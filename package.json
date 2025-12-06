@@ -1,0 +1,32 @@
+{
+  "name": "everlore-server",
+  "description": "",
+  "type": "module",
+  "scripts": {
+    "postinstall": "motia install",
+    "dev": "motia dev",
+    "start": "motia start",
+    "generate-types": "motia generate-types",
+    "build": "motia build",
+    "clean": "rm -rf dist node_modules python_modules .motia .mermaid"
+  },
+  "keywords": [
+    "motia"
+  ],
+  "dependencies": {
+    "@motiadev/adapter-bullmq-events": "^0.15.4-beta.169",
+    "@motiadev/core": "^0.15.4-beta.169",
+    "@motiadev/plugin-bullmq": "^0.15.4-beta.169",
+    "@motiadev/plugin-endpoint": "^0.15.4-beta.169",
+    "@motiadev/plugin-logs": "^0.15.4-beta.169",
+    "@motiadev/plugin-observability": "^0.15.4-beta.169",
+    "@motiadev/plugin-states": "^0.15.4-beta.169",
+    "motia": "^0.15.4-beta.169",
+    "zod": "^4.1.12"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.7.3"
+  }
+}
