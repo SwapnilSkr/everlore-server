@@ -1,4 +1,5 @@
-import type { EventConfig, Handlers } from "motia";
+import type { Handlers } from "motia";
+import { normalizeConfig } from "../../types/app.types";
 import { z } from "zod";
 
 const inputSchema = z.object({
@@ -8,7 +9,7 @@ const inputSchema = z.object({
   requestId: z.string(),
 });
 
-export const config: EventConfig = {
+export const config = normalizeConfig({
   name: "ProcessGreeting",
   type: "event",
   description: "Processes greeting in the background",
@@ -16,7 +17,7 @@ export const config: EventConfig = {
   emits: [],
   flows: ["hello-world-flow"],
   input: inputSchema,
-};
+});
 
 export const handler: Handlers["ProcessGreeting"] = async (
   input,

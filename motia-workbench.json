@@ -8,8 +8,16 @@
       },
       "steps/hello/hello-api.step.ts": {
         "x": 0,
-        "y": 0,
-        "sourceHandlePosition": "right"
+        "y": 0
+      }
+    }
+  },
+  {
+    "id": "auth-flow",
+    "config": {
+      "steps/auth/signup.step.ts": {
+        "x": 0,
+        "y": 0
       }
     }
   }

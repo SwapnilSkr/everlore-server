@@ -1,7 +1,8 @@
-import type { ApiRouteConfig, Handlers } from "motia";
+import type { Handlers } from "motia";
+import { normalizeConfig } from "../../types/app.types";
 import { z } from "zod";
 
-export const config: ApiRouteConfig = {
+export const config = normalizeConfig({
   name: "HelloAPI",
   type: "api",
   path: "/hello",
@@ -16,7 +17,7 @@ export const config: ApiRouteConfig = {
       appName: z.string(),
     }),
   },
-};
+});
 
 export const handler: Handlers["HelloAPI"] = async (_, { emit, logger }) => {
   const appName = process.env.APP_NAME || "Motia App";
