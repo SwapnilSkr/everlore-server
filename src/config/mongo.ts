@@ -56,6 +56,8 @@ async function createIndexes(db: Db) {
   await c('world_templates').createIndex({ slug: 1 }, { unique: true })
 
   // users
-  await c('users').createIndex({ email: 1 }, { unique: true })
+  await c('users').createIndex({ email: 1 }, { unique: true, sparse: true })
   await c('users').createIndex({ username: 1 }, { unique: true })
+  await c('users').createIndex({ phone: 1 }, { unique: true, sparse: true })
+  await c('users').createIndex({ google_sub: 1 }, { unique: true, sparse: true })
 }

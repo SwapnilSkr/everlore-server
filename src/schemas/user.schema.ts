@@ -15,6 +15,15 @@ export const GoogleAuthBody = t.Object({
   id_token: t.String(),
 })
 
+export const SendOtpBody = t.Object({
+  phone: t.String({ pattern: '^\\+[1-9]\\d{7,14}$' }),
+})
+
+export const VerifyOtpBody = t.Object({
+  phone: t.String({ pattern: '^\\+[1-9]\\d{7,14}$' }),
+  code: t.String({ minLength: 4, maxLength: 10 }),
+})
+
 export const UpdatePreferencesBody = t.Object({
   nsfw_enabled: t.Optional(t.Boolean()),
   preferred_model: t.Optional(t.String()),

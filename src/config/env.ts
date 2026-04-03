@@ -11,6 +11,10 @@ const optionalEnvVars = {
   CLIENT_ORIGINS: 'http://localhost:3000,http://localhost:8080',
   OPENROUTER_API_KEY: '',
   PINECONE_INDEX: 'nexus-memories',
+  GOOGLE_CLIENT_ID: '',
+  TWILIO_ACCOUNT_SID: '',
+  TWILIO_AUTH_TOKEN: '',
+  TWILIO_VERIFY_SERVICE_SID: '',
 } as const
 
 export interface Env {
@@ -23,6 +27,10 @@ export interface Env {
   PINECONE_API_KEY: string
   PINECONE_INDEX: string
   CLIENT_ORIGINS: string[]
+  GOOGLE_CLIENT_ID: string
+  TWILIO_ACCOUNT_SID: string
+  TWILIO_AUTH_TOKEN: string
+  TWILIO_VERIFY_SERVICE_SID: string
 }
 
 function loadEnv(): Env {
@@ -44,6 +52,10 @@ function loadEnv(): Env {
     PINECONE_API_KEY: process.env.PINECONE_API_KEY || '',
     PINECONE_INDEX: process.env.PINECONE_INDEX || optionalEnvVars.PINECONE_INDEX,
     CLIENT_ORIGINS: (process.env.CLIENT_ORIGINS || optionalEnvVars.CLIENT_ORIGINS).split(','),
+    GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || optionalEnvVars.GOOGLE_CLIENT_ID,
+    TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID || optionalEnvVars.TWILIO_ACCOUNT_SID,
+    TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN || optionalEnvVars.TWILIO_AUTH_TOKEN,
+    TWILIO_VERIFY_SERVICE_SID: process.env.TWILIO_VERIFY_SERVICE_SID || optionalEnvVars.TWILIO_VERIFY_SERVICE_SID,
   }
 }
 
