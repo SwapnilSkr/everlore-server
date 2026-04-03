@@ -1,7 +1,9 @@
-interface GenerationOutput {
+import type { FlagMutation, Mutation } from '../../src/utils/state-mutator'
+
+export interface GenerationOutput {
   narrative: string
-  state_mutations: Record<string, { op: string; value: number }>
-  flag_mutations: Record<string, { op: string; value?: any }>
+  state_mutations: Record<string, Mutation>
+  flag_mutations: Record<string, FlagMutation>
   scene_tag: string
   emotional_tone: string
 }
@@ -26,17 +28,31 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
     }
 
     // Validate each mutation
-    for (const [key, val] of Object.entries(parsed.state_mutations)) {
-      const mutation = val as any
-      if (!mutation || !['add', 'subtract', 'set'].includes(mutation.op)) {
-        delete parsed.state_mutations[key]
-      }
+    const rawState = parsed.state_mutations as Record<string, unknown>
+    const stateMutations: Record<string, Mutation> = {}
+    for (const [key, val] of Object.entries(rawState)) {
+      if (!val || typeof val !== 'object') continue
+      const m = val as { op?: unknown; value?: unknown }
+      if (m.op !== 'add' && m.op !== 'subtract' && m.op !== 'set') continue
+      if (typeof m.value !== 'number') continue
+      stateMutations[key] = { op: m.op, value: m.value }
     }
+    parsed.state_mutations = stateMutations
 
     // Ensure flag_mutations is an object
     if (!parsed.flag_mutations || typeof parsed.flag_mutations !== 'object') {
       parsed.flag_mutations = {}
     }
+
+    const rawFlags = parsed.flag_mutations as Record<string, unknown>
+    const flagMutations: Record<string, FlagMutation> = {}
+    for (const [key, val] of Object.entries(rawFlags)) {
+      if (!val || typeof val !== 'object') continue
+      const m = val as { op?: unknown; value?: unknown }
+      if (m.op !== 'set' && m.op !== 'increment' && m.op !== 'decrement') continue
+      flagMutations[key] = m.op === 'set' ? { op: 'set', value: m.value } : { op: m.op }
+    }
+    parsed.flag_mutations = flagMutations
 
     // Validate scene_tag
     if (!parsed.scene_tag || !VALID_SCENE_TAGS.has(parsed.scene_tag)) {

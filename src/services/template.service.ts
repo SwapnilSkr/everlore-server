@@ -1,4 +1,4 @@
-import { getDb } from '../config/mongo'
+import { coll } from '../config/mongo'
 import { getPineconeIndex } from '../config/pinecone'
 import { embed } from '../utils/embedding'
 import { generateId } from '../utils/id'
@@ -12,12 +12,11 @@ function slugify(text: string): string {
 
 export const templateService = {
   async create(creatorId: string, data: any) {
-    const db = getDb()
     const id = generateId('tpl')
     let slug = slugify(data.title)
 
     // Ensure unique slug
-    const existing = await db.collection('world_templates').findOne({ slug })
+    const existing = await coll('world_templates').findOne({ slug })
     if (existing) {
       slug = `${slug}-${Date.now().toString(36)}`
     }
@@ -49,13 +48,12 @@ export const templateService = {
       updated_at: new Date(),
     }
 
-    await db.collection('world_templates').insertOne(template)
+    await coll('world_templates').insertOne(template)
     return template
   },
 
   async update(templateId: string, creatorId: string, data: any) {
-    const db = getDb()
-    const existing = await db.collection('world_templates').findOne({
+    const existing = await coll('world_templates').findOne({
       _id: templateId,
       creator_id: creatorId,
     })
@@ -65,7 +63,7 @@ export const templateService = {
     delete updateFields.creator_id
     delete updateFields._id
 
-    await db.collection('world_templates').updateOne(
+    await coll('world_templates').updateOne(
       { _id: templateId },
       { $set: updateFields },
     )
@@ -74,8 +72,7 @@ export const templateService = {
   },
 
   async publish(templateId: string, creatorId: string) {
-    const db = getDb()
-    const template = await db.collection('world_templates').findOne({
+    const template = await coll('world_templates').findOne({
       _id: templateId,
       creator_id: creatorId,
     })
@@ -86,7 +83,7 @@ export const templateService = {
       await embedLore(templateId, template.global_lore)
     }
 
-    await db.collection('world_templates').updateOne(
+    await coll('world_templates').updateOne(
       { _id: templateId },
       {
         $set: { is_published: true, updated_at: new Date() },
@@ -98,12 +95,10 @@ export const templateService = {
   },
 
   async getById(templateId: string) {
-    const db = getDb()
-    return db.collection('world_templates').findOne({ _id: templateId })
+    return coll('world_templates').findOne({ _id: templateId })
   },
 
   async listPublished(page: number = 1, limit: number = 20, search?: string) {
-    const db = getDb()
     const filter: any = { is_published: true }
     if (search) {
       filter.$or = [
@@ -112,9 +107,8 @@ export const templateService = {
       ]
     }
 
-    const total = await db.collection('world_templates').countDocuments(filter)
-    const templates = await db
-      .collection('world_templates')
+    const total = await coll('world_templates').countDocuments(filter)
+    const templates = await coll('world_templates')
       .find(filter)
       .sort({ created_at: -1 })
       .skip((page - 1) * limit)
@@ -125,9 +119,7 @@ export const templateService = {
   },
 
   async listByCreator(creatorId: string) {
-    const db = getDb()
-    return db
-      .collection('world_templates')
+    return coll('world_templates')
       .find({ creator_id: creatorId })
       .sort({ updated_at: -1 })
       .toArray()
@@ -159,7 +151,7 @@ async function embedLore(templateId: string, loreText: string) {
 
   // Upsert in batches of 100
   for (let i = 0; i < vectors.length; i += 100) {
-    await namespace.upsert(vectors.slice(i, i + 100))
+    await namespace.upsert({ records: vectors.slice(i, i + 100) })
   }
 }
 

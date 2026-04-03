@@ -1,11 +1,11 @@
-interface Mutation {
+export interface Mutation {
   op: 'add' | 'subtract' | 'set'
   value: number
 }
 
-interface FlagMutation {
+export interface FlagMutation {
   op: 'set' | 'increment' | 'decrement'
-  value?: any
+  value?: unknown
 }
 
 export function applyStateMutations(

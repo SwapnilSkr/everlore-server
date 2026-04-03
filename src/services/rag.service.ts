@@ -1,6 +1,6 @@
 import { getPineconeIndex } from '../config/pinecone'
 import { embed } from '../utils/embedding'
-import { getDb } from '../config/mongo'
+import { coll } from '../config/mongo'
 
 interface RagResult {
   loreTexts: string[]
@@ -44,8 +44,7 @@ export async function queryRag(
 
   // Update access counts for retrieved memories
   if (retrievedMemoryMongoIds.length > 0) {
-    const db = getDb()
-    await db.collection('memories').updateMany(
+    await coll('memories').updateMany(
       { _id: { $in: retrievedMemoryMongoIds } },
       { $inc: { access_count: 1 }, $set: { last_accessed_at: new Date() } },
     )

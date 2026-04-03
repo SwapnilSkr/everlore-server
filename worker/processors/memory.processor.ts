@@ -1,5 +1,5 @@
 import { Job } from 'bullmq'
-import { getDb } from '../../src/config/mongo'
+import { coll } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/utils/embedding'
 import { generateId } from '../../src/utils/id'
@@ -31,7 +31,6 @@ Respond ONLY with valid JSON matching this schema:
 export async function memoryProcessor(job: Job) {
   const { instanceId, playerId, eventId, playerInput, aiResponse, sceneTag } = job.data
   const redis = getRedisClient()
-  const db = getDb()
 
   const result = await callLLM({
     model: 'gpt-4o',
@@ -69,18 +68,20 @@ export async function memoryProcessor(job: Job) {
 
     const embedding = await embed(mem.text)
 
-    await namespace.upsert([{
-      id: vecId,
-      values: embedding,
-      metadata: {
-        text: mem.text,
-        type: mem.type,
-        importance: mem.importance,
-        is_nsfw: mem.is_nsfw || false,
-        mongo_id: memId,
-        created_at: new Date().toISOString(),
-      },
-    }])
+    await namespace.upsert({
+      records: [{
+        id: vecId,
+        values: embedding,
+        metadata: {
+          text: mem.text,
+          type: mem.type,
+          importance: mem.importance,
+          is_nsfw: mem.is_nsfw || false,
+          mongo_id: memId,
+          created_at: new Date().toISOString(),
+        },
+      }],
+    })
 
     const memoryDoc = {
       _id: memId,
@@ -98,12 +99,12 @@ export async function memoryProcessor(job: Job) {
       created_at: new Date(),
       updated_at: new Date(),
     }
-    await db.collection('memories').insertOne(memoryDoc)
+    await coll('memories').insertOne(memoryDoc)
     newMemories.push(memoryDoc)
   }
 
   // Update instance meta
-  await db.collection('world_instances').updateOne(
+  await coll('world_instances').updateOne(
     { _id: instanceId },
     { $inc: { 'meta.total_memories': newMemories.length } },
   )

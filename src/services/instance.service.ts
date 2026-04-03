@@ -1,4 +1,4 @@
-import { getDb } from '../config/mongo'
+import { coll } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
 import { generateId } from '../utils/id'
 
@@ -10,10 +10,8 @@ const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number 
 
 export const instanceService = {
   async create(playerId: string, templateId: string, tier: string) {
-    const db = getDb()
-
     // Check template exists and is published
-    const template = await db.collection('world_templates').findOne({
+    const template = await coll('world_templates').findOne({
       _id: templateId,
       is_published: true,
     })
@@ -21,7 +19,7 @@ export const instanceService = {
 
     // Check instance limit
     const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
-    const instanceCount = await db.collection('world_instances').countDocuments({
+    const instanceCount = await coll('world_instances').countDocuments({
       player_id: playerId,
       'meta.is_archived': { $ne: true },
     })
@@ -65,35 +63,31 @@ export const instanceService = {
       updated_at: new Date(),
     }
 
-    await db.collection('world_instances').insertOne(instance)
+    await coll('world_instances').insertOne(instance)
     return { instance, template }
   },
 
   async getById(instanceId: string, playerId: string) {
-    const db = getDb()
-    return db.collection('world_instances').findOne({
+    return coll('world_instances').findOne({
       _id: instanceId,
       player_id: playerId,
     })
   },
 
   async list(playerId: string, includeArchived: boolean = false) {
-    const db = getDb()
     const filter: any = { player_id: playerId }
     if (!includeArchived) {
       filter['meta.is_archived'] = { $ne: true }
     }
 
-    const instances = await db
-      .collection('world_instances')
+    const instances = await coll('world_instances')
       .find(filter)
       .sort({ 'meta.last_active_at': -1 })
       .toArray()
 
     // Enrich with template titles
     const templateIds = [...new Set(instances.map((i) => i.template_id))]
-    const templates = await db
-      .collection('world_templates')
+    const templates = await coll('world_templates')
       .find({ _id: { $in: templateIds } })
       .project({ _id: 1, title: 1, is_sentient: 1, description: 1 })
       .toArray()
@@ -106,8 +100,7 @@ export const instanceService = {
   },
 
   async archive(instanceId: string, playerId: string) {
-    const db = getDb()
-    const result = await db.collection('world_instances').updateOne(
+    const result = await coll('world_instances').updateOne(
       { _id: instanceId, player_id: playerId },
       { $set: { 'meta.is_archived': true, updated_at: new Date() } },
     )
@@ -122,20 +115,19 @@ export const instanceService = {
 
   async loadSession(instanceId: string, playerId: string) {
     const redis = getRedisClient()
-    const db = getDb()
 
     // Try Redis first
     const cached = await redis.get(`session:${instanceId}`)
     if (cached) return JSON.parse(cached)
 
     // Load from Mongo
-    const instance = await db.collection('world_instances').findOne({
+    const instance = await coll('world_instances').findOne({
       _id: instanceId,
       player_id: playerId,
     })
     if (!instance) throw new Error('Instance not found')
 
-    const template = await db.collection('world_templates').findOne({
+    const template = await coll('world_templates').findOne({
       _id: instance.template_id,
     })
     if (!template) throw new Error('Template not found')

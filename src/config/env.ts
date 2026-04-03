@@ -13,7 +13,19 @@ const optionalEnvVars = {
   PINECONE_INDEX: 'nexus-memories',
 } as const
 
-function loadEnv() {
+export interface Env {
+  PORT: number
+  JWT_SECRET: string
+  MONGODB_URI: string
+  REDIS_URL: string
+  OPENAI_API_KEY: string
+  OPENROUTER_API_KEY: string
+  PINECONE_API_KEY: string
+  PINECONE_INDEX: string
+  CLIENT_ORIGINS: string[]
+}
+
+function loadEnv(): Env {
   const missing: string[] = []
   for (const key of requiredEnvVars) {
     if (!process.env[key]) missing.push(key)
@@ -35,4 +47,4 @@ function loadEnv() {
   }
 }
 
-export const env = loadEnv()
+export const env: Env = loadEnv()

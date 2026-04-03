@@ -1,5 +1,5 @@
 import { getRedisClient } from '../config/redis'
-import { getDb } from '../config/mongo'
+import { coll } from '../config/mongo'
 import { getGenerationQueue } from '../queues'
 import { instanceService } from './instance.service'
 
@@ -10,14 +10,11 @@ export const generationService = {
     userMessage: string
   }) {
     const { instanceId, playerId, userMessage } = params
-    const db = getDb()
-
     // Load session (from Redis cache or MongoDB)
     const session = await instanceService.loadSession(instanceId, playerId)
 
     // Fetch recent events for immediate context (last 6 turns)
-    const recentEvents = await db
-      .collection('events')
+    const recentEvents = await coll('events')
       .find({ instance_id: instanceId })
       .sort({ sequence: -1 })
       .limit(6)
@@ -25,7 +22,7 @@ export const generationService = {
     recentEvents.reverse()
 
     // Fetch active scene summary
-    const activeSummary = await db.collection('scene_summaries').findOne(
+    const activeSummary = await coll('scene_summaries').findOne(
       {
         instance_id: instanceId,
         'event_range.end_sequence': {
@@ -58,27 +55,24 @@ export const generationService = {
   },
 
   async loadInstance(instanceId: string, playerId: string) {
-    const db = getDb()
-    const instance = await db.collection('world_instances').findOne({
+    const instance = await coll('world_instances').findOne({
       _id: instanceId,
       player_id: playerId,
     })
     if (!instance) throw new Error('Instance not found')
 
-    const template = await db.collection('world_templates').findOne({
+    const template = await coll('world_templates').findOne({
       _id: instance.template_id,
     })
 
-    const recentEvents = await db
-      .collection('events')
+    const recentEvents = await coll('events')
       .find({ instance_id: instanceId })
       .sort({ sequence: -1 })
       .limit(20)
       .toArray()
     recentEvents.reverse()
 
-    const memories = await db
-      .collection('memories')
+    const memories = await coll('memories')
       .find({ instance_id: instanceId, is_archived: false })
       .sort({ importance: -1 })
       .limit(20)

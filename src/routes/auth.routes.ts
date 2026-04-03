@@ -1,22 +1,18 @@
 import { Elysia } from 'elysia'
-import { jwt } from '@elysiajs/jwt'
 import * as argon2 from 'argon2'
-import { getDb } from '../config/mongo'
-import { env } from '../config/env'
+import { coll } from '../config/mongo'
 import { generateId } from '../utils/id'
 import { RegisterBody, LoginBody, GoogleAuthBody, UpdatePreferencesBody } from '../schemas/user.schema'
-import { authPlugin, requireAuth } from '../middleware/auth'
+import { authPlugin } from '../middleware/auth'
 import { rateLimit } from '../middleware/rate-limit'
 
 export const authRoutes = new Elysia({ prefix: '/auth' })
-  .use(jwt({ name: 'jwt', secret: env.JWT_SECRET }))
+  .use(authPlugin)
 
   .post('/register', async ({ body, jwt }) => {
-    const db = getDb()
     const { email, username, password } = body
 
-    // Check existing
-    const existing = await db.collection('users').findOne({
+    const existing = await coll('users').findOne({
       $or: [{ email }, { username }],
     })
     if (existing) {
@@ -44,7 +40,7 @@ export const authRoutes = new Elysia({ prefix: '/auth' })
       updated_at: new Date(),
     }
 
-    await db.collection('users').insertOne(user)
+    await coll('users').insertOne(user)
 
     const token = await jwt.sign({
       id: user._id,
@@ -60,53 +56,54 @@ export const authRoutes = new Elysia({ prefix: '/auth' })
   }, { body: RegisterBody })
 
   .post('/login', async ({ body, jwt }) => {
-    const db = getDb()
     const { email, password } = body
 
-    await rateLimit(email, 'auth_attempt', 10, 300)
+    const rl = await rateLimit(email, 'auth_attempt')
+    if (!rl.allowed) {
+      throw new Error('Too many login attempts. Please try again later.')
+    }
 
-    const user = await db.collection('users').findOne({ email })
-    if (!user) throw new Error('Invalid credentials')
+    const userDoc = await coll('users').findOne({ email })
+    if (!userDoc) throw new Error('Invalid credentials')
 
-    const valid = await argon2.verify(user.password_hash, password)
+    const valid = await argon2.verify(userDoc.password_hash, password)
     if (!valid) throw new Error('Invalid credentials')
 
     const token = await jwt.sign({
-      id: user._id,
-      email: user.email,
-      username: user.username,
-      tier: user.tier,
+      id: userDoc._id,
+      email: userDoc.email,
+      username: userDoc.username,
+      tier: userDoc.tier,
     })
 
     return {
       token,
       user: {
-        id: user._id,
-        email: user.email,
-        username: user.username,
-        tier: user.tier,
-        preferences: user.preferences,
+        id: userDoc._id,
+        email: userDoc.email,
+        username: userDoc.username,
+        tier: userDoc.tier,
+        preferences: userDoc.preferences,
       },
     }
   }, { body: LoginBody })
 
   .post('/google', async ({ body, jwt }) => {
-    const db = getDb()
     const { id_token } = body
 
-    // Verify Google ID token (simplified — in production, use google-auth-library)
-    // For now, decode the JWT payload (the real implementation should verify signature)
     const parts = id_token.split('.')
     if (parts.length !== 3) throw new Error('Invalid token')
-    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString())
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString()) as {
+      email?: string
+    }
 
     if (!payload.email) throw new Error('No email in token')
 
-    let user = await db.collection('users').findOne({ email: payload.email })
+    let userDoc = await coll('users').findOne({ email: payload.email })
 
-    if (!user) {
+    if (!userDoc) {
       const id = generateId('usr')
-      user = {
+      const newUser = {
         _id: id,
         email: payload.email,
         username: payload.email.split('@')[0] + '_' + Date.now().toString(36),
@@ -123,34 +120,32 @@ export const authRoutes = new Elysia({ prefix: '/auth' })
         created_at: new Date(),
         updated_at: new Date(),
       }
-      await db.collection('users').insertOne(user)
+      await coll('users').insertOne(newUser)
+      userDoc = newUser
     }
 
     const token = await jwt.sign({
-      id: user._id,
-      email: user.email,
-      username: user.username,
-      tier: user.tier,
+      id: userDoc._id,
+      email: userDoc.email,
+      username: userDoc.username,
+      tier: userDoc.tier,
     })
 
     return {
       token,
       user: {
-        id: user._id,
-        email: user.email,
-        username: user.username,
-        tier: user.tier,
-        preferences: user.preferences,
+        id: userDoc._id,
+        email: userDoc.email,
+        username: userDoc.username,
+        tier: userDoc.tier,
+        preferences: userDoc.preferences,
       },
     }
   }, { body: GoogleAuthBody })
 
-  .use(authPlugin)
-
   .get('/me', async ({ user }) => {
     if (!user) throw new Error('Unauthorized')
-    const db = getDb()
-    const dbUser = await db.collection('users').findOne({ _id: user.id })
+    const dbUser = await coll('users').findOne({ _id: user.id })
     if (!dbUser) throw new Error('User not found')
 
     return {
@@ -165,14 +160,13 @@ export const authRoutes = new Elysia({ prefix: '/auth' })
 
   .put('/preferences', async ({ user, body }) => {
     if (!user) throw new Error('Unauthorized')
-    const db = getDb()
 
-    const updateFields: any = {}
+    const updateFields: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(body)) {
       updateFields[`preferences.${key}`] = value
     }
     updateFields.updated_at = new Date()
 
-    await db.collection('users').updateOne({ _id: user.id }, { $set: updateFields })
+    await coll('users').updateOne({ _id: user.id }, { $set: updateFields })
     return { success: true }
   }, { body: UpdatePreferencesBody })

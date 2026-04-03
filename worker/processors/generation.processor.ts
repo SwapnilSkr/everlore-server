@@ -1,5 +1,5 @@
 import { Job } from 'bullmq'
-import { getDb } from '../../src/config/mongo'
+import { coll } from '../../src/config/mongo'
 import { getRedisClient } from '../../src/config/redis'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/utils/embedding'
@@ -55,7 +55,6 @@ export async function generationProcessor(job: Job) {
   } = job.data
 
   const redis = getRedisClient()
-  const db = getDb()
 
   // STEP 1: Embed user message for RAG query
   let loreTexts: string[] = []
@@ -87,7 +86,7 @@ export async function generationProcessor(job: Job) {
       .map((m) => (m.metadata as any)?.mongo_id)
       .filter(Boolean)
     if (mongoIds.length > 0) {
-      await db.collection('memories').updateMany(
+      await coll('memories').updateMany(
         { _id: { $in: mongoIds } },
         { $inc: { access_count: 1 }, $set: { last_accessed_at: new Date() } },
       )
@@ -137,7 +136,7 @@ export async function generationProcessor(job: Job) {
   const newFlags = applyFlagMutations(session.active_flags, parsed.flag_mutations)
 
   // STEP 6: Get next sequence number
-  const lastEvent = await db.collection('events').findOne(
+  const lastEvent = await coll('events').findOne(
     { instance_id: instanceId },
     { sort: { sequence: -1 }, projection: { sequence: 1 } },
   )
@@ -165,7 +164,7 @@ export async function generationProcessor(job: Job) {
     created_at: new Date(),
   }
 
-  await db.collection('events').insertOne(event)
+  await coll('events').insertOne(event)
 
   // STEP 8: Update world instance
   const sceneTag = parsed.scene_tag
@@ -173,7 +172,7 @@ export async function generationProcessor(job: Job) {
   const sameScene = currentScene.tag === sceneTag
   const newTurnCount = sameScene ? currentScene.turn_count + 1 : 1
 
-  await db.collection('world_instances').updateOne(
+  await coll('world_instances').updateOne(
     { _id: instanceId },
     {
       $set: {

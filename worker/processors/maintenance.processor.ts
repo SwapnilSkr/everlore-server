@@ -1,17 +1,15 @@
 import { Job } from 'bullmq'
-import { getDb } from '../../src/config/mongo'
+import { coll } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/utils/embedding'
 
 export async function maintenanceProcessor(job: Job) {
   const { task } = job.data
-  const db = getDb()
-
   switch (task) {
     case 'importance_decay': {
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 
-      const staleMemories = await db.collection('memories')
+      const staleMemories = await coll('memories')
         .find({
           importance: { $lt: 3 },
           last_accessed_at: { $lt: thirtyDaysAgo },
@@ -29,7 +27,7 @@ export async function maintenanceProcessor(job: Job) {
           }
         }
 
-        await db.collection('memories').updateOne(
+        await coll('memories').updateOne(
           { _id: mem._id },
           {
             $set: {
@@ -46,7 +44,7 @@ export async function maintenanceProcessor(job: Job) {
 
     case 'dedup_memories': {
       const { instanceId } = job.data
-      const memories = await db.collection('memories')
+      const memories = await coll('memories')
         .find({ instance_id: instanceId, is_archived: false })
         .toArray()
 
@@ -83,7 +81,7 @@ export async function maintenanceProcessor(job: Job) {
               ]),
             ]
 
-            await db.collection('memories').updateOne(
+            await coll('memories').updateOne(
               { _id: keeper._id },
               { $set: { source_event_ids: mergedSources } },
             )
@@ -97,7 +95,7 @@ export async function maintenanceProcessor(job: Job) {
               }
             }
 
-            await db.collection('memories').updateOne(
+            await coll('memories').updateOne(
               { _id: discard._id },
               { $set: { is_archived: true, pinecone_id: null } },
             )
@@ -113,7 +111,7 @@ export async function maintenanceProcessor(job: Job) {
 
     case 'schedule_dedups': {
       // Find active instances with enough memories to warrant dedup
-      const instances = await db.collection('world_instances')
+      const instances = await coll('world_instances')
         .find({ 'meta.total_memories': { $gt: 20 }, 'meta.is_archived': { $ne: true } })
         .project({ _id: 1 })
         .toArray()

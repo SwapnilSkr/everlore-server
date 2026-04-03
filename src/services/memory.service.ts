@@ -1,42 +1,37 @@
-import { getDb } from '../config/mongo'
+import { coll } from '../config/mongo'
 import { getPineconeIndex } from '../config/pinecone'
 import { embed } from '../utils/embedding'
 import { generateId } from '../utils/id'
 
 export const memoryService = {
   async getEvents(instanceId: string, playerId: string, opts: any) {
-    const db = getDb()
     const skip = ((opts.page || 1) - 1) * (opts.limit || 50)
     const filter: any = { instance_id: instanceId, player_id: playerId }
     if (opts.type) filter.type = opts.type
 
-    const events = await db
-      .collection('events')
+    const events = await coll('events')
       .find(filter)
       .sort({ sequence: -1 })
       .skip(skip)
       .limit(opts.limit || 50)
       .toArray()
 
-    const total = await db.collection('events').countDocuments(filter)
+    const total = await coll('events').countDocuments(filter)
     return { events: events.reverse(), total, page: opts.page || 1 }
   },
 
   async getMemories(instanceId: string, playerId: string, opts: any) {
-    const db = getDb()
     const filter: any = { instance_id: instanceId, player_id: playerId }
     if (!opts.includeArchived) filter.is_archived = false
 
-    return db
-      .collection('memories')
+    return coll('memories')
       .find(filter)
       .sort({ importance: -1, updated_at: -1 })
       .toArray()
   },
 
   async editMemory(memoryId: string, playerId: string, updates: any) {
-    const db = getDb()
-    const memory = await db.collection('memories').findOne({
+    const memory = await coll('memories').findOne({
       _id: memoryId,
       player_id: playerId,
     })
@@ -47,7 +42,7 @@ export const memoryService = {
     if (updates.type) updateFields.type = updates.type
     if (updates.importance !== undefined) updateFields.importance = updates.importance
 
-    await db.collection('memories').updateOne({ _id: memoryId }, { $set: updateFields })
+    await coll('memories').updateOne({ _id: memoryId }, { $set: updateFields })
 
     // Re-embed if text changed
     if (updates.text) {
@@ -57,34 +52,38 @@ export const memoryService = {
 
       if (memory.pinecone_id) {
         // Update existing vector
-        await namespace.upsert([{
-          id: memory.pinecone_id,
-          values: newEmbedding,
-          metadata: {
-            text: updates.text,
-            type: updates.type || memory.type,
-            importance: updates.importance ?? memory.importance,
-            is_nsfw: memory.is_nsfw,
-            mongo_id: memoryId,
-            created_at: memory.created_at.toISOString(),
-          },
-        }])
+        await namespace.upsert({
+          records: [{
+            id: memory.pinecone_id,
+            values: newEmbedding,
+            metadata: {
+              text: updates.text,
+              type: updates.type || memory.type,
+              importance: updates.importance ?? memory.importance,
+              is_nsfw: memory.is_nsfw,
+              mongo_id: memoryId,
+              created_at: memory.created_at.toISOString(),
+            },
+          }],
+        })
       } else {
         // Re-embed archived memory
         const newVecId = generateId('vec')
-        await namespace.upsert([{
-          id: newVecId,
-          values: newEmbedding,
-          metadata: {
-            text: updates.text,
-            type: updates.type || memory.type,
-            importance: updates.importance ?? memory.importance,
-            is_nsfw: memory.is_nsfw,
-            mongo_id: memoryId,
-            created_at: memory.created_at.toISOString(),
-          },
-        }])
-        await db.collection('memories').updateOne(
+        await namespace.upsert({
+          records: [{
+            id: newVecId,
+            values: newEmbedding,
+            metadata: {
+              text: updates.text,
+              type: updates.type || memory.type,
+              importance: updates.importance ?? memory.importance,
+              is_nsfw: memory.is_nsfw,
+              mongo_id: memoryId,
+              created_at: memory.created_at.toISOString(),
+            },
+          }],
+        })
+        await coll('memories').updateOne(
           { _id: memoryId },
           { $set: { pinecone_id: newVecId, is_archived: false } },
         )
@@ -95,8 +94,7 @@ export const memoryService = {
   },
 
   async deleteMemory(memoryId: string, playerId: string) {
-    const db = getDb()
-    const memory = await db.collection('memories').findOne({
+    const memory = await coll('memories').findOne({
       _id: memoryId,
       player_id: playerId,
     })
@@ -107,8 +105,8 @@ export const memoryService = {
       await index.namespace(`mem_${memory.instance_id}`).deleteOne(memory.pinecone_id)
     }
 
-    await db.collection('memories').deleteOne({ _id: memoryId })
-    await db.collection('world_instances').updateOne(
+    await coll('memories').deleteOne({ _id: memoryId })
+    await coll('world_instances').updateOne(
       { _id: memory.instance_id },
       { $inc: { 'meta.total_memories': -1 } },
     )
@@ -117,14 +115,13 @@ export const memoryService = {
   },
 
   async editEvent(eventId: string, playerId: string, updates: any) {
-    const db = getDb()
-    const event = await db.collection('events').findOne({
+    const event = await coll('events').findOne({
       _id: eventId,
       player_id: playerId,
     })
     if (!event) throw new Error('Event not found')
 
-    await db.collection('events').updateOne(
+    await coll('events').updateOne(
       { _id: eventId },
       {
         $push: {

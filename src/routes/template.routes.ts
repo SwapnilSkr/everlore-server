@@ -29,7 +29,10 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
     if (user.tier !== 'creator' && user.tier !== 'premium') {
       throw new Error('Creator or premium tier required')
     }
-    await rateLimit(user.id, 'template_create', 5, 86400)
+    const rl = await rateLimit(user.id, 'template_create')
+    if (!rl.allowed) {
+      throw new Error('Template creation rate limit exceeded. Try again later.')
+    }
     return templateService.create(user.id, body)
   }, { body: CreateTemplateBody })
 
