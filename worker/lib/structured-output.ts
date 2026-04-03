@@ -1,0 +1,87 @@
+interface GenerationOutput {
+  narrative: string
+  state_mutations: Record<string, { op: string; value: number }>
+  flag_mutations: Record<string, { op: string; value?: any }>
+  scene_tag: string
+  emotional_tone: string
+}
+
+const VALID_SCENE_TAGS = new Set([
+  'dialogue', 'combat', 'intimate', 'exploration',
+  'existential', 'cosmic', 'mundane',
+])
+
+export function enforceSchema(rawResponse: string): GenerationOutput {
+  try {
+    const parsed = JSON.parse(rawResponse)
+
+    // Validate required fields
+    if (!parsed.narrative || typeof parsed.narrative !== 'string') {
+      throw new Error('Missing or invalid narrative')
+    }
+
+    // Ensure state_mutations is an object
+    if (!parsed.state_mutations || typeof parsed.state_mutations !== 'object') {
+      parsed.state_mutations = {}
+    }
+
+    // Validate each mutation
+    for (const [key, val] of Object.entries(parsed.state_mutations)) {
+      const mutation = val as any
+      if (!mutation || !['add', 'subtract', 'set'].includes(mutation.op)) {
+        delete parsed.state_mutations[key]
+      }
+    }
+
+    // Ensure flag_mutations is an object
+    if (!parsed.flag_mutations || typeof parsed.flag_mutations !== 'object') {
+      parsed.flag_mutations = {}
+    }
+
+    // Validate scene_tag
+    if (!parsed.scene_tag || !VALID_SCENE_TAGS.has(parsed.scene_tag)) {
+      parsed.scene_tag = 'dialogue'
+    }
+
+    // Ensure emotional_tone
+    if (!parsed.emotional_tone || typeof parsed.emotional_tone !== 'string') {
+      parsed.emotional_tone = 'neutral'
+    }
+
+    return parsed as GenerationOutput
+  } catch (err) {
+    // Attempt to extract narrative from malformed response
+    return repairResponse(rawResponse)
+  }
+}
+
+function repairResponse(raw: string): GenerationOutput {
+  // Try to extract JSON from markdown code blocks
+  const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
+  if (jsonMatch) {
+    try {
+      return enforceSchema(jsonMatch[1])
+    } catch {
+      // Fall through to text extraction
+    }
+  }
+
+  // Try to find JSON object in the response
+  const objectMatch = raw.match(/\{[\s\S]*\}/)
+  if (objectMatch) {
+    try {
+      return enforceSchema(objectMatch[0])
+    } catch {
+      // Fall through
+    }
+  }
+
+  // Last resort: use the raw text as narrative with neutral mutations
+  return {
+    narrative: raw.slice(0, 2000),
+    state_mutations: {},
+    flag_mutations: {},
+    scene_tag: 'dialogue',
+    emotional_tone: 'neutral',
+  }
+}

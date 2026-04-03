@@ -1,7 +1,6 @@
 import { Elysia } from 'elysia'
 import { jwt } from '@elysiajs/jwt'
 import { env } from '../config/env'
-import { getDb } from '../config/mongo'
 
 export interface AuthUser {
   id: string
