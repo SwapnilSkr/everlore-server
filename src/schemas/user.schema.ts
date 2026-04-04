@@ -35,3 +35,16 @@ export const UpdatePreferencesBody = t.Object({
   ])),
   auto_memory_curation: t.Optional(t.Boolean()),
 })
+
+/** Body for unauthenticated admin tier updates (dev / internal use only). */
+export const AdminSetTierBody = t.Object({
+  tier: t.Union([
+    t.Literal('free'),
+    t.Literal('premium'),
+    t.Literal('creator'),
+  ]),
+})
+
+export const AdminUserListQuery = t.Object({
+  limit: t.Optional(t.Numeric({ minimum: 1, maximum: 200 })),
+})

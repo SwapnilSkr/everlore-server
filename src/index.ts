@@ -7,7 +7,9 @@ import { authRoutes } from './routes/auth.routes'
 import { templateRoutes } from './routes/template.routes'
 import { instanceRoutes } from './routes/instance.routes'
 import { chronicleRoutes } from './routes/chronicle.routes'
-import { wsRoutes, setupRedisPubSub } from './routes/ws.routes'
+import { adminRoutes } from './routes/admin.routes'
+import { wsRoutes } from './routes/ws.routes'
+import { setupRedisPubSub } from './services/play-ws.service'
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
@@ -46,6 +48,7 @@ async function main() {
     .get('/', () => 'Everlore API')
     .get('/health', () => ({ ok: true, timestamp: new Date().toISOString() }))
     .use(authRoutes)
+    .use(adminRoutes)
     .use(templateRoutes)
     .use(instanceRoutes)
     .use(chronicleRoutes)
