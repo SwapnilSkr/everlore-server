@@ -11,6 +11,7 @@ import { adminRoutes } from './routes/admin.routes'
 import { wsRoutes } from './routes/ws.routes'
 import { setupRedisPubSub } from './services/play-ws.service'
 import { HttpError } from './utils/http-error'
+import { httpLoggerPlugin } from './plugins/http-logger.plugin'
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
@@ -28,6 +29,7 @@ async function main() {
 
   const app = new Elysia()
     .use(cors({ origin: env.CLIENT_ORIGINS }))
+    .use(httpLoggerPlugin)
     .onError(({ error, code, set }) => {
       if (error instanceof HttpError) {
         set.status = error.statusCode

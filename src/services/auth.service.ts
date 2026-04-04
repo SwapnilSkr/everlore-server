@@ -7,7 +7,7 @@ import {
   sendPhoneOtp,
   verifyGoogleIdToken,
   verifyPhoneOtp,
-} from './auth-provider.service'
+} from '../providers/auth.provider'
 
 export function defaultUserPreferences(): UserDoc['preferences'] {
   return {
