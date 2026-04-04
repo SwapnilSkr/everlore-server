@@ -15,38 +15,52 @@ import { getMemoryCurationQueue, getSceneSummaryQueue } from '../../src/queues'
 
 const MAX_CONTEXT_TOKENS = 6000
 
+/** OpenAI `json_schema` + `strict: true`: root and every fixed-shape object must set `additionalProperties: false`; every key in `properties` must appear in `required`. */
 const GENERATION_SCHEMA = {
-  type: 'object' as const,
+  type: 'object',
+  additionalProperties: false,
   properties: {
-    narrative: { type: 'string' as const, description: 'The narrative response text' },
+    narrative: { type: 'string', description: 'The narrative response text' },
+    /** Dynamic stat keys → map pattern (only value shape is closed with additionalProperties: false). */
     state_mutations: {
-      type: 'object' as const,
+      type: 'object',
       additionalProperties: {
-        type: 'object' as const,
+        type: 'object',
+        additionalProperties: false,
         properties: {
-          op: { type: 'string' as const, enum: ['add', 'subtract', 'set'] },
-          value: { type: 'number' as const },
+          op: { type: 'string', enum: ['add', 'subtract', 'set'] },
+          value: { type: 'number' },
         },
         required: ['op', 'value'],
       },
     },
     flag_mutations: {
-      type: 'object' as const,
+      type: 'object',
       additionalProperties: {
-        type: 'object' as const,
+        type: 'object',
+        additionalProperties: false,
         properties: {
-          op: { type: 'string' as const, enum: ['set', 'increment', 'decrement'] },
-          value: {},
+          op: { type: 'string', enum: ['set', 'increment', 'decrement'] },
+          value: {
+            description: 'For op "set", the new flag value; for increment/decrement use null',
+            anyOf: [
+              { type: 'string' },
+              { type: 'number' },
+              { type: 'boolean' },
+              { type: 'null' },
+            ],
+          },
         },
+        required: ['op', 'value'],
       },
     },
     scene_tag: {
-      type: 'string' as const,
+      type: 'string',
       enum: ['dialogue', 'combat', 'intimate', 'exploration', 'existential', 'cosmic', 'mundane'],
     },
-    emotional_tone: { type: 'string' as const },
+    emotional_tone: { type: 'string' },
   },
-  required: ['narrative', 'state_mutations', 'flag_mutations', 'scene_tag'] as const,
+  required: ['narrative', 'state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone'],
 }
 
 export async function generationProcessor(job: Job) {

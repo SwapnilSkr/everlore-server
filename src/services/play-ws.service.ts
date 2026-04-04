@@ -3,7 +3,10 @@ import { generationService } from './generation.service'
 import { verifyWsToken, type AuthUser } from '../middleware/auth'
 import { rateLimit } from '../middleware/rate-limit'
 
-const activeConnections = new Map<string, Set<{ send: (data: string) => void }>>()
+/** Underlying Bun socket — stable identity; Elysia passes a new `ElysiaWS` wrapper per event. */
+type RawWs = { send: (data: string) => void }
+
+const activeConnections = new Map<string, Set<RawWs>>()
 
 export function setupRedisPubSub() {
   const subscriber = getRedisSubscriber()
@@ -30,14 +33,22 @@ export function setupRedisPubSub() {
 type PlayWs = {
   send: (data: string) => void
   close: () => void
-  data: unknown
+  /** Bun upgrade payload; shared across all ElysiaWS wrapper instances for this connection. */
+  data: WsUpgradeData
 }
 
-function getWsData(ws: PlayWs): { query?: { token?: string }; jwt: { verify: (t: string) => Promise<unknown> } } {
-  return ws.data as {
-    query?: { token?: string }
-    jwt: { verify: (t: string) => Promise<unknown> }
-  }
+type WsUpgradeData = {
+  query?: { token?: string }
+  jwt: { verify: (t: string) => Promise<unknown> }
+  _user?: AuthUser
+}
+
+function getWsData(ws: { data: WsUpgradeData }): WsUpgradeData {
+  return ws.data
+}
+
+function getRawSocket(ws: PlayWs): RawWs {
+  return (ws as unknown as { raw: RawWs }).raw
 }
 
 export const playWsService = {
@@ -57,21 +68,25 @@ export const playWsService = {
       return
     }
 
-    ;(ws as PlayWs & { _user?: AuthUser })._user = user
+    getWsData(ws)._user = user
 
     if (!activeConnections.has(user.id)) {
       activeConnections.set(user.id, new Set())
     }
-    activeConnections.get(user.id)!.add(ws)
+    const sockets = activeConnections.get(user.id)!
+    const isFirstSocket = sockets.size === 0
+    sockets.add(getRawSocket(ws))
 
     const subscriber = getRedisSubscriber()
-    await subscriber.subscribe(`user:${user.id}:events`)
+    if (isFirstSocket) {
+      await subscriber.subscribe(`user:${user.id}:events`)
+    }
 
     ws.send(JSON.stringify({ type: 'connected', userId: user.id }))
   },
 
   async handleMessage(ws: PlayWs, msg: unknown) {
-    const user = (ws as PlayWs & { _user?: AuthUser })._user
+    const user = getWsData(ws)._user
     if (!user) {
       ws.send(JSON.stringify({ type: 'error', message: 'Not authenticated' }))
       return
@@ -156,11 +171,11 @@ export const playWsService = {
   },
 
   handleClose(ws: PlayWs) {
-    const user = (ws as PlayWs & { _user?: AuthUser })._user
+    const user = getWsData(ws)._user
     if (user) {
       const connections = activeConnections.get(user.id)
       if (connections) {
-        connections.delete(ws)
+        connections.delete(getRawSocket(ws))
         if (connections.size === 0) {
           activeConnections.delete(user.id)
           const subscriber = getRedisSubscriber()

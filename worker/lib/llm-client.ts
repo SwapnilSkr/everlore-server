@@ -47,7 +47,7 @@ export async function callLLM(req: LLMRequest): Promise<string> {
       type: 'json_schema',
       json_schema: {
         name: 'generation_response',
-        strict: true,
+        strict: false,
         schema: req.responseSchema,
       },
     }
