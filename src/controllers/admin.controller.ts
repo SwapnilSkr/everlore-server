@@ -1,4 +1,5 @@
 import { adminService } from '../services/admin.service'
+import { idString } from '../utils/mongo-id'
 
 export const adminController = {
   listUsers: async ({ query }: { query: { limit?: number } }) => {
@@ -14,7 +15,7 @@ export const adminController = {
     }
 
     return {
-      id: user._id,
+      id: idString(user._id),
       username: user.username,
       email: user.email || null,
       phone: user.phone || null,
@@ -44,7 +45,7 @@ export const adminController = {
     const u = res
     return {
       user: {
-        id: u._id,
+        id: idString(u._id),
         username: u.username,
         email: u.email || null,
         phone: u.phone || null,

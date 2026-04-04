@@ -1,7 +1,7 @@
-import { getRedisClient } from '../config/redis'
 import { coll } from '../config/mongo'
 import { getGenerationQueue } from '../queues'
 import { instanceService } from './instance.service'
+import { parseObjectId } from '../utils/mongo-id'
 
 export const generationService = {
   async dispatch(params: {
@@ -10,21 +10,20 @@ export const generationService = {
     userMessage: string
   }) {
     const { instanceId, playerId, userMessage } = params
-    // Load session (from Redis cache or MongoDB)
     const session = await instanceService.loadSession(instanceId, playerId)
 
-    // Fetch recent events for immediate context (last 6 turns)
+    const iid = parseObjectId(instanceId)
+
     const recentEvents = await coll('events')
-      .find({ instance_id: instanceId })
+      .find({ instance_id: iid })
       .sort({ sequence: -1 })
       .limit(6)
       .toArray()
     recentEvents.reverse()
 
-    // Fetch active scene summary
     const activeSummary = await coll('scene_summaries').findOne(
       {
-        instance_id: instanceId,
+        instance_id: iid,
         'event_range.end_sequence': {
           $lt: recentEvents[0]?.sequence || 0,
         },
@@ -32,7 +31,6 @@ export const generationService = {
       { sort: { 'event_range.end_sequence': -1 } },
     )
 
-    // Enqueue the generation job
     const queue = getGenerationQueue()
     const job = await queue.add(
       'generate',
@@ -55,9 +53,12 @@ export const generationService = {
   },
 
   async loadInstance(instanceId: string, playerId: string) {
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+
     const instance = await coll('world_instances').findOne({
-      _id: instanceId,
-      player_id: playerId,
+      _id: iid,
+      player_id: pid,
     })
     if (!instance) throw new Error('Instance not found')
 
@@ -66,14 +67,14 @@ export const generationService = {
     })
 
     const recentEvents = await coll('events')
-      .find({ instance_id: instanceId })
+      .find({ instance_id: iid })
       .sort({ sequence: -1 })
       .limit(20)
       .toArray()
     recentEvents.reverse()
 
     const memories = await coll('memories')
-      .find({ instance_id: instanceId, is_archived: false })
+      .find({ instance_id: iid, is_archived: false })
       .sort({ importance: -1 })
       .limit(20)
       .toArray()

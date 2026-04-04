@@ -1,10 +1,12 @@
+import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { coll } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/utils/embedding'
-import { generateId } from '../../src/utils/id'
+import { randomUUID } from 'crypto'
 import { callLLM } from '../lib/llm-client'
 import { getRedisClient } from '../../src/config/redis'
+import { idString, parseObjectId } from '../../src/utils/mongo-id'
 
 const EXTRACTION_PROMPT = `You are a memory curator for a narrative engine. Given the following exchange between a player and a world, extract 0-3 important facts that should be remembered long-term.
 
@@ -26,11 +28,15 @@ Respond ONLY with valid JSON matching this schema:
       "is_nsfw": boolean
     }
   ]
+}
 }`
 
 export async function memoryProcessor(job: Job) {
   const { instanceId, playerId, eventId, playerInput, aiResponse, sceneTag } = job.data
   const redis = getRedisClient()
+  const instanceOid = parseObjectId(instanceId)
+  const playerOid = parseObjectId(playerId)
+  const eventOid = parseObjectId(eventId)
 
   const result = await callLLM({
     model: 'gpt-4o',
@@ -63,8 +69,9 @@ export async function memoryProcessor(job: Job) {
   const newMemories: any[] = []
 
   for (const mem of extracted.memories) {
-    const memId = generateId('mem')
-    const vecId = generateId('vec')
+    const memId = new ObjectId()
+    const vecId = randomUUID()
+    const memIdStr = idString(memId)
 
     const embedding = await embed(mem.text)
 
@@ -77,7 +84,7 @@ export async function memoryProcessor(job: Job) {
           type: mem.type,
           importance: mem.importance,
           is_nsfw: mem.is_nsfw || false,
-          mongo_id: memId,
+          mongo_id: memIdStr,
           created_at: new Date().toISOString(),
         },
       }],
@@ -85,13 +92,13 @@ export async function memoryProcessor(job: Job) {
 
     const memoryDoc = {
       _id: memId,
-      instance_id: instanceId,
-      player_id: playerId,
+      instance_id: instanceOid,
+      player_id: playerOid,
       text: mem.text,
       type: mem.type,
       importance: mem.importance,
       is_nsfw: mem.is_nsfw || false,
-      source_event_ids: [eventId],
+      source_event_ids: [eventOid],
       pinecone_id: vecId,
       access_count: 0,
       last_accessed_at: new Date(),
@@ -103,18 +110,16 @@ export async function memoryProcessor(job: Job) {
     newMemories.push(memoryDoc)
   }
 
-  // Update instance meta
   await coll('world_instances').updateOne(
-    { _id: instanceId },
+    { _id: instanceOid },
     { $inc: { 'meta.total_memories': newMemories.length } },
   )
 
-  // Notify client
   await redis.publish(`user:${playerId}:events`, JSON.stringify({
     type: 'memories_curated',
     instanceId,
     memories: newMemories.map((m) => ({
-      id: m._id,
+      id: idString(m._id),
       text: m.text,
       type: m.type,
       importance: m.importance,

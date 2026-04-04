@@ -1,7 +1,9 @@
+import { ObjectId } from 'mongodb'
 import { coll } from '../config/mongo'
 import { getPineconeIndex } from '../config/pinecone'
 import { embed } from '../utils/embedding'
-import { generateId } from '../utils/id'
+import { HttpError } from '../utils/http-error'
+import { idString, parseObjectId } from '../utils/mongo-id'
 
 function slugify(text: string): string {
   return text
@@ -10,20 +12,29 @@ function slugify(text: string): string {
     .replace(/^-|-$/g, '')
 }
 
+function assertNonEmptyStats(baseStats: Record<string, unknown> | undefined, field: string) {
+  if (!baseStats || Object.keys(baseStats).length === 0) {
+    throw new HttpError(400, `At least one stat is required (${field})`)
+  }
+}
+
 export const templateService = {
   async create(creatorId: string, data: any) {
-    const id = generateId('tpl')
+    assertNonEmptyStats(data.base_stats_template, 'base_stats_template')
+
+    const _id = new ObjectId()
     let slug = slugify(data.title)
 
-    // Ensure unique slug
     const existing = await coll('world_templates').findOne({ slug })
     if (existing) {
       slug = `${slug}-${Date.now().toString(36)}`
     }
 
+    const creatorOid = parseObjectId(creatorId)
+
     const template = {
-      _id: id,
-      creator_id: creatorId,
+      _id,
+      creator_id: creatorOid,
       title: data.title,
       slug,
       description: data.description,
@@ -53,38 +64,45 @@ export const templateService = {
   },
 
   async update(templateId: string, creatorId: string, data: any) {
+    const tid = parseObjectId(templateId)
+    const creatorOid = parseObjectId(creatorId)
+
     const existing = await coll('world_templates').findOne({
-      _id: templateId,
-      creator_id: creatorId,
+      _id: tid,
+      creator_id: creatorOid,
     })
     if (!existing) throw new Error('Template not found')
+
+    if (data.base_stats_template !== undefined) {
+      assertNonEmptyStats(data.base_stats_template, 'base_stats_template')
+    }
 
     const updateFields: any = { ...data, updated_at: new Date() }
     delete updateFields.creator_id
     delete updateFields._id
 
-    await coll('world_templates').updateOne(
-      { _id: templateId },
-      { $set: updateFields },
-    )
+    await coll('world_templates').updateOne({ _id: tid }, { $set: updateFields })
 
     return { ...existing, ...updateFields }
   },
 
   async publish(templateId: string, creatorId: string) {
+    const tid = parseObjectId(templateId)
+    const creatorOid = parseObjectId(creatorId)
+
     const template = await coll('world_templates').findOne({
-      _id: templateId,
-      creator_id: creatorId,
+      _id: tid,
+      creator_id: creatorOid,
     })
     if (!template) throw new Error('Template not found')
 
-    // Embed and upsert global lore into Pinecone
+    const loreKey = idString(template._id)
     if (template.global_lore) {
-      await embedLore(templateId, template.global_lore)
+      await embedLore(loreKey, template.global_lore)
     }
 
     await coll('world_templates').updateOne(
-      { _id: templateId },
+      { _id: tid },
       {
         $set: { is_published: true, updated_at: new Date() },
         $inc: { version: 1 },
@@ -95,7 +113,7 @@ export const templateService = {
   },
 
   async getById(templateId: string) {
-    return coll('world_templates').findOne({ _id: templateId })
+    return coll('world_templates').findOne({ _id: parseObjectId(templateId) })
   },
 
   async listPublished(page: number = 1, limit: number = 20, search?: string) {
@@ -120,23 +138,22 @@ export const templateService = {
 
   async listByCreator(creatorId: string) {
     return coll('world_templates')
-      .find({ creator_id: creatorId })
+      .find({ creator_id: parseObjectId(creatorId) })
       .sort({ updated_at: -1 })
       .toArray()
   },
 }
 
-async function embedLore(templateId: string, loreText: string) {
-  // Chunk lore into ~500 char segments
+async function embedLore(namespaceKey: string, loreText: string) {
   const chunks = chunkText(loreText, 500)
   const index = getPineconeIndex()
-  const namespace = index.namespace(`lore_${templateId}`)
+  const namespace = index.namespace(`lore_${namespaceKey}`)
 
   const vectors = await Promise.all(
     chunks.map(async (chunk, i) => {
       const embedding = await embed(chunk)
       return {
-        id: `lore_${templateId}_${i}`,
+        id: `lore_${namespaceKey}_${i}`,
         values: embedding,
         metadata: {
           text: chunk,
@@ -149,7 +166,6 @@ async function embedLore(templateId: string, loreText: string) {
     }),
   )
 
-  // Upsert in batches of 100
   for (let i = 0; i < vectors.length; i += 100) {
     await namespace.upsert({ records: vectors.slice(i, i + 100) })
   }

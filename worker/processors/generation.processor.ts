@@ -1,3 +1,4 @@
+import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { coll } from '../../src/config/mongo'
 import { getRedisClient } from '../../src/config/redis'
@@ -6,7 +7,7 @@ import { embed } from '../../src/utils/embedding'
 import { buildPrompt } from '../../src/utils/prompt-builder'
 import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-mutator'
 import { countTokens } from '../../src/utils/token-counter'
-import { generateId } from '../../src/utils/id'
+import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { callLLM } from '../lib/llm-client'
 import { classifyScene } from '../lib/nsfw-classifier'
 import { enforceSchema } from '../lib/structured-output'
@@ -55,8 +56,9 @@ export async function generationProcessor(job: Job) {
   } = job.data
 
   const redis = getRedisClient()
+  const instanceOid = parseObjectId(instanceId)
+  const playerOid = parseObjectId(playerId)
 
-  // STEP 1: Embed user message for RAG query
   let loreTexts: string[] = []
   let memoryTexts: string[] = []
 
@@ -64,7 +66,6 @@ export async function generationProcessor(job: Job) {
     const queryEmbedding = await embed(userMessage)
     const index = getPineconeIndex()
 
-    // Query lore and memory in parallel
     const [loreResults, memoryResults] = await Promise.all([
       index.namespace(`lore_${session.template_id}`).query({
         vector: queryEmbedding,
@@ -81,10 +82,10 @@ export async function generationProcessor(job: Job) {
     loreTexts = (loreResults.matches || []).map((m) => (m.metadata as any)?.text || '')
     memoryTexts = (memoryResults.matches || []).map((m) => (m.metadata as any)?.text || '')
 
-    // Update access counts
     const mongoIds = (memoryResults.matches || [])
       .map((m) => (m.metadata as any)?.mongo_id)
       .filter(Boolean)
+      .map((id: string) => parseObjectId(String(id)))
     if (mongoIds.length > 0) {
       await coll('memories').updateMany(
         { _id: { $in: mongoIds } },
@@ -95,7 +96,6 @@ export async function generationProcessor(job: Job) {
     console.warn('RAG query failed, proceeding without retrieved memories:', (err as Error).message)
   }
 
-  // STEP 2: Assemble prompt
   const prompt = buildPrompt({
     seedPrompt: session.seed_prompt,
     isSentient: session.is_sentient,
@@ -110,7 +110,6 @@ export async function generationProcessor(job: Job) {
     maxTokens: MAX_CONTEXT_TOKENS,
   })
 
-  // STEP 3: Route model
   let modelId = session.model_preferences?.narration_sfw || 'gpt-4o'
 
   if (session.is_nsfw_capable) {
@@ -120,7 +119,6 @@ export async function generationProcessor(job: Job) {
     }
   }
 
-  // STEP 4: Call LLM
   const rawResponse = await callLLM({
     model: modelId,
     messages: prompt.messages,
@@ -131,22 +129,19 @@ export async function generationProcessor(job: Job) {
 
   const parsed = enforceSchema(rawResponse)
 
-  // STEP 5: Apply mutations
   const newWorldState = applyStateMutations(session.world_state, parsed.state_mutations)
   const newFlags = applyFlagMutations(session.active_flags, parsed.flag_mutations)
 
-  // STEP 6: Get next sequence number
   const lastEvent = await coll('events').findOne(
-    { instance_id: instanceId },
+    { instance_id: instanceOid },
     { sort: { sequence: -1 }, projection: { sequence: 1 } },
   )
   const nextSequence = (lastEvent?.sequence || 0) + 1
 
-  // STEP 7: Persist event
   const event = {
-    _id: generateId('evt'),
-    instance_id: instanceId,
-    player_id: playerId,
+    _id: new ObjectId(),
+    instance_id: instanceOid,
+    player_id: playerOid,
     sequence: nextSequence,
     type: parsed.scene_tag === 'intimate' ? 'intimate' : 'narration',
     data: {
@@ -166,14 +161,13 @@ export async function generationProcessor(job: Job) {
 
   await coll('events').insertOne(event)
 
-  // STEP 8: Update world instance
   const sceneTag = parsed.scene_tag
   const currentScene = session.current_scene
   const sameScene = currentScene.tag === sceneTag
   const newTurnCount = sameScene ? currentScene.turn_count + 1 : 1
 
   await coll('world_instances').updateOne(
-    { _id: instanceId },
+    { _id: instanceOid },
     {
       $set: {
         world_state: newWorldState,
@@ -193,7 +187,6 @@ export async function generationProcessor(job: Job) {
     },
   )
 
-  // Update Redis session cache
   const updatedSession = {
     ...session,
     world_state: newWorldState,
@@ -206,14 +199,15 @@ export async function generationProcessor(job: Job) {
   }
   await redis.set(`session:${instanceId}`, JSON.stringify(updatedSession), 'EX', 3600)
 
-  // STEP 9: Release lock and notify client
   await redis.del(`lock:gen:${playerId}:${instanceId}`)
+
+  const eventIdStr = idString(event._id)
 
   await redis.publish(`user:${playerId}:events`, JSON.stringify({
     type: 'generation_complete',
     instanceId,
     event: {
-      id: event._id,
+      id: eventIdStr,
       sequence: event.sequence,
       narrative: parsed.narrative,
       scene_tag: parsed.scene_tag,
@@ -225,12 +219,11 @@ export async function generationProcessor(job: Job) {
     },
   }))
 
-  // STEP 10: Queue follow-up jobs
   const memoryCurationQueue = getMemoryCurationQueue()
   await memoryCurationQueue.add('curate', {
     instanceId,
     playerId,
-    eventId: event._id,
+    eventId: eventIdStr,
     playerInput: userMessage,
     aiResponse: parsed.narrative,
     sceneTag: parsed.scene_tag,
@@ -246,5 +239,5 @@ export async function generationProcessor(job: Job) {
     }, { priority: 10, delay: 5000 })
   }
 
-  return { eventId: event._id, sequence: nextSequence }
+  return { eventId: eventIdStr, sequence: nextSequence }
 }

@@ -1,6 +1,8 @@
 import * as argon2 from 'argon2'
-import { coll, type EverloreDoc } from '../config/mongo'
-import { generateId } from '../utils/id'
+import type { Document } from 'mongodb'
+import { coll } from '../config/mongo'
+import { HttpError } from '../utils/http-error'
+import { idString, parseObjectId } from '../utils/mongo-id'
 import {
   sendPhoneOtp,
   verifyGoogleIdToken,
@@ -33,7 +35,7 @@ export type JwtUserPayload = {
   tier: string
 }
 
-type UserRow = EverloreDoc & {
+type UserRow = Document & {
   email?: string
   phone?: string
   username?: string
@@ -42,23 +44,24 @@ type UserRow = EverloreDoc & {
   token_balance?: number
   providers?: string[]
   google_sub?: string
+  password_hash?: string
 }
 
 export const authService = {
-  toJwtPayload(user: EverloreDoc): JwtUserPayload {
+  toJwtPayload(user: Document): JwtUserPayload {
     const u = user as UserRow
     return {
-      id: u._id,
+      id: idString(u._id),
       email: u.email || '',
       username: typeof u.username === 'string' ? u.username : '',
       tier: typeof u.tier === 'string' ? u.tier : 'free',
     }
   },
 
-  serializeUser(user: EverloreDoc) {
+  serializeUser(user: Document) {
     const u = user as UserRow
     return {
-      id: u._id,
+      id: idString(u._id),
       email: u.email || '',
       phone: u.phone || null,
       username: typeof u.username === 'string' ? u.username : '',
@@ -74,14 +77,15 @@ export const authService = {
       $or: [{ email }, { username }],
     })
     if (existing) {
-      throw new Error(existing.email === email ? 'Email already registered' : 'Username taken')
+      throw new HttpError(
+        409,
+        existing.email === email ? 'Email already registered' : 'Username taken',
+      )
     }
 
     const passwordHash = await argon2.hash(password)
-    const id = generateId('usr')
 
-    const user = {
-      _id: id,
+    const doc = {
       email,
       username,
       password_hash: passwordHash,
@@ -93,31 +97,29 @@ export const authService = {
       updated_at: new Date(),
     }
 
-    await coll('users').insertOne(user)
-    return user
+    const { insertedId } = await coll('users').insertOne(doc)
+    return { ...doc, _id: insertedId }
   },
 
-  async authenticatePassword(input: { email: string; password: string }) {
+  async authenticatePassword(input: { email: string; password: string }): Promise<Document> {
     const userDoc = await coll('users').findOne({ email: input.email })
-    if (!userDoc) throw new Error('Invalid credentials')
+    if (!userDoc) throw new HttpError(401, 'Invalid credentials')
 
-    const valid = await argon2.verify(userDoc.password_hash, input.password)
-    if (!valid) throw new Error('Invalid credentials')
+    const valid = await argon2.verify(userDoc.password_hash as string, input.password)
+    if (!valid) throw new HttpError(401, 'Invalid credentials')
 
     return userDoc
   },
 
-  async signInWithGoogle(idToken: string) {
+  async signInWithGoogle(idToken: string): Promise<Document> {
     const profile = await verifyGoogleIdToken(idToken)
 
-    let userDoc = await coll('users').findOne({
+    let userDoc: Document | null = await coll('users').findOne({
       $or: [{ google_sub: profile.subject }, { email: profile.email }],
     })
 
     if (!userDoc) {
-      const id = generateId('usr')
-      const newUser = {
-        _id: id,
+      const doc = {
         email: profile.email,
         google_sub: profile.subject,
         username: usernameFromSeed(profile.email.split('@')[0] || profile.name || 'player'),
@@ -129,8 +131,8 @@ export const authService = {
         created_at: new Date(),
         updated_at: new Date(),
       }
-      await coll('users').insertOne(newUser)
-      userDoc = newUser
+      const { insertedId } = await coll('users').insertOne(doc)
+      userDoc = { ...doc, _id: insertedId }
     } else {
       const prev = userDoc as UserRow
       const providers = Array.isArray(prev.providers)
@@ -155,7 +157,7 @@ export const authService = {
         email: profile.email,
         google_sub: profile.subject,
         providers: [...providers],
-      } as typeof userDoc
+      }
     }
 
     return userDoc
@@ -165,16 +167,14 @@ export const authService = {
     await sendPhoneOtp(phone)
   },
 
-  async signInWithPhoneOtp(phone: string, code: string) {
+  async signInWithPhoneOtp(phone: string, code: string): Promise<Document> {
     const approved = await verifyPhoneOtp(phone, code)
-    if (!approved) throw new Error('Invalid verification code')
+    if (!approved) throw new HttpError(400, 'Invalid verification code')
 
-    let userDoc = await coll('users').findOne({ phone })
+    let userDoc: Document | null = await coll('users').findOne({ phone })
 
     if (!userDoc) {
-      const id = generateId('usr')
-      const newUser = {
-        _id: id,
+      const doc = {
         phone,
         username: usernameFromSeed(phone),
         password_hash: '',
@@ -185,8 +185,8 @@ export const authService = {
         created_at: new Date(),
         updated_at: new Date(),
       }
-      await coll('users').insertOne(newUser)
-      userDoc = newUser
+      const { insertedId } = await coll('users').insertOne(doc)
+      userDoc = { ...doc, _id: insertedId }
     } else {
       const prev = userDoc as UserRow
       const providers = Array.isArray(prev.providers)
@@ -209,15 +209,15 @@ export const authService = {
         ...userDoc,
         phone,
         providers: [...providers],
-      } as typeof userDoc
+      }
     }
 
     return userDoc
   },
 
   async getUserById(userId: string) {
-    const dbUser = await coll('users').findOne({ _id: userId })
-    if (!dbUser) throw new Error('User not found')
+    const dbUser = await coll('users').findOne({ _id: parseObjectId(userId) })
+    if (!dbUser) throw new HttpError(404, 'User not found')
     return dbUser
   },
 
@@ -228,6 +228,6 @@ export const authService = {
     }
     updateFields.updated_at = new Date()
 
-    await coll('users').updateOne({ _id: userId }, { $set: updateFields })
+    await coll('users').updateOne({ _id: parseObjectId(userId) }, { $set: updateFields })
   },
 }

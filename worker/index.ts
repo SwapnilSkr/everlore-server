@@ -76,11 +76,11 @@ async function main() {
       try {
         const { coll } = await import('../src/config/mongo')
         const { getRedisClient } = await import('../src/config/redis')
-        const { generateId } = await import('../src/utils/id')
+        const { ObjectId } = await import('mongodb')
         const redis = getRedisClient()
 
         await coll('dead_letter_jobs').insertOne({
-          _id: generateId('dlq'),
+          _id: new ObjectId(),
           queue: 'generation',
           jobId: job.id,
           data: job.data,

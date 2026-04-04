@@ -1,4 +1,5 @@
 import { coll } from '../config/mongo'
+import { idString, parseObjectId } from '../utils/mongo-id'
 
 export type AdminUserTier = 'free' | 'premium' | 'creator'
 
@@ -24,7 +25,7 @@ export const adminService = {
 
     return {
       users: users.map((u) => ({
-        id: u._id,
+        id: idString(u._id),
         username: u.username,
         email: u.email || null,
         phone: u.phone || null,
@@ -36,7 +37,7 @@ export const adminService = {
 
   async getUser(userId: string) {
     return coll('users').findOne(
-      { _id: userId },
+      { _id: parseObjectId(userId) },
       {
         projection: {
           _id: 1,
@@ -54,7 +55,7 @@ export const adminService = {
 
   async setUserTier(userId: string, tier: AdminUserTier) {
     return coll('users').findOneAndUpdate(
-      { _id: userId },
+      { _id: parseObjectId(userId) },
       { $set: { tier, updated_at: new Date() } },
       { returnDocument: 'after', projection: { password_hash: 0 } },
     )

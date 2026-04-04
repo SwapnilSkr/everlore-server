@@ -1,6 +1,8 @@
+import { ObjectId } from 'mongodb'
 import { coll } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
-import { generateId } from '../utils/id'
+import { HttpError } from '../utils/http-error'
+import { idString, parseObjectId } from '../utils/mongo-id'
 
 const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number }> = {
   free: { max_instances: 3, max_memories: 100 },
@@ -10,41 +12,40 @@ const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number 
 
 export const instanceService = {
   async create(playerId: string, templateId: string, tier: string) {
-    // Check template exists and is published
+    const playerOid = parseObjectId(playerId)
+    const templateOid = parseObjectId(templateId)
+
     const template = await coll('world_templates').findOne({
-      _id: templateId,
+      _id: templateOid,
       is_published: true,
     })
-    if (!template) throw new Error('Template not found or not published')
+    if (!template) throw new HttpError(404, 'Template not found or not published')
 
-    // Check instance limit
     const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
     const instanceCount = await coll('world_instances').countDocuments({
-      player_id: playerId,
+      player_id: playerOid,
       'meta.is_archived': { $ne: true },
     })
     if (instanceCount >= limits.max_instances) {
-      throw new Error(`Instance limit reached (${limits.max_instances})`)
+      throw new HttpError(403, `Instance limit reached (${limits.max_instances})`)
     }
 
-    // Initialize world_state from template defaults
     const worldState: Record<string, number> = {}
     for (const [key, def] of Object.entries(template.base_stats_template as Record<string, any>)) {
       worldState[key] = def.default
     }
 
-    // Initialize flags from template defaults
     const activeFlags: Record<string, any> = {}
     for (const [key, def] of Object.entries((template.flag_definitions || {}) as Record<string, any>)) {
       activeFlags[key] = def.default
     }
 
-    const id = generateId('inst')
+    const _id = new ObjectId()
     const instance = {
-      _id: id,
-      template_id: templateId,
+      _id,
+      template_id: templateOid,
       template_version: template.version,
-      player_id: playerId,
+      player_id: playerOid,
       world_state: worldState,
       active_flags: activeFlags,
       current_scene: {
@@ -69,13 +70,14 @@ export const instanceService = {
 
   async getById(instanceId: string, playerId: string) {
     return coll('world_instances').findOne({
-      _id: instanceId,
-      player_id: playerId,
+      _id: parseObjectId(instanceId),
+      player_id: parseObjectId(playerId),
     })
   },
 
   async list(playerId: string, includeArchived: boolean = false) {
-    const filter: any = { player_id: playerId }
+    const playerOid = parseObjectId(playerId)
+    const filter: any = { player_id: playerOid }
     if (!includeArchived) {
       filter['meta.is_archived'] = { $ne: true }
     }
@@ -85,45 +87,47 @@ export const instanceService = {
       .sort({ 'meta.last_active_at': -1 })
       .toArray()
 
-    // Enrich with template titles
     const templateIds = [...new Set(instances.map((i) => i.template_id))]
     const templates = await coll('world_templates')
       .find({ _id: { $in: templateIds } })
       .project({ _id: 1, title: 1, is_sentient: 1, description: 1 })
       .toArray()
-    const templateMap = new Map(templates.map((t) => [t._id, t]))
+    const templateMap = new Map(templates.map((t) => [idString(t._id), t]))
 
     return instances.map((inst) => ({
       ...inst,
-      template: templateMap.get(inst.template_id) || null,
+      template: templateMap.get(idString(inst.template_id)) || null,
     }))
   },
 
   async archive(instanceId: string, playerId: string) {
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
     const result = await coll('world_instances').updateOne(
-      { _id: instanceId, player_id: playerId },
+      { _id: iid, player_id: pid },
       { $set: { 'meta.is_archived': true, updated_at: new Date() } },
     )
     if (result.matchedCount === 0) throw new Error('Instance not found')
 
-    // Clear Redis session
     const redis = getRedisClient()
-    await redis.del(`session:${instanceId}`)
+    await redis.del(`session:${idString(iid)}`)
 
     return { success: true }
   },
 
   async loadSession(instanceId: string, playerId: string) {
     const redis = getRedisClient()
+    const iidStr = instanceId.trim()
 
-    // Try Redis first
-    const cached = await redis.get(`session:${instanceId}`)
+    const cached = await redis.get(`session:${iidStr}`)
     if (cached) return JSON.parse(cached)
 
-    // Load from Mongo
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+
     const instance = await coll('world_instances').findOne({
-      _id: instanceId,
-      player_id: playerId,
+      _id: iid,
+      player_id: pid,
     })
     if (!instance) throw new Error('Instance not found')
 
@@ -143,10 +147,10 @@ export const instanceService = {
       model_preferences: template.model_preferences,
       max_context_memories: template.max_context_memories,
       max_lore_results: template.max_lore_results,
-      template_id: template._id,
+      template_id: idString(template._id),
     }
 
-    await redis.set(`session:${instanceId}`, JSON.stringify(session), 'EX', 3600)
+    await redis.set(`session:${iidStr}`, JSON.stringify(session), 'EX', 3600)
     return session
   },
 }

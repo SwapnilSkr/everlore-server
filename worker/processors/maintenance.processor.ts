@@ -2,6 +2,7 @@ import { Job } from 'bullmq'
 import { coll } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/utils/embedding'
+import { idString, parseObjectId } from '../../src/utils/mongo-id'
 
 export async function maintenanceProcessor(job: Job) {
   const { task } = job.data
@@ -21,7 +22,8 @@ export async function maintenanceProcessor(job: Job) {
         if (mem.pinecone_id) {
           try {
             const index = getPineconeIndex()
-            await index.namespace(`mem_${mem.instance_id}`).deleteOne(mem.pinecone_id)
+            const ns = idString(mem.instance_id)
+            await index.namespace(`mem_${ns}`).deleteOne(mem.pinecone_id)
           } catch (err) {
             console.warn(`Failed to delete Pinecone vector ${mem.pinecone_id}:`, (err as Error).message)
           }
@@ -43,30 +45,33 @@ export async function maintenanceProcessor(job: Job) {
     }
 
     case 'dedup_memories': {
-      const { instanceId } = job.data
+      const { instanceId } = job.data as { instanceId: string }
+      const instanceOid = parseObjectId(instanceId)
       const memories = await coll('memories')
-        .find({ instance_id: instanceId, is_archived: false })
+        .find({ instance_id: instanceOid, is_archived: false })
         .toArray()
 
       if (memories.length < 2) return { merged: 0 }
 
       const embeddings = new Map<string, number[]>()
       for (const mem of memories) {
-        embeddings.set(mem._id, await embed(mem.text))
+        embeddings.set(idString(mem._id), await embed(mem.text))
       }
 
       const processed = new Set<string>()
       const merged: any[] = []
 
       for (let i = 0; i < memories.length; i++) {
-        if (processed.has(memories[i]._id)) continue
+        const idI = idString(memories[i]._id)
+        if (processed.has(idI)) continue
 
         for (let j = i + 1; j < memories.length; j++) {
-          if (processed.has(memories[j]._id)) continue
+          const idJ = idString(memories[j]._id)
+          if (processed.has(idJ)) continue
 
           const sim = cosineSimilarity(
-            embeddings.get(memories[i]._id)!,
-            embeddings.get(memories[j]._id)!,
+            embeddings.get(idI)!,
+            embeddings.get(idJ)!,
           )
 
           if (sim > 0.95) {
@@ -100,7 +105,7 @@ export async function maintenanceProcessor(job: Job) {
               { $set: { is_archived: true, pinecone_id: null } },
             )
 
-            processed.add(discard._id)
+            processed.add(idString(discard._id))
             merged.push({ kept: keeper._id, discarded: discard._id, similarity: sim })
           }
         }
@@ -110,7 +115,6 @@ export async function maintenanceProcessor(job: Job) {
     }
 
     case 'schedule_dedups': {
-      // Find active instances with enough memories to warrant dedup
       const instances = await coll('world_instances')
         .find({ 'meta.total_memories': { $gt: 20 }, 'meta.is_archived': { $ne: true } })
         .project({ _id: 1 })
@@ -122,7 +126,7 @@ export async function maintenanceProcessor(job: Job) {
       for (const inst of instances) {
         await queue.add('dedup', {
           task: 'dedup_memories',
-          instanceId: inst._id,
+          instanceId: idString(inst._id),
         }, { priority: 20 })
       }
 
