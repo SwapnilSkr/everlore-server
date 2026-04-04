@@ -1,6 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
-import { coll } from '../../src/config/mongo'
+import { mongoColl } from '../../src/config/mongo'
 import { getRedisClient } from '../../src/config/redis'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/utils/embedding'
@@ -87,7 +87,7 @@ export async function generationProcessor(job: Job) {
       .filter(Boolean)
       .map((id: string) => parseObjectId(String(id)))
     if (mongoIds.length > 0) {
-      await coll('memories').updateMany(
+      await mongoColl.memories().updateMany(
         { _id: { $in: mongoIds } },
         { $inc: { access_count: 1 }, $set: { last_accessed_at: new Date() } },
       )
@@ -132,7 +132,7 @@ export async function generationProcessor(job: Job) {
   const newWorldState = applyStateMutations(session.world_state, parsed.state_mutations)
   const newFlags = applyFlagMutations(session.active_flags, parsed.flag_mutations)
 
-  const lastEvent = await coll('events').findOne(
+  const lastEvent = await mongoColl.events().findOne(
     { instance_id: instanceOid },
     { sort: { sequence: -1 }, projection: { sequence: 1 } },
   )
@@ -159,14 +159,14 @@ export async function generationProcessor(job: Job) {
     created_at: new Date(),
   }
 
-  await coll('events').insertOne(event)
+  await mongoColl.events().insertOne(event)
 
   const sceneTag = parsed.scene_tag
   const currentScene = session.current_scene
   const sameScene = currentScene.tag === sceneTag
   const newTurnCount = sameScene ? currentScene.turn_count + 1 : 1
 
-  await coll('world_instances').updateOne(
+  await mongoColl.worldInstances().updateOne(
     { _id: instanceOid },
     {
       $set: {

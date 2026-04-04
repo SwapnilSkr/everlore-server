@@ -1,6 +1,6 @@
 import { getPineconeIndex } from '../config/pinecone'
 import { embed } from '../utils/embedding'
-import { coll } from '../config/mongo'
+import { mongoColl } from '../config/mongo'
 import { parseObjectId } from '../utils/mongo-id'
 
 interface RagResult {
@@ -19,7 +19,6 @@ export async function queryRag(
   const queryEmbedding = await embed(queryText)
   const index = getPineconeIndex()
 
-  // Query lore and memory namespaces in parallel
   const [loreResults, memoryResults] = await Promise.all([
     index.namespace(`lore_${templateId}`).query({
       vector: queryEmbedding,
@@ -34,19 +33,18 @@ export async function queryRag(
   ])
 
   const loreTexts = (loreResults.matches || []).map(
-    (m) => (m.metadata as any)?.text || '',
+    (m) => (m.metadata as { text?: string })?.text || '',
   )
   const memoryTexts = (memoryResults.matches || []).map(
-    (m) => (m.metadata as any)?.text || '',
+    (m) => (m.metadata as { text?: string })?.text || '',
   )
   const retrievedMemoryMongoIds = (memoryResults.matches || [])
-    .map((m) => (m.metadata as any)?.mongo_id)
-    .filter(Boolean)
+    .map((m) => (m.metadata as { mongo_id?: string })?.mongo_id)
+    .filter(Boolean) as string[]
 
-  // Update access counts for retrieved memories
   if (retrievedMemoryMongoIds.length > 0) {
     const oids = retrievedMemoryMongoIds.map((id) => parseObjectId(String(id)))
-    await coll('memories').updateMany(
+    await mongoColl.memories().updateMany(
       { _id: { $in: oids } },
       { $inc: { access_count: 1 }, $set: { last_accessed_at: new Date() } },
     )

@@ -1,5 +1,5 @@
 import { Job } from 'bullmq'
-import { coll } from '../../src/config/mongo'
+import { mongoColl } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/utils/embedding'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
@@ -10,7 +10,7 @@ export async function maintenanceProcessor(job: Job) {
     case 'importance_decay': {
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 
-      const staleMemories = await coll('memories')
+      const staleMemories = await mongoColl.memories()
         .find({
           importance: { $lt: 3 },
           last_accessed_at: { $lt: thirtyDaysAgo },
@@ -23,13 +23,13 @@ export async function maintenanceProcessor(job: Job) {
           try {
             const index = getPineconeIndex()
             const ns = idString(mem.instance_id)
-            await index.namespace(`mem_${ns}`).deleteOne(mem.pinecone_id)
+            await index.namespace(`mem_${ns}`).deleteOne({ id: mem.pinecone_id })
           } catch (err) {
             console.warn(`Failed to delete Pinecone vector ${mem.pinecone_id}:`, (err as Error).message)
           }
         }
 
-        await coll('memories').updateOne(
+        await mongoColl.memories().updateOne(
           { _id: mem._id },
           {
             $set: {
@@ -47,7 +47,7 @@ export async function maintenanceProcessor(job: Job) {
     case 'dedup_memories': {
       const { instanceId } = job.data as { instanceId: string }
       const instanceOid = parseObjectId(instanceId)
-      const memories = await coll('memories')
+      const memories = await mongoColl.memories()
         .find({ instance_id: instanceOid, is_archived: false })
         .toArray()
 
@@ -86,7 +86,7 @@ export async function maintenanceProcessor(job: Job) {
               ]),
             ]
 
-            await coll('memories').updateOne(
+            await mongoColl.memories().updateOne(
               { _id: keeper._id },
               { $set: { source_event_ids: mergedSources } },
             )
@@ -94,13 +94,13 @@ export async function maintenanceProcessor(job: Job) {
             if (discard.pinecone_id) {
               try {
                 const index = getPineconeIndex()
-                await index.namespace(`mem_${instanceId}`).deleteOne(discard.pinecone_id)
+                await index.namespace(`mem_${instanceId}`).deleteOne({ id: discard.pinecone_id })
               } catch {
                 // Best effort
               }
             }
 
-            await coll('memories').updateOne(
+            await mongoColl.memories().updateOne(
               { _id: discard._id },
               { $set: { is_archived: true, pinecone_id: null } },
             )
@@ -115,7 +115,7 @@ export async function maintenanceProcessor(job: Job) {
     }
 
     case 'schedule_dedups': {
-      const instances = await coll('world_instances')
+      const instances = await mongoColl.worldInstances()
         .find({ 'meta.total_memories': { $gt: 20 }, 'meta.is_archived': { $ne: true } })
         .project({ _id: 1 })
         .toArray()

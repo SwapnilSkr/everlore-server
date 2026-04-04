@@ -1,9 +1,16 @@
 import { ObjectId } from 'mongodb'
-import { coll } from '../config/mongo'
+import { mongoColl } from '../config/mongo'
+import type {
+  FlagDefinitionDoc,
+  StatDefinitionDoc,
+  WorldTemplateDoc,
+} from '../models/world-template.model'
 import { getPineconeIndex } from '../config/pinecone'
 import { embed } from '../utils/embedding'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
+
+const worldTemplates = () => mongoColl.worldTemplates()
 
 function slugify(text: string): string {
   return text
@@ -19,20 +26,20 @@ function assertNonEmptyStats(baseStats: Record<string, unknown> | undefined, fie
 }
 
 export const templateService = {
-  async create(creatorId: string, data: any) {
+  async create(creatorId: string, data: any): Promise<WorldTemplateDoc> {
     assertNonEmptyStats(data.base_stats_template, 'base_stats_template')
 
     const _id = new ObjectId()
     let slug = slugify(data.title)
 
-    const existing = await coll('world_templates').findOne({ slug })
+    const existing = await worldTemplates().findOne({ slug })
     if (existing) {
       slug = `${slug}-${Date.now().toString(36)}`
     }
 
     const creatorOid = parseObjectId(creatorId)
 
-    const template = {
+    const template: WorldTemplateDoc = {
       _id,
       creator_id: creatorOid,
       title: data.title,
@@ -44,8 +51,8 @@ export const templateService = {
       version: 1,
       seed_prompt: data.seed_prompt,
       global_lore: data.global_lore,
-      base_stats_template: data.base_stats_template,
-      flag_definitions: data.flag_definitions || {},
+      base_stats_template: data.base_stats_template as Record<string, StatDefinitionDoc>,
+      flag_definitions: (data.flag_definitions || {}) as Record<string, FlagDefinitionDoc>,
       scene_tags: data.scene_tags || [],
       model_preferences: {
         logic: data.model_preferences?.logic || 'gpt-4o',
@@ -59,15 +66,15 @@ export const templateService = {
       updated_at: new Date(),
     }
 
-    await coll('world_templates').insertOne(template)
+    await worldTemplates().insertOne(template)
     return template
   },
 
-  async update(templateId: string, creatorId: string, data: any) {
+  async update(templateId: string, creatorId: string, data: any): Promise<WorldTemplateDoc> {
     const tid = parseObjectId(templateId)
     const creatorOid = parseObjectId(creatorId)
 
-    const existing = await coll('world_templates').findOne({
+    const existing = await worldTemplates().findOne({
       _id: tid,
       creator_id: creatorOid,
     })
@@ -77,20 +84,20 @@ export const templateService = {
       assertNonEmptyStats(data.base_stats_template, 'base_stats_template')
     }
 
-    const updateFields: any = { ...data, updated_at: new Date() }
+    const updateFields: Record<string, unknown> = { ...data, updated_at: new Date() }
     delete updateFields.creator_id
     delete updateFields._id
 
-    await coll('world_templates').updateOne({ _id: tid }, { $set: updateFields })
+    await worldTemplates().updateOne({ _id: tid }, { $set: updateFields })
 
-    return { ...existing, ...updateFields }
+    return { ...existing, ...updateFields } as WorldTemplateDoc
   },
 
   async publish(templateId: string, creatorId: string) {
     const tid = parseObjectId(templateId)
     const creatorOid = parseObjectId(creatorId)
 
-    const template = await coll('world_templates').findOne({
+    const template = await worldTemplates().findOne({
       _id: tid,
       creator_id: creatorOid,
     })
@@ -101,7 +108,7 @@ export const templateService = {
       await embedLore(loreKey, template.global_lore)
     }
 
-    await coll('world_templates').updateOne(
+    await worldTemplates().updateOne(
       { _id: tid },
       {
         $set: { is_published: true, updated_at: new Date() },
@@ -113,11 +120,11 @@ export const templateService = {
   },
 
   async getById(templateId: string) {
-    return coll('world_templates').findOne({ _id: parseObjectId(templateId) })
+    return worldTemplates().findOne({ _id: parseObjectId(templateId) })
   },
 
   async listPublished(page: number = 1, limit: number = 20, search?: string) {
-    const filter: any = { is_published: true }
+    const filter: Record<string, unknown> = { is_published: true }
     if (search) {
       filter.$or = [
         { title: { $regex: search, $options: 'i' } },
@@ -125,8 +132,8 @@ export const templateService = {
       ]
     }
 
-    const total = await coll('world_templates').countDocuments(filter)
-    const templates = await coll('world_templates')
+    const total = await worldTemplates().countDocuments(filter)
+    const templates = await worldTemplates()
       .find(filter)
       .sort({ created_at: -1 })
       .skip((page - 1) * limit)
@@ -136,8 +143,8 @@ export const templateService = {
     return { templates, total, page }
   },
 
-  async listByCreator(creatorId: string) {
-    return coll('world_templates')
+  async listByCreator(creatorId: string): Promise<WorldTemplateDoc[]> {
+    return worldTemplates()
       .find({ creator_id: parseObjectId(creatorId) })
       .sort({ updated_at: -1 })
       .toArray()

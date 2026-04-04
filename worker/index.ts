@@ -74,12 +74,12 @@ async function main() {
   generationWorker.on('failed', async (job, err) => {
     if (job && job.attemptsMade >= (job.opts.attempts || 1)) {
       try {
-        const { coll } = await import('../src/config/mongo')
+        const { mongoColl } = await import('../src/config/mongo')
         const { getRedisClient } = await import('../src/config/redis')
         const { ObjectId } = await import('mongodb')
         const redis = getRedisClient()
 
-        await coll('dead_letter_jobs').insertOne({
+        await mongoColl.deadLetterJobs().insertOne({
           _id: new ObjectId(),
           queue: 'generation',
           jobId: job.id,

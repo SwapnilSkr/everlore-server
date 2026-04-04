@@ -1,6 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
-import { coll } from '../../src/config/mongo'
+import { mongoColl } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/utils/embedding'
 import { randomUUID } from 'crypto'
@@ -106,11 +106,11 @@ export async function memoryProcessor(job: Job) {
       created_at: new Date(),
       updated_at: new Date(),
     }
-    await coll('memories').insertOne(memoryDoc)
+    await mongoColl.memories().insertOne(memoryDoc)
     newMemories.push(memoryDoc)
   }
 
-  await coll('world_instances').updateOne(
+  await mongoColl.worldInstances().updateOne(
     { _id: instanceOid },
     { $inc: { 'meta.total_memories': newMemories.length } },
   )

@@ -1,5 +1,7 @@
 import { ObjectId } from 'mongodb'
-import { coll } from '../config/mongo'
+import { mongoColl } from '../config/mongo'
+import type { WorldInstanceDoc } from '../models/world-instance.model'
+import type { WorldTemplateDoc, WorldTemplateSummaryDoc } from '../models/world-template.model'
 import { getRedisClient } from '../config/redis'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
@@ -10,19 +12,30 @@ const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number 
   creator: { max_instances: 50, max_memories: 1000 },
 }
 
+const worldTemplates = () => mongoColl.worldTemplates()
+const worldInstances = () => mongoColl.worldInstances()
+
+export type InstanceListRow = WorldInstanceDoc & {
+  template: WorldTemplateSummaryDoc | null
+}
+
 export const instanceService = {
-  async create(playerId: string, templateId: string, tier: string) {
+  async create(
+    playerId: string,
+    templateId: string,
+    tier: string,
+  ): Promise<{ instance: WorldInstanceDoc; template: WorldTemplateDoc }> {
     const playerOid = parseObjectId(playerId)
     const templateOid = parseObjectId(templateId)
 
-    const template = await coll('world_templates').findOne({
+    const template = await worldTemplates().findOne({
       _id: templateOid,
       is_published: true,
     })
     if (!template) throw new HttpError(404, 'Template not found or not published')
 
     const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
-    const instanceCount = await coll('world_instances').countDocuments({
+    const instanceCount = await worldInstances().countDocuments({
       player_id: playerOid,
       'meta.is_archived': { $ne: true },
     })
@@ -31,17 +44,17 @@ export const instanceService = {
     }
 
     const worldState: Record<string, number> = {}
-    for (const [key, def] of Object.entries(template.base_stats_template as Record<string, any>)) {
+    for (const [key, def] of Object.entries(template.base_stats_template)) {
       worldState[key] = def.default
     }
 
-    const activeFlags: Record<string, any> = {}
-    for (const [key, def] of Object.entries((template.flag_definitions || {}) as Record<string, any>)) {
+    const activeFlags: Record<string, unknown> = {}
+    for (const [key, def] of Object.entries(template.flag_definitions)) {
       activeFlags[key] = def.default
     }
 
     const _id = new ObjectId()
-    const instance = {
+    const instance: WorldInstanceDoc = {
       _id,
       template_id: templateOid,
       template_version: template.version,
@@ -64,34 +77,35 @@ export const instanceService = {
       updated_at: new Date(),
     }
 
-    await coll('world_instances').insertOne(instance)
+    await worldInstances().insertOne(instance)
     return { instance, template }
   },
 
   async getById(instanceId: string, playerId: string) {
-    return coll('world_instances').findOne({
+    return worldInstances().findOne({
       _id: parseObjectId(instanceId),
       player_id: parseObjectId(playerId),
     })
   },
 
-  async list(playerId: string, includeArchived: boolean = false) {
+  async list(playerId: string, includeArchived: boolean = false): Promise<InstanceListRow[]> {
     const playerOid = parseObjectId(playerId)
-    const filter: any = { player_id: playerOid }
+    const filter: Record<string, unknown> = { player_id: playerOid }
     if (!includeArchived) {
       filter['meta.is_archived'] = { $ne: true }
     }
 
-    const instances = await coll('world_instances')
+    const instances = await worldInstances()
       .find(filter)
       .sort({ 'meta.last_active_at': -1 })
       .toArray()
 
     const templateIds = [...new Set(instances.map((i) => i.template_id))]
-    const templates = await coll('world_templates')
+    const templates = (await worldTemplates()
       .find({ _id: { $in: templateIds } })
       .project({ _id: 1, title: 1, is_sentient: 1, description: 1 })
-      .toArray()
+      .toArray()) as WorldTemplateSummaryDoc[]
+
     const templateMap = new Map(templates.map((t) => [idString(t._id), t]))
 
     return instances.map((inst) => ({
@@ -103,7 +117,7 @@ export const instanceService = {
   async archive(instanceId: string, playerId: string) {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
-    const result = await coll('world_instances').updateOne(
+    const result = await worldInstances().updateOne(
       { _id: iid, player_id: pid },
       { $set: { 'meta.is_archived': true, updated_at: new Date() } },
     )
@@ -125,13 +139,13 @@ export const instanceService = {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
 
-    const instance = await coll('world_instances').findOne({
+    const instance = await worldInstances().findOne({
       _id: iid,
       player_id: pid,
     })
     if (!instance) throw new Error('Instance not found')
 
-    const template = await coll('world_templates').findOne({
+    const template = await worldTemplates().findOne({
       _id: instance.template_id,
     })
     if (!template) throw new Error('Template not found')

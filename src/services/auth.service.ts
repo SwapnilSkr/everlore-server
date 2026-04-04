@@ -1,6 +1,6 @@
 import * as argon2 from 'argon2'
-import type { Document } from 'mongodb'
-import { coll } from '../config/mongo'
+import { mongoColl } from '../config/mongo'
+import type { UserDoc, UserInsertDoc, UserTier } from '../models/user.model'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import {
@@ -9,12 +9,12 @@ import {
   verifyPhoneOtp,
 } from './auth-provider.service'
 
-export function defaultUserPreferences() {
+export function defaultUserPreferences(): UserDoc['preferences'] {
   return {
     nsfw_enabled: false,
     preferred_model: 'gpt-4o',
     theme: 'dark',
-    narration_length: 'detailed' as const,
+    narration_length: 'detailed',
     auto_memory_curation: true,
   }
 }
@@ -35,45 +35,33 @@ export type JwtUserPayload = {
   tier: string
 }
 
-type UserRow = Document & {
-  email?: string
-  phone?: string
-  username?: string
-  tier?: string
-  preferences?: unknown
-  token_balance?: number
-  providers?: string[]
-  google_sub?: string
-  password_hash?: string
-}
+const users = () => mongoColl.users()
 
 export const authService = {
-  toJwtPayload(user: Document): JwtUserPayload {
-    const u = user as UserRow
+  toJwtPayload(user: UserDoc): JwtUserPayload {
     return {
-      id: idString(u._id),
-      email: u.email || '',
-      username: typeof u.username === 'string' ? u.username : '',
-      tier: typeof u.tier === 'string' ? u.tier : 'free',
+      id: idString(user._id),
+      email: user.email || '',
+      username: user.username,
+      tier: user.tier,
     }
   },
 
-  serializeUser(user: Document) {
-    const u = user as UserRow
+  serializeUser(user: UserDoc) {
     return {
-      id: idString(u._id),
-      email: u.email || '',
-      phone: u.phone || null,
-      username: typeof u.username === 'string' ? u.username : '',
-      tier: typeof u.tier === 'string' ? u.tier : 'free',
-      preferences: u.preferences,
-      token_balance: u.token_balance,
+      id: idString(user._id),
+      email: user.email || '',
+      phone: user.phone || null,
+      username: user.username,
+      tier: user.tier,
+      preferences: user.preferences,
+      token_balance: user.token_balance,
     }
   },
 
   async registerWithPassword(input: { email: string; username: string; password: string }) {
     const { email, username, password } = input
-    const existing = await coll('users').findOne({
+    const existing = await users().findOne({
       $or: [{ email }, { username }],
     })
     if (existing) {
@@ -85,11 +73,11 @@ export const authService = {
 
     const passwordHash = await argon2.hash(password)
 
-    const doc = {
+    const doc: UserInsertDoc = {
       email,
       username,
       password_hash: passwordHash,
-      tier: 'free',
+      tier: 'free' as UserTier,
       providers: ['password'],
       preferences: defaultUserPreferences(),
       token_balance: 15000,
@@ -97,56 +85,55 @@ export const authService = {
       updated_at: new Date(),
     }
 
-    const { insertedId } = await coll('users').insertOne(doc)
-    return { ...doc, _id: insertedId }
+    const { insertedId } = await users().insertOne(doc)
+    return { ...doc, _id: insertedId } as UserDoc
   },
 
-  async authenticatePassword(input: { email: string; password: string }): Promise<Document> {
-    const userDoc = await coll('users').findOne({ email: input.email })
+  async authenticatePassword(input: { email: string; password: string }): Promise<UserDoc> {
+    const userDoc = await users().findOne({ email: input.email })
     if (!userDoc) throw new HttpError(401, 'Invalid credentials')
 
-    const valid = await argon2.verify(userDoc.password_hash as string, input.password)
+    const valid = await argon2.verify(userDoc.password_hash, input.password)
     if (!valid) throw new HttpError(401, 'Invalid credentials')
 
     return userDoc
   },
 
-  async signInWithGoogle(idToken: string): Promise<Document> {
+  async signInWithGoogle(idToken: string): Promise<UserDoc> {
     const profile = await verifyGoogleIdToken(idToken)
 
-    let userDoc: Document | null = await coll('users').findOne({
+    let userDoc: UserDoc | null = await users().findOne({
       $or: [{ google_sub: profile.subject }, { email: profile.email }],
     })
 
     if (!userDoc) {
-      const doc = {
+      const doc: UserInsertDoc = {
         email: profile.email,
         google_sub: profile.subject,
         username: usernameFromSeed(profile.email.split('@')[0] || profile.name || 'player'),
         password_hash: '',
-        tier: 'free',
+        tier: 'free' as UserTier,
         providers: ['google'],
         preferences: defaultUserPreferences(),
         token_balance: 15000,
         created_at: new Date(),
         updated_at: new Date(),
       }
-      const { insertedId } = await coll('users').insertOne(doc)
-      userDoc = { ...doc, _id: insertedId }
+      const { insertedId } = await users().insertOne(doc)
+      userDoc = { ...doc, _id: insertedId } as UserDoc
     } else {
-      const prev = userDoc as UserRow
-      const providers = Array.isArray(prev.providers)
-        ? new Set<string>(prev.providers)
+      const prov = Array.isArray(userDoc.providers)
+        ? new Set<string>(userDoc.providers)
         : new Set<string>()
-      providers.add('google')
+      prov.add('google')
 
-      await coll('users').updateOne(
+      await users().updateOne(
         { _id: userDoc._id },
         {
           $set: {
             email: profile.email,
             google_sub: profile.subject,
-            providers: [...providers],
+            providers: [...prov],
             updated_at: new Date(),
           },
         },
@@ -156,7 +143,7 @@ export const authService = {
         ...userDoc,
         email: profile.email,
         google_sub: profile.subject,
-        providers: [...providers],
+        providers: [...prov],
       }
     }
 
@@ -167,39 +154,38 @@ export const authService = {
     await sendPhoneOtp(phone)
   },
 
-  async signInWithPhoneOtp(phone: string, code: string): Promise<Document> {
+  async signInWithPhoneOtp(phone: string, code: string): Promise<UserDoc> {
     const approved = await verifyPhoneOtp(phone, code)
     if (!approved) throw new HttpError(400, 'Invalid verification code')
 
-    let userDoc: Document | null = await coll('users').findOne({ phone })
+    let userDoc: UserDoc | null = await users().findOne({ phone })
 
     if (!userDoc) {
-      const doc = {
+      const doc: UserInsertDoc = {
         phone,
         username: usernameFromSeed(phone),
         password_hash: '',
-        tier: 'free',
+        tier: 'free' as UserTier,
         providers: ['phone'],
         preferences: defaultUserPreferences(),
         token_balance: 15000,
         created_at: new Date(),
         updated_at: new Date(),
       }
-      const { insertedId } = await coll('users').insertOne(doc)
-      userDoc = { ...doc, _id: insertedId }
+      const { insertedId } = await users().insertOne(doc)
+      userDoc = { ...doc, _id: insertedId } as UserDoc
     } else {
-      const prev = userDoc as UserRow
-      const providers = Array.isArray(prev.providers)
-        ? new Set<string>(prev.providers)
+      const prov = Array.isArray(userDoc.providers)
+        ? new Set<string>(userDoc.providers)
         : new Set<string>()
-      providers.add('phone')
+      prov.add('phone')
 
-      await coll('users').updateOne(
+      await users().updateOne(
         { _id: userDoc._id },
         {
           $set: {
             phone,
-            providers: [...providers],
+            providers: [...prov],
             updated_at: new Date(),
           },
         },
@@ -208,15 +194,15 @@ export const authService = {
       userDoc = {
         ...userDoc,
         phone,
-        providers: [...providers],
+        providers: [...prov],
       }
     }
 
     return userDoc
   },
 
-  async getUserById(userId: string) {
-    const dbUser = await coll('users').findOne({ _id: parseObjectId(userId) })
+  async getUserById(userId: string): Promise<UserDoc> {
+    const dbUser = await users().findOne({ _id: parseObjectId(userId) })
     if (!dbUser) throw new HttpError(404, 'User not found')
     return dbUser
   },
@@ -228,6 +214,6 @@ export const authService = {
     }
     updateFields.updated_at = new Date()
 
-    await coll('users').updateOne({ _id: parseObjectId(userId) }, { $set: updateFields })
+    await users().updateOne({ _id: parseObjectId(userId) }, { $set: updateFields })
   },
 }

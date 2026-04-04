@@ -1,35 +1,39 @@
 import { randomUUID } from 'crypto'
-import { coll } from '../config/mongo'
+import { mongoColl } from '../config/mongo'
 import { getPineconeIndex } from '../config/pinecone'
 import { embed } from '../utils/embedding'
 import { idString, parseObjectId } from '../utils/mongo-id'
+
+const events = () => mongoColl.events()
+const memories = () => mongoColl.memories()
+const worldInstances = () => mongoColl.worldInstances()
 
 export const memoryService = {
   async getEvents(instanceId: string, playerId: string, opts: any) {
     const skip = ((opts.page || 1) - 1) * (opts.limit || 50)
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
-    const filter: any = { instance_id: iid, player_id: pid }
+    const filter: Record<string, unknown> = { instance_id: iid, player_id: pid }
     if (opts.type) filter.type = opts.type
 
-    const events = await coll('events')
+    const evs = await events()
       .find(filter)
       .sort({ sequence: -1 })
       .skip(skip)
       .limit(opts.limit || 50)
       .toArray()
 
-    const total = await coll('events').countDocuments(filter)
-    return { events: events.reverse(), total, page: opts.page || 1 }
+    const total = await events().countDocuments(filter)
+    return { events: evs.reverse(), total, page: opts.page || 1 }
   },
 
   async getMemories(instanceId: string, playerId: string, opts: any) {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
-    const filter: any = { instance_id: iid, player_id: pid }
+    const filter: Record<string, unknown> = { instance_id: iid, player_id: pid }
     if (!opts.includeArchived) filter.is_archived = false
 
-    return coll('memories')
+    return memories()
       .find(filter)
       .sort({ importance: -1, updated_at: -1 })
       .toArray()
@@ -39,18 +43,18 @@ export const memoryService = {
     const mid = parseObjectId(memoryId)
     const pid = parseObjectId(playerId)
 
-    const memory = await coll('memories').findOne({
+    const memory = await memories().findOne({
       _id: mid,
       player_id: pid,
     })
     if (!memory) throw new Error('Memory not found')
 
-    const updateFields: any = { updated_at: new Date() }
+    const updateFields: Record<string, unknown> = { updated_at: new Date() }
     if (updates.text) updateFields.text = updates.text
     if (updates.type) updateFields.type = updates.type
     if (updates.importance !== undefined) updateFields.importance = updates.importance
 
-    await coll('memories').updateOne({ _id: mid }, { $set: updateFields })
+    await memories().updateOne({ _id: mid }, { $set: updateFields })
 
     if (updates.text) {
       const newEmbedding = await embed(updates.text)
@@ -89,7 +93,7 @@ export const memoryService = {
             },
           }],
         })
-        await coll('memories').updateOne(
+        await memories().updateOne(
           { _id: mid },
           { $set: { pinecone_id: newVecId, is_archived: false } },
         )
@@ -103,7 +107,7 @@ export const memoryService = {
     const mid = parseObjectId(memoryId)
     const pid = parseObjectId(playerId)
 
-    const memory = await coll('memories').findOne({
+    const memory = await memories().findOne({
       _id: mid,
       player_id: pid,
     })
@@ -112,11 +116,11 @@ export const memoryService = {
     if (memory.pinecone_id) {
       const index = getPineconeIndex()
       const ns = idString(memory.instance_id)
-      await index.namespace(`mem_${ns}`).deleteOne(memory.pinecone_id)
+      await index.namespace(`mem_${ns}`).deleteOne({ id: memory.pinecone_id })
     }
 
-    await coll('memories').deleteOne({ _id: mid })
-    await coll('world_instances').updateOne(
+    await memories().deleteOne({ _id: mid })
+    await worldInstances().updateOne(
       { _id: memory.instance_id },
       { $inc: { 'meta.total_memories': -1 } },
     )
@@ -128,13 +132,13 @@ export const memoryService = {
     const eid = parseObjectId(eventId)
     const pid = parseObjectId(playerId)
 
-    const event = await coll('events').findOne({
+    const event = await events().findOne({
       _id: eid,
       player_id: pid,
     })
     if (!event) throw new Error('Event not found')
 
-    await coll('events').updateOne(
+    await events().updateOne(
       { _id: eid },
       {
         $push: {
@@ -142,14 +146,14 @@ export const memoryService = {
             previous_data: event.data,
             edited_at: new Date(),
           },
-        } as any,
+        },
         $set: {
           'data.ai_response': updates.ai_response ?? event.data.ai_response,
           'data.player_input': updates.player_input ?? event.data.player_input,
           is_user_edited: true,
           updated_at: new Date(),
         },
-      },
+      } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
     )
 
     return { success: true }

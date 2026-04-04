@@ -1,6 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
-import { coll } from '../../src/config/mongo'
+import { mongoColl } from '../../src/config/mongo'
 import { callLLM } from '../lib/llm-client'
 import { parseObjectId } from '../../src/utils/mongo-id'
 
@@ -8,7 +8,7 @@ export async function summaryProcessor(job: Job) {
   const { instanceId, sceneTag, startSequence, endSequence } = job.data
   const instanceOid = parseObjectId(instanceId)
 
-  const events = await coll('events')
+  const events = await mongoColl.events()
     .find({
       instance_id: instanceOid,
       sequence: { $gte: startSequence, $lte: endSequence },
@@ -47,9 +47,9 @@ export async function summaryProcessor(job: Job) {
     created_at: new Date(),
   }
 
-  await coll('scene_summaries').insertOne(summary)
+  await mongoColl.sceneSummaries().insertOne(summary)
 
-  await coll('world_instances').updateOne(
+  await mongoColl.worldInstances().updateOne(
     { _id: instanceOid },
     { $set: { 'current_scene.summary_pending': false } },
   )

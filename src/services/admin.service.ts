@@ -1,11 +1,14 @@
-import { coll } from '../config/mongo'
+import { mongoColl } from '../config/mongo'
+import type { UserTier } from '../models/user.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 
 export type AdminUserTier = 'free' | 'premium' | 'creator'
 
+const users = () => mongoColl.users()
+
 export const adminService = {
   async listUsers(limit: number) {
-    const users = await coll('users')
+    const rows = await users()
       .find(
         {},
         {
@@ -24,7 +27,7 @@ export const adminService = {
       .toArray()
 
     return {
-      users: users.map((u) => ({
+      users: rows.map((u) => ({
         id: idString(u._id),
         username: u.username,
         email: u.email || null,
@@ -36,7 +39,7 @@ export const adminService = {
   },
 
   async getUser(userId: string) {
-    return coll('users').findOne(
+    return users().findOne(
       { _id: parseObjectId(userId) },
       {
         projection: {
@@ -54,9 +57,9 @@ export const adminService = {
   },
 
   async setUserTier(userId: string, tier: AdminUserTier) {
-    return coll('users').findOneAndUpdate(
+    return users().findOneAndUpdate(
       { _id: parseObjectId(userId) },
-      { $set: { tier, updated_at: new Date() } },
+      { $set: { tier: tier as UserTier, updated_at: new Date() } },
       { returnDocument: 'after', projection: { password_hash: 0 } },
     )
   },

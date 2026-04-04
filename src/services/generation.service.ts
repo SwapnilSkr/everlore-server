@@ -1,7 +1,17 @@
-import { coll } from '../config/mongo'
+import { mongoColl } from '../config/mongo'
+import type { MemoryDoc } from '../models/memory.model'
+import type { WorldEventDoc } from '../models/world-event.model'
+import type { WorldInstanceDoc } from '../models/world-instance.model'
+import type { WorldTemplateDoc } from '../models/world-template.model'
 import { getGenerationQueue } from '../queues'
 import { instanceService } from './instance.service'
 import { parseObjectId } from '../utils/mongo-id'
+
+const worldInstances = () => mongoColl.worldInstances()
+const worldTemplates = () => mongoColl.worldTemplates()
+const events = () => mongoColl.events()
+const sceneSummaries = () => mongoColl.sceneSummaries()
+const memories = () => mongoColl.memories()
 
 export const generationService = {
   async dispatch(params: {
@@ -14,14 +24,14 @@ export const generationService = {
 
     const iid = parseObjectId(instanceId)
 
-    const recentEvents = await coll('events')
+    const recentEvents = await events()
       .find({ instance_id: iid })
       .sort({ sequence: -1 })
       .limit(6)
       .toArray()
     recentEvents.reverse()
 
-    const activeSummary = await coll('scene_summaries').findOne(
+    const activeSummary = await sceneSummaries().findOne(
       {
         instance_id: iid,
         'event_range.end_sequence': {
@@ -52,33 +62,41 @@ export const generationService = {
     return job.id
   },
 
-  async loadInstance(instanceId: string, playerId: string) {
+  async loadInstance(
+    instanceId: string,
+    playerId: string,
+  ): Promise<{
+    instance: WorldInstanceDoc
+    template: WorldTemplateDoc | null
+    recentEvents: WorldEventDoc[]
+    memories: MemoryDoc[]
+  }> {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
 
-    const instance = await coll('world_instances').findOne({
+    const instance = await worldInstances().findOne({
       _id: iid,
       player_id: pid,
     })
     if (!instance) throw new Error('Instance not found')
 
-    const template = await coll('world_templates').findOne({
+    const template = await worldTemplates().findOne({
       _id: instance.template_id,
     })
 
-    const recentEvents = await coll('events')
+    const recentEvents = await events()
       .find({ instance_id: iid })
       .sort({ sequence: -1 })
       .limit(20)
       .toArray()
     recentEvents.reverse()
 
-    const memories = await coll('memories')
+    const mems = await memories()
       .find({ instance_id: iid, is_archived: false })
       .sort({ importance: -1 })
       .limit(20)
       .toArray()
 
-    return { instance, template, recentEvents, memories }
+    return { instance, template, recentEvents, memories: mems }
   },
 }
