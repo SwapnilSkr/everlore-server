@@ -1,4 +1,4 @@
-const OPENAI_MODELS = new Set(['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'])
+const OPENAI_MODELS = new Set(['gpt-5', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'])
 
 interface ModelPreferences {
   logic?: string
@@ -15,16 +15,14 @@ export function selectNarrationModel(
   preferences: ModelPreferences,
   isNsfw: boolean,
 ): string {
-  if (isNsfw && preferences.narration_nsfw) {
-    return preferences.narration_nsfw
-  }
-  return preferences.narration_sfw || 'gpt-4o'
+  // Always use gpt-5 regardless of NSFW setting
+  return 'gpt-5'
 }
 
 export function selectLogicModel(preferences: ModelPreferences): string {
-  return preferences.logic || 'gpt-4o'
+  return 'gpt-5'
 }
 
 export function selectSummaryModel(preferences: ModelPreferences): string {
-  return preferences.summary || 'gpt-4o-mini'
+  return 'gpt-5'
 }

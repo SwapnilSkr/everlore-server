@@ -13,3 +13,5 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
   .post('/', (ctx) => instanceController.create(ctx), { body: CreateInstanceBody })
 
   .post('/:id/archive', (ctx) => instanceController.archive(ctx))
+
+  .delete('/:id', (ctx) => instanceController.delete(ctx))

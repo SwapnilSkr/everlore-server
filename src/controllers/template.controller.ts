@@ -1,6 +1,7 @@
 import { rateLimit } from '../middleware/rate-limit'
 import type { AuthUser } from '../middleware/auth'
 import { templateService } from '../services/template.service'
+import { deletionService } from '../services/deletion.service'
 import type { Static } from '@sinclair/typebox'
 import type { CreateTemplateBody, UpdateTemplateBody } from '../schemas/template.schema'
 import { HttpError } from '../utils/http-error'
@@ -75,5 +76,16 @@ export const templateController = {
   listMine: async ({ user }: { user: AuthUser | null }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return templateService.listByCreator(user.id)
+  },
+
+  delete: async ({
+    user,
+    params,
+  }: {
+    user: AuthUser | null
+    params: { id: string }
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return deletionService.deleteTemplate(params.id, user.id)
   },
 }

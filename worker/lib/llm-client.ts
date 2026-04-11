@@ -1,7 +1,7 @@
 import OpenAI from 'openai'
 import { env } from '../../src/config/env'
 
-const OPENAI_MODELS = new Set(['gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'])
+const OPENAI_MODELS = new Set(['gpt-5', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'])
 
 let openaiClient: OpenAI | null = null
 let openrouterClient: OpenAI | null = null

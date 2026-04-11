@@ -1,5 +1,6 @@
 import type { AuthUser } from '../middleware/auth'
 import { instanceService } from '../services/instance.service'
+import { deletionService } from '../services/deletion.service'
 import { HttpError } from '../utils/http-error'
 
 export const instanceController = {
@@ -35,5 +36,10 @@ export const instanceController = {
   archive: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return instanceService.archive(params.id, user.id)
+  },
+
+  delete: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return deletionService.deleteInstance(params.id, user.id)
   },
 }

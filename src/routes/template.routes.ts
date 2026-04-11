@@ -17,3 +17,5 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
   .put('/:id', (ctx) => templateController.update(ctx), { body: UpdateTemplateBody })
 
   .post('/:id/publish', (ctx) => templateController.publish(ctx))
+
+  .delete('/:id', (ctx) => templateController.delete(ctx))
