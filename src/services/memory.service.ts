@@ -1,12 +1,16 @@
 import { randomUUID } from 'crypto'
 import { mongoColl } from '../config/mongo'
 import { getPineconeIndex } from '../config/pinecone'
+import { getRedisClient } from '../config/redis'
 import { embed } from '../utils/embedding'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
 
 const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
 const worldInstances = () => mongoColl.worldInstances()
+const worldTemplates = () => mongoColl.worldTemplates()
+const sceneSummaries = () => mongoColl.sceneSummaries()
 
 export const memoryService = {
   async getEvents(instanceId: string, playerId: string, opts: any) {
@@ -126,6 +130,111 @@ export const memoryService = {
     )
 
     return { success: true }
+  },
+
+  /**
+   * Rewind a playthrough to a chosen turn: removes the event at [sequence] and
+   * every event after it, then rolls everything back to that point —
+   *  - deletes memories sourced from the removed turns (+ their Pinecone vectors,
+   *    so they can't resurface via RAG),
+   *  - deletes scene summaries covering the removed range,
+   *  - recomputes world_state / active_flags by replaying the surviving turns
+   *    from the template defaults (stats are stored as deltas, not snapshots),
+   *  - recomputes the current scene + meta counts,
+   *  - busts the cached session so the next turn rebuilds from fresh state.
+   */
+  async rewindToSequence(instanceId: string, playerId: string, sequence: number) {
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+
+    const instance = await worldInstances().findOne({ _id: iid, player_id: pid })
+    if (!instance) throw new Error('Instance not found')
+
+    const template = await worldTemplates().findOne({ _id: instance.template_id })
+    if (!template) throw new Error('Template not found')
+
+    // Events being removed: the chosen turn and everything after it.
+    const doomed = await events()
+      .find({ instance_id: iid, sequence: { $gte: sequence } }, { projection: { _id: 1 } })
+      .toArray()
+    const doomedIds = doomed.map((e) => e._id)
+
+    // 1. Memories sourced from removed turns → delete docs + Pinecone vectors.
+    let deletedMemories = 0
+    if (doomedIds.length > 0) {
+      const mems = await memories()
+        .find({ instance_id: iid, source_event_ids: { $in: doomedIds } })
+        .toArray()
+      if (mems.length > 0) {
+        const ns = getPineconeIndex().namespace(`mem_${instanceId}`)
+        for (const m of mems) {
+          if (!m.pinecone_id) continue
+          try {
+            await ns.deleteOne({ id: m.pinecone_id })
+          } catch (err) {
+            console.warn('Rewind: failed to delete vector', m.pinecone_id, (err as Error).message)
+          }
+        }
+        await memories().deleteMany({ _id: { $in: mems.map((m) => m._id) } })
+        deletedMemories = mems.length
+      }
+    }
+
+    // 2. Scene summaries covering the removed range.
+    await sceneSummaries().deleteMany({
+      instance_id: iid,
+      'event_range.end_sequence': { $gte: sequence },
+    })
+
+    // 3. The events themselves.
+    await events().deleteMany({ instance_id: iid, sequence: { $gte: sequence } })
+
+    // 4. Replay survivors from template defaults to rebuild state.
+    const statLimits: Record<string, { min: number; max: number }> = {}
+    let worldState: Record<string, number> = {}
+    for (const [key, def] of Object.entries(template.base_stats_template)) {
+      worldState[key] = def.default
+      statLimits[key] = { min: def.min, max: def.max }
+    }
+    let activeFlags: Record<string, unknown> = {}
+    for (const [key, def] of Object.entries(template.flag_definitions || {})) {
+      activeFlags[key] = def.default
+    }
+
+    const survivors = await events().find({ instance_id: iid }).sort({ sequence: 1 }).toArray()
+    for (const ev of survivors) {
+      worldState = applyStateMutations(worldState, ev.data?.state_mutations || {}, statLimits)
+      activeFlags = applyFlagMutations(activeFlags, ev.data?.flag_mutations || {})
+    }
+
+    // 5. Current scene from the tail of survivors.
+    const last = survivors[survivors.length - 1]
+    const sceneTag = last?.scene_tag || 'dialogue'
+    let turnCount = 0
+    for (let i = survivors.length - 1; i >= 0; i--) {
+      if (survivors[i].scene_tag === sceneTag) turnCount++
+      else break
+    }
+
+    // 6. Persist rolled-back instance state.
+    await worldInstances().updateOne(
+      { _id: iid },
+      {
+        $set: {
+          world_state: worldState,
+          active_flags: activeFlags,
+          current_scene: { tag: sceneTag, turn_count: turnCount, summary_pending: false },
+          'meta.total_events': survivors.length,
+          'meta.total_memories': Math.max(0, (instance.meta?.total_memories || 0) - deletedMemories),
+          updated_at: new Date(),
+        },
+      },
+    )
+
+    // 7. Drop the cached session so the next generation uses fresh state.
+    await getRedisClient().del(`session:${instanceId}`)
+
+    return { success: true, deletedEvents: doomedIds.length, deletedMemories }
   },
 
   async editEvent(eventId: string, playerId: string, updates: any) {

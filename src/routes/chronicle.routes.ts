@@ -1,4 +1,4 @@
-import { Elysia } from 'elysia'
+import { Elysia, t } from 'elysia'
 import { authPlugin } from '../middleware/auth'
 import { EventQueryParams, EditEventBody } from '../schemas/event.schema'
 import { MemoryQueryParams, EditMemoryBody } from '../schemas/memory.schema'
@@ -23,4 +23,8 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
 
   .put('/event/:eventId', (ctx) => chronicleController.editEvent(ctx), {
     body: EditEventBody,
+  })
+
+  .post('/rewind/:instanceId', (ctx) => chronicleController.rewind(ctx), {
+    body: t.Object({ sequence: t.Number({ minimum: 1 }) }),
   })

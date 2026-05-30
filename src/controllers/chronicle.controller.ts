@@ -71,4 +71,17 @@ export const chronicleController = {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return memoryService.editEvent(params.eventId, user.id, body)
   },
+
+  rewind: async ({
+    params,
+    body,
+    user,
+  }: {
+    params: { instanceId: string }
+    body: { sequence: number }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return memoryService.rewindToSequence(params.instanceId, user.id, body.sequence)
+  },
 }
