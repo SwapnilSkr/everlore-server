@@ -54,12 +54,10 @@ export const templateService = {
       base_stats_template: data.base_stats_template as Record<string, StatDefinitionDoc>,
       flag_definitions: (data.flag_definitions || {}) as Record<string, FlagDefinitionDoc>,
       scene_tags: data.scene_tags || [],
-      model_preferences: {
-        logic: 'gpt-4o',
-        narration_nsfw: 'gryphe/mythomax-l2-13b',
-        narration_sfw: 'gpt-4o',
-        summary: 'gpt-4o-mini',
-      },
+      // Narration models default to env (NARRATION_SFW_MODEL / _NSFW_MODEL) so
+      // they can be A/B'd globally without per-template migrations. Leave empty
+      // unless a world needs a specific override.
+      model_preferences: {},
       max_context_memories: data.max_context_memories || 25,
       max_lore_results: data.max_lore_results || 10,
       created_at: new Date(),

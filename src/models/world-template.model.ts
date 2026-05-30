@@ -13,11 +13,13 @@ export interface FlagDefinitionDoc {
   description: string
 }
 
+/** All optional — narration models default to env (NARRATION_SFW_MODEL /
+ *  NARRATION_NSFW_MODEL); a template may override per-world. */
 export interface ModelPreferencesDoc {
-  logic: string
-  narration_nsfw: string
-  narration_sfw: string
-  summary: string
+  logic?: string
+  narration_nsfw?: string
+  narration_sfw?: string
+  summary?: string
 }
 
 /**
