@@ -147,6 +147,44 @@ export const playWsService = {
         break
       }
 
+      case 'continue': {
+        const instanceId = (data as { instance_id?: string }).instance_id
+        if (!instanceId) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Missing instance_id' }))
+          return
+        }
+
+        const rl = await rateLimit(user.id, 'chat')
+        if (!rl.allowed) {
+          ws.send(
+            JSON.stringify({ type: 'error', code: 'RATE_LIMITED', retryAfter: rl.retryAfter }),
+          )
+          return
+        }
+
+        const lockKey = `lock:gen:${user.id}:${instanceId}`
+        if (await redis.exists(lockKey)) {
+          ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
+          return
+        }
+
+        try {
+          // No player message — the world advances on its own.
+          const jobId = await generationService.dispatch({
+            instanceId,
+            playerId: user.id,
+            userMessage: '',
+            isContinuation: true,
+          })
+          await redis.set(lockKey, jobId!, 'EX', 30)
+          ws.send(JSON.stringify({ type: 'ack', jobId }))
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err)
+          ws.send(JSON.stringify({ type: 'error', message }))
+        }
+        break
+      }
+
       case 'load_instance': {
         try {
           const instanceId = (data as { instance_id?: string }).instance_id

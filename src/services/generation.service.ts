@@ -1,5 +1,6 @@
 import { mongoColl } from '../config/mongo'
 import type { MemoryDoc } from '../models/memory.model'
+import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { WorldEventDoc } from '../models/world-event.model'
 import type { WorldInstanceDoc } from '../models/world-instance.model'
 import type { WorldTemplateDoc } from '../models/world-template.model'
@@ -13,14 +14,16 @@ const worldTemplates = () => mongoColl.worldTemplates()
 const events = () => mongoColl.events()
 const sceneSummaries = () => mongoColl.sceneSummaries()
 const memories = () => mongoColl.memories()
+const characters = () => mongoColl.characters()
 
 export const generationService = {
   async dispatch(params: {
     instanceId: string
     playerId: string
     userMessage: string
+    isContinuation?: boolean
   }) {
-    const { instanceId, playerId, userMessage } = params
+    const { instanceId, playerId, userMessage, isContinuation = false } = params
     const session = await instanceService.loadSession(instanceId, playerId)
 
     // Per-user NSFW consent is read fresh (not from the cached session) so a
@@ -51,16 +54,24 @@ export const generationService = {
     )
 
     const queue = getGenerationQueue()
+    const characterCodex = await characters()
+      .find({ instance_id: iid })
+      .sort({ mention_count: -1, updated_at: -1 })
+      .limit(16)
+      .toArray()
+
     const job = await queue.add(
       'generate',
       {
         instanceId,
         playerId,
         userMessage,
+        isContinuation,
         session,
         userNsfwEnabled,
         recentEvents,
         activeSummary: activeSummary?.summary_text || null,
+        characterCodex,
       },
       {
         priority: 1,
@@ -80,6 +91,7 @@ export const generationService = {
     template: WorldTemplateDoc | null
     recentEvents: WorldEventDoc[]
     memories: MemoryDoc[]
+    characters: CharacterProfileDoc[]
   }> {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
@@ -107,6 +119,12 @@ export const generationService = {
       .limit(20)
       .toArray()
 
-    return { instance, template, recentEvents, memories: mems }
+    const codex = await characters()
+      .find({ instance_id: iid })
+      .sort({ mention_count: -1, updated_at: -1 })
+      .limit(30)
+      .toArray()
+
+    return { instance, template, recentEvents, memories: mems, characters: codex }
   },
 }

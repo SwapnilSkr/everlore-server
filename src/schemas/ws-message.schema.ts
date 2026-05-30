@@ -7,6 +7,7 @@ export const WsChatPayload = t.Object({
 export const WsMessage = t.Object({
   action: t.Union([
     t.Literal('chat'),
+    t.Literal('continue'),
     t.Literal('ping'),
     t.Literal('load_instance'),
     t.Literal('edit_event'),

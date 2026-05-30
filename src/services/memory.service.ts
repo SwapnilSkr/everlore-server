@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto'
 import { mongoColl } from '../config/mongo'
 import { getPineconeIndex } from '../config/pinecone'
 import { getRedisClient } from '../config/redis'
+import { getMemoryCurationQueue } from '../queues'
 import { embed } from '../utils/embedding'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
@@ -11,6 +12,7 @@ const memories = () => mongoColl.memories()
 const worldInstances = () => mongoColl.worldInstances()
 const worldTemplates = () => mongoColl.worldTemplates()
 const sceneSummaries = () => mongoColl.sceneSummaries()
+const characters = () => mongoColl.characters()
 
 export const memoryService = {
   async getEvents(instanceId: string, playerId: string, opts: any) {
@@ -189,6 +191,10 @@ export const memoryService = {
     // 3. The events themselves.
     await events().deleteMany({ instance_id: iid, sequence: { $gte: sequence } })
 
+    // 3b. Character codex may contain facts from removed turns; reset it so
+    // canon is rebuilt from future play instead of keeping contradictions.
+    await characters().deleteMany({ instance_id: iid })
+
     // 4. Replay survivors from template defaults to rebuild state.
     const statLimits: Record<string, { min: number; max: number }> = {}
     let worldState: Record<string, number> = {}
@@ -224,6 +230,7 @@ export const memoryService = {
           world_state: worldState,
           active_flags: activeFlags,
           current_scene: { tag: sceneTag, turn_count: turnCount, summary_pending: false },
+          focus_character_id: null,
           'meta.total_events': survivors.length,
           'meta.total_memories': Math.max(0, (instance.meta?.total_memories || 0) - deletedMemories),
           updated_at: new Date(),
@@ -247,6 +254,16 @@ export const memoryService = {
     })
     if (!event) throw new Error('Event not found')
 
+    const nextAiResponse = updates.ai_response ?? event.data.ai_response
+    const nextPlayerInput = updates.player_input ?? event.data.player_input
+    const aiChanged =
+      typeof updates.ai_response === 'string' &&
+      updates.ai_response !== event.data.ai_response
+    const playerChanged =
+      typeof updates.player_input === 'string' &&
+      updates.player_input !== event.data.player_input
+    const contentChanged = aiChanged || playerChanged
+
     await events().updateOne(
       { _id: eid },
       {
@@ -257,14 +274,61 @@ export const memoryService = {
           },
         },
         $set: {
-          'data.ai_response': updates.ai_response ?? event.data.ai_response,
-          'data.player_input': updates.player_input ?? event.data.player_input,
+          'data.ai_response': nextAiResponse,
+          'data.player_input': nextPlayerInput,
           is_user_edited: true,
           updated_at: new Date(),
         },
       } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
     )
 
-    return { success: true }
+    let deletedMemories = 0
+
+    if (contentChanged) {
+      // Memories derived from this event become stale after edits. Remove both
+      // Mongo docs and Pinecone vectors, then re-run curation on the edited text.
+      const staleMemories = await memories()
+        .find({ instance_id: event.instance_id, source_event_ids: eid })
+        .toArray()
+
+      if (staleMemories.length > 0) {
+        const ns = getPineconeIndex().namespace(`mem_${idString(event.instance_id)}`)
+        for (const m of staleMemories) {
+          if (!m.pinecone_id) continue
+          try {
+            await ns.deleteOne({ id: m.pinecone_id })
+          } catch (err) {
+            console.warn('Edit event: failed to delete vector', m.pinecone_id, (err as Error).message)
+          }
+        }
+
+        await memories().deleteMany({ _id: { $in: staleMemories.map((m) => m._id) } })
+        deletedMemories = staleMemories.length
+        await worldInstances().updateOne(
+          { _id: event.instance_id },
+          { $inc: { 'meta.total_memories': -deletedMemories } },
+        )
+      }
+
+      const memoryCurationQueue = getMemoryCurationQueue()
+      await memoryCurationQueue.add(
+        'curate',
+        {
+          instanceId: idString(event.instance_id),
+          playerId,
+          eventId: idString(event._id),
+          playerInput: nextPlayerInput || '',
+          aiResponse: nextAiResponse || '',
+          sceneTag: event.scene_tag || 'dialogue',
+        },
+        { priority: 5, delay: 500 },
+      )
+    }
+
+    return {
+      success: true,
+      memories_deleted: deletedMemories,
+      recuration_queued: contentChanged,
+    }
   },
 }

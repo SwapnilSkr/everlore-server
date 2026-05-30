@@ -16,6 +16,24 @@ interface PromptInput {
    *  Used for the uncensored NSFW model, whose structured metadata is extracted
    *  by a separate pass. */
   proseOnly?: boolean
+  /** Narration person. Defaults to third. */
+  narrationPov?: 'first' | 'third'
+  /** Optional conversation tone (e.g. "casual", "romantic", "erotic"). */
+  tone?: string
+  /** Canonical emergent character cards enforced as story constraints. */
+  characterCodex?: Array<{
+    canonical_name: string
+    aliases?: string[]
+    role?: string
+    appearance?: string
+    persona?: string
+    immutable_facts?: string[]
+    mutable_state?: string[]
+    disposition_to_player?: string
+    hidden_thought?: string
+  }>
+  /** Optional focused character id/name chosen by player for this instance. */
+  focusCharacterName?: string
 }
 
 interface PromptMessage {
@@ -32,12 +50,23 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
   // that varies per turn (state, flags, retrieved lore/memories) belongs here.
   let staticContent = ''
 
-  // Identity framing
+  // Identity framing — POV is player-controllable (defaults to third person)
+  const pov = input.narrationPov ?? 'third'
   if (input.isSentient) {
     staticContent += `${input.seedPrompt}\n\n`
-    staticContent += `You ARE this entity. Respond in first person. You have feelings. You react to their actions emotionally and physically.\n\n`
+    if (pov === 'first') {
+      staticContent += `You ARE this entity. Speak and act in the FIRST person (I, me, my). You have feelings and react to the player's actions emotionally and physically.\n\n`
+    } else {
+      staticContent += `You ARE this entity, but portray yourself in the THIRD person — narrate your own speech, actions, and feelings using your name or they/she/he (e.g. "Elara hesitates, then answers"). You still have feelings and react emotionally and physically.\n\n`
+    }
   } else {
-    staticContent += `You are the Game Master of this world. Narrate in third person. You describe the world, its inhabitants, and the consequences of the player's actions.\n\n`
+    // For a Game Master, POV chooses how the player is addressed: second-person
+    // immersive ("you") vs third-person ("the adventurer").
+    if (pov === 'first') {
+      staticContent += `You are the Game Master of this world. Narrate in the SECOND person, addressing the player directly as "you" (e.g. "You push open the tavern door and the room falls silent"). You describe the world, its inhabitants, and the consequences of the player's actions.\n\n`
+    } else {
+      staticContent += `You are the Game Master of this world. Narrate in the THIRD person, referring to the player by their role rather than "you" (e.g. "The adventurer pushes open the tavern door"). You describe the world, its inhabitants, and the consequences of the player's actions.\n\n`
+    }
     staticContent += `World Premise: ${input.seedPrompt}\n\n`
   }
 
@@ -47,9 +76,12 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
   // Response format instructions (static for the life of the world)
   if (input.proseOnly) {
     staticContent += `RESPONSE FORMAT:
-Write your reply as in-character story prose. Follow this style strictly:
-- Put ALL narration, scene description, actions, and inner thoughts in *italics* (wrapped in single asterisks).
-- Write characters' actual SPOKEN words as plain text (no asterisks), e.g. on their own line: "I won't let you pass."
+Write your reply as in-character story prose. Follow this style EXACTLY:
+- ONLY the exact words a character speaks ALOUD are plain text, wrapped in double quotes: "Like this."
+- EVERYTHING else is narration and MUST be wrapped in *italics* with single asterisks: scene, actions, body language, inner thoughts, AND dialogue tags/attributions such as *she said softly* or *I reply, my voice steady*. This applies even mid-line — between or after quoted speech, the attribution still goes in italics.
+- Example: "You came back," *she whispered, her hand trembling.* "I didn't think you would."
+- Never leave an attribution like "I reply" or "she said" as plain text. If it is not a spoken quote, it is italicized.
+- The player may include their OWN *actions or narration in asterisks* (in any point of view). Treat these as canonical events that truly happen in the story — honor them and react; do not override or contradict them. Their unmarked, quoted text is what the player says aloud.
 - Vivid and emotionally resonant, roughly 2-4 short paragraphs.
 - Output ONLY the story. No JSON, no field names, no headings, no bullet points, no commentary before or after. Never break character.`
   } else {
@@ -69,6 +101,40 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
   // ── DYNAMIC SYSTEM PROMPT (per-turn state) ──────
   // Everything that changes each turn lives after the cacheable prefix.
   let dynamicContent = ''
+
+  if (input.tone && input.tone.trim().length > 0) {
+    dynamicContent += `TONE: Write this scene in a ${input.tone.trim()} tone.\n\n`
+  }
+
+  if (input.characterCodex && input.characterCodex.length > 0) {
+    dynamicContent += `CANONICAL CHARACTER CODEX (never contradict these facts):\n`
+    for (const c of input.characterCodex.slice(0, 16)) {
+      dynamicContent += `- ${c.canonical_name}`
+      if (c.role) dynamicContent += ` | role: ${c.role}`
+      if (c.aliases && c.aliases.length) dynamicContent += ` | aliases: ${c.aliases.join(', ')}`
+      if (c.appearance) dynamicContent += ` | appearance: ${c.appearance}`
+      if (c.persona) dynamicContent += ` | persona: ${c.persona}`
+      if (c.immutable_facts && c.immutable_facts.length) {
+        dynamicContent += ` | immutable facts: ${c.immutable_facts.join('; ')}`
+      }
+      if (c.mutable_state && c.mutable_state.length) {
+        dynamicContent += ` | current state: ${c.mutable_state.join('; ')}`
+      }
+      if (c.disposition_to_player) {
+        dynamicContent += ` | disposition toward player: ${c.disposition_to_player}`
+      }
+      if (c.hidden_thought) {
+        dynamicContent += ` | private thought (internal only, never quoted verbatim): ${c.hidden_thought}`
+      }
+      dynamicContent += '\n'
+    }
+    dynamicContent += '\n'
+  }
+
+  if (input.focusCharacterName && input.focusCharacterName.trim()) {
+    dynamicContent += `FOCUS CHARACTER: ${input.focusCharacterName.trim()}\n`
+    dynamicContent += `Prioritize this character's presence, responses, and continuity unless the player explicitly shifts away.\n\n`
+  }
 
   dynamicContent += `CURRENT WORLD STATE:\n`
   for (const [key, value] of Object.entries(input.worldState)) {
