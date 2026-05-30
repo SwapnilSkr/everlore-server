@@ -25,6 +25,12 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
     body: EditEventBody,
   })
 
+  .post('/replay/:eventId', (ctx) => chronicleController.replayEvent(ctx))
+
+  .post('/replay/select/:eventId', (ctx) => chronicleController.selectReplayVariant(ctx), {
+    body: t.Object({ variant_index: t.Number({ minimum: 0 }) }),
+  })
+
   .post('/rewind/:instanceId', (ctx) => chronicleController.rewind(ctx), {
     body: t.Object({ sequence: t.Number({ minimum: 1 }) }),
   })

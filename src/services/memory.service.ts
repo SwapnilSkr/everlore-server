@@ -1,12 +1,17 @@
 import { randomUUID } from 'crypto'
+import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
 import { getPineconeIndex } from '../config/pinecone'
 import { getRedisClient } from '../config/redis'
 import { getMemoryCurationQueue, QUEUE_RETENTION } from '../queues'
+import { queryRag } from '../providers/rag.provider'
+import { buildPrompt } from '../utils/prompt-builder'
 import { embed } from '../utils/embedding'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
+import { callLLM, callLLMStream } from '../../worker/lib/llm-client'
+import { classifyScene } from '../../worker/lib/nsfw-classifier'
 
 const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
@@ -14,6 +19,89 @@ const worldInstances = () => mongoColl.worldInstances()
 const worldTemplates = () => mongoColl.worldTemplates()
 const sceneSummaries = () => mongoColl.sceneSummaries()
 const characters = () => mongoColl.characters()
+const users = () => mongoColl.users()
+
+function baseReplayVariantFor(event: any) {
+  return {
+    id: `base_${idString(event._id)}`,
+    narrative: event.data?.ai_response || '',
+    model_used: event.data?.model_used || env.NARRATION_SFW_MODEL,
+    created_at: event.created_at || new Date(),
+    source: 'base',
+    retrieval_profile: {
+      lore_top_k: 10,
+      memory_top_k: 25,
+      recent_event_window: 6,
+    },
+  }
+}
+
+function normalizeReplayVariants(event: any): any[] {
+  const existing = Array.isArray(event.data?.replay_variants)
+    ? event.data.replay_variants.filter((v: any) => typeof v?.narrative === 'string')
+    : []
+  if (existing.length > 0) return existing
+  if (typeof event.data?.ai_response === 'string' && event.data.ai_response.trim()) {
+    return [baseReplayVariantFor(event)]
+  }
+  return []
+}
+
+async function recurateMemoriesForEvent(
+  event: any,
+  playerId: string,
+  playerInputRaw: string,
+  playerSpokenInput: string,
+  playerNarrationFacts: string[],
+  aiResponse: string,
+): Promise<number> {
+  let deletedMemories = 0
+  const staleMemories = await memories()
+    .find({ instance_id: event.instance_id, source_event_ids: event._id })
+    .toArray()
+
+  if (staleMemories.length > 0) {
+    const ns = getPineconeIndex().namespace(`mem_${idString(event.instance_id)}`)
+    for (const m of staleMemories) {
+      if (!m.pinecone_id) continue
+      try {
+        await ns.deleteOne({ id: m.pinecone_id })
+      } catch (err) {
+        console.warn('Event recuration: failed to delete vector', m.pinecone_id, (err as Error).message)
+      }
+    }
+
+    await memories().deleteMany({ _id: { $in: staleMemories.map((m) => m._id) } })
+    deletedMemories = staleMemories.length
+    await worldInstances().updateOne(
+      { _id: event.instance_id },
+      { $inc: { 'meta.total_memories': -deletedMemories } },
+    )
+  }
+
+  const memoryCurationQueue = getMemoryCurationQueue()
+  await memoryCurationQueue.add(
+    'curate',
+    {
+      instanceId: idString(event.instance_id),
+      playerId,
+      eventId: idString(event._id),
+      playerInput: playerInputRaw,
+      playerSpokenInput,
+      playerNarrationFacts,
+      aiResponse: aiResponse || '',
+      sceneTag: event.scene_tag || 'dialogue',
+    },
+    {
+      priority: 5,
+      delay: 500,
+      removeOnComplete: QUEUE_RETENTION.memoryCuration.removeOnComplete,
+      removeOnFail: QUEUE_RETENTION.memoryCuration.removeOnFail,
+    },
+  )
+
+  return deletedMemories
+}
 
 export const memoryService = {
   async getEvents(instanceId: string, playerId: string, opts: any) {
@@ -265,6 +353,26 @@ export const memoryService = {
       typeof updates.player_input === 'string' &&
       updates.player_input !== event.data.player_input
     const contentChanged = aiChanged || playerChanged
+    const replayVariants = normalizeReplayVariants(event)
+    let nextReplayVariants = replayVariants
+    let nextSelectedReplayIndex =
+      typeof event.data?.selected_replay_index === 'number'
+        ? event.data.selected_replay_index
+        : Math.max(0, replayVariants.length - 1)
+
+    if (aiChanged && typeof nextAiResponse === 'string' && nextAiResponse.trim()) {
+      nextReplayVariants = [...replayVariants]
+      if (nextReplayVariants[nextReplayVariants.length - 1]?.narrative !== nextAiResponse) {
+        nextReplayVariants.push({
+          id: randomUUID(),
+          narrative: nextAiResponse,
+          model_used: event.data?.model_used || env.NARRATION_SFW_MODEL,
+          created_at: new Date(),
+          source: 'edit',
+        })
+      }
+      nextSelectedReplayIndex = nextReplayVariants.length - 1
+    }
 
     await events().updateOne(
       { _id: eid },
@@ -280,6 +388,8 @@ export const memoryService = {
           'data.player_input': nextPlayerInput,
           'data.player_spoken_input': parsedPlayerInput.spoken,
           'data.player_narration_facts': parsedPlayerInput.narrationFacts,
+          'data.replay_variants': nextReplayVariants,
+          'data.selected_replay_index': nextSelectedReplayIndex,
           is_user_edited: true,
           updated_at: new Date(),
         },
@@ -289,50 +399,13 @@ export const memoryService = {
     let deletedMemories = 0
 
     if (contentChanged) {
-      // Memories derived from this event become stale after edits. Remove both
-      // Mongo docs and Pinecone vectors, then re-run curation on the edited text.
-      const staleMemories = await memories()
-        .find({ instance_id: event.instance_id, source_event_ids: eid })
-        .toArray()
-
-      if (staleMemories.length > 0) {
-        const ns = getPineconeIndex().namespace(`mem_${idString(event.instance_id)}`)
-        for (const m of staleMemories) {
-          if (!m.pinecone_id) continue
-          try {
-            await ns.deleteOne({ id: m.pinecone_id })
-          } catch (err) {
-            console.warn('Edit event: failed to delete vector', m.pinecone_id, (err as Error).message)
-          }
-        }
-
-        await memories().deleteMany({ _id: { $in: staleMemories.map((m) => m._id) } })
-        deletedMemories = staleMemories.length
-        await worldInstances().updateOne(
-          { _id: event.instance_id },
-          { $inc: { 'meta.total_memories': -deletedMemories } },
-        )
-      }
-
-      const memoryCurationQueue = getMemoryCurationQueue()
-      await memoryCurationQueue.add(
-        'curate',
-        {
-          instanceId: idString(event.instance_id),
-          playerId,
-          eventId: idString(event._id),
-          playerInput: parsedPlayerInput.raw,
-          playerSpokenInput: parsedPlayerInput.spoken,
-          playerNarrationFacts: parsedPlayerInput.narrationFacts,
-          aiResponse: nextAiResponse || '',
-          sceneTag: event.scene_tag || 'dialogue',
-        },
-        {
-          priority: 5,
-          delay: 500,
-          removeOnComplete: QUEUE_RETENTION.memoryCuration.removeOnComplete,
-          removeOnFail: QUEUE_RETENTION.memoryCuration.removeOnFail,
-        },
+      deletedMemories = await recurateMemoriesForEvent(
+        event,
+        playerId,
+        parsedPlayerInput.raw,
+        parsedPlayerInput.spoken,
+        parsedPlayerInput.narrationFacts,
+        nextAiResponse || '',
       )
     }
 
@@ -340,6 +413,265 @@ export const memoryService = {
       success: true,
       memories_deleted: deletedMemories,
       recuration_queued: contentChanged,
+    }
+  },
+
+  /**
+   * Generate an alternative response for an event. When [onDelta] is supplied
+   * the narration is streamed token-by-token through the callback (used by the
+   * streaming worker path); otherwise it is generated in one shot (REST).
+   */
+  async replayEvent(
+    eventId: string,
+    playerId: string,
+    onDelta?: (chunk: string) => void,
+  ) {
+    const eid = parseObjectId(eventId)
+    const pid = parseObjectId(playerId)
+
+    const event = await events().findOne({ _id: eid, player_id: pid })
+    if (!event) throw new Error('Event not found')
+    if (!(event.data?.player_input || '').trim()) {
+      throw new Error('Replay is only supported for turns with player input')
+    }
+
+    // Keep state consistency simple: replay only the latest turn in a thread.
+    const newerCount = await events().countDocuments({
+      instance_id: event.instance_id,
+      sequence: { $gt: event.sequence },
+    })
+    if (newerCount > 0) {
+      throw new Error('Replay is only available for the latest turn. Rewind first for earlier turns.')
+    }
+
+    const instance = await worldInstances().findOne({ _id: event.instance_id, player_id: pid })
+    if (!instance) throw new Error('Instance not found')
+    const template = await worldTemplates().findOne({ _id: instance.template_id })
+    if (!template) throw new Error('Template not found')
+
+    const player = await users().findOne(
+      { _id: pid },
+      { projection: { 'preferences.nsfw_enabled': 1 } },
+    )
+    const userNsfwEnabled = player?.preferences?.nsfw_enabled === true
+
+    const parsed = parsePlayerInput(event.data.player_input || '')
+    const replayVariants = normalizeReplayVariants(event)
+    const replayDepth = replayVariants.length // 1-based progression after base
+
+    // Incremental retrieval widening per replay, bounded aggressively.
+    const factor = Math.min(1 + replayDepth * 0.35, 2.5)
+    const loreTopK = Math.min(Math.max(Math.round((template.max_lore_results || 10) * factor), template.max_lore_results || 10), 40)
+    const memoryTopK = Math.min(Math.max(Math.round((template.max_context_memories || 25) * factor), template.max_context_memories || 25), 80)
+    const recentWindow = Math.min(6 + replayDepth * 2, 20)
+
+    const priorEvents = await events()
+      .find({ instance_id: event.instance_id, sequence: { $lt: event.sequence } })
+      .sort({ sequence: -1 })
+      .limit(recentWindow)
+      .toArray()
+    priorEvents.reverse()
+
+    const activeSummary = await sceneSummaries().findOne(
+      {
+        instance_id: event.instance_id,
+        'event_range.end_sequence': { $lt: priorEvents[0]?.sequence || 0 },
+      },
+      { sort: { 'event_range.end_sequence': -1 } },
+    )
+
+    const codex = await characters()
+      .find({ instance_id: event.instance_id })
+      .sort({ mention_count: -1, updated_at: -1 })
+      .limit(16)
+      .toArray()
+
+    const ragQuery = parsed.raw || event.data.ai_response || template.seed_prompt
+    const rag = await queryRag(
+      idString(template._id),
+      idString(event.instance_id),
+      ragQuery,
+      loreTopK,
+      memoryTopK,
+    )
+
+    const tone = instance.tone || ''
+    const toneWantsNsfw = /erotic|explicit|sexual|nsfw/i.test(tone)
+    const sceneClass =
+      template.is_nsfw_capable && userNsfwEnabled
+        ? toneWantsNsfw
+          ? 'nsfw'
+          : classifyScene(parsed.raw, priorEvents)
+        : 'sfw'
+    const modelId = sceneClass === 'nsfw'
+      ? (template.model_preferences?.narration_nsfw || env.NARRATION_NSFW_MODEL)
+      : (template.model_preferences?.narration_sfw || env.NARRATION_SFW_MODEL)
+
+    const prompt = buildPrompt({
+      seedPrompt: template.seed_prompt,
+      isSentient: template.is_sentient,
+      worldState: instance.world_state,
+      activeFlags: instance.active_flags,
+      globalLore: template.global_lore,
+      retrievedLore: rag.loreTexts,
+      retrievedMemories: rag.memoryTexts,
+      sceneSummary: activeSummary?.summary_text || null,
+      recentEvents: priorEvents,
+      userMessage: parsed.spoken || '[No spoken dialogue from player this turn.]',
+      userSpokenInput: parsed.spoken,
+      userNarrationFacts: parsed.narrationFacts,
+      maxTokens: 7000,
+      proseOnly: true,
+      narrationPov: instance.narration_pov || 'third',
+      tone,
+      characterCodex: codex as any,
+      focusCharacterName: (() => {
+        const fid = instance.focus_character_id ? idString(instance.focus_character_id) : ''
+        const c = (codex as any[]).find((x) => idString(x._id) === fid)
+        return c?.canonical_name
+      })(),
+    })
+
+    const replayDirective = replayVariants
+      .slice(-3)
+      .map((v, i) => `Variant ${replayVariants.length - Math.min(3, replayVariants.length) + i + 1}: ${String(v.narrative || '').slice(0, 220)}`)
+      .join('\n')
+
+    const replayMessages = [
+      ...prompt.messages,
+      {
+        role: 'system',
+        content: `REPLAY OPTIMIZATION DIRECTIVE:
+- Produce a DISTINCT alternative response to the same turn.
+- Improve precision, characterization, and continuity.
+- Keep canonical narration facts true.
+- Keep within context constraints (do not invent off-screen lore).
+- If prior variants were weak, correct that.
+
+Recent variants (for contrast, do not copy):
+${replayDirective || '(none)'}`,
+      },
+    ]
+    const replayTemp = Math.max(0.45, 0.8 - replayDepth * 0.05)
+    const replayNarrative = onDelta
+      ? await callLLMStream(
+          { model: modelId, messages: replayMessages, temperature: replayTemp, maxTokens: 900 },
+          onDelta,
+        )
+      : await callLLM({
+          model: modelId,
+          messages: replayMessages,
+          temperature: replayTemp,
+          maxTokens: 900,
+        })
+
+    const nextVariant = {
+      id: randomUUID(),
+      narrative: replayNarrative.trim(),
+      model_used: modelId,
+      created_at: new Date(),
+      source: 'replay',
+      retrieval_profile: {
+        lore_top_k: loreTopK,
+        memory_top_k: memoryTopK,
+        recent_event_window: recentWindow,
+      },
+    }
+    const nextVariants = [...replayVariants, nextVariant]
+    const selectedIdx = nextVariants.length - 1
+
+    await events().updateOne(
+      { _id: eid },
+      {
+        $push: {
+          edit_history: {
+            previous_data: event.data,
+            edited_at: new Date(),
+          },
+        },
+        $set: {
+          'data.ai_response': nextVariant.narrative,
+          'data.model_used': modelId,
+          'data.replay_variants': nextVariants,
+          'data.selected_replay_index': selectedIdx,
+          updated_at: new Date(),
+        },
+      } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
+    )
+
+    const deletedMemories = await recurateMemoriesForEvent(
+      event,
+      playerId,
+      parsed.raw,
+      parsed.spoken,
+      parsed.narrationFacts,
+      nextVariant.narrative,
+    )
+
+    const updated = await events().findOne({ _id: eid })
+    return {
+      success: true,
+      event: updated,
+      replay_count: nextVariants.length,
+      selected_index: selectedIdx,
+      memories_deleted: deletedMemories,
+    }
+  },
+
+  async selectReplayVariant(eventId: string, playerId: string, variantIndex: number) {
+    const eid = parseObjectId(eventId)
+    const pid = parseObjectId(playerId)
+    const event = await events().findOne({ _id: eid, player_id: pid })
+    if (!event) throw new Error('Event not found')
+
+    const variants = normalizeReplayVariants(event)
+    if (variantIndex < 0 || variantIndex >= variants.length) {
+      throw new Error('Invalid replay variant index')
+    }
+
+    const chosen = variants[variantIndex]
+    const nextAi = chosen.narrative || event.data.ai_response || ''
+    const changed = nextAi !== event.data.ai_response
+
+    await events().updateOne(
+      { _id: eid },
+      {
+        $push: {
+          edit_history: {
+            previous_data: event.data,
+            edited_at: new Date(),
+          },
+        },
+        $set: {
+          'data.ai_response': nextAi,
+          'data.model_used': chosen.model_used || event.data.model_used,
+          'data.replay_variants': variants,
+          'data.selected_replay_index': variantIndex,
+          updated_at: new Date(),
+        },
+      } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
+    )
+
+    let deletedMemories = 0
+    if (changed) {
+      const parsed = parsePlayerInput(event.data.player_input || '')
+      deletedMemories = await recurateMemoriesForEvent(
+        event,
+        playerId,
+        parsed.raw,
+        parsed.spoken,
+        parsed.narrationFacts,
+        nextAi,
+      )
+    }
+
+    const updated = await events().findOne({ _id: eid })
+    return {
+      success: true,
+      event: updated,
+      replay_count: variants.length,
+      selected_index: variantIndex,
+      memories_deleted: deletedMemories,
     }
   },
 }

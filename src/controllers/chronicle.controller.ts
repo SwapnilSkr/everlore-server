@@ -84,4 +84,28 @@ export const chronicleController = {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return memoryService.rewindToSequence(params.instanceId, user.id, body.sequence)
   },
+
+  replayEvent: async ({
+    params,
+    user,
+  }: {
+    params: { eventId: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return memoryService.replayEvent(params.eventId, user.id)
+  },
+
+  selectReplayVariant: async ({
+    params,
+    body,
+    user,
+  }: {
+    params: { eventId: string }
+    body: { variant_index: number }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return memoryService.selectReplayVariant(params.eventId, user.id, Number(body.variant_index))
+  },
 }

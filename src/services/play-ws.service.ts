@@ -185,6 +185,44 @@ export const playWsService = {
         break
       }
 
+      case 'replay': {
+        const instanceId = (data as { instance_id?: string }).instance_id
+        const eventId = (data as { event_id?: string }).event_id
+        if (!instanceId || !eventId) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Missing instance_id or event_id' }))
+          return
+        }
+
+        const rl = await rateLimit(user.id, 'chat')
+        if (!rl.allowed) {
+          ws.send(
+            JSON.stringify({ type: 'error', code: 'RATE_LIMITED', retryAfter: rl.retryAfter }),
+          )
+          return
+        }
+
+        const lockKey = `lock:gen:${user.id}:${instanceId}`
+        if (await redis.exists(lockKey)) {
+          ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
+          return
+        }
+
+        try {
+          const jobId = await generationService.dispatchReplay({
+            instanceId,
+            playerId: user.id,
+            eventId,
+          })
+          // Replays widen retrieval and can run a touch longer than a normal turn.
+          await redis.set(lockKey, jobId!, 'EX', 60)
+          ws.send(JSON.stringify({ type: 'ack', jobId }))
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err)
+          ws.send(JSON.stringify({ type: 'error', message }))
+        }
+        break
+      }
+
       case 'load_instance': {
         try {
           const instanceId = (data as { instance_id?: string }).instance_id

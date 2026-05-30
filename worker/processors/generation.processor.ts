@@ -17,10 +17,17 @@ import { extractSceneMetadata } from '../lib/metadata-extractor'
 import { extractCharacterCodexDeltas } from '../lib/character-codex-extractor'
 import { characterCodexService } from '../../src/services/character-codex.service'
 import { getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../../src/queues'
+import { replayProcessor } from './replay.processor'
 
 const MAX_CONTEXT_TOKENS = 6000
 
 export async function generationProcessor(job: Job) {
+  // Replay turns reuse the generation queue/worker but follow a distinct path:
+  // they stream an alternative for an existing event instead of appending one.
+  if (job.data?.mode === 'replay') {
+    return replayProcessor(job)
+  }
+
   const {
     instanceId, playerId, userMessage,
     isContinuation = false,
@@ -181,6 +188,21 @@ export async function generationProcessor(job: Job) {
       player_spoken_input: parsedPlayerInput.spoken,
       player_narration_facts: parsedPlayerInput.narrationFacts,
       ai_response: parsed.narrative,
+      replay_variants: [
+        {
+          id: `base_${Date.now()}`,
+          narrative: parsed.narrative,
+          model_used: modelId,
+          created_at: new Date(),
+          source: 'base',
+          retrieval_profile: {
+            lore_top_k: session.max_lore_results || 10,
+            memory_top_k: session.max_context_memories || 25,
+            recent_event_window: 6,
+          },
+        },
+      ],
+      selected_replay_index: 0,
       state_mutations: parsed.state_mutations,
       flag_mutations: parsed.flag_mutations,
       model_used: modelId,

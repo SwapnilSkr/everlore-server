@@ -85,6 +85,23 @@ export const generationService = {
     return job.id
   },
 
+  /** Enqueue a streaming replay (alternative response) for an existing event. */
+  async dispatchReplay(params: { instanceId: string; playerId: string; eventId: string }) {
+    const { instanceId, playerId, eventId } = params
+    const queue = getGenerationQueue()
+    const job = await queue.add(
+      'replay',
+      { mode: 'replay', instanceId, playerId, eventId },
+      {
+        priority: 1,
+        attempts: 1,
+        removeOnComplete: QUEUE_RETENTION.generation.removeOnComplete,
+        removeOnFail: QUEUE_RETENTION.generation.removeOnFail,
+      },
+    )
+    return job.id
+  },
+
   async loadInstance(
     instanceId: string,
     playerId: string,
