@@ -17,6 +17,7 @@ Rules:
 - Classify type: relationship, promise, lore, observation, emotion, secret.
 - Flag if NSFW content is referenced.
 - If nothing is worth remembering, return an empty array.
+- Treat "Player canonical narration facts" as events that DEFINITELY happened.
 
 Respond ONLY with valid JSON matching this schema:
 {
@@ -32,7 +33,16 @@ Respond ONLY with valid JSON matching this schema:
 }`
 
 export async function memoryProcessor(job: Job) {
-  const { instanceId, playerId, eventId, playerInput, aiResponse, sceneTag } = job.data
+  const {
+    instanceId,
+    playerId,
+    eventId,
+    playerInput,
+    playerSpokenInput = '',
+    playerNarrationFacts = [],
+    aiResponse,
+    sceneTag,
+  } = job.data
   const redis = getRedisClient()
   const instanceOid = parseObjectId(instanceId)
   const playerOid = parseObjectId(playerId)
@@ -44,7 +54,16 @@ export async function memoryProcessor(job: Job) {
       { role: 'system', content: EXTRACTION_PROMPT },
       {
         role: 'user',
-        content: `Scene type: ${sceneTag}\n\nPlayer: ${playerInput}\n\nWorld: ${aiResponse}`,
+        content: `Scene type: ${sceneTag}
+
+Player (raw input): ${playerInput}
+Player spoken dialogue: ${playerSpokenInput || '(none)'}
+Player canonical narration facts:
+${Array.isArray(playerNarrationFacts) && playerNarrationFacts.length
+    ? playerNarrationFacts.map((f: string) => `- ${f}`).join('\n')
+    : '- (none)'}
+
+World: ${aiResponse}`,
       },
     ],
     temperature: 0.3,

@@ -6,6 +6,7 @@ import { getRedisClient } from '../../src/config/redis'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/utils/embedding'
 import { buildPrompt } from '../../src/utils/prompt-builder'
+import { parsePlayerInput } from '../../src/utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-mutator'
 import { countTokens } from '../../src/utils/token-counter'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
@@ -29,9 +30,13 @@ export async function generationProcessor(job: Job) {
 
   // On a "continue" turn the player says nothing — the world advances on its
   // own. We feed the model a directive (but store no player input on the event).
+  const parsedPlayerInput = isContinuation
+    ? { raw: '', spoken: '', narrationFacts: [] as string[] }
+    : parsePlayerInput(userMessage)
+
   const promptUserMessage = isContinuation
     ? '[The player waits and observes. Continue the story, advancing events naturally without asking the player what they do.]'
-    : userMessage
+    : (parsedPlayerInput.spoken || '[No spoken dialogue from player this turn.]')
   const storedPlayerInput = isContinuation ? '' : userMessage
   const classifyText = isContinuation ? '' : userMessage
   const ragQueryText = isContinuation
@@ -110,6 +115,8 @@ export async function generationProcessor(job: Job) {
     sceneSummary: activeSummary,
     recentEvents,
     userMessage: promptUserMessage,
+    userSpokenInput: parsedPlayerInput.spoken,
+    userNarrationFacts: parsedPlayerInput.narrationFacts,
     maxTokens: MAX_CONTEXT_TOKENS,
     narrationPov: session.narration_pov,
     tone: session.tone,
@@ -171,6 +178,8 @@ export async function generationProcessor(job: Job) {
     type: parsed.scene_tag === 'intimate' ? 'intimate' : 'narration',
     data: {
       player_input: storedPlayerInput,
+      player_spoken_input: parsedPlayerInput.spoken,
+      player_narration_facts: parsedPlayerInput.narrationFacts,
       ai_response: parsed.narrative,
       state_mutations: parsed.state_mutations,
       flag_mutations: parsed.flag_mutations,
@@ -271,7 +280,7 @@ export async function generationProcessor(job: Job) {
   ;(async () => {
     try {
       const deltas = await extractCharacterCodexDeltas({
-        playerInput: storedPlayerInput,
+        playerInput: parsedPlayerInput.raw,
         aiResponse: parsed.narrative,
         existing: (characterCodex || []).map((c: any) => ({
           canonical_name: c.canonical_name,
@@ -319,7 +328,9 @@ export async function generationProcessor(job: Job) {
     instanceId,
     playerId,
     eventId: eventIdStr,
-    playerInput: userMessage,
+    playerInput: parsedPlayerInput.raw,
+    playerSpokenInput: parsedPlayerInput.spoken,
+    playerNarrationFacts: parsedPlayerInput.narrationFacts,
     aiResponse: parsed.narrative,
     sceneTag: parsed.scene_tag,
   }, { priority: 5, delay: 1000 })

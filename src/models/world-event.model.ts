@@ -16,6 +16,10 @@ export interface FlagMutationDoc {
 
 export interface EventDataDoc {
   player_input: string
+  /** Spoken dialogue outside narration markers. */
+  player_spoken_input?: string
+  /** Canonical narration/action facts authored inside *...* or **...**. */
+  player_narration_facts?: string[]
   ai_response: string
   state_mutations: Record<string, StateMutationDoc>
   flag_mutations: Record<string, FlagMutationDoc>

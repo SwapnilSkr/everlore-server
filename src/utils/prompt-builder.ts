@@ -11,6 +11,8 @@ interface PromptInput {
   sceneSummary: string | null
   recentEvents: any[]
   userMessage: string
+  userSpokenInput?: string
+  userNarrationFacts?: string[]
   maxTokens: number
   /** When true, ask for plain narrative prose instead of the JSON envelope.
    *  Used for the uncensored NSFW model, whose structured metadata is extracted
@@ -136,6 +138,14 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
     dynamicContent += `Prioritize this character's presence, responses, and continuity unless the player explicitly shifts away.\n\n`
   }
 
+  if (input.userNarrationFacts && input.userNarrationFacts.length > 0) {
+    dynamicContent += `PLAYER CANONICAL NARRATION FOR THIS TURN (GROUND TRUTH — these events/facts already happened):\n`
+    for (const fact of input.userNarrationFacts) {
+      dynamicContent += `- ${fact}\n`
+    }
+    dynamicContent += `\nHonor these as established reality in this turn. If they imply character changes, portray a believable in-story shift instead of ignoring or contradicting them.\n\n`
+  }
+
   dynamicContent += `CURRENT WORLD STATE:\n`
   for (const [key, value] of Object.entries(input.worldState)) {
     dynamicContent += `- ${key}: ${value}/100\n`
@@ -206,7 +216,10 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
   }
 
   // ── CURRENT USER MESSAGE ───────────────────────
-  messages.push({ role: 'user', content: input.userMessage })
+  messages.push({
+    role: 'user',
+    content: (input.userSpokenInput ?? input.userMessage).trim() || '[No spoken dialogue from player this turn.]',
+  })
 
   return { messages }
 }

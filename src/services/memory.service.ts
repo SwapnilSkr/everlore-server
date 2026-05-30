@@ -5,6 +5,7 @@ import { getRedisClient } from '../config/redis'
 import { getMemoryCurationQueue } from '../queues'
 import { embed } from '../utils/embedding'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { parsePlayerInput } from '../utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
 
 const events = () => mongoColl.events()
@@ -256,6 +257,7 @@ export const memoryService = {
 
     const nextAiResponse = updates.ai_response ?? event.data.ai_response
     const nextPlayerInput = updates.player_input ?? event.data.player_input
+    const parsedPlayerInput = parsePlayerInput(nextPlayerInput || '')
     const aiChanged =
       typeof updates.ai_response === 'string' &&
       updates.ai_response !== event.data.ai_response
@@ -276,6 +278,8 @@ export const memoryService = {
         $set: {
           'data.ai_response': nextAiResponse,
           'data.player_input': nextPlayerInput,
+          'data.player_spoken_input': parsedPlayerInput.spoken,
+          'data.player_narration_facts': parsedPlayerInput.narrationFacts,
           is_user_edited: true,
           updated_at: new Date(),
         },
@@ -317,7 +321,9 @@ export const memoryService = {
           instanceId: idString(event.instance_id),
           playerId,
           eventId: idString(event._id),
-          playerInput: nextPlayerInput || '',
+          playerInput: parsedPlayerInput.raw,
+          playerSpokenInput: parsedPlayerInput.spoken,
+          playerNarrationFacts: parsedPlayerInput.narrationFacts,
           aiResponse: nextAiResponse || '',
           sceneTag: event.scene_tag || 'dialogue',
         },
