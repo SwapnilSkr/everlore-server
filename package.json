@@ -8,7 +8,8 @@
     "start": "bun run src/index.ts",
     "start:worker": "bun run worker/index.ts",
     "typecheck": "tsc --noEmit",
-    "test:nsfw": "bun run scripts/test-nsfw-model.ts"
+    "test:nsfw": "bun run scripts/test-nsfw-model.ts",
+    "clean:queue-jobs": "bun run scripts/clean-redis-jobs.ts"
   },
   "dependencies": {
     "@elysiajs/cors": "^1.4.1",

@@ -3,6 +3,7 @@ import { mongoColl } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/utils/embedding'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
+import { QUEUE_RETENTION } from '../../src/queues'
 
 export async function maintenanceProcessor(job: Job) {
   const { task } = job.data
@@ -127,7 +128,11 @@ export async function maintenanceProcessor(job: Job) {
         await queue.add('dedup', {
           task: 'dedup_memories',
           instanceId: idString(inst._id),
-        }, { priority: 20 })
+        }, {
+          priority: 20,
+          removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+        })
       }
 
       return { scheduled: instances.length }

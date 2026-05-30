@@ -5,7 +5,7 @@ import { generationProcessor } from './processors/generation.processor'
 import { memoryProcessor } from './processors/memory.processor'
 import { summaryProcessor } from './processors/summary.processor'
 import { maintenanceProcessor } from './processors/maintenance.processor'
-import { getMaintenanceQueue } from '../src/queues'
+import { getMaintenanceQueue, QUEUE_RETENTION } from '../src/queues'
 
 async function main() {
   // Initialize connections
@@ -41,10 +41,14 @@ async function main() {
   await maintenanceQueue.add('decay', { task: 'importance_decay' }, {
     repeat: { pattern: '0 3 * * *' },
     priority: 20,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
   })
   await maintenanceQueue.add('dedup-scheduler', { task: 'schedule_dedups' }, {
     repeat: { pattern: '0 4 * * 0' },
     priority: 20,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
   })
 
   // Graceful shutdown

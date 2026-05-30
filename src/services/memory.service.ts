@@ -2,7 +2,7 @@ import { randomUUID } from 'crypto'
 import { mongoColl } from '../config/mongo'
 import { getPineconeIndex } from '../config/pinecone'
 import { getRedisClient } from '../config/redis'
-import { getMemoryCurationQueue } from '../queues'
+import { getMemoryCurationQueue, QUEUE_RETENTION } from '../queues'
 import { embed } from '../utils/embedding'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
@@ -327,7 +327,12 @@ export const memoryService = {
           aiResponse: nextAiResponse || '',
           sceneTag: event.scene_tag || 'dialogue',
         },
-        { priority: 5, delay: 500 },
+        {
+          priority: 5,
+          delay: 500,
+          removeOnComplete: QUEUE_RETENTION.memoryCuration.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.memoryCuration.removeOnFail,
+        },
       )
     }
 

@@ -4,7 +4,7 @@ import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { WorldEventDoc } from '../models/world-event.model'
 import type { WorldInstanceDoc } from '../models/world-instance.model'
 import type { WorldTemplateDoc } from '../models/world-template.model'
-import { getGenerationQueue } from '../queues'
+import { getGenerationQueue, QUEUE_RETENTION } from '../queues'
 import { instanceService } from './instance.service'
 import { parseObjectId } from '../utils/mongo-id'
 
@@ -77,6 +77,8 @@ export const generationService = {
         priority: 1,
         attempts: 2,
         backoff: { type: 'exponential', delay: 3000 },
+        removeOnComplete: QUEUE_RETENTION.generation.removeOnComplete,
+        removeOnFail: QUEUE_RETENTION.generation.removeOnFail,
       },
     )
 

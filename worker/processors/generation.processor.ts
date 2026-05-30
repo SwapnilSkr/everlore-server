@@ -16,7 +16,7 @@ import { type GenerationOutput } from '../lib/structured-output'
 import { extractSceneMetadata } from '../lib/metadata-extractor'
 import { extractCharacterCodexDeltas } from '../lib/character-codex-extractor'
 import { characterCodexService } from '../../src/services/character-codex.service'
-import { getMemoryCurationQueue, getSceneSummaryQueue } from '../../src/queues'
+import { getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../../src/queues'
 
 const MAX_CONTEXT_TOKENS = 6000
 
@@ -333,7 +333,12 @@ export async function generationProcessor(job: Job) {
     playerNarrationFacts: parsedPlayerInput.narrationFacts,
     aiResponse: parsed.narrative,
     sceneTag: parsed.scene_tag,
-  }, { priority: 5, delay: 1000 })
+  }, {
+    priority: 5,
+    delay: 1000,
+    removeOnComplete: QUEUE_RETENTION.memoryCuration.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.memoryCuration.removeOnFail,
+  })
 
   if (newTurnCount >= 12 && sameScene) {
     const sceneSummaryQueue = getSceneSummaryQueue()
@@ -342,7 +347,12 @@ export async function generationProcessor(job: Job) {
       sceneTag,
       startSequence: nextSequence - 11,
       endSequence: nextSequence,
-    }, { priority: 10, delay: 5000 })
+    }, {
+      priority: 10,
+      delay: 5000,
+      removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
+      removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
+    })
   }
 
   return { eventId: eventIdStr, sequence: nextSequence }
