@@ -1,3 +1,4 @@
+import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
 import { deletePineconeNamespace } from './pinecone-cleanup.service'

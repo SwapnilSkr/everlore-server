@@ -32,7 +32,7 @@ export async function deletePineconeVector(
   const namespace = index.namespace(namespaceName)
   
   try {
-    await namespace.deleteOne(vectorId)
+    await namespace.deleteOne({ id: vectorId })
   } catch (err) {
     console.warn(`Failed to delete vector ${vectorId} from ${namespaceName}:`, (err as Error).message)
     throw err
