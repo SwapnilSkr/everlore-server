@@ -39,7 +39,7 @@ export async function memoryProcessor(job: Job) {
   const eventOid = parseObjectId(eventId)
 
   const result = await callLLM({
-    model: 'gpt-5',
+    model: 'gpt-4o-mini',
     messages: [
       { role: 'system', content: EXTRACTION_PROMPT },
       {

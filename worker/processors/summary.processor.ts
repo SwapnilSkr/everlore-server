@@ -23,7 +23,7 @@ export async function summaryProcessor(job: Job) {
     .join('\n\n')
 
   const summaryResult = await callLLM({
-    model: 'gpt-5',
+    model: 'gpt-4o-mini',
     messages: [
       {
         role: 'system',
@@ -42,7 +42,7 @@ export async function summaryProcessor(job: Job) {
     event_range: { start_sequence: startSequence, end_sequence: endSequence },
     summary_text: summaryResult,
     key_facts_extracted: [],
-    model_used: 'gpt-5',
+    model_used: 'gpt-4o-mini',
     tokens_consumed: 0,
     created_at: new Date(),
   }
