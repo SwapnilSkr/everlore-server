@@ -8,65 +8,18 @@ import { buildPrompt } from '../../src/utils/prompt-builder'
 import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-mutator'
 import { countTokens } from '../../src/utils/token-counter'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
-import { callLLM } from '../lib/llm-client'
+import { callLLMStream } from '../lib/llm-client'
 import { classifyScene } from '../lib/nsfw-classifier'
-import { enforceSchema } from '../lib/structured-output'
+import { type GenerationOutput } from '../lib/structured-output'
+import { extractSceneMetadata } from '../lib/metadata-extractor'
 import { getMemoryCurationQueue, getSceneSummaryQueue } from '../../src/queues'
 
 const MAX_CONTEXT_TOKENS = 6000
 
-/** OpenAI `json_schema` + `strict: true`: root and every fixed-shape object must set `additionalProperties: false`; every key in `properties` must appear in `required`. */
-const GENERATION_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    narrative: { type: 'string', description: 'The narrative response text' },
-    /** Dynamic stat keys → map pattern (only value shape is closed with additionalProperties: false). */
-    state_mutations: {
-      type: 'object',
-      additionalProperties: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          op: { type: 'string', enum: ['add', 'subtract', 'set'] },
-          value: { type: 'number' },
-        },
-        required: ['op', 'value'],
-      },
-    },
-    flag_mutations: {
-      type: 'object',
-      additionalProperties: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          op: { type: 'string', enum: ['set', 'increment', 'decrement'] },
-          value: {
-            description: 'For op "set", the new flag value; for increment/decrement use null',
-            anyOf: [
-              { type: 'string' },
-              { type: 'number' },
-              { type: 'boolean' },
-              { type: 'null' },
-            ],
-          },
-        },
-        required: ['op', 'value'],
-      },
-    },
-    scene_tag: {
-      type: 'string',
-      enum: ['dialogue', 'combat', 'intimate', 'exploration', 'existential', 'cosmic', 'mundane'],
-    },
-    emotional_tone: { type: 'string' },
-  },
-  required: ['narrative', 'state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone'],
-}
-
 export async function generationProcessor(job: Job) {
   const {
     instanceId, playerId, userMessage,
-    session, recentEvents, activeSummary,
+    session, userNsfwEnabled, recentEvents, activeSummary,
   } = job.data
 
   const redis = getRedisClient()
@@ -110,6 +63,20 @@ export async function generationProcessor(job: Job) {
     console.warn('RAG query failed, proceeding without retrieved memories:', (err as Error).message)
   }
 
+  // Decide routing first so the prompt asks for the right output shape.
+  // NSFW routing requires BOTH the world being mature-capable AND the player
+  // having opted in via their account preference. Either alone keeps it SFW.
+  let modelId = session.model_preferences?.narration_sfw || 'gpt-4o'
+  let isNsfwTurn = false
+
+  if (session.is_nsfw_capable && userNsfwEnabled) {
+    const sceneClass = classifyScene(userMessage, recentEvents)
+    if (sceneClass === 'nsfw') {
+      modelId = session.model_preferences?.narration_nsfw || 'gryphe/mythomax-l2-13b'
+      isNsfwTurn = true
+    }
+  }
+
   const prompt = buildPrompt({
     seedPrompt: session.seed_prompt,
     isSentient: session.is_sentient,
@@ -122,26 +89,37 @@ export async function generationProcessor(job: Job) {
     recentEvents,
     userMessage,
     maxTokens: MAX_CONTEXT_TOKENS,
+    // Always request plain prose: it lets us stream tokens to the player as they
+    // arrive (low TTFT), and uncensored models can't do the JSON envelope anyway.
+    // Structured fields (stats/flags/scene tag) are derived in a cheap pass below.
+    proseOnly: true,
   })
 
-  let modelId = session.model_preferences?.narration_sfw || 'gpt-4o'
+  // Stream the narrative token-by-token so the player sees words within ~1s
+  // instead of waiting for the full completion. Deltas ride the same Redis
+  // pub/sub channel that the API forwards to the player's WebSocket.
+  const channel = `user:${playerId}:events`
+  const prose = await callLLMStream(
+    {
+      model: modelId,
+      messages: prompt.messages,
+      temperature: 0.85,
+      maxTokens: 800,
+    },
+    (chunk) => {
+      redis.publish(
+        channel,
+        JSON.stringify({ type: 'generation_delta', instanceId, delta: chunk }),
+      )
+    },
+  )
 
-  if (session.is_nsfw_capable) {
-    const sceneClass = classifyScene(userMessage, recentEvents)
-    if (sceneClass === 'nsfw') {
-      modelId = session.model_preferences?.narration_nsfw || modelId
-    }
-  }
-
-  const rawResponse = await callLLM({
-    model: modelId,
-    messages: prompt.messages,
-    temperature: 0.85,
-    maxTokens: 800,
-    responseSchema: GENERATION_SCHEMA,
-  })
-
-  const parsed = enforceSchema(rawResponse)
+  const meta = await extractSceneMetadata(
+    prose.trim(),
+    Object.keys(session.world_state || {}),
+    Object.keys(session.active_flags || {}),
+  )
+  const parsed: GenerationOutput = { narrative: prose.trim(), ...meta }
 
   const newWorldState = applyStateMutations(session.world_state, parsed.state_mutations)
   const newFlags = applyFlagMutations(session.active_flags, parsed.flag_mutations)
