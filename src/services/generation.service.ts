@@ -7,6 +7,7 @@ import { getGenerationQueue } from '../queues'
 import { instanceService } from './instance.service'
 import { parseObjectId } from '../utils/mongo-id'
 
+const users = () => mongoColl.users()
 const worldInstances = () => mongoColl.worldInstances()
 const worldTemplates = () => mongoColl.worldTemplates()
 const events = () => mongoColl.events()
@@ -21,6 +22,14 @@ export const generationService = {
   }) {
     const { instanceId, playerId, userMessage } = params
     const session = await instanceService.loadSession(instanceId, playerId)
+
+    // Per-user NSFW consent is read fresh (not from the cached session) so a
+    // user toggling the preference takes effect on their very next turn.
+    const player = await users().findOne(
+      { _id: parseObjectId(playerId) },
+      { projection: { 'preferences.nsfw_enabled': 1 } },
+    )
+    const userNsfwEnabled = player?.preferences?.nsfw_enabled === true
 
     const iid = parseObjectId(instanceId)
 
@@ -49,6 +58,7 @@ export const generationService = {
         playerId,
         userMessage,
         session,
+        userNsfwEnabled,
         recentEvents,
         activeSummary: activeSummary?.summary_text || null,
       },

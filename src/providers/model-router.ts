@@ -15,8 +15,9 @@ export function selectNarrationModel(
   preferences: ModelPreferences,
   isNsfw: boolean,
 ): string {
-  // Always use gpt-5 regardless of NSFW setting
-  return 'gpt-5'
+  return isNsfw
+    ? (preferences.narration_nsfw ?? 'gryphe/mythomax-l2-13b')
+    : (preferences.narration_sfw ?? 'gpt-4o')
 }
 
 export function selectLogicModel(preferences: ModelPreferences): string {
