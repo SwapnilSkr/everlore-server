@@ -25,6 +25,12 @@ export interface WorldInstanceDoc {
   world_state: Record<string, number>
   active_flags: Record<string, unknown>
   current_scene: CurrentSceneDoc
+  /** Narration person, toggleable in chat. Worlds start in third person. */
+  narration_pov?: 'first' | 'third'
+  /** Optional conversation tone (e.g. "casual", "romantic", "erotic"); '' = default. */
+  tone?: string
+  /** Optional focused side-character for character-targeted conversation. */
+  focus_character_id?: ObjectId | null
   meta: InstanceMetaDoc
   created_at: Date
   updated_at: Date

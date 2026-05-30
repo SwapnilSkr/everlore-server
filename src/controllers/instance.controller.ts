@@ -42,4 +42,17 @@ export const instanceController = {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return deletionService.deleteInstance(params.id, user.id)
   },
+
+  updateSettings: async ({
+    user,
+    params,
+    body,
+  }: {
+    user: AuthUser | null
+    params: { id: string }
+    body: { narration_pov?: 'first' | 'third'; tone?: string; focus_character_id?: string | null }
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return instanceService.updateSettings(params.id, user.id, body)
+  },
 }

@@ -14,6 +14,7 @@ const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number 
 
 const worldTemplates = () => mongoColl.worldTemplates()
 const worldInstances = () => mongoColl.worldInstances()
+const characters = () => mongoColl.characters()
 
 export type InstanceListRow = WorldInstanceDoc & {
   template: WorldTemplateSummaryDoc | null
@@ -66,6 +67,10 @@ export const instanceService = {
         turn_count: 0,
         summary_pending: false,
       },
+      // Worlds always start in third person; the player can toggle in chat.
+      narration_pov: 'third',
+      tone: '',
+      focus_character_id: null,
       meta: {
         total_events: 0,
         total_memories: 0,
@@ -154,6 +159,9 @@ export const instanceService = {
       world_state: instance.world_state,
       active_flags: instance.active_flags,
       current_scene: instance.current_scene,
+      narration_pov: instance.narration_pov || 'third',
+      tone: instance.tone || '',
+      focus_character_id: instance.focus_character_id ? idString(instance.focus_character_id) : null,
       seed_prompt: template.seed_prompt,
       global_lore: template.global_lore,
       is_sentient: template.is_sentient,
@@ -166,5 +174,50 @@ export const instanceService = {
 
     await redis.set(`session:${iidStr}`, JSON.stringify(session), 'EX', 3600)
     return session
+  },
+
+  /**
+   * Update in-chat session settings (narration POV, tone) for an instance and
+   * bust the cached session so the next turn rebuilds with the new values.
+   */
+  async updateSettings(
+    instanceId: string,
+    playerId: string,
+    settings: { narration_pov?: 'first' | 'third'; tone?: string; focus_character_id?: string | null },
+  ): Promise<{ narration_pov: 'first' | 'third'; tone: string; focus_character_id: string | null }> {
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+
+    const update: Record<string, unknown> = { updated_at: new Date() }
+    if (settings.narration_pov === 'first' || settings.narration_pov === 'third') {
+      update.narration_pov = settings.narration_pov
+    }
+    if (typeof settings.tone === 'string') {
+      update.tone = settings.tone.slice(0, 100)
+    }
+    if (settings.focus_character_id !== undefined) {
+      if (settings.focus_character_id === null || settings.focus_character_id === '') {
+        update.focus_character_id = null
+      } else {
+        const cid = parseObjectId(settings.focus_character_id)
+        const exists = await characters().findOne({ _id: cid, instance_id: iid, player_id: pid })
+        if (!exists) throw new HttpError(400, 'Invalid focus_character_id')
+        update.focus_character_id = cid
+      }
+    }
+
+    const result = await worldInstances().findOneAndUpdate(
+      { _id: iid, player_id: pid },
+      { $set: update },
+      { returnDocument: 'after' },
+    )
+    if (!result) throw new HttpError(404, 'Instance not found')
+
+    await getRedisClient().del(`session:${idString(iid)}`)
+    return {
+      narration_pov: result.narration_pov || 'third',
+      tone: result.tone || '',
+      focus_character_id: result.focus_character_id ? idString(result.focus_character_id) : null,
+    }
   },
 }
