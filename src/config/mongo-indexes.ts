@@ -93,6 +93,18 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     options: { unique: true, sparse: true, name: "idx_memories_pinecone_id" },
   },
 
+  // characters (self-building codex)
+  {
+    collection: COLLECTIONS.characters,
+    key: { instance_id: 1, name_normalized: 1 },
+    options: { unique: true, name: "idx_characters_instance_name" },
+  },
+  {
+    collection: COLLECTIONS.characters,
+    key: { instance_id: 1, mention_count: -1, updated_at: -1 },
+    options: { name: "idx_characters_instance_rank" },
+  },
+
   // scene_summaries
   {
     collection: COLLECTIONS.scene_summaries,

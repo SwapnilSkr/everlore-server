@@ -8,7 +8,9 @@ import type { WorldInstanceDoc } from '../models/world-instance.model'
 import type { WorldEventDoc } from '../models/world-event.model'
 import type { MemoryDoc } from '../models/memory.model'
 import type { SceneSummaryDoc } from '../models/scene-summary.model'
+import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { DeadLetterJobDoc } from '../models/dead-letter-job.model'
+import type { GenerationLogDoc } from '../models/generation-log.model'
 
 let client: MongoClient | null = null
 let database: Db | null = null
@@ -30,7 +32,9 @@ export const mongoColl = {
   events: () => coll<WithoutId<WorldEventDoc>>(COLLECTIONS.events),
   memories: () => coll<WithoutId<MemoryDoc>>(COLLECTIONS.memories),
   sceneSummaries: () => coll<WithoutId<SceneSummaryDoc>>(COLLECTIONS.scene_summaries),
+  characters: () => coll<WithoutId<CharacterProfileDoc>>(COLLECTIONS.characters),
   deadLetterJobs: () => coll<WithoutId<DeadLetterJobDoc>>(COLLECTIONS.dead_letter_jobs),
+  generationLogs: () => coll<WithoutId<GenerationLogDoc>>(COLLECTIONS.generation_logs),
 } as const
 
 export async function connectMongo(): Promise<Db> {

@@ -10,6 +10,7 @@ const worldInstances = () => mongoColl.worldInstances()
 const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
 const sceneSummaries = () => mongoColl.sceneSummaries()
+const characters = () => mongoColl.characters()
 
 export const deletionService = {
   /**
@@ -65,6 +66,16 @@ export const deletionService = {
     // Delete all scene summaries for these instances
     if (instanceIds.length > 0) {
       await sceneSummaries().deleteMany({ instance_id: { $in: instanceIds } })
+    }
+
+    // Delete all character codex entries for these instances
+    if (instanceIds.length > 0) {
+      await characters().deleteMany({ instance_id: { $in: instanceIds } })
+    }
+
+    // Delete observability logs for these instances
+    if (instanceIds.length > 0) {
+      await mongoColl.generationLogs().deleteMany({ instance_id: { $in: instanceIds } })
     }
     
     // Delete all instances
@@ -125,7 +136,13 @@ export const deletionService = {
     
     // Delete scene summaries
     await sceneSummaries().deleteMany({ instance_id: iid })
-    
+
+    // Delete character codex entries
+    await characters().deleteMany({ instance_id: iid })
+
+    // Delete observability logs for this instance
+    await mongoColl.generationLogs().deleteMany({ instance_id: iid })
+
     // Delete the instance
     await worldInstances().deleteOne({ _id: iid })
     
