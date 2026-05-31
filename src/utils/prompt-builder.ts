@@ -114,7 +114,8 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
   const npcCodex = (input.characterCodex || []).filter((c) => !c.is_protagonist)
 
   if (protagonistCard) {
-    const facts = protagonistCard.immutable_facts || []
+    // Show the most recent facts (storage may hold more between compactions).
+    const facts = (protagonistCard.immutable_facts || []).slice(-14)
     const state = protagonistCard.mutable_state || []
     if (input.isSentient) {
       // Identity is already in the seed ("You ARE Elara"), so don't re-inject
@@ -146,7 +147,7 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
       if (c.appearance) dynamicContent += ` | appearance: ${c.appearance}`
       if (c.persona) dynamicContent += ` | persona: ${c.persona}`
       if (c.immutable_facts && c.immutable_facts.length) {
-        dynamicContent += ` | immutable facts: ${c.immutable_facts.join('; ')}`
+        dynamicContent += ` | immutable facts: ${c.immutable_facts.slice(-14).join('; ')}`
       }
       if (c.mutable_state && c.mutable_state.length) {
         dynamicContent += ` | current state: ${c.mutable_state.join('; ')}`

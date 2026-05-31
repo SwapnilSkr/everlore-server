@@ -6,6 +6,7 @@ import type { WorldInstanceDoc } from '../models/world-instance.model'
 import type { WorldTemplateDoc } from '../models/world-template.model'
 import { getGenerationQueue, QUEUE_RETENTION } from '../queues'
 import { instanceService } from './instance.service'
+import { rankCodexForInjection } from './character-codex.service'
 import { parseObjectId } from '../utils/mongo-id'
 
 const users = () => mongoColl.users()
@@ -54,11 +55,18 @@ export const generationService = {
     )
 
     const queue = getGenerationQueue()
-    const characterCodex = await characters()
+    // Pull a candidate pool, then rank by recency-weighted importance so the
+    // injected top-16 tracks the CURRENT cast (dormant characters decay out)
+    // rather than lifetime mention frequency.
+    const codexPool = await characters()
       .find({ instance_id: iid })
       .sort({ is_protagonist: -1, mention_count: -1, updated_at: -1 })
-      .limit(16)
+      .limit(40)
       .toArray()
+    const currentSequence = recentEvents.length
+      ? recentEvents[recentEvents.length - 1].sequence
+      : 0
+    const characterCodex = rankCodexForInjection(codexPool, currentSequence, 16)
 
     const job = await queue.add(
       'generate',

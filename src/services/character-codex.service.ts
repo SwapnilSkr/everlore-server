@@ -44,6 +44,46 @@ function uniqStrings(values: string[], max: number): string[] {
   return out
 }
 
+/**
+ * Dedupe (order-preserving) then keep the MOST RECENT `max` items. Unlike
+ * uniqStrings (which keeps the oldest and drops new on overflow), this never
+ * silently drops a fact/state the latest turn just added — important over very
+ * long playthroughs. An async LLM compaction pass distills the list back down
+ * when it grows large, preserving identity/important history.
+ */
+function uniqKeepRecent(values: string[], max: number): string[] {
+  const deduped = uniqStrings(values, Number.MAX_SAFE_INTEGER)
+  return deduped.length <= max ? deduped : deduped.slice(deduped.length - max)
+}
+
+/** Stored fact ceiling (a safety bound; async compaction keeps it well under this). */
+const IMMUTABLE_STORE_MAX = 40
+const MUTABLE_STATE_MAX = 12
+
+/** Recency half-life (turns) for codex injection ranking. */
+const RANK_HALF_LIFE = 80
+
+/**
+ * Recency-weighted importance: a character mentioned often AND recently ranks
+ * high; one that was central long ago but dormant for many turns decays out, so
+ * the injected top-K tracks the CURRENT cast instead of lifetime frequency.
+ */
+export function rankCodexForInjection<
+  T extends { is_protagonist?: boolean; mention_count: number; last_seen_sequence: number },
+>(chars: T[], currentSequence: number, limit: number): T[] {
+  const protagonists = chars.filter((c) => c.is_protagonist)
+  const scored = chars
+    .filter((c) => !c.is_protagonist)
+    .map((c) => {
+      const age = Math.max(0, currentSequence - (c.last_seen_sequence || 0))
+      const score = (c.mention_count || 1) * Math.pow(0.5, age / RANK_HALF_LIFE)
+      return { c, score }
+    })
+    .sort((a, b) => b.score - a.score)
+    .map((x) => x.c)
+  return [...protagonists, ...scored].slice(0, limit)
+}
+
 function shouldSetText(value?: string): value is string {
   return typeof value === 'string' && value.trim().length > 0
 }
@@ -71,7 +111,7 @@ function reconcileMutableState(
     const n = normalizeState(item)
     return !retireNorm.some((r) => n === r || n.includes(r) || r.includes(n))
   })
-  return uniqStrings([...kept, ...(add || [])], max)
+  return uniqKeepRecent([...kept, ...(add || [])], max)
 }
 
 function buildAliasSet(delta: CharacterCodexDelta): string[] {
@@ -198,8 +238,8 @@ export const characterCodexService = {
           role: shouldSetText(delta.role) ? delta.role.trim() : undefined,
           appearance: shouldSetText(delta.appearance) ? delta.appearance.trim() : undefined,
           persona: shouldSetText(delta.persona) ? delta.persona.trim() : undefined,
-          immutable_facts: uniqStrings(delta.immutable_facts || [], 20),
-          mutable_state: uniqStrings(delta.mutable_state || [], 12),
+          immutable_facts: uniqKeepRecent(delta.immutable_facts || [], IMMUTABLE_STORE_MAX),
+          mutable_state: uniqKeepRecent(delta.mutable_state || [], MUTABLE_STATE_MAX),
           disposition_to_player: shouldSetText(delta.disposition_to_player)
             ? delta.disposition_to_player.trim()
             : '',
@@ -227,15 +267,17 @@ export const characterCodexService = {
       if (!target) continue
 
       const mergedAliases = uniqStrings([...(target.aliases || []), ...aliases], 20)
-      const mergedImmutableFacts = uniqStrings(
+      // Keep the most recent facts on overflow (never silently drop this turn's
+      // new permanent facts); async compaction distills the list back down.
+      const mergedImmutableFacts = uniqKeepRecent(
         [...(target.immutable_facts || []), ...(delta.immutable_facts || [])],
-        20,
+        IMMUTABLE_STORE_MAX,
       )
       const mergedMutableState = reconcileMutableState(
         target.mutable_state || [],
         delta.retire_state || [],
         delta.mutable_state || [],
-        12,
+        MUTABLE_STATE_MAX,
       )
 
       const setFields: Record<string, unknown> = {
@@ -271,5 +313,14 @@ export const characterCodexService = {
     }
 
     return this.listForInstance(instanceId, 30)
+  },
+
+  /** Overwrite a character's immutable_facts (used by async compaction to
+   *  distill an overgrown list back down without losing identity/history). */
+  async setImmutableFacts(characterId: string, facts: string[]): Promise<void> {
+    await characters().updateOne(
+      { _id: parseObjectId(characterId) },
+      { $set: { immutable_facts: facts, updated_at: new Date() } },
+    )
   },
 }

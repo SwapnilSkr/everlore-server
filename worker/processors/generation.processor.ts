@@ -15,6 +15,7 @@ import { classifyScene } from '../lib/nsfw-classifier'
 import { type GenerationOutput } from '../lib/structured-output'
 import { extractSceneMetadata } from '../lib/metadata-extractor'
 import { extractCharacterCodexDeltas } from '../lib/character-codex-extractor'
+import { compactImmutableFacts } from '../lib/codex-compactor'
 import { characterCodexService } from '../../src/services/character-codex.service'
 import { memorySupersessionService } from '../../src/services/memory-supersession.service'
 import { getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../../src/queues'
@@ -341,6 +342,21 @@ export async function generationProcessor(job: Job) {
           .catch((err) =>
             console.warn('memory supersession failed:', (err as Error).message),
           )
+      }
+
+      // Async fact-cap compaction: distill any character whose permanent-fact
+      // list has grown large, so long-lived characters stay bounded + accurate
+      // over thousands of turns without losing recent or important facts.
+      for (const c of codex) {
+        if ((c.immutable_facts?.length || 0) >= 24) {
+          compactImmutableFacts(c.canonical_name, c.immutable_facts, 16)
+            .then((compacted) => {
+              if (compacted && compacted.length) {
+                return characterCodexService.setImmutableFacts(idString(c._id), compacted)
+              }
+            })
+            .catch(() => {})
+        }
       }
 
       await redis.publish(`user:${playerId}:events`, JSON.stringify({
