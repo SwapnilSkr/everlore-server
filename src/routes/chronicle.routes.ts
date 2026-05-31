@@ -25,6 +25,19 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
     body: EditEventBody,
   })
 
+  .put('/character/:characterId', (ctx) => chronicleController.editCharacter(ctx), {
+    body: t.Object({
+      canonical_name: t.Optional(t.String({ maxLength: 120 })),
+      role: t.Optional(t.String({ maxLength: 200 })),
+      appearance: t.Optional(t.String({ maxLength: 600 })),
+      persona: t.Optional(t.String({ maxLength: 1000 })),
+      immutable_facts: t.Optional(t.Array(t.String({ maxLength: 400 }))),
+      mutable_state: t.Optional(t.Array(t.String({ maxLength: 400 }))),
+      disposition_to_player: t.Optional(t.String({ maxLength: 400 })),
+      hidden_thought: t.Optional(t.String({ maxLength: 400 })),
+    }),
+  })
+
   .post('/replay/:eventId', (ctx) => chronicleController.replayEvent(ctx))
 
   .post('/replay/select/:eventId', (ctx) => chronicleController.selectReplayVariant(ctx), {

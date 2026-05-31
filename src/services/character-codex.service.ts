@@ -1,7 +1,8 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import type { CharacterProfileDoc } from '../models/character-profile.model'
-import { parseObjectId } from '../utils/mongo-id'
+import { idString, parseObjectId } from '../utils/mongo-id'
+import { HttpError } from '../utils/http-error'
 
 const characters = () => mongoColl.characters()
 
@@ -322,5 +323,79 @@ export const characterCodexService = {
       { _id: parseObjectId(characterId) },
       { $set: { immutable_facts: facts, updated_at: new Date() } },
     )
+  },
+
+  /**
+   * Player-driven edit of a character/protagonist card. Returns the updated doc
+   * plus the facts the edit REMOVED — those are handed to memory supersession so
+   * stale memories about the old facts can't resurface and fight the edit.
+   */
+  async editCharacter(params: {
+    playerId: string
+    characterId: string
+    updates: {
+      canonical_name?: string
+      role?: string
+      appearance?: string
+      persona?: string
+      immutable_facts?: string[]
+      mutable_state?: string[]
+      disposition_to_player?: string
+      hidden_thought?: string
+    }
+  }): Promise<{ character: CharacterProfileDoc; instanceId: string; retiredFacts: string[] }> {
+    const { playerId, characterId, updates } = params
+    const cid = parseObjectId(characterId)
+    const pid = parseObjectId(playerId)
+
+    const target = await characters().findOne({ _id: cid, player_id: pid })
+    if (!target) throw new HttpError(404, 'Character not found')
+
+    const setFields: Record<string, unknown> = { updated_at: new Date() }
+    const retiredFacts: string[] = []
+
+    if (shouldSetText(updates.canonical_name) && updates.canonical_name.trim() !== target.canonical_name) {
+      const newName = updates.canonical_name.trim().slice(0, 120)
+      setFields.canonical_name = newName
+      setFields.name_normalized = normalizeName(newName)
+      // Preserve the old name as an alias so existing references still resolve.
+      setFields.aliases = uniqStrings([target.canonical_name, ...(target.aliases || [])], 20)
+    }
+    if (updates.role !== undefined) setFields.role = updates.role.trim() || undefined
+    if (updates.appearance !== undefined) setFields.appearance = updates.appearance.trim() || undefined
+    if (updates.persona !== undefined) setFields.persona = updates.persona.trim() || undefined
+    if (updates.disposition_to_player !== undefined) {
+      setFields.disposition_to_player = updates.disposition_to_player.trim()
+    }
+    if (updates.hidden_thought !== undefined) {
+      setFields.hidden_thought = updates.hidden_thought.trim()
+    }
+
+    if (Array.isArray(updates.immutable_facts)) {
+      const next = uniqKeepRecent(
+        updates.immutable_facts.map((s) => String(s).trim()).filter(Boolean),
+        IMMUTABLE_STORE_MAX,
+      )
+      const keep = new Set(next.map((f) => f.toLowerCase()))
+      for (const old of target.immutable_facts || []) {
+        if (!keep.has(old.toLowerCase())) retiredFacts.push(old)
+      }
+      setFields.immutable_facts = next
+    }
+    if (Array.isArray(updates.mutable_state)) {
+      const next = uniqKeepRecent(
+        updates.mutable_state.map((s) => String(s).trim()).filter(Boolean),
+        MUTABLE_STATE_MAX,
+      )
+      const keep = new Set(next.map((f) => f.toLowerCase()))
+      for (const old of target.mutable_state || []) {
+        if (!keep.has(old.toLowerCase())) retiredFacts.push(old)
+      }
+      setFields.mutable_state = next
+    }
+
+    await characters().updateOne({ _id: cid }, { $set: setFields })
+    const character = (await characters().findOne({ _id: cid }))!
+    return { character, instanceId: idString(target.instance_id), retiredFacts }
   },
 }

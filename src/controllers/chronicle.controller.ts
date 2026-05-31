@@ -1,8 +1,11 @@
 import type { AuthUser } from '../middleware/auth'
 import { memoryService } from '../services/memory.service'
+import { characterCodexService } from '../services/character-codex.service'
+import { memorySupersessionService } from '../services/memory-supersession.service'
 import type { Static } from '@sinclair/typebox'
 import type { EditEventBody } from '../schemas/event.schema'
 import type { EditMemoryBody } from '../schemas/memory.schema'
+import { idString } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 
 type EditEvent = Static<typeof EditEventBody>
@@ -70,6 +73,56 @@ export const chronicleController = {
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return memoryService.editEvent(params.eventId, user.id, body)
+  },
+
+  editCharacter: async ({
+    params,
+    body,
+    user,
+  }: {
+    params: { characterId: string }
+    body: {
+      canonical_name?: string
+      role?: string
+      appearance?: string
+      persona?: string
+      immutable_facts?: string[]
+      mutable_state?: string[]
+      disposition_to_player?: string
+      hidden_thought?: string
+    }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    const result = await characterCodexService.editCharacter({
+      playerId: user.id,
+      characterId: params.characterId,
+      updates: body,
+    })
+    // Facts this edit removed → evict matching memory vectors so RAG can't
+    // resurface them and contradict the player's edit.
+    if (result.retiredFacts.length > 0) {
+      memorySupersessionService
+        .supersedeMemories({ instanceId: result.instanceId, retiredFacts: result.retiredFacts })
+        .catch(() => {})
+    }
+    const c = result.character
+    return {
+      character: {
+        id: idString(c._id),
+        canonical_name: c.canonical_name,
+        aliases: c.aliases,
+        role: c.role,
+        appearance: c.appearance,
+        persona: c.persona,
+        immutable_facts: c.immutable_facts,
+        mutable_state: c.mutable_state,
+        disposition_to_player: c.disposition_to_player,
+        hidden_thought: c.hidden_thought,
+        mention_count: c.mention_count,
+        is_protagonist: c.is_protagonist === true,
+      },
+    }
   },
 
   rewind: async ({
