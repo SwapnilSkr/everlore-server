@@ -16,6 +16,7 @@ import { type GenerationOutput } from '../lib/structured-output'
 import { extractSceneMetadata } from '../lib/metadata-extractor'
 import { extractCharacterCodexDeltas } from '../lib/character-codex-extractor'
 import { characterCodexService } from '../../src/services/character-codex.service'
+import { memorySupersessionService } from '../../src/services/memory-supersession.service'
 import { getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../../src/queues'
 import { replayProcessor } from './replay.processor'
 
@@ -326,6 +327,21 @@ export async function generationProcessor(job: Job) {
         sequence: nextSequence,
         deltas,
       })
+
+      // Memory-vector supersession: when a status was retired this turn, evict
+      // the stale memory vectors so RAG can't resurface the now-false fact.
+      const retiredFacts = deltas.flatMap((d) => d.retire_state || [])
+      if (retiredFacts.length > 0) {
+        memorySupersessionService
+          .supersedeMemories({
+            instanceId,
+            retiredFacts,
+            beforeDate: new Date(genStart),
+          })
+          .catch((err) =>
+            console.warn('memory supersession failed:', (err as Error).message),
+          )
+      }
 
       await redis.publish(`user:${playerId}:events`, JSON.stringify({
         type: 'character_codex_updated',
