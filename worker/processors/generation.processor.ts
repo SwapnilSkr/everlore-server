@@ -22,6 +22,8 @@ import { getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '.
 import { replayProcessor } from './replay.processor'
 
 const MAX_CONTEXT_TOKENS = 6000
+/** Turns of one continuous scene that fold into a single recap (non-overlapping). */
+const SCENE_SUMMARY_BLOCK = 12
 
 export async function generationProcessor(job: Job) {
   // Replay turns reuse the generation queue/worker but follow a distinct path:
@@ -244,7 +246,13 @@ export async function generationProcessor(job: Job) {
   const sceneTag = parsed.scene_tag
   const currentScene = session.current_scene
   const sameScene = currentScene.tag === sceneTag
-  const newTurnCount = sameScene ? currentScene.turn_count + 1 : 1
+  const rawTurnCount = sameScene ? currentScene.turn_count + 1 : 1
+  // Summarize a scene in NON-OVERLAPPING blocks: once a same-type scene reaches
+  // the block size, fold those turns into one recap and RESET the counter — so
+  // we don't re-summarize the trailing window on every subsequent turn (which
+  // previously burned an LLM call per turn and piled up overlapping rows).
+  const shouldSummarize = sameScene && rawTurnCount >= SCENE_SUMMARY_BLOCK
+  const newTurnCount = shouldSummarize ? 0 : rawTurnCount
 
   await mongoColl.worldInstances().updateOne(
     { _id: instanceOid },
@@ -255,7 +263,7 @@ export async function generationProcessor(job: Job) {
         current_scene: {
           tag: sceneTag,
           turn_count: newTurnCount,
-          summary_pending: newTurnCount >= 12,
+          summary_pending: shouldSummarize,
         },
         'meta.last_active_at': new Date(),
         updated_at: new Date(),
@@ -400,12 +408,12 @@ export async function generationProcessor(job: Job) {
     removeOnFail: QUEUE_RETENTION.memoryCuration.removeOnFail,
   })
 
-  if (newTurnCount >= 12 && sameScene) {
+  if (shouldSummarize) {
     const sceneSummaryQueue = getSceneSummaryQueue()
     await sceneSummaryQueue.add('summarize', {
       instanceId,
       sceneTag,
-      startSequence: nextSequence - 11,
+      startSequence: nextSequence - (SCENE_SUMMARY_BLOCK - 1),
       endSequence: nextSequence,
     }, {
       priority: 10,
