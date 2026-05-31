@@ -109,16 +109,37 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
     dynamicContent += `TONE: Write this scene in a ${input.tone.trim()} tone.\n\n`
   }
 
-  // In a sentient world the protagonist's identity already lives in the seed
-  // prompt ("You ARE Elara…"). Re-injecting that same persona here as a
-  // third-party NPC card is redundant and can fracture first-person narration,
-  // so the protagonist card is excluded from the codex block.
-  const codexForInjection = (input.characterCodex || []).filter(
-    (c) => !(input.isSentient && c.is_protagonist),
-  )
-  if (codexForInjection.length > 0) {
+  // The locked protagonist is handled separately from side-character NPCs.
+  const protagonistCard = (input.characterCodex || []).find((c) => c.is_protagonist)
+  const npcCodex = (input.characterCodex || []).filter((c) => !c.is_protagonist)
+
+  if (protagonistCard) {
+    const facts = protagonistCard.immutable_facts || []
+    const state = protagonistCard.mutable_state || []
+    if (input.isSentient) {
+      // Identity is already in the seed ("You ARE Elara"), so don't re-inject
+      // persona/appearance. But DO inject evolving history/status so first-person
+      // narration stays consistent (e.g. she remembers she broke the engagement).
+      if (facts.length || state.length) {
+        dynamicContent += `YOUR EVOLVING STATE (you are ${protagonistCard.canonical_name} — stay consistent with what has happened to you):\n`
+        for (const f of facts) dynamicContent += `- (happened) ${f}\n`
+        for (const s of state) dynamicContent += `- (current) ${s}\n`
+        dynamicContent += `\n`
+      }
+    } else {
+      // GM world: the protagonist is the PLAYER. Tell the narrator who they are
+      // so the story stays anchored to the player's character + their changes.
+      dynamicContent += `THE PLAYER (protagonist — narrate the world around them): ${protagonistCard.canonical_name}\n`
+      if (protagonistCard.persona) dynamicContent += `- identity: ${protagonistCard.persona}\n`
+      for (const f of facts) dynamicContent += `- (happened) ${f}\n`
+      for (const s of state) dynamicContent += `- (current) ${s}\n`
+      dynamicContent += `\n`
+    }
+  }
+
+  if (npcCodex.length > 0) {
     dynamicContent += `CANONICAL CHARACTER CODEX (never contradict these facts):\n`
-    for (const c of codexForInjection.slice(0, 16)) {
+    for (const c of npcCodex.slice(0, 16)) {
       dynamicContent += `- ${c.canonical_name}`
       if (c.role) dynamicContent += ` | role: ${c.role}`
       if (c.aliases && c.aliases.length) dynamicContent += ` | aliases: ${c.aliases.join(', ')}`
@@ -154,17 +175,25 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
     dynamicContent += `\nHonor these as established reality in this turn. If they imply character changes, portray a believable in-story shift instead of ignoring or contradicting them.\n\n`
   }
 
-  dynamicContent += `CURRENT WORLD STATE:\n`
-  for (const [key, value] of Object.entries(input.worldState)) {
-    dynamicContent += `- ${key}: ${value}/100\n`
+  // Stat-less Characters have no world state / flags — omit the blocks entirely
+  // so the prompt reads like a conversation, not an RPG dashboard.
+  const worldStateEntries = Object.entries(input.worldState || {})
+  if (worldStateEntries.length > 0) {
+    dynamicContent += `CURRENT WORLD STATE:\n`
+    for (const [key, value] of worldStateEntries) {
+      dynamicContent += `- ${key}: ${value}/100\n`
+    }
+    dynamicContent += `\n`
   }
-  dynamicContent += `\n`
 
-  dynamicContent += `ACTIVE FLAGS:\n`
-  for (const [key, value] of Object.entries(input.activeFlags)) {
-    dynamicContent += `- ${key}: ${value}\n`
+  const activeFlagEntries = Object.entries(input.activeFlags || {})
+  if (activeFlagEntries.length > 0) {
+    dynamicContent += `ACTIVE FLAGS:\n`
+    for (const [key, value] of activeFlagEntries) {
+      dynamicContent += `- ${key}: ${value}\n`
+    }
+    dynamicContent += `\n`
   }
-  dynamicContent += `\n`
 
   if (input.retrievedLore.length > 0) {
     dynamicContent += `RELEVANT LORE DETAILS:\n`

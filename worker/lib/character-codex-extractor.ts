@@ -67,8 +67,11 @@ export async function extractCharacterCodexDeltas(params: {
    *  treating it like a random NPC. Omit/empty for Game Master worlds. */
   seedPrompt?: string
   isSentient?: boolean
+  /** Name of the locked protagonist. For GM worlds this is the PLAYER's own
+   *  character — the extractor must track their evolving state and tag them. */
+  protagonistName?: string
 }): Promise<CharacterCodexDelta[]> {
-  const { playerInput, aiResponse, existing, seedPrompt, isSentient } = params
+  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName } = params
 
   const existingText = existing.length
     ? existing
@@ -85,19 +88,24 @@ export async function extractCharacterCodexDeltas(params: {
     isSentient && seedPrompt && seedPrompt.trim().length > 0
       ? `
 MAIN CHARACTER (PROTAGONIST):
-This is a sentient world. The player is in conversation WITH a single main character, described by the world's seed prompt below. When you extract THAT character, set "is_protagonist": true and resolve all of their aliases/titles to the same card (never split them). Every other character is a side character with "is_protagonist": false.
+This is a sentient world. The player is in conversation WITH a single main character, described by the world's seed prompt below. When you extract THAT character, set "is_protagonist": true and resolve all of their aliases/titles to the same card (never split them). Track their evolving state (relationships, powers, status) accurately. Every other character is a side character with "is_protagonist": false.
 --- SEED PROMPT ---
 ${seedPrompt.trim().slice(0, 800)}
 --- END SEED PROMPT ---
 `
-      : ''
+      : protagonistName && protagonistName.trim()
+        ? `
+PROTAGONIST (THE PLAYER): The player's own character is named "${protagonistName.trim()}". Treat them as a tracked character: set "is_protagonist": true for them, and update their evolving state from the turn — relationships formed/ended, powers gained, status changes (e.g. married, wounded, exiled). Everyone else is a side character with "is_protagonist": false.
+`
+        : ''
 
   const system = `You maintain an RPG character codex. Extract character updates from the turn.
 
 Rules:
-- Include non-player characters and entities (and, in a sentient world, the main character described below).
-- Prefer resolving to existing characters when aliases/titles refer to the same person.
-- Return 0-4 characters.
+- Include non-player characters and entities (and the protagonist described below).
+- ALWAYS create or update a card for any NAMED character who appears, speaks, or is referenced this turn — even with sparse detail. Do not skip newly introduced characters; capturing them promptly keeps the story consistent.
+- Prefer resolving to existing characters when aliases/titles/pronouns refer to the same person; never split one character into two cards.
+- Return 0-6 characters (most important / most active first).
 - Keep hidden_thought private/internal (never spoken aloud), short and specific to the player.
 - immutable_facts: PERMANENT history/identity that never stops being true once it happens (e.g. "was engaged to Lord X", "gained pyromancy", "married Mira"). Append-only — only NEW permanent facts from this turn.
 - mutable_state: the character's CURRENT status that may change later (e.g. "unattached", "wields fire magic", "wounded"). Only NEW or newly-changed current-status items from this turn.
@@ -154,7 +162,7 @@ Respond ONLY JSON:
     const delta = toDelta(item)
     if (!delta) continue
     out.push(delta)
-    if (out.length >= 4) break
+    if (out.length >= 6) break
   }
   return out
 }

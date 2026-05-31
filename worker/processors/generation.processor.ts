@@ -316,6 +316,7 @@ export async function generationProcessor(job: Job) {
         })),
         seedPrompt: session.seed_prompt,
         isSentient: session.is_sentient,
+        protagonistName: (characterCodex as any[]).find((c) => c.is_protagonist)?.canonical_name,
       })
       if (!deltas.length) return
 
