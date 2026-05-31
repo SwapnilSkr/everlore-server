@@ -1,4 +1,4 @@
-import { callLLM } from './llm-client'
+import { callLLM, AI_MODELS } from '../../src/ai'
 import type { CharacterCodexDelta } from '../../src/services/character-codex.service'
 
 type ExistingCharacter = {
@@ -139,7 +139,7 @@ Respond ONLY JSON:
   let raw: string
   try {
     raw = await callLLM({
-      model: 'gpt-4o-mini',
+      model: AI_MODELS.codexExtraction,
       messages: [
         { role: 'system', content: system },
         {

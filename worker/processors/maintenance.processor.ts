@@ -1,7 +1,7 @@
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
-import { embed } from '../../src/utils/embedding'
+import { embed } from '../../src/ai'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { QUEUE_RETENTION } from '../../src/queues'
 

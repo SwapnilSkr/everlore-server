@@ -6,7 +6,7 @@ import type {
   WorldTemplateDoc,
 } from '../models/world-template.model'
 import { getPineconeIndex } from '../config/pinecone'
-import { embed } from '../utils/embedding'
+import { embed } from '../ai'
 import { deriveProtagonist } from '../utils/protagonist'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'

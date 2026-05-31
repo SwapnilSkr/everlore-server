@@ -4,13 +4,12 @@ import { mongoColl } from '../../src/config/mongo'
 import { env } from '../../src/config/env'
 import { getRedisClient } from '../../src/config/redis'
 import { getPineconeIndex } from '../../src/config/pinecone'
-import { embed } from '../../src/utils/embedding'
+import { embed, callLLMStream, AI_MODELS } from '../../src/ai'
 import { buildPrompt } from '../../src/utils/prompt-builder'
 import { parsePlayerInput } from '../../src/utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-mutator'
 import { countTokens } from '../../src/utils/token-counter'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
-import { callLLMStream } from '../lib/llm-client'
 import { classifyScene } from '../lib/nsfw-classifier'
 import { type GenerationOutput } from '../lib/structured-output'
 import { extractSceneMetadata } from '../lib/metadata-extractor'
@@ -98,7 +97,7 @@ export async function generationProcessor(job: Job) {
   // Decide routing first so the prompt asks for the right output shape.
   // NSFW routing requires BOTH the world being mature-capable AND the player
   // having opted in via their account preference. Either alone keeps it SFW.
-  let modelId = session.model_preferences?.narration_sfw || env.NARRATION_SFW_MODEL
+  let modelId = session.model_preferences?.narration_sfw || AI_MODELS.narrationSfw
   let isNsfwTurn = false
 
   // An explicitly erotic tone forces the NSFW path (when the world allows it and
@@ -111,7 +110,7 @@ export async function generationProcessor(job: Job) {
         : classifyScene(classifyText, recentEvents)
       : 'sfw'
   if (sceneClassification === 'nsfw') {
-    modelId = session.model_preferences?.narration_nsfw || env.NARRATION_NSFW_MODEL
+    modelId = session.model_preferences?.narration_nsfw || AI_MODELS.narrationNsfw
     isNsfwTurn = true
   }
 
@@ -235,7 +234,7 @@ export async function generationProcessor(job: Job) {
       scene_classification: sceneClassification,
       nsfw_path: isNsfwTurn,
       model_used: modelId,
-      metadata_model: 'gpt-4o-mini',
+      metadata_model: AI_MODELS.metadata,
       tokens_in: event.data.tokens_in,
       tokens_out: event.data.tokens_out,
       latency_ms: latencyMs,

@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
-import { callLLM } from '../lib/llm-client'
+import { callLLM, AI_MODELS } from '../../src/ai'
 import { parseObjectId } from '../../src/utils/mongo-id'
 
 export async function summaryProcessor(job: Job) {
@@ -23,7 +23,7 @@ export async function summaryProcessor(job: Job) {
     .join('\n\n')
 
   const summaryResult = await callLLM({
-    model: 'gpt-4o-mini',
+    model: AI_MODELS.sceneSummary,
     messages: [
       {
         role: 'system',
@@ -42,7 +42,7 @@ export async function summaryProcessor(job: Job) {
     event_range: { start_sequence: startSequence, end_sequence: endSequence },
     summary_text: summaryResult,
     key_facts_extracted: [],
-    model_used: 'gpt-4o-mini',
+    model_used: AI_MODELS.sceneSummary,
     tokens_consumed: 0,
     created_at: new Date(),
   }

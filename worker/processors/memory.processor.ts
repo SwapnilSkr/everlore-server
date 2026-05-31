@@ -2,9 +2,8 @@ import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
-import { embed } from '../../src/utils/embedding'
+import { embed, callLLM, AI_MODELS } from '../../src/ai'
 import { randomUUID } from 'crypto'
-import { callLLM } from '../lib/llm-client'
 import { getRedisClient } from '../../src/config/redis'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
 
@@ -49,7 +48,7 @@ export async function memoryProcessor(job: Job) {
   const eventOid = parseObjectId(eventId)
 
   const result = await callLLM({
-    model: 'gpt-4o-mini',
+    model: AI_MODELS.memoryCuration,
     messages: [
       { role: 'system', content: EXTRACTION_PROMPT },
       {

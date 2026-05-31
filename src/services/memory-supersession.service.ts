@@ -1,5 +1,5 @@
 import { getPineconeIndex } from '../config/pinecone'
-import { embed } from '../utils/embedding'
+import { embed } from '../ai'
 import { mongoColl } from '../config/mongo'
 import { parseObjectId } from '../utils/mongo-id'
 import { deletePineconeVector } from './pinecone-cleanup.service'

@@ -1,4 +1,4 @@
-import { callLLM } from './llm-client'
+import { callLLM, AI_MODELS } from '../../src/ai'
 
 /**
  * Distill an overgrown immutable-fact list back down without losing identity or
@@ -22,7 +22,7 @@ Respond ONLY with JSON: {"facts":["fact one","fact two", ...]}`
   let raw: string
   try {
     raw = await callLLM({
-      model: 'gpt-4o-mini',
+      model: AI_MODELS.codexCompaction,
       messages: [
         { role: 'system', content: system },
         {

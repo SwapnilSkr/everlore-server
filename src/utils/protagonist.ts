@@ -1,4 +1,4 @@
-import { getOpenAI } from '../config/openai'
+import { callLLM, AI_MODELS } from '../ai'
 import type { ProtagonistDoc } from '../models/world-template.model'
 
 /**
@@ -15,18 +15,16 @@ export async function deriveProtagonist(seedPrompt: string): Promise<Protagonist
 {"name":"the character's name (or a short title if unnamed, e.g. 'The Oracle')","persona":"one concise sentence on personality/role","appearance":"one concise sentence, or empty string"}`
 
   try {
-    const openai = getOpenAI()
-    const res = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+    const raw = await callLLM({
+      model: AI_MODELS.protagonistDerive,
       temperature: 0.1,
-      max_tokens: 200,
-      response_format: { type: 'json_object' },
+      maxTokens: 200,
+      responseFormat: { type: 'json_object' },
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: seed.slice(0, 2000) },
       ],
     })
-    const raw = res.choices[0]?.message?.content || '{}'
     const parsed = JSON.parse(raw) as Record<string, unknown>
     const name = typeof parsed.name === 'string' ? parsed.name.trim() : ''
     if (!name) return null

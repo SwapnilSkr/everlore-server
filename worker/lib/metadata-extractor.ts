@@ -1,10 +1,10 @@
-import { callLLM } from './llm-client'
+import { callLLM, AI_MODELS } from '../../src/ai'
 import { enforceSchema, type GenerationOutput } from './structured-output'
 
 /** Structured fields derived from a narrative — everything except the prose itself. */
 export type SceneMetadata = Omit<GenerationOutput, 'narrative'>
 
-/** Schema mirrors the generation envelope minus `narrative` (llm-client uses strict:false). */
+/** Schema mirrors the generation envelope minus `narrative` (callLLM uses strict:false). */
 const METADATA_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -90,7 +90,7 @@ Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length
   let raw: string
   try {
     raw = await callLLM({
-      model: 'gpt-4o-mini',
+      model: AI_MODELS.metadata,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: narrative },

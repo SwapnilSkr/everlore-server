@@ -6,11 +6,10 @@ import { getRedisClient } from '../config/redis'
 import { getMemoryCurationQueue, QUEUE_RETENTION } from '../queues'
 import { queryRag } from '../providers/rag.provider'
 import { buildPrompt } from '../utils/prompt-builder'
-import { embed } from '../utils/embedding'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
-import { callLLM, callLLMStream } from '../../worker/lib/llm-client'
+import { callLLM, callLLMStream, embed, AI_MODELS } from '../ai'
 import { classifyScene } from '../../worker/lib/nsfw-classifier'
 
 const events = () => mongoColl.events()
@@ -25,7 +24,7 @@ function baseReplayVariantFor(event: any) {
   return {
     id: `base_${idString(event._id)}`,
     narrative: event.data?.ai_response || '',
-    model_used: event.data?.model_used || env.NARRATION_SFW_MODEL,
+    model_used: event.data?.model_used || AI_MODELS.narrationSfw,
     created_at: event.created_at || new Date(),
     source: 'base',
     retrieval_profile: {
@@ -366,7 +365,7 @@ export const memoryService = {
         nextReplayVariants.push({
           id: randomUUID(),
           narrative: nextAiResponse,
-          model_used: event.data?.model_used || env.NARRATION_SFW_MODEL,
+          model_used: event.data?.model_used || AI_MODELS.narrationSfw,
           created_at: new Date(),
           source: 'edit',
         })
@@ -504,8 +503,8 @@ export const memoryService = {
           : classifyScene(parsed.raw, priorEvents)
         : 'sfw'
     const modelId = sceneClass === 'nsfw'
-      ? (template.model_preferences?.narration_nsfw || env.NARRATION_NSFW_MODEL)
-      : (template.model_preferences?.narration_sfw || env.NARRATION_SFW_MODEL)
+      ? (template.model_preferences?.narration_nsfw || AI_MODELS.narrationNsfw)
+      : (template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw)
 
     const prompt = buildPrompt({
       seedPrompt: template.seed_prompt,

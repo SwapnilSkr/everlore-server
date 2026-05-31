@@ -1,4 +1,4 @@
-import { callLLM } from "../worker/lib/llm-client";
+import { callLLM } from "../src/ai";
 
 async function main() {
   const prompt =
