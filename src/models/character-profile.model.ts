@@ -17,6 +17,10 @@ export interface CharacterProfileDoc {
   mutable_state: string[]
   disposition_to_player: string
   hidden_thought: string
+  /** True for the world's main sentient persona (the character the player talks
+   *  TO in a sentient world). Pins them to the top of the roster and excludes
+   *  them from the redundant NPC-codex prompt injection. */
+  is_protagonist?: boolean
   first_seen_sequence: number
   last_seen_sequence: number
   mention_count: number

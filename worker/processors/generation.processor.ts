@@ -311,7 +311,11 @@ export async function generationProcessor(job: Job) {
           appearance: c.appearance,
           persona: c.persona,
           disposition_to_player: c.disposition_to_player,
+          mutable_state: c.mutable_state || [],
+          immutable_facts: c.immutable_facts || [],
         })),
+        seedPrompt: session.seed_prompt,
+        isSentient: session.is_sentient,
       })
       if (!deltas.length) return
 
@@ -338,6 +342,7 @@ export async function generationProcessor(job: Job) {
           disposition_to_player: c.disposition_to_player,
           hidden_thought: c.hidden_thought,
           mention_count: c.mention_count,
+          is_protagonist: c.is_protagonist === true,
         })),
       }))
     } catch (err) {

@@ -8,6 +8,10 @@ type ExistingCharacter = {
   appearance?: string
   persona?: string
   disposition_to_player?: string
+  /** Current status snapshot the extractor must reconcile (supersede stale items). */
+  mutable_state?: string[]
+  /** Permanent history; provided for context so new facts aren't duplicated. */
+  immutable_facts?: string[]
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> {
@@ -40,9 +44,13 @@ function toDelta(raw: any): CharacterCodexDelta | null {
     mutable_state: Array.isArray(raw.mutable_state)
       ? raw.mutable_state.map(String).slice(0, 6)
       : [],
+    retire_state: Array.isArray(raw.retire_state)
+      ? raw.retire_state.map(String).slice(0, 6)
+      : [],
     disposition_to_player:
       typeof raw.disposition_to_player === 'string' ? raw.disposition_to_player.trim() : undefined,
     hidden_thought: typeof raw.hidden_thought === 'string' ? raw.hidden_thought.trim() : undefined,
+    is_protagonist: raw.is_protagonist === true,
   }
 }
 
@@ -54,30 +62,50 @@ export async function extractCharacterCodexDeltas(params: {
   playerInput: string
   aiResponse: string
   existing: ExistingCharacter[]
+  /** Seed prompt of a sentient world — describes the main persona the player
+   *  talks TO. Lets the extractor tag that card as the protagonist instead of
+   *  treating it like a random NPC. Omit/empty for Game Master worlds. */
+  seedPrompt?: string
+  isSentient?: boolean
 }): Promise<CharacterCodexDelta[]> {
-  const { playerInput, aiResponse, existing } = params
+  const { playerInput, aiResponse, existing, seedPrompt, isSentient } = params
 
   const existingText = existing.length
     ? existing
       .map((c) => {
         const aliases = (c.aliases || []).join(', ')
-        return `- ${c.canonical_name}${aliases ? ` (aliases: ${aliases})` : ''}${c.role ? ` role: ${c.role}` : ''}`
+        const state = (c.mutable_state || []).filter(Boolean)
+        const stateLine = state.length ? `\n    current state: ${state.join('; ')}` : ''
+        return `- ${c.canonical_name}${aliases ? ` (aliases: ${aliases})` : ''}${c.role ? ` role: ${c.role}` : ''}${stateLine}`
       })
       .join('\n')
     : '(none yet)'
 
-  const system = `You maintain an RPG character codex. Extract NPC updates from the turn.
+  const protagonistBlock =
+    isSentient && seedPrompt && seedPrompt.trim().length > 0
+      ? `
+MAIN CHARACTER (PROTAGONIST):
+This is a sentient world. The player is in conversation WITH a single main character, described by the world's seed prompt below. When you extract THAT character, set "is_protagonist": true and resolve all of their aliases/titles to the same card (never split them). Every other character is a side character with "is_protagonist": false.
+--- SEED PROMPT ---
+${seedPrompt.trim().slice(0, 800)}
+--- END SEED PROMPT ---
+`
+      : ''
+
+  const system = `You maintain an RPG character codex. Extract character updates from the turn.
 
 Rules:
-- Include ONLY non-player characters or entities.
+- Include non-player characters and entities (and, in a sentient world, the main character described below).
 - Prefer resolving to existing characters when aliases/titles refer to the same person.
 - Return 0-4 characters.
 - Keep hidden_thought private/internal (never spoken aloud), short and specific to the player.
-- immutable_facts: stable details (identity, appearance, role, backstory).
-- mutable_state: current mood/condition/intent that may change later.
+- immutable_facts: PERMANENT history/identity that never stops being true once it happens (e.g. "was engaged to Lord X", "gained pyromancy", "married Mira"). Append-only — only NEW permanent facts from this turn.
+- mutable_state: the character's CURRENT status that may change later (e.g. "unattached", "wields fire magic", "wounded"). Only NEW or newly-changed current-status items from this turn.
+- retire_state: CRITICAL for continuity. Copy here, VERBATIM, any item from the character's existing "current state" (shown below) that THIS TURN made false or obsolete. Example: if existing state says "engaged to Lord X" and this turn the engagement is broken, put "engaged to Lord X" in retire_state. Leave [] if nothing became false. NEVER let an outdated status linger.
 - disposition_to_player: concise sentiment toward the player right now.
-
-Existing characters:
+- is_protagonist: true ONLY for the world's main character (see below); otherwise false.
+${protagonistBlock}
+Existing characters (with their current state — reconcile against this):
 ${existingText}
 
 Respond ONLY JSON:
@@ -92,8 +120,10 @@ Respond ONLY JSON:
       "persona": "string",
       "immutable_facts": ["string"],
       "mutable_state": ["string"],
+      "retire_state": ["existing current-state items that are now false/obsolete"],
       "disposition_to_player": "string",
-      "hidden_thought": "string"
+      "hidden_thought": "string",
+      "is_protagonist": false
     }
   ]
 }`

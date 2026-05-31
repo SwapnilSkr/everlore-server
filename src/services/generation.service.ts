@@ -56,7 +56,7 @@ export const generationService = {
     const queue = getGenerationQueue()
     const characterCodex = await characters()
       .find({ instance_id: iid })
-      .sort({ mention_count: -1, updated_at: -1 })
+      .sort({ is_protagonist: -1, mention_count: -1, updated_at: -1 })
       .limit(16)
       .toArray()
 
@@ -140,7 +140,7 @@ export const generationService = {
 
     const codex = await characters()
       .find({ instance_id: iid })
-      .sort({ mention_count: -1, updated_at: -1 })
+      .sort({ is_protagonist: -1, mention_count: -1, updated_at: -1 })
       .limit(30)
       .toArray()
 

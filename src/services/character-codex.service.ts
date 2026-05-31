@@ -14,8 +14,11 @@ export type CharacterCodexDelta = {
   persona?: string
   immutable_facts?: string[]
   mutable_state?: string[]
+  /** Existing current-state items this turn made false/obsolete; removed on merge. */
+  retire_state?: string[]
   disposition_to_player?: string
   hidden_thought?: string
+  is_protagonist?: boolean
 }
 
 function normalizeName(name: string): string {
@@ -45,6 +48,32 @@ function shouldSetText(value?: string): value is string {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+function normalizeState(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Reconcile a character's CURRENT status snapshot: drop items the latest turn
+ * marked obsolete (`retire`), then add the new ones. This is what stops stale
+ * status (e.g. "engaged to Lord X") from lingering after the story moves on —
+ * the previous behaviour merely appended, so contradictions coexisted forever.
+ */
+function reconcileMutableState(
+  existing: string[],
+  retire: string[],
+  add: string[],
+  max: number,
+): string[] {
+  const retireNorm = (retire || [])
+    .map(normalizeState)
+    .filter((r) => r.length >= 3)
+  const kept = (existing || []).filter((item) => {
+    const n = normalizeState(item)
+    return !retireNorm.some((r) => n === r || n.includes(r) || r.includes(n))
+  })
+  return uniqStrings([...kept, ...(add || [])], max)
+}
+
 function buildAliasSet(delta: CharacterCodexDelta): string[] {
   return uniqStrings([
     delta.name,
@@ -56,7 +85,7 @@ export const characterCodexService = {
   async listForInstance(instanceId: string, limit: number = 30): Promise<CharacterProfileDoc[]> {
     return characters()
       .find({ instance_id: parseObjectId(instanceId) })
-      .sort({ mention_count: -1, updated_at: -1 })
+      .sort({ is_protagonist: -1, mention_count: -1, updated_at: -1 })
       .limit(limit)
       .toArray()
   },
@@ -122,6 +151,7 @@ export const characterCodexService = {
           hidden_thought: shouldSetText(delta.hidden_thought)
             ? delta.hidden_thought.trim()
             : '',
+          is_protagonist: delta.is_protagonist === true,
           first_seen_sequence: sequence,
           last_seen_sequence: sequence,
           mention_count: 1,
@@ -146,8 +176,10 @@ export const characterCodexService = {
         [...(target.immutable_facts || []), ...(delta.immutable_facts || [])],
         20,
       )
-      const mergedMutableState = uniqStrings(
-        [...(target.mutable_state || []), ...(delta.mutable_state || [])],
+      const mergedMutableState = reconcileMutableState(
+        target.mutable_state || [],
+        delta.retire_state || [],
+        delta.mutable_state || [],
         12,
       )
 
@@ -167,6 +199,11 @@ export const characterCodexService = {
       }
       if (shouldSetText(delta.hidden_thought)) {
         setFields.hidden_thought = delta.hidden_thought.trim()
+      }
+      // Protagonist is a sticky flag: once a turn identifies this card as the
+      // main persona, keep it set even if a later turn omits the hint.
+      if (delta.is_protagonist === true && !target.is_protagonist) {
+        setFields.is_protagonist = true
       }
 
       await characters().updateOne(

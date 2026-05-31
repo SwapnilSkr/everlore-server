@@ -33,6 +33,7 @@ interface PromptInput {
     mutable_state?: string[]
     disposition_to_player?: string
     hidden_thought?: string
+    is_protagonist?: boolean
   }>
   /** Optional focused character id/name chosen by player for this instance. */
   focusCharacterName?: string
@@ -108,9 +109,16 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
     dynamicContent += `TONE: Write this scene in a ${input.tone.trim()} tone.\n\n`
   }
 
-  if (input.characterCodex && input.characterCodex.length > 0) {
+  // In a sentient world the protagonist's identity already lives in the seed
+  // prompt ("You ARE Elara…"). Re-injecting that same persona here as a
+  // third-party NPC card is redundant and can fracture first-person narration,
+  // so the protagonist card is excluded from the codex block.
+  const codexForInjection = (input.characterCodex || []).filter(
+    (c) => !(input.isSentient && c.is_protagonist),
+  )
+  if (codexForInjection.length > 0) {
     dynamicContent += `CANONICAL CHARACTER CODEX (never contradict these facts):\n`
-    for (const c of input.characterCodex.slice(0, 16)) {
+    for (const c of codexForInjection.slice(0, 16)) {
       dynamicContent += `- ${c.canonical_name}`
       if (c.role) dynamicContent += ` | role: ${c.role}`
       if (c.aliases && c.aliases.length) dynamicContent += ` | aliases: ${c.aliases.join(', ')}`
