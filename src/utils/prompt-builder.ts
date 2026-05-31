@@ -93,7 +93,7 @@ You MUST respond with valid JSON containing these fields:
 - "narrative": Your in-character response (2-4 paragraphs, vivid, emotionally resonant)
 - "state_mutations": Changes to world state as {"stat_name": {"op": "add"|"subtract"|"set", "value": number}}. Only include stats that actually change. Values should be between 1-20 for add/subtract.
 - "flag_mutations": Changes to flags as {"flag_name": {"op": "set"|"increment", "value": any}}. Only include flags that change.
-- "scene_tag": One of: dialogue, combat, intimate, exploration, existential, cosmic, mundane
+- "scene_tag": One of: dialogue, combat, romantic, intimate, exploration, existential, cosmic, mundane. Use "romantic" for affectionate/romantic but non-explicit moments (flirting, kissing, emotional intimacy). Use "intimate" ONLY for explicit sexual content.
 - "emotional_tone": A single word describing the emotional tone of this response
 
 Do NOT break character in the narrative. State mutations and flags are metadata the player does not see.`

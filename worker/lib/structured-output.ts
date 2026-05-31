@@ -9,7 +9,7 @@ export interface GenerationOutput {
 }
 
 const VALID_SCENE_TAGS = new Set([
-  'dialogue', 'combat', 'intimate', 'exploration',
+  'dialogue', 'combat', 'romantic', 'intimate', 'exploration',
   'existential', 'cosmic', 'mundane',
 ])
 

@@ -42,7 +42,7 @@ const METADATA_SCHEMA = {
     },
     scene_tag: {
       type: 'string',
-      enum: ['dialogue', 'combat', 'intimate', 'exploration', 'existential', 'cosmic', 'mundane'],
+      enum: ['dialogue', 'combat', 'romantic', 'intimate', 'exploration', 'existential', 'cosmic', 'mundane'],
     },
     emotional_tone: { type: 'string' },
   },
@@ -81,7 +81,7 @@ export async function extractSceneMetadata(
 Rules:
 - state_mutations: include ONLY stats that actually changed this passage. op is "add"|"subtract"|"set"; for add/subtract keep value between 1 and 20.
 - flag_mutations: include ONLY flags that changed. op is "set"|"increment"|"decrement".
-- scene_tag: one of dialogue, combat, intimate, exploration, existential, cosmic, mundane. Use "intimate" for romantic or sexual scenes.
+- scene_tag: one of dialogue, combat, romantic, intimate, exploration, existential, cosmic, mundane. Use "romantic" for affectionate/romantic but non-explicit scenes (flirting, kissing, emotional intimacy). Use "intimate" ONLY for explicit sexual content.
 - emotional_tone: a single word.
 
 Tracked stats (only these names may appear in state_mutations): ${statKeys.length ? statKeys.join(', ') : '(none)'}
