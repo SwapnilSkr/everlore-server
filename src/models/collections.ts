@@ -12,6 +12,7 @@ export const COLLECTIONS = {
   characters: 'characters',
   dead_letter_jobs: 'dead_letter_jobs',
   generation_logs: 'generation_logs',
+  nsfw_lexicon: 'nsfw_lexicon',
 } as const
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS]

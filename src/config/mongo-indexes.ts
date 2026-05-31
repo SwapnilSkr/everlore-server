@@ -157,6 +157,18 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { failedAt: -1 },
     options: { name: "idx_dead_letter_jobs_failed_at" },
   },
+
+  // nsfw_lexicon (term is the natural key; seeder upserts on it)
+  {
+    collection: COLLECTIONS.nsfw_lexicon,
+    key: { term: 1 },
+    options: { unique: true, name: "uniq_nsfw_lexicon_term" },
+  },
+  {
+    collection: COLLECTIONS.nsfw_lexicon,
+    key: { weight: 1, is_phrase: 1 },
+    options: { name: "idx_nsfw_lexicon_weight_phrase" },
+  },
 ]
 
 function keysMatch(existing: Document, desired: Document): boolean {

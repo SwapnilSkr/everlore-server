@@ -11,6 +11,7 @@ import type { SceneSummaryDoc } from '../models/scene-summary.model'
 import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { DeadLetterJobDoc } from '../models/dead-letter-job.model'
 import type { GenerationLogDoc } from '../models/generation-log.model'
+import type { NsfwTermDoc } from '../models/nsfw-term.model'
 
 let client: MongoClient | null = null
 let database: Db | null = null
@@ -35,6 +36,7 @@ export const mongoColl = {
   characters: () => coll<WithoutId<CharacterProfileDoc>>(COLLECTIONS.characters),
   deadLetterJobs: () => coll<WithoutId<DeadLetterJobDoc>>(COLLECTIONS.dead_letter_jobs),
   generationLogs: () => coll<WithoutId<GenerationLogDoc>>(COLLECTIONS.generation_logs),
+  nsfwLexicon: () => coll<WithoutId<NsfwTermDoc>>(COLLECTIONS.nsfw_lexicon),
 } as const
 
 export async function connectMongo(): Promise<Db> {

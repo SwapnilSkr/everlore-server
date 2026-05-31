@@ -6,11 +6,15 @@ import { memoryProcessor } from './processors/memory.processor'
 import { summaryProcessor } from './processors/summary.processor'
 import { maintenanceProcessor } from './processors/maintenance.processor'
 import { getMaintenanceQueue, QUEUE_RETENTION } from '../src/queues'
+import { loadNsfwLexicon } from './lib/nsfw-classifier'
 
 async function main() {
   // Initialize connections
   await connectMongo()
   await connectRedis()
+
+  // Warm the NSFW routing lexicon from Mongo (falls back to built-ins if unseeded).
+  await loadNsfwLexicon(true)
 
   const connection = getQueueRedisClient()
 

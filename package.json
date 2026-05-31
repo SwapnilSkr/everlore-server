@@ -9,6 +9,7 @@
     "start:worker": "bun run worker/index.ts",
     "typecheck": "tsc --noEmit",
     "test:nsfw": "bun run scripts/test-nsfw-model.ts",
+    "seed:nsfw-lexicon": "bun run scripts/seed-nsfw-lexicon.ts",
     "clean:queue-jobs": "bun run scripts/clean-redis-jobs.ts"
   },
   "dependencies": {
