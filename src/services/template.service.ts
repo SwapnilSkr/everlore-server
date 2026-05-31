@@ -7,6 +7,7 @@ import type {
 } from '../models/world-template.model'
 import { getPineconeIndex } from '../config/pinecone'
 import { embed } from '../utils/embedding'
+import { deriveProtagonist } from '../utils/protagonist'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 
@@ -27,7 +28,11 @@ function assertNonEmptyStats(baseStats: Record<string, unknown> | undefined, fie
 
 export const templateService = {
   async create(creatorId: string, data: any): Promise<WorldTemplateDoc> {
-    assertNonEmptyStats(data.base_stats_template, 'base_stats_template')
+    const kind: 'world' | 'character' = data.kind === 'character' ? 'character' : 'world'
+    // Characters may be stat-less; Worlds still require at least one stat.
+    if (kind === 'world') {
+      assertNonEmptyStats(data.base_stats_template, 'base_stats_template')
+    }
 
     const _id = new ObjectId()
     let slug = slugify(data.title)
@@ -39,19 +44,30 @@ export const templateService = {
 
     const creatorOid = parseObjectId(creatorId)
 
+    // Lock the protagonist for sentient templates. Prefer an explicit one
+    // (Character creation supplies it); otherwise derive from the seed prompt so
+    // existing fantasy sentient worlds also get an accurate, fixed protagonist.
+    let protagonist = data.protagonist as WorldTemplateDoc['protagonist']
+    if (!protagonist?.name && data.is_sentient) {
+      protagonist = (await deriveProtagonist(data.seed_prompt)) || undefined
+    }
+
     const template: WorldTemplateDoc = {
       _id,
       creator_id: creatorOid,
       title: data.title,
       slug,
       description: data.description,
+      kind,
       is_published: false,
       is_sentient: data.is_sentient,
       is_nsfw_capable: data.is_nsfw_capable,
       version: 1,
       seed_prompt: data.seed_prompt,
       global_lore: data.global_lore,
-      base_stats_template: data.base_stats_template as Record<string, StatDefinitionDoc>,
+      opening_line: typeof data.opening_line === 'string' ? data.opening_line.trim() : undefined,
+      protagonist,
+      base_stats_template: (data.base_stats_template || {}) as Record<string, StatDefinitionDoc>,
       flag_definitions: (data.flag_definitions || {}) as Record<string, FlagDefinitionDoc>,
       scene_tags: data.scene_tags || [],
       // Narration models default to env (NARRATION_SFW_MODEL / _NSFW_MODEL) so
@@ -78,7 +94,8 @@ export const templateService = {
     })
     if (!existing) throw new Error('Template not found')
 
-    if (data.base_stats_template !== undefined) {
+    const effectiveKind = data.kind || existing.kind || 'world'
+    if (effectiveKind === 'world' && data.base_stats_template !== undefined) {
       assertNonEmptyStats(data.base_stats_template, 'base_stats_template')
     }
 
