@@ -90,6 +90,61 @@ export const characterCodexService = {
       .toArray()
   },
 
+  /**
+   * Deterministically create the locked protagonist card for an instance if one
+   * doesn't already exist. Used for sentient worlds (the AI persona, from the
+   * template) and GM worlds (the player's own character, from onboarding).
+   * `isPlayer` distinguishes the GM player-protagonist for roster rendering.
+   */
+  async seedProtagonist(params: {
+    instanceId: string
+    playerId: string
+    name: string
+    persona?: string
+    appearance?: string
+    isPlayer?: boolean
+    sequence?: number
+  }): Promise<CharacterProfileDoc | null> {
+    const { instanceId, playerId, name, persona, appearance, isPlayer, sequence = 0 } = params
+    const trimmed = (name || '').trim()
+    if (!trimmed) return null
+
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+
+    const existing = await characters().findOne({ instance_id: iid, is_protagonist: true })
+    if (existing) return existing
+
+    const now = new Date()
+    const doc: CharacterProfileDoc = {
+      _id: new ObjectId(),
+      instance_id: iid,
+      player_id: pid,
+      canonical_name: trimmed.slice(0, 120),
+      name_normalized: normalizeName(trimmed),
+      aliases: [],
+      role: isPlayer ? 'protagonist (the player)' : 'protagonist',
+      appearance: shouldSetText(appearance) ? appearance.trim() : undefined,
+      persona: shouldSetText(persona) ? persona.trim() : undefined,
+      immutable_facts: [],
+      mutable_state: [],
+      disposition_to_player: '',
+      hidden_thought: '',
+      is_protagonist: true,
+      first_seen_sequence: sequence,
+      last_seen_sequence: sequence,
+      mention_count: 1,
+      created_at: now,
+      updated_at: now,
+    }
+    try {
+      await characters().insertOne(doc)
+      return doc
+    } catch {
+      return characters().findOne({ instance_id: iid, name_normalized: doc.name_normalized })
+    }
+  },
+
   async applyDeltas(params: {
     instanceId: string
     playerId: string

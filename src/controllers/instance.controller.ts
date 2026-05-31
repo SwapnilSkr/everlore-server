@@ -43,6 +43,19 @@ export const instanceController = {
     return deletionService.deleteInstance(params.id, user.id)
   },
 
+  setProtagonist: async ({
+    user,
+    params,
+    body,
+  }: {
+    user: AuthUser | null
+    params: { id: string }
+    body: { name: string; identity?: string }
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return instanceService.setPlayerProtagonist(params.id, user.id, body)
+  },
+
   updateSettings: async ({
     user,
     params,

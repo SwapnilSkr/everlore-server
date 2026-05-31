@@ -14,6 +14,13 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
 
   .post('/:id/archive', (ctx) => instanceController.archive(ctx))
 
+  .post('/:id/protagonist', (ctx) => instanceController.setProtagonist(ctx), {
+    body: t.Object({
+      name: t.String({ minLength: 1, maxLength: 120 }),
+      identity: t.Optional(t.String({ maxLength: 400 })),
+    }),
+  })
+
   .delete('/:id', (ctx) => instanceController.delete(ctx))
 
   .patch('/:id/settings', (ctx) => instanceController.updateSettings(ctx), {

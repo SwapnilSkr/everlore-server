@@ -2,9 +2,11 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import type { WorldInstanceDoc } from '../models/world-instance.model'
 import type { WorldTemplateDoc, WorldTemplateSummaryDoc } from '../models/world-template.model'
+import type { WorldEventDoc } from '../models/world-event.model'
 import { getRedisClient } from '../config/redis'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { characterCodexService } from './character-codex.service'
 
 const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number }> = {
   free: { max_instances: 3, max_memories: 100 },
@@ -15,6 +17,7 @@ const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number 
 const worldTemplates = () => mongoColl.worldTemplates()
 const worldInstances = () => mongoColl.worldInstances()
 const characters = () => mongoColl.characters()
+const events = () => mongoColl.events()
 
 export type InstanceListRow = WorldInstanceDoc & {
   template: WorldTemplateSummaryDoc | null
@@ -45,12 +48,12 @@ export const instanceService = {
     }
 
     const worldState: Record<string, number> = {}
-    for (const [key, def] of Object.entries(template.base_stats_template)) {
+    for (const [key, def] of Object.entries(template.base_stats_template || {})) {
       worldState[key] = def.default
     }
 
     const activeFlags: Record<string, unknown> = {}
-    for (const [key, def] of Object.entries(template.flag_definitions)) {
+    for (const [key, def] of Object.entries(template.flag_definitions || {})) {
       activeFlags[key] = def.default
     }
 
@@ -67,8 +70,9 @@ export const instanceService = {
         turn_count: 0,
         summary_pending: false,
       },
-      // Worlds always start in third person; the player can toggle in chat.
-      narration_pov: 'third',
+      // Characters start in first person (intimate chat feel); Worlds start in
+      // third person. Either way the player can toggle POV in chat.
+      narration_pov: template.kind === 'character' ? 'first' : 'third',
       tone: '',
       focus_character_id: null,
       meta: {
@@ -83,6 +87,47 @@ export const instanceService = {
     }
 
     await worldInstances().insertOne(instance)
+
+    // Deterministic protagonist: for sentient templates, seed the locked main
+    // persona codex card from the template so it's present + correct from turn 0
+    // (rather than waiting for emergent extraction to discover it).
+    if (template.is_sentient && template.protagonist?.name) {
+      await characterCodexService.seedProtagonist({
+        instanceId: idString(_id),
+        playerId,
+        name: template.protagonist.name,
+        persona: template.protagonist.persona,
+        appearance: template.protagonist.appearance,
+        isPlayer: false,
+      })
+    }
+
+    // Opening line: if the template greets the player, seed it as the first event
+    // so the chat opens with the character speaking instead of a blank screen.
+    if (template.opening_line && template.opening_line.trim().length > 0) {
+      const greeting = template.opening_line.trim()
+      await events().insertOne({
+        _id: new ObjectId(),
+        instance_id: _id,
+        player_id: playerOid,
+        sequence: 1,
+        type: 'narration',
+        data: {
+          player_input: '',
+          ai_response: greeting,
+          state_mutations: {},
+          flag_mutations: {},
+          model_used: 'seed',
+          tokens_in: 0,
+          tokens_out: 0,
+        },
+        is_user_edited: false,
+        edit_history: [],
+        scene_tag: 'dialogue',
+        created_at: new Date(),
+      } as unknown as WorldEventDoc)
+    }
+
     return { instance, template }
   },
 
@@ -108,7 +153,7 @@ export const instanceService = {
     const templateIds = [...new Set(instances.map((i) => i.template_id))]
     const templates = (await worldTemplates()
       .find({ _id: { $in: templateIds } })
-      .project({ _id: 1, title: 1, is_sentient: 1, description: 1 })
+      .project({ _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1 })
       .toArray()) as WorldTemplateSummaryDoc[]
 
     const templateMap = new Map(templates.map((t) => [idString(t._id), t]))
@@ -132,6 +177,34 @@ export const instanceService = {
     await redis.del(`session:${idString(iid)}`)
 
     return { success: true }
+  },
+
+  /**
+   * GM onboarding: establish the player's own character as the locked protagonist
+   * of this instance (first play). No-op if a protagonist already exists.
+   */
+  async setPlayerProtagonist(
+    instanceId: string,
+    playerId: string,
+    data: { name: string; identity?: string },
+  ) {
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+    const instance = await worldInstances().findOne({ _id: iid, player_id: pid })
+    if (!instance) throw new HttpError(404, 'Instance not found')
+
+    const card = await characterCodexService.seedProtagonist({
+      instanceId,
+      playerId,
+      name: data.name,
+      persona: data.identity,
+      isPlayer: true,
+    })
+    return {
+      protagonist: card
+        ? { id: idString(card._id), canonical_name: card.canonical_name }
+        : null,
+    }
   },
 
   async loadSession(instanceId: string, playerId: string) {
