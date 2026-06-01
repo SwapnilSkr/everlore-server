@@ -2,6 +2,7 @@ import { getRedisClient, getRedisSubscriber } from '../config/redis'
 import { generationService } from './generation.service'
 import { verifyWsToken, type AuthUser } from '../middleware/auth'
 import { rateLimit } from '../middleware/rate-limit'
+import { log } from '../utils/logger'
 
 /** Underlying Bun socket — stable identity; Elysia passes a new `ElysiaWS` wrapper per event. */
 type RawWs = { send: (data: string) => void }
@@ -17,9 +18,18 @@ export function setupRedisPubSub() {
 
     const userId = match[1]
     const connections = activeConnections.get(userId)
-    if (!connections) return
+    if (!connections) {
+      // A frame was published but nobody is subscribed/tracked for this user —
+      // this is exactly the "stream goes nowhere" symptom worth surfacing.
+      const t = (() => { try { return JSON.parse(message).type } catch { return '?' } })()
+      log.warn('ws.relay.no_connection', { userId, type: t })
+      return
+    }
 
     const parsed = JSON.parse(message)
+    if (parsed?.type === 'replay_delta' || parsed?.type === 'replay_complete') {
+      log.info('ws.relay', { userId, type: parsed.type, sockets: connections.size })
+    }
     for (const ws of connections) {
       try {
         ws.send(JSON.stringify(parsed))
@@ -95,6 +105,15 @@ export const playWsService = {
     const redis = getRedisClient()
     const data = typeof msg === 'string' ? JSON.parse(msg) : msg
     const action = (data as { action?: string }).action
+
+    if (action !== 'ping') {
+      log.info('ws.message', {
+        userId: user.id,
+        action: action ?? '(none)',
+        instanceId: (data as { instance_id?: string }).instance_id,
+        eventId: (data as { event_id?: string }).event_id,
+      })
+    }
 
     switch (action) {
       case 'chat': {
@@ -215,9 +234,11 @@ export const playWsService = {
           })
           // Replays widen retrieval and can run a touch longer than a normal turn.
           await redis.set(lockKey, jobId!, 'EX', 60)
+          log.info('ws.replay.dispatched', { userId: user.id, instanceId, eventId, jobId })
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err)
+          log.error('ws.replay.failed', { userId: user.id, instanceId, eventId, error: message })
           ws.send(JSON.stringify({ type: 'error', message }))
         }
         break
@@ -241,6 +262,7 @@ export const playWsService = {
       }
 
       default: {
+        log.warn('ws.unknown_action', { userId: user.id, action: String(action) })
         ws.send(JSON.stringify({ type: 'error', message: `Unknown action: ${String(action)}` }))
       }
     }

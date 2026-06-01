@@ -536,11 +536,18 @@ export const memoryService = {
       .map((v, i) => `Variant ${replayVariants.length - Math.min(3, replayVariants.length) + i + 1}: ${String(v.narrative || '').slice(0, 220)}`)
       .join('\n')
 
+    // The replay directive MUST sit BEFORE the final user turn. If appended
+    // after it, the model often "answers" the directive — emitting the raw
+    // REQUIREMENTS/bullet text instead of narrating. Splicing it in just before
+    // the user message keeps the user turn last, so the model replies in-story.
+    const baseMessages = prompt.messages
+    const lastUserTurn = baseMessages[baseMessages.length - 1]
+    const head = baseMessages.slice(0, -1)
     const replayMessages = [
-      ...prompt.messages,
+      ...head,
       {
         role: 'system',
-        content: `REPLAY OPTIMIZATION DIRECTIVE:
+        content: `REPLAY OPTIMIZATION DIRECTIVE (instruction — do NOT repeat or quote this; respond only with in-character story prose):
 - Produce a DISTINCT alternative response to the same turn.
 - Improve precision, characterization, and continuity.
 - Keep canonical narration facts true.
@@ -550,6 +557,7 @@ export const memoryService = {
 Recent variants (for contrast, do not copy):
 ${replayDirective || '(none)'}`,
       },
+      lastUserTurn,
     ]
     const replayTemp = Math.max(0.45, 0.8 - replayDepth * 0.05)
     const replayNarrative = onDelta
