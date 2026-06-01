@@ -3,6 +3,7 @@ import type { AuthUser } from '../middleware/auth'
 import { templateService } from '../services/template.service'
 import { deletionService } from '../services/deletion.service'
 import { imageService } from '../services/image.service'
+import { autofillService } from '../services/autofill.service'
 import type { Static } from '@sinclair/typebox'
 import type { CreateTemplateBody, UpdateTemplateBody } from '../schemas/template.schema'
 import { HttpError } from '../utils/http-error'
@@ -44,33 +45,6 @@ export const templateController = {
     return template
   },
 
-  // Auto-suggest an editable visual prompt for the world/character avatar.
-  suggestImagePrompt: async ({
-    user,
-    body,
-  }: {
-    user: AuthUser | null
-    body: {
-      title: string
-      description?: string
-      seed_prompt?: string
-      global_lore?: string
-      narrative_style?: string
-      is_sentient?: boolean
-    }
-  }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
-    const prompt = await imageService.suggestPrompt({
-      title: body.title,
-      description: body.description,
-      seedPrompt: body.seed_prompt,
-      globalLore: body.global_lore,
-      narrativeStyle: body.narrative_style,
-      isSentient: body.is_sentient ?? true,
-    })
-    return { prompt }
-  },
-
   // Generate a preview image from a (creator-edited) prompt → returns CDN url.
   // Creator may call this repeatedly to re-roll until satisfied.
   generateImage: async ({
@@ -89,6 +63,40 @@ export const templateController = {
       throw new HttpError(429, 'Image generation rate limit exceeded. Try again shortly.')
     }
     return imageService.generatePreview(body.prompt)
+  },
+
+  // One-shot creation autofill — drafts an entire world/character from a brief.
+  autofill: async ({
+    user,
+    body,
+  }: {
+    user: AuthUser | null
+    body: {
+      target: 'world' | 'character'
+      brief?: string
+      is_sentient?: boolean
+      is_nsfw_capable?: boolean
+      narrative_style?: string
+    }
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (user.tier !== 'creator' && user.tier !== 'premium') {
+      throw new HttpError(403, 'Creator or premium tier required')
+    }
+    const rl = await rateLimit(user.id, 'autofill')
+    if (!rl.allowed) {
+      throw new HttpError(429, 'Autofill rate limit exceeded. Try again shortly.')
+    }
+    const opts = {
+      brief: body.brief,
+      isSentient: body.is_sentient ?? (body.target === 'character'),
+      isNsfwCapable: body.is_nsfw_capable ?? false,
+      narrativeStyle: body.narrative_style,
+    }
+    if (body.target === 'character') {
+      return { target: 'character', draft: await autofillService.autofillCharacter(opts) }
+    }
+    return { target: 'world', draft: await autofillService.autofillWorld(opts) }
   },
 
   create: async ({ user, body }: { user: AuthUser | null; body: CreateBody }) => {

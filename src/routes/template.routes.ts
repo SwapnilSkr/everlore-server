@@ -4,8 +4,8 @@ import {
   CreateTemplateBody,
   UpdateTemplateBody,
   TemplateQueryParams,
-  SuggestImageBody,
   GenerateImageBody,
+  AutofillBody,
 } from '../schemas/template.schema'
 import { templateController } from '../controllers/template.controller'
 
@@ -18,12 +18,12 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
 
   .get('/:id', (ctx) => templateController.getById(ctx))
 
-  .post('/image/suggest', (ctx) => templateController.suggestImagePrompt(ctx), {
-    body: SuggestImageBody,
-  })
-
   .post('/image/generate', (ctx) => templateController.generateImage(ctx), {
     body: GenerateImageBody,
+  })
+
+  .post('/autofill', (ctx) => templateController.autofill(ctx), {
+    body: AutofillBody,
   })
 
   .post('/', (ctx) => templateController.create(ctx), { body: CreateTemplateBody })

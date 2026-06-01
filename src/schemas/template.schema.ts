@@ -50,17 +50,16 @@ export const CreateTemplateBody = t.Object({
 
 export const UpdateTemplateBody = t.Partial(CreateTemplateBody)
 
-export const SuggestImageBody = t.Object({
-  title: t.String({ minLength: 1, maxLength: 200 }),
-  description: t.Optional(t.String({ maxLength: 2000 })),
-  seed_prompt: t.Optional(t.String({ maxLength: 10000 })),
-  global_lore: t.Optional(t.String({ maxLength: 50000 })),
-  narrative_style: t.Optional(t.String({ maxLength: 50 })),
-  is_sentient: t.Optional(t.Boolean()),
-})
-
 export const GenerateImageBody = t.Object({
   prompt: t.String({ minLength: 4, maxLength: 1200 }),
+})
+
+export const AutofillBody = t.Object({
+  target: t.Union([t.Literal('world'), t.Literal('character')]),
+  brief: t.Optional(t.String({ maxLength: 1500 })),
+  is_sentient: t.Optional(t.Boolean()),
+  is_nsfw_capable: t.Optional(t.Boolean()),
+  narrative_style: t.Optional(t.String({ maxLength: 50 })),
 })
 
 export const TemplateQueryParams = t.Object({

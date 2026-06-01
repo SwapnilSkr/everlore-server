@@ -58,6 +58,11 @@ export const AI_MODELS = {
    *  modalities:["image","text"]. Default Seedream 4.5 — anime-strong, cheap,
    *  fast. Override via IMAGE_MODEL. See server/IMAGE_MODELS.md for alternates. */
   image: env.IMAGE_MODEL,
+
+  /** One-shot creation autofill — drafts an entire world/character from a brief.
+   *  Default deepseek/deepseek-v4-flash (very cheap, fast, 1M ctx, solid JSON).
+   *  Override via AUTHORING_MODEL. */
+  authoring: env.AUTHORING_MODEL,
 } as const
 
 export type AiModelKey = keyof typeof AI_MODELS

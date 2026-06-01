@@ -5,6 +5,7 @@ const LIMITS: Record<string, { max: number; windowSeconds: number }> = {
   memory_edit: { max: 30, windowSeconds: 3600 },
   template_create: { max: 5, windowSeconds: 86400 },
   image_generate: { max: 40, windowSeconds: 3600 },
+  autofill: { max: 30, windowSeconds: 3600 },
   auth_attempt: { max: 10, windowSeconds: 300 },
   otp_send: { max: 5, windowSeconds: 600 },
   otp_verify: { max: 10, windowSeconds: 600 },
