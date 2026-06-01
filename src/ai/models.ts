@@ -53,6 +53,11 @@ export const AI_MODELS = {
 
   /** Embedding model for ALL vector stores (world lore + per-instance memories). */
   embedding: process.env.MODEL_EMBEDDING || 'text-embedding-3-small',
+
+  /** Image generation (world/character avatars + chat backgrounds). OpenRouter,
+   *  modalities:["image","text"]. Default Seedream 4.5 — anime-strong, cheap,
+   *  fast. Override via IMAGE_MODEL. See server/IMAGE_MODELS.md for alternates. */
+  image: env.IMAGE_MODEL,
 } as const
 
 export type AiModelKey = keyof typeof AI_MODELS

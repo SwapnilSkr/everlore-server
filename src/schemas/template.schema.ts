@@ -23,6 +23,8 @@ export const CreateTemplateBody = t.Object({
   global_lore: t.String({ maxLength: 50000 }),
   narrative_style: t.Optional(t.String({ maxLength: 50 })),
   style_notes: t.Optional(t.String({ maxLength: 500 })),
+  image_url: t.Optional(t.String({ maxLength: 600 })),
+  image_prompt: t.Optional(t.String({ maxLength: 1200 })),
   opening_line: t.Optional(t.String({ maxLength: 2000 })),
   protagonist: t.Optional(
     t.Object({
@@ -47,6 +49,19 @@ export const CreateTemplateBody = t.Object({
 })
 
 export const UpdateTemplateBody = t.Partial(CreateTemplateBody)
+
+export const SuggestImageBody = t.Object({
+  title: t.String({ minLength: 1, maxLength: 200 }),
+  description: t.Optional(t.String({ maxLength: 2000 })),
+  seed_prompt: t.Optional(t.String({ maxLength: 10000 })),
+  global_lore: t.Optional(t.String({ maxLength: 50000 })),
+  narrative_style: t.Optional(t.String({ maxLength: 50 })),
+  is_sentient: t.Optional(t.Boolean()),
+})
+
+export const GenerateImageBody = t.Object({
+  prompt: t.String({ minLength: 4, maxLength: 1200 }),
+})
 
 export const TemplateQueryParams = t.Object({
   page: t.Optional(t.Numeric()),

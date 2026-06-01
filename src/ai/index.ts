@@ -10,3 +10,4 @@
 export { AI_MODELS, type AiModelKey } from './models'
 export { callLLM, callLLMStream } from './client'
 export { embed, embedBatch } from './embedding'
+export { generateImage } from './image'

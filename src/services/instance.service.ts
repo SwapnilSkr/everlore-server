@@ -158,7 +158,7 @@ export const instanceService = {
     const templateIds = [...new Set(instances.map((i) => i.template_id))]
     const templates = (await worldTemplates()
       .find({ _id: { $in: templateIds } })
-      .project({ _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1 })
+      .project({ _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1, image_url: 1 })
       .toArray()) as WorldTemplateSummaryDoc[]
 
     const templateMap = new Map(templates.map((t) => [idString(t._id), t]))

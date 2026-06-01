@@ -53,6 +53,10 @@ export interface WorldTemplateDoc {
   narrative_style?: string
   /** Optional free-text style refinements appended to the voice block. */
   style_notes?: string
+  /** CDN URL of the generated avatar/background image (served via CloudFront). */
+  image_url?: string
+  /** The visual prompt used to generate {@link image_url} (for re-rolls/editing). */
+  image_prompt?: string
   /** Optional first message a sentient persona/character greets the player with. */
   opening_line?: string
   /** Locked main persona for sentient templates (deterministic protagonist). */
@@ -70,5 +74,5 @@ export interface WorldTemplateDoc {
 /** Projected fields when listing instances with template titles. */
 export type WorldTemplateSummaryDoc = Pick<
   WorldTemplateDoc,
-  '_id' | 'title' | 'is_sentient' | 'description' | 'kind'
+  '_id' | 'title' | 'is_sentient' | 'description' | 'kind' | 'image_url'
 >

@@ -10,6 +10,7 @@ import { embed } from '../ai'
 import { deriveProtagonist } from '../utils/protagonist'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { storageService } from './storage.service'
 
 const worldTemplates = () => mongoColl.worldTemplates()
 
@@ -52,6 +53,10 @@ export const templateService = {
       protagonist = (await deriveProtagonist(data.seed_prompt)) || undefined
     }
 
+    // Promote the chosen preview image to the durable prefix so the bucket
+    // lifecycle rule won't expire it. No-op for empty/non-preview URLs.
+    const imageUrl = data.image_url ? await storageService.promote(data.image_url) : ''
+
     const template: WorldTemplateDoc = {
       _id,
       creator_id: creatorOid,
@@ -67,6 +72,8 @@ export const templateService = {
       global_lore: data.global_lore,
       narrative_style: typeof data.narrative_style === 'string' ? data.narrative_style : '',
       style_notes: typeof data.style_notes === 'string' ? data.style_notes.slice(0, 500) : '',
+      image_url: imageUrl,
+      image_prompt: typeof data.image_prompt === 'string' ? data.image_prompt.slice(0, 1200) : '',
       opening_line: typeof data.opening_line === 'string' ? data.opening_line.trim() : undefined,
       protagonist,
       base_stats_template: (data.base_stats_template || {}) as Record<string, StatDefinitionDoc>,
@@ -104,6 +111,15 @@ export const templateService = {
     const updateFields: Record<string, unknown> = { ...data, updated_at: new Date() }
     delete updateFields.creator_id
     delete updateFields._id
+
+    // If a new image was chosen, promote the preview and evict the old object.
+    if (typeof data.image_url === 'string' && data.image_url !== existing.image_url) {
+      updateFields.image_url = data.image_url ? await storageService.promote(data.image_url) : ''
+      if (existing.image_url) {
+        const oldKey = storageService.keyFromUrl(existing.image_url)
+        if (oldKey) void storageService.delete(oldKey)
+      }
+    }
 
     await worldTemplates().updateOne({ _id: tid }, { $set: updateFields })
 

@@ -14,6 +14,12 @@ const optionalEnvVars = {
   // Narration models — swap freely for A/B (narration is prose-only, no JSON/tools needed).
   NARRATION_SFW_MODEL: 'deepseek/deepseek-v3.2',
   NARRATION_NSFW_MODEL: 'gryphe/mythomax-l2-13b',
+  // OpenRouter image-generation model (avatars + chat backgrounds).
+  IMAGE_MODEL: 'bytedance-seed/seedream-4.5',
+  // AWS S3 + CloudFront for generated media. Bucket is private; served via CDN.
+  AWS_REGION: 'ap-south-1',
+  S3_BUCKET: '',
+  CDN_BASE_URL: '',
   GOOGLE_CLIENT_ID: '',
   TWILIO_ACCOUNT_SID: '',
   TWILIO_AUTH_TOKEN: '',
@@ -31,6 +37,10 @@ export interface Env {
   PINECONE_INDEX: string
   NARRATION_SFW_MODEL: string
   NARRATION_NSFW_MODEL: string
+  IMAGE_MODEL: string
+  AWS_REGION: string
+  S3_BUCKET: string
+  CDN_BASE_URL: string
   CLIENT_ORIGINS: string[]
   GOOGLE_CLIENT_ID: string
   TWILIO_ACCOUNT_SID: string
@@ -58,6 +68,10 @@ function loadEnv(): Env {
     PINECONE_INDEX: process.env.PINECONE_INDEX || optionalEnvVars.PINECONE_INDEX,
     NARRATION_SFW_MODEL: process.env.NARRATION_SFW_MODEL || optionalEnvVars.NARRATION_SFW_MODEL,
     NARRATION_NSFW_MODEL: process.env.NARRATION_NSFW_MODEL || optionalEnvVars.NARRATION_NSFW_MODEL,
+    IMAGE_MODEL: process.env.IMAGE_MODEL || optionalEnvVars.IMAGE_MODEL,
+    AWS_REGION: process.env.AWS_REGION || optionalEnvVars.AWS_REGION,
+    S3_BUCKET: process.env.S3_BUCKET || optionalEnvVars.S3_BUCKET,
+    CDN_BASE_URL: process.env.CDN_BASE_URL || optionalEnvVars.CDN_BASE_URL,
     CLIENT_ORIGINS: (process.env.CLIENT_ORIGINS || optionalEnvVars.CLIENT_ORIGINS).split(','),
     GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || optionalEnvVars.GOOGLE_CLIENT_ID,
     TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID || optionalEnvVars.TWILIO_ACCOUNT_SID,
