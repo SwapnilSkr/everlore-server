@@ -6,6 +6,7 @@ import { getRedisClient } from '../config/redis'
 import { getMemoryCurationQueue, QUEUE_RETENTION } from '../queues'
 import { queryRag } from '../providers/rag.provider'
 import { buildPrompt } from '../utils/prompt-builder'
+import { lengthMaxTokens } from '../utils/narrative-styles'
 import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
@@ -564,16 +565,20 @@ ${replayDirective || '(none)'}`,
       lastUserTurn,
     ]
     const replayTemp = Math.max(0.45, 0.8 - replayDepth * 0.05)
+    // Match the alternative's length budget to the player's chosen reply length,
+    // exactly like the primary turn — so a regenerate respects short/medium/long
+    // instead of always running to a fixed 900-token ceiling.
+    const replayMaxTokens = lengthMaxTokens(instance.message_length || 'medium')
     const replayNarrative = onDelta
       ? await callLLMStream(
-          { model: modelId, messages: replayMessages, temperature: replayTemp, maxTokens: 900 },
+          { model: modelId, messages: replayMessages, temperature: replayTemp, maxTokens: replayMaxTokens },
           onDelta,
         )
       : await callLLM({
           model: modelId,
           messages: replayMessages,
           temperature: replayTemp,
-          maxTokens: 900,
+          maxTokens: replayMaxTokens,
         })
 
     const nextVariant = {
