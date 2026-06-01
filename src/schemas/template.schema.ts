@@ -13,31 +13,51 @@ const FlagDefinition = t.Object({
   description: t.String(),
 })
 
+// ── Field length caps (characters) ──────────────────────────────────────────
+// Single source of truth shared with the frontend field caps and the autofill
+// clamps. Kept deliberately lean so the world/character static prompt prefix
+// stays small and cacheable (healthy TTFT). Storage caps carry a little headroom
+// above the per-field UI caps because character creation COMPOSES several fields
+// (seed = "You are {name}. {tagline}.\n\n{persona}"; backstory -> global_lore;
+// greeting -> opening_line), so the stored value can be a bit longer than any
+// single field the creator typed.
+export const FIELD_LIMITS = {
+  title: 80, // UI cap 60 (name/world name) + headroom
+  description: 600, // UI cap 400 (world) / 120 (tagline) + headroom
+  seedPrompt: 2500, // UI cap 1500 (world seed / character persona) + composition headroom
+  globalLore: 3000, // UI cap 2500 (lore / backstory) + headroom
+  openingLine: 600, // UI cap 400 (opening / greeting) + headroom
+  styleNotes: 500,
+  imagePrompt: 1200, // decorated prompt (visual core 400 + style/composition suffix)
+  protagonistName: 80,
+  protagonistText: 400,
+} as const
+
 export const CreateTemplateBody = t.Object({
-  title: t.String({ minLength: 1, maxLength: 200 }),
-  description: t.String({ minLength: 1, maxLength: 2000 }),
+  title: t.String({ minLength: 1, maxLength: FIELD_LIMITS.title }),
+  description: t.String({ minLength: 1, maxLength: FIELD_LIMITS.description }),
   kind: t.Optional(t.Union([t.Literal('world'), t.Literal('character')])),
   is_sentient: t.Boolean(),
   is_nsfw_capable: t.Boolean(),
-  seed_prompt: t.String({ minLength: 10, maxLength: 10000 }),
-  global_lore: t.String({ maxLength: 50000 }),
+  seed_prompt: t.String({ minLength: 10, maxLength: FIELD_LIMITS.seedPrompt }),
+  global_lore: t.String({ maxLength: FIELD_LIMITS.globalLore }),
   narrative_style: t.Optional(t.String({ maxLength: 50 })),
-  style_notes: t.Optional(t.String({ maxLength: 500 })),
+  style_notes: t.Optional(t.String({ maxLength: FIELD_LIMITS.styleNotes })),
   image_url: t.Optional(t.String({ maxLength: 600 })),
-  image_prompt: t.Optional(t.String({ maxLength: 1200 })),
-  opening_line: t.Optional(t.String({ maxLength: 2000 })),
+  image_prompt: t.Optional(t.String({ maxLength: FIELD_LIMITS.imagePrompt })),
+  opening_line: t.Optional(t.String({ maxLength: FIELD_LIMITS.openingLine })),
   protagonist: t.Optional(
     t.Object({
-      name: t.String({ minLength: 1, maxLength: 120 }),
-      persona: t.Optional(t.String({ maxLength: 400 })),
-      appearance: t.Optional(t.String({ maxLength: 400 })),
+      name: t.String({ minLength: 1, maxLength: FIELD_LIMITS.protagonistName }),
+      persona: t.Optional(t.String({ maxLength: FIELD_LIMITS.protagonistText })),
+      appearance: t.Optional(t.String({ maxLength: FIELD_LIMITS.protagonistText })),
     }),
   ),
   // Optional: Character-kind templates may have zero stats. Worlds still require
   // at least one (enforced in templateService for kind 'world').
   base_stats_template: t.Optional(t.Record(t.String(), StatDefinition)),
   flag_definitions: t.Optional(t.Record(t.String(), FlagDefinition)),
-  scene_tags: t.Optional(t.Array(t.String())),
+  scene_tags: t.Optional(t.Array(t.String({ maxLength: 24 }), { maxItems: 8 })),
   model_preferences: t.Optional(t.Object({
     logic: t.Optional(t.String()),
     narration_nsfw: t.Optional(t.String()),

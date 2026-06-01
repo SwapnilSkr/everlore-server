@@ -24,6 +24,17 @@ const STYLE_HINT: Record<string, string> = {
   epic_fantasy: 'epic painterly fantasy concept art, dramatic lighting',
   grimdark: 'dark grim fantasy concept art, desaturated, ominous mood',
   modern_casual: 'clean contemporary illustration, natural lighting',
+  yandere: 'vibrant anime illustration, intense expressive eyes, unsettling intimate mood',
+  dark_romance: 'moody cinematic illustration, dramatic chiaroscuro lighting, sensual dangerous mood',
+  shonen: 'dynamic shonen anime illustration, bold action linework, dramatic energy',
+  cyberpunk: 'neon-soaked cyberpunk illustration, rain-slick reflections, holographic glow, high contrast',
+  kdrama: 'soft cinematic illustration, warm romantic lighting, tender mood',
+  cozy_comfort: 'soft warm illustration, gentle golden lighting, cozy comforting atmosphere',
+  dark_academia: 'moody dark-academia illustration, candlelit gothic interior, muted vintage palette',
+  regency: 'elegant period-romance illustration, soft painterly lighting, regency-era setting',
+  horror: 'eerie horror illustration, deep shadows, unsettling atmosphere, desaturated dread',
+  litrpg: 'vibrant fantasy game-art illustration, heroic adventurer, glowing magical effects',
+  chaotic_comedy: 'lively colorful cartoon illustration, exaggerated expressive comedy, dynamic energy',
 }
 const DEFAULT_HINT = 'high-quality character illustration, cinematic lighting'
 

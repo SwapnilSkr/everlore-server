@@ -14,7 +14,38 @@ import { HttpError } from '../utils/http-error'
 const VALID_STYLE_KEYS = [
   'default', 'modern_casual', 'anime', 'tsundere', 'romcom', 'flirty', 'noir',
   'slice_of_life', 'whimsical', 'epic_fantasy', 'grimdark',
+  'yandere', 'dark_romance', 'shonen', 'cyberpunk', 'kdrama', 'cozy_comfort',
+  'dark_academia', 'regency', 'horror', 'litrpg', 'chaotic_comedy',
 ]
+
+/**
+ * Per-field draft caps (characters). These MUST match the frontend field caps
+ * exactly so a draft that re-seeds a capped TextField never exceeds the visible
+ * counter. They sit at or below the storage caps in template.schema.ts and are
+ * kept lean to keep the cacheable prompt prefix small (healthy TTFT).
+ */
+const DRAFT = {
+  // world
+  title: 60,
+  description: 400,
+  seedPrompt: 1500,
+  globalLore: 2500,
+  openingLine: 400,
+  visualCore: 400,
+  statName: 32,
+  statDesc: 120,
+  flagName: 32,
+  flagDesc: 120,
+  sceneTag: 24,
+  // character
+  name: 60,
+  tagline: 120,
+  persona: 1500,
+  greeting: 400,
+  backstory: 2500,
+  // shared
+  styleNotes: 500,
+} as const
 
 export interface WorldDraft {
   title: string
@@ -88,7 +119,7 @@ function cleanTags(v: any): string[] {
   if (!Array.isArray(v)) return []
   return v
     .map((t) => String(t).trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, ''))
-    .filter((t) => t.length > 0 && t.length <= 30)
+    .filter((t) => t.length > 0 && t.length <= DRAFT.sceneTag)
     .slice(0, 8)
 }
 
@@ -96,14 +127,14 @@ function cleanStats(v: any): WorldDraft['stats'] {
   const arr = Array.isArray(v) ? v : []
   const out = arr
     .map((s) => {
-      const name = str(s?.name, 40)
+      const name = str(s?.name, DRAFT.statName)
       if (!name) return null
       const min = num(s?.min, 0)
       const max = num(s?.max, 100)
       const lo = Math.min(min, max)
       const hi = Math.max(min, max, lo + 1)
       const def = Math.max(lo, Math.min(hi, num(s?.default, Math.round((lo + hi) / 2))))
-      return { name, default: def, min: lo, max: hi, description: str(s?.description, 200) }
+      return { name, default: def, min: lo, max: hi, description: str(s?.description, DRAFT.statDesc) }
     })
     .filter((s): s is WorldDraft['stats'][number] => s !== null)
     .slice(0, 6)
@@ -118,7 +149,7 @@ function cleanFlags(v: any): WorldDraft['flags'] {
   const arr = Array.isArray(v) ? v : []
   return arr
     .map((f) => {
-      const name = str(f?.name, 40)
+      const name = str(f?.name, DRAFT.flagName)
       if (!name) return null
       let type: 'boolean' | 'integer' | 'string' = 'boolean'
       if (f?.type === 'integer' || f?.type === 'string') type = f.type
@@ -126,7 +157,7 @@ function cleanFlags(v: any): WorldDraft['flags'] {
       if (type === 'integer') def = Math.round(num(f?.default, 0))
       else if (type === 'string') def = str(f?.default, 80)
       else def = Boolean(f?.default)
-      return { name, type, default: def, description: str(f?.description, 200) }
+      return { name, type, default: def, description: str(f?.description, DRAFT.flagDesc) }
     })
     .filter((f): f is WorldDraft['flags'][number] => f !== null)
     .slice(0, 4)
@@ -135,7 +166,7 @@ function cleanFlags(v: any): WorldDraft['flags'] {
 function styleGuidance(isNsfw: boolean): string {
   return [
     'Pick the narrative_style key that best fits the concept from this exact set:',
-    'default, modern_casual, anime, tsundere, romcom, flirty, noir, slice_of_life, whimsical, epic_fantasy, grimdark.',
+    `${VALID_STYLE_KEYS.join(', ')}.`,
     isNsfw
       ? 'Mature themes are permitted; you may lean flirty/romantic where it fits, but keep the draft itself non-explicit.'
       : 'Keep everything strictly safe-for-work.',
@@ -155,21 +186,22 @@ export const autofillService = {
       `You are a world-design assistant for an immersive AI roleplay app. Draft ${kind}.`,
       'Return ONLY a JSON object (no markdown, no prose) with EXACTLY these keys:',
       '{',
-      '"title": short evocative world name (2-5 words),',
-      '"description": one compelling paragraph (2-3 sentences) shown in the browser,',
-      '"seed_prompt": the core system premise the AI runs on — who/what the world is, its central situation, what the player does (3-6 sentences, second person where natural),',
-      '"global_lore": key facts, factions, places, rules, history the AI must always know (one rich paragraph),',
+      `"title": short evocative world name, 2-5 words (max ${DRAFT.title} chars),`,
+      `"description": one compelling paragraph, 2-3 sentences shown in the browser (max ${DRAFT.description} chars),`,
+      `"seed_prompt": the core system premise the AI runs on — who/what the world is, its central situation, what the player does, 3-6 sentences, second person where natural (max ${DRAFT.seedPrompt} chars),`,
+      `"global_lore": key facts, factions, places, rules, history the AI must always know, one rich paragraph (max ${DRAFT.globalLore} chars),`,
       '"narrative_style": one key from the allowed set,',
-      '"style_notes": one short sentence of extra voice guidance (may be empty string),',
-      '"opening_line": the very first line the world says to open the scene (immersive, in-voice),',
-      '"scene_tags": 3-6 short lowercase_snake tags describing settings/moods,',
-      '"stats": 3-5 player attributes, each {name, default(0-100), min, max, description},',
-      '"flags": 0-3 world state flags, each {name, type("boolean"|"integer"|"string"), default, description},',
-      '"visual": ONE concrete line describing what an establishing image of this world looks like — place, atmosphere, lighting (no art-style or quality words)',
+      `"style_notes": one short sentence of extra voice guidance, may be empty string (max ${DRAFT.styleNotes} chars),`,
+      `"opening_line": the very first line the world says to open the scene, immersive and in-voice (max ${DRAFT.openingLine} chars),`,
+      `"scene_tags": 3-6 short lowercase_snake tags describing settings/moods (each max ${DRAFT.sceneTag} chars),`,
+      `"stats": 3-5 player attributes, each {name (max ${DRAFT.statName} chars), default(0-100), min, max, description (max ${DRAFT.statDesc} chars)},`,
+      `"flags": 0-3 world state flags, each {name (max ${DRAFT.flagName} chars), type("boolean"|"integer"|"string"), default, description (max ${DRAFT.flagDesc} chars)},`,
+      `"visual": ONE concrete line describing what an establishing image of this world looks like — place, atmosphere, lighting, no art-style or quality words (max ${DRAFT.visualCore} chars)`,
       '}',
       lockedStyle
         ? `The narrative_style MUST be "${lockedStyle}" (the creator locked it).`
         : styleGuidance(input.isNsfwCapable),
+      'Stay within every field\'s character limit — be vivid but concise; do not pad to fill space.',
       'Make it vivid, specific, and genuinely fun to play — avoid generic medieval filler unless the brief asks for it.',
     ].join('\n')
 
@@ -180,7 +212,7 @@ export const autofillService = {
     const raw = await callLLM({
       model: AI_MODELS.authoring,
       temperature: 0.9,
-      maxTokens: 1400,
+      maxTokens: 2000,
       responseFormat: { type: 'json_object' },
       messages: [
         { role: 'system', content: system },
@@ -191,17 +223,17 @@ export const autofillService = {
     const j = parseJson(raw)
     const style = lockedStyle || cleanStyle(j.narrative_style)
     return {
-      title: str(j.title, 200, 'Untitled World'),
-      description: str(j.description, 2000),
-      seed_prompt: str(j.seed_prompt, 10000),
-      global_lore: str(j.global_lore, 50000),
+      title: str(j.title, DRAFT.title, 'Untitled World'),
+      description: str(j.description, DRAFT.description),
+      seed_prompt: str(j.seed_prompt, DRAFT.seedPrompt),
+      global_lore: str(j.global_lore, DRAFT.globalLore),
       narrative_style: style,
-      style_notes: str(j.style_notes, 500),
-      opening_line: str(j.opening_line, 2000),
+      style_notes: str(j.style_notes, DRAFT.styleNotes),
+      opening_line: str(j.opening_line, DRAFT.openingLine),
       scene_tags: cleanTags(j.scene_tags),
       stats: cleanStats(j.stats),
       flags: cleanFlags(j.flags),
-      image_prompt: decorateImagePrompt(str(j.visual, 400, str(j.title, 200)), style),
+      image_prompt: decorateImagePrompt(str(j.visual, DRAFT.visualCore, str(j.title, DRAFT.title)), style),
     }
   },
 
@@ -211,18 +243,19 @@ export const autofillService = {
       'You design vivid, talkable AI roleplay characters. Draft ONE character the user will chat with.',
       'Return ONLY a JSON object (no markdown, no prose) with EXACTLY these keys:',
       '{',
-      '"name": the character\'s name,',
-      '"tagline": one short line capturing who they are at a glance,',
-      '"persona": how they think, talk, and treat the user — mood, quirks, speech patterns, relationship dynamic (one rich paragraph, second person to the user where natural),',
-      '"greeting": the first thing they say when the chat opens (in their voice),',
-      '"backstory": their past, world, and relationships the AI should always know (one paragraph),',
+      `"name": the character's name (max ${DRAFT.name} chars),`,
+      `"tagline": one short line capturing who they are at a glance (max ${DRAFT.tagline} chars),`,
+      `"persona": how they think, talk, and treat the user — mood, quirks, speech patterns, relationship dynamic, one rich paragraph, second person to the user where natural (max ${DRAFT.persona} chars),`,
+      `"greeting": the first thing they say when the chat opens, in their voice (max ${DRAFT.greeting} chars),`,
+      `"backstory": their past, world, and relationships the AI should always know, one paragraph (max ${DRAFT.backstory} chars),`,
       '"narrative_style": one key from the allowed set,',
-      '"style_notes": one short sentence of extra voice guidance (may be empty string),',
-      '"visual": ONE concrete line describing the character\'s appearance — face, hair, build, clothing, expression, setting (no art-style or quality words)',
+      `"style_notes": one short sentence of extra voice guidance, may be empty string (max ${DRAFT.styleNotes} chars),`,
+      `"visual": ONE concrete line describing the character's appearance — face, hair, build, clothing, expression, setting, no art-style or quality words (max ${DRAFT.visualCore} chars)`,
       '}',
       lockedStyle
         ? `The narrative_style MUST be "${lockedStyle}" (the creator locked it).`
         : styleGuidance(input.isNsfwCapable),
+      'Stay within every field\'s character limit — be vivid but concise; do not pad to fill space.',
       'Give them a distinct, memorable voice — not a generic assistant.',
     ].join('\n')
 
@@ -233,7 +266,7 @@ export const autofillService = {
     const raw = await callLLM({
       model: AI_MODELS.authoring,
       temperature: 0.9,
-      maxTokens: 1100,
+      maxTokens: 1500,
       responseFormat: { type: 'json_object' },
       messages: [
         { role: 'system', content: system },
@@ -244,14 +277,14 @@ export const autofillService = {
     const j = parseJson(raw)
     const style = lockedStyle || cleanStyle(j.narrative_style)
     return {
-      name: str(j.name, 120, 'Unnamed'),
-      tagline: str(j.tagline, 400),
-      persona: str(j.persona, 10000),
-      greeting: str(j.greeting, 2000),
-      backstory: str(j.backstory, 50000),
+      name: str(j.name, DRAFT.name, 'Unnamed'),
+      tagline: str(j.tagline, DRAFT.tagline),
+      persona: str(j.persona, DRAFT.persona),
+      greeting: str(j.greeting, DRAFT.greeting),
+      backstory: str(j.backstory, DRAFT.backstory),
       narrative_style: style,
-      style_notes: str(j.style_notes, 500),
-      image_prompt: decorateImagePrompt(str(j.visual, 400, str(j.name, 120)), style),
+      style_notes: str(j.style_notes, DRAFT.styleNotes),
+      image_prompt: decorateImagePrompt(str(j.visual, DRAFT.visualCore, str(j.name, DRAFT.name)), style),
     }
   },
 }

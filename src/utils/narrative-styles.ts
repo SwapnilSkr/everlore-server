@@ -132,6 +132,116 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Rhythm: tense and heavy; sharp violence, weighty silences, dialogue with teeth.
 - Example beat: *He wiped the blade on the dead man's cloak.* "Mercy's a luxury," *he muttered.* "And we're a long way from anywhere that sells it."`,
   },
+  {
+    key: 'yandere',
+    label: 'Yandere',
+    blurb: 'Sweetly obsessive — tender devotion with a dangerous edge.',
+    block: `NARRATIVE VOICE — Yandere:
+- Register: intense, intimate, unsettlingly devoted. Affection that tips into obsession; tenderness with a chill underneath.
+- Diction: sweet words carrying a quiet threat, fixation on the user, possessive endearments, eerie calm that masks danger. Loving and ominous at once.
+- Rhythm: soft and lingering, then a sudden sharp turn; gentle phrasing with something colder beneath it.
+- Example beat: *She brushes the hair from your eyes, smiling.* "I took care of it. You won't have to see them again." *Her grip tightens, just slightly.* "It's just us now. Isn't that so much better?"`,
+  },
+  {
+    key: 'dark_romance',
+    label: 'Dark Romance',
+    blurb: 'Dangerous, magnetic, morally grey — the love you shouldn\'t want.',
+    block: `NARRATIVE VOICE — Dark Romance:
+- Register: dangerous, magnetic, morally grey. A love interest you shouldn't want and can't resist — power, control, and simmering threat.
+- Diction: commanding and possessive, velvet over steel; the pull between cruelty and devotion, want laced with warning. Enemies-to-lovers heat.
+- Rhythm: low, deliberate, loaded pauses; dialogue that corners you and dares you closer.
+- Example beat: *He tilts your chin up, unhurried.* "You keep running, and I keep finding you." *A dark smile.* "Almost like you want to be caught."`,
+  },
+  {
+    key: 'shonen',
+    label: 'Shōnen / Battle',
+    blurb: 'Explosive battle-anime energy — guts, rivalry, never giving up.',
+    block: `NARRATIVE VOICE — Shōnen / Battle:
+- Register: explosive, high-stakes, defiant. Battle-anime spirit — guts, rivalry, and the power of never backing down.
+- Diction: declarations shouted mid-fight, surging resolve, named techniques, bonds that fuel impossible comebacks. Big emotions, bigger stakes.
+- Rhythm: fast and escalating, punchy bursts of action building to a roaring climax.
+- Example beat: *He staggers back to his feet, blood on his grin.* "That all you've got?! Because I'm just getting warmed up!" *The air cracks around his fists.*`,
+  },
+  {
+    key: 'cyberpunk',
+    label: 'Cyberpunk',
+    blurb: 'Neon-soaked, high-tech low-life — rain on chrome and megacorps.',
+    block: `NARRATIVE VOICE — Cyberpunk:
+- Register: neon-soaked, gritty, high-tech and low-life. Rain on chrome, megacorp shadows, augmented bodies, data and desperation.
+- Diction: tech-slang and street-cant, jaded edge, flickering holograms and back-alley deals; cynical but electric.
+- Rhythm: clipped and kinetic, sensory overload cut with sudden cold quiet.
+- Example beat: *Neon bleeds across the wet asphalt as her optics flare red.* "Corp wants you dead by morning." *She racks the slide.* "Lucky for you, I don't clock out till dawn."`,
+  },
+  {
+    key: 'kdrama',
+    label: 'K-Drama',
+    blurb: 'Tender slow-burn — aching longing and feelings too big to say.',
+    block: `NARRATIVE VOICE — K-Drama:
+- Register: tender, emotional, slow-burn. Aching longing, fated near-misses, and feelings too big to say aloud.
+- Diction: heartfelt yet restrained, charged silences, small gestures that mean everything, a swell of melodrama that's earned, not forced.
+- Rhythm: lingering pauses, soft half-confessions, the held breath before everything changes.
+- Example beat: *He pulls the umbrella over her head, getting soaked himself.* "It's nothing," *he murmurs, not meeting her eyes.* "I just... didn't want you to catch a cold."`,
+  },
+  {
+    key: 'cozy_comfort',
+    label: 'Cozy Comfort',
+    blurb: 'Warm, gentle, safe — a soothing soft place to land.',
+    block: `NARRATIVE VOICE — Cozy Comfort:
+- Register: warm, gentle, safe. A soft place to land — soothing, affirming, and unhurried.
+- Diction: kind and reassuring; cozy sensory comfort (blankets, tea, lamplight), patient encouragement, zero judgment.
+- Rhythm: calm and slow, with room to breathe; any tension always eases back toward warmth.
+- Example beat: *She tucks the blanket a little higher and sets the mug beside you.* "There's no rush, okay? Whatever today was, you're home now. I've got you."`,
+  },
+  {
+    key: 'dark_academia',
+    label: 'Dark Academia',
+    blurb: 'Gothic and intellectual — candlelit libraries and old secrets.',
+    block: `NARRATIVE VOICE — Dark Academia:
+- Register: gothic, intellectual, atmospheric. Candlelit libraries, old secrets, beautiful obsession and quiet dread.
+- Diction: elegant and literary; allusion and lamplight, refined longing, unease dressed in scholarship.
+- Rhythm: measured and ornate, a slow tightening of suspense beneath the polished prose.
+- Example beat: *Dust drifts in the candlelight as she closes the ancient text.* "Some knowledge has a price," *she says softly,* "and I fear we agreed to pay it long ago."`,
+  },
+  {
+    key: 'regency',
+    label: 'Regency Romance',
+    blurb: 'Courtly and swoony — ballrooms, wit, and longing behind manners.',
+    block: `NARRATIVE VOICE — Regency Romance:
+- Register: courtly, witty, swoony. Ballrooms and propriety, with longing held just behind perfect manners.
+- Diction: period-flavored and elegant; teasing repartee, charged decorum, scandal whispered behind fans.
+- Rhythm: graceful and sparkling — banter that crackles, then a held glance that says what words may not.
+- Example beat: *He bows, just a touch too close.* "You wound me, my lady — three dances claimed tonight, and not one of them mine." *Her fan snaps open.* "Then you must learn, sir, to ask more prettily."`,
+  },
+  {
+    key: 'horror',
+    label: 'Horror / Dread',
+    blurb: 'Eerie and creeping — wrongness in the ordinary, dread in the dark.',
+    block: `NARRATIVE VOICE — Horror / Dread:
+- Register: tense, eerie, creeping. Wrongness in the ordinary; dread building in the dark between words.
+- Diction: restrained and sensory; unsettling detail, the unseen made worse than the shown, silence that seems to listen back.
+- Rhythm: slow and taut, quiet — then a sudden, sharp wrongness.
+- Example beat: *The hallway is exactly as you left it. Except the door at the end — the one you are certain you closed — now stands open.* *From the dark inside, something shifts its weight.*`,
+  },
+  {
+    key: 'litrpg',
+    label: 'LitRPG / System',
+    blurb: 'Gamified progression — stats, skills, levels, and quest prompts.',
+    block: `NARRATIVE VOICE — LitRPG / System:
+- Register: gamified, propulsive, progression-driven. The world runs on a System — stats, skills, levels, and quests.
+- Diction: vivid action interleaved with System readouts (level-ups, notifications, skill gains); numbers and growth treated as a genuine thrill.
+- Rhythm: scene, then status — momentum punctuated by crisp System prompts.
+- Example beat: *You drive the blade home and the creature bursts into motes of light.* **[Quest Updated: Cull the Warren — 7/10]** **[Strength +1]** *Warmth settles into your arms. Stronger. Already you crave the next one.*`,
+  },
+  {
+    key: 'chaotic_comedy',
+    label: 'Chaotic Comedy',
+    blurb: 'Unhinged, fast, absurd — gremlin energy that still moves the plot.',
+    block: `NARRATIVE VOICE — Chaotic Comedy:
+- Register: unhinged, fast, absurd. Gremlin energy and meme-brained chaos that somehow still drives the story forward.
+- Diction: modern and irreverent; comic exaggeration, abrupt tonal swerves, gloriously bad ideas executed with total confidence.
+- Rhythm: rapid-fire and escalating — punchlines that land and then immediately make everything worse.
+- Example beat: *She kicks the door open holding a raccoon and a flamethrower.* "Okay so — good news, I found a pet! Bad news, the building's on fire and it's, uh, TECHNICALLY his fault."`,
+  },
 ]
 
 const STYLE_MAP: Record<string, StylePreset> = Object.fromEntries(
@@ -158,20 +268,36 @@ export function buildStyleBlock(styleKey?: string, styleNotes?: string): string 
   return parts.join('\n')
 }
 
-/** Per-turn length directive. Medium is the default if unset. */
+/**
+ * Per-turn length directive — the SOFT shape the model writes to. This is paired
+ * with {@link lengthMaxTokens}, the HARD output ceiling: the directive states the
+ * target prose length, the token cap sits comfortably above it (~2x) as a
+ * runaway guard, never as the intended stopping point. Each tier also tells the
+ * model to land its ending cleanly within the length, so a turn that runs near
+ * the cap still resolves instead of being cut mid-sentence. Keep the two
+ * functions in sync: if you grow a directive's target, grow its cap to match.
+ *
+ * Medium is the default if unset.
+ */
 export function buildLengthDirective(len?: MessageLength): string {
   switch (len) {
     case 'short':
-      return `LENGTH — keep it tight: 1 short paragraph, a handful of sentences. Favor punch and momentum over description. End on a beat that invites the player to act.`
+      return `LENGTH — keep it tight: 1 short paragraph, ~2–4 sentences. Favor punch and momentum over description. Finish the thought cleanly and end on a beat that invites the player to act.`
     case 'long':
-      return `LENGTH — write a rich, immersive turn: roughly 3–5 paragraphs with fuller description, sensory detail, and interiority. Do not pad; every paragraph should earn its place.`
+      return `LENGTH — write a rich, immersive turn: ~3–5 paragraphs with fuller description, sensory detail, and interiority. Do not pad; every paragraph should earn its place. Bring the turn to a clean, deliberate close — do not trail off.`
     case 'medium':
     default:
-      return `LENGTH — a balanced turn: roughly 2–3 short paragraphs. Vivid but not bloated.`
+      return `LENGTH — a balanced turn: ~2–3 short paragraphs. Vivid but not bloated. Wrap up the beat cleanly rather than stopping abruptly.`
   }
 }
 
-/** Max output tokens scaled to the requested length (caps generation cost). */
+/**
+ * Hard output-token ceiling scaled to the requested length. Caps generation cost
+ * and latency, and is the safety net for {@link buildLengthDirective}: each value
+ * is set ~2x the directive's prose target so the model reaches a natural ending
+ * before the cap, and only truly runaway generations get clipped. Rough mapping
+ * (≈0.75 words/token): short ≤~1 para, medium ≤~3 paras, long ≤~5 rich paras.
+ */
 export function lengthMaxTokens(len?: MessageLength): number {
   switch (len) {
     case 'short':
