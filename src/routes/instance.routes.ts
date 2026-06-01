@@ -21,6 +21,8 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
     }),
   })
 
+  .post('/:id/reset', (ctx) => instanceController.reset(ctx))
+
   .delete('/:id', (ctx) => instanceController.delete(ctx))
 
   .patch('/:id/settings', (ctx) => instanceController.updateSettings(ctx), {

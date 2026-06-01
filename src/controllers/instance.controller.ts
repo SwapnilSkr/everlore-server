@@ -38,6 +38,11 @@ export const instanceController = {
     return instanceService.archive(params.id, user.id)
   },
 
+  reset: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return deletionService.resetInstance(params.id, user.id)
+  },
+
   delete: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return deletionService.deleteInstance(params.id, user.id)
