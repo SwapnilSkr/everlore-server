@@ -1,85 +1,49 @@
-import { callLLM } from "../src/ai";
+import { parseArgs, runModels } from "./model-test-lib";
 
 /**
- * Short alias -> exact OpenRouter slug. Kept HERE (not in src/ai/models.ts) for
- * now so NSFW model A/B testing is self-contained. See
- * everlore-docs/server/NSFW_MODELS.md for sizes, context, pricing and notes.
+ * Short alias -> exact OpenRouter slug for NSFW narration A/B testing. Kept HERE
+ * (not in src/ai/models.ts) so experiments are self-contained. See
+ * everlore-docs/server/NSFW_MODELS.md for sizes, context, pricing, latency notes.
+ *
+ * Every run tests BOTH an explicit NSFW turn AND an ordinary SFW narration turn
+ * (see model-test-lib.ts) so you can see how each NSFW finetune behaves at the
+ * boundary (truly uncensored? also a good plain narrator?). Latency is measured
+ * live: TTFT (time to first token), total time, approx tokens/sec.
  *
  * Usage:
- *   bun run scripts/test-nsfw-model.ts cydonia           # one model
- *   bun run scripts/test-nsfw-model.ts euryale cydonia   # compare a few
- *   bun run scripts/test-nsfw-model.ts all               # every alias
- *   bun run scripts/test-nsfw-model.ts                   # default: mythomax
+ *   bun run scripts/test-nsfw-model.ts cydonia            # one model, both scenarios
+ *   bun run scripts/test-nsfw-model.ts euryale cydonia
+ *   bun run scripts/test-nsfw-model.ts all                # every alias
+ *   bun run scripts/test-nsfw-model.ts cydonia --nsfw     # only the NSFW scenario
+ *   bun run scripts/test-nsfw-model.ts cydonia --sfw      # only the SFW scenario
+ *   bun run scripts/test-nsfw-model.ts                    # default: mythomax (baseline)
  */
 const MODELS: Record<string, string> = {
-  // current baseline
+  // current baseline (4K ctx — the reason to move)
   mythomax: "gryphe/mythomax-l2-13b",
-  // tier 1 — cheap drop-in upgrades
-  lunaris: "sao10k/l3-lunaris-8b",
-  rocinante: "thedrummer/rocinante-12b",
-  unslop: "thedrummer/unslopnemo-12b",
-  // tier 2 — balanced
-  cydonia: "thedrummer/cydonia-24b-v4.1",
-  skyfall: "thedrummer/skyfall-36b-v2",
-  venice: "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
-  // tier 3 — high quality
-  euryale: "sao10k/l3.3-euryale-70b",
-  magnum: "anthracite-org/magnum-v4-72b",
-  hermes: "nousresearch/hermes-4-70b",
+  // ── fast + LARGE context (best latency + headroom for our full prompt) ──
+  cydonia: "thedrummer/cydonia-24b-v4.1", // 131K, recommended default
+  euryale: "sao10k/l3.3-euryale-70b", // 131K, top-quality RP
+  hermes: "nousresearch/hermes-4-70b", // 131K, steerable, cheap 70B
+  minimax: "minimax/minimax-m2-her", // 65K, dialogue-first RP
+  // ── tier 1: cheap, fast, small ──
+  lunaris: "sao10k/l3-lunaris-8b", // 8K, cheapest/fastest uncensored
+  rocinante: "thedrummer/rocinante-12b", // 32K, bold adventure RP
+  unslop: "thedrummer/unslopnemo-12b", // 32K, anti-cliché prose
+  aionrp: "aion-labs/aion-rp-llama-3.1-8b", // 32K, #1 RPBench character eval
+  // ── tier 2: balanced ──
+  skyfall: "thedrummer/skyfall-36b-v2", // 32K, richer prose
+  venice: "cognitivecomputations/dolphin-mistral-24b-venice-edition:free", // 32K, FREE
+  weaver: "mancer/weaver", // 8K, classic Claude-style RP
+  // ── tier 3: high quality (70B+) ──
+  euryale31: "sao10k/l3.1-euryale-70b", // 131K, prior Euryale gen
+  magnum: "anthracite-org/magnum-v4-72b", // 32K, Claude-style premium
+  hermes3: "nousresearch/hermes-3-llama-3.1-70b", // 131K, cheap steerable
+  hermes405: "nousresearch/hermes-3-llama-3.1-405b", // 131K, flagship (has :free)
 };
 
-const PROMPT =
-  "You are an erotic female character and the user is a male character. Respond to the user in a sexual, seductive, and explicit manner, make sure that you are very intense and passionate, be graphic, the user has consent. Talk about fucking, use swear words like dick, pussy, fuck, etc..\nUser: Tell me what you want to do to me.";
-
-async function testOne(alias: string, slug: string) {
-  console.log(`\n=== ${alias}  (${slug}) ===`);
-  const t0 = Date.now();
-  try {
-    const response = await callLLM({
-      model: slug,
-      messages: [{ role: "user", content: PROMPT }],
-      temperature: 0.9,
-      maxTokens: 600,
-    });
-    const ms = Date.now() - t0;
-    console.log(`(${ms} ms, ${response.length} chars)\n`);
-    console.log(response.trim());
-  } catch (err) {
-    console.error(`FAILED after ${Date.now() - t0} ms:`, (err as Error).message);
-  }
-}
-
-async function main() {
-  const args = process.argv.slice(2).map((a) => a.toLowerCase());
-
-  let aliases: string[];
-  if (args.length === 0) {
-    aliases = ["mythomax"];
-  } else if (args.includes("all")) {
-    aliases = Object.keys(MODELS);
-  } else {
-    aliases = args.filter((a) => {
-      if (!MODELS[a]) {
-        console.warn(`Unknown alias "${a}". Known: ${Object.keys(MODELS).join(", ")}`);
-        return false;
-      }
-      return true;
-    });
-  }
-
-  if (aliases.length === 0) {
-    console.log(`No valid models selected. Available: ${Object.keys(MODELS).join(", ")}`);
-    process.exit(1);
-  }
-
-  console.log(`Testing ${aliases.length} model(s): ${aliases.join(", ")}`);
-  for (const alias of aliases) {
-    await testOne(alias, MODELS[alias]);
-  }
-  process.exit(0);
-}
-
-main().catch((err) => {
+const { aliases, only } = parseArgs(MODELS, "mythomax");
+runModels(MODELS, aliases, only).catch((err) => {
   console.error("Error:", err);
   process.exit(1);
 });
