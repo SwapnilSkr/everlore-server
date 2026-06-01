@@ -68,7 +68,12 @@ export const instanceController = {
   }: {
     user: AuthUser | null
     params: { id: string }
-    body: { narration_pov?: 'first' | 'third'; tone?: string; focus_character_id?: string | null }
+    body: {
+      narration_pov?: 'first' | 'third'
+      mode?: string
+      message_length?: 'short' | 'medium' | 'long'
+      focus_character_id?: string | null
+    }
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return instanceService.updateSettings(params.id, user.id, body)

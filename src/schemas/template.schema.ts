@@ -21,6 +21,8 @@ export const CreateTemplateBody = t.Object({
   is_nsfw_capable: t.Boolean(),
   seed_prompt: t.String({ minLength: 10, maxLength: 10000 }),
   global_lore: t.String({ maxLength: 50000 }),
+  narrative_style: t.Optional(t.String({ maxLength: 50 })),
+  style_notes: t.Optional(t.String({ maxLength: 500 })),
   opening_line: t.Optional(t.String({ maxLength: 2000 })),
   protagonist: t.Optional(
     t.Object({

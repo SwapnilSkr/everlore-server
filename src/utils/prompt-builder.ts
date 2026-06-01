@@ -1,4 +1,11 @@
 import { countTokens } from './token-counter'
+import {
+  buildStyleBlock,
+  buildLengthDirective,
+  buildStyleReminder,
+  type MessageLength,
+} from './narrative-styles'
+import { buildModeDirective, modeReminderLabel } from './chat-modes'
 
 interface PromptInput {
   seedPrompt: string
@@ -20,8 +27,14 @@ interface PromptInput {
   proseOnly?: boolean
   /** Narration person. Defaults to third. */
   narrationPov?: 'first' | 'third'
-  /** Optional conversation tone (e.g. "casual", "romantic", "erotic"). */
-  tone?: string
+  /** Chat MODE key (see chat-modes.ts) — how the chat flows. Player-chosen. */
+  chatMode?: string
+  /** Narrative VOICE preset key (see narrative-styles.ts). Stable per instance. */
+  narrativeStyle?: string
+  /** Free-text creator/player style refinements appended to the voice block. */
+  styleNotes?: string
+  /** Desired reply length: 'short' | 'medium' | 'long'. Defaults to medium. */
+  messageLength?: MessageLength
   /** Canonical emergent character cards enforced as story constraints. */
   characterCodex?: Array<{
     canonical_name: string
@@ -73,6 +86,14 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
     staticContent += `World Premise: ${input.seedPrompt}\n\n`
   }
 
+  // Narrative VOICE / STYLE — the single biggest lever on "how it sounds".
+  // World-stable (per instance) so it stays in the cacheable prefix and costs ~0
+  // extra TTFT after turn 1. Placed high so it frames everything that follows.
+  const styleBlock = buildStyleBlock(input.narrativeStyle, input.styleNotes)
+  if (styleBlock) {
+    staticContent += `${styleBlock}\n\n`
+  }
+
   // Global lore — typically the largest block, hence the biggest caching payoff
   staticContent += `WORLD LORE:\n${input.globalLore}\n\n`
 
@@ -85,7 +106,7 @@ Write your reply as in-character story prose. Follow this style EXACTLY:
 - Example: "You came back," *she whispered, her hand trembling.* "I didn't think you would."
 - Never leave an attribution like "I reply" or "she said" as plain text. If it is not a spoken quote, it is italicized.
 - The player may include their OWN *actions or narration in asterisks* (in any point of view). Treat these as canonical events that truly happen in the story — honor them and react; do not override or contradict them. Their unmarked, quoted text is what the player says aloud.
-- Vivid and emotionally resonant, roughly 2-4 short paragraphs.
+- Vivid and emotionally resonant; match the requested length and voice below.
 - Output ONLY the story. No JSON, no field names, no headings, no bullet points, no commentary before or after. Never break character.`
   } else {
     staticContent += `RESPONSE FORMAT:
@@ -105,9 +126,12 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
   // Everything that changes each turn lives after the cacheable prefix.
   let dynamicContent = ''
 
-  if (input.tone && input.tone.trim().length > 0) {
-    dynamicContent += `TONE: Write this scene in a ${input.tone.trim()} tone.\n\n`
-  }
+  // Per-turn modifiers layered on top of the static VOICE block. Chat mode and
+  // length change turn-to-turn (player-toggleable), so they live in the dynamic
+  // block. Mode governs pacing/intent only; the locked voice owns diction.
+  const modeDirective = buildModeDirective(input.chatMode)
+  if (modeDirective) dynamicContent += `${modeDirective}\n\n`
+  dynamicContent += `${buildLengthDirective(input.messageLength)}\n\n`
 
   // The locked protagonist is handled separately from side-character NPCs.
   const protagonistCard = (input.characterCodex || []).find((c) => c.is_protagonist)
@@ -276,6 +300,17 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
           ? `POINT OF VIEW for your next reply (override any earlier style): write in the SECOND person, addressing the player as "you". If the turns above did otherwise, switch now. e.g. *You push the door open* NOT *The adventurer pushes the door open*.`
           : `POINT OF VIEW for your next reply (override any earlier style): write in the THIRD person, referring to the player by their role, NEVER "you". If the turns above used "you", switch now. e.g. *The adventurer pushes the door open* NOT *You push the door open*.`
     }
+    // Reinforce VOICE + tone + length here too: weak models imitate the register
+    // of recent history over a static instruction far up the prefix, exactly like
+    // POV. A compact restatement right before the user turn keeps the writing on
+    // the chosen voice regardless of which model is serving.
+    const styleCue = buildStyleReminder(
+      input.narrativeStyle,
+      modeReminderLabel(input.chatMode),
+      input.messageLength,
+    )
+    if (styleCue) povReminder += `\n${styleCue}`
+
     messages.push({ role: 'system', content: povReminder })
   }
 

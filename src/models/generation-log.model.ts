@@ -24,7 +24,10 @@ export interface GenerationLogDoc {
   metadata_model: string
   tokens_in: number
   tokens_out: number
-  /** Wall-clock latency of the narration generation, milliseconds. */
+  /** Wall-clock latency of the full narration generation, milliseconds. */
   latency_ms: number
+  /** Time-to-first-token: ms from request start until the first streamed delta.
+   *  The latency the player actually feels. 0 if no tokens streamed. */
+  ttft_ms: number
   created_at: Date
 }

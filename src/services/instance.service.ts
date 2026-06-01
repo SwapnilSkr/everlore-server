@@ -7,6 +7,8 @@ import { getRedisClient } from '../config/redis'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { characterCodexService } from './character-codex.service'
+import { isValidMessageLength } from '../utils/narrative-styles'
+import { isValidModeKey, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 
 const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number }> = {
   free: { max_instances: 3, max_memories: 100 },
@@ -73,7 +75,10 @@ export const instanceService = {
       // Characters start in first person (intimate chat feel); Worlds start in
       // third person. Either way the player can toggle POV in chat.
       narration_pov: template.kind === 'character' ? 'first' : 'third',
-      tone: '',
+      // Chat mode + length are player-chosen; voice is creator-locked on the
+      // template and read from there at prompt time (never stored per-instance).
+      mode: DEFAULT_CHAT_MODE,
+      message_length: 'medium',
       focus_character_id: null,
       meta: {
         total_events: 0,
@@ -233,7 +238,12 @@ export const instanceService = {
       active_flags: instance.active_flags,
       current_scene: instance.current_scene,
       narration_pov: instance.narration_pov || 'third',
-      tone: instance.tone || '',
+      // Mode + length are per-instance (player). Voice is creator-locked: read
+      // straight from the template so players can never alter the author's voice.
+      mode: instance.mode || DEFAULT_CHAT_MODE,
+      message_length: instance.message_length || 'medium',
+      narrative_style: template.narrative_style || '',
+      style_notes: template.style_notes || '',
       focus_character_id: instance.focus_character_id ? idString(instance.focus_character_id) : null,
       seed_prompt: template.seed_prompt,
       global_lore: template.global_lore,
@@ -250,14 +260,26 @@ export const instanceService = {
   },
 
   /**
-   * Update in-chat session settings (narration POV, tone) for an instance and
-   * bust the cached session so the next turn rebuilds with the new values.
+   * Update in-chat session settings (narration POV, chat mode, message length,
+   * focus) for an instance and bust the cached session so the next turn rebuilds
+   * with the new values. Narrative voice is creator-locked and intentionally NOT
+   * editable here.
    */
   async updateSettings(
     instanceId: string,
     playerId: string,
-    settings: { narration_pov?: 'first' | 'third'; tone?: string; focus_character_id?: string | null },
-  ): Promise<{ narration_pov: 'first' | 'third'; tone: string; focus_character_id: string | null }> {
+    settings: {
+      narration_pov?: 'first' | 'third'
+      mode?: string
+      message_length?: 'short' | 'medium' | 'long'
+      focus_character_id?: string | null
+    },
+  ): Promise<{
+    narration_pov: 'first' | 'third'
+    mode: string
+    message_length: 'short' | 'medium' | 'long'
+    focus_character_id: string | null
+  }> {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
 
@@ -265,8 +287,17 @@ export const instanceService = {
     if (settings.narration_pov === 'first' || settings.narration_pov === 'third') {
       update.narration_pov = settings.narration_pov
     }
-    if (typeof settings.tone === 'string') {
-      update.tone = settings.tone.slice(0, 100)
+    if (typeof settings.mode === 'string') {
+      if (!isValidModeKey(settings.mode)) {
+        throw new HttpError(400, 'Invalid mode')
+      }
+      update.mode = settings.mode
+    }
+    if (typeof settings.message_length === 'string') {
+      if (!isValidMessageLength(settings.message_length)) {
+        throw new HttpError(400, 'Invalid message_length')
+      }
+      update.message_length = settings.message_length
     }
     if (settings.focus_character_id !== undefined) {
       if (settings.focus_character_id === null || settings.focus_character_id === '') {
@@ -289,7 +320,8 @@ export const instanceService = {
     await getRedisClient().del(`session:${idString(iid)}`)
     return {
       narration_pov: result.narration_pov || 'third',
-      tone: result.tone || '',
+      mode: result.mode || DEFAULT_CHAT_MODE,
+      message_length: result.message_length || 'medium',
       focus_character_id: result.focus_character_id ? idString(result.focus_character_id) : null,
     }
   },

@@ -30,7 +30,10 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
       narration_pov: t.Optional(
         t.Union([t.Literal('first'), t.Literal('third')]),
       ),
-      tone: t.Optional(t.String({ maxLength: 100 })),
+      mode: t.Optional(t.String({ maxLength: 40 })),
+      message_length: t.Optional(
+        t.Union([t.Literal('short'), t.Literal('medium'), t.Literal('long')]),
+      ),
       focus_character_id: t.Optional(t.Nullable(t.String())),
     }),
   })

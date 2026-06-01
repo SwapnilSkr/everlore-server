@@ -6,6 +6,8 @@ import { getRedisClient } from '../../src/config/redis'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed, callLLMStream, AI_MODELS } from '../../src/ai'
 import { buildPrompt } from '../../src/utils/prompt-builder'
+import { lengthMaxTokens } from '../../src/utils/narrative-styles'
+import { NSFW_MODE } from '../../src/utils/chat-modes'
 import { parsePlayerInput } from '../../src/utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-mutator'
 import { countTokens } from '../../src/utils/token-counter'
@@ -100,12 +102,13 @@ export async function generationProcessor(job: Job) {
   let modelId = session.model_preferences?.narration_sfw || AI_MODELS.narrationSfw
   let isNsfwTurn = false
 
-  // An explicitly erotic tone forces the NSFW path (when the world allows it and
-  // the player has opted in); otherwise fall back to the keyword classifier.
-  const toneWantsNsfw = /erotic|explicit|sexual|nsfw/i.test(session.tone || '')
+  // 'Ardent' chat mode is the structured NSFW on-ramp: when the world allows it
+  // and the player opted in, it forces the explicit path. Otherwise the weighted
+  // lexicon classifier decides automatically.
+  const modeWantsNsfw = session.mode === NSFW_MODE
   const sceneClassification =
     session.is_nsfw_capable && userNsfwEnabled
-      ? toneWantsNsfw
+      ? modeWantsNsfw
         ? 'nsfw'
         : classifyScene(classifyText, recentEvents)
       : 'sfw'
@@ -129,7 +132,10 @@ export async function generationProcessor(job: Job) {
     userNarrationFacts: parsedPlayerInput.narrationFacts,
     maxTokens: MAX_CONTEXT_TOKENS,
     narrationPov: session.narration_pov,
-    tone: session.tone,
+    chatMode: session.mode,
+    narrativeStyle: session.narrative_style,
+    styleNotes: session.style_notes,
+    messageLength: session.message_length,
     characterCodex,
     focusCharacterName: (() => {
       const focusedId = session.focus_character_id
@@ -148,14 +154,17 @@ export async function generationProcessor(job: Job) {
   // pub/sub channel that the API forwards to the player's WebSocket.
   const channel = `user:${playerId}:events`
   const genStart = Date.now()
+  let ttftMs = 0
   const prose = await callLLMStream(
     {
       model: modelId,
       messages: prompt.messages,
       temperature: 0.85,
-      maxTokens: 800,
+      maxTokens: lengthMaxTokens(session.message_length),
     },
     (chunk) => {
+      // First streamed delta = the latency the player actually feels.
+      if (ttftMs === 0) ttftMs = Date.now() - genStart
       redis.publish(
         channel,
         JSON.stringify({ type: 'generation_delta', instanceId, delta: chunk }),
@@ -238,6 +247,7 @@ export async function generationProcessor(job: Job) {
       tokens_in: event.data.tokens_in,
       tokens_out: event.data.tokens_out,
       latency_ms: latencyMs,
+      ttft_ms: ttftMs,
       created_at: new Date(),
     })
     .catch((err) => console.warn('generation_log insert failed:', (err as Error).message))

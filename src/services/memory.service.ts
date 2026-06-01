@@ -6,6 +6,7 @@ import { getRedisClient } from '../config/redis'
 import { getMemoryCurationQueue, QUEUE_RETENTION } from '../queues'
 import { queryRag } from '../providers/rag.provider'
 import { buildPrompt } from '../utils/prompt-builder'
+import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
@@ -494,11 +495,11 @@ export const memoryService = {
       memoryTopK,
     )
 
-    const tone = instance.tone || ''
-    const toneWantsNsfw = /erotic|explicit|sexual|nsfw/i.test(tone)
+    const mode = instance.mode || DEFAULT_CHAT_MODE
+    const modeWantsNsfw = mode === NSFW_MODE
     const sceneClass =
       template.is_nsfw_capable && userNsfwEnabled
-        ? toneWantsNsfw
+        ? modeWantsNsfw
           ? 'nsfw'
           : classifyScene(parsed.raw, priorEvents)
         : 'sfw'
@@ -522,7 +523,10 @@ export const memoryService = {
       maxTokens: 7000,
       proseOnly: true,
       narrationPov: instance.narration_pov || 'third',
-      tone,
+      chatMode: mode,
+      narrativeStyle: template.narrative_style || '',
+      styleNotes: template.style_notes || '',
+      messageLength: instance.message_length || 'medium',
       characterCodex: codex as any,
       focusCharacterName: (() => {
         const fid = instance.focus_character_id ? idString(instance.focus_character_id) : ''

@@ -48,6 +48,11 @@ export interface WorldTemplateDoc {
   version: number
   seed_prompt: string
   global_lore: string
+  /** Default narrative voice preset for this world/character (see
+   *  narrative-styles.ts). Players may override per-conversation. */
+  narrative_style?: string
+  /** Optional free-text style refinements appended to the voice block. */
+  style_notes?: string
   /** Optional first message a sentient persona/character greets the player with. */
   opening_line?: string
   /** Locked main persona for sentient templates (deterministic protagonist). */

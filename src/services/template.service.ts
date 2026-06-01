@@ -65,6 +65,8 @@ export const templateService = {
       version: 1,
       seed_prompt: data.seed_prompt,
       global_lore: data.global_lore,
+      narrative_style: typeof data.narrative_style === 'string' ? data.narrative_style : '',
+      style_notes: typeof data.style_notes === 'string' ? data.style_notes.slice(0, 500) : '',
       opening_line: typeof data.opening_line === 'string' ? data.opening_line.trim() : undefined,
       protagonist,
       base_stats_template: (data.base_stats_template || {}) as Record<string, StatDefinitionDoc>,

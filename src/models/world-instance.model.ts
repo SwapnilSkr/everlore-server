@@ -27,8 +27,12 @@ export interface WorldInstanceDoc {
   current_scene: CurrentSceneDoc
   /** Narration person, toggleable in chat. Worlds start in third person. */
   narration_pov?: 'first' | 'third'
-  /** Optional conversation tone (e.g. "casual", "romantic", "erotic"); '' = default. */
-  tone?: string
+  /** Chat MODE (see chat-modes.ts) — how the chat flows (pacing/intent).
+   *  Player-chosen per conversation. Default 'free_play'. (Narrative voice is
+   *  creator-locked on the template and is NOT stored here.) */
+  mode?: string
+  /** Desired reply length: 'short' | 'medium' | 'long'. Default 'medium'. */
+  message_length?: 'short' | 'medium' | 'long'
   /** Optional focused side-character for character-targeted conversation. */
   focus_character_id?: ObjectId | null
   meta: InstanceMetaDoc
