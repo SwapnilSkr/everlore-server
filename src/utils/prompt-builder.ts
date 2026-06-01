@@ -253,6 +253,32 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
     )
   }
 
+  // ── POV REMINDER (last system word before the user turn) ──
+  // The recent history above may be written in a DIFFERENT point of view than
+  // the player currently has selected (POV is toggleable mid-chat). Models
+  // imitate the POV of recent turns over an instruction placed far up in the
+  // prefix, so when there is history we restate the directive here — right
+  // before the user's message — with a concrete example, and explicitly tell
+  // the model to override the earlier pattern. It is kept BEFORE the user turn
+  // (not after) so the model answers the player rather than echoing the rule.
+  // Empty history (turn 1) doesn't need this; the static instruction governs.
+  if (input.recentEvents.length > 0) {
+    const selfName = protagonistCard?.canonical_name || 'the character'
+    let povReminder: string
+    if (input.isSentient) {
+      povReminder =
+        pov === 'first'
+          ? `POINT OF VIEW for your next reply (override any earlier style): write in the FIRST person as ${selfName} — "I", "me", "my". If the turns above were third person, switch now. e.g. *I lower my eyes* NOT *${selfName} lowers her eyes*.`
+          : `POINT OF VIEW for your next reply (override any earlier style): write in the THIRD person — refer to ${selfName} by name or she/he/they, NEVER "I"/"me"/"my". If the turns above were first person, switch now. e.g. *${selfName} lowers her eyes* NOT *I lower my eyes*.`
+    } else {
+      povReminder =
+        pov === 'first'
+          ? `POINT OF VIEW for your next reply (override any earlier style): write in the SECOND person, addressing the player as "you". If the turns above did otherwise, switch now. e.g. *You push the door open* NOT *The adventurer pushes the door open*.`
+          : `POINT OF VIEW for your next reply (override any earlier style): write in the THIRD person, referring to the player by their role, NEVER "you". If the turns above used "you", switch now. e.g. *The adventurer pushes the door open* NOT *You push the door open*.`
+    }
+    messages.push({ role: 'system', content: povReminder })
+  }
+
   // ── CURRENT USER MESSAGE ───────────────────────
   messages.push({
     role: 'user',
