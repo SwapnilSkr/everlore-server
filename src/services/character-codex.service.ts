@@ -351,6 +351,24 @@ export const characterCodexService = {
     const target = await characters().findOne({ _id: cid, player_id: pid })
     if (!target) throw new HttpError(404, 'Character not found')
 
+    // Protagonist edit policy: in a SENTIENT world (incl. character worlds, which
+    // are sentient) the protagonist is the creator's main character — an authored
+    // creative choice players must not rewrite. In a GM (non-sentient) world the
+    // protagonist IS the player's own character, so editing is allowed. Side
+    // characters are always editable.
+    if (target.is_protagonist) {
+      const instance = await mongoColl.worldInstances().findOne({ _id: target.instance_id })
+      const template = instance
+        ? await mongoColl.worldTemplates().findOne({ _id: instance.template_id })
+        : null
+      if (template?.is_sentient) {
+        throw new HttpError(
+          403,
+          'The main character is set by the creator and cannot be edited.',
+        )
+      }
+    }
+
     const setFields: Record<string, unknown> = { updated_at: new Date() }
     const retiredFacts: string[] = []
 
