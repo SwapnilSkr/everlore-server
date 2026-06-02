@@ -11,6 +11,7 @@
     "test:nsfw": "bun run scripts/test-nsfw-model.ts",
     "test:sfw": "bun run scripts/test-sfw-model.ts",
     "seed:nsfw-lexicon": "bun run scripts/seed-nsfw-lexicon.ts",
+    "gen:splash-avatars": "bun run scripts/gen-splash-avatars.ts",
     "clean:queue-jobs": "bun run scripts/clean-redis-jobs.ts"
   },
   "dependencies": {
@@ -28,6 +29,8 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "detect-libc": "^2.1.2",
+    "sharp": "^0.34.5",
     "typescript": "^6.0.2"
   }
 }
