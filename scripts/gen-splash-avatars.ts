@@ -60,7 +60,8 @@ const STYLE_SUFFIX =
   'clean silhouette, expressive detailed face, dark muted background with a soft radial vignette, ' +
   'square composition, no text, no watermark, no logo, no border, no frame.'
 
-/** Curated 12 — the most visually distinct archetypes from our voice registry. */
+/** All 21 genre voices (default excluded). First 12 are the original splash set;
+ *  the rest were added so interests/voice chips and the backdrop bands have art. */
 const CHARACTERS: { key: string; subject: string }[] = [
   {
     key: 'tsundere',
@@ -121,6 +122,51 @@ const CHARACTERS: { key: string; subject: string }[] = [
     key: 'litrpg',
     subject:
       'a heroic anime adventurer with glowing translucent game-UI stat windows floating beside them, magical RPG effects',
+  },
+  {
+    key: 'modern_casual',
+    subject:
+      'a relaxed modern anime character in casual streetwear and a hoodie, easy friendly smile, contemporary everyday vibe',
+  },
+  {
+    key: 'anime',
+    subject:
+      'a bright expressive anime protagonist with big sparkling eyes and dynamic colorful hair, lively energetic grin',
+  },
+  {
+    key: 'romcom',
+    subject:
+      'a charming anime character with a playful wink and a warm blush, light romantic-comedy mood, soft pastel tones',
+  },
+  {
+    key: 'flirty',
+    subject:
+      'an alluring confident anime character with a teasing sultry smile and half-lidded eyes, warm intimate lighting',
+  },
+  {
+    key: 'slice_of_life',
+    subject:
+      'a gentle everyday anime character in cozy casual clothes by a sunlit window, calm contented expression',
+  },
+  {
+    key: 'whimsical',
+    subject:
+      'a playful storybook anime character with a curious grin surrounded by tiny floating sparkles, soft fairytale palette',
+  },
+  {
+    key: 'grimdark',
+    subject:
+      'a grim battle-worn anime character with a faint scar and a hardened cold stare, muted desaturated tones, ash and smoke',
+  },
+  {
+    key: 'regency',
+    subject:
+      'an elegant anime character in Regency-era period attire with refined poised expression, warm candlelit ballroom mood',
+  },
+  {
+    key: 'chaotic_comedy',
+    subject:
+      'a wild-eyed anime character mid-laugh with chaotic messy hair and a mischievous gremlin grin, bright punchy colors',
   },
 ]
 
