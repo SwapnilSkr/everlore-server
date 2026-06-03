@@ -26,6 +26,8 @@ const optionalEnvVars = {
   TWILIO_ACCOUNT_SID: '',
   TWILIO_AUTH_TOKEN: '',
   TWILIO_VERIFY_SERVICE_SID: '',
+  /** When true, OTP send/verify skip Redis rate limits (local dev only). */
+  DISABLE_OTP_RATE_LIMIT: 'false',
 } as const
 
 export interface Env {
@@ -49,6 +51,7 @@ export interface Env {
   TWILIO_ACCOUNT_SID: string
   TWILIO_AUTH_TOKEN: string
   TWILIO_VERIFY_SERVICE_SID: string
+  DISABLE_OTP_RATE_LIMIT: boolean
 }
 
 function loadEnv(): Env {
@@ -81,6 +84,7 @@ function loadEnv(): Env {
     TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID || optionalEnvVars.TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN || optionalEnvVars.TWILIO_AUTH_TOKEN,
     TWILIO_VERIFY_SERVICE_SID: process.env.TWILIO_VERIFY_SERVICE_SID || optionalEnvVars.TWILIO_VERIFY_SERVICE_SID,
+    DISABLE_OTP_RATE_LIMIT: process.env.DISABLE_OTP_RATE_LIMIT === 'true',
   }
 }
 

@@ -1,4 +1,7 @@
+import { env } from '../config/env'
 import { getRedisClient } from '../config/redis'
+
+const OTP_ACTIONS = new Set(['otp_send', 'otp_verify'])
 
 const LIMITS: Record<string, { max: number; windowSeconds: number }> = {
   chat: { max: 10, windowSeconds: 60 },
@@ -17,6 +20,10 @@ export async function rateLimit(
 ): Promise<{ allowed: boolean; remaining: number; retryAfter?: number }> {
   const limit = LIMITS[action]
   if (!limit) return { allowed: true, remaining: Infinity }
+
+  if (env.DISABLE_OTP_RATE_LIMIT && OTP_ACTIONS.has(action)) {
+    return { allowed: true, remaining: limit.max }
+  }
 
   const redis = getRedisClient()
   const key = `rl:${action}:${userId}`
