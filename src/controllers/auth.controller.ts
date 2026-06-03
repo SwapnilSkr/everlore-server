@@ -1,4 +1,6 @@
 import { authService } from '../services/auth.service'
+import { deletionService } from '../services/deletion.service'
+import { disconnectUserSockets } from '../services/play-ws.service'
 import { rateLimit } from '../middleware/rate-limit'
 import type { AuthUser } from '../middleware/auth'
 import { HttpError } from '../utils/http-error'
@@ -82,5 +84,12 @@ export const authController = {
     if (!user) throw new HttpError(401, 'Unauthorized')
     await authService.updatePreferences(user.id, body)
     return { success: true }
+  },
+
+  deleteAccount: async ({ user }: { user: AuthUser | null }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    await deletionService.deleteAccount(user.id)
+    disconnectUserSockets(user.id)
+    return { deleted: true }
   },
 }

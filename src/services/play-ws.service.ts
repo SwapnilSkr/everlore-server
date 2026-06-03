@@ -9,6 +9,25 @@ type RawWs = { send: (data: string) => void }
 
 const activeConnections = new Map<string, Set<RawWs>>()
 
+/** Closes all WebSocket connections for a user (e.g. after account deletion). */
+export function disconnectUserSockets(userId: string): void {
+  const connections = activeConnections.get(userId)
+  if (!connections) return
+
+  for (const socket of connections) {
+    try {
+      socket.send(JSON.stringify({ type: 'account_deleted' }))
+    } catch {
+      // Socket may already be closed.
+    }
+  }
+
+  activeConnections.delete(userId)
+  getRedisSubscriber()
+    .unsubscribe(`user:${userId}:events`)
+    .catch(() => {})
+}
+
 export function setupRedisPubSub() {
   const subscriber = getRedisSubscriber()
 

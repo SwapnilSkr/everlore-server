@@ -7,6 +7,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import type { WorldEventDoc } from '../models/world-event.model'
 
+const users = () => mongoColl.users()
 const worldTemplates = () => mongoColl.worldTemplates()
 const worldInstances = () => mongoColl.worldInstances()
 const events = () => mongoColl.events()
@@ -262,5 +263,42 @@ export const deletionService = {
       console.warn(`Failed to delete memory vectors for instance ${instanceIdStr}:`, (err as Error).message)
       // Continue with deletion even if Pinecone cleanup fails
     }
+  },
+
+  /**
+   * Permanently deletes the account and all owned data:
+   * playthroughs (instances), created world templates, and the user document.
+   */
+  async deleteAccount(userId: string): Promise<{ deleted: boolean }> {
+    const pid = parseObjectId(userId)
+    const user = await users().findOne({ _id: pid })
+    if (!user) {
+      throw new HttpError(404, 'User not found')
+    }
+
+    const instances = await worldInstances()
+      .find({ player_id: pid })
+      .project({ _id: 1 })
+      .toArray()
+
+    for (const instance of instances) {
+      await this.deleteInstance(idString(instance._id), userId)
+    }
+
+    const templates = await worldTemplates()
+      .find({ creator_id: pid })
+      .project({ _id: 1 })
+      .toArray()
+
+    for (const template of templates) {
+      await this.deleteTemplate(idString(template._id), userId)
+    }
+
+    const result = await users().deleteOne({ _id: pid })
+    if (result.deletedCount === 0) {
+      throw new HttpError(404, 'User not found')
+    }
+
+    return { deleted: true }
   },
 }

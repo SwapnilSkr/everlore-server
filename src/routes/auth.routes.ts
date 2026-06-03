@@ -28,3 +28,5 @@ export const authRoutes = new Elysia({ prefix: '/auth' })
   .put('/preferences', (ctx) => authController.updatePreferences(ctx), {
     body: UpdatePreferencesBody,
   })
+
+  .delete('/account', (ctx) => authController.deleteAccount(ctx))
