@@ -8,6 +8,8 @@ export interface UserPreferences {
   theme: string
   narration_length: 'detailed' | string
   auto_memory_curation: boolean
+  /** Genre taste from onboarding (narrative_style keys); biases discovery. */
+  interests?: string[]
 }
 
 /**

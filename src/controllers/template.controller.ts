@@ -15,13 +15,16 @@ type UpdateBody = Static<typeof UpdateTemplateBody>
 export const templateController = {
   listPublished: async ({
     query,
+    user,
   }: {
     query: { page?: number; limit?: number; search?: string }
+    user: AuthUser | null
   }) => {
     return templateService.listPublished(
       Number(query.page) || 1,
       Number(query.limit) || 20,
       query.search,
+      user?.id,
     )
   },
 

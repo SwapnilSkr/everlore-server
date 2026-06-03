@@ -11,8 +11,10 @@ import { deriveProtagonist } from '../utils/protagonist'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { storageService } from './storage.service'
+import { familyExpandedKeys } from '../utils/narrative-styles'
 
 const worldTemplates = () => mongoColl.worldTemplates()
+const users = () => mongoColl.users()
 
 function slugify(text: string): string {
   return text
@@ -156,7 +158,12 @@ export const templateService = {
     return worldTemplates().findOne({ _id: parseObjectId(templateId) })
   },
 
-  async listPublished(page: number = 1, limit: number = 20, search?: string) {
+  async listPublished(
+    page: number = 1,
+    limit: number = 20,
+    search?: string,
+    userId?: string,
+  ) {
     const filter: Record<string, unknown> = { is_published: true }
     if (search) {
       filter.$or = [
@@ -166,6 +173,38 @@ export const templateService = {
     }
 
     const total = await worldTemplates().countDocuments(filter)
+
+    // Personalize ordering by the player's interests when signed in. Pure boost,
+    // never a filter: an exact genre match outranks a same-family match, then
+    // recency. Falls back to plain recency when there are no interests.
+    const interests = userId ? await this.interestsFor(userId) : []
+    if (interests.length > 0) {
+      const family = familyExpandedKeys(interests)
+      const templates = await worldTemplates()
+        .aggregate<WorldTemplateDoc>([
+          { $match: filter },
+          {
+            $addFields: {
+              _interest_score: {
+                $switch: {
+                  branches: [
+                    { case: { $in: ['$narrative_style', interests] }, then: 2 },
+                    { case: { $in: ['$narrative_style', family] }, then: 1 },
+                  ],
+                  default: 0,
+                },
+              },
+            },
+          },
+          { $sort: { _interest_score: -1, created_at: -1 } },
+          { $skip: (page - 1) * limit },
+          { $limit: limit },
+          { $project: { _interest_score: 0 } },
+        ])
+        .toArray()
+      return { templates, total, page }
+    }
+
     const templates = await worldTemplates()
       .find(filter)
       .sort({ created_at: -1 })
@@ -174,6 +213,16 @@ export const templateService = {
       .toArray()
 
     return { templates, total, page }
+  },
+
+  /** The signed-in player's saved interest keys (empty if none / not found). */
+  async interestsFor(userId: string): Promise<string[]> {
+    const user = await users().findOne(
+      { _id: parseObjectId(userId) },
+      { projection: { 'preferences.interests': 1 } },
+    )
+    const interests = user?.preferences?.interests
+    return Array.isArray(interests) ? interests : []
   },
 
   async listByCreator(creatorId: string): Promise<WorldTemplateDoc[]> {

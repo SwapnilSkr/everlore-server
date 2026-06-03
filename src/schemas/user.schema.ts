@@ -34,6 +34,7 @@ export const UpdatePreferencesBody = t.Object({
     t.Literal('verbose'),
   ])),
   auto_memory_curation: t.Optional(t.Boolean()),
+  interests: t.Optional(t.Array(t.String())),
 })
 
 /** Body for unauthenticated admin tier updates (dev / internal use only). */

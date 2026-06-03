@@ -249,6 +249,47 @@ const STYLE_MAP: Record<string, StylePreset> = Object.fromEntries(
 )
 
 /**
+ * Genre families — mirror of the Flutter grouping in
+ * `everlore/lib/shared/narrative_styles.dart`. Shared so discovery ranking can
+ * award partial credit when a world's voice is in the SAME family as one of the
+ * player's interests (see interests/discovery). Keep in sync with the client.
+ */
+export const STYLE_FAMILY: Record<string, string> = {
+  modern_casual: 'modern_everyday',
+  slice_of_life: 'modern_everyday',
+  kdrama: 'modern_everyday',
+  romcom: 'modern_everyday',
+  epic_fantasy: 'epic_adventure',
+  shonen: 'epic_adventure',
+  litrpg: 'epic_adventure',
+  noir: 'atmospheric_dark',
+  dark_academia: 'atmospheric_dark',
+  horror: 'atmospheric_dark',
+  grimdark: 'atmospheric_dark',
+  cyberpunk: 'atmospheric_dark',
+  flirty: 'romance_charged',
+  dark_romance: 'romance_charged',
+  yandere: 'romance_charged',
+  tsundere: 'romance_charged',
+  regency: 'romance_charged',
+  cozy_comfort: 'cozy_playful',
+  whimsical: 'cozy_playful',
+  chaotic_comedy: 'cozy_playful',
+  anime: 'cozy_playful',
+}
+
+/** All style keys sharing a family with any of the given interest keys. */
+export function familyExpandedKeys(interests: string[]): string[] {
+  const fams = new Set(
+    interests.map((k) => STYLE_FAMILY[k]).filter(Boolean),
+  )
+  if (fams.size === 0) return []
+  return Object.entries(STYLE_FAMILY)
+    .filter(([, fam]) => fams.has(fam))
+    .map(([key]) => key)
+}
+
+/**
  * Compile the static style block for the system prompt. Combines a preset's
  * imperative voice block with optional free-text creator notes. Returns '' when
  * neutral and no notes (so the prompt stays lean). Trailing newlines are the
