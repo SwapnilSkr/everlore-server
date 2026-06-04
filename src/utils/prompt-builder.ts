@@ -97,6 +97,15 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
   // Global lore — typically the largest block, hence the biggest caching payoff
   staticContent += `WORLD LORE:\n${input.globalLore}\n\n`
 
+  staticContent += `NARRATION HYGIENE:
+- Use character names only when needed for clarity: first entrance, reintroduction after absence, direct address, dialogue among multiple characters, or when pronouns would be ambiguous.
+- Once a character is clear in the current beat, prefer pronouns, role descriptors, body language, or direct action over repeating their name.
+- Do not start consecutive sentences or paragraphs with the same character name.
+- Do not mention every character in the codex. Refer only to characters actually present, speaking, acting, or being directly discussed in this turn.
+- If only one character is active, avoid naming them repeatedly; use their name at most once unless contrast or ambiguity requires it.
+
+`
+
   // Response format instructions (static for the life of the world)
   if (input.proseOnly) {
     staticContent += `RESPONSE FORMAT:
@@ -310,6 +319,8 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
       input.messageLength,
     )
     if (styleCue) povReminder += `\n${styleCue}`
+    povReminder +=
+      `\nNAME HYGIENE for your next reply: use names only when clarity requires it; otherwise use pronouns or actions, and do not repeat the same character name in consecutive sentences.`
 
     messages.push({ role: 'system', content: povReminder })
   }
