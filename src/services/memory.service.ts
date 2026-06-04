@@ -13,6 +13,7 @@ import { parsePlayerInput } from '../utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
 import { callLLM, callLLMStream, embed, AI_MODELS } from '../ai'
 import { classifyScene } from '../../worker/lib/nsfw-classifier'
+import { EVENT_WINDOWS } from '../utils/event-window'
 
 const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
@@ -106,7 +107,8 @@ async function recurateMemoriesForEvent(
 
 export const memoryService = {
   async getEvents(instanceId: string, playerId: string, opts: any) {
-    const skip = ((opts.page || 1) - 1) * (opts.limit || 50)
+    const limit = opts.limit || EVENT_WINDOWS.chroniclePageSize
+    const skip = ((opts.page || 1) - 1) * limit
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
     const filter: Record<string, unknown> = { instance_id: iid, player_id: pid }
@@ -116,7 +118,7 @@ export const memoryService = {
       .find(filter)
       .sort({ sequence: -1 })
       .skip(skip)
-      .limit(opts.limit || 50)
+      .limit(limit)
       .toArray()
 
     const total = await events().countDocuments(filter)

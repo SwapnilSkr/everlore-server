@@ -7,6 +7,7 @@ import type { EditEventBody } from '../schemas/event.schema'
 import type { EditMemoryBody } from '../schemas/memory.schema'
 import { idString } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
+import { EVENT_WINDOWS } from '../utils/event-window'
 
 type EditEvent = Static<typeof EditEventBody>
 type EditMemory = Static<typeof EditMemoryBody>
@@ -24,7 +25,7 @@ export const chronicleController = {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return memoryService.getEvents(params.instanceId, user.id, {
       page: Number(query.page) || 1,
-      limit: Number(query.limit) || 50,
+      limit: Number(query.limit) || EVENT_WINDOWS.chroniclePageSize,
       type: query.type,
     })
   },

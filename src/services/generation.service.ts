@@ -8,6 +8,7 @@ import { getGenerationQueue, QUEUE_RETENTION } from '../queues'
 import { instanceService } from './instance.service'
 import { rankCodexForInjection } from './character-codex.service'
 import { parseObjectId } from '../utils/mongo-id'
+import { EVENT_WINDOWS, buildEventWindow } from '../utils/event-window'
 
 const users = () => mongoColl.users()
 const worldInstances = () => mongoColl.worldInstances()
@@ -40,7 +41,7 @@ export const generationService = {
     const recentEvents = await events()
       .find({ instance_id: iid })
       .sort({ sequence: -1 })
-      .limit(6)
+      .limit(EVENT_WINDOWS.promptRecentEvents)
       .toArray()
     recentEvents.reverse()
 
@@ -119,6 +120,11 @@ export const generationService = {
     recentEvents: WorldEventDoc[]
     memories: MemoryDoc[]
     characters: CharacterProfileDoc[]
+    eventWindow: {
+      limit: number
+      total: number
+      hasOlder: boolean
+    }
   }> {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
@@ -136,7 +142,7 @@ export const generationService = {
     const recentEvents = await events()
       .find({ instance_id: iid })
       .sort({ sequence: -1 })
-      .limit(20)
+      .limit(EVENT_WINDOWS.loadInstanceRecentEvents)
       .toArray()
     recentEvents.reverse()
 
@@ -152,6 +158,18 @@ export const generationService = {
       .limit(30)
       .toArray()
 
-    return { instance, template, recentEvents, memories: mems, characters: codex }
+    const totalEvents =
+      typeof instance.meta?.total_events === 'number'
+        ? instance.meta.total_events
+        : await events().countDocuments({ instance_id: iid })
+
+    return {
+      instance,
+      template,
+      recentEvents,
+      memories: mems,
+      characters: codex,
+      eventWindow: buildEventWindow(totalEvents, recentEvents.length),
+    }
   },
 }
