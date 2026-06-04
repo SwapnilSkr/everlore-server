@@ -155,8 +155,8 @@ export const playWsService = {
         }
 
         const lockKey = `lock:gen:${user.id}:${instanceId}`
-        const locked = await redis.exists(lockKey)
-        if (locked) {
+        const locked = await redis.set(lockKey, 'pending', 'EX', 30, 'NX')
+        if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
         }
@@ -165,6 +165,7 @@ export const playWsService = {
           const payload = (data as { payload?: { message?: string } }).payload
           const message = payload?.message
           if (!message || typeof message !== 'string' || message.length === 0 || message.length > 4000) {
+            await redis.del(lockKey)
             ws.send(JSON.stringify({ type: 'error', message: 'Invalid message' }))
             return
           }
@@ -179,6 +180,7 @@ export const playWsService = {
 
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
+          await redis.del(lockKey)
           const message = err instanceof Error ? err.message : String(err)
           ws.send(JSON.stringify({ type: 'error', message }))
         }
@@ -201,7 +203,8 @@ export const playWsService = {
         }
 
         const lockKey = `lock:gen:${user.id}:${instanceId}`
-        if (await redis.exists(lockKey)) {
+        const locked = await redis.set(lockKey, 'pending', 'EX', 30, 'NX')
+        if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
         }
@@ -217,6 +220,7 @@ export const playWsService = {
           await redis.set(lockKey, jobId!, 'EX', 30)
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
+          await redis.del(lockKey)
           const message = err instanceof Error ? err.message : String(err)
           ws.send(JSON.stringify({ type: 'error', message }))
         }
@@ -240,7 +244,8 @@ export const playWsService = {
         }
 
         const lockKey = `lock:gen:${user.id}:${instanceId}`
-        if (await redis.exists(lockKey)) {
+        const locked = await redis.set(lockKey, 'pending', 'EX', 60, 'NX')
+        if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
         }
@@ -256,6 +261,7 @@ export const playWsService = {
           log.info('ws.replay.dispatched', { userId: user.id, instanceId, eventId, jobId })
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
+          await redis.del(lockKey)
           const message = err instanceof Error ? err.message : String(err)
           log.error('ws.replay.failed', { userId: user.id, instanceId, eventId, error: message })
           ws.send(JSON.stringify({ type: 'error', message }))

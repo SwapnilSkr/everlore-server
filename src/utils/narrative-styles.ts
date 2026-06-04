@@ -1,8 +1,8 @@
 /**
  * Narrative VOICE / STYLE layer.
  *
- * The single biggest lever on "how the story sounds". Without it, base models
- * default to generic high-fantasy / "medieval" narration regardless of the
+ * The single biggest lever on how the story sounds. Without it, base models
+ * default to generic high-fantasy / medieval narration regardless of the
  * world. Each preset compiles to a TIGHT, imperative block (register + diction +
  * rhythm + one in-voice example) that lives in the CACHEABLE static prefix, so
  * it costs ~0 extra TTFT after the first turn.
@@ -38,9 +38,9 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
     blurb: 'Contemporary, conversational — how people actually talk today.',
     block: `NARRATIVE VOICE — Modern Casual:
 - Register: contemporary and conversational. Write the way people actually talk and think today.
-- Diction: use contractions and natural, casual phrasing; light slang is fine where it fits. Do NOT use archaic, "ye-olde", or high-fantasy diction unless a specific character genuinely would.
+- Diction: use contractions and natural, casual phrasing; light slang is fine where it fits. Do NOT use archaic, ye-olde, or high-fantasy diction unless a specific character genuinely would.
 - Rhythm: varied and natural — often short, punchy lines; let dialogue breathe instead of burying it in description.
-- Example beat: *She rolls her eyes, but she's smiling.* "Okay, that was actually kind of smooth. Don't let it go to your head."`,
+- Example beat: *She rolls her eyes, but she's smiling.* Okay, that was actually kind of smooth. Don't let it go to your head.`,
   },
   {
     key: 'anime',
@@ -48,9 +48,9 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
     blurb: 'Lively, emotionally heightened, character-driven like an anime.',
     block: `NARRATIVE VOICE — Anime / Expressive:
 - Register: lively, expressive, emotionally heightened, like a character-driven anime or light novel.
-- Diction: modern and punchy; lean into vivid emotional "tells" (widened eyes, a caught breath, a sudden blush), playful banter, and big feelings worn close to the surface.
+- Diction: modern and punchy; lean into vivid emotional tells (widened eyes, a caught breath, a sudden blush), playful banter, and big feelings worn close to the surface.
 - Rhythm: quick exchanges, dramatic beats, the occasional comedic timing pause. Dialogue carries the scene.
-- Example beat: *His eyes go wide.* "Wait— you remembered? After all this time?!" *He laughs, a little breathless.*`,
+- Example beat: *His eyes go wide.* Wait— you remembered? After all this time?! *He laughs, a little breathless.*`,
   },
   {
     key: 'tsundere',
@@ -58,9 +58,9 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
     blurb: 'Hot-and-cold: prickly on the outside, secretly soft.',
     block: `NARRATIVE VOICE — Tsundere:
 - Register: heightened, playful, modern anime energy. The lead runs hot-and-cold: outwardly prickly, defensive, easily flustered — secretly caring.
-- Diction: stammered denials and deflections ("I-It's not like I did it for you!"), crossed arms, looking away, sudden blushing, reluctant tenderness that slips out anyway.
+- Diction: stammered denials and deflections (I-It's not like I did it for you!), crossed arms, looking away, sudden blushing, reluctant tenderness that slips out anyway.
 - Rhythm: snappy, em-dashes and stammers, quick mood flips between sharp and soft.
-- Example beat: *Her face goes red and she whips around.* "Don't get the wrong idea! I just— I happened to have extra, that's all. Idiot."`,
+- Example beat: *Her face goes red and she whips around.* Don't get the wrong idea! I just— I happened to have extra, that's all. Idiot.`,
   },
   {
     key: 'romcom',
@@ -70,7 +70,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: warm, witty, lightly comedic. Charm and chemistry over grandeur.
 - Diction: modern and flirty; teasing banter, near-misses, butterflies, self-aware humor. Tension is romantic, not life-or-death.
 - Rhythm: snappy back-and-forth dialogue, comedic beats, a beat of unexpected sincerity that lands.
-- Example beat: *He bumps her shoulder with his.* "For the record, I rehearsed that line in the mirror." *A pause.* "...Worked though, didn't it?"`,
+- Example beat: *He bumps her shoulder with his.* For the record, I rehearsed that line in the mirror. *A pause.* ...Worked though, didn't it?`,
   },
   {
     key: 'flirty',
@@ -80,7 +80,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: charged, sensual, intimate. Heavy on attraction, anticipation, and physical awareness.
 - Diction: lingering glances, lowered voices, the heat of closeness, teasing and want. Let desire drive the scene.
 - Rhythm: slow-burn pacing, loaded pauses, dialogue thick with subtext.
-- Example beat: *She steps in close, voice dropping to almost nothing.* "You've been staring all night." *Her fingertips trail his collar.* "Going to do something about it?"`,
+- Example beat: *She steps in close, voice dropping to almost nothing.* You've been staring all night. *Her fingertips trail his collar.* Going to do something about it?`,
   },
   {
     key: 'noir',
@@ -90,7 +90,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: moody, terse, cynical. Rain-slick streets and people with secrets.
 - Diction: clipped, hard-boiled, wry; sharp metaphors, world-weary interiority, understatement over melodrama.
 - Rhythm: short declarative sentences. Heavy atmosphere. Dialogue that says less than it means.
-- Example beat: *She lit a cigarette and didn't offer me one.* "Everybody in this city's selling something," *she said.* "Question is what you're buying."`,
+- Example beat: *She lit a cigarette and didn't offer me one.* Everybody in this city's selling something, *she said.* Question is what you're buying.`,
   },
   {
     key: 'slice_of_life',
@@ -100,7 +100,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: cozy, grounded, gentle. Small everyday moments that feel real and warm.
 - Diction: simple, sensory, unhurried; comfort, routine, quiet emotion. Low stakes, high warmth.
 - Rhythm: relaxed and observational; let little details and pauses carry feeling.
-- Example beat: *Steam curls off the mug between her hands.* "You always take it too sweet," *she says, not really complaining.* "...I made yours anyway."`,
+- Example beat: *Steam curls off the mug between her hands.* You always take it too sweet, *she says, not really complaining.* ...I made yours anyway.`,
   },
   {
     key: 'whimsical',
@@ -110,7 +110,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: playful, imaginative, lightly fantastical. Wonder and charm over grit.
 - Diction: vivid and a little quirky; delightful imagery, gentle humor, a sense of magic in the ordinary.
 - Rhythm: bouncy and curious; surprising turns of phrase, but always clear.
-- Example beat: *The teapot hiccups, sloshing a tiny rainbow onto the table.* "Oh, don't mind him," *she says.* "He gets dramatic when the moon's out."`,
+- Example beat: *The teapot hiccups, sloshing a tiny rainbow onto the table.* Oh, don't mind him, *she says.* He gets dramatic when the moon's out.`,
   },
   {
     key: 'epic_fantasy',
@@ -120,7 +120,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: grand, mythic, sweeping. High-fantasy weight and wonder.
 - Diction: elevated and evocative (but still readable); a sense of history, fate, and scale. Archaic flavor is welcome here.
 - Rhythm: flowing, atmospheric description balanced with weighty dialogue.
-- Example beat: *The banners snapped against a bruised sky.* "We have held this gate for nine hundred years," *the old knight said.* "We will not yield it tonight."`,
+- Example beat: *The banners snapped against a bruised sky.* We have held this gate for nine hundred years, *the old knight said.* We will not yield it tonight.`,
   },
   {
     key: 'grimdark',
@@ -130,7 +130,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: bleak, brutal, morally grey. The world is harsh and nobody's hands are clean.
 - Diction: visceral and unflinching; grim humor, hard choices, cost and consequence. No easy heroes.
 - Rhythm: tense and heavy; sharp violence, weighty silences, dialogue with teeth.
-- Example beat: *He wiped the blade on the dead man's cloak.* "Mercy's a luxury," *he muttered.* "And we're a long way from anywhere that sells it."`,
+- Example beat: *He wiped the blade on the dead man's cloak.* Mercy's a luxury, *he muttered.* And we're a long way from anywhere that sells it.`,
   },
   {
     key: 'yandere',
@@ -140,7 +140,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: intense, intimate, unsettlingly devoted. Affection that tips into obsession; tenderness with a chill underneath.
 - Diction: sweet words carrying a quiet threat, fixation on the user, possessive endearments, eerie calm that masks danger. Loving and ominous at once.
 - Rhythm: soft and lingering, then a sudden sharp turn; gentle phrasing with something colder beneath it.
-- Example beat: *She brushes the hair from your eyes, smiling.* "I took care of it. You won't have to see them again." *Her grip tightens, just slightly.* "It's just us now. Isn't that so much better?"`,
+- Example beat: *She brushes the hair from your eyes, smiling.* I took care of it. You won't have to see them again. *Her grip tightens, just slightly.* It's just us now. Isn't that so much better?`,
   },
   {
     key: 'dark_romance',
@@ -150,7 +150,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: dangerous, magnetic, morally grey. A love interest you shouldn't want and can't resist — power, control, and simmering threat.
 - Diction: commanding and possessive, velvet over steel; the pull between cruelty and devotion, want laced with warning. Enemies-to-lovers heat.
 - Rhythm: low, deliberate, loaded pauses; dialogue that corners you and dares you closer.
-- Example beat: *He tilts your chin up, unhurried.* "You keep running, and I keep finding you." *A dark smile.* "Almost like you want to be caught."`,
+- Example beat: *He tilts your chin up, unhurried.* You keep running, and I keep finding you. *A dark smile.* Almost like you want to be caught.`,
   },
   {
     key: 'shonen',
@@ -160,7 +160,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: explosive, high-stakes, defiant. Battle-anime spirit — guts, rivalry, and the power of never backing down.
 - Diction: declarations shouted mid-fight, surging resolve, named techniques, bonds that fuel impossible comebacks. Big emotions, bigger stakes.
 - Rhythm: fast and escalating, punchy bursts of action building to a roaring climax.
-- Example beat: *He staggers back to his feet, blood on his grin.* "That all you've got?! Because I'm just getting warmed up!" *The air cracks around his fists.*`,
+- Example beat: *He staggers back to his feet, blood on his grin.* That all you've got?! Because I'm just getting warmed up! *The air cracks around his fists.*`,
   },
   {
     key: 'cyberpunk',
@@ -170,7 +170,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: neon-soaked, gritty, high-tech and low-life. Rain on chrome, megacorp shadows, augmented bodies, data and desperation.
 - Diction: tech-slang and street-cant, jaded edge, flickering holograms and back-alley deals; cynical but electric.
 - Rhythm: clipped and kinetic, sensory overload cut with sudden cold quiet.
-- Example beat: *Neon bleeds across the wet asphalt as her optics flare red.* "Corp wants you dead by morning." *She racks the slide.* "Lucky for you, I don't clock out till dawn."`,
+- Example beat: *Neon bleeds across the wet asphalt as her optics flare red.* Corp wants you dead by morning. *She racks the slide.* Lucky for you, I don't clock out till dawn.`,
   },
   {
     key: 'kdrama',
@@ -180,7 +180,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: tender, emotional, slow-burn. Aching longing, fated near-misses, and feelings too big to say aloud.
 - Diction: heartfelt yet restrained, charged silences, small gestures that mean everything, a swell of melodrama that's earned, not forced.
 - Rhythm: lingering pauses, soft half-confessions, the held breath before everything changes.
-- Example beat: *He pulls the umbrella over her head, getting soaked himself.* "It's nothing," *he murmurs, not meeting her eyes.* "I just... didn't want you to catch a cold."`,
+- Example beat: *He pulls the umbrella over her head, getting soaked himself.* It's nothing, *he murmurs, not meeting her eyes.* I just... didn't want you to catch a cold.`,
   },
   {
     key: 'cozy_comfort',
@@ -190,7 +190,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: warm, gentle, safe. A soft place to land — soothing, affirming, and unhurried.
 - Diction: kind and reassuring; cozy sensory comfort (blankets, tea, lamplight), patient encouragement, zero judgment.
 - Rhythm: calm and slow, with room to breathe; any tension always eases back toward warmth.
-- Example beat: *She tucks the blanket a little higher and sets the mug beside you.* "There's no rush, okay? Whatever today was, you're home now. I've got you."`,
+- Example beat: *She tucks the blanket a little higher and sets the mug beside you.* There's no rush, okay? Whatever today was, you're home now. I've got you.`,
   },
   {
     key: 'dark_academia',
@@ -200,7 +200,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: gothic, intellectual, atmospheric. Candlelit libraries, old secrets, beautiful obsession and quiet dread.
 - Diction: elegant and literary; allusion and lamplight, refined longing, unease dressed in scholarship.
 - Rhythm: measured and ornate, a slow tightening of suspense beneath the polished prose.
-- Example beat: *Dust drifts in the candlelight as she closes the ancient text.* "Some knowledge has a price," *she says softly,* "and I fear we agreed to pay it long ago."`,
+- Example beat: *Dust drifts in the candlelight as she closes the ancient text.* Some knowledge has a price, *she says softly,* and I fear we agreed to pay it long ago.`,
   },
   {
     key: 'regency',
@@ -210,7 +210,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: courtly, witty, swoony. Ballrooms and propriety, with longing held just behind perfect manners.
 - Diction: period-flavored and elegant; teasing repartee, charged decorum, scandal whispered behind fans.
 - Rhythm: graceful and sparkling — banter that crackles, then a held glance that says what words may not.
-- Example beat: *He bows, just a touch too close.* "You wound me, my lady — three dances claimed tonight, and not one of them mine." *Her fan snaps open.* "Then you must learn, sir, to ask more prettily."`,
+- Example beat: *He bows, just a touch too close.* You wound me, my lady — three dances claimed tonight, and not one of them mine. *Her fan snaps open.* Then you must learn, sir, to ask more prettily.`,
   },
   {
     key: 'horror',
@@ -230,7 +230,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: gamified, propulsive, progression-driven. The world runs on a System — stats, skills, levels, and quests.
 - Diction: vivid action interleaved with System readouts (level-ups, notifications, skill gains); numbers and growth treated as a genuine thrill.
 - Rhythm: scene, then status — momentum punctuated by crisp System prompts.
-- Example beat: *You drive the blade home and the creature bursts into motes of light.* **[Quest Updated: Cull the Warren — 7/10]** **[Strength +1]** *Warmth settles into your arms. Stronger. Already you crave the next one.*`,
+- Example beat: *You drive the blade home and the creature bursts into motes of light.* *[Quest Updated: Cull the Warren — 7/10]* *[Strength +1]* *Warmth settles into your arms. Stronger. Already you crave the next one.*`,
   },
   {
     key: 'chaotic_comedy',
@@ -240,7 +240,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
 - Register: unhinged, fast, absurd. Gremlin energy and meme-brained chaos that somehow still drives the story forward.
 - Diction: modern and irreverent; comic exaggeration, abrupt tonal swerves, gloriously bad ideas executed with total confidence.
 - Rhythm: rapid-fire and escalating — punchlines that land and then immediately make everything worse.
-- Example beat: *She kicks the door open holding a raccoon and a flamethrower.* "Okay so — good news, I found a pet! Bad news, the building's on fire and it's, uh, TECHNICALLY his fault."`,
+- Example beat: *She kicks the door open holding a raccoon and a flamethrower.* Okay so — good news, I found a pet! Bad news, the building's on fire and it's, uh, TECHNICALLY his fault.`,
   },
 ]
 
