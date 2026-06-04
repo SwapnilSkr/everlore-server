@@ -11,6 +11,7 @@ import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
+import { repairProseHygiene, validateProseHygiene } from '../utils/prose-hygiene'
 import { callLLM, callLLMStream, embed, AI_MODELS } from '../ai'
 import { classifyScene } from '../../worker/lib/nsfw-classifier'
 import { EVENT_WINDOWS } from '../utils/event-window'
@@ -22,6 +23,14 @@ const worldTemplates = () => mongoColl.worldTemplates()
 const sceneSummaries = () => mongoColl.sceneSummaries()
 const characters = () => mongoColl.characters()
 const users = () => mongoColl.users()
+
+function continuityText(value: string, max = 220): string {
+  return String(value || '')
+    .replace(/\*/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, max)
+}
 
 function baseReplayVariantFor(event: any) {
   return {
@@ -47,6 +56,14 @@ function normalizeReplayVariants(event: any): any[] {
     return [baseReplayVariantFor(event)]
   }
   return []
+}
+
+async function characterNamesForInstance(instanceId: any): Promise<string[]> {
+  const codex = await characters()
+    .find({ instance_id: instanceId }, { projection: { canonical_name: 1 } })
+    .limit(40)
+    .toArray()
+  return codex.map((c: any) => c.canonical_name).filter(Boolean)
 }
 
 async function recurateMemoriesForEvent(
@@ -357,6 +374,10 @@ export const memoryService = {
       updates.player_input !== event.data.player_input
     const contentChanged = aiChanged || playerChanged
     const replayVariants = normalizeReplayVariants(event)
+    const proseHygieneIssues = validateProseHygiene({
+      narrative: nextAiResponse || '',
+      characterNames: await characterNamesForInstance(event.instance_id),
+    })
     let nextReplayVariants = replayVariants
     let nextSelectedReplayIndex =
       typeof event.data?.selected_replay_index === 'number'
@@ -372,6 +393,7 @@ export const memoryService = {
           model_used: event.data?.model_used || AI_MODELS.narrationSfw,
           created_at: new Date(),
           source: 'edit',
+          prose_hygiene_issues: proseHygieneIssues,
         })
       }
       nextSelectedReplayIndex = nextReplayVariants.length - 1
@@ -393,6 +415,7 @@ export const memoryService = {
           'data.player_narration_facts': parsedPlayerInput.narrationFacts,
           'data.replay_variants': nextReplayVariants,
           'data.selected_replay_index': nextSelectedReplayIndex,
+          'data.prose_hygiene_issues': proseHygieneIssues,
           is_user_edited: true,
           updated_at: new Date(),
         },
@@ -434,8 +457,8 @@ export const memoryService = {
 
     const event = await events().findOne({ _id: eid, player_id: pid })
     if (!event) throw new Error('Event not found')
-    if (!(event.data?.player_input || '').trim()) {
-      throw new Error('Replay is only supported for turns with player input')
+    if (!(event.data?.ai_response || '').trim() || event.data?.model_used === 'seed') {
+      throw new Error('Replay is only supported for generated AI turns')
     }
 
     // Keep state consistency simple: replay only the latest turn in a thread.
@@ -540,7 +563,7 @@ export const memoryService = {
 
     const replayDirective = replayVariants
       .slice(-3)
-      .map((v, i) => `Variant ${replayVariants.length - Math.min(3, replayVariants.length) + i + 1}: ${String(v.narrative || '').slice(0, 220)}`)
+      .map((v, i) => `Variant ${replayVariants.length - Math.min(3, replayVariants.length) + i + 1}: ${continuityText(v.narrative || '')}`)
       .join('\n')
 
     // The replay directive MUST sit BEFORE the final user turn. If appended
@@ -561,12 +584,21 @@ export const memoryService = {
 - Keep within context constraints (do not invent off-screen lore).
 - If prior variants were weak, correct that.
 
+REPLAY HYGIENE:
+- This is an alternative handling of the SAME story beat, not a new timeline branch.
+- Keep the same player intent, scene scope, involved characters, and canonical facts.
+- Do not introduce new named characters, locations, lore, danger, romance, or escalation merely to be distinct.
+- Distinct means better characterization, clearer prose, sharper continuity, cleaner formatting, or better pacing.
+- If prior variants had hygiene issues, fix them; do not imitate their wording, structure, or mistakes.
+- Do not line-edit, paraphrase, or lightly expand the immediately previous variant. Recompose the beat from the player turn and continuity facts.
+- Preserve the player's *action/narration* facts as already happened in this same beat; never respond as if those actions are only pending.
+
 Recent variants (for contrast, do not copy):
 ${replayDirective || '(none)'}`,
       },
       lastUserTurn,
     ]
-    const replayTemp = Math.max(0.45, 0.8 - replayDepth * 0.05)
+    const replayTemp = Math.max(0.4, 0.68 - replayDepth * 0.04)
     // Match the alternative's length budget to the player's chosen reply length,
     // exactly like the primary turn — so a regenerate respects short/medium/long
     // instead of always running to a fixed 900-token ceiling.
@@ -582,13 +614,19 @@ ${replayDirective || '(none)'}`,
           temperature: replayTemp,
           maxTokens: replayMaxTokens,
         })
+    const repairedReplay = await repairProseHygiene({
+      narrative: replayNarrative.trim(),
+      characterNames: (codex as any[]).map((c) => c.canonical_name),
+      model: modelId,
+    })
 
     const nextVariant = {
       id: randomUUID(),
-      narrative: replayNarrative.trim(),
+      narrative: repairedReplay.narrative,
       model_used: modelId,
       created_at: new Date(),
       source: 'replay',
+      prose_hygiene_issues: repairedReplay.issues,
       retrieval_profile: {
         lore_top_k: loreTopK,
         memory_top_k: memoryTopK,
@@ -612,6 +650,7 @@ ${replayDirective || '(none)'}`,
           'data.model_used': modelId,
           'data.replay_variants': nextVariants,
           'data.selected_replay_index': selectedIdx,
+          'data.prose_hygiene_issues': repairedReplay.issues,
           updated_at: new Date(),
         },
       } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
@@ -650,6 +689,13 @@ ${replayDirective || '(none)'}`,
     const chosen = variants[variantIndex]
     const nextAi = chosen.narrative || event.data.ai_response || ''
     const changed = nextAi !== event.data.ai_response
+    const proseHygieneIssues =
+      Array.isArray(chosen.prose_hygiene_issues)
+        ? chosen.prose_hygiene_issues
+        : validateProseHygiene({
+            narrative: nextAi,
+            characterNames: await characterNamesForInstance(event.instance_id),
+          })
 
     await events().updateOne(
       { _id: eid },
@@ -665,6 +711,7 @@ ${replayDirective || '(none)'}`,
           'data.model_used': chosen.model_used || event.data.model_used,
           'data.replay_variants': variants,
           'data.selected_replay_index': variantIndex,
+          'data.prose_hygiene_issues': proseHygieneIssues,
           updated_at: new Date(),
         },
       } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,

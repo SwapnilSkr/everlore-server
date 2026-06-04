@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { ProseHygieneIssue } from '../utils/prose-hygiene'
 
 export type StateMutationOp = 'add' | 'subtract' | 'set'
 
@@ -26,6 +27,7 @@ export interface ReplayVariantDoc {
     memory_top_k: number
     recent_event_window: number
   }
+  prose_hygiene_issues?: ProseHygieneIssue[]
 }
 
 export interface EventDataDoc {
@@ -42,6 +44,7 @@ export interface EventDataDoc {
   model_used: string
   tokens_in: number
   tokens_out: number
+  prose_hygiene_issues?: ProseHygieneIssue[]
 }
 
 export interface EventEditHistoryEntry {

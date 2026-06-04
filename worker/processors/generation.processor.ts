@@ -11,6 +11,7 @@ import { NSFW_MODE } from '../../src/utils/chat-modes'
 import { parsePlayerInput } from '../../src/utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-mutator'
 import { countTokens } from '../../src/utils/token-counter'
+import { repairProseHygiene } from '../../src/utils/prose-hygiene'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { classifyScene } from '../lib/nsfw-classifier'
 import { type GenerationOutput } from '../lib/structured-output'
@@ -48,7 +49,7 @@ export async function generationProcessor(job: Job) {
     : parsePlayerInput(userMessage)
 
   const promptUserMessage = isContinuation
-    ? '[The player waits and observes. Continue the story, advancing events naturally without asking the player what they do.]'
+    ? '[The player waits and observes. Continue the current beat naturally without asking what they do. Prefer a quiet reaction, consequence, or small atmospheric progression. Do not introduce a new complication, location, character, danger, romance escalation, or major plot turn unless it was already clearly set up by recent events.]'
     : (parsedPlayerInput.spoken || '[No spoken dialogue from player this turn.]')
   const storedPlayerInput = isContinuation ? '' : userMessage
   const classifyText = isContinuation ? '' : userMessage
@@ -160,7 +161,7 @@ export async function generationProcessor(job: Job) {
     {
       model: modelId,
       messages: prompt.messages,
-      temperature: 0.85,
+      temperature: 0.72,
       maxTokens: lengthMaxTokens(session.message_length),
     },
     (chunk) => {
@@ -174,12 +175,21 @@ export async function generationProcessor(job: Job) {
   )
   const latencyMs = Date.now() - genStart
 
+  const characterNames = (characterCodex || []).map((c: any) => c.canonical_name)
+  const repairedProse = await repairProseHygiene({
+    narrative: prose.trim(),
+    characterNames,
+    model: modelId,
+  })
+  const finalNarrative = repairedProse.narrative
+
   const meta = await extractSceneMetadata(
-    prose.trim(),
+    finalNarrative,
     Object.keys(session.world_state || {}),
     Object.keys(session.active_flags || {}),
   )
-  const parsed: GenerationOutput = { narrative: prose.trim(), ...meta }
+  const parsed: GenerationOutput = { narrative: finalNarrative, ...meta }
+  const proseHygieneIssues = repairedProse.issues
 
   const newWorldState = applyStateMutations(session.world_state, parsed.state_mutations)
   const newFlags = applyFlagMutations(session.active_flags, parsed.flag_mutations)
@@ -221,6 +231,7 @@ export async function generationProcessor(job: Job) {
       model_used: modelId,
       tokens_in: countTokens(JSON.stringify(prompt.messages)),
       tokens_out: countTokens(parsed.narrative),
+      prose_hygiene_issues: proseHygieneIssues,
     },
     is_user_edited: false,
     edit_history: [],
@@ -247,6 +258,7 @@ export async function generationProcessor(job: Job) {
       metadata_model: AI_MODELS.metadata,
       tokens_in: event.data.tokens_in,
       tokens_out: event.data.tokens_out,
+      prose_hygiene_issues: proseHygieneIssues,
       latency_ms: latencyMs,
       ttft_ms: ttftMs,
       created_at: new Date(),
@@ -310,6 +322,7 @@ export async function generationProcessor(job: Job) {
       narrative: parsed.narrative,
       scene_tag: parsed.scene_tag,
       emotional_tone: parsed.emotional_tone,
+      model_used: event.data.model_used,
       state_diff: {
         world_state: newWorldState,
         active_flags: newFlags,

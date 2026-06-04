@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { ProseHygieneIssue } from '../utils/prose-hygiene'
 
 /**
  * generation_logs — one document per narration generation. Non-blocking,
@@ -24,6 +25,8 @@ export interface GenerationLogDoc {
   metadata_model: string
   tokens_in: number
   tokens_out: number
+  /** Non-mutating prose hygiene findings from the streamed response. */
+  prose_hygiene_issues?: ProseHygieneIssue[]
   /** Wall-clock latency of the full narration generation, milliseconds. */
   latency_ms: number
   /** Time-to-first-token: ms from request start until the first streamed delta.
