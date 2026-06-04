@@ -18,6 +18,8 @@ const optionalEnvVars = {
   IMAGE_MODEL: 'bytedance-seed/seedream-4.5',
   // One-shot creation autofill (drafts a whole world/character). Cheap, fast, 1M ctx.
   AUTHORING_MODEL: 'deepseek/deepseek-v4-flash',
+  // OpenRouter TTS (/api/v1/audio/speech). See everlore-docs/server/TTS_MODELS.md.
+  TTS_MODEL: 'hexgrad/kokoro-82m',
   // AWS S3 + CloudFront for generated media. Bucket is private; served via CDN.
   AWS_REGION: 'ap-south-1',
   S3_BUCKET: '',
@@ -43,6 +45,7 @@ export interface Env {
   NARRATION_NSFW_MODEL: string
   IMAGE_MODEL: string
   AUTHORING_MODEL: string
+  TTS_MODEL: string
   AWS_REGION: string
   S3_BUCKET: string
   CDN_BASE_URL: string
@@ -76,6 +79,7 @@ function loadEnv(): Env {
     NARRATION_NSFW_MODEL: process.env.NARRATION_NSFW_MODEL || optionalEnvVars.NARRATION_NSFW_MODEL,
     IMAGE_MODEL: process.env.IMAGE_MODEL || optionalEnvVars.IMAGE_MODEL,
     AUTHORING_MODEL: process.env.AUTHORING_MODEL || optionalEnvVars.AUTHORING_MODEL,
+    TTS_MODEL: process.env.TTS_MODEL || optionalEnvVars.TTS_MODEL,
     AWS_REGION: process.env.AWS_REGION || optionalEnvVars.AWS_REGION,
     S3_BUCKET: process.env.S3_BUCKET || optionalEnvVars.S3_BUCKET,
     CDN_BASE_URL: process.env.CDN_BASE_URL || optionalEnvVars.CDN_BASE_URL,

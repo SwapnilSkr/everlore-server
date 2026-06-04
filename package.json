@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test:nsfw": "bun run scripts/test-nsfw-model.ts",
     "test:sfw": "bun run scripts/test-sfw-model.ts",
+    "test:tts": "bun run scripts/test-tts-model.ts",
     "seed:nsfw-lexicon": "bun run scripts/seed-nsfw-lexicon.ts",
     "gen:splash-avatars": "bun run scripts/gen-splash-avatars.ts",
     "clean:queue-jobs": "bun run scripts/clean-redis-jobs.ts"

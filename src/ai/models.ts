@@ -25,6 +25,9 @@ import { env } from '../config/env'
  *  codexCompaction      gpt-4o-mini                  no         OpenAI     MODEL_CODEX_COMPACTION
  *  protagonistDerive    gpt-4o-mini                  no         OpenAI     MODEL_PROTAGONIST_DERIVE
  *  embedding            text-embedding-3-small       —          OpenAI     MODEL_EMBEDDING
+ *  image                bytedance-seed/seedream-4.5  —          OpenRouter IMAGE_MODEL
+ *  authoring            deepseek/deepseek-v4-flash   —          OpenRouter AUTHORING_MODEL
+ *  tts                  hexgrad/kokoro-82m           —          OpenRouter TTS_MODEL
  */
 export const AI_MODELS = {
   /** Main story narration, SFW. Streamed token-by-token (TTFT-critical). Prose only. */
@@ -63,6 +66,10 @@ export const AI_MODELS = {
    *  Default deepseek/deepseek-v4-flash (very cheap, fast, 1M ctx, solid JSON).
    *  Override via AUTHORING_MODEL. */
   authoring: env.AUTHORING_MODEL,
+
+  /** Text-to-speech for reading narration aloud. OpenRouter /audio/speech.
+   *  Default Kokoro 82M — cheapest. Override via TTS_MODEL. See server/TTS_MODELS.md. */
+  tts: env.TTS_MODEL,
 } as const
 
 export type AiModelKey = keyof typeof AI_MODELS
