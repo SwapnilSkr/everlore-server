@@ -4,6 +4,10 @@ import { getPineconeIndex } from '../../src/config/pinecone'
 import { embed } from '../../src/ai'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { QUEUE_RETENTION } from '../../src/queues'
+import { log } from '../../src/utils/logger'
+
+const SCENE_SUMMARY_BLOCK = 12
+const STUCK_SUMMARY_MS = 10 * 60 * 1000
 
 export async function maintenanceProcessor(job: Job) {
   const { task } = job.data
@@ -136,6 +140,70 @@ export async function maintenanceProcessor(job: Job) {
       }
 
       return { scheduled: instances.length }
+    }
+
+    case 'repair_scene_summaries': {
+      const stuckBefore = new Date(Date.now() - STUCK_SUMMARY_MS)
+      const instances = await mongoColl.worldInstances()
+        .find({
+          'current_scene.summary_pending': true,
+          updated_at: { $lt: stuckBefore },
+          'meta.is_archived': { $ne: true },
+        })
+        .project({ _id: 1, current_scene: 1 })
+        .limit(100)
+        .toArray()
+
+      const { getSceneSummaryQueue } = await import('../../src/queues')
+      const queue = getSceneSummaryQueue()
+      let scheduled = 0
+
+      for (const inst of instances) {
+        const latest = await mongoColl.events().findOne(
+          { instance_id: inst._id },
+          { sort: { sequence: -1 }, projection: { sequence: 1, scene_tag: 1 } },
+        )
+        if (!latest || typeof latest.sequence !== 'number') continue
+
+        const endSequence = latest.sequence
+        const startSequence = Math.max(1, endSequence - (SCENE_SUMMARY_BLOCK - 1))
+        const sceneTag =
+          typeof inst.current_scene?.tag === 'string'
+            ? inst.current_scene.tag
+            : latest.scene_tag || 'dialogue'
+
+        const existing = await mongoColl.sceneSummaries().findOne({
+          instance_id: inst._id,
+          'event_range.end_sequence': endSequence,
+        })
+        if (existing) {
+          await mongoColl.worldInstances().updateOne(
+            { _id: inst._id },
+            { $set: { 'current_scene.summary_pending': false } },
+          )
+          continue
+        }
+
+        log.warn('scene_summary.repair_queued', {
+          instanceId: idString(inst._id),
+          sceneTag,
+          startSequence,
+          endSequence,
+        })
+        await queue.add('summarize', {
+          instanceId: idString(inst._id),
+          sceneTag,
+          startSequence,
+          endSequence,
+        }, {
+          priority: 15,
+          removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
+        })
+        scheduled++
+      }
+
+      return { scanned: instances.length, scheduled }
     }
 
     default:

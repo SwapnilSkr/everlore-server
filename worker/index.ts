@@ -7,6 +7,7 @@ import { summaryProcessor } from './processors/summary.processor'
 import { maintenanceProcessor } from './processors/maintenance.processor'
 import { getMaintenanceQueue, QUEUE_RETENTION } from '../src/queues'
 import { loadNsfwLexicon } from './lib/nsfw-classifier'
+import { log } from '../src/utils/logger'
 
 async function main() {
   // Initialize connections
@@ -54,6 +55,12 @@ async function main() {
     removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
     removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
   })
+  await maintenanceQueue.add('summary-repair', { task: 'repair_scene_summaries' }, {
+    repeat: { pattern: '*/15 * * * *' },
+    priority: 15,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+  })
 
   // Graceful shutdown
   const shutdown = async () => {
@@ -72,6 +79,16 @@ async function main() {
   for (const w of workers) {
     w.on('failed', (job, err) => {
       console.error(`[${w.name}] Job ${job?.id} failed:`, err.message)
+      if (w.name === 'scene-summary') {
+        log.error('scene_summary.failed', {
+          jobId: job?.id,
+          instanceId: job?.data?.instanceId,
+          sceneTag: job?.data?.sceneTag,
+          startSequence: job?.data?.startSequence,
+          endSequence: job?.data?.endSequence,
+          error: err.message,
+        })
+      }
     })
     w.on('completed', (job) => {
       console.log(`[${w.name}] Job ${job.id} completed`)

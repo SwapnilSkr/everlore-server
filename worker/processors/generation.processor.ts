@@ -21,6 +21,7 @@ import { characterCodexService } from '../../src/services/character-codex.servic
 import { memorySupersessionService } from '../../src/services/memory-supersession.service'
 import { getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../../src/queues'
 import { replayProcessor } from './replay.processor'
+import { log } from '../../src/utils/logger'
 
 const MAX_CONTEXT_TOKENS = 6000
 /** Turns of one continuous scene that fold into a single recap (non-overlapping). */
@@ -419,11 +420,19 @@ export async function generationProcessor(job: Job) {
 
   if (shouldSummarize) {
     const sceneSummaryQueue = getSceneSummaryQueue()
+    const startSequence = nextSequence - (SCENE_SUMMARY_BLOCK - 1)
+    const endSequence = nextSequence
+    log.info('scene_summary.queued', {
+      instanceId,
+      sceneTag,
+      startSequence,
+      endSequence,
+    })
     await sceneSummaryQueue.add('summarize', {
       instanceId,
       sceneTag,
-      startSequence: nextSequence - (SCENE_SUMMARY_BLOCK - 1),
-      endSequence: nextSequence,
+      startSequence,
+      endSequence,
     }, {
       priority: 10,
       delay: 5000,

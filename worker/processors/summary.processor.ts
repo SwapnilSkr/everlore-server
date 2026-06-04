@@ -3,10 +3,18 @@ import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { callLLM, AI_MODELS } from '../../src/ai'
 import { parseObjectId } from '../../src/utils/mongo-id'
+import { log } from '../../src/utils/logger'
 
 export async function summaryProcessor(job: Job) {
   const { instanceId, sceneTag, startSequence, endSequence } = job.data
   const instanceOid = parseObjectId(instanceId)
+  log.info('scene_summary.started', {
+    jobId: job.id,
+    instanceId,
+    sceneTag,
+    startSequence,
+    endSequence,
+  })
 
   const events = await mongoColl.events()
     .find({
@@ -16,7 +24,22 @@ export async function summaryProcessor(job: Job) {
     .sort({ sequence: 1 })
     .toArray()
 
-  if (events.length < 6) return { skipped: true }
+  if (events.length < 6) {
+    await mongoColl.worldInstances().updateOne(
+      { _id: instanceOid },
+      { $set: { 'current_scene.summary_pending': false } },
+    )
+    log.warn('scene_summary.skipped', {
+      jobId: job.id,
+      instanceId,
+      sceneTag,
+      startSequence,
+      endSequence,
+      eventsFound: events.length,
+      reason: 'insufficient_events',
+    })
+    return { skipped: true }
+  }
 
   const conversationText = events
     .map((e) => `[Turn ${e.sequence}] Player: ${e.data.player_input}\nWorld: ${e.data.ai_response}`)
@@ -53,6 +76,15 @@ export async function summaryProcessor(job: Job) {
     { _id: instanceOid },
     { $set: { 'current_scene.summary_pending': false } },
   )
+
+  log.info('scene_summary.succeeded', {
+    jobId: job.id,
+    instanceId,
+    sceneTag,
+    startSequence,
+    endSequence,
+    summaryId: summary._id.toString(),
+  })
 
   return { summaryId: summary._id }
 }
