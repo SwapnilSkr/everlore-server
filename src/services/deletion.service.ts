@@ -3,6 +3,7 @@ import { mongoColl } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
 import { deletePineconeNamespace } from './pinecone-cleanup.service'
 import { characterCodexService } from './character-codex.service'
+import { isDefaultCoverUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
@@ -123,7 +124,8 @@ export const deletionService = {
     }
 
     // Delete generated template image from S3 when it is one of our CDN assets.
-    if (template.image_url) {
+    // Never delete the shared default cover — many templates may reference it.
+    if (template.image_url && !isDefaultCoverUrl(template.image_url)) {
       const key = storageService.keyFromUrl(template.image_url)
       if (key) await storageService.delete(key)
     }

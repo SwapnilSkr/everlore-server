@@ -4,6 +4,7 @@ import type { UserTier } from '../models/user.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import { deletionService } from './deletion.service'
+import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
 import { deletePineconeVector } from './pinecone-cleanup.service'
 
@@ -205,8 +206,8 @@ export const adminService = {
     if ('creator_id' in patch) patch.creator_id = maybeObjectId(patch.creator_id)
 
     if (typeof patch.image_url === 'string' && patch.image_url !== existing.image_url) {
-      patch.image_url = patch.image_url ? await storageService.promote(patch.image_url) : ''
-      if (existing.image_url) {
+      patch.image_url = await resolveTemplateImageUrl(patch.image_url)
+      if (existing.image_url && !isDefaultCoverUrl(existing.image_url)) {
         const oldKey = storageService.keyFromUrl(existing.image_url)
         if (oldKey) void storageService.delete(oldKey)
       }

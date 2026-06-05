@@ -10,6 +10,7 @@ import { embed } from '../ai'
 import { deriveProtagonist } from '../utils/protagonist'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
 import { familyExpandedKeys } from '../utils/narrative-styles'
 
@@ -55,9 +56,8 @@ export const templateService = {
       protagonist = (await deriveProtagonist(data.seed_prompt)) || undefined
     }
 
-    // Promote the chosen preview image to the durable prefix so the bucket
-    // lifecycle rule won't expire it. No-op for empty/non-preview URLs.
-    const imageUrl = data.image_url ? await storageService.promote(data.image_url) : ''
+    // Promote a chosen preview, or assign the universal default when skipped.
+    const imageUrl = await resolveTemplateImageUrl(data.image_url)
 
     const template: WorldTemplateDoc = {
       _id,
@@ -114,10 +114,10 @@ export const templateService = {
     delete updateFields.creator_id
     delete updateFields._id
 
-    // If a new image was chosen, promote the preview and evict the old object.
+    // If a new image was chosen (or cleared), promote or fall back to default.
     if (typeof data.image_url === 'string' && data.image_url !== existing.image_url) {
-      updateFields.image_url = data.image_url ? await storageService.promote(data.image_url) : ''
-      if (existing.image_url) {
+      updateFields.image_url = await resolveTemplateImageUrl(data.image_url)
+      if (existing.image_url && !isDefaultCoverUrl(existing.image_url)) {
         const oldKey = storageService.keyFromUrl(existing.image_url)
         if (oldKey) void storageService.delete(oldKey)
       }

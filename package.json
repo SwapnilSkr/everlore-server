@@ -13,6 +13,8 @@
     "test:tts": "bun run scripts/test-tts-model.ts",
     "seed:nsfw-lexicon": "bun run scripts/seed-nsfw-lexicon.ts",
     "gen:splash-avatars": "bun run scripts/gen-splash-avatars.ts",
+    "gen:player-avatars": "bun run scripts/gen-player-avatars.ts",
+    "seed:default-cover": "bun run scripts/seed-default-cover.ts",
     "clean:queue-jobs": "bun run scripts/clean-redis-jobs.ts"
   },
   "dependencies": {
