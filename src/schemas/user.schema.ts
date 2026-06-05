@@ -34,6 +34,12 @@ export const UpdatePreferencesBody = t.Object({
     t.Literal('verbose'),
   ])),
   auto_memory_curation: t.Optional(t.Boolean()),
+  player_name: t.Optional(t.String({ minLength: 2, maxLength: 40 })),
+  gender: t.Optional(t.Union([
+    t.Literal('male'),
+    t.Literal('female'),
+    t.Literal('non_binary'),
+  ])),
   interests: t.Optional(t.Array(t.String())),
 })
 

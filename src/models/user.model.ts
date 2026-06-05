@@ -2,12 +2,18 @@ import type { ObjectId } from 'mongodb'
 
 export type UserTier = 'free' | 'premium' | 'creator'
 
+export type PlayerGender = 'male' | 'female' | 'non_binary'
+
 export interface UserPreferences {
   nsfw_enabled: boolean
   preferred_model: string
   theme: string
   narration_length: 'detailed' | string
   auto_memory_curation: boolean
+  /** Display name chosen during post-auth onboarding. */
+  player_name?: string
+  /** Optional gender from onboarding; unset when skipped (neutral avatar). */
+  gender?: PlayerGender
   /** Genre taste from onboarding (narrative_style keys); biases discovery. */
   interests?: string[]
 }
