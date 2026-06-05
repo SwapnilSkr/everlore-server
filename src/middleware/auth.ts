@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia'
 import { jwt } from '@elysiajs/jwt'
 import { env } from '../config/env'
+import { authService } from '../services/auth.service'
 
 export interface AuthUser {
   id: string
@@ -33,7 +34,11 @@ export const authPlugin = new Elysia({ name: 'auth-plugin' })
     const token = auth.slice(7)
     const payload = await jwt.verify(token)
     const user = payloadToUser(payload)
-    return { user }
+    if (!user) return { user: null as AuthUser | null }
+
+    // Tier is stored on the user doc; JWT may still say `free` until re-login.
+    const tier = await authService.getLiveTier(user.id)
+    return { user: { ...user, tier } }
   })
 
 /** Chain after `authPlugin` to reject unauthenticated requests (optional helper). */

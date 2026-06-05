@@ -207,6 +207,15 @@ export const authService = {
     return dbUser
   },
 
+  /** JWT tier can lag after admin upgrades — read the live value from Mongo. */
+  async getLiveTier(userId: string): Promise<UserTier> {
+    const row = await users().findOne(
+      { _id: parseObjectId(userId) },
+      { projection: { tier: 1 } },
+    )
+    return (row?.tier as UserTier | undefined) ?? 'free'
+  },
+
   async updatePreferences(userId: string, body: Record<string, unknown>) {
     const updateFields: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(body)) {
