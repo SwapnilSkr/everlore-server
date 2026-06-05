@@ -50,6 +50,11 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   },
   {
     collection: COLLECTIONS.world_instances,
+    key: { player_id: 1, template_id: 1, "meta.is_archived": 1 },
+    options: { name: "idx_world_instances_player_template_archived" },
+  },
+  {
+    collection: COLLECTIONS.world_instances,
     key: { "meta.last_active_at": 1 },
     options: { name: "idx_world_instances_last_active" },
   },

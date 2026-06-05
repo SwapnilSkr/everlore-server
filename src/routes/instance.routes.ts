@@ -8,6 +8,10 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
 
   .get('/', (ctx) => instanceController.list(ctx), { query: InstanceQueryParams })
 
+  .get('/play-status/:templateId', (ctx) => instanceController.playStatus(ctx))
+
+  .get('/by-template/:templateId', (ctx) => instanceController.listByTemplate(ctx))
+
   .get('/:id', (ctx) => instanceController.getById(ctx))
 
   .post('/', (ctx) => instanceController.create(ctx), { body: CreateInstanceBody })

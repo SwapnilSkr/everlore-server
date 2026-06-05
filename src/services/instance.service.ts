@@ -143,6 +143,153 @@ export const instanceService = {
     })
   },
 
+  /**
+   * Fast check: has this player entered this world before? Used before opening
+   * a template so the client can offer "continue" vs "begin anew" without
+   * loading the full instance list.
+   */
+  async getPlayStatus(
+    playerId: string,
+    templateId: string,
+  ): Promise<{
+    has_played: boolean
+    count: number
+    latest_instance_id: string | null
+    stories: Array<{ id: string; last_active_at: Date; total_events: number }>
+  }> {
+    const playerOid = parseObjectId(playerId)
+    const templateOid = parseObjectId(templateId)
+
+    const rows = await worldInstances()
+      .find({
+        player_id: playerOid,
+        template_id: templateOid,
+        'meta.is_archived': { $ne: true },
+      })
+      .project({
+        _id: 1,
+        'meta.last_active_at': 1,
+        'meta.total_events': 1,
+      })
+      .sort({ 'meta.last_active_at': -1 })
+      .limit(25)
+      .toArray()
+
+    return {
+      has_played: rows.length > 0,
+      count: rows.length,
+      latest_instance_id: rows.length > 0 ? idString(rows[0]._id) : null,
+      stories: rows.map((r) => ({
+        id: idString(r._id),
+        last_active_at: r.meta.last_active_at,
+        total_events: r.meta.total_events,
+      })),
+    }
+  },
+
+  /**
+   * All active playthroughs for one world, with a one-line story preview from
+   * the latest turn. Used on "Your Realms" when a world has multiple stories.
+   */
+  async listByTemplate(
+    playerId: string,
+    templateId: string,
+  ): Promise<{
+    template: WorldTemplateSummaryDoc | null
+    stories: Array<
+      InstanceListRow & {
+        preview: string
+        story_index: number
+      }
+    >
+  }> {
+    const playerOid = parseObjectId(playerId)
+    const templateOid = parseObjectId(templateId)
+
+    const instances = (await worldInstances()
+      .find({
+        player_id: playerOid,
+        template_id: templateOid,
+        'meta.is_archived': { $ne: true },
+      })
+      .sort({ 'meta.last_active_at': -1 })
+      .toArray()) as WorldInstanceDoc[]
+
+    if (instances.length === 0) {
+      const template = (await worldTemplates()
+        .find({ _id: templateOid })
+        .project({ _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1, image_url: 1 })
+        .limit(1)
+        .toArray()) as WorldTemplateSummaryDoc[]
+      return { template: template[0] || null, stories: [] }
+    }
+
+    const instanceIds = instances.map((i) => i._id)
+    const previewRows = await events()
+      .aggregate<{
+        _id: ObjectId
+        preview: string
+      }>([
+        { $match: { instance_id: { $in: instanceIds }, player_id: playerOid } },
+        { $sort: { sequence: -1 } },
+        {
+          $group: {
+            _id: '$instance_id',
+            player_input: { $first: '$data.player_input' },
+            ai_response: { $first: '$data.ai_response' },
+          },
+        },
+        {
+          $project: {
+            preview: {
+              $let: {
+                vars: {
+                  pi: { $ifNull: ['$player_input', ''] },
+                  ar: { $ifNull: ['$ai_response', ''] },
+                },
+                in: {
+                  $cond: [
+                    { $gt: [{ $strLenCP: '$$pi' }, 0] },
+                    '$$pi',
+                    '$$ar',
+                  ],
+                },
+              },
+            },
+          },
+        },
+      ])
+      .toArray()
+
+    const previewMap = new Map(
+      previewRows.map((r) => [idString(r._id), (r.preview || '').trim()]),
+    )
+
+    const templateRows = (await worldTemplates()
+      .find({ _id: templateOid })
+      .project({ _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1, image_url: 1 })
+      .limit(1)
+      .toArray()) as WorldTemplateSummaryDoc[]
+    const template = templateRows[0] || null
+
+    const templateMap = template ? new Map([[idString(template._id), template]]) : new Map()
+
+    const stories = instances.map((inst, idx) => {
+      const tid = idString(inst.template_id)
+      const summary = templateMap.get(tid) || null
+      const raw = previewMap.get(idString(inst._id)) || ''
+      const preview = raw.length > 160 ? `${raw.slice(0, 157)}…` : raw
+      return {
+        ...inst,
+        template: summary,
+        preview,
+        story_index: instances.length - idx,
+      }
+    })
+
+    return { template, stories }
+  },
+
   async list(playerId: string, includeArchived: boolean = false): Promise<InstanceListRow[]> {
     const playerOid = parseObjectId(playerId)
     const filter: Record<string, unknown> = { player_id: playerOid }

@@ -15,6 +15,28 @@ export const instanceController = {
     return instanceService.list(user.id, query.include_archived === true)
   },
 
+  playStatus: async ({
+    user,
+    params,
+  }: {
+    user: AuthUser | null
+    params: { templateId: string }
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return instanceService.getPlayStatus(user.id, params.templateId)
+  },
+
+  listByTemplate: async ({
+    user,
+    params,
+  }: {
+    user: AuthUser | null
+    params: { templateId: string }
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return instanceService.listByTemplate(user.id, params.templateId)
+  },
+
   getById: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     const instance = await instanceService.getById(params.id, user.id)
