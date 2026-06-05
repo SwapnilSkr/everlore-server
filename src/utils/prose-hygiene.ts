@@ -15,7 +15,8 @@ interface ProseHygieneInput {
 }
 
 const REPAIRABLE_CODES = new Set([
-  'dialogue_quotes_present',
+  'unbalanced_dialogue_quotes',
+  'unquoted_text_outside_markers',
   'double_asterisk_markers',
   'unbalanced_italics',
   'plain_narration_outside_markers',
@@ -42,6 +43,10 @@ function narrationMarkerCount(text: string): number {
   return count
 }
 
+function quoteMarkerCount(text: string): number {
+  return (text.match(/["“”]/g) || []).length
+}
+
 function sentenceStarts(text: string): string[] {
   return text
     .replace(/\n+/g, ' ')
@@ -66,6 +71,14 @@ function plainSegmentsOutsideNarration(text: string): string[] {
   }
   segments.push(text.slice(cursor))
   return segments.map((s) => s.trim()).filter(Boolean)
+}
+
+function unquotedTextOutsideNarration(segment: string): string {
+  const withoutQuotedSpeech = segment
+    .replace(/"[^"]*"/g, ' ')
+    .replace(/“[^”]*”/g, ' ')
+    .replace(/[,\s.!?;:—–-]+/g, '')
+  return withoutQuotedSpeech
 }
 
 function plainSegmentLooksLikeNarration(segment: string, names: string[]): boolean {
@@ -116,6 +129,8 @@ function issueScore(issues: ProseHygieneIssue[]): number {
     if (issue.code === 'repeated_character_name') return sum + 3
     if (issue.code === 'consecutive_name_sentence_starts') return sum + 3
     if (issue.code === 'unbalanced_italics') return sum + 3
+    if (issue.code === 'unbalanced_dialogue_quotes') return sum + 3
+    if (issue.code === 'unquoted_text_outside_markers') return sum + 3
     if (issue.code === 'plain_narration_outside_markers') return sum + 3
     if (issue.code === 'double_asterisk_markers') return sum + 2
     return sum + 1
@@ -166,14 +181,6 @@ export function validateProseHygiene(input: ProseHygieneInput): ProseHygieneIssu
     })
   }
 
-  if (/["“”]/.test(trimmed)) {
-    issues.push({
-      code: 'dialogue_quotes_present',
-      severity: 'warning',
-      message: 'Response contains quotation marks; spoken dialogue should be plain text without quote markers.',
-    })
-  }
-
   if (/\*\*[^*]+?\*\*/.test(trimmed)) {
     issues.push({
       code: 'double_asterisk_markers',
@@ -190,7 +197,27 @@ export function validateProseHygiene(input: ProseHygieneInput): ProseHygieneIssu
     })
   }
 
+  if (quoteMarkerCount(trimmed) % 2 !== 0) {
+    issues.push({
+      code: 'unbalanced_dialogue_quotes',
+      severity: 'warning',
+      message: 'Response has unbalanced dialogue quote markers.',
+    })
+  }
+
   const names = normalizedNames(input.characterNames || [])
+  const unquotedSegment = plainSegmentsOutsideNarration(trimmed).find((segment) =>
+    /[A-Za-z]/.test(unquotedTextOutsideNarration(segment)),
+  )
+  if (unquotedSegment) {
+    issues.push({
+      code: 'unquoted_text_outside_markers',
+      severity: 'warning',
+      message: 'Response has text outside *...* markers that is not wrapped as quoted speech.',
+      detail: unquotedSegment.slice(0, 180),
+    })
+  }
+
   const unmarkedNarration = plainSegmentsOutsideNarration(trimmed).find((segment) =>
     plainSegmentLooksLikeNarration(segment, names),
   )
@@ -249,7 +276,9 @@ export function validateProseHygiene(input: ProseHygieneInput): ProseHygieneIssu
 }
 
 export function normalizeNarrationMarkers(narrative: string): string {
-  return String(narrative || '').replace(/\*\*([\s\S]*?)\*\*/g, (_m, inner) => `*${String(inner).trim()}*`)
+  return String(narrative || '')
+    .replace(/[“”]/g, '"')
+    .replace(/\*\*([\s\S]*?)\*\*/g, (_m, inner) => `*${String(inner).trim()}*`)
 }
 
 export async function repairProseHygiene(input: ProseHygieneInput & { model: string }): Promise<{
@@ -270,10 +299,10 @@ export async function repairProseHygiene(input: ProseHygieneInput & { model: str
 
 Rules:
 - Keep the same events, facts, speaker intent, emotional beat, and approximate length.
-- Spoken aloud words are plain text with no quotation marks.
+- Spoken aloud words must be wrapped in double quotes, like "I missed you."
 - All narration, action, body language, inner thought, and dialogue attribution must be inside single asterisks, like *she says softly*.
 - Scene description and atmospheric prose are narration. They must also be inside single asterisks.
-- Text outside asterisks must be only the exact words spoken aloud by a character.
+- Text outside asterisks must be quoted speech only.
 - Do not use double asterisks.
 - Use a character's name only when needed for clarity. If the character is already clear, use pronouns, role descriptors, action, or body language.
 - Do not start consecutive sentences with the same character name.

@@ -193,12 +193,12 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
   if (input.proseOnly) {
     staticContent += `RESPONSE FORMAT:
 Write your reply as in-character story prose. Follow this style EXACTLY:
-- ONLY the exact words a character speaks ALOUD are plain text. Do NOT wrap spoken dialogue in quotation marks.
-- EVERYTHING else is narration and MUST be wrapped in single-asterisk italics: scene, actions, body language, inner thoughts, AND dialogue tags/attributions such as *she said softly* or *I reply, my voice steady*. This applies even mid-line — between or after spoken words, the attribution still goes in italics.
+- ONLY the exact words a character speaks ALOUD are wrapped in double quotes, like "I missed you."
+- EVERYTHING else is narration and MUST be wrapped in single-asterisk italics: scene, actions, body language, inner thoughts, AND dialogue tags/attributions such as *she said softly* or *I reply, my voice steady*. This applies even mid-line — between or after quoted speech, the attribution still goes in italics.
 - Scene description and atmosphere are narration too: *The hearth crackles between you.* Never leave that kind of prose plain.
-- Example: You came back, *she whispered, her hand trembling. The hearth crackled between you.* I didn't think you would.
+- Example: "You came back," *she whispered, her hand trembling. The hearth crackled between you.* "I didn't think you would."
 - Do not use double asterisks for story prose.
-- Never leave an attribution like I reply or she said as plain text. If it is not spoken aloud, it is italicized.
+- Never leave an attribution like I reply or she said as plain text. If it is not a spoken quote, it is italicized.
 - The player may include their OWN *actions or narration in asterisks* (in any point of view). Treat these as canonical events that truly happen in the story — honor them and react; do not override or contradict them. Their unmarked text is what the player says aloud.
 - Vivid and emotionally resonant; match the requested length and voice below.
 - Output ONLY the story. No JSON, no field names, no headings, no bullet points, no commentary before or after. Never break character.`
@@ -206,7 +206,7 @@ Write your reply as in-character story prose. Follow this style EXACTLY:
     staticContent += `RESPONSE FORMAT:
 You MUST respond with valid JSON containing these fields:
 - "narrative": Your in-character response (2-4 paragraphs, vivid, emotionally resonant)
-- In "narrative", spoken words are plain text with no quotation marks; non-spoken narration/actions/attributions are wrapped in single-asterisk italics.
+- In "narrative", spoken words are wrapped in double quotes; non-spoken narration/actions/attributions are wrapped in single-asterisk italics.
 - "state_mutations": Changes to world state as {"stat_name": {"op": "add"|"subtract"|"set", "value": number}}. Only include stats that actually change. Values should be between 1-20 for add/subtract.
 - "flag_mutations": Changes to flags as {"flag_name": {"op": "set"|"increment", "value": any}}. Only include flags that change.
 - "scene_tag": One of: dialogue, combat, romantic, intimate, exploration, existential, cosmic, mundane. Use "romantic" for affectionate/romantic but non-explicit moments (flirting, kissing, emotional intimacy). Use "intimate" ONLY for explicit sexual content.
@@ -430,7 +430,7 @@ ${continuityTurns.join('\n\n')}`,
     povReminder +=
       `\nANTI-HALLUCINATION: answer only from the current player turn, recent continuity, active scene, and provided reference material. Do not add unrelated lore, off-screen characters, sudden dangers, new locations, or new plot complications just to make the response dramatic.`
     povReminder +=
-      `\nFORMAT HYGIENE: spoken words are plain text with no quotation marks. Every non-spoken element must be wrapped in single-asterisk italics, including actions, scene description, atmosphere, inner thoughts, and dialogue tags such as *she said* or *I whisper*. Text outside asterisks must be only spoken aloud words. Do not use double asterisks. Do not leave narration or attributions as plain text.`
+      `\nFORMAT HYGIENE: spoken words must be wrapped in double quotes. Every non-spoken element must be wrapped in single-asterisk italics, including actions, scene description, atmosphere, inner thoughts, and dialogue tags such as *she said* or *I whisper*. Text outside asterisks must be quoted speech only. Do not use double asterisks. Do not leave narration or attributions as plain text.`
 
     messages.push({ role: 'system', content: povReminder })
   }
