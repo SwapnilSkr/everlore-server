@@ -1,57 +1,136 @@
 import { adminService } from '../services/admin.service'
-import { idString } from '../utils/mongo-id'
+
+function boolQuery(value: unknown): boolean | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  if (value === true || value === 'true') return true
+  if (value === false || value === 'false') return false
+  return undefined
+}
+
+function pageQuery(query: { page?: number; limit?: number }) {
+  return {
+    page: query.page ?? 1,
+    limit: query.limit ?? 50,
+  }
+}
 
 export const adminController = {
-  listUsers: async ({ query }: { query: { limit?: number } }) => {
-    const limit = query.limit ?? 50
-    return adminService.listUsers(limit)
-  },
+  overview: async () => adminService.overview(),
 
-  getUser: async ({ params, set }: { params: { userId: string }; set: { status?: unknown } }) => {
-    const user = await adminService.getUser(params.userId)
-    if (!user) {
-      set.status = 404
-      return { error: 'User not found' }
-    }
+  listUsers: async ({ query }: { query: { page?: number; limit?: number; search?: string } }) =>
+    adminService.listUsers({ ...pageQuery(query), search: query.search }),
 
-    return {
-      id: idString(user._id),
-      username: user.username,
-      email: user.email || null,
-      phone: user.phone || null,
-      tier: user.tier,
-      token_balance: user.token_balance,
-      created_at: user.created_at,
-      updated_at: user.updated_at,
-    }
-  },
+  getUser: async ({ params }: { params: { userId: string } }) => adminService.getUser(params.userId),
+
+  patchUser: async ({ params, body }: { params: { userId: string }; body: Record<string, unknown> }) =>
+    adminService.updateUser(params.userId, body),
 
   patchUserTier: async ({
     params,
     body,
-    set,
   }: {
     params: { userId: string }
     body: { tier: 'free' | 'premium' | 'creator' }
-    set: { status?: unknown }
-  }) => {
-    const res = await adminService.setUserTier(params.userId, body.tier)
+  }) => ({
+    ...(await adminService.setUserTier(params.userId, body.tier)),
+    note: 'Existing JWTs still carry the old tier until the user signs in again.',
+  }),
 
-    if (!res) {
-      set.status = 404
-      return { error: 'User not found' }
-    }
+  deleteUser: async ({ params }: { params: { userId: string } }) => adminService.deleteUser(params.userId),
 
-    const u = res
-    return {
-      user: {
-        id: idString(u._id),
-        username: u.username,
-        email: u.email || null,
-        phone: u.phone || null,
-        tier: u.tier,
-      },
-      note: 'Existing JWTs still carry the old tier until the user signs in again.',
-    }
-  },
+  listWorlds: async ({
+    query,
+  }: {
+    query: { page?: number; limit?: number; search?: string; creator_id?: string; published?: boolean | string }
+  }) =>
+    adminService.listWorlds({
+      ...pageQuery(query),
+      search: query.search,
+      creator_id: query.creator_id,
+      published: boolQuery(query.published),
+    }),
+
+  getWorld: async ({ params }: { params: { worldId: string } }) => adminService.getWorld(params.worldId),
+
+  patchWorld: async ({ params, body }: { params: { worldId: string }; body: Record<string, unknown> }) =>
+    adminService.updateWorld(params.worldId, body),
+
+  deleteWorld: async ({ params }: { params: { worldId: string } }) => adminService.deleteWorld(params.worldId),
+
+  listInstances: async ({
+    query,
+  }: {
+    query: { page?: number; limit?: number; player_id?: string; template_id?: string; archived?: boolean | string }
+  }) =>
+    adminService.listInstances({
+      ...pageQuery(query),
+      player_id: query.player_id,
+      template_id: query.template_id,
+      archived: boolQuery(query.archived),
+    }),
+
+  getInstance: async ({ params }: { params: { instanceId: string } }) =>
+    adminService.getInstance(params.instanceId),
+
+  patchInstance: async ({ params, body }: { params: { instanceId: string }; body: Record<string, unknown> }) =>
+    adminService.updateInstance(params.instanceId, body),
+
+  deleteInstance: async ({ params }: { params: { instanceId: string } }) =>
+    adminService.deleteInstance(params.instanceId),
+
+  listEvents: async ({
+    query,
+  }: {
+    query: { page?: number; limit?: number; instance_id?: string; player_id?: string }
+  }) =>
+    adminService.listEvents({
+      ...pageQuery(query),
+      instance_id: query.instance_id,
+      player_id: query.player_id,
+    }),
+
+  patchEvent: async ({ params, body }: { params: { eventId: string }; body: Record<string, unknown> }) =>
+    adminService.updateEvent(params.eventId, body),
+
+  deleteEvent: async ({ params }: { params: { eventId: string } }) => adminService.deleteEvent(params.eventId),
+
+  listMemories: async ({
+    query,
+  }: {
+    query: { page?: number; limit?: number; instance_id?: string; player_id?: string }
+  }) =>
+    adminService.listMemories({
+      ...pageQuery(query),
+      instance_id: query.instance_id,
+      player_id: query.player_id,
+    }),
+
+  patchMemory: async ({ params, body }: { params: { memoryId: string }; body: Record<string, unknown> }) =>
+    adminService.updateMemory(params.memoryId, body),
+
+  deleteMemory: async ({ params }: { params: { memoryId: string } }) =>
+    adminService.deleteMemory(params.memoryId),
+
+  listCharacters: async ({ query }: { query: { page?: number; limit?: number; instance_id?: string } }) =>
+    adminService.listCharacters({
+      ...pageQuery(query),
+      instance_id: query.instance_id,
+    }),
+
+  patchCharacter: async ({ params, body }: { params: { characterId: string }; body: Record<string, unknown> }) =>
+    adminService.updateCharacter(params.characterId, body),
+
+  deleteCharacter: async ({ params }: { params: { characterId: string } }) =>
+    adminService.deleteCharacter(params.characterId),
+
+  listGenerationLogs: async ({
+    query,
+  }: {
+    query: { page?: number; limit?: number; instance_id?: string; player_id?: string }
+  }) =>
+    adminService.listGenerationLogs({
+      ...pageQuery(query),
+      instance_id: query.instance_id,
+      player_id: query.player_id,
+    }),
 }

@@ -1,17 +1,103 @@
-/**
- * Unauthenticated admin helpers — for local/dev tier management only.
- * Add proper admin auth (or network isolation) before any public deployment.
- */
-import { Elysia } from 'elysia'
-import { AdminSetTierBody, AdminUserListQuery } from '../schemas/user.schema'
+import { Elysia, t } from 'elysia'
+import { AdminSetTierBody } from '../schemas/user.schema'
 import { adminController } from '../controllers/admin.controller'
+import { requireAdmin } from '../middleware/admin-auth'
+
+const PageQuery = t.Object({
+  page: t.Optional(t.Numeric({ minimum: 1 })),
+  limit: t.Optional(t.Numeric({ minimum: 1, maximum: 200 })),
+})
+
+const SearchPageQuery = t.Composite([
+  PageQuery,
+  t.Object({
+    search: t.Optional(t.String({ maxLength: 120 })),
+  }),
+])
+
+const AdminPatchBody = t.Record(t.String(), t.Any())
 
 export const adminRoutes = new Elysia({ prefix: '/admin' })
+  .use(requireAdmin)
 
-  .get('/users', (ctx) => adminController.listUsers(ctx), { query: AdminUserListQuery })
+  .get('/overview', () => adminController.overview())
 
+  .get('/users', (ctx) => adminController.listUsers(ctx), { query: SearchPageQuery })
   .get('/users/:userId', (ctx) => adminController.getUser(ctx))
-
+  .patch('/users/:userId', (ctx) => adminController.patchUser(ctx), { body: AdminPatchBody })
   .patch('/users/:userId/tier', (ctx) => adminController.patchUserTier(ctx), {
     body: AdminSetTierBody,
+  })
+  .delete('/users/:userId', (ctx) => adminController.deleteUser(ctx))
+
+  .get('/worlds', (ctx) => adminController.listWorlds(ctx), {
+    query: t.Composite([
+      SearchPageQuery,
+      t.Object({
+        creator_id: t.Optional(t.String()),
+        published: t.Optional(t.Union([t.Boolean(), t.String()])),
+      }),
+    ]),
+  })
+  .get('/worlds/:worldId', (ctx) => adminController.getWorld(ctx))
+  .patch('/worlds/:worldId', (ctx) => adminController.patchWorld(ctx), { body: AdminPatchBody })
+  .delete('/worlds/:worldId', (ctx) => adminController.deleteWorld(ctx))
+
+  .get('/instances', (ctx) => adminController.listInstances(ctx), {
+    query: t.Composite([
+      PageQuery,
+      t.Object({
+        player_id: t.Optional(t.String()),
+        template_id: t.Optional(t.String()),
+        archived: t.Optional(t.Union([t.Boolean(), t.String()])),
+      }),
+    ]),
+  })
+  .get('/instances/:instanceId', (ctx) => adminController.getInstance(ctx))
+  .patch('/instances/:instanceId', (ctx) => adminController.patchInstance(ctx), { body: AdminPatchBody })
+  .delete('/instances/:instanceId', (ctx) => adminController.deleteInstance(ctx))
+
+  .get('/events', (ctx) => adminController.listEvents(ctx), {
+    query: t.Composite([
+      PageQuery,
+      t.Object({
+        instance_id: t.Optional(t.String()),
+        player_id: t.Optional(t.String()),
+      }),
+    ]),
+  })
+  .patch('/events/:eventId', (ctx) => adminController.patchEvent(ctx), { body: AdminPatchBody })
+  .delete('/events/:eventId', (ctx) => adminController.deleteEvent(ctx))
+
+  .get('/memories', (ctx) => adminController.listMemories(ctx), {
+    query: t.Composite([
+      PageQuery,
+      t.Object({
+        instance_id: t.Optional(t.String()),
+        player_id: t.Optional(t.String()),
+      }),
+    ]),
+  })
+  .patch('/memories/:memoryId', (ctx) => adminController.patchMemory(ctx), { body: AdminPatchBody })
+  .delete('/memories/:memoryId', (ctx) => adminController.deleteMemory(ctx))
+
+  .get('/characters', (ctx) => adminController.listCharacters(ctx), {
+    query: t.Composite([
+      PageQuery,
+      t.Object({
+        instance_id: t.Optional(t.String()),
+      }),
+    ]),
+  })
+  .patch('/characters/:characterId', (ctx) => adminController.patchCharacter(ctx), { body: AdminPatchBody })
+  .delete('/characters/:characterId', (ctx) => adminController.deleteCharacter(ctx))
+
+  .get('/generation-logs', (ctx) => adminController.listGenerationLogs(ctx), {
+    query: t.Composite([
+      PageQuery,
+      t.Object({
+        instance_id: t.Optional(t.String()),
+        player_id: t.Optional(t.String()),
+      }),
+    ]),
   })

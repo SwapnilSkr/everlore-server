@@ -37,7 +37,7 @@ export const UpdatePreferencesBody = t.Object({
   interests: t.Optional(t.Array(t.String())),
 })
 
-/** Body for unauthenticated admin tier updates (dev / internal use only). */
+/** Body for admin tier updates. Guarded by env-backed admin auth. */
 export const AdminSetTierBody = t.Object({
   tier: t.Union([
     t.Literal('free'),

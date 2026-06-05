@@ -3,6 +3,7 @@ import { mongoColl } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
 import { deletePineconeNamespace } from './pinecone-cleanup.service'
 import { characterCodexService } from './character-codex.service'
+import { storageService } from './storage.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import type { WorldEventDoc } from '../models/world-event.model'
@@ -14,6 +15,7 @@ const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
 const sceneSummaries = () => mongoColl.sceneSummaries()
 const characters = () => mongoColl.characters()
+const deadLetterJobs = () => mongoColl.deadLetterJobs()
 
 export const deletionService = {
   /**
@@ -38,24 +40,45 @@ export const deletionService = {
     if (!template) {
       throw new HttpError(404, 'Template not found or you do not have permission to delete it')
     }
-    
+
+    return this.deleteTemplateById(tid)
+  },
+
+  /**
+   * Admin/internal template purge. Deletes the template itself plus every
+   * playthrough and derivative artifact created from it, regardless of owner.
+   */
+  async deleteTemplateById(templateId: string | ObjectId): Promise<{ deleted: boolean }> {
+    const tid = typeof templateId === 'string' ? parseObjectId(templateId) : templateId
+    const template = await worldTemplates().findOne({ _id: tid })
+    if (!template) throw new HttpError(404, 'Template not found')
+
     const tidStr = idString(tid)
     const redis = getRedisClient()
-    
+
     // Find all instances created from this template
     const instances = await worldInstances()
-      .find({ template_id: tid })
-      .project({ _id: 1 })
+      .find({ template_id: tid }, { projection: { _id: 1, player_id: 1 } })
       .toArray()
-    
+
     const instanceIds = instances.map(i => i._id)
-    
-    // Delete all associated data for each instance
+
+    // Delete all associated Pinecone namespaces and volatile Redis state.
     for (const instance of instances) {
       const iidStr = idString(instance._id)
       await this.deleteInstanceData(instance._id, iidStr)
+      await redis.del(`session:${iidStr}`)
+      await redis.del(`lock:gen:${idString(instance.player_id)}:${iidStr}`)
+      await deadLetterJobs().deleteMany({
+        $or: [
+          { 'data.instanceId': iidStr },
+          { 'data.instance_id': iidStr },
+          { 'data.templateId': tidStr },
+          { 'data.template_id': tidStr },
+        ],
+      })
     }
-    
+
     // Delete all events for these instances
     if (instanceIds.length > 0) {
       await events().deleteMany({ instance_id: { $in: instanceIds } })
@@ -80,10 +103,17 @@ export const deletionService = {
     if (instanceIds.length > 0) {
       await mongoColl.generationLogs().deleteMany({ instance_id: { $in: instanceIds } })
     }
-    
+
+    await deadLetterJobs().deleteMany({
+      $or: [
+        { 'data.templateId': tidStr },
+        { 'data.template_id': tidStr },
+      ],
+    })
+
     // Delete all instances
     await worldInstances().deleteMany({ template_id: tid })
-    
+
     // Delete the lore vectors from Pinecone
     try {
       await deletePineconeNamespace(`lore_${tidStr}`)
@@ -91,15 +121,16 @@ export const deletionService = {
       console.warn(`Failed to delete lore vectors for template ${tidStr}:`, (err as Error).message)
       // Continue with deletion even if Pinecone cleanup fails
     }
-    
-    // Clear any cached sessions for deleted instances
-    for (const instance of instances) {
-      await redis.del(`session:${idString(instance._id)}`)
+
+    // Delete generated template image from S3 when it is one of our CDN assets.
+    if (template.image_url) {
+      const key = storageService.keyFromUrl(template.image_url)
+      if (key) await storageService.delete(key)
     }
-    
+
     // Delete the template
     await worldTemplates().deleteOne({ _id: tid })
-    
+
     return { deleted: true }
   },
 
@@ -220,19 +251,28 @@ export const deletionService = {
     if (!instance) {
       throw new HttpError(404, 'Instance not found or you do not have permission to delete it')
     }
-    
+
+    return this.deleteInstanceById(iid)
+  },
+
+  /** Admin/internal instance purge without owner checks. */
+  async deleteInstanceById(instanceId: string | ObjectId): Promise<{ deleted: boolean }> {
+    const iid = typeof instanceId === 'string' ? parseObjectId(instanceId) : instanceId
+    const instance = await worldInstances().findOne({ _id: iid })
+    if (!instance) throw new HttpError(404, 'Instance not found')
+
     const iidStr = idString(iid)
     const redis = getRedisClient()
-    
+
     // Delete all associated data
     await this.deleteInstanceData(iid, iidStr)
-    
+
     // Delete events
     await events().deleteMany({ instance_id: iid })
-    
+
     // Delete memories
     await memories().deleteMany({ instance_id: iid })
-    
+
     // Delete scene summaries
     await sceneSummaries().deleteMany({ instance_id: iid })
 
@@ -244,10 +284,17 @@ export const deletionService = {
 
     // Delete the instance
     await worldInstances().deleteOne({ _id: iid })
-    
+
     // Clear Redis session cache
     await redis.del(`session:${iidStr}`)
-    
+    await redis.del(`lock:gen:${idString(instance.player_id)}:${iidStr}`)
+    await deadLetterJobs().deleteMany({
+      $or: [
+        { 'data.instanceId': iidStr },
+        { 'data.instance_id': iidStr },
+      ],
+    })
+
     return { deleted: true }
   },
 
@@ -293,6 +340,15 @@ export const deletionService = {
     for (const template of templates) {
       await this.deleteTemplate(idString(template._id), userId)
     }
+
+    await deadLetterJobs().deleteMany({
+      $or: [
+        { 'data.playerId': userId },
+        { 'data.player_id': userId },
+        { 'data.userId': userId },
+        { 'data.user_id': userId },
+      ],
+    })
 
     const result = await users().deleteOne({ _id: pid })
     if (result.deletedCount === 0) {
