@@ -23,7 +23,7 @@
     "@elysiajs/jwt": "^1.4.1",
     "@pinecone-database/pinecone": "^7.1.0",
     "argon2": "^0.44.0",
-    "bullmq": "^5.73.0",
+    "bullmq": "^5.78.0",
     "elysia": "^1.4.18",
     "ioredis": "^5.10.1",
     "js-tiktoken": "^1.0.21",
