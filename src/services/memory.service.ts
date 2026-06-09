@@ -402,6 +402,12 @@ export const memoryService = {
           'meta.total_memories': Math.max(0, (instance.meta?.total_memories || 0) - deletedMemories),
           // Milestones earned in the removed turns no longer happened.
           'meta.milestones': (instance.meta?.milestones || []).filter((m) => m.sequence < sequence),
+          // The fate-seed marker may point at a removed turn; clamp it below the
+          // rewind point so fate seeding isn't blocked on surviving play.
+          'meta.last_fate_seed_sequence': Math.min(
+            instance.meta?.last_fate_seed_sequence || 0,
+            Math.max(0, sequence - 1),
+          ),
           updated_at: new Date(),
         },
       },
@@ -486,6 +492,8 @@ export const memoryService = {
           'data.replay_variants': nextReplayVariants,
           'data.selected_replay_index': nextSelectedReplayIndex,
           'data.prose_hygiene_issues': proseHygieneIssues,
+          // A rewritten narrative invalidates the old next-move chips.
+          ...(aiChanged ? { 'data.choices': [] } : {}),
           is_user_edited: true,
           updated_at: new Date(),
         },
@@ -753,6 +761,8 @@ ${replayDirective || '(none)'}`,
           'data.replay_variants': nextVariants,
           'data.selected_replay_index': selectedIdx,
           'data.prose_hygiene_issues': repairedReplay.issues,
+          // Stale tap-to-play chips: they were derived from the prior prose.
+          'data.choices': [],
           updated_at: new Date(),
         },
       } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
@@ -825,6 +835,8 @@ ${replayDirective || '(none)'}`,
           'data.replay_variants': variants,
           'data.selected_replay_index': variantIndex,
           'data.prose_hygiene_issues': proseHygieneIssues,
+          // Chips belonged to the previously-selected variant's prose.
+          ...(changed ? { 'data.choices': [] } : {}),
           updated_at: new Date(),
         },
       } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,

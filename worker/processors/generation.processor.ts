@@ -494,6 +494,16 @@ export async function generationProcessor(job: Job) {
       });
       if (!deltas.length) return;
 
+      // GM-world protagonist is the player's OWN character; relationship meters
+      // toward the player are nonsense there (a character has no stance toward
+      // themself). Enforce what the extractor prompt asks for. Sentient worlds
+      // keep protagonist meters — the persona genuinely has a stance.
+      if (!session.is_sentient) {
+        for (const d of deltas) {
+          if (d.is_protagonist) delete d.relationship_deltas;
+        }
+      }
+
       const codex = await characterCodexService.applyDeltas({
         instanceId,
         playerId,
