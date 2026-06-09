@@ -91,9 +91,21 @@ export async function maintenanceProcessor(job: Job) {
               ]),
             ]
 
+            // Near-duplicates may differ in enrichment: keep the union of
+            // entity refs and stay unresolved if either copy still is.
+            const mergedFields: Record<string, unknown> = {
+              source_event_ids: mergedSources,
+              subjects: [...new Set([...(keeper.subjects || []), ...(discard.subjects || [])])],
+              objects: [...new Set([...(keeper.objects || []), ...(discard.objects || [])])],
+            }
+            if (keeper.unresolved_thread || discard.unresolved_thread) {
+              mergedFields.unresolved_thread = true
+              mergedFields.resolved_at = null
+            }
+
             await mongoColl.memories().updateOne(
               { _id: keeper._id },
-              { $set: { source_event_ids: mergedSources } },
+              { $set: mergedFields },
             )
 
             if (discard.pinecone_id) {

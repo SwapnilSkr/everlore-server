@@ -51,6 +51,9 @@ export const generationService = {
         'event_range.end_sequence': {
           $lt: recentEvents[0]?.sequence || 0,
         },
+        // Stale = a source event inside the range was edited; the rebuild job
+        // will restore it. Until then the prompt skips the contradicted recap.
+        status: { $ne: 'stale' },
       },
       { sort: { 'event_range.end_sequence': -1 } },
     )

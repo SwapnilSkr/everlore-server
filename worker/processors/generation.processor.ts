@@ -2,8 +2,8 @@ import { ObjectId } from "mongodb";
 import { Job } from "bullmq";
 import { mongoColl } from "../../src/config/mongo";
 import { getRedisClient } from "../../src/config/redis";
-import { getPineconeIndex } from "../../src/config/pinecone";
-import { embed, callLLMStream, AI_MODELS } from "../../src/ai";
+import { callLLMStream, AI_MODELS } from "../../src/ai";
+import { queryRag } from "../../src/providers/rag.provider";
 import { buildPrompt } from "../../src/utils/prompt-builder";
 import { lengthMaxTokens } from "../../src/utils/narrative-styles";
 import { NSFW_MODE } from "../../src/utils/chat-modes";
@@ -29,22 +29,6 @@ import {
 } from "../../src/queues";
 import { replayProcessor } from "./replay.processor";
 import { log } from "../../src/utils/logger";
-
-type RagVectorMatch = {
-  metadata?: {
-    text?: unknown;
-    mongo_id?: unknown;
-  };
-};
-
-function ragText(match: RagVectorMatch): string {
-  return typeof match.metadata?.text === "string" ? match.metadata.text : "";
-}
-
-function ragMongoId(match: RagVectorMatch): string | null {
-  const id = match.metadata?.mongo_id;
-  return id ? String(id) : null;
-}
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -112,43 +96,21 @@ export async function generationProcessor(job: Job) {
 
   let loreTexts: string[] = [];
   let memoryTexts: string[] = [];
+  let openThreads: string[] = [];
 
   try {
-    const queryEmbedding = await embed(ragQueryText);
-    const index = getPineconeIndex();
-
-    const [loreResults, memoryResults] = await Promise.all([
-      index.namespace(`lore_${session.template_id}`).query({
-        vector: queryEmbedding,
-        topK: session.max_lore_results || 10,
-        includeMetadata: true,
-      }),
-      index.namespace(`mem_${instanceId}`).query({
-        vector: queryEmbedding,
-        topK: session.max_context_memories || 25,
-        includeMetadata: true,
-      }),
-    ]);
-
-    loreTexts = (loreResults.matches || []).map((m: RagVectorMatch) =>
-      ragText(m),
+    // Hybrid retrieval (vector + keyword + open threads) — shared with the
+    // replay path so both turn types see the same memory surface.
+    const rag = await queryRag(
+      String(session.template_id),
+      instanceId,
+      ragQueryText,
+      session.max_lore_results || 10,
+      session.max_context_memories || 25,
     );
-    memoryTexts = (memoryResults.matches || []).map((m: RagVectorMatch) =>
-      ragText(m),
-    );
-
-    const mongoIds = (memoryResults.matches || [])
-      .map((m: RagVectorMatch) => ragMongoId(m))
-      .filter((id): id is string => id !== null)
-      .map((id) => parseObjectId(id));
-    if (mongoIds.length > 0) {
-      await mongoColl
-        .memories()
-        .updateMany(
-          { _id: { $in: mongoIds } },
-          { $inc: { access_count: 1 }, $set: { last_accessed_at: new Date() } },
-        );
-    }
+    loreTexts = rag.loreTexts;
+    memoryTexts = rag.memoryTexts;
+    openThreads = rag.openThreads;
   } catch (err) {
     console.warn(
       "RAG query failed, proceeding without retrieved memories:",
@@ -187,6 +149,7 @@ export async function generationProcessor(job: Job) {
     globalLore: session.global_lore,
     retrievedLore: loreTexts,
     retrievedMemories: memoryTexts,
+    openThreads,
     sceneSummary: activeSummary,
     recentEvents,
     userMessage: promptUserMessage,

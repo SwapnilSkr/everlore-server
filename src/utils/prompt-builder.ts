@@ -17,6 +17,8 @@ interface PromptInput {
   globalLore: string
   retrievedLore: string[]
   retrievedMemories: string[]
+  /** Unresolved promises/conflicts/questions the world still owes a payoff for. */
+  openThreads?: string[]
   sceneSummary: string | null
   recentEvents: any[]
   userMessage: string
@@ -366,6 +368,18 @@ ${personaLine}
     dynamicContent += `THINGS YOU REMEMBER ABOUT THIS PLAYER (reference only — use for continuity, not as a reason to change topic or summon unrelated events):\n`
     for (const mem of input.retrievedMemories) {
       dynamicContent += `- ${mem}\n`
+    }
+    dynamicContent += `\n`
+  }
+
+  if (input.openThreads && input.openThreads.length > 0) {
+    dynamicContent += `OPEN THREADS (unresolved promises, conflicts, and questions the story still owes a payoff for):
+- These are live continuity debts, not a to-do list. Do NOT force them into this turn or resolve several at once.
+- Let them quietly inform reactions, tension, and consequences when the current scene naturally touches them.
+- If the player's current action directly engages one, honor it faithfully — characters remember what was promised.
+`
+    for (const thread of input.openThreads) {
+      dynamicContent += `- ${thread}\n`
     }
     dynamicContent += `\n`
   }

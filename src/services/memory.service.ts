@@ -3,7 +3,7 @@ import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
 import { getPineconeIndex } from '../config/pinecone'
 import { getRedisClient } from '../config/redis'
-import { getMemoryCurationQueue, QUEUE_RETENTION } from '../queues'
+import { getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../queues'
 import { queryRag } from '../providers/rag.provider'
 import { buildPrompt } from '../utils/prompt-builder'
 import { lengthMaxTokens } from '../utils/narrative-styles'
@@ -81,6 +81,48 @@ async function characterNamesForInstance(instanceId: any): Promise<string[]> {
     .limit(40)
     .toArray()
   return codex.map((c: any) => c.canonical_name).filter(Boolean)
+}
+
+/**
+ * Projection provenance: when a turn's content changes, any scene summary whose
+ * range covers that turn now describes events that no longer happened. Mark it
+ * stale (prompts skip stale summaries) and requeue a rebuild for the same range.
+ */
+async function staleSummariesCoveringEvent(event: any): Promise<number> {
+  const covering = await sceneSummaries()
+    .find({
+      instance_id: event.instance_id,
+      'event_range.start_sequence': { $lte: event.sequence },
+      'event_range.end_sequence': { $gte: event.sequence },
+      status: { $ne: 'stale' },
+    })
+    .toArray()
+  if (covering.length === 0) return 0
+
+  await sceneSummaries().updateMany(
+    { _id: { $in: covering.map((s) => s._id) } },
+    { $set: { status: 'stale' } },
+  )
+
+  const queue = getSceneSummaryQueue()
+  for (const s of covering) {
+    await queue.add(
+      'summarize',
+      {
+        instanceId: idString(event.instance_id),
+        sceneTag: s.scene_tag,
+        startSequence: s.event_range.start_sequence,
+        endSequence: s.event_range.end_sequence,
+      },
+      {
+        priority: 15,
+        delay: 2000,
+        removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
+        removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
+      },
+    )
+  }
+  return covering.length
 }
 
 async function recurateMemoriesForEvent(
@@ -194,19 +236,25 @@ export const memoryService = {
       const ns = idString(memory.instance_id)
       const namespace = index.namespace(`mem_${ns}`)
 
+      const vectorMetadata: Record<string, string | number | boolean | string[]> = {
+        text: updates.text,
+        type: updates.type || memory.type,
+        importance: updates.importance ?? memory.importance,
+        is_nsfw: memory.is_nsfw,
+        mongo_id: idString(mid),
+        unresolved_thread: memory.unresolved_thread === true,
+        created_at: memory.created_at.toISOString(),
+      }
+      if (memory.subjects && memory.subjects.length > 0) {
+        vectorMetadata.subjects = memory.subjects
+      }
+
       if (memory.pinecone_id) {
         await namespace.upsert({
           records: [{
             id: memory.pinecone_id,
             values: newEmbedding,
-            metadata: {
-              text: updates.text,
-              type: updates.type || memory.type,
-              importance: updates.importance ?? memory.importance,
-              is_nsfw: memory.is_nsfw,
-              mongo_id: idString(mid),
-              created_at: memory.created_at.toISOString(),
-            },
+            metadata: vectorMetadata,
           }],
         })
       } else {
@@ -215,14 +263,7 @@ export const memoryService = {
           records: [{
             id: newVecId,
             values: newEmbedding,
-            metadata: {
-              text: updates.text,
-              type: updates.type || memory.type,
-              importance: updates.importance ?? memory.importance,
-              is_nsfw: memory.is_nsfw,
-              mongo_id: idString(mid),
-              created_at: memory.created_at.toISOString(),
-            },
+            metadata: vectorMetadata,
           }],
         })
         await memories().updateOne(
@@ -460,6 +501,7 @@ export const memoryService = {
         parsedPlayerInput.narrationFacts,
         nextAiResponse || '',
       )
+      await staleSummariesCoveringEvent(event)
     }
 
     return {
@@ -529,6 +571,7 @@ export const memoryService = {
       {
         instance_id: event.instance_id,
         'event_range.end_sequence': { $lt: priorEvents[0]?.sequence || 0 },
+        status: { $ne: 'stale' },
       },
       { sort: { 'event_range.end_sequence': -1 } },
     )
@@ -585,6 +628,7 @@ export const memoryService = {
       globalLore: template.global_lore,
       retrievedLore: rag.loreTexts,
       retrievedMemories: rag.memoryTexts,
+      openThreads: rag.openThreads,
       sceneSummary: activeSummary?.summary_text || null,
       recentEvents: priorEvents,
       userMessage: parsed.spoken || '[No spoken dialogue from player this turn.]',
@@ -720,6 +764,7 @@ ${replayDirective || '(none)'}`,
       parsed.narrationFacts,
       nextVariant.narrative,
     )
+    await staleSummariesCoveringEvent(event)
 
     const updated = await events().findOne({ _id: eid })
     return {
@@ -794,6 +839,7 @@ ${replayDirective || '(none)'}`,
         parsed.narrationFacts,
         nextAi,
       )
+      await staleSummariesCoveringEvent(event)
     }
 
     const updated = await events().findOne({ _id: eid })

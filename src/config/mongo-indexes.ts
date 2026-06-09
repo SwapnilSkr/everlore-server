@@ -97,6 +97,20 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { pinecone_id: 1 },
     options: { unique: true, sparse: true, name: "idx_memories_pinecone_id" },
   },
+  // Keyword half of hybrid retrieval: exact names, places, promises, artifacts —
+  // the recall mode pure vector search is weakest at. One text index max per
+  // collection (Mongo limit); subjects/objects are entity-name arrays.
+  {
+    collection: COLLECTIONS.memories,
+    key: { text: "text", subjects: "text", objects: "text" },
+    options: { name: "idx_memories_text_search" },
+  },
+  // Open-thread surfacing: unresolved promises/conflicts ranked by importance.
+  {
+    collection: COLLECTIONS.memories,
+    key: { instance_id: 1, unresolved_thread: 1, is_archived: 1, importance: -1 },
+    options: { name: "idx_memories_instance_unresolved" },
+  },
 
   // characters (self-building codex)
   {
@@ -188,7 +202,24 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   },
 ]
 
-function keysMatch(existing: Document, desired: Document): boolean {
+function isTextIndexDef(desired: Document): boolean {
+  return Object.values(desired).some((v) => v === "text")
+}
+
+function keysMatch(existingIndex: Document, desired: Document): boolean {
+  const existing = (existingIndex.key ?? {}) as Document
+  // Mongo stores text indexes with a normalized { _fts: "text", _ftsx: 1 } key
+  // (the indexed fields move into the index's `weights`), so a literal key
+  // comparison would recreate the index every startup. Compare weights instead.
+  if (isTextIndexDef(desired)) {
+    if (existing._fts !== "text") return false
+    const weights = (existingIndex.weights ?? {}) as Document
+    const desiredTextFields = Object.keys(desired).filter((k) => desired[k] === "text")
+    return (
+      desiredTextFields.length === Object.keys(weights).length &&
+      desiredTextFields.every((f) => weights[f] !== undefined)
+    )
+  }
   const ek = Object.keys(existing)
   const dk = Object.keys(desired)
   if (ek.length !== dk.length) return false
@@ -219,7 +250,7 @@ export async function ensureEverloreIndexes(db: Db): Promise<void> {
     let satisfied = false
     for (const idx of existing) {
       if (idx.name === "_id_") continue
-      if (!keysMatch(idx.key as Document, def.key)) continue
+      if (!keysMatch(idx as Document, def.key)) continue
       if (optionsMatch(idx as Document, def.options)) {
         satisfied = true
       } else {

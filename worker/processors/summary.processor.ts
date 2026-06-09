@@ -67,9 +67,17 @@ export async function summaryProcessor(job: Job) {
     key_facts_extracted: [],
     model_used: AI_MODELS.sceneSummary,
     tokens_consumed: 0,
+    status: 'active' as const,
     created_at: new Date(),
   }
 
+  // Replace, don't accumulate: a rebuild for the same range (e.g. after an
+  // event edit staled the original) supersedes the previous summary row.
+  await mongoColl.sceneSummaries().deleteMany({
+    instance_id: instanceOid,
+    'event_range.start_sequence': startSequence,
+    'event_range.end_sequence': endSequence,
+  })
   await mongoColl.sceneSummaries().insertOne(summary)
 
   await mongoColl.worldInstances().updateOne(
