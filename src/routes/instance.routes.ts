@@ -39,5 +39,6 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
         t.Union([t.Literal('short'), t.Literal('medium'), t.Literal('long')]),
       ),
       focus_character_id: t.Optional(t.Nullable(t.String())),
+      persona_id: t.Optional(t.Nullable(t.String())),
     }),
   })

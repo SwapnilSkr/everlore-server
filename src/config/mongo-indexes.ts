@@ -110,6 +110,18 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     options: { name: "idx_characters_instance_rank" },
   },
 
+  // personas
+  {
+    collection: COLLECTIONS.personas,
+    key: { player_id: 1, updated_at: -1 },
+    options: { name: "idx_personas_player_updated" },
+  },
+  {
+    collection: COLLECTIONS.personas,
+    key: { player_id: 1, name: 1 },
+    options: { name: "idx_personas_player_name" },
+  },
+
   // scene_summaries
   {
     collection: COLLECTIONS.scene_summaries,

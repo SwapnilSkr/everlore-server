@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { PersonaSnapshotDoc } from './persona.model'
 
 export interface InstanceMetaDoc {
   total_events: number
@@ -35,6 +36,11 @@ export interface WorldInstanceDoc {
   message_length?: 'short' | 'medium' | 'long'
   /** Optional focused side-character for character-targeted conversation. */
   focus_character_id?: ObjectId | null
+  /** Optional reusable account-level persona selected for this instance. */
+  persona_id?: ObjectId | null
+  /** Snapshot of the selected persona, so long-running chats do not drift when
+   *  the reusable persona is later edited. */
+  persona_snapshot?: PersonaSnapshotDoc | null
   meta: InstanceMetaDoc
   created_at: Date
   updated_at: Date

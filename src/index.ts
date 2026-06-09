@@ -6,6 +6,7 @@ import { env } from './config/env'
 import { authRoutes } from './routes/auth.routes'
 import { templateRoutes } from './routes/template.routes'
 import { instanceRoutes } from './routes/instance.routes'
+import { personaRoutes } from './routes/persona.routes'
 import { chronicleRoutes } from './routes/chronicle.routes'
 import { adminRoutes } from './routes/admin.routes'
 import { wsRoutes } from './routes/ws.routes'
@@ -111,6 +112,7 @@ async function main() {
     .use(adminRoutes)
     .use(templateRoutes)
     .use(instanceRoutes)
+    .use(personaRoutes)
     .use(chronicleRoutes)
     .use(wsRoutes)
     .listen(env.PORT)

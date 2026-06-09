@@ -10,6 +10,7 @@ export const COLLECTIONS = {
   memories: 'memories',
   scene_summaries: 'scene_summaries',
   characters: 'characters',
+  personas: 'personas',
   dead_letter_jobs: 'dead_letter_jobs',
   generation_logs: 'generation_logs',
   nsfw_lexicon: 'nsfw_lexicon',

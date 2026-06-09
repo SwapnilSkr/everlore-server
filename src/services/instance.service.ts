@@ -7,6 +7,7 @@ import { getRedisClient } from '../config/redis'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { characterCodexService } from './character-codex.service'
+import { personaService } from './persona.service'
 import { isValidMessageLength } from '../utils/narrative-styles'
 import { isValidModeKey, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 
@@ -19,6 +20,7 @@ const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number 
 const worldTemplates = () => mongoColl.worldTemplates()
 const worldInstances = () => mongoColl.worldInstances()
 const characters = () => mongoColl.characters()
+const personas = () => mongoColl.personas()
 const events = () => mongoColl.events()
 
 export type InstanceListRow = WorldInstanceDoc & {
@@ -392,6 +394,8 @@ export const instanceService = {
       narrative_style: template.narrative_style || '',
       style_notes: template.style_notes || '',
       focus_character_id: instance.focus_character_id ? idString(instance.focus_character_id) : null,
+      persona_id: instance.persona_id ? idString(instance.persona_id) : null,
+      persona_snapshot: instance.persona_snapshot || null,
       seed_prompt: template.seed_prompt,
       global_lore: template.global_lore,
       is_sentient: template.is_sentient,
@@ -427,12 +431,14 @@ export const instanceService = {
       mode?: string
       message_length?: 'short' | 'medium' | 'long'
       focus_character_id?: string | null
+      persona_id?: string | null
     },
   ): Promise<{
     narration_pov: 'first' | 'third'
     mode: string
     message_length: 'short' | 'medium' | 'long'
     focus_character_id: string | null
+    persona_id: string | null
   }> {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
@@ -463,6 +469,19 @@ export const instanceService = {
         update.focus_character_id = cid
       }
     }
+    let selectedPersona: any | null = null
+    if (settings.persona_id !== undefined) {
+      if (settings.persona_id === null || settings.persona_id === '') {
+        update.persona_id = null
+        update.persona_snapshot = null
+      } else {
+        const personaOid = parseObjectId(settings.persona_id)
+        selectedPersona = await personas().findOne({ _id: personaOid, player_id: pid })
+        if (!selectedPersona) throw new HttpError(400, 'Invalid persona_id')
+        update.persona_id = personaOid
+        update.persona_snapshot = personaService.snapshotFromPersona(selectedPersona)
+      }
+    }
 
     const result = await worldInstances().findOneAndUpdate(
       { _id: iid, player_id: pid },
@@ -471,12 +490,32 @@ export const instanceService = {
     )
     if (!result) throw new HttpError(404, 'Instance not found')
 
+    // In GM worlds the player protagonist is canonical. If a persona is selected
+    // before the player created one, seed the protagonist from the persona once.
+    // If one already exists, it remains the higher-precedence canon.
+    if (selectedPersona) {
+      const template = await worldTemplates().findOne({ _id: result.template_id })
+      if (template && !template.is_sentient) {
+        const existingProtagonist = await characters().findOne({ instance_id: iid, player_id: pid, is_protagonist: true })
+        if (!existingProtagonist) {
+          await characterCodexService.seedProtagonist({
+            instanceId,
+            playerId,
+            name: selectedPersona.name,
+            persona: [selectedPersona.description, selectedPersona.other_info].filter(Boolean).join(' '),
+            isPlayer: true,
+          })
+        }
+      }
+    }
+
     await getRedisClient().del(`session:${idString(iid)}`)
     return {
       narration_pov: result.narration_pov || 'third',
       mode: result.mode || DEFAULT_CHAT_MODE,
       message_length: result.message_length || 'medium',
       focus_character_id: result.focus_character_id ? idString(result.focus_character_id) : null,
+      persona_id: result.persona_id ? idString(result.persona_id) : null,
     }
   },
 }

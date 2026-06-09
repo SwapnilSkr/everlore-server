@@ -7,6 +7,7 @@ import {
 } from './narrative-styles'
 import { buildModeDirective, modeReminderLabel } from './chat-modes'
 import { parsePlayerInput } from './player-input-parser'
+import type { PersonaSnapshotDoc } from '../models/persona.model'
 
 interface PromptInput {
   seedPrompt: string
@@ -35,6 +36,8 @@ interface PromptInput {
   narrativeStyle?: string
   /** Free-text creator/player style refinements appended to the voice block. */
   styleNotes?: string
+  /** Optional reusable player persona selected for this instance. */
+  playerPersona?: PersonaSnapshotDoc | null
   /** Desired reply length: 'short' | 'medium' | 'long'. Defaults to medium. */
   messageLength?: MessageLength
   /** Canonical emergent character cards enforced as story constraints. */
@@ -96,6 +99,17 @@ function continuityText(value: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 700)
+}
+
+function compactPersonaLine(input: PromptInput): string {
+  const p = input.playerPersona
+  if (!p?.name) return ''
+  const parts: string[] = [`Name: ${String(p.name).trim()}`]
+  if (p.gender) parts.push(`Gender: ${p.gender === 'non_binary' ? 'non-binary' : p.gender}`)
+  if (typeof p.age === 'number') parts.push(`Age: ${p.age}`)
+  if (p.description) parts.push(`Description: ${String(p.description).replace(/\s+/g, ' ').trim().slice(0, 500)}`)
+  if (p.other_info) parts.push(`Other: ${String(p.other_info).replace(/\s+/g, ' ').trim().slice(0, 500)}`)
+  return parts.join('\n')
 }
 
 function formatRecentTurnForContinuity(event: any): string {
@@ -297,6 +311,19 @@ CHARACTER CARDS:
   if (input.focusCharacterName && input.focusCharacterName.trim()) {
     dynamicContent += `FOCUS CHARACTER: ${input.focusCharacterName.trim()} (continuity anchor, not a forced cameo)\n`
     dynamicContent += `Use this character as the preferred point of continuity only when they are already present, directly addressed, recently central, or naturally relevant to the player's action. Do NOT force them into unrelated scenes, cut away to them, or mention them just because they are focused. If the player shifts away, follow the active scene and let the focus resume only when relevant again.\n\n`
+  }
+
+  const personaLine = compactPersonaLine(input)
+  if (personaLine) {
+    dynamicContent += `PLAYER PERSONA PROFILE (optional context for who "you" are — not a command to recite):
+- Use only when naturally relevant to the current scene, relationship, dialogue, or consequences.
+- Do not call the player "user" or "player"; this profile describes "you".
+- Current player input, established events, memories, character codex, protagonist card, and world premise override this profile.
+- If this profile conflicts with the world role, setting, current scene, or established canon, preserve canon and use only compatible details.
+- Do not introduce persona details unprompted as exposition. Let them surface through natural reactions and continuity.
+${personaLine}
+
+`
   }
 
   if (input.userNarrationFacts && input.userNarrationFacts.length > 0) {

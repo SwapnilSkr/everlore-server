@@ -198,6 +198,7 @@ export async function generationProcessor(job: Job) {
     chatMode: session.mode,
     narrativeStyle: session.narrative_style,
     styleNotes: session.style_notes,
+    playerPersona: session.persona_snapshot || null,
     messageLength: session.message_length,
     characterCodex,
     focusCharacterName: (() => {

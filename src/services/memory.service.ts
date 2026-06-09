@@ -596,6 +596,7 @@ export const memoryService = {
       chatMode: mode,
       narrativeStyle: template.narrative_style || '',
       styleNotes: template.style_notes || '',
+      playerPersona: instance.persona_snapshot || null,
       messageLength: instance.message_length || 'medium',
       characterCodex: replayCodex,
       focusCharacterName: (() => {

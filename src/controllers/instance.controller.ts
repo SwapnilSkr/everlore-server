@@ -95,6 +95,7 @@ export const instanceController = {
       mode?: string
       message_length?: 'short' | 'medium' | 'long'
       focus_character_id?: string | null
+      persona_id?: string | null
     }
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
