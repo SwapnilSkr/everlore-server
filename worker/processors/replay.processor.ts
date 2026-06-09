@@ -12,8 +12,10 @@ export async function replayProcessor(job: Job) {
   const { instanceId, playerId, eventId } = job.data
   const redis = getRedisClient()
   const channel = `user:${playerId}:events`
+  const lockKey = `lock:gen:${playerId}:${instanceId}`
 
   try {
+    await redis.expire(lockKey, 240)
     const result = await memoryService.replayEvent(eventId, playerId, (chunk) => {
       redis.publish(
         channel,
@@ -49,6 +51,6 @@ export async function replayProcessor(job: Job) {
       }),
     )
   } finally {
-    await redis.del(`lock:gen:${playerId}:${instanceId}`)
+    await redis.del(lockKey)
   }
 }

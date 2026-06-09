@@ -46,6 +46,25 @@ function ragMongoId(match: RagVectorMatch): string | null {
   return id ? String(id) : null;
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function openingCharacterName(events: any[], names: string[]): string | null {
+  const last = [...(events || [])]
+    .reverse()
+    .find((event) => String(event.data?.ai_response || "").trim());
+  const text = String(last?.data?.ai_response || "")
+    .trim()
+    .replace(/^[\s*_]+/, "");
+  for (const name of names) {
+    if (!name) continue;
+    const re = new RegExp(`^${escapeRegExp(name)}(?:\\b|'s\\b)`, "i");
+    if (re.test(text)) return name;
+  }
+  return null;
+}
+
 const MAX_CONTEXT_TOKENS = 6000;
 /** Turns of one continuous scene that fold into a single recap (non-overlapping). */
 const SCENE_SUMMARY_BLOCK = 12;
@@ -76,7 +95,7 @@ export async function generationProcessor(job: Job) {
     : parsePlayerInput(userMessage);
 
   const promptUserMessage = isContinuation
-    ? "[The player waits and observes. Continue the current beat naturally without asking what they do. Prefer a quiet reaction, consequence, or small atmospheric progression. Do not introduce a new complication, location, character, danger, romance escalation, or major plot turn unless it was already clearly set up by recent events.]"
+    ? "[The player waits and observes. Continue the current beat naturally without asking what they do. Prefer a quiet reaction, consequence, or small atmospheric progression. Do not introduce a new complication, location, character, danger, romance escalation, or major plot turn unless it was already clearly set up by recent events. Because this is an autonomous continuation, do not open with the active character's name; begin with pronoun, action, body language, speech, or setting instead.]"
     : parsedPlayerInput.spoken || "[No spoken dialogue from player this turn.]";
   const storedPlayerInput = isContinuation ? "" : userMessage;
   const classifyText = isContinuation ? "" : userMessage;
@@ -86,6 +105,8 @@ export async function generationProcessor(job: Job) {
     : userMessage;
 
   const redis = getRedisClient();
+  const lockKey = `lock:gen:${playerId}:${instanceId}`;
+  await redis.expire(lockKey, 240);
   const instanceOid = parseObjectId(instanceId);
   const playerOid = parseObjectId(playerId);
 
@@ -171,6 +192,7 @@ export async function generationProcessor(job: Job) {
     userMessage: promptUserMessage,
     userSpokenInput: parsedPlayerInput.spoken,
     userNarrationFacts: parsedPlayerInput.narrationFacts,
+    isContinuation,
     maxTokens: MAX_CONTEXT_TOKENS,
     narrationPov: session.narration_pov,
     chatMode: session.mode,
@@ -215,6 +237,7 @@ export async function generationProcessor(job: Job) {
     },
   );
   const latencyMs = Date.now() - genStart;
+  await redis.expire(lockKey, 240);
 
   await redis.publish(
     channel,
@@ -228,9 +251,13 @@ export async function generationProcessor(job: Job) {
   const characterNames = (characterCodex || []).map(
     (c: any) => c.canonical_name,
   );
+  const previousOpeningName = openingCharacterName(recentEvents || [], characterNames);
   const repairedProse = await repairProseHygiene({
     narrative: prose.trim(),
     characterNames,
+    messageLength: session.message_length,
+    previousOpeningNames: previousOpeningName ? [previousOpeningName] : [],
+    avoidOpeningNames: characterNames,
     model: modelId,
   });
   const finalNarrative = repairedProse.narrative;
@@ -377,7 +404,7 @@ export async function generationProcessor(job: Job) {
     3600,
   );
 
-  await redis.del(`lock:gen:${playerId}:${instanceId}`);
+  await redis.del(lockKey);
 
   const eventIdStr = idString(event._id);
 

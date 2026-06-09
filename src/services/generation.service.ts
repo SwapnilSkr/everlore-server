@@ -68,6 +68,23 @@ export const generationService = {
       ? recentEvents[recentEvents.length - 1].sequence
       : 0
     const characterCodex = rankCodexForInjection(codexPool, currentSequence, 16)
+    const protagonistName = session.protagonist?.name
+    if (
+      session.is_sentient &&
+      protagonistName &&
+      !characterCodex.some((c: any) => c.is_protagonist || c.canonical_name === protagonistName)
+    ) {
+      characterCodex.unshift({
+        canonical_name: protagonistName,
+        persona: session.protagonist?.persona,
+        appearance: session.protagonist?.appearance,
+        immutable_facts: [],
+        mutable_state: [],
+        mention_count: 0,
+        last_seen_sequence: currentSequence,
+        is_protagonist: true,
+      } as any)
+    }
 
     const job = await queue.add(
       'generate',

@@ -32,6 +32,23 @@ function continuityText(value: string, max = 220): string {
     .slice(0, max)
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function openingCharacterName(recentEvents: any[], names: string[]): string | null {
+  const last = [...(recentEvents || [])].reverse().find((event) => String(event.data?.ai_response || '').trim())
+  const text = String(last?.data?.ai_response || '')
+    .trim()
+    .replace(/^[\s*_]+/, '')
+  for (const name of names) {
+    if (!name) continue
+    const re = new RegExp(`^${escapeRegExp(name)}(?:\\b|'s\\b)`, 'i')
+    if (re.test(text)) return name
+  }
+  return null
+}
+
 function baseReplayVariantFor(event: any) {
   return {
     id: `base_${idString(event._id)}`,
@@ -374,9 +391,15 @@ export const memoryService = {
       updates.player_input !== event.data.player_input
     const contentChanged = aiChanged || playerChanged
     const replayVariants = normalizeReplayVariants(event)
+    const [editCharacterNames, editInstance] = await Promise.all([
+      characterNamesForInstance(event.instance_id),
+      worldInstances().findOne({ _id: event.instance_id, player_id: pid }, { projection: { message_length: 1 } }),
+    ])
     const proseHygieneIssues = validateProseHygiene({
       narrative: nextAiResponse || '',
-      characterNames: await characterNamesForInstance(event.instance_id),
+      characterNames: editCharacterNames,
+      messageLength: editInstance?.message_length || 'medium',
+      avoidOpeningNames: editCharacterNames,
     })
     let nextReplayVariants = replayVariants
     let nextSelectedReplayIndex =
@@ -511,6 +534,23 @@ export const memoryService = {
       .sort({ mention_count: -1, updated_at: -1 })
       .limit(16)
       .toArray()
+    const replayCodex: any[] = [...(codex as any[])]
+    if (
+      template.is_sentient &&
+      template.protagonist?.name &&
+      !replayCodex.some((c) => c.is_protagonist || c.canonical_name === template.protagonist?.name)
+    ) {
+      replayCodex.unshift({
+        canonical_name: template.protagonist.name,
+        persona: template.protagonist.persona,
+        appearance: template.protagonist.appearance,
+        immutable_facts: [],
+        mutable_state: [],
+        mention_count: 0,
+        last_seen_sequence: event.sequence,
+        is_protagonist: true,
+      })
+    }
 
     const ragQuery = parsed.raw || event.data.ai_response || template.seed_prompt
     const rag = await queryRag(
@@ -553,10 +593,10 @@ export const memoryService = {
       narrativeStyle: template.narrative_style || '',
       styleNotes: template.style_notes || '',
       messageLength: instance.message_length || 'medium',
-      characterCodex: codex as any,
+      characterCodex: replayCodex,
       focusCharacterName: (() => {
         const fid = instance.focus_character_id ? idString(instance.focus_character_id) : ''
-        const c = (codex as any[]).find((x) => idString(x._id) === fid)
+        const c = replayCodex.find((x) => x._id && idString(x._id) === fid)
         return c?.canonical_name
       })(),
     })
@@ -592,6 +632,7 @@ REPLAY HYGIENE:
 - If prior variants had hygiene issues, fix them; do not imitate their wording, structure, or mistakes.
 - Do not line-edit, paraphrase, or lightly expand the immediately previous variant. Recompose the beat from the player turn and continuity facts.
 - Preserve the player's *action/narration* facts as already happened in this same beat; never respond as if those actions are only pending.
+- Natural conversation flow is mandatory: do not open with a character name, do not repeat protagonist or side-character names unless clarity requires it, and avoid full canonical names in ordinary narration.
 
 Recent variants (for contrast, do not copy):
 ${replayDirective || '(none)'}`,
@@ -616,7 +657,16 @@ ${replayDirective || '(none)'}`,
         })
     const repairedReplay = await repairProseHygiene({
       narrative: replayNarrative.trim(),
-      characterNames: (codex as any[]).map((c) => c.canonical_name),
+      characterNames: replayCodex.map((c) => c.canonical_name),
+      messageLength: instance.message_length || 'medium',
+      previousOpeningNames: (() => {
+        const previousOpeningName = openingCharacterName(
+          priorEvents,
+          replayCodex.map((c) => c.canonical_name),
+        )
+        return previousOpeningName ? [previousOpeningName] : []
+      })(),
+      avoidOpeningNames: replayCodex.map((c) => c.canonical_name),
       model: modelId,
     })
 
@@ -689,12 +739,18 @@ ${replayDirective || '(none)'}`,
     const chosen = variants[variantIndex]
     const nextAi = chosen.narrative || event.data.ai_response || ''
     const changed = nextAi !== event.data.ai_response
+    const [selectedCharacterNames, selectedInstance] = await Promise.all([
+      characterNamesForInstance(event.instance_id),
+      worldInstances().findOne({ _id: event.instance_id, player_id: pid }, { projection: { message_length: 1 } }),
+    ])
     const proseHygieneIssues =
       Array.isArray(chosen.prose_hygiene_issues)
         ? chosen.prose_hygiene_issues
         : validateProseHygiene({
             narrative: nextAi,
-            characterNames: await characterNamesForInstance(event.instance_id),
+            characterNames: selectedCharacterNames,
+            messageLength: selectedInstance?.message_length || 'medium',
+            avoidOpeningNames: selectedCharacterNames,
           })
 
     await events().updateOne(

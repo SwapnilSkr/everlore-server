@@ -18,6 +18,10 @@ interface LLMRequest {
   maxTokens?: number
   responseSchema?: object
   responseFormat?: { type: string }
+  /** Abort a streaming request if no token arrives for this long. */
+  idleTimeoutMs?: number
+  /** Absolute request timeout passed to the OpenAI SDK. */
+  timeoutMs?: number
 }
 
 export async function callLLM(req: LLMRequest): Promise<string> {
@@ -43,7 +47,9 @@ export async function callLLM(req: LLMRequest): Promise<string> {
     params.response_format = req.responseFormat
   }
 
-  const response = await client.chat.completions.create(params)
+  const response = await client.chat.completions.create(params, {
+    timeout: req.timeoutMs ?? 90000,
+  })
   const content = response.choices[0]?.message?.content
 
   if (!content) throw new Error('Empty LLM response')
@@ -60,6 +66,16 @@ export async function callLLMStream(
   onDelta: (chunk: string) => void,
 ): Promise<string> {
   const client = clientFor(req.model)
+  const controller = new AbortController()
+  const idleTimeoutMs = req.idleTimeoutMs ?? 45000
+  let idleTimer: ReturnType<typeof setTimeout> | null = null
+
+  const armIdleTimer = () => {
+    if (idleTimer) clearTimeout(idleTimer)
+    idleTimer = setTimeout(() => {
+      controller.abort(new Error(`LLM stream stalled for ${idleTimeoutMs}ms`))
+    }, idleTimeoutMs)
+  }
 
   const stream = await client.chat.completions.create({
     model: req.model,
@@ -67,15 +83,24 @@ export async function callLLMStream(
     temperature: req.temperature ?? 0.8,
     max_tokens: req.maxTokens ?? 600,
     stream: true,
+  }, {
+    signal: controller.signal,
+    timeout: req.timeoutMs ?? 180000,
   })
 
   let full = ''
-  for await (const part of stream) {
-    const delta = part.choices[0]?.delta?.content ?? ''
-    if (delta) {
-      full += delta
-      onDelta(delta)
+  try {
+    armIdleTimer()
+    for await (const part of stream) {
+      const delta = part.choices[0]?.delta?.content ?? ''
+      if (delta) {
+        full += delta
+        onDelta(delta)
+        armIdleTimer()
+      }
     }
+  } finally {
+    if (idleTimer) clearTimeout(idleTimer)
   }
 
   if (!full) throw new Error('Empty LLM response')

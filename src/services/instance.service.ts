@@ -395,6 +395,13 @@ export const instanceService = {
       seed_prompt: template.seed_prompt,
       global_lore: template.global_lore,
       is_sentient: template.is_sentient,
+      protagonist: template.protagonist?.name
+        ? {
+            name: template.protagonist.name,
+            persona: template.protagonist.persona,
+            appearance: template.protagonist.appearance,
+          }
+        : null,
       is_nsfw_capable: template.is_nsfw_capable,
       model_preferences: template.model_preferences,
       max_context_memories: template.max_context_memories,

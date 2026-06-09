@@ -21,6 +21,7 @@ interface PromptInput {
   userMessage: string
   userSpokenInput?: string
   userNarrationFacts?: string[]
+  isContinuation?: boolean
   maxTokens: number
   /** When true, ask for plain narrative prose instead of the JSON envelope.
    *  Used for the uncensored NSFW model, whose structured metadata is extracted
@@ -69,7 +70,7 @@ function openingCharacterName(recentEvents: any[], names: string[]): string | nu
     .replace(/^[\s*_]+/, '')
   for (const name of names) {
     if (!name) continue
-    const re = new RegExp(`^${escapeRegExp(name)}\\b`, 'i')
+    const re = new RegExp(`^${escapeRegExp(name)}(?:\\b|'s\\b)`, 'i')
     if (re.test(text)) return name
   }
   return null
@@ -146,7 +147,7 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
     if (pov === 'first') {
       staticContent += `You ARE this entity. Speak and act in the FIRST person (I, me, my). You have feelings and react to the player's actions emotionally and physically.\n\n`
     } else {
-      staticContent += `You ARE this entity, but portray yourself in the THIRD person — narrate your own speech, actions, and feelings using your name or they/she/he (e.g. Elara hesitates, then answers). You still have feelings and react emotionally and physically.\n\n`
+      staticContent += `You ARE this entity, but portray yourself in the THIRD person — narrate your own speech, actions, and feelings with pronouns by default (she/he/they), using your name only when clarity genuinely requires it. You still have feelings and react emotionally and physically.\n\n`
     }
   } else {
     // For a Game Master, POV chooses how the player is addressed: second-person
@@ -170,13 +171,17 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
   // Global lore — typically the largest block, hence the biggest caching payoff
   staticContent += `WORLD LORE:\n${input.globalLore}\n\n`
 
-  staticContent += `NARRATION HYGIENE:
-- Use character names only when needed for clarity: first entrance, reintroduction after absence, direct address, dialogue among multiple characters, or when pronouns would be ambiguous.
-- Once a character is clear in the current beat, prefer pronouns, role descriptors, body language, or direct action over repeating their name.
-- Do not start consecutive sentences or paragraphs with the same character name.
+  staticContent += `NON-NEGOTIABLE NATURAL PROSE HYGIENE:
+- Natural conversation flow is mandatory. Character-name repetition is a quality failure.
+- Character names are for disambiguation only: first entrance, reintroduction after absence, direct address, multiple same-gender/ambiguous actors, or explicit contrast between characters.
+- If the active character is already clear, do NOT name them again. Use pronouns, body language, gesture, action, silence, dialogue, role descriptors, or setting beats instead.
+- Do not use a protagonist's or character's full canonical name in ordinary narration unless the scene genuinely requires formal identification. Prefer a first name or pronoun when a name is unavoidable.
+- Do not open replies with a character name by default. Open with speech, action, reaction, body language, silence, setting, or a pronoun.
+- Never start consecutive sentences or paragraphs with any character name.
+- Never repeat the same character name as a rhythmic sentence starter.
 - Do not mention every character in the codex. Refer only to characters actually present, speaking, acting, or being directly discussed in this turn.
-- If only one character is active, avoid naming them repeatedly; use their name at most once unless contrast or ambiguity requires it.
-- Do not open every reply with the same character's name. If the previous assistant turn opened with a name, vary the next opening with action, pronoun, setting, or spoken words.
+- In a one-on-one beat, avoid names almost entirely after the character is established. A single short name is acceptable only if clarity would otherwise suffer.
+- In multi-character scenes, use names sparingly to establish who acts or speaks, then switch back to pronouns and distinct actions as soon as clarity is restored.
 
 `
 
@@ -403,7 +408,7 @@ ${continuityTurns.join('\n\n')}`,
       povReminder =
         pov === 'first'
           ? `POINT OF VIEW for your next reply (override any earlier style): write in the FIRST person as ${selfName} — I, me, my. If the turns above were third person, switch now. e.g. *I lower my eyes* NOT *${selfName} lowers her eyes*.`
-          : `POINT OF VIEW for your next reply (override any earlier style): write in the THIRD person — refer to ${selfName} by name or she/he/they, NEVER I/me/my. If the turns above were first person, switch now. e.g. *${selfName} lowers her eyes* NOT *I lower my eyes*.`
+          : `POINT OF VIEW for your next reply (override any earlier style): write in the THIRD person — use she/he/they by default, and use ${selfName}'s name only when clarity requires it. NEVER I/me/my. If the turns above were first person, switch now. e.g. *She lowers her eyes* NOT *I lower my eyes*.`
     } else {
       povReminder =
         pov === 'first'
@@ -421,9 +426,12 @@ ${continuityTurns.join('\n\n')}`,
     )
     if (styleCue) povReminder += `\n${styleCue}`
     povReminder +=
-      `\nNAME HYGIENE for your next reply: use names only when clarity requires it; otherwise use pronouns or actions, and do not repeat the same character name in consecutive sentences.`
+      `\nNAME HYGIENE for your next reply: natural flow is mandatory. Do not open with a character name unless there is no other clear option. Use full names only for formal identification or unavoidable disambiguation. Prefer pronouns, action, body language, dialogue, silence, setting, or role descriptors. Do not repeat the same name as a sentence rhythm.`
     if (previousOpeningName) {
       povReminder += ` Do not start this reply with ${previousOpeningName}; the previous assistant turn already opened that way.`
+    }
+    if (input.isContinuation && input.isSentient) {
+      povReminder += ` This is an autonomous continuation with no new player speech, so do not open with ${selfName}; start with pronoun, action, body language, speech, or setting instead.`
     }
     povReminder +=
       `\nHISTORY HYGIENE: treat previous assistant turns as continuity facts, not prose style to imitate. If earlier turns overused names, repeated sentence shapes, malformed formatting, awkward phrasing, or drifted from the current voice, correct course and follow the current instructions instead.`

@@ -8,6 +8,8 @@ import { log } from '../utils/logger'
 type RawWs = { send: (data: string) => void }
 
 const activeConnections = new Map<string, Set<RawWs>>()
+const GENERATION_LOCK_TTL_SECONDS = 240
+const REPLAY_LOCK_TTL_SECONDS = 240
 
 /** Closes all WebSocket connections for a user (e.g. after account deletion). */
 export function disconnectUserSockets(userId: string): void {
@@ -155,7 +157,7 @@ export const playWsService = {
         }
 
         const lockKey = `lock:gen:${user.id}:${instanceId}`
-        const locked = await redis.set(lockKey, 'pending', 'EX', 30, 'NX')
+        const locked = await redis.set(lockKey, 'pending', 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
@@ -176,7 +178,7 @@ export const playWsService = {
             userMessage: message,
           })
 
-          await redis.set(lockKey, jobId!, 'EX', 30)
+          await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
 
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
@@ -203,7 +205,7 @@ export const playWsService = {
         }
 
         const lockKey = `lock:gen:${user.id}:${instanceId}`
-        const locked = await redis.set(lockKey, 'pending', 'EX', 30, 'NX')
+        const locked = await redis.set(lockKey, 'pending', 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
@@ -217,7 +219,7 @@ export const playWsService = {
             userMessage: '',
             isContinuation: true,
           })
-          await redis.set(lockKey, jobId!, 'EX', 30)
+          await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
           await redis.del(lockKey)
@@ -244,7 +246,7 @@ export const playWsService = {
         }
 
         const lockKey = `lock:gen:${user.id}:${instanceId}`
-        const locked = await redis.set(lockKey, 'pending', 'EX', 60, 'NX')
+        const locked = await redis.set(lockKey, 'pending', 'EX', REPLAY_LOCK_TTL_SECONDS, 'NX')
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
@@ -257,7 +259,7 @@ export const playWsService = {
             eventId,
           })
           // Replays widen retrieval and can run a touch longer than a normal turn.
-          await redis.set(lockKey, jobId!, 'EX', 60)
+          await redis.set(lockKey, jobId!, 'EX', REPLAY_LOCK_TTL_SECONDS)
           log.info('ws.replay.dispatched', { userId: user.id, instanceId, eventId, jobId })
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
