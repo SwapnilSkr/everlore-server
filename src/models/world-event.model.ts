@@ -37,6 +37,16 @@ export interface EventDataDoc {
   /** Canonical narration/action facts authored inside *...* or **...**. */
   player_narration_facts?: string[]
   ai_response: string
+  /** Suggested next moves (tap-to-play chips) derived in the metadata pass.
+   *  `send` is the formatted player input dispatched on tap (act = *narration*,
+   *  say = spoken aloud); `label` is the chip caption shown to the player. */
+  choices?: Array<{ label: string; kind: 'act' | 'say'; send: string }>
+  /** Story landmark crossed this turn (brass-seal moment), when one occurred. */
+  milestone?: string | null
+  /** In-story time that passed on a calendar_tick turn (e.g. "several days"). */
+  time_advanced?: string
+  /** Open-thread text that seeded this turn's beat, when fate came knocking. */
+  fate_thread?: string
   replay_variants?: ReplayVariantDoc[]
   selected_replay_index?: number
   state_mutations: Record<string, StateMutationDoc>

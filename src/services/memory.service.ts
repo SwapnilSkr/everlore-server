@@ -400,6 +400,8 @@ export const memoryService = {
           focus_character_id: null,
           'meta.total_events': survivors.length,
           'meta.total_memories': Math.max(0, (instance.meta?.total_memories || 0) - deletedMemories),
+          // Milestones earned in the removed turns no longer happened.
+          'meta.milestones': (instance.meta?.milestones || []).filter((m) => m.sequence < sequence),
           updated_at: new Date(),
         },
       },

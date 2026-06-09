@@ -24,8 +24,10 @@ export const generationService = {
     playerId: string
     userMessage: string
     isContinuation?: boolean
+    /** 'hours' | 'day' | 'days' | 'season' — turns a continue into a calendar tick. */
+    timeAdvance?: string
   }) {
-    const { instanceId, playerId, userMessage, isContinuation = false } = params
+    const { instanceId, playerId, userMessage, isContinuation = false, timeAdvance } = params
     const session = await instanceService.loadSession(instanceId, playerId)
 
     // Per-user NSFW consent is read fresh (not from the cached session) so a
@@ -96,6 +98,7 @@ export const generationService = {
         playerId,
         userMessage,
         isContinuation,
+        timeAdvance,
         session,
         userNsfwEnabled,
         recentEvents,

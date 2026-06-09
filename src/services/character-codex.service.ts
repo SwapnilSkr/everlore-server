@@ -1,10 +1,12 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
-import type { CharacterProfileDoc } from '../models/character-profile.model'
+import type { CharacterProfileDoc, RelationshipMeters } from '../models/character-profile.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 
 const characters = () => mongoColl.characters()
+
+export type RelationshipDeltas = Partial<RelationshipMeters>
 
 export type CharacterCodexDelta = {
   name: string
@@ -19,6 +21,8 @@ export type CharacterCodexDelta = {
   retire_state?: string[]
   disposition_to_player?: string
   hidden_thought?: string
+  /** Per-turn meter shifts toward the player (already clamped to ±10 on parse). */
+  relationship_deltas?: RelationshipDeltas
   is_protagonist?: boolean
 }
 
@@ -60,6 +64,39 @@ function uniqKeepRecent(values: string[], max: number): string[] {
 /** Stored fact ceiling (a safety bound; async compaction keeps it well under this). */
 const IMMUTABLE_STORE_MAX = 40
 const MUTABLE_STATE_MAX = 12
+
+/** Relationship meter guardrails: LLM noise must not whipsaw the numbers. */
+const RELATIONSHIP_BASELINES: RelationshipMeters = { trust: 50, affection: 50, fear: 0, rivalry: 0 }
+const RELATIONSHIP_DELTA_CAP = 10
+const METER_MIN = 0
+const METER_MAX = 100
+
+/**
+ * Apply clamped per-turn deltas to a character's relationship meters. Meters
+ * initialize from baselines on the first meter-moving turn; each delta is
+ * capped at ±RELATIONSHIP_DELTA_CAP and the result bounded to [0, 100].
+ */
+export function applyRelationshipDeltas(
+  current: RelationshipMeters | undefined,
+  deltas: RelationshipDeltas,
+): RelationshipMeters {
+  const base = current ?? { ...RELATIONSHIP_BASELINES }
+  const next: RelationshipMeters = { ...base }
+  for (const key of ['trust', 'affection', 'fear', 'rivalry'] as const) {
+    const raw = deltas[key]
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw === 0) continue
+    const capped = Math.max(-RELATIONSHIP_DELTA_CAP, Math.min(RELATIONSHIP_DELTA_CAP, Math.round(raw)))
+    next[key] = Math.max(METER_MIN, Math.min(METER_MAX, (base[key] ?? RELATIONSHIP_BASELINES[key]) + capped))
+  }
+  return next
+}
+
+function hasRelationshipDeltas(deltas?: RelationshipDeltas): deltas is RelationshipDeltas {
+  if (!deltas) return false
+  return (['trust', 'affection', 'fear', 'rivalry'] as const).some(
+    (k) => typeof deltas[k] === 'number' && Number.isFinite(deltas[k]) && deltas[k] !== 0,
+  )
+}
 
 /** Recency half-life (turns) for codex injection ranking. */
 const RANK_HALF_LIFE = 80
@@ -247,6 +284,9 @@ export const characterCodexService = {
           hidden_thought: shouldSetText(delta.hidden_thought)
             ? delta.hidden_thought.trim()
             : '',
+          relationship: hasRelationshipDeltas(delta.relationship_deltas)
+            ? applyRelationshipDeltas(undefined, delta.relationship_deltas)
+            : undefined,
           is_protagonist: delta.is_protagonist === true,
           first_seen_sequence: sequence,
           last_seen_sequence: sequence,
@@ -297,6 +337,12 @@ export const characterCodexService = {
       }
       if (shouldSetText(delta.hidden_thought)) {
         setFields.hidden_thought = delta.hidden_thought.trim()
+      }
+      if (hasRelationshipDeltas(delta.relationship_deltas)) {
+        setFields.relationship = applyRelationshipDeltas(
+          target.relationship,
+          delta.relationship_deltas,
+        )
       }
       // Protagonist is a sticky flag: once a turn identifies this card as the
       // main persona, keep it set even if a later turn omits the hint.

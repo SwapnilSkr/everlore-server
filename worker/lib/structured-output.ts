@@ -1,11 +1,78 @@
 import type { FlagMutation, Mutation } from '../../src/utils/state-mutator'
 
+/**
+ * A tap-to-play suggestion. `label` is the short chip caption the player sees;
+ * `send` is the editable, pre-formatted player input the chip drops into the
+ * composer. It may mix a narrated action (inside *asterisks*) and spoken words
+ * (bare), e.g. `*I step closer, lowering my voice.* What are you hiding?`. The
+ * player can edit `send` before dispatching. `kind` is a presentation hint
+ * (`say` when the move includes spoken words, otherwise `act`).
+ */
+export interface ChoiceOption {
+  label: string
+  kind: 'act' | 'say'
+  send: string
+}
+
 export interface GenerationOutput {
   narrative: string
   state_mutations: Record<string, Mutation>
   flag_mutations: Record<string, FlagMutation>
   scene_tag: string
   emotional_tone: string
+  /** 2-4 short suggested player moves for the next turn (tap-to-play chips). */
+  choices: ChoiceOption[]
+  /** Set only when this turn crossed a true story landmark; null otherwise. */
+  milestone: string | null
+}
+
+/**
+ * Normalize raw model choices into editable, well-formed {@link ChoiceOption}s.
+ *
+ * Intentional formatting is preserved: if `send` already marks narration with
+ * *asterisks* — including a mix of narration and spoken words — it is trusted
+ * as-is. Only a bare, unmarked ACTION is wrapped in asterisks, so that a tapped
+ * action like "Take her hand" can never be dispatched as spoken words. A `say`
+ * move with no markers is left bare (spoken aloud). Tolerates the legacy
+ * `string[]` shape (treated as narrated actions).
+ */
+export function sanitizeChoices(raw: unknown): ChoiceOption[] {
+  if (!Array.isArray(raw)) return []
+  const out: ChoiceOption[] = []
+  for (const item of raw) {
+    let label = ''
+    let kind: 'act' | 'say' = 'act'
+    let content = ''
+    if (typeof item === 'string') {
+      label = item
+      content = item
+    } else if (item && typeof item === 'object') {
+      const r = item as Record<string, unknown>
+      label = typeof r.label === 'string' ? r.label : ''
+      kind = r.kind === 'say' ? 'say' : 'act'
+      content =
+        typeof r.send === 'string' && r.send.trim()
+          ? r.send
+          : typeof r.text === 'string'
+            ? r.text
+            : label
+    } else {
+      continue
+    }
+    label = label.replace(/\s+/g, ' ').trim().slice(0, 80)
+    if (!label) continue
+    let send = content.replace(/\s+/g, ' ').trim().slice(0, 280)
+    if (!send) continue
+    // A bare action (no narration markers) must be wrapped, or the input parser
+    // would treat it as spoken dialogue. Anything already containing asterisks
+    // (pure narration or mixed narration + speech) is left exactly as authored.
+    if (kind === 'act' && !send.includes('*')) {
+      send = `*${send}*`
+    }
+    out.push({ label, kind, send })
+    if (out.length >= 4) break
+  }
+  return out
 }
 
 const VALID_SCENE_TAGS = new Set([
@@ -64,6 +131,15 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
       parsed.emotional_tone = 'neutral'
     }
 
+    // Choices: up to 4 structured, correctly-formatted tap-to-play suggestions.
+    parsed.choices = sanitizeChoices(parsed.choices)
+
+    // Milestone: short label or null (empty/placeholder strings normalize to null).
+    parsed.milestone =
+      typeof parsed.milestone === 'string' && parsed.milestone.trim() && !/^(null|none)$/i.test(parsed.milestone.trim())
+        ? parsed.milestone.replace(/\s+/g, ' ').trim().slice(0, 120)
+        : null
+
     return parsed as GenerationOutput
   } catch (err) {
     // Attempt to extract narrative from malformed response
@@ -99,5 +175,7 @@ function repairResponse(raw: string): GenerationOutput {
     flag_mutations: {},
     scene_tag: 'dialogue',
     emotional_tone: 'neutral',
+    choices: [],
+    milestone: null,
   }
 }

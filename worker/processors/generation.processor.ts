@@ -52,6 +52,15 @@ function openingCharacterName(events: any[], names: string[]): string | null {
 const MAX_CONTEXT_TOKENS = 6000;
 /** Turns of one continuous scene that fold into a single recap (non-overlapping). */
 const SCENE_SUMMARY_BLOCK = 12;
+/** Human labels for calendar-tick spans (keys arrive from the client). */
+const TIME_ADVANCE_LABELS: Record<string, string> = {
+  hours: "several hours",
+  day: "a day",
+  days: "several days",
+  season: "a season",
+};
+/** Min turns between fate-seeded tick beats — keeps old promises from nagging. */
+const FATE_SEED_COOLDOWN_TURNS = 8;
 
 export async function generationProcessor(job: Job) {
   // Replay turns reuse the generation queue/worker but follow a distinct path:
@@ -65,12 +74,17 @@ export async function generationProcessor(job: Job) {
     playerId,
     userMessage,
     isContinuation = false,
+    timeAdvance,
     session,
     userNsfwEnabled,
     recentEvents,
     activeSummary,
     characterCodex = [],
   } = job.data;
+
+  // A continue with a time span becomes a calendar tick: story time advances.
+  const timeAdvanceLabel: string | undefined =
+    isContinuation && timeAdvance ? TIME_ADVANCE_LABELS[String(timeAdvance)] : undefined;
 
   // On a "continue" turn the player says nothing — the world advances on its
   // own. We feed the model a directive (but store no player input on the event).
@@ -118,6 +132,45 @@ export async function generationProcessor(job: Job) {
     );
   }
 
+  // Sequence is needed before generation now (fate cooldown + milestone bookkeeping).
+  const lastEvent = await mongoColl
+    .events()
+    .findOne(
+      { instance_id: instanceOid },
+      { sort: { sequence: -1 }, projection: { sequence: 1 } },
+    );
+  const nextSequence = (lastEvent?.sequence || 0) + 1;
+
+  // Fate seeding: on a calendar tick, the highest-importance open thread may
+  // come due — but only past the cooldown, so the world doesn't feel like a
+  // debt collector opening every time skip with an old promise.
+  let fateThread: string | undefined;
+  if (timeAdvanceLabel && openThreads.length > 0) {
+    try {
+      const inst = await mongoColl.worldInstances().findOne(
+        { _id: instanceOid },
+        { projection: { "meta.last_fate_seed_sequence": 1 } },
+      );
+      const lastSeed = inst?.meta?.last_fate_seed_sequence || 0;
+      if (nextSequence - lastSeed >= FATE_SEED_COOLDOWN_TURNS) {
+        fateThread = openThreads[0];
+      }
+    } catch {
+      // Seeding is an enhancement; the tick proceeds without it.
+    }
+  }
+
+  const tickDirective = timeAdvanceLabel
+    ? `[TIME ADVANCES: ${timeAdvanceLabel} pass(es) in the story. Narrate this span as a flowing interlude, then land on a concrete new beat.
+- Show what changed across the span: characters pursued their own lives, recent events settled into consequences, the world moved without the player.
+- Stay grounded in established canon, current world state, and active flags. Do not invent major new characters, locations, or lore.
+- End IN SCENE on a specific moment — an arrival, an encounter, a discovery, a change — that naturally invites the player's next move. Do not ask the player what they do.${
+        fateThread
+          ? `\n- During this span, an unresolved matter comes due. Weave its consequence into the new beat naturally and concretely (do not resolve it on the player's behalf): ${fateThread}`
+          : ""
+      }]`
+    : undefined;
+
   // Decide routing first so the prompt asks for the right output shape.
   // NSFW routing requires BOTH the world being mature-capable AND the player
   // having opted in via their account preference. Either alone keeps it SFW.
@@ -152,7 +205,7 @@ export async function generationProcessor(job: Job) {
     openThreads,
     sceneSummary: activeSummary,
     recentEvents,
-    userMessage: promptUserMessage,
+    userMessage: tickDirective ?? promptUserMessage,
     userSpokenInput: parsedPlayerInput.spoken,
     userNarrationFacts: parsedPlayerInput.narrationFacts,
     isContinuation,
@@ -231,6 +284,7 @@ export async function generationProcessor(job: Job) {
     finalNarrative,
     Object.keys(session.world_state || {}),
     Object.keys(session.active_flags || {}),
+    { isSentient: session.is_sentient },
   );
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta };
   const proseHygieneIssues = repairedProse.issues;
@@ -244,25 +298,25 @@ export async function generationProcessor(job: Job) {
     parsed.flag_mutations,
   );
 
-  const lastEvent = await mongoColl
-    .events()
-    .findOne(
-      { instance_id: instanceOid },
-      { sort: { sequence: -1 }, projection: { sequence: 1 } },
-    );
-  const nextSequence = (lastEvent?.sequence || 0) + 1;
-
   const event = {
     _id: new ObjectId(),
     instance_id: instanceOid,
     player_id: playerOid,
     sequence: nextSequence,
-    type: parsed.scene_tag === "intimate" ? "intimate" : "narration",
+    type: timeAdvanceLabel
+      ? "calendar_tick"
+      : parsed.scene_tag === "intimate"
+        ? "intimate"
+        : "narration",
     data: {
       player_input: storedPlayerInput,
       player_spoken_input: parsedPlayerInput.spoken,
       player_narration_facts: parsedPlayerInput.narrationFacts,
       ai_response: parsed.narrative,
+      choices: parsed.choices,
+      milestone: parsed.milestone,
+      ...(timeAdvanceLabel ? { time_advanced: timeAdvanceLabel } : {}),
+      ...(fateThread ? { fate_thread: fateThread } : {}),
       replay_variants: [
         {
           id: `base_${Date.now()}`,
@@ -330,27 +384,34 @@ export async function generationProcessor(job: Job) {
   const shouldSummarize = sameScene && rawTurnCount >= SCENE_SUMMARY_BLOCK;
   const newTurnCount = shouldSummarize ? 0 : rawTurnCount;
 
-  await mongoColl.worldInstances().updateOne(
-    { _id: instanceOid },
-    {
-      $set: {
-        world_state: newWorldState,
-        active_flags: newFlags,
-        current_scene: {
-          tag: sceneTag,
-          turn_count: newTurnCount,
-          summary_pending: shouldSummarize,
-        },
-        "meta.last_active_at": new Date(),
-        updated_at: new Date(),
+  const instanceUpdate: Record<string, unknown> = {
+    $set: {
+      world_state: newWorldState,
+      active_flags: newFlags,
+      current_scene: {
+        tag: sceneTag,
+        turn_count: newTurnCount,
+        summary_pending: shouldSummarize,
       },
-      $inc: {
-        "meta.total_events": 1,
-        "meta.total_tokens_consumed":
-          event.data.tokens_in + event.data.tokens_out,
-      },
+      "meta.last_active_at": new Date(),
+      updated_at: new Date(),
+      ...(fateThread ? { "meta.last_fate_seed_sequence": nextSequence } : {}),
     },
-  );
+    $inc: {
+      "meta.total_events": 1,
+      "meta.total_tokens_consumed":
+        event.data.tokens_in + event.data.tokens_out,
+    },
+  };
+  if (parsed.milestone) {
+    instanceUpdate.$push = {
+      "meta.milestones": {
+        $each: [{ label: parsed.milestone, sequence: nextSequence, at: new Date() }],
+        $slice: -50,
+      },
+    };
+  }
+  await mongoColl.worldInstances().updateOne({ _id: instanceOid }, instanceUpdate as never);
 
   const updatedSession = {
     ...session,
@@ -385,6 +446,11 @@ export async function generationProcessor(job: Job) {
         scene_tag: parsed.scene_tag,
         emotional_tone: parsed.emotional_tone,
         model_used: event.data.model_used,
+        choices: parsed.choices,
+        milestone: parsed.milestone,
+        time_advanced: timeAdvanceLabel || null,
+        fate_thread: fateThread || null,
+        event_type: event.type,
         state_diff: {
           world_state: newWorldState,
           active_flags: newFlags,
@@ -392,6 +458,17 @@ export async function generationProcessor(job: Job) {
       },
     }),
   );
+
+  if (parsed.milestone) {
+    await redis.publish(
+      `user:${playerId}:events`,
+      JSON.stringify({
+        type: "milestone_unlocked",
+        instanceId,
+        milestone: { label: parsed.milestone, sequence: nextSequence },
+      }),
+    );
+  }
 
   // Self-building character codex: extract NPC deltas from this turn, persist
   // canonical cards, then push an update to the live client.
@@ -474,6 +551,7 @@ export async function generationProcessor(job: Job) {
             mutable_state: c.mutable_state,
             disposition_to_player: c.disposition_to_player,
             hidden_thought: c.hidden_thought,
+            relationship: c.relationship || null,
             mention_count: c.mention_count,
             is_protagonist: c.is_protagonist === true,
           })),

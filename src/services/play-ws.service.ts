@@ -212,12 +212,19 @@ export const playWsService = {
         }
 
         try {
-          // No player message — the world advances on its own.
+          // No player message — the world advances on its own. Optional payload
+          // `advance` turns the quiet continue into a time-skip (calendar tick).
+          const advanceRaw = (data as { payload?: { advance?: string } }).payload?.advance
+          const timeAdvance =
+            advanceRaw && ['hours', 'day', 'days', 'season'].includes(advanceRaw)
+              ? advanceRaw
+              : undefined
           const jobId = await generationService.dispatch({
             instanceId,
             playerId: user.id,
             userMessage: '',
             isContinuation: true,
+            timeAdvance,
           })
           await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
           ws.send(JSON.stringify({ type: 'ack', jobId }))

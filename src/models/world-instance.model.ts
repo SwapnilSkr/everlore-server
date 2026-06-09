@@ -1,12 +1,22 @@
 import type { ObjectId } from 'mongodb'
 import type { PersonaSnapshotDoc } from './persona.model'
 
+export interface InstanceMilestoneDoc {
+  label: string
+  sequence: number
+  at: Date
+}
+
 export interface InstanceMetaDoc {
   total_events: number
   total_memories: number
   total_tokens_consumed: number
   last_active_at: Date
   is_archived: boolean
+  /** Story landmarks crossed (brass seals), most recent last. Capped at 50. */
+  milestones?: InstanceMilestoneDoc[]
+  /** Sequence of the last fate-seeded tick beat — enforces the anti-nag cooldown. */
+  last_fate_seed_sequence?: number
 }
 
 export interface CurrentSceneDoc {

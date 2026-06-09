@@ -28,6 +28,19 @@ function parseJsonObject(raw: string): Record<string, unknown> {
   }
 }
 
+const METER_KEYS = ['trust', 'affection', 'fear', 'rivalry'] as const
+
+function toRelationshipDeltas(raw: any): CharacterCodexDelta['relationship_deltas'] {
+  if (!raw || typeof raw !== 'object') return undefined
+  const out: Record<string, number> = {}
+  for (const key of METER_KEYS) {
+    const v = Number((raw as Record<string, unknown>)[key])
+    if (!Number.isFinite(v) || v === 0) continue
+    out[key] = Math.max(-10, Math.min(10, Math.round(v)))
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
 function toDelta(raw: any): CharacterCodexDelta | null {
   const name = typeof raw?.name === 'string' ? raw.name.trim() : ''
   if (!name) return null
@@ -50,6 +63,7 @@ function toDelta(raw: any): CharacterCodexDelta | null {
     disposition_to_player:
       typeof raw.disposition_to_player === 'string' ? raw.disposition_to_player.trim() : undefined,
     hidden_thought: typeof raw.hidden_thought === 'string' ? raw.hidden_thought.trim() : undefined,
+    relationship_deltas: toRelationshipDeltas(raw.relationship_deltas),
     is_protagonist: raw.is_protagonist === true,
   }
 }
@@ -111,6 +125,7 @@ Rules:
 - mutable_state: the character's CURRENT status that may change later (e.g. "unattached", "wields fire magic", "wounded"). Only NEW or newly-changed current-status items from this turn.
 - retire_state: CRITICAL for continuity. Copy here, VERBATIM, any item from the character's existing "current state" (shown below) that THIS TURN made false or obsolete. Example: if existing state says "engaged to Lord X" and this turn the engagement is broken, put "engaged to Lord X" in retire_state. Leave [] if nothing became false. NEVER let an outdated status linger.
 - disposition_to_player: concise sentiment toward the player right now.
+- relationship_deltas: how THIS TURN shifted the character's stance toward the player, as integer changes to four meters: trust, affection, fear, rivalry. Include ONLY meters that genuinely moved, ONLY for characters present this turn. Scale: ±1-3 for small moments (kind words, minor friction), ±4-7 for significant ones (a gift, a confession, a public insult), ±8-10 ONLY for dramatic turning points (betrayal, a life saved, a vow broken). Omit the field entirely when nothing shifted. NEVER include it for the player's own protagonist card in a Game Master world (a character has no meters toward themself).
 - is_protagonist: true ONLY for the world's main character (see below); otherwise false.
 ${protagonistBlock}
 Existing characters (with their current state — reconcile against this):
@@ -131,6 +146,7 @@ Respond ONLY JSON:
       "retire_state": ["existing current-state items that are now false/obsolete"],
       "disposition_to_player": "string",
       "hidden_thought": "string",
+      "relationship_deltas": { "trust": 0, "affection": 0, "fear": 0, "rivalry": 0 },
       "is_protagonist": false
     }
   ]
