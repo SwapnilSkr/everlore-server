@@ -145,9 +145,9 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
   if (input.isSentient) {
     staticContent += `${input.seedPrompt}\n\n`
     if (pov === 'first') {
-      staticContent += `You ARE this entity. Speak and act in the FIRST person (I, me, my). You have feelings and react to the player's actions emotionally and physically.\n\n`
+      staticContent += `You ARE this entity. Speak and act in the FIRST person (I, me, my). You have feelings and react to the player's actions emotionally and physically. Refer to the player directly as you, never as "the player" or "the user".\n\n`
     } else {
-      staticContent += `You ARE this entity, but portray yourself in the THIRD person — narrate your own speech, actions, and feelings with pronouns by default (she/he/they), using your name only when clarity genuinely requires it. You still have feelings and react emotionally and physically.\n\n`
+      staticContent += `You ARE this entity, but portray yourself in the THIRD person — narrate your own speech, actions, and feelings with pronouns by default (she/he/they), using your name only when clarity genuinely requires it. You still have feelings and react emotionally and physically. Refer to the player directly as you, never as "the player" or "the user" (e.g. *She watches you*, not *She watches the player*).\n\n`
     }
   } else {
     // For a Game Master, POV chooses how the player is addressed: second-person
@@ -182,6 +182,7 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
 - Do not mention every character in the codex. Refer only to characters actually present, speaking, acting, or being directly discussed in this turn.
 - In a one-on-one beat, avoid names almost entirely after the character is established. A single short name is acceptable only if clarity would otherwise suffer.
 - In multi-character scenes, use names sparingly to establish who acts or speaks, then switch back to pronouns and distinct actions as soon as clarity is restored.
+- Never call the visible player "user". In sentient character chats, never call them "player" either; address them as "you" even when narrating the character in third person.
 
 `
 
@@ -427,6 +428,9 @@ ${continuityTurns.join('\n\n')}`,
     if (styleCue) povReminder += `\n${styleCue}`
     povReminder +=
       `\nNAME HYGIENE for your next reply: natural flow is mandatory. Do not open with a character name unless there is no other clear option. Use full names only for formal identification or unavoidable disambiguation. Prefer pronouns, action, body language, dialogue, silence, setting, or role descriptors. Do not repeat the same name as a sentence rhythm.`
+    if (input.isSentient) {
+      povReminder += `\nPLAYER ADDRESS for your next reply: address the player as "you"; never write "the player" or "the user" in story prose.`
+    }
     if (previousOpeningName) {
       povReminder += ` Do not start this reply with ${previousOpeningName}; the previous assistant turn already opened that way.`
     }

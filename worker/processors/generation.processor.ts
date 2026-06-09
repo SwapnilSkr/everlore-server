@@ -256,6 +256,7 @@ export async function generationProcessor(job: Job) {
     narrative: prose.trim(),
     characterNames,
     messageLength: session.message_length,
+    playerAddressMode: session.is_sentient ? "you" : session.narration_pov === "first" ? "you" : "role",
     previousOpeningNames: previousOpeningName ? [previousOpeningName] : [],
     avoidOpeningNames: characterNames,
     model: modelId,

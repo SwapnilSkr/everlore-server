@@ -393,12 +393,16 @@ export const memoryService = {
     const replayVariants = normalizeReplayVariants(event)
     const [editCharacterNames, editInstance] = await Promise.all([
       characterNamesForInstance(event.instance_id),
-      worldInstances().findOne({ _id: event.instance_id, player_id: pid }, { projection: { message_length: 1 } }),
+      worldInstances().findOne({ _id: event.instance_id, player_id: pid }, { projection: { message_length: 1, narration_pov: 1, template_id: 1 } }),
     ])
+    const editTemplate = editInstance
+      ? await worldTemplates().findOne({ _id: editInstance.template_id }, { projection: { is_sentient: 1 } })
+      : null
     const proseHygieneIssues = validateProseHygiene({
       narrative: nextAiResponse || '',
       characterNames: editCharacterNames,
       messageLength: editInstance?.message_length || 'medium',
+      playerAddressMode: editTemplate?.is_sentient ? 'you' : editInstance?.narration_pov === 'first' ? 'you' : 'role',
       avoidOpeningNames: editCharacterNames,
     })
     let nextReplayVariants = replayVariants
@@ -659,6 +663,7 @@ ${replayDirective || '(none)'}`,
       narrative: replayNarrative.trim(),
       characterNames: replayCodex.map((c) => c.canonical_name),
       messageLength: instance.message_length || 'medium',
+      playerAddressMode: template.is_sentient ? 'you' : (instance.narration_pov || 'third') === 'first' ? 'you' : 'role',
       previousOpeningNames: (() => {
         const previousOpeningName = openingCharacterName(
           priorEvents,
@@ -741,8 +746,11 @@ ${replayDirective || '(none)'}`,
     const changed = nextAi !== event.data.ai_response
     const [selectedCharacterNames, selectedInstance] = await Promise.all([
       characterNamesForInstance(event.instance_id),
-      worldInstances().findOne({ _id: event.instance_id, player_id: pid }, { projection: { message_length: 1 } }),
+      worldInstances().findOne({ _id: event.instance_id, player_id: pid }, { projection: { message_length: 1, narration_pov: 1, template_id: 1 } }),
     ])
+    const selectedTemplate = selectedInstance
+      ? await worldTemplates().findOne({ _id: selectedInstance.template_id }, { projection: { is_sentient: 1 } })
+      : null
     const proseHygieneIssues =
       Array.isArray(chosen.prose_hygiene_issues)
         ? chosen.prose_hygiene_issues
@@ -750,6 +758,7 @@ ${replayDirective || '(none)'}`,
             narrative: nextAi,
             characterNames: selectedCharacterNames,
             messageLength: selectedInstance?.message_length || 'medium',
+            playerAddressMode: selectedTemplate?.is_sentient ? 'you' : selectedInstance?.narration_pov === 'first' ? 'you' : 'role',
             avoidOpeningNames: selectedCharacterNames,
           })
 
