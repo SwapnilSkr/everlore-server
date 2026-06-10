@@ -583,4 +583,87 @@ export const characterCodexService = {
     const character = (await characters().findOne({ _id: cid }))!
     return { character, instanceId: idString(target.instance_id), retiredFacts }
   },
+
+  /**
+   * Relationship Ledger (Phase 10 product surface): every non-protagonist in
+   * the cast, their standing toward the player (meters + disposition), and the
+   * narrative moments that shifted the bond (free-text `relationship` edges
+   * between the player/protagonist entity and the character). Read-only.
+   * `hidden_thought` is intentionally NOT surfaced — it stays the model's
+   * private knowledge so the ledger reflects what the player can observe.
+   */
+  async listRelationships(instanceId: string, playerId: string) {
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+    const instance = await mongoColl.worldInstances().findOne({ _id: iid, player_id: pid })
+    if (!instance) throw new HttpError(404, 'Instance not found')
+
+    const cards = await characters()
+      .find({ instance_id: iid, is_protagonist: { $ne: true } })
+      .sort({ mention_count: -1, updated_at: -1 })
+      .limit(40)
+      .toArray()
+
+    // The "you" side of the bond: player/protagonist entities for this instance.
+    const selfEntities = await mongoColl
+      .entities()
+      .find({ instance_id: iid, type: { $in: ['player', 'protagonist'] } })
+      .project({ _id: 1 })
+      .toArray()
+    const selfIds = selfEntities.map((e) => e._id as ObjectId)
+
+    const charEntityIds = cards
+      .map((c) => c.entity_id)
+      .filter((id): id is ObjectId => !!id)
+
+    // Narrative bond moments — relationship-type edges between the player and
+    // each character, newest first.
+    const edges =
+      charEntityIds.length && selfIds.length
+        ? await mongoColl
+            .entityEdges()
+            .find({
+              instance_id: iid,
+              type: 'relationship',
+              status: 'active',
+              $or: [
+                { source_entity_id: { $in: charEntityIds }, target_entity_id: { $in: selfIds } },
+                { source_entity_id: { $in: selfIds }, target_entity_id: { $in: charEntityIds } },
+              ],
+            })
+            .sort({ last_event_sequence: -1 })
+            .toArray()
+        : []
+
+    const momentsByChar = new Map<string, { label: string; sequence: number }[]>()
+    const charIdSet = new Set(charEntityIds.map((id) => idString(id)))
+    for (const edge of edges) {
+      if (!edge.label) continue
+      const srcKey = idString(edge.source_entity_id)
+      const tgtKey = idString(edge.target_entity_id)
+      const charKey = charIdSet.has(srcKey) ? srcKey : tgtKey
+      const list = momentsByChar.get(charKey) || []
+      if (list.length < 5) {
+        list.push({ label: edge.label, sequence: edge.last_event_sequence })
+        momentsByChar.set(charKey, list)
+      }
+    }
+
+    return {
+      characters: cards.map((c) => {
+        const m = c.relationship as RelationshipMeters | undefined
+        return {
+          id: idString(c._id),
+          name: c.canonical_name,
+          role: c.role || null,
+          disposition: c.disposition_to_player || null,
+          meters: m
+            ? { trust: m.trust, affection: m.affection, fear: m.fear, rivalry: m.rivalry }
+            : null,
+          mention_count: c.mention_count,
+          moments: c.entity_id ? momentsByChar.get(idString(c.entity_id)) || [] : [],
+        }
+      }),
+    }
+  },
 }
