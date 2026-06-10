@@ -10,6 +10,7 @@ import { lengthMaxTokens } from '../utils/narrative-styles'
 import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
+import { characterCodexService } from './character-codex.service'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
 import { repairProseHygiene, validateProseHygiene } from '../utils/prose-hygiene'
 import { callLLM, callLLMStream, embed, AI_MODELS } from '../ai'
@@ -360,7 +361,26 @@ export const memoryService = {
 
     // 3b. Character codex may contain facts from removed turns; reset it so
     // canon is rebuilt from future play instead of keeping contradictions.
+    // BUT the protagonist's identity is authored (sentient) or onboarded (GM),
+    // not emergent — like world_state it must be restored, not lost. Capture it
+    // first, blow away the codex, then deterministically re-seed the
+    // protagonist with its identity (name/persona/appearance/aliases) intact
+    // and its evolved facts/state cleared. Without this, a GM rewind orphans
+    // the player and re-opens protagonist/player identity drift.
+    const priorProtagonist = await characters().findOne({ instance_id: iid, is_protagonist: true })
     await characters().deleteMany({ instance_id: iid })
+    const protoName = priorProtagonist?.canonical_name || template.protagonist?.name
+    if (protoName) {
+      await characterCodexService.seedProtagonist({
+        instanceId,
+        playerId,
+        name: protoName,
+        persona: priorProtagonist?.persona ?? template.protagonist?.persona,
+        appearance: priorProtagonist?.appearance ?? template.protagonist?.appearance,
+        aliases: priorProtagonist?.aliases || [],
+        isPlayer: !template.is_sentient,
+      })
+    }
 
     // 4. Replay survivors from template defaults to rebuild state.
     const statLimits: Record<string, { min: number; max: number }> = {}

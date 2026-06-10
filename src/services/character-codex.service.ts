@@ -182,8 +182,11 @@ export const characterCodexService = {
     appearance?: string
     isPlayer?: boolean
     sequence?: number
+    /** Restore known referents (e.g. role epithets) so identity resolution
+     *  survives a rewind — see the protagonist/player drift guard. */
+    aliases?: string[]
   }): Promise<CharacterProfileDoc | null> {
-    const { instanceId, playerId, name, persona, appearance, isPlayer, sequence = 0 } = params
+    const { instanceId, playerId, name, persona, appearance, isPlayer, sequence = 0, aliases } = params
     const trimmed = (name || '').trim()
     if (!trimmed) return null
 
@@ -200,7 +203,10 @@ export const characterCodexService = {
       player_id: pid,
       canonical_name: trimmed.slice(0, 120),
       name_normalized: normalizeName(trimmed),
-      aliases: [],
+      // Drop any alias equal to the canonical name; keep the rest as referents.
+      aliases: uniqStrings(aliases || [], 20).filter(
+        (a) => normalizeName(a) !== normalizeName(trimmed),
+      ),
       role: isPlayer ? 'protagonist (the player)' : 'protagonist',
       appearance: shouldSetText(appearance) ? appearance.trim() : undefined,
       persona: shouldSetText(persona) ? persona.trim() : undefined,
