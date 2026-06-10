@@ -15,6 +15,9 @@ import { classifyScene } from "../lib/nsfw-classifier";
 import { timeService } from "../../src/services/time.service";
 import { buildSideChatPacket } from "../../src/services/context-packet.service";
 import { getMemoryCurationQueue, QUEUE_RETENTION } from "../../src/queues";
+import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
+import { characterCodexService } from "../../src/services/character-codex.service";
+import { entityGraphService } from "../../src/services/entity-graph.service";
 import type { CharacterProfileDoc } from "../../src/models/character-profile.model";
 import type { WorldEventDoc } from "../../src/models/world-event.model";
 
@@ -227,6 +230,104 @@ ${buildLengthDirective(session.message_length)}`;
         // Cache refresh is best-effort; the next loadSession rebuilds it.
       }
     }
+
+    // Relationship updates from the private chat (best-effort, like the main
+    // path): extract codex deltas but apply ONLY the active character's — a
+    // private conversation may move how THEY feel, never another card. Deltas
+    // are ledgered on the event, so rewind replays them exactly; meter edges
+    // re-project onto the entity graph.
+    ;(async () => {
+      try {
+        const deltas = await extractCharacterCodexDeltas({
+          playerInput: userMessage,
+          aiResponse: narrative,
+          existing: [
+            {
+              canonical_name: card.canonical_name,
+              aliases: card.aliases || [],
+              role: card.role,
+              appearance: card.appearance,
+              persona: card.persona,
+              disposition_to_player: card.disposition_to_player,
+              mutable_state: card.mutable_state || [],
+              immutable_facts: card.immutable_facts || [],
+            },
+          ],
+          seedPrompt: session.seed_prompt,
+          isSentient: session.is_sentient,
+          playerPersonaName: session.persona_snapshot?.name,
+        });
+        const cardNames = new Set(
+          [card.canonical_name, ...(card.aliases || [])].map((n) => n.trim().toLowerCase()),
+        );
+        const scoped = deltas.filter((d) =>
+          [d.resolved_name, d.name].some(
+            (n) => typeof n === "string" && cardNames.has(n.trim().toLowerCase()),
+          ),
+        );
+        if (!scoped.length) return;
+
+        const codex = await characterCodexService.applyDeltas({
+          instanceId,
+          playerId,
+          sequence: nextSequence,
+          deltas: scoped,
+        });
+        await mongoColl
+          .events()
+          .updateOne({ _id: event._id }, { $set: { "data.codex_deltas": scoped } });
+
+        const entityMap = await entityGraphService.syncCodexEntities({
+          instanceId,
+          playerId,
+          sequence: nextSequence,
+          cards: codex,
+        });
+        const touched = codex.filter(
+          (c) =>
+            idString(c._id) === idString(card._id) &&
+            c.last_seen_sequence === nextSequence &&
+            c.relationship,
+        );
+        if (touched.length > 0) {
+          await entityGraphService.syncRelationshipEdges({
+            instanceId,
+            playerId,
+            sequence: nextSequence,
+            eventId: event._id,
+            cards: touched,
+            entitiesByCardName: entityMap,
+            playerName: session.persona_snapshot?.name,
+          });
+        }
+
+        await redis.publish(
+          channel,
+          JSON.stringify({
+            type: "character_codex_updated",
+            instanceId,
+            focused_character_id: session.focus_character_id || null,
+            characters: codex.map((c) => ({
+              id: idString(c._id),
+              canonical_name: c.canonical_name,
+              aliases: c.aliases,
+              role: c.role,
+              appearance: c.appearance,
+              persona: c.persona,
+              immutable_facts: c.immutable_facts,
+              mutable_state: c.mutable_state,
+              disposition_to_player: c.disposition_to_player,
+              hidden_thought: c.hidden_thought,
+              relationship: c.relationship || null,
+              mention_count: c.mention_count,
+              is_protagonist: c.is_protagonist === true,
+            })),
+          }),
+        );
+      } catch (err) {
+        console.warn("side-chat codex update failed:", (err as Error).message);
+      }
+    })();
 
     // Scoped memory curation: atoms from this exchange are minted with
     // origin 'side_chat' + known_by participants, so main narration can
