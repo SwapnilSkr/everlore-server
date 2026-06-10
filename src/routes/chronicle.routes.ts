@@ -19,6 +19,11 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
 
   .get('/relationships/:instanceId', (ctx) => chronicleController.getRelationships(ctx))
 
+  .get(
+    '/relationships/:instanceId/:characterId/memories',
+    (ctx) => chronicleController.getCharacterMemories(ctx),
+  )
+
   .get('/locations/:instanceId', (ctx) => chronicleController.getLocations(ctx))
 
   .get(

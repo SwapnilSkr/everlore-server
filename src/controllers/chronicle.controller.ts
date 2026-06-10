@@ -69,6 +69,21 @@ export const chronicleController = {
     return characterCodexService.listRelationships(params.instanceId, user.id)
   },
 
+  getCharacterMemories: async ({
+    params,
+    user,
+  }: {
+    params: { instanceId: string; characterId: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return characterCodexService.characterMemories(
+      params.instanceId,
+      user.id,
+      params.characterId,
+    )
+  },
+
   getLocations: async ({
     params,
     user,

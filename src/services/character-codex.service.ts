@@ -666,4 +666,60 @@ export const characterCodexService = {
       }),
     }
   },
+
+  /**
+   * "What this character remembers about you" (Phase 10): the memories this
+   * character is part of, found via the entity subject/object links from
+   * Phase 3. Falls back to matching the canonical name against the string
+   * `subjects`/`objects` for pre-graph rows that were never entity-resolved.
+   * Read-only; ranked by importance then recency.
+   */
+  async characterMemories(instanceId: string, playerId: string, characterId: string) {
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+    const card = await characters().findOne({
+      _id: parseObjectId(characterId),
+      instance_id: iid,
+    })
+    if (!card) throw new HttpError(404, 'Character not found')
+
+    const ownsInstance = await mongoColl
+      .worldInstances()
+      .findOne({ _id: iid, player_id: pid }, { projection: { _id: 1 } })
+    if (!ownsInstance) throw new HttpError(404, 'Instance not found')
+
+    const or: Record<string, unknown>[] = []
+    if (card.entity_id) {
+      or.push({ subject_entity_ids: card.entity_id })
+      or.push({ object_entity_ids: card.entity_id })
+    }
+    // Back-compat for memories that predate entity resolution.
+    or.push({ subjects: card.canonical_name })
+    or.push({ objects: card.canonical_name })
+
+    const mems = await mongoColl
+      .memories()
+      .find({ instance_id: iid, is_archived: false, $or: or })
+      .sort({ importance: -1, updated_at: -1 })
+      .limit(50)
+      .toArray()
+
+    return {
+      character: {
+        id: idString(card._id),
+        name: card.canonical_name,
+        role: card.role || null,
+      },
+      memories: mems.map((m) => ({
+        id: idString(m._id),
+        text: m.text,
+        type: m.type,
+        importance: m.importance,
+        emotional_valence: m.emotional_valence || null,
+        relationship_delta: m.relationship_delta || null,
+        unresolved_thread: m.unresolved_thread === true,
+        time_anchor: m.time_anchor || null,
+      })),
+    }
+  },
 }
