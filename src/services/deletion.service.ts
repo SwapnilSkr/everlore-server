@@ -91,10 +91,11 @@ export const deletionService = {
       await memories().deleteMany({ instance_id: { $in: instanceIds } })
     }
     
-    // Delete all scene + chapter summaries for these instances
+    // Delete all scene + chapter + arc summaries for these instances
     if (instanceIds.length > 0) {
       await sceneSummaries().deleteMany({ instance_id: { $in: instanceIds } })
       await mongoColl.chapterSummaries().deleteMany({ instance_id: { $in: instanceIds } })
+      await mongoColl.arcSummaries().deleteMany({ instance_id: { $in: instanceIds } })
     }
 
     // Delete all character codex entries for these instances
@@ -175,6 +176,7 @@ export const deletionService = {
     await memories().deleteMany({ instance_id: iid })
     await sceneSummaries().deleteMany({ instance_id: iid })
     await mongoColl.chapterSummaries().deleteMany({ instance_id: iid })
+    await mongoColl.arcSummaries().deleteMany({ instance_id: iid })
     await characters().deleteMany({ instance_id: iid })
     await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
     await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
@@ -335,9 +337,10 @@ export const deletionService = {
     // Delete memories
     await memories().deleteMany({ instance_id: iid })
 
-    // Delete scene + chapter summaries
+    // Delete scene + chapter + arc summaries
     await sceneSummaries().deleteMany({ instance_id: iid })
     await mongoColl.chapterSummaries().deleteMany({ instance_id: iid })
+    await mongoColl.arcSummaries().deleteMany({ instance_id: iid })
 
     // Delete character codex entries
     await characters().deleteMany({ instance_id: iid })

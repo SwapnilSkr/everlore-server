@@ -9,6 +9,7 @@ import type { WorldEventDoc } from '../models/world-event.model'
 import type { MemoryDoc } from '../models/memory.model'
 import type { SceneSummaryDoc } from '../models/scene-summary.model'
 import type { ChapterSummaryDoc } from '../models/chapter-summary.model'
+import type { ArcSummaryDoc } from '../models/arc-summary.model'
 import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { EntityDoc } from '../models/entity.model'
 import type { EntityEdgeDoc } from '../models/entity-edge.model'
@@ -39,6 +40,7 @@ export const mongoColl = {
   memories: () => coll<WithoutId<MemoryDoc>>(COLLECTIONS.memories),
   sceneSummaries: () => coll<WithoutId<SceneSummaryDoc>>(COLLECTIONS.scene_summaries),
   chapterSummaries: () => coll<WithoutId<ChapterSummaryDoc>>(COLLECTIONS.chapter_summaries),
+  arcSummaries: () => coll<WithoutId<ArcSummaryDoc>>(COLLECTIONS.arc_summaries),
   characters: () => coll<WithoutId<CharacterProfileDoc>>(COLLECTIONS.characters),
   entities: () => coll<WithoutId<EntityDoc>>(COLLECTIONS.entities),
   entityEdges: () => coll<WithoutId<EntityEdgeDoc>>(COLLECTIONS.entity_edges),

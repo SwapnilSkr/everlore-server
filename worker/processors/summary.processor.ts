@@ -9,6 +9,8 @@ import { log } from '../../src/utils/logger'
 
 /** Roll up a fixed block of consecutive scene summaries into one chapter. */
 const CHAPTER_SCENE_BLOCK = 8
+/** Roll up a fixed block of consecutive chapters into one arc. */
+const ARC_CHAPTER_BLOCK = 4
 
 /**
  * Embed a summary into Pinecone for semantic summary retrieval. The vector id is
@@ -18,7 +20,7 @@ const CHAPTER_SCENE_BLOCK = 8
  */
 async function embedSummary(
   instanceOid: ReturnType<typeof parseObjectId>,
-  tier: 'scene' | 'chapter',
+  tier: 'scene' | 'chapter' | 'arc',
   startSequence: number,
   endSequence: number,
   text: string,
@@ -49,6 +51,9 @@ export async function summaryProcessor(job: Job) {
   // by `kind` so we don't need a second queue/worker registration.
   if (job.data.kind === 'chapter') {
     return chapterRollup(job)
+  }
+  if (job.data.kind === 'arc') {
+    return arcRollup(job)
   }
 
   const { instanceId, sceneTag, startSequence, endSequence } = job.data
@@ -276,5 +281,122 @@ async function chapterRollup(job: Job) {
     chapterId: chapter._id.toString(),
   })
 
+  // A completed chapter may close out an arc's worth of chapters.
+  await maybeQueueArc(instanceOid)
+
   return { chapterId: chapter._id }
+}
+
+/** Enqueue an arc rollup when ARC_CHAPTER_BLOCK chapters accumulate beyond the
+ *  last arc's coverage. One arc per chapter completion keeps cost flat. */
+async function maybeQueueArc(instanceOid: ObjectId): Promise<void> {
+  const lastArc = await mongoColl.arcSummaries().findOne(
+    { instance_id: instanceOid },
+    { sort: { 'event_range.end_sequence': -1 } },
+  )
+  const coveredThrough = lastArc?.event_range.end_sequence ?? 0
+
+  const pending = await mongoColl.chapterSummaries()
+    .find({
+      instance_id: instanceOid,
+      status: { $ne: 'stale' },
+      'event_range.end_sequence': { $gt: coveredThrough },
+    })
+    .sort({ 'event_range.end_sequence': 1 })
+    .toArray()
+
+  if (pending.length < ARC_CHAPTER_BLOCK) return
+
+  const block = pending.slice(0, ARC_CHAPTER_BLOCK)
+  const queue = getSceneSummaryQueue()
+  await queue.add(
+    'summarize',
+    {
+      kind: 'arc',
+      instanceId: idString(instanceOid),
+      arcIndex: (lastArc?.arc_index ?? 0) + 1,
+      startSequence: block[0].event_range.start_sequence,
+      endSequence: block[block.length - 1].event_range.end_sequence,
+    },
+    {
+      priority: 17,
+      removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
+      removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
+    },
+  )
+}
+
+/** Compress a block of consecutive chapters into one arc, framed around the
+ *  plot and relationship through-lines rather than a chronological recap. */
+async function arcRollup(job: Job) {
+  const { instanceId, arcIndex, startSequence, endSequence } = job.data
+  const instanceOid = parseObjectId(instanceId)
+
+  // Fetch child chapters by EVENT RANGE (robust to chapter rebuilds, which mint
+  // new _ids), same as chapters fetch their scenes.
+  const chapters = await mongoColl.chapterSummaries()
+    .find({
+      instance_id: instanceOid,
+      status: { $ne: 'stale' },
+      'event_range.start_sequence': { $gte: startSequence },
+      'event_range.end_sequence': { $lte: endSequence },
+    })
+    .sort({ 'event_range.start_sequence': 1 })
+    .toArray()
+
+  if (chapters.length < 2) {
+    log.warn('arc_summary.skipped', { jobId: job.id, instanceId, arcIndex, chaptersFound: chapters.length })
+    return { skipped: true }
+  }
+
+  const body = chapters
+    .map((c, i) => `Chapter ${i + 1}: ${c.summary_text}`)
+    .join('\n\n')
+
+  const summaryText = await callLLM({
+    model: AI_MODELS.sceneSummary,
+    messages: [
+      {
+        role: 'system',
+        content: `Distill these consecutive chapters into a single ARC summary of 2-3 paragraphs. Do NOT write a blow-by-blow recap. Instead trace the THROUGH-LINES: how the central plot moved, how key RELATIONSHIPS evolved (trust gained or broken, alliances, rivalries, intimacy), which promises/threats/questions opened and which paid off across the whole span, and the lasting changes to the world and the protagonist. Keep NSFW descriptors non-explicit. The arc must stand on its own as "what this stretch of the story was really about".`,
+      },
+      { role: 'user', content: body },
+    ],
+    temperature: 0.3,
+    maxTokens: 600,
+  })
+
+  const pineconeId = await embedSummary(instanceOid, 'arc', startSequence, endSequence, summaryText)
+
+  const arc = {
+    _id: new ObjectId(),
+    instance_id: instanceOid,
+    arc_index: arcIndex,
+    event_range: { start_sequence: startSequence, end_sequence: endSequence },
+    chapter_summary_ids: chapters.map((c) => c._id),
+    summary_text: summaryText,
+    model_used: AI_MODELS.sceneSummary,
+    tokens_consumed: 0,
+    pinecone_id: pineconeId,
+    status: 'active' as const,
+    created_at: new Date(),
+  }
+
+  await mongoColl.arcSummaries().deleteMany({
+    instance_id: instanceOid,
+    'event_range.start_sequence': startSequence,
+    'event_range.end_sequence': endSequence,
+  })
+  await mongoColl.arcSummaries().insertOne(arc)
+
+  log.info('arc_summary.succeeded', {
+    jobId: job.id,
+    instanceId,
+    arcIndex,
+    startSequence,
+    endSequence,
+    arcId: arc._id.toString(),
+  })
+
+  return { arcId: arc._id }
 }

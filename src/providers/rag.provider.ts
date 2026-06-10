@@ -370,7 +370,7 @@ export async function queryRag(
 
 export interface SummaryHit {
   id: string
-  tier: 'scene' | 'chapter'
+  tier: 'scene' | 'chapter' | 'arc'
   text: string
   score: number
   startSequence: number
@@ -403,20 +403,26 @@ export async function querySummaries(
     // are excluded; also reads the authoritative current text.
     const iid = parseObjectId(instanceId)
     const ids = matches.map((m) => m.id)
-    const [scenes, chapters] = await Promise.all([
+    const [scenes, chapters, arcs] = await Promise.all([
       mongoColl.sceneSummaries()
         .find({ instance_id: iid, pinecone_id: { $in: ids }, status: { $ne: 'stale' } })
         .toArray(),
       mongoColl.chapterSummaries()
         .find({ instance_id: iid, pinecone_id: { $in: ids }, status: { $ne: 'stale' } })
         .toArray(),
+      mongoColl.arcSummaries()
+        .find({ instance_id: iid, pinecone_id: { $in: ids }, status: { $ne: 'stale' } })
+        .toArray(),
     ])
-    const byVecId = new Map<string, { tier: 'scene' | 'chapter'; text: string; start: number; end: number }>()
+    const byVecId = new Map<string, { tier: 'scene' | 'chapter' | 'arc'; text: string; start: number; end: number }>()
     for (const s of scenes) {
       if (s.pinecone_id) byVecId.set(s.pinecone_id, { tier: 'scene', text: s.summary_text, start: s.event_range.start_sequence, end: s.event_range.end_sequence })
     }
     for (const c of chapters) {
       if (c.pinecone_id) byVecId.set(c.pinecone_id, { tier: 'chapter', text: c.summary_text, start: c.event_range.start_sequence, end: c.event_range.end_sequence })
+    }
+    for (const a of arcs) {
+      if (a.pinecone_id) byVecId.set(a.pinecone_id, { tier: 'arc', text: a.summary_text, start: a.event_range.start_sequence, end: a.event_range.end_sequence })
     }
 
     const out: SummaryHit[] = []

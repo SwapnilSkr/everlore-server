@@ -10,6 +10,7 @@ export const COLLECTIONS = {
   memories: 'memories',
   scene_summaries: 'scene_summaries',
   chapter_summaries: 'chapter_summaries',
+  arc_summaries: 'arc_summaries',
   characters: 'characters',
   entities: 'entities',
   entity_edges: 'entity_edges',

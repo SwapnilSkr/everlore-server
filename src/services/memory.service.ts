@@ -25,6 +25,7 @@ const worldInstances = () => mongoColl.worldInstances()
 const worldTemplates = () => mongoColl.worldTemplates()
 const sceneSummaries = () => mongoColl.sceneSummaries()
 const chapterSummaries = () => mongoColl.chapterSummaries()
+const arcSummaries = () => mongoColl.arcSummaries()
 const characters = () => mongoColl.characters()
 const users = () => mongoColl.users()
 
@@ -157,6 +158,41 @@ async function staleSummariesCoveringEvent(event: any): Promise<number> {
         {
           priority: 16,
           delay: 5000,
+          removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
+        },
+      )
+    }
+  }
+
+  // Arcs sit above chapters: an arc over any affected chapter is now superseded.
+  // Stale it and requeue (longer delay so the chapters above rebuild first).
+  const coveringArcs = await arcSummaries()
+    .find({
+      instance_id: event.instance_id,
+      'event_range.start_sequence': { $lte: event.sequence },
+      'event_range.end_sequence': { $gte: event.sequence },
+      status: { $ne: 'stale' },
+    })
+    .toArray()
+  if (coveringArcs.length > 0) {
+    await arcSummaries().updateMany(
+      { _id: { $in: coveringArcs.map((a) => a._id) } },
+      { $set: { status: 'stale' } },
+    )
+    for (const a of coveringArcs) {
+      await queue.add(
+        'summarize',
+        {
+          kind: 'arc',
+          instanceId: idString(event.instance_id),
+          arcIndex: a.arc_index,
+          startSequence: a.event_range.start_sequence,
+          endSequence: a.event_range.end_sequence,
+        },
+        {
+          priority: 17,
+          delay: 9000,
           removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
           removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
         },
@@ -559,7 +595,13 @@ export const memoryService = {
         { projection: { pinecone_id: 1 } },
       )
       .toArray()
-    const summaryVecIds = [...doomedSummaries, ...doomedChapters]
+    const doomedArcs = await arcSummaries()
+      .find(
+        { instance_id: iid, 'event_range.end_sequence': { $gte: sequence } },
+        { projection: { pinecone_id: 1 } },
+      )
+      .toArray()
+    const summaryVecIds = [...doomedSummaries, ...doomedChapters, ...doomedArcs]
       .map((s) => s.pinecone_id)
       .filter((id): id is string => !!id)
     if (summaryVecIds.length > 0) {
@@ -576,6 +618,10 @@ export const memoryService = {
       'event_range.end_sequence': { $gte: sequence },
     })
     await chapterSummaries().deleteMany({
+      instance_id: iid,
+      'event_range.end_sequence': { $gte: sequence },
+    })
+    await arcSummaries().deleteMany({
       instance_id: iid,
       'event_range.end_sequence': { $gte: sequence },
     })
