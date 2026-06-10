@@ -12,6 +12,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { characterCodexService } from './character-codex.service'
 import { entityGraphService } from './entity-graph.service'
+import { timeService } from './time.service'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
 import { repairProseHygiene, validateProseHygiene } from '../utils/prose-hygiene'
 import { callLLM, callLLMStream, embed, AI_MODELS } from '../ai'
@@ -414,6 +415,7 @@ export const memoryService = {
           projection: {
             sequence: 1,
             scene_tag: 1,
+            time_anchor: 1,
             'data.state_mutations': 1,
             'data.flag_mutations': 1,
             'data.codex_deltas': 1,
@@ -493,6 +495,13 @@ export const memoryService = {
       if (survivors[i].scene_tag === sceneTag) turnCount++
       else break
     }
+    const rewindTimeAnchor =
+      last?.time_anchor ||
+      (await timeService.initialAnchor({
+        instanceId,
+        templateId: idString(template._id),
+        sequence: 0,
+      }))
 
     // 6. Persist rolled-back instance state.
     await worldInstances().updateOne(
@@ -502,6 +511,9 @@ export const memoryService = {
           world_state: worldState,
           active_flags: activeFlags,
           current_scene: { tag: sceneTag, turn_count: turnCount, summary_pending: false },
+          current_time_anchor: rewindTimeAnchor,
+          active_timeline_id: rewindTimeAnchor.timeline_id,
+          default_calendar_id: rewindTimeAnchor.story_calendar?.calendar_id,
           focus_character_id: null,
           'meta.total_events': survivors.length,
           'meta.total_memories': Math.max(0, (instance.meta?.total_memories || 0) - deletedMemories),

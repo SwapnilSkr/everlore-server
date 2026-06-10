@@ -65,6 +65,36 @@ async function main() {
       { name: 'LateStranger', immutable_facts: ['arrived from the north'], is_protagonist: false },
     ] } },
   )
+  const calendarId = new ObjectId()
+  const anchorFor = (sequence: number, label: string) => ({
+    real_time: new Date(),
+    sequence,
+    story_calendar: {
+      calendar_id: calendarId,
+      year: 1,
+      month: 1,
+      day: sequence,
+      era: 'First Era',
+      label,
+    },
+    event_time_label: label,
+    timeline_id: 'main',
+    causal_parent_event_ids: [],
+  })
+  const survivingAnchor = anchorFor(survSeq, 'surviving day')
+  const doomedAnchor = anchorFor(SEQ, 'doomed day')
+  await mongoColl.events().updateOne(
+    { instance_id: tempId, sequence: survSeq },
+    { $set: { time_anchor: survivingAnchor } },
+  )
+  await mongoColl.events().updateOne(
+    { instance_id: tempId, sequence: SEQ },
+    { $set: { time_anchor: doomedAnchor } },
+  )
+  await mongoColl.worldInstances().updateOne(
+    { _id: tempId },
+    { $set: { current_time_anchor: doomedAnchor, active_timeline_id: 'main', default_calendar_id: calendarId } },
+  )
 
   // === Seed entity graph on the clone ===
   // Two non-character entities (one born in a surviving turn, one in a doomed
@@ -120,7 +150,7 @@ async function main() {
     await mongoColl.memories().insertOne({
       _id: new ObjectId(), instance_id: tempId, player_id: playerId,
       text: 'The player swore to defend OldKeep.', type: 'promise', importance: 4, is_nsfw: false,
-      source_event_ids: [survEventId], pinecone_id: null, access_count: 0, last_accessed_at: now,
+      source_event_ids: [survEventId], access_count: 0, last_accessed_at: now,
       is_archived: false, subjects: ['player'], objects: ['OldKeep'],
       subject_entity_ids: [], object_entity_ids: [oldKeep._id],
       created_at: now, updated_at: now,
@@ -203,6 +233,7 @@ async function main() {
   ok('meta.total_events updated', inst?.meta?.total_events === remainingEvents.length, `meta=${inst?.meta?.total_events} actual=${remainingEvents.length}`)
   ok('focus_character_id cleared', !inst?.focus_character_id)
   ok('milestones after rewind pruned', (inst?.meta?.milestones || []).every((m: any) => m.sequence < SEQ))
+  ok('story-time cursor rolled back to last surviving event', inst?.current_time_anchor?.sequence === survSeq, `time_sequence=${inst?.current_time_anchor?.sequence}`)
 
   // === Cleanup ===
   await mongoColl.worldInstances().deleteOne({ _id: tempId })
@@ -212,6 +243,8 @@ async function main() {
   await mongoColl.sceneSummaries().deleteMany({ instance_id: tempId })
   await mongoColl.entities().deleteMany({ instance_id: tempId })
   await mongoColl.entityEdges().deleteMany({ instance_id: tempId })
+  await mongoColl.storyCalendars().deleteMany({ instance_id: tempId })
+  await mongoColl.timelineBranches().deleteMany({ instance_id: tempId })
   console.log(`\nCleaned up clone ${tempId}.`)
   process.exit(process.exitCode || 0)
 }

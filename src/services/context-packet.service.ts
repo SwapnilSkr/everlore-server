@@ -4,8 +4,10 @@ import type { WorldEventDoc } from '../models/world-event.model'
 import { queryRag } from '../providers/rag.provider'
 import { rankCodexForInjection } from './character-codex.service'
 import { entityGraphService } from './entity-graph.service'
+import { timeService } from './time.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { EVENT_WINDOWS } from '../utils/event-window'
+import type { TimeAnchorDoc } from '../models/time.model'
 
 /** Injected codex size (recency-ranked top-K before pinning). */
 const CODEX_INJECT_LIMIT = 16
@@ -37,6 +39,8 @@ export interface ContextPacket {
   retrievedEntityIds: string[]
   /** Sequence of the latest existing event (0 on a fresh world). */
   currentSequence: number
+  currentTimeAnchor: TimeAnchorDoc | null
+  timeContext: string | null
 }
 
 /** The session fields the packet builder reads (subset of the cached session). */
@@ -46,6 +50,7 @@ interface PacketSession {
   protagonist?: { name?: string; persona?: string; appearance?: string } | null
   max_lore_results?: number
   max_context_memories?: number
+  current_time_anchor?: TimeAnchorDoc | null
 }
 
 /**
@@ -84,6 +89,11 @@ export async function buildContextPacket(params: {
     },
     { sort: { 'event_range.end_sequence': -1 } },
   )
+  const currentTimeAnchor =
+    session.current_time_anchor ||
+    recentEvents[recentEvents.length - 1]?.time_anchor ||
+    null
+  const timeContext = await timeService.timelineContext(instanceId, currentTimeAnchor)
 
   // ── 1. Direct mentions: entities + dormant codex cards named in the input ──
   // (On a continue turn the player says nothing — nothing to resolve.)
@@ -120,6 +130,7 @@ export async function buildContextPacket(params: {
       session.max_lore_results || 10,
       session.max_context_memories || 25,
       mentionedEntityIds,
+      currentTimeAnchor?.timeline_id || 'main',
     )
     loreTexts = rag.loreTexts
     memoryTexts = rag.memoryTexts
@@ -206,5 +217,7 @@ export async function buildContextPacket(params: {
     openThreads,
     retrievedEntityIds,
     currentSequence,
+    currentTimeAnchor,
+    timeContext,
   }
 }

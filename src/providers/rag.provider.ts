@@ -27,6 +27,61 @@ type FusedCandidate = {
   score: number
 }
 
+type TimelineEligibility = {
+  clauses: Record<string, unknown>[]
+  includesLegacyMain: boolean
+  allowsMemory: (m: Pick<MemoryDoc, 'timeline_id' | 'time_anchor'>) => boolean
+}
+
+async function timelineEligibility(instanceId: string, timelineId?: string | null): Promise<TimelineEligibility | null> {
+  if (!timelineId) return null
+  const iid = parseObjectId(instanceId)
+  const branches = await mongoColl.timelineBranches().find({ instance_id: iid }).toArray()
+  const byId = new Map(branches.map((b) => [String(b.timeline_id), b]))
+  const allowed = new Map<string, number | null>()
+  const visit = (id: string, maxSequence: number | null) => {
+    if (!id) return
+    const prev = allowed.get(id)
+    if (prev !== undefined && (prev === null || maxSequence === null || prev >= maxSequence)) return
+    allowed.set(id, maxSequence)
+    const branch = byId.get(id)
+    if (branch?.parent_timeline_id) {
+      visit(branch.parent_timeline_id, branch.forked_at_sequence)
+    }
+  }
+  visit(timelineId, null)
+  if (!allowed.size) allowed.set(timelineId, null)
+
+  const clauses: Record<string, unknown>[] = []
+  for (const [id, maxSequence] of allowed) {
+    if (maxSequence === null) {
+      clauses.push({ timeline_id: id })
+    } else {
+      clauses.push({ timeline_id: id, 'time_anchor.sequence': { $lte: maxSequence } })
+    }
+  }
+  const mainMax = allowed.get('main')
+  const includesLegacyMain = allowed.has('main')
+  if (includesLegacyMain) {
+    // Pre-TimeAnchor rows are main-timeline compatible, but have no sequence to
+    // clamp. Keep them only when main is in the ancestry, never on unrelated branches.
+    clauses.push({ timeline_id: { $exists: false } })
+  }
+
+  return {
+    clauses,
+    includesLegacyMain,
+    allowsMemory: (m) => {
+      const memTimeline = m.timeline_id || m.time_anchor?.timeline_id || ''
+      if (!memTimeline) return includesLegacyMain
+      const maxSequence = allowed.get(memTimeline)
+      if (maxSequence === undefined) return false
+      if (maxSequence === null) return true
+      return (m.time_anchor?.sequence || 0) <= maxSequence
+    },
+  }
+}
+
 /**
  * Hybrid retrieval: vector search (Pinecone) for conceptual/emotional
  * similarity + Mongo $text keyword search for exact names, places, and
@@ -43,10 +98,20 @@ export async function queryRag(
   /** Entity ids mentioned in the player's turn — adds graph-neighborhood
    *  retrieval (memories LINKED to those entities by id, not by string). */
   mentionedEntityIds: string[] = [],
+  /** Current timeline branch. New memories are scoped; legacy rows without
+   *  timeline_id are still eligible on the main branch. */
+  timelineId?: string | null,
 ): Promise<RagResult> {
   const queryEmbedding = await embed(queryText)
   const index = getPineconeIndex()
   const instanceOid = parseObjectId(instanceId)
+  const eligibility = await timelineEligibility(instanceId, timelineId)
+  const memoryScope = (extra: Record<string, unknown> = {}) => ({
+    instance_id: instanceOid,
+    is_archived: false,
+    ...(eligibility ? { $and: [{ $or: eligibility.clauses }] } : {}),
+    ...extra,
+  })
 
   const keywordSearch = async (): Promise<MemoryDoc[]> => {
     if (!queryText.trim()) return []
@@ -55,8 +120,7 @@ export async function queryRag(
         .memories()
         .find(
           {
-            instance_id: instanceOid,
-            is_archived: false,
+            ...memoryScope(),
             $text: { $search: queryText },
           },
           { projection: { score: { $meta: 'textScore' } } as never },
@@ -82,8 +146,7 @@ export async function queryRag(
       return (await mongoColl
         .memories()
         .find({
-          instance_id: instanceOid,
-          is_archived: false,
+          ...memoryScope(),
           $or: [
             { subject_entity_ids: { $in: ids } },
             { object_entity_ids: { $in: ids } },
@@ -102,9 +165,8 @@ export async function queryRag(
     mongoColl
       .memories()
       .find({
-        instance_id: instanceOid,
+        ...memoryScope(),
         unresolved_thread: true,
-        is_archived: false,
       })
       .sort({ importance: -1, updated_at: -1 })
       .limit(OPEN_THREADS_LIMIT)
@@ -119,7 +181,7 @@ export async function queryRag(
       }),
       index.namespace(`mem_${instanceId}`).query({
         vector: queryEmbedding,
-        topK: maxMemoryResults,
+        topK: timelineId ? Math.max(maxMemoryResults * 2, maxMemoryResults) : maxMemoryResults,
         includeMetadata: true,
       }),
       keywordSearch(),
@@ -155,12 +217,48 @@ export async function queryRag(
     })
   }
 
+  const vectorMatches = memoryResults.matches || []
+  const vectorMongoIds = vectorMatches
+    .map((m) => String((m.metadata || {}).mongo_id || ''))
+    .filter(Boolean)
+  const vectorDocs =
+    eligibility && vectorMongoIds.length
+      ? new Map(
+          (
+            (await mongoColl.memories()
+              .find(
+                { _id: { $in: vectorMongoIds.map((id) => parseObjectId(id)) } },
+                { projection: { _id: 1, timeline_id: 1, time_anchor: 1 } },
+              )
+              .toArray()) as MemoryDoc[]
+          ).map((m) => [idString(m._id), m]),
+        )
+      : new Map<string, MemoryDoc>()
+
   addRanked(
-    (memoryResults.matches || []).map((m) => {
+    vectorMatches
+      .filter((m) => {
+        if (!eligibility) return true
+        const meta = (m.metadata || {}) as { mongo_id?: string; timeline_id?: string; sequence?: number }
+        const mongoId = meta.mongo_id ? String(meta.mongo_id) : ''
+        const doc = mongoId ? vectorDocs.get(mongoId) : null
+        if (doc) return eligibility.allowsMemory(doc)
+        const metaTimeline = String(meta.timeline_id || '')
+        if (!metaTimeline) return eligibility.includesLegacyMain
+        return eligibility.allowsMemory({
+          timeline_id: metaTimeline,
+          time_anchor: typeof meta.sequence === 'number'
+            ? { sequence: meta.sequence, real_time: new Date(), timeline_id: metaTimeline, causal_parent_event_ids: [] }
+            : undefined,
+        })
+      })
+      .slice(0, maxMemoryResults)
+      .map((m) => {
       const meta = (m.metadata || {}) as {
         text?: string
         mongo_id?: string
         importance?: number
+        timeline_id?: string
       }
       const mongoId = meta.mongo_id ? String(meta.mongo_id) : null
       return {

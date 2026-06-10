@@ -8,6 +8,7 @@ import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { characterCodexService } from './character-codex.service'
 import { personaService } from './persona.service'
+import { timeService } from './time.service'
 import { isValidMessageLength } from '../utils/narrative-styles'
 import { isValidModeKey, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 
@@ -62,6 +63,11 @@ export const instanceService = {
     }
 
     const _id = new ObjectId()
+    const initialTimeAnchor = await timeService.initialAnchor({
+      instanceId: idString(_id),
+      templateId,
+      sequence: 0,
+    })
     const instance: WorldInstanceDoc = {
       _id,
       template_id: templateOid,
@@ -82,6 +88,9 @@ export const instanceService = {
       mode: DEFAULT_CHAT_MODE,
       message_length: 'medium',
       focus_character_id: null,
+      current_time_anchor: initialTimeAnchor,
+      active_timeline_id: initialTimeAnchor.timeline_id,
+      default_calendar_id: initialTimeAnchor.story_calendar?.calendar_id,
       meta: {
         total_events: 0,
         total_memories: 0,
@@ -113,6 +122,13 @@ export const instanceService = {
     // so the chat opens with the character speaking instead of a blank screen.
     if (template.opening_line && template.opening_line.trim().length > 0) {
       const greeting = template.opening_line.trim()
+      const openingTimeAnchor = await timeService.anchorForNextEvent({
+        instanceId: idString(_id),
+        templateId,
+        previous: initialTimeAnchor,
+        sequence: 1,
+        eventTimeLabel: 'Opening scene',
+      })
       await events().insertOne({
         _id: new ObjectId(),
         instance_id: _id,
@@ -131,8 +147,24 @@ export const instanceService = {
         is_user_edited: false,
         edit_history: [],
         scene_tag: 'dialogue',
+        time_anchor: openingTimeAnchor,
         created_at: new Date(),
       } as unknown as WorldEventDoc)
+      await worldInstances().updateOne(
+        { _id },
+        {
+          $set: {
+            current_time_anchor: openingTimeAnchor,
+            active_timeline_id: openingTimeAnchor.timeline_id,
+            default_calendar_id: openingTimeAnchor.story_calendar?.calendar_id,
+            'meta.total_events': 1,
+          },
+        },
+      )
+      instance.current_time_anchor = openingTimeAnchor
+      instance.active_timeline_id = openingTimeAnchor.timeline_id
+      instance.default_calendar_id = openingTimeAnchor.story_calendar?.calendar_id
+      instance.meta.total_events = 1
     }
 
     return { instance, template }
@@ -396,6 +428,9 @@ export const instanceService = {
       focus_character_id: instance.focus_character_id ? idString(instance.focus_character_id) : null,
       persona_id: instance.persona_id ? idString(instance.persona_id) : null,
       persona_snapshot: instance.persona_snapshot || null,
+      current_time_anchor: instance.current_time_anchor || null,
+      active_timeline_id: instance.active_timeline_id || 'main',
+      default_calendar_id: instance.default_calendar_id ? idString(instance.default_calendar_id) : null,
       seed_prompt: template.seed_prompt,
       global_lore: template.global_lore,
       is_sentient: template.is_sentient,

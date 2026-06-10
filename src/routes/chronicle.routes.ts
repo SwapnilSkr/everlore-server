@@ -15,6 +15,37 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
     query: MemoryQueryParams,
   })
 
+  .get('/calendar/:instanceId', (ctx) => chronicleController.getCalendar(ctx))
+
+  .post('/calendar/:instanceId/timeline', (ctx) => chronicleController.forkTimeline(ctx), {
+    body: t.Object({
+      name: t.String({ minLength: 1, maxLength: 120 }),
+      timeline_id: t.Optional(t.String({ maxLength: 80 })),
+      parent_timeline_id: t.Optional(t.String({ maxLength: 80 })),
+      make_active: t.Optional(t.Boolean()),
+    }),
+  })
+
+  .put('/calendar/:instanceId/timeline/active', (ctx) => chronicleController.setActiveTimeline(ctx), {
+    body: t.Object({
+      timeline_id: t.String({ minLength: 1, maxLength: 80 }),
+    }),
+  })
+
+  .put('/calendar/event/:eventId/time-anchor', (ctx) => chronicleController.updateEventTimeAnchor(ctx), {
+    body: t.Object({
+      story_calendar: t.Optional(t.Object({
+        year: t.Optional(t.Number()),
+        month: t.Optional(t.Number({ minimum: 1 })),
+        day: t.Optional(t.Number({ minimum: 1 })),
+        era: t.Optional(t.String({ maxLength: 80 })),
+        label: t.Optional(t.String({ maxLength: 160 })),
+      })),
+      event_time_label: t.Optional(t.String({ maxLength: 160 })),
+      timeline_id: t.Optional(t.String({ maxLength: 80 })),
+    }),
+  })
+
   .put('/memory/:memoryId', (ctx) => chronicleController.editMemory(ctx), {
     body: EditMemoryBody,
   })

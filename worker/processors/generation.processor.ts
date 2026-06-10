@@ -23,6 +23,7 @@ import { compactImmutableFacts } from "../lib/codex-compactor";
 import { characterCodexService } from "../../src/services/character-codex.service";
 import { entityGraphService } from "../../src/services/entity-graph.service";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
+import { timeService } from "../../src/services/time.service";
 import {
   getMemoryCurationQueue,
   getSceneSummaryQueue,
@@ -118,6 +119,8 @@ export async function generationProcessor(job: Job) {
     loreTexts,
     memoryTexts,
     openThreads,
+    currentTimeAnchor,
+    timeContext,
   } = packet;
   const activeSummary = packet.sceneSummary;
   const nextSequence = packet.currentSequence + 1;
@@ -198,6 +201,7 @@ export async function generationProcessor(job: Job) {
     playerPersona: session.persona_snapshot || null,
     messageLength: session.message_length,
     characterCodex,
+    timeContext,
     focusCharacterName: (() => {
       const focusedId = session.focus_character_id;
       if (!focusedId) return undefined;
@@ -278,6 +282,21 @@ export async function generationProcessor(job: Job) {
     session.active_flags,
     parsed.flag_mutations,
   );
+  const eventCreatedAt = new Date();
+  const previousEventId = recentEvents.length
+    ? (recentEvents[recentEvents.length - 1] as any)._id
+    : null;
+  const timeAnchor = await timeService.anchorForNextEvent({
+    instanceId,
+    templateId: String(session.template_id),
+    previous: currentTimeAnchor || session.current_time_anchor || null,
+    previousEventId,
+    sequence: nextSequence,
+    realTime: eventCreatedAt,
+    timeAdvancedLabel: timeAdvanceLabel,
+    eventTimeLabel: timeAdvanceLabel || undefined,
+    timelineId: session.active_timeline_id || currentTimeAnchor?.timeline_id || null,
+  });
 
   const event = {
     _id: new ObjectId(),
@@ -324,7 +343,8 @@ export async function generationProcessor(job: Job) {
     is_user_edited: false,
     edit_history: [],
     scene_tag: parsed.scene_tag,
-    created_at: new Date(),
+    time_anchor: timeAnchor,
+    created_at: eventCreatedAt,
   };
 
   await mongoColl.events().insertOne(event);
@@ -375,6 +395,9 @@ export async function generationProcessor(job: Job) {
         turn_count: newTurnCount,
         summary_pending: shouldSummarize,
       },
+      current_time_anchor: timeAnchor,
+      active_timeline_id: timeAnchor.timeline_id,
+      default_calendar_id: timeAnchor.story_calendar?.calendar_id,
       "meta.last_active_at": new Date(),
       updated_at: new Date(),
       ...(fateThread ? { "meta.last_fate_seed_sequence": nextSequence } : {}),
@@ -404,6 +427,11 @@ export async function generationProcessor(job: Job) {
       turn_count: newTurnCount,
       summary_pending: shouldSummarize,
     },
+    current_time_anchor: timeAnchor,
+    active_timeline_id: timeAnchor.timeline_id,
+    default_calendar_id: timeAnchor.story_calendar?.calendar_id
+      ? idString(timeAnchor.story_calendar.calendar_id)
+      : session.default_calendar_id,
   };
   await redis.set(
     `session:${instanceId}`,
@@ -432,6 +460,7 @@ export async function generationProcessor(job: Job) {
         milestone: parsed.milestone,
         present_characters: parsed.present_characters,
         time_advanced: timeAdvanceLabel || null,
+        time_anchor: timeAnchor,
         fate_thread: fateThread || null,
         event_type: event.type,
         state_diff: {

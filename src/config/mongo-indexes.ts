@@ -75,6 +75,16 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { instance_id: 1, scene_tag: 1 },
     options: { name: "idx_events_instance_scene" },
   },
+  {
+    collection: COLLECTIONS.events,
+    key: { instance_id: 1, "time_anchor.timeline_id": 1, sequence: 1 },
+    options: { name: "idx_events_instance_timeline_sequence" },
+  },
+  {
+    collection: COLLECTIONS.events,
+    key: { instance_id: 1, "time_anchor.story_calendar.calendar_id": 1, "time_anchor.story_calendar.year": 1, "time_anchor.story_calendar.month": 1, "time_anchor.story_calendar.day": 1 },
+    options: { name: "idx_events_instance_story_date" },
+  },
 
   // memories
   {
@@ -115,6 +125,16 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     collection: COLLECTIONS.memories,
     key: { instance_id: 1, object_entity_ids: 1 },
     options: { name: "idx_memories_instance_object_entities" },
+  },
+  {
+    collection: COLLECTIONS.memories,
+    key: { instance_id: 1, timeline_id: 1, "time_anchor.sequence": 1, importance: -1 },
+    options: { name: "idx_memories_instance_timeline_sequence" },
+  },
+  {
+    collection: COLLECTIONS.memories,
+    key: { instance_id: 1, "time_anchor.story_calendar.calendar_id": 1, "time_anchor.story_calendar.year": 1, "time_anchor.story_calendar.month": 1, "time_anchor.story_calendar.day": 1 },
+    options: { name: "idx_memories_instance_story_date" },
   },
   // Open-thread surfacing: unresolved promises/conflicts ranked by importance.
   {
@@ -175,6 +195,28 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     collection: COLLECTIONS.entity_edges,
     key: { instance_id: 1, status: 1, importance: -1 },
     options: { name: "idx_entity_edges_instance_status" },
+  },
+
+  // story calendars / timelines
+  {
+    collection: COLLECTIONS.story_calendars,
+    key: { instance_id: 1, is_default: 1 },
+    options: { name: "idx_story_calendars_instance_default" },
+  },
+  {
+    collection: COLLECTIONS.story_calendars,
+    key: { template_id: 1, is_default: 1 },
+    options: { name: "idx_story_calendars_template_default" },
+  },
+  {
+    collection: COLLECTIONS.timeline_branches,
+    key: { instance_id: 1, timeline_id: 1 },
+    options: { unique: true, name: "idx_timeline_branches_instance_timeline" },
+  },
+  {
+    collection: COLLECTIONS.timeline_branches,
+    key: { instance_id: 1, status: 1 },
+    options: { name: "idx_timeline_branches_instance_status" },
   },
 
   // personas
@@ -262,6 +304,8 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
 export const DEPRECATED_INDEXES: Array<{ collection: string; name: string }> = [
   // Replaced by idx_entity_edges_assertion (label joined the unique key).
   { collection: COLLECTIONS.entity_edges, name: "idx_entity_edges_endpoints_type" },
+  // Replaced by idx_memories_instance_timeline_sequence (parent-branch clamps by sequence).
+  { collection: COLLECTIONS.memories, name: "idx_memories_instance_timeline_importance" },
 ]
 
 function isTextIndexDef(desired: Document): boolean {

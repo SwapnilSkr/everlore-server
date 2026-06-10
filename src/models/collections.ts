@@ -12,6 +12,8 @@ export const COLLECTIONS = {
   characters: 'characters',
   entities: 'entities',
   entity_edges: 'entity_edges',
+  story_calendars: 'story_calendars',
+  timeline_branches: 'timeline_branches',
   personas: 'personas',
   dead_letter_jobs: 'dead_letter_jobs',
   generation_logs: 'generation_logs',

@@ -2,6 +2,7 @@ import type { AuthUser } from '../middleware/auth'
 import { memoryService } from '../services/memory.service'
 import { characterCodexService } from '../services/character-codex.service'
 import { memorySupersessionService } from '../services/memory-supersession.service'
+import { timeService } from '../services/time.service'
 import type { Static } from '@sinclair/typebox'
 import type { EditEventBody } from '../schemas/event.schema'
 import type { EditMemoryBody } from '../schemas/memory.schema'
@@ -42,6 +43,73 @@ export const chronicleController = {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return memoryService.getMemories(params.instanceId, user.id, {
       includeArchived: query.include_archived === true,
+    })
+  },
+
+  getCalendar: async ({
+    params,
+    user,
+  }: {
+    params: { instanceId: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return timeService.listCalendar(params.instanceId, user.id)
+  },
+
+  forkTimeline: async ({
+    params,
+    body,
+    user,
+  }: {
+    params: { instanceId: string }
+    body: { name: string; timeline_id?: string; parent_timeline_id?: string; make_active?: boolean }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return timeService.forkTimeline({
+      instanceId: params.instanceId,
+      playerId: user.id,
+      name: body.name,
+      timelineId: body.timeline_id,
+      parentTimelineId: body.parent_timeline_id,
+      makeActive: body.make_active,
+    })
+  },
+
+  setActiveTimeline: async ({
+    params,
+    body,
+    user,
+  }: {
+    params: { instanceId: string }
+    body: { timeline_id: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return timeService.setActiveTimeline(params.instanceId, user.id, body.timeline_id)
+  },
+
+  updateEventTimeAnchor: async ({
+    params,
+    body,
+    user,
+  }: {
+    params: { eventId: string }
+    body: {
+      story_calendar?: { year?: number; month?: number; day?: number; era?: string; label?: string }
+      event_time_label?: string
+      timeline_id?: string
+    }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return timeService.updateEventTimeAnchor({
+      eventId: params.eventId,
+      playerId: user.id,
+      storyCalendar: body.story_calendar,
+      eventTimeLabel: body.event_time_label,
+      timelineId: body.timeline_id,
     })
   },
 

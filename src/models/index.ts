@@ -27,6 +27,13 @@ export type { ProjectionStatus, ProjectionProvenance } from './projection.model'
 export { memoryProjectionStatus } from './projection.model'
 export type { EntityType, EntityDoc } from './entity.model'
 export type { EntityEdgeType, EntityEdgeDoc } from './entity-edge.model'
+export type {
+  StoryCalendarDateDoc,
+  StoryCalendarDoc,
+  StoryCalendarMonthDoc,
+  TimeAnchorDoc,
+  TimelineBranchDoc,
+} from './time.model'
 export type { PersonaGender, PersonaSnapshotDoc, PersonaDoc } from './persona.model'
 export type { SceneEventRangeDoc, SceneSummaryDoc } from './scene-summary.model'
 export type { DeadLetterJobDoc } from './dead-letter-job.model'

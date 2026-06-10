@@ -5,6 +5,7 @@ import { deletePineconeNamespace } from './pinecone-cleanup.service'
 import { characterCodexService } from './character-codex.service'
 import { isDefaultCoverUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
+import { timeService } from './time.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import type { WorldEventDoc } from '../models/world-event.model'
@@ -100,6 +101,11 @@ export const deletionService = {
       await characters().deleteMany({ instance_id: { $in: instanceIds } })
     }
 
+    if (instanceIds.length > 0) {
+      await mongoColl.storyCalendars().deleteMany({ instance_id: { $in: instanceIds } })
+      await mongoColl.timelineBranches().deleteMany({ instance_id: { $in: instanceIds } })
+    }
+
     // Delete observability logs for these instances
     if (instanceIds.length > 0) {
       await mongoColl.generationLogs().deleteMany({ instance_id: { $in: instanceIds } })
@@ -168,6 +174,8 @@ export const deletionService = {
     await memories().deleteMany({ instance_id: iid })
     await sceneSummaries().deleteMany({ instance_id: iid })
     await characters().deleteMany({ instance_id: iid })
+    await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
+    await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
     await mongoColl.generationLogs().deleteMany({ instance_id: iid })
 
     // 2. Restore world state / flags / scene from template defaults.
@@ -179,6 +187,11 @@ export const deletionService = {
     for (const [key, def] of Object.entries(template.flag_definitions || {})) {
       activeFlags[key] = (def as { default: unknown }).default
     }
+    const initialTimeAnchor = await timeService.initialAnchor({
+      instanceId: iidStr,
+      templateId: idString(template._id),
+      sequence: 0,
+    })
     await worldInstances().updateOne(
       { _id: iid },
       {
@@ -187,6 +200,9 @@ export const deletionService = {
           active_flags: activeFlags,
           current_scene: { tag: 'dialogue', turn_count: 0, summary_pending: false },
           focus_character_id: null,
+          current_time_anchor: initialTimeAnchor,
+          active_timeline_id: initialTimeAnchor.timeline_id,
+          default_calendar_id: initialTimeAnchor.story_calendar?.calendar_id,
           'meta.total_events': 0,
           'meta.total_memories': 0,
           'meta.total_tokens_consumed': 0,
@@ -225,6 +241,13 @@ export const deletionService = {
 
     // 4. Re-seed the opening line so the chat reopens with the greeting.
     if (template.opening_line && template.opening_line.trim().length > 0) {
+      const openingTimeAnchor = await timeService.anchorForNextEvent({
+        instanceId: iidStr,
+        templateId: idString(template._id),
+        previous: initialTimeAnchor,
+        sequence: 1,
+        eventTimeLabel: 'Opening scene',
+      })
       await events().insertOne({
         _id: new ObjectId(),
         instance_id: iid,
@@ -243,8 +266,20 @@ export const deletionService = {
         is_user_edited: false,
         edit_history: [],
         scene_tag: 'dialogue',
+        time_anchor: openingTimeAnchor,
         created_at: new Date(),
       } as unknown as WorldEventDoc)
+      await worldInstances().updateOne(
+        { _id: iid },
+        {
+          $set: {
+            current_time_anchor: openingTimeAnchor,
+            active_timeline_id: openingTimeAnchor.timeline_id,
+            default_calendar_id: openingTimeAnchor.story_calendar?.calendar_id,
+            'meta.total_events': 1,
+          },
+        },
+      )
     }
 
     // 5. Drop the cached session so the next turn rebuilds from fresh state.
@@ -301,6 +336,9 @@ export const deletionService = {
 
     // Delete character codex entries
     await characters().deleteMany({ instance_id: iid })
+
+    await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
+    await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
 
     // Delete observability logs for this instance
     await mongoColl.generationLogs().deleteMany({ instance_id: iid })

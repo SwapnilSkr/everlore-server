@@ -19,6 +19,8 @@ interface PromptInput {
   retrievedMemories: string[]
   /** Unresolved promises/conflicts/questions the world still owes a payoff for. */
   openThreads?: string[]
+  /** Current story-time/timeline context from the context packet. */
+  timeContext?: string | null
   sceneSummary: string | null
   recentEvents: any[]
   userMessage: string
@@ -399,6 +401,14 @@ CHARACTER CARDS:
   if (input.focusCharacterName && input.focusCharacterName.trim()) {
     dynamicContent += `FOCUS CHARACTER: ${input.focusCharacterName.trim()} (continuity anchor, not a forced cameo)\n`
     dynamicContent += `Use this character as the preferred point of continuity only when they are already present, directly addressed, recently central, or naturally relevant to the player's action. Do NOT force them into unrelated scenes, cut away to them, or mention them just because they are focused. If the player shifts away, follow the active scene and let the focus resume only when relevant again.\n\n`
+  }
+
+  if (input.timeContext && input.timeContext.trim()) {
+    dynamicContent += `CURRENT STORY TIME:
+${input.timeContext.trim()}
+- Treat sequence order, story date, and timeline branch as distinct. A flashback or alternate branch can be narrated without rewriting what the player experienced.
+
+`
   }
 
   const personaLine = compactPersonaLine(input)
