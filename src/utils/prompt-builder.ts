@@ -252,7 +252,21 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
 
   // The locked protagonist is handled separately from side-character NPCs.
   const protagonistCard = (input.characterCodex || []).find((c) => c.is_protagonist)
-  const npcCodex = (input.characterCodex || []).filter((c) => !c.is_protagonist)
+  // Identity guard: a card whose name or alias matches the protagonist's is a
+  // duplicate referent of the SAME person (e.g. a role title minted as its own
+  // card). Presenting it as an NPC would make the narrator treat the player as
+  // two people — exclude it from injection entirely.
+  const protagonistRefs = new Set(
+    [protagonistCard?.canonical_name, ...(protagonistCard?.aliases || [])]
+      .filter((n): n is string => !!n)
+      .map((n) => n.trim().toLowerCase()),
+  )
+  const npcCodex = (input.characterCodex || []).filter(
+    (c) =>
+      !c.is_protagonist &&
+      !(c.canonical_name && protagonistRefs.has(c.canonical_name.trim().toLowerCase())) &&
+      !(c.aliases || []).some((a) => protagonistRefs.has(a.trim().toLowerCase())),
+  )
 
   if (protagonistCard) {
     // Show the most recent facts (storage may hold more between compactions).

@@ -84,8 +84,11 @@ export async function extractCharacterCodexDeltas(params: {
   /** Name of the locked protagonist. For GM worlds this is the PLAYER's own
    *  character — the extractor must track their evolving state and tag them. */
   protagonistName?: string
+  /** Player persona name (sentient worlds): the human in the conversation.
+   *  They must NEVER become a codex card — the codex tracks the world's cast. */
+  playerPersonaName?: string
 }): Promise<CharacterCodexDelta[]> {
-  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName } = params
+  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName } = params
 
   const existingText = existing.length
     ? existing
@@ -103,6 +106,7 @@ export async function extractCharacterCodexDeltas(params: {
       ? `
 MAIN CHARACTER (PROTAGONIST):
 This is a sentient world. The player is in conversation WITH a single main character, described by the world's seed prompt below. When you extract THAT character, set "is_protagonist": true and resolve all of their aliases/titles to the same card (never split them). Track their evolving state (relationships, powers, status) accurately. Every other character is a side character with "is_protagonist": false.
+THE PLAYER IS NOT A CHARACTER: the human player${playerPersonaName && playerPersonaName.trim() ? ` (who may be called "${playerPersonaName.trim()}")` : ''} is the person the main character talks to. NEVER create a card for the player, under any name, role, or title — "disposition_to_player" and "relationship_deltas" already capture how characters relate to them.
 --- SEED PROMPT ---
 ${seedPrompt.trim().slice(0, 800)}
 --- END SEED PROMPT ---
@@ -110,6 +114,10 @@ ${seedPrompt.trim().slice(0, 800)}
       : protagonistName && protagonistName.trim()
         ? `
 PROTAGONIST (THE PLAYER): The player's own character is named "${protagonistName.trim()}". Treat them as a tracked character: set "is_protagonist": true for them, and update their evolving state from the turn — relationships formed/ended, powers gained, status changes (e.g. married, wounded, exiled). Everyone else is a side character with "is_protagonist": false.
+ONE PERSON, ONE CARD — CRITICAL: the narration addresses the player in second person. "You"/"your" IS "${protagonistName.trim()}". So is any role title, epithet, or description the premise or narration uses for the player's role (e.g. "the heir", "the neglected son", "the stranger"). When the narration refers to the player by ANY such referent, resolve it to the "${protagonistName.trim()}" card via "resolved_name" — NEVER create a separate card for the player, their role, or "you". A new card is only ever for a DIFFERENT person the player can meet.${seedPrompt && seedPrompt.trim() ? `
+--- WORLD PREMISE (defines the player's role — referents of this role are the player) ---
+${seedPrompt.trim().slice(0, 800)}
+--- END WORLD PREMISE ---` : ''}
 `
         : ''
 
@@ -118,7 +126,7 @@ PROTAGONIST (THE PLAYER): The player's own character is named "${protagonistName
 Rules:
 - Include non-player characters and entities (and the protagonist described below).
 - ALWAYS create or update a card for any NAMED character who appears, speaks, or is referenced this turn — even with sparse detail. Do not skip newly introduced characters; capturing them promptly keeps the story consistent.
-- Prefer resolving to existing characters when aliases/titles/pronouns refer to the same person; never split one character into two cards.
+- Prefer resolving to existing characters when aliases/titles/pronouns refer to the same person; never split one character into two cards. Before creating a NEW card, check whether the name is actually a title, epithet, or description of someone already listed (or of the player) — if so, use "resolved_name" instead of a new card.
 - Return 0-6 characters (most important / most active first).
 - Keep hidden_thought private/internal (never spoken aloud), short and specific to the player.
 - immutable_facts: PERMANENT history/identity that never stops being true once it happens (e.g. "was engaged to Lord X", "gained pyromancy", "married Mira"). Append-only — only NEW permanent facts from this turn.

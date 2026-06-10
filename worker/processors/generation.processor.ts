@@ -493,8 +493,24 @@ export async function generationProcessor(job: Job) {
         isSentient: session.is_sentient,
         protagonistName: (characterCodex as any[]).find((c) => c.is_protagonist)
           ?.canonical_name,
+        playerPersonaName: session.persona_snapshot?.name,
       });
       if (!deltas.length) return;
+
+      // Sentient worlds: the player is the persona TALKING TO the world's main
+      // character — they are not part of the cast. Drop any delta that would
+      // card them, no matter what the extractor produced.
+      const personaName = (session.persona_snapshot?.name || "").trim().toLowerCase();
+      if (session.is_sentient && personaName) {
+        const refersToPlayer = (d: (typeof deltas)[number]) =>
+          [d.name, d.resolved_name, ...(d.aliases || [])].some(
+            (n) => (n || "").trim().toLowerCase() === personaName,
+          );
+        for (let i = deltas.length - 1; i >= 0; i--) {
+          if (refersToPlayer(deltas[i])) deltas.splice(i, 1);
+        }
+        if (!deltas.length) return;
+      }
 
       // GM-world protagonist is the player's OWN character; relationship meters
       // toward the player are nonsense there (a character has no stance toward

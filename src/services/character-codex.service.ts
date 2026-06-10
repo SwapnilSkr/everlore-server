@@ -244,6 +244,10 @@ export const characterCodexService = {
       byName.set(c.name_normalized, c)
       for (const a of c.aliases || []) byName.set(normalizeName(a), c)
     }
+    // Single-protagonist invariant: at most one canonical main-character card
+    // per instance, seeded deterministically. Extractor output must never be
+    // able to mint a second one.
+    let protagonist = existing.find((c) => c.is_protagonist)
 
     for (const delta of deltas) {
       if (!shouldSetText(delta.name)) continue
@@ -259,6 +263,14 @@ export const characterCodexService = {
         if (!n) continue
         target = byName.get(n)
         if (target) break
+      }
+
+      // A NEW name claiming to be the protagonist is a referent of the
+      // protagonist (a role title or epithet — "the neglected son"), never a
+      // second person. Merge into the canonical card; the alias merge below
+      // makes the resolution permanent, so the split can't recur.
+      if (!target && delta.is_protagonist === true && protagonist) {
+        target = protagonist
       }
 
       const aliases = buildAliasSet(delta)
@@ -287,7 +299,8 @@ export const characterCodexService = {
           relationship: hasRelationshipDeltas(delta.relationship_deltas)
             ? applyRelationshipDeltas(undefined, delta.relationship_deltas)
             : undefined,
-          is_protagonist: delta.is_protagonist === true,
+          // Only ever the FIRST protagonist claim can mint the canonical card.
+          is_protagonist: delta.is_protagonist === true && !protagonist,
           first_seen_sequence: sequence,
           last_seen_sequence: sequence,
           mention_count: 1,
@@ -299,6 +312,7 @@ export const characterCodexService = {
           target = doc
           byName.set(doc.name_normalized, doc)
           for (const a of doc.aliases) byName.set(normalizeName(a), doc)
+          if (doc.is_protagonist) protagonist = doc
         } catch {
           // Concurrent duplicate on unique index: fallback to existing row.
           target = await characters().findOne({ instance_id: iid, name_normalized: normalized }) || undefined
@@ -345,9 +359,12 @@ export const characterCodexService = {
         )
       }
       // Protagonist is a sticky flag: once a turn identifies this card as the
-      // main persona, keep it set even if a later turn omits the hint.
-      if (delta.is_protagonist === true && !target.is_protagonist) {
+      // main persona, keep it set even if a later turn omits the hint — but
+      // only while NO canonical protagonist exists. Promoting a second card
+      // would split one person into two (the catastrophic-drift case).
+      if (delta.is_protagonist === true && !target.is_protagonist && !protagonist) {
         setFields.is_protagonist = true
+        protagonist = target
       }
 
       await characters().updateOne(
@@ -357,6 +374,9 @@ export const characterCodexService = {
           $inc: { mention_count: 1 },
         },
       )
+      // Newly-learned referents must resolve to this card for the REST of this
+      // batch too, not only on the next turn.
+      for (const a of mergedAliases) byName.set(normalizeName(a), target)
     }
 
     return this.listForInstance(instanceId, 30)
