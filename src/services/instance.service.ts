@@ -265,7 +265,7 @@ export const instanceService = {
         _id: ObjectId
         preview: string
       }>([
-        { $match: { instance_id: { $in: instanceIds }, player_id: playerOid } },
+        { $match: { instance_id: { $in: instanceIds }, player_id: playerOid, type: { $ne: 'side_chat' } } },
         { $sort: { sequence: -1 } },
         {
           $group: {

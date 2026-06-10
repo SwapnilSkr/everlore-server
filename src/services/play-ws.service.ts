@@ -236,6 +236,62 @@ export const playWsService = {
         break
       }
 
+      case 'side_chat': {
+        const instanceId = (data as { instance_id?: string }).instance_id
+        if (!instanceId) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Missing instance_id' }))
+          return
+        }
+
+        const rl = await rateLimit(user.id, 'chat')
+        if (!rl.allowed) {
+          ws.send(
+            JSON.stringify({ type: 'error', code: 'RATE_LIMITED', retryAfter: rl.retryAfter }),
+          )
+          return
+        }
+
+        // Side chats share the per-instance generation lock: one turn at a
+        // time, whether the player is in the main story or a private chat.
+        const lockKey = `lock:gen:${user.id}:${instanceId}`
+        const locked = await redis.set(lockKey, 'pending', 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')
+        if (!locked) {
+          ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
+          return
+        }
+
+        try {
+          const payload = (data as { payload?: { character_id?: string; message?: string } })
+            .payload
+          const characterId = payload?.character_id
+          const message = payload?.message
+          if (!characterId || typeof characterId !== 'string') {
+            await redis.del(lockKey)
+            ws.send(JSON.stringify({ type: 'error', message: 'Missing character_id' }))
+            return
+          }
+          if (!message || typeof message !== 'string' || message.length === 0 || message.length > 4000) {
+            await redis.del(lockKey)
+            ws.send(JSON.stringify({ type: 'error', message: 'Invalid message' }))
+            return
+          }
+
+          const jobId = await generationService.dispatchSideChat({
+            instanceId,
+            playerId: user.id,
+            characterId,
+            userMessage: message,
+          })
+          await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
+          ws.send(JSON.stringify({ type: 'ack', jobId }))
+        } catch (err: unknown) {
+          await redis.del(lockKey)
+          const message = err instanceof Error ? err.message : String(err)
+          ws.send(JSON.stringify({ type: 'error', message }))
+        }
+        break
+      }
+
       case 'replay': {
         const instanceId = (data as { instance_id?: string }).instance_id
         const eventId = (data as { event_id?: string }).event_id

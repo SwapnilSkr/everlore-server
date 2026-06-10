@@ -70,6 +70,9 @@ export async function summaryProcessor(job: Job) {
     .find({
       instance_id: instanceOid,
       sequence: { $gte: startSequence, $lte: endSequence },
+      // Side chats share the sequence counter but are private conversations —
+      // they must never fold into the main story's recap.
+      type: { $ne: 'side_chat' },
     })
     .sort({ sequence: 1 })
     .toArray()

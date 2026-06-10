@@ -33,6 +33,7 @@ export type EverloreIndexDef = {
     sparse?: boolean
     name?: string
     expireAfterSeconds?: number
+    partialFilterExpression?: Document
   }
 }
 
@@ -94,6 +95,14 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     collection: COLLECTIONS.events,
     key: { instance_id: 1, "location_anchor.entity_id": 1, sequence: 1 },
     options: { name: "idx_events_instance_location_sequence" },
+  },
+  {
+    collection: COLLECTIONS.events,
+    key: { instance_id: 1, "side_chat.character_id": 1, sequence: 1 },
+    options: {
+      name: "idx_events_side_chat_character",
+      partialFilterExpression: { type: "side_chat" },
+    },
   },
 
   // memories

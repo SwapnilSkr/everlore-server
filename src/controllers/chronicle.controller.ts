@@ -4,6 +4,7 @@ import { characterCodexService } from '../services/character-codex.service'
 import { memorySupersessionService } from '../services/memory-supersession.service'
 import { timeService } from '../services/time.service'
 import { locationService } from '../services/location.service'
+import { sideChatService } from '../services/side-chat.service'
 import type { Static } from '@sinclair/typebox'
 import type { EditEventBody } from '../schemas/event.schema'
 import type { EditMemoryBody } from '../schemas/memory.schema'
@@ -141,6 +142,33 @@ export const chronicleController = {
       user.id,
       params.locationEntityId,
     )
+  },
+
+  getSideChatThreads: async ({
+    params,
+    user,
+  }: {
+    params: { instanceId: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return sideChatService.listThreads(params.instanceId, user.id)
+  },
+
+  getSideChatThread: async ({
+    params,
+    query,
+    user,
+  }: {
+    params: { instanceId: string; characterId: string }
+    query: { page?: number; limit?: number }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return sideChatService.getThread(params.instanceId, user.id, params.characterId, {
+      page: Number(query.page) || 1,
+      limit: Number(query.limit) || undefined,
+    })
   },
 
   forkTimeline: async ({

@@ -35,6 +35,13 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
     (ctx) => chronicleController.getLocationJournal(ctx),
   )
 
+  .get('/side-chats/:instanceId', (ctx) => chronicleController.getSideChatThreads(ctx))
+
+  .get(
+    '/side-chats/:instanceId/:characterId',
+    (ctx) => chronicleController.getSideChatThread(ctx),
+  )
+
   .post('/calendar/:instanceId/timeline', (ctx) => chronicleController.forkTimeline(ctx), {
     body: t.Object({
       name: t.String({ minLength: 1, maxLength: 120 }),

@@ -88,16 +88,22 @@ export async function buildContextPacket(params: {
   const { instanceId, playerId, session, userMessage, isContinuation } = params
   const iid = parseObjectId(instanceId)
 
-  const recentEvents = (await mongoColl
-    .events()
-    .find({ instance_id: iid })
-    .sort({ sequence: -1 })
-    .limit(EVENT_WINDOWS.promptRecentEvents)
-    .toArray()) as WorldEventDoc[]
+  // Side chats are excluded from the narration window (private conversations,
+  // not story beats) but they DO share the sequence counter — so the cursor
+  // must come from the true latest event or a later turn could collide.
+  const [recentEvents, latestAnyEvent] = await Promise.all([
+    mongoColl
+      .events()
+      .find({ instance_id: iid, type: { $ne: 'side_chat' } })
+      .sort({ sequence: -1 })
+      .limit(EVENT_WINDOWS.promptRecentEvents)
+      .toArray() as Promise<WorldEventDoc[]>,
+    mongoColl
+      .events()
+      .findOne({ instance_id: iid }, { sort: { sequence: -1 }, projection: { sequence: 1 } }),
+  ])
   recentEvents.reverse()
-  const currentSequence = recentEvents.length
-    ? recentEvents[recentEvents.length - 1].sequence
-    : 0
+  const currentSequence = latestAnyEvent?.sequence || 0
 
   const summaryDoc = await mongoColl.sceneSummaries().findOne(
     {

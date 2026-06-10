@@ -30,6 +30,7 @@ import {
   QUEUE_RETENTION,
 } from "../../src/queues";
 import { replayProcessor } from "./replay.processor";
+import { sideChatProcessor } from "./side-chat.processor";
 import { log } from "../../src/utils/logger";
 
 function escapeRegExp(value: string): string {
@@ -69,6 +70,11 @@ export async function generationProcessor(job: Job) {
   // they stream an alternative for an existing event instead of appending one.
   if (job.data?.mode === "replay") {
     return replayProcessor(job);
+  }
+  // Side chats also share the generation queue/worker: a private conversation
+  // with one side character, appended to the same ledger as its own event type.
+  if (job.data?.mode === "side_chat") {
+    return sideChatProcessor(job);
   }
 
   const {

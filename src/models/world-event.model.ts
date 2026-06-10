@@ -74,6 +74,18 @@ export interface EventEditHistoryEntry {
 }
 
 /**
+ * Present only on `type: 'side_chat'` events — the side character the player is
+ * privately talking to. Side chats share the main sequence counter (so rewind,
+ * time anchors, and the continuity audit stay exact) but are excluded from the
+ * main-narration window, scene summaries, and the Play feed.
+ */
+export interface SideChatRefDoc {
+  character_id: ObjectId
+  character_entity_id: ObjectId | null
+  character_name: string
+}
+
+/**
  * events — chronological narration turns (events collection).
  */
 export interface WorldEventDoc {
@@ -81,7 +93,8 @@ export interface WorldEventDoc {
   instance_id: ObjectId
   player_id: ObjectId
   sequence: number
-  type: 'intimate' | 'narration' | string
+  type: 'intimate' | 'narration' | 'calendar_tick' | 'side_chat' | string
+  side_chat?: SideChatRefDoc
   data: EventDataDoc
   is_user_edited: boolean
   edit_history: EventEditHistoryEntry[]
