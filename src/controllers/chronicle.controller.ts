@@ -38,12 +38,23 @@ export const chronicleController = {
     user,
   }: {
     params: { instanceId: string }
-    query: { include_archived?: boolean }
+    query: {
+      include_archived?: boolean
+      q?: string
+      type?: string
+      min_importance?: number
+      unresolved?: boolean
+    }
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return memoryService.getMemories(params.instanceId, user.id, {
       includeArchived: query.include_archived === true,
+      q: query.q,
+      type: query.type,
+      minImportance:
+        query.min_importance != null ? Number(query.min_importance) : undefined,
+      unresolved: query.unresolved === true,
     })
   },
 

@@ -228,6 +228,24 @@ export const memoryService = {
     const filter: Record<string, unknown> = { instance_id: iid, player_id: pid }
     if (!opts.includeArchived) filter.is_archived = false
 
+    // Advanced filters (all optional; absent = today's behavior).
+    if (opts.type) filter.type = opts.type
+    if (typeof opts.minImportance === 'number') {
+      filter.importance = { $gte: opts.minImportance }
+    }
+    if (opts.unresolved) filter.unresolved_thread = true
+
+    const q = typeof opts.q === 'string' ? opts.q.trim() : ''
+    if (q) {
+      // Full-text over text/subjects/objects, ranked by relevance.
+      filter.$text = { $search: q }
+      return memories()
+        .find(filter, { projection: { score: { $meta: 'textScore' } } })
+        .sort({ score: { $meta: 'textScore' } })
+        .limit(100)
+        .toArray()
+    }
+
     return memories()
       .find(filter)
       .sort({ importance: -1, updated_at: -1 })
