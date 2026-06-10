@@ -24,6 +24,8 @@ interface PromptInput {
   /** Current place context from the context packet. */
   locationContext?: string | null
   sceneSummary: string | null
+  /** Distant chapter/scene summaries retrieved as relevant to this turn. */
+  relevantSummaries?: string[]
   recentEvents: any[]
   userMessage: string
   userSpokenInput?: string
@@ -132,6 +134,7 @@ const SECTION_TOKEN_BUDGET = {
   memories: 1100,
   lore: 450,
   threads: 350,
+  summaries: 500,
 } as const
 
 /**
@@ -146,7 +149,13 @@ const RECENTS_FLOOR_TOKENS = 1000
 /** Headroom for the small uncapped dynamic blocks (protagonist card, persona,
  *  state/flags, directives) + the POV reminder and current turn. */
 const FIXED_OVERHEAD_TOKENS = 700
-const REFERENCE_SHARE = { codex: 0.49, memories: 0.3, lore: 0.12, threads: 0.09 } as const
+const REFERENCE_SHARE = {
+  codex: 0.45,
+  memories: 0.28,
+  lore: 0.1,
+  threads: 0.08,
+  summaries: 0.09,
+} as const
 
 function allocateSectionBudgets(staticTokens: number, maxTokens: number) {
   const pool = Math.max(
@@ -158,6 +167,7 @@ function allocateSectionBudgets(staticTokens: number, maxTokens: number) {
     memories: Math.min(SECTION_TOKEN_BUDGET.memories, Math.floor(pool * REFERENCE_SHARE.memories)),
     lore: Math.min(SECTION_TOKEN_BUDGET.lore, Math.floor(pool * REFERENCE_SHARE.lore)),
     threads: Math.min(SECTION_TOKEN_BUDGET.threads, Math.floor(pool * REFERENCE_SHARE.threads)),
+    summaries: Math.min(SECTION_TOKEN_BUDGET.summaries, Math.floor(pool * REFERENCE_SHARE.summaries)),
   }
 }
 
@@ -486,6 +496,14 @@ ${personaLine}
 `
     for (const thread of withinTokenBudget(input.openThreads, sectionBudget.threads)) {
       dynamicContent += `- ${thread}\n`
+    }
+    dynamicContent += `\n`
+  }
+
+  if (input.relevantSummaries && input.relevantSummaries.length > 0) {
+    dynamicContent += `RELEVANT PAST CHAPTERS (compressed recall of earlier, possibly distant parts of the story that bear on this turn — reference only, for continuity; do not replay them as current action):\n`
+    for (const summary of withinTokenBudget(input.relevantSummaries, sectionBudget.summaries)) {
+      dynamicContent += `- ${summary}\n`
     }
     dynamicContent += `\n`
   }

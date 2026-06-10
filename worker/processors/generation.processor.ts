@@ -190,6 +190,7 @@ export async function generationProcessor(job: Job) {
     retrievedMemories: memoryTexts,
     openThreads,
     sceneSummary: activeSummary,
+    relevantSummaries: packet.relevantSummaries,
     recentEvents,
     userMessage: tickDirective ?? promptUserMessage,
     userSpokenInput: parsedPlayerInput.spoken,

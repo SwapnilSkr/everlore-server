@@ -1,7 +1,7 @@
 import { mongoColl } from '../config/mongo'
 import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { WorldEventDoc } from '../models/world-event.model'
-import { queryRag } from '../providers/rag.provider'
+import { queryRag, querySummaries } from '../providers/rag.provider'
 import { rankCodexForInjection } from './character-codex.service'
 import { entityGraphService } from './entity-graph.service'
 import { timeService } from './time.service'
@@ -29,6 +29,9 @@ export interface ContextPacket {
   recentEvents: WorldEventDoc[]
   /** Latest non-stale scene summary ending before the recent window. */
   sceneSummary: string | null
+  /** Semantically-relevant DISTANT chapter/scene summaries (long-horizon recall
+   *  the recent window + injected scene summary don't already cover). */
+  relevantSummaries: string[]
   /** Ranked + pinned cards: [input mentions, memory-driven pins, ranked top-K]. */
   characterCodex: CharacterProfileDoc[]
   /** Entity ids the player named this turn (drives neighborhood retrieval). */
@@ -146,6 +149,17 @@ export async function buildContextPacket(params: {
   let memoryTexts: string[] = []
   let openThreads: string[] = []
   let retrievedEntityIds: string[] = []
+
+  // Long-horizon recall runs CONCURRENTLY with the main RAG query so it adds no
+  // extra serial latency to TTFT. Skipped on a continue (no query to match).
+  const summariesPromise: Promise<Awaited<ReturnType<typeof querySummaries>>> =
+    !isContinuation && ragQueryText.trim()
+      ? querySummaries(instanceId, ragQueryText, 3).catch((err) => {
+          console.warn('Context packet: summary retrieval skipped:', (err as Error).message)
+          return []
+        })
+      : Promise.resolve([])
+
   try {
     const rag = await queryRag(
       String(session.template_id),
@@ -167,6 +181,14 @@ export async function buildContextPacket(params: {
       (err as Error).message,
     )
   }
+
+  // ── 2b. Long-horizon recall: exclude anything the recent raw window or the
+  //    injected scene summary already covers so we don't double-narrate.
+  const earliestRecent = recentEvents[0]?.sequence ?? currentSequence
+  const injectedEnd = summaryDoc?.event_range?.end_sequence ?? -1
+  const relevantSummaries = (await summariesPromise)
+    .filter((h) => h.endSequence < earliestRecent && h.endSequence !== injectedEnd)
+    .map((h) => h.text)
 
   // ── 3. Codex selection (AFTER retrieval, so memories can shape it) ──
   const codexPool = (await mongoColl
@@ -235,6 +257,7 @@ export async function buildContextPacket(params: {
   return {
     recentEvents,
     sceneSummary: summaryDoc?.summary_text || null,
+    relevantSummaries,
     characterCodex,
     mentionedEntityIds,
     loreTexts,
