@@ -123,7 +123,25 @@ export async function memoryProcessor(job: Job) {
     playerNarrationFacts = [],
     aiResponse,
     sceneTag,
-  } = job.data
+    /** Present when the exchange is a PRIVATE side-character chat: atoms get
+     *  origin 'side_chat' + known_by participant scoping. */
+    sideChat = null,
+  } = job.data as {
+    instanceId: string
+    playerId: string
+    eventId: string
+    playerInput: string
+    playerSpokenInput?: string
+    playerNarrationFacts?: string[]
+    aiResponse: string
+    sceneTag: string
+    sideChat?: {
+      characterId: string
+      characterName: string
+      characterEntityId: string | null
+      isSentient: boolean
+    } | null
+  }
   const redis = getRedisClient()
   const instanceOid = parseObjectId(instanceId)
   const playerOid = parseObjectId(playerId)
@@ -155,7 +173,11 @@ export async function memoryProcessor(job: Job) {
       { role: 'system', content: EXTRACTION_PROMPT },
       {
         role: 'user',
-        content: `Scene type: ${sceneTag}
+        content: `Scene type: ${sceneTag}${
+          sideChat
+            ? `\nNOTE: This is a PRIVATE one-on-one conversation between the player and ${sideChat.characterName}, outside the main story narration. "World" below is ${sideChat.characterName} speaking. Only the two of them witnessed it.`
+            : ''
+        }
 
 Character roster (canonical names for resolution):
 ${rosterLines}
@@ -199,6 +221,7 @@ World: ${aiResponse}`,
   // neighborhood retrieval and rewind repair operate on. Graph failures must
   // never fail curation.
   let entityMap: Map<string, EntityDoc> | null = null
+  let playerEntity: EntityDoc | null = null
   let entitySequence = 0
   let eventTimeAnchor: TimeAnchorDoc | null = null
   let eventLocationAnchor: LocationAnchorDoc | null = null
@@ -246,7 +269,7 @@ World: ${aiResponse}`,
         })
       }
     }
-    await entityGraphService.ensurePlayerEntity({ instanceId, playerId, sequence })
+    playerEntity = await entityGraphService.ensurePlayerEntity({ instanceId, playerId, sequence })
     entityMap = await entityGraphService.resolveOrCreateEntities({
       instanceId,
       playerId,
@@ -256,6 +279,34 @@ World: ${aiResponse}`,
     entitySequence = sequence
   } catch (err) {
     console.warn('Memory entity resolution skipped:', (err as Error).message)
+  }
+
+  // Who-knows-this scope for private side-chat atoms: the player, the side
+  // character, and — in GM worlds, where the player speaks AS the protagonist —
+  // the protagonist too (their own conversations are protagonist knowledge,
+  // which is exactly what the main-narration gate checks). Fails CLOSED: if
+  // resolution comes up empty the atom is invisible everywhere rather than leaked.
+  let knownByEntityIds: ObjectId[] = []
+  if (sideChat) {
+    try {
+      if (playerEntity) knownByEntityIds.push(playerEntity._id)
+      const charEntityId = sideChat.characterEntityId
+        ? parseObjectId(sideChat.characterEntityId)
+        : entityMap?.get(normalizeEntityName(sideChat.characterName))?._id || null
+      if (charEntityId && !knownByEntityIds.some((id) => id.equals(charEntityId))) {
+        knownByEntityIds.push(charEntityId)
+      }
+      if (!sideChat.isSentient) {
+        const protagonist = await mongoColl
+          .entities()
+          .findOne({ instance_id: instanceOid, type: 'protagonist' }, { projection: { _id: 1 } })
+        if (protagonist && !knownByEntityIds.some((id) => id.equals(protagonist._id))) {
+          knownByEntityIds.push(protagonist._id)
+        }
+      }
+    } catch (err) {
+      console.warn('Side-chat known_by resolution incomplete:', (err as Error).message)
+    }
   }
   const entityIdsFor = (names: string[]): ObjectId[] => {
     if (!entityMap) return []
@@ -296,6 +347,10 @@ World: ${aiResponse}`,
       created_at: new Date().toISOString(),
     }
     if (subjects.length > 0) vectorMetadata.subjects = subjects
+    if (sideChat) {
+      vectorMetadata.origin = 'side_chat'
+      vectorMetadata.known_by = knownByEntityIds.map((id) => idString(id))
+    }
     if (eventTimeAnchor?.timeline_id) vectorMetadata.timeline_id = eventTimeAnchor.timeline_id
     if (eventTimeAnchor?.sequence) vectorMetadata.sequence = eventTimeAnchor.sequence
     if (eventLocationAnchor?.entity_id) vectorMetadata.location_entity_id = idString(eventLocationAnchor.entity_id)
@@ -333,6 +388,7 @@ World: ${aiResponse}`,
       last_accessed_at: new Date(),
       is_archived: false,
       status: 'active' as const,
+      ...(sideChat ? { origin: 'side_chat' as const, known_by_entity_ids: knownByEntityIds } : {}),
       subjects,
       objects,
       ...(subjectEntityIds.length ? { subject_entity_ids: subjectEntityIds } : {}),

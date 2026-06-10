@@ -477,6 +477,13 @@ export const memoryService = {
       if (memory.subjects && memory.subjects.length > 0) {
         vectorMetadata.subjects = memory.subjects
       }
+      // Privacy scope must survive re-embedding: without it an edited
+      // side-chat memory's vector would lose its origin and the fail-closed
+      // metadata fallback in queryRag couldn't recognize it as private.
+      if (memory.origin === 'side_chat') {
+        vectorMetadata.origin = 'side_chat'
+        vectorMetadata.known_by = (memory.known_by_entity_ids || []).map((id) => idString(id))
+      }
 
       if (memory.pinecone_id) {
         await namespace.upsert({

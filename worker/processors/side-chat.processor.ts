@@ -14,6 +14,7 @@ import { idString, parseObjectId } from "../../src/utils/mongo-id";
 import { classifyScene } from "../lib/nsfw-classifier";
 import { timeService } from "../../src/services/time.service";
 import { buildSideChatPacket } from "../../src/services/context-packet.service";
+import { getMemoryCurationQueue, QUEUE_RETENTION } from "../../src/queues";
 import type { CharacterProfileDoc } from "../../src/models/character-profile.model";
 import type { WorldEventDoc } from "../../src/models/world-event.model";
 
@@ -227,10 +228,35 @@ ${buildLengthDirective(session.message_length)}`;
       }
     }
 
-    // Memory curation is deliberately NOT queued yet: side-chat atoms need
-    // who-knows-this scoping (known_by_entity_ids) before they may exist at
-    // all — an unscoped atom would leak private conversation into the main
-    // narration's retrieval forever. The scoped pipeline is the next slice.
+    // Scoped memory curation: atoms from this exchange are minted with
+    // origin 'side_chat' + known_by participants, so main narration can
+    // never retrieve them unless the protagonist was one of the knowers.
+    const memoryCurationQueue = getMemoryCurationQueue();
+    await memoryCurationQueue.add(
+      "curate",
+      {
+        instanceId,
+        playerId,
+        eventId: idString(event._id),
+        playerInput: userMessage,
+        playerSpokenInput: "",
+        playerNarrationFacts: [],
+        aiResponse: narrative,
+        sceneTag: "side_chat",
+        sideChat: {
+          characterId: idString(card._id),
+          characterName: card.canonical_name,
+          characterEntityId: card.entity_id ? idString(card.entity_id) : null,
+          isSentient: !!session.is_sentient,
+        },
+      },
+      {
+        priority: 5,
+        delay: 1000,
+        removeOnComplete: QUEUE_RETENTION.memoryCuration.removeOnComplete,
+        removeOnFail: QUEUE_RETENTION.memoryCuration.removeOnFail,
+      },
+    );
 
     await redis.del(lockKey);
     await redis.publish(

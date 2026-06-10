@@ -108,10 +108,37 @@ export async function queryRag(
   const index = getPineconeIndex()
   const instanceOid = parseObjectId(instanceId)
   const eligibility = await timelineEligibility(instanceId, timelineId)
+
+  // Secret gate (Phase 7): main narration may retrieve a private side-chat
+  // memory ONLY when the protagonist is among its knowers. GM worlds qualify
+  // (the player speaks AS the protagonist in side chats); sentient worlds
+  // don't until the player shares it in the main story — which mints a new,
+  // main-scoped memory. Hard gate, fail closed.
+  let protagonistEntityId: import('mongodb').ObjectId | null = null
+  try {
+    const protagonist = await mongoColl
+      .entities()
+      .findOne({ instance_id: instanceOid, type: 'protagonist' }, { projection: { _id: 1 } })
+    protagonistEntityId = protagonist?._id || null
+  } catch {
+    // No graph yet — only origin-less (main) memories pass the gate anyway.
+  }
+  const knowledgeClause: Record<string, unknown> = {
+    $or: [
+      { origin: { $ne: 'side_chat' } },
+      ...(protagonistEntityId ? [{ known_by_entity_ids: protagonistEntityId }] : []),
+    ],
+  }
+  const allowsKnowledge = (m: Pick<MemoryDoc, 'origin' | 'known_by_entity_ids'>): boolean => {
+    if (m.origin !== 'side_chat') return true
+    if (!protagonistEntityId) return false
+    return (m.known_by_entity_ids || []).some((id) => id.equals(protagonistEntityId!))
+  }
+
   const memoryScope = (extra: Record<string, unknown> = {}) => ({
     instance_id: instanceOid,
     is_archived: false,
-    ...(eligibility ? { $and: [{ $or: eligibility.clauses }] } : {}),
+    $and: [...(eligibility ? [{ $or: eligibility.clauses }] : []), knowledgeClause],
     ...extra,
   })
 
@@ -248,28 +275,39 @@ export async function queryRag(
   const vectorMongoIds = vectorMatches
     .map((m) => String((m.metadata || {}).mongo_id || ''))
     .filter(Boolean)
-  const vectorDocs =
-    eligibility && vectorMongoIds.length
-      ? new Map(
-          (
-            (await mongoColl.memories()
-              .find(
-                { _id: { $in: vectorMongoIds.map((id) => parseObjectId(id)) } },
-                { projection: { _id: 1, timeline_id: 1, time_anchor: 1 } },
-              )
-              .toArray()) as MemoryDoc[]
-          ).map((m) => [idString(m._id), m]),
-        )
-      : new Map<string, MemoryDoc>()
+  const vectorDocs = vectorMongoIds.length
+    ? new Map(
+        (
+          (await mongoColl.memories()
+            .find(
+              { _id: { $in: vectorMongoIds.map((id) => parseObjectId(id)) } },
+              { projection: { _id: 1, timeline_id: 1, time_anchor: 1, origin: 1, known_by_entity_ids: 1 } },
+            )
+            .toArray()) as MemoryDoc[]
+        ).map((m) => [idString(m._id), m]),
+      )
+    : new Map<string, MemoryDoc>()
 
   addRanked(
     vectorMatches
       .filter((m) => {
-        if (!eligibility) return true
-        const meta = (m.metadata || {}) as { mongo_id?: string; timeline_id?: string; sequence?: number }
+        const meta = (m.metadata || {}) as {
+          mongo_id?: string
+          timeline_id?: string
+          sequence?: number
+          origin?: string
+          known_by?: string[]
+        }
         const mongoId = meta.mongo_id ? String(meta.mongo_id) : ''
         const doc = mongoId ? vectorDocs.get(mongoId) : null
-        if (doc) return eligibility.allowsMemory(doc)
+        if (doc) return allowsKnowledge(doc) && (!eligibility || eligibility.allowsMemory(doc))
+        // Metadata-only fallback (doc not found): private memories fail CLOSED
+        // unless the vector metadata itself proves protagonist knowledge.
+        if (String(meta.origin || '') === 'side_chat') {
+          const knownBy = Array.isArray(meta.known_by) ? meta.known_by.map(String) : []
+          if (!protagonistEntityId || !knownBy.includes(idString(protagonistEntityId))) return false
+        }
+        if (!eligibility) return true
         const metaTimeline = String(meta.timeline_id || '')
         if (!metaTimeline) return eligibility.includesLegacyMain
         return eligibility.allowsMemory({

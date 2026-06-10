@@ -116,7 +116,7 @@ export async function buildSideChatPacket(params: {
   // Knowledge scope: main-story memories they are part of, and — once
   // side-chat curation lands rows with origin/known_by — only THEIR private
   // conversations, never another character's. No-op on today's rows.
-  const knowledgeScope = {
+  const knowledgeScope: Record<string, unknown> = {
     $or: [
       { origin: { $ne: 'side_chat' } },
       ...(card.entity_id ? [{ known_by_entity_ids: card.entity_id }] : []),
