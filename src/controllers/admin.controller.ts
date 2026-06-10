@@ -1,4 +1,5 @@
 import { adminService } from '../services/admin.service'
+import { continuityAuditService } from '../services/continuity-audit.service'
 
 function boolQuery(value: unknown): boolean | undefined {
   if (value === undefined || value === null || value === '') return undefined
@@ -68,6 +69,9 @@ export const adminController = {
       template_id: query.template_id,
       archived: boolQuery(query.archived),
     }),
+
+  getContinuityAudit: async ({ params }: { params: { instanceId: string } }) =>
+    continuityAuditService.audit(params.instanceId),
 
   getInstance: async ({ params }: { params: { instanceId: string } }) =>
     adminService.getInstance(params.instanceId),

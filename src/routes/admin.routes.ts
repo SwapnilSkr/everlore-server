@@ -54,6 +54,8 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
     ]),
   })
   .get('/instances/:instanceId', (ctx) => adminController.getInstance(ctx))
+  // Cross-projection continuity audit (codex/entities/memories/summaries/cursors).
+  .get('/instances/:instanceId/continuity-audit', (ctx) => adminController.getContinuityAudit(ctx))
   .patch('/instances/:instanceId', (ctx) => adminController.patchInstance(ctx), { body: AdminPatchBody })
   .delete('/instances/:instanceId', (ctx) => adminController.deleteInstance(ctx))
 
