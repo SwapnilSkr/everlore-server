@@ -156,7 +156,22 @@ export async function buildSideChatPacket(params: {
     .timelineContext(instanceId, currentTimeAnchor)
     .catch(() => null)
   const currentLocation = normalizeLocationAnchor(session.current_location)
-  const locationContext = currentLocation ? `Current place: ${currentLocation.name}.` : null
+  let locationContext = currentLocation ? `Current place: ${currentLocation.name}.` : null
+  if (currentLocation) {
+    // Fold in the place's established canon + current condition so narration
+    // stays consistent with what's known about where the protagonist stands.
+    const placeEntity = (await mongoColl
+      .entities()
+      .findOne(
+        { _id: currentLocation.entity_id, instance_id: parseObjectId(instanceId), type: 'location' },
+        { projection: { location_state: 1, location_facts: 1 } },
+      )
+      .catch(() => null)) as { location_state?: Array<{ text: string }>; location_facts?: Array<{ text: string }> } | null
+    const facts = (placeEntity?.location_facts || []).slice(-3).map((f) => f.text)
+    const state = (placeEntity?.location_state || []).slice(-3).map((f) => f.text)
+    if (facts.length) locationContext += `\nAbout this place: ${facts.join(' ')}`
+    if (state.length) locationContext += `\nCurrent condition: ${state.join(' ')}`
+  }
 
   const threadIds = new Set(threads.map((t) => idString(t._id)))
   return {

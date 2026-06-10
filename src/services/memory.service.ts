@@ -254,6 +254,9 @@ async function recurateMemoriesForEvent(
   // out first mention must not linger as an active entity.
   try {
     await entityGraphService.removeEventProvenance(idString(event.instance_id), [event._id])
+    // Location state/facts asserted by this turn's old content go with it; the
+    // re-curated turn re-applies whatever the new prose still supports.
+    await entityGraphService.pruneLocationFactsByEvents(idString(event.instance_id), [event._id])
     const candidateEntityIds = [
       ...new Map(
         staleMemories

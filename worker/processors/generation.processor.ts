@@ -393,6 +393,28 @@ export async function generationProcessor(job: Job) {
 
   await mongoColl.events().insertOne(event);
 
+  // Record what changed about the current place this turn onto its location
+  // entity (mutable state + enduring canon, both event-sourced for rewind/edit
+  // pruning). Fire-and-forget — it feeds FUTURE turns, not this response.
+  if (
+    locationAnchor &&
+    ((parsed.location_state_changes?.length || 0) > 0 ||
+      (parsed.location_permanent_facts?.length || 0) > 0)
+  ) {
+    entityGraphService
+      .applyLocationFacts({
+        instanceId,
+        locationEntityId: locationAnchor.entity_id,
+        sequence: nextSequence,
+        eventId: event._id,
+        state: parsed.location_state_changes,
+        facts: parsed.location_permanent_facts,
+      })
+      .catch((err) =>
+        console.warn("applyLocationFacts failed:", (err as Error).message),
+      );
+  }
+
   // Non-blocking observability log: which model handled this turn + NSFW path.
   // Fire-and-forget — never let logging affect the player's turn.
   mongoColl

@@ -16,6 +16,19 @@ export type EntityType =
   | 'concept'
 
 /**
+ * A single provenance-tracked fact about a location entity. `source_sequence`
+ * makes rewind pruning a cheap range query; `source_event_id` makes edit/replay
+ * recuration exact — a fact whose source turn was removed or rewritten goes
+ * with it, so the place never asserts something that no longer happened.
+ */
+export interface LocationFactDoc {
+  text: string
+  source_event_id: ObjectId
+  source_sequence: number
+  created_at: Date
+}
+
+/**
  * entities — the reusable nouns of a playthrough (WHO/WHAT/WHERE as linked IDs,
  * not loose strings). Created on first mention with dedup by normalized
  * name/alias; memories link to entities via subject/object_entity_ids and the
@@ -36,6 +49,12 @@ export interface EntityDoc {
   first_seen_sequence: number
   last_seen_sequence: number
   mention_count: number
+  /** location entities only — mutable world state of the place ("the gate now
+   *  lies in ruins"). Newest last; bounded; pruned on rewind/edit. */
+  location_state?: LocationFactDoc[]
+  /** location entities only — enduring canonical facts about the place ("built
+   *  over a buried god"). Append-only canon; bounded; pruned on rewind/edit. */
+  location_facts?: LocationFactDoc[]
   created_at: Date
   updated_at: Date
 }

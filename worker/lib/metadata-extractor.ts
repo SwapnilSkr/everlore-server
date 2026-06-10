@@ -73,8 +73,18 @@ const METADATA_SCHEMA = {
     time_elapsed: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
+    location_state_changes: {
+      type: 'array',
+      maxItems: 6,
+      items: { type: 'string' },
+    },
+    location_permanent_facts: {
+      type: 'array',
+      maxItems: 6,
+      items: { type: 'string' },
+    },
   },
-  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone', 'present_characters', 'current_location', 'time_elapsed'],
+  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone', 'present_characters', 'current_location', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
 }
 
 function safeParseObject(raw: string): Record<string, unknown> {
@@ -128,6 +138,8 @@ Rules:
 - present_characters: the proper names of the people (characters) physically present in the scene at the END of this passage — those in the same place as the viewpoint, able to be spoken to or acted on right now. Use the exact name as written in the prose. EXCLUDE anyone only mentioned, remembered, written about, or elsewhere; exclude the player/narrator themself. Empty array [] when the viewpoint is alone or no other character is in the scene.
 - current_location: the concrete named place where the viewpoint/protagonist is physically located at the END of the passage. Use the most specific stable place name written or strongly implied by the prose ("Old Keep", "Mira's room", "North Road"). If the passage does not establish a concrete place, or the scene simply remains where it already was, return null. Prior known location: ${opts?.currentLocationName || '(unknown)'}.
 - time_elapsed: how much IN-WORLD time the passage itself narrates passing during this turn — a short human label ("three days", "a week later", "a few hours", "the next morning"). Use this ONLY when the prose clearly skips or spans time (a journey, a "later that night", "weeks passed"). Return null for a continuous, real-time scene where no meaningful time elapses (most dialogue/combat turns). Do not invent time; report only what the passage states or strongly implies.
+- location_state_changes: short clauses for what BECAME TRUE about the CURRENT place this turn — its mutable condition ("the gate now lies in ruins", "the tavern has burned down", "soldiers occupy the square"). Each clause must be self-contained and name what changed. Empty array [] when the place's condition did not change (the usual case).
+- location_permanent_facts: short clauses for ENDURING, canonical facts about the current place newly established this turn ("the temple was built over a buried god", "this bridge is the only crossing for fifty miles"). These are lasting truths, not passing events or moods. Empty array [] almost always — use sparingly.
 
 Tracked stats (only these names may appear in state_mutations): ${statKeys.length ? statKeys.join(', ') : '(none)'}
 Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}`
@@ -155,6 +167,8 @@ Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length
       present_characters: [],
       current_location: null,
       time_elapsed: null,
+      location_state_changes: [],
+      location_permanent_facts: [],
     }
   }
 

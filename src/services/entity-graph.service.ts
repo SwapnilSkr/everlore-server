@@ -1,6 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
-import type { EntityDoc, EntityType } from '../models/entity.model'
+import type { EntityDoc, EntityType, LocationFactDoc } from '../models/entity.model'
 import type { CharacterProfileDoc, RelationshipMeters } from '../models/character-profile.model'
 import { characterCodexService } from './character-codex.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
@@ -518,6 +518,94 @@ export const entityGraphService = {
   },
 
   /**
+   * Record what changed about a place this turn onto its location entity.
+   * `state` is mutable condition (bounded ring — newest kept), `facts` is
+   * enduring canon (append-only, bounded). Both carry event provenance so a
+   * rewind or edit that removes the source turn can pull them back out
+   * ({@link pruneLocationFactsByEvents}, rewind range-prune). Dedupes against
+   * what the place already asserts so repeated beats don't pile up.
+   */
+  async applyLocationFacts(params: {
+    instanceId: string
+    locationEntityId: ObjectId
+    sequence: number
+    eventId: ObjectId
+    state?: string[]
+    facts?: string[]
+  }): Promise<void> {
+    const state = (params.state || []).map((s) => s.trim()).filter(Boolean)
+    const facts = (params.facts || []).map((s) => s.trim()).filter(Boolean)
+    if (!state.length && !facts.length) return
+    const iid = parseObjectId(params.instanceId)
+    const entity = (await entities().findOne(
+      { _id: params.locationEntityId, instance_id: iid, type: 'location' },
+      { projection: { location_state: 1, location_facts: 1 } },
+    )) as Pick<EntityDoc, 'location_state' | 'location_facts'> | null
+    if (!entity) return
+
+    const now = new Date()
+    const STATE_CAP = 12
+    const FACTS_CAP = 30
+    const seen = (list: LocationFactDoc[] | undefined) =>
+      new Set((list || []).map((f) => f.text.toLowerCase()))
+
+    const mkEntries = (texts: string[], existing: Set<string>): LocationFactDoc[] => {
+      const out: LocationFactDoc[] = []
+      for (const text of texts) {
+        const key = text.toLowerCase()
+        if (existing.has(key)) continue
+        existing.add(key)
+        out.push({ text, source_event_id: params.eventId, source_sequence: params.sequence, created_at: now })
+      }
+      return out
+    }
+
+    const newState = mkEntries(state, seen(entity.location_state))
+    const newFacts = mkEntries(facts, seen(entity.location_facts))
+    if (!newState.length && !newFacts.length) return
+
+    const nextState = [...(entity.location_state || []), ...newState].slice(-STATE_CAP)
+    const nextFacts = [...(entity.location_facts || []), ...newFacts].slice(-FACTS_CAP)
+    await entities().updateOne(
+      { _id: params.locationEntityId },
+      {
+        $set: {
+          ...(newState.length ? { location_state: nextState } : {}),
+          ...(newFacts.length ? { location_facts: nextFacts } : {}),
+          updated_at: now,
+        },
+      },
+    )
+  },
+
+  /**
+   * Pull location state/facts sourced from removed or rewritten turns — used by
+   * event edit/replay recuration and rewind so a place never asserts a fact
+   * whose source turn no longer happened. Rewind also range-prunes inline.
+   */
+  async pruneLocationFactsByEvents(instanceId: string, eventIds: ObjectId[]): Promise<void> {
+    if (!eventIds.length) return
+    const iid = parseObjectId(instanceId)
+    await entities().updateMany(
+      {
+        instance_id: iid,
+        type: 'location',
+        $or: [
+          { 'location_state.source_event_id': { $in: eventIds } },
+          { 'location_facts.source_event_id': { $in: eventIds } },
+        ],
+      },
+      {
+        $pull: {
+          location_state: { source_event_id: { $in: eventIds } },
+          location_facts: { source_event_id: { $in: eventIds } },
+        },
+        $set: { updated_at: new Date() },
+      } as never,
+    )
+  },
+
+  /**
    * Codex cards behind a set of entity ids — used for memory-driven pinning
    * AFTER RAG: when retrieval surfaces memories about a character the prompt
    * wasn't going to include, their structured card gets pinned too. Protagonist
@@ -662,6 +750,26 @@ export const entityGraphService = {
     await entities().updateMany(
       { instance_id: iid, last_seen_sequence: { $gte: sequence } },
       { $set: { last_seen_sequence: Math.max(0, sequence - 1), updated_at: new Date() } },
+    )
+
+    // 1b. Location state/facts sourced from removed turns are pulled (cheap
+    //     range prune by source_sequence — survivors keep their pre-rewind canon).
+    await entities().updateMany(
+      {
+        instance_id: iid,
+        type: 'location',
+        $or: [
+          { 'location_state.source_sequence': { $gte: sequence } },
+          { 'location_facts.source_sequence': { $gte: sequence } },
+        ],
+      },
+      {
+        $pull: {
+          location_state: { source_sequence: { $gte: sequence } },
+          location_facts: { source_sequence: { $gte: sequence } },
+        },
+        $set: { updated_at: new Date() },
+      } as never,
     )
 
     // 2. Edge provenance from removed events.

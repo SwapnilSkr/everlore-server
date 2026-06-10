@@ -43,6 +43,42 @@ export interface GenerationOutput {
    * skips, not only the explicit wait/continue button.
    */
   time_elapsed?: string | null
+  /**
+   * Things that became true about the CURRENT place this turn — mutable world
+   * state of the location ("the gate now lies in ruins", "the market is
+   * abandoned"). Short, self-contained clauses. Empty when nothing about the
+   * place changed.
+   */
+  location_state_changes?: string[]
+  /**
+   * Enduring, canonical facts about the current place established this turn
+   * ("the temple was built over a buried god", "the bridge is the only crossing
+   * for fifty miles"). Append-only place canon. Empty almost always.
+   */
+  location_permanent_facts?: string[]
+}
+
+/**
+ * Normalize a raw list of short place-fact clauses: tolerates a string or
+ * array, trims/collapses/dedupes case-insensitively, drops the model's empty
+ * sentinels, and bounds count and per-item length.
+ */
+export function sanitizeFactList(raw: unknown, max = 6): string[] {
+  const items = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const item of items) {
+    if (typeof item !== 'string') continue
+    const text = item.replace(/\s+/g, ' ').trim().slice(0, 200)
+    if (!text) continue
+    if (/^(null|none|n\/?a|no change|unchanged|nothing)$/i.test(text)) continue
+    const key = text.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(text)
+    if (out.length >= max) break
+  }
+  return out
 }
 
 /**
@@ -207,6 +243,8 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
     parsed.present_characters = sanitizePresentCharacters(parsed.present_characters)
     parsed.current_location = sanitizeLocationName(parsed.current_location)
     parsed.time_elapsed = sanitizeTimeElapsed(parsed.time_elapsed)
+    parsed.location_state_changes = sanitizeFactList(parsed.location_state_changes)
+    parsed.location_permanent_facts = sanitizeFactList(parsed.location_permanent_facts)
 
     return parsed as GenerationOutput
   } catch (err) {
@@ -248,5 +286,7 @@ function repairResponse(raw: string): GenerationOutput {
     present_characters: [],
     current_location: null,
     time_elapsed: null,
+    location_state_changes: [],
+    location_permanent_facts: [],
   }
 }

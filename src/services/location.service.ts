@@ -2,6 +2,7 @@ import { mongoColl } from '../config/mongo'
 import { parseObjectId, idString } from '../utils/mongo-id'
 import type { WorldEventDoc } from '../models/world-event.model'
 import type { MemoryDoc } from '../models/memory.model'
+import type { EntityDoc } from '../models/entity.model'
 
 async function mainVisibleMemoryScope(instanceId: ReturnType<typeof parseObjectId>) {
   const protagonist = await mongoColl
@@ -160,8 +161,16 @@ export const locationService = {
       mems[0]?.location_name ||
       'This place'
 
+    const factText = (list: Array<{ text: string }> | undefined) =>
+      (list || []).map((f) => f.text).filter(Boolean)
+
     return {
-      location: { entity_id: locationEntityId, name },
+      location: {
+        entity_id: locationEntityId,
+        name,
+        permanent_facts: factText((entity as EntityDoc | null)?.location_facts),
+        current_state: factText((entity as EntityDoc | null)?.location_state),
+      },
       events: (evs as WorldEventDoc[]).map((e) => ({
         id: idString(e._id),
         sequence: e.sequence,
