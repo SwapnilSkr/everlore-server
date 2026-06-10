@@ -492,8 +492,9 @@ export const memoryService = {
           'data.replay_variants': nextReplayVariants,
           'data.selected_replay_index': nextSelectedReplayIndex,
           'data.prose_hygiene_issues': proseHygieneIssues,
-          // A rewritten narrative invalidates the old next-move chips.
-          ...(aiChanged ? { 'data.choices': [] } : {}),
+          // A rewritten narrative invalidates the old next-move chips and the
+          // scene's presence list (who was in the room may have changed).
+          ...(aiChanged ? { 'data.choices': [], 'data.present_characters': [] } : {}),
           is_user_edited: true,
           updated_at: new Date(),
         },
@@ -761,8 +762,9 @@ ${replayDirective || '(none)'}`,
           'data.replay_variants': nextVariants,
           'data.selected_replay_index': selectedIdx,
           'data.prose_hygiene_issues': repairedReplay.issues,
-          // Stale tap-to-play chips: they were derived from the prior prose.
+          // Stale tap-to-play chips + presence: derived from the prior prose.
           'data.choices': [],
+          'data.present_characters': [],
           updated_at: new Date(),
         },
       } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
@@ -835,8 +837,8 @@ ${replayDirective || '(none)'}`,
           'data.replay_variants': variants,
           'data.selected_replay_index': variantIndex,
           'data.prose_hygiene_issues': proseHygieneIssues,
-          // Chips belonged to the previously-selected variant's prose.
-          ...(changed ? { 'data.choices': [] } : {}),
+          // Chips + presence belonged to the previously-selected variant's prose.
+          ...(changed ? { 'data.choices': [], 'data.present_characters': [] } : {}),
           updated_at: new Date(),
         },
       } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,

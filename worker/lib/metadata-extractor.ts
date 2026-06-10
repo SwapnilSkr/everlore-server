@@ -62,8 +62,13 @@ const METADATA_SCHEMA = {
     milestone: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
+    present_characters: {
+      type: 'array',
+      maxItems: 12,
+      items: { type: 'string' },
+    },
   },
-  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone'],
+  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone', 'present_characters'],
 }
 
 function safeParseObject(raw: string): Record<string, unknown> {
@@ -114,6 +119,7 @@ Rules:
     - kind: "say" if send contains any spoken words (even alongside an action); "act" only for a silent action. Drives the chip's icon.
   The set must be distinct in spirit — mix bold / cautious / emotional / curious, and include at least one "say" and one "act" when both fit. Ground every choice in what THIS passage just established; never invent new characters, places, or facts.
 - milestone: null almost always. Set a short evocative label (3-8 words) ONLY when this passage crossed a true story landmark: a vow or marriage, a first kiss, a death of a significant character, a title/power gained, a major victory or betrayal, a life-changing decision. Routine progress is NOT a milestone.
+- present_characters: the proper names of the people (characters) physically present in the scene at the END of this passage — those in the same place as the viewpoint, able to be spoken to or acted on right now. Use the exact name as written in the prose. EXCLUDE anyone only mentioned, remembered, written about, or elsewhere; exclude the player/narrator themself. Empty array [] when the viewpoint is alone or no other character is in the scene.
 
 Tracked stats (only these names may appear in state_mutations): ${statKeys.length ? statKeys.join(', ') : '(none)'}
 Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}`
@@ -138,6 +144,7 @@ Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length
       emotional_tone: 'neutral',
       choices: [],
       milestone: null,
+      present_characters: [],
     }
   }
 

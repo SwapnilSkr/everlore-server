@@ -47,6 +47,9 @@ export interface EventDataDoc {
   time_advanced?: string
   /** Open-thread text that seeded this turn's beat, when fate came knocking. */
   fate_thread?: string
+  /** Characters present in the scene at the end of this turn (scene-aware bond
+   *  actions: approach vs. seek out). Empty/absent when the viewpoint is alone. */
+  present_characters?: string[]
   replay_variants?: ReplayVariantDoc[]
   selected_replay_index?: number
   state_mutations: Record<string, StateMutationDoc>

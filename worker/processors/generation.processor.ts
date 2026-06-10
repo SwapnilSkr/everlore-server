@@ -315,6 +315,7 @@ export async function generationProcessor(job: Job) {
       ai_response: parsed.narrative,
       choices: parsed.choices,
       milestone: parsed.milestone,
+      present_characters: parsed.present_characters,
       ...(timeAdvanceLabel ? { time_advanced: timeAdvanceLabel } : {}),
       ...(fateThread ? { fate_thread: fateThread } : {}),
       replay_variants: [
@@ -448,6 +449,7 @@ export async function generationProcessor(job: Job) {
         model_used: event.data.model_used,
         choices: parsed.choices,
         milestone: parsed.milestone,
+        present_characters: parsed.present_characters,
         time_advanced: timeAdvanceLabel || null,
         fate_thread: fateThread || null,
         event_type: event.type,

@@ -24,6 +24,35 @@ export interface GenerationOutput {
   choices: ChoiceOption[]
   /** Set only when this turn crossed a true story landmark; null otherwise. */
   milestone: string | null
+  /**
+   * Names of characters physically present in the scene at the END of this
+   * turn — those the player could speak to or act on right now. Drives
+   * scene-aware bond actions (approach vs. seek out). Empty when the
+   * protagonist is alone or presence is unknown.
+   */
+  present_characters: string[]
+}
+
+/**
+ * Normalize a raw present-characters list into clean, deduped display names.
+ * Tolerates a single string or array; trims, collapses whitespace, drops blanks
+ * and case-insensitive duplicates, and bounds the count/length.
+ */
+export function sanitizePresentCharacters(raw: unknown): string[] {
+  const items = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const item of items) {
+    if (typeof item !== 'string') continue
+    const name = item.replace(/\s+/g, ' ').trim().slice(0, 60)
+    if (!name) continue
+    const key = name.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(name)
+    if (out.length >= 12) break
+  }
+  return out
 }
 
 /**
@@ -140,6 +169,9 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
         ? parsed.milestone.replace(/\s+/g, ' ').trim().slice(0, 120)
         : null
 
+    // Present characters: clean, bounded list driving scene-aware bond actions.
+    parsed.present_characters = sanitizePresentCharacters(parsed.present_characters)
+
     return parsed as GenerationOutput
   } catch (err) {
     // Attempt to extract narrative from malformed response
@@ -177,5 +209,6 @@ function repairResponse(raw: string): GenerationOutput {
     emotional_tone: 'neutral',
     choices: [],
     milestone: null,
+    present_characters: [],
   }
 }
