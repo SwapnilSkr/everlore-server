@@ -296,8 +296,10 @@ export const memoryService = {
     const skip = ((opts.page || 1) - 1) * limit
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
-    const filter: Record<string, unknown> = { instance_id: iid, player_id: pid }
-    if (opts.type) filter.type = opts.type
+    // Timeline is the MAIN-story chronicle; private side chats have their own
+    // thread view and never appear here (a side_chat type filter is ignored).
+    const filter: Record<string, unknown> = { instance_id: iid, player_id: pid, type: { $ne: 'side_chat' } }
+    if (opts.type && opts.type !== 'side_chat') filter.type = opts.type
 
     const evs = await events()
       .find(filter)
@@ -315,6 +317,9 @@ export const memoryService = {
     const pid = parseObjectId(playerId)
     const filter: Record<string, unknown> = { instance_id: iid, player_id: pid }
     if (!opts.includeArchived) filter.is_archived = false
+    // Echoes is a MAIN-story surface: private side-chat atoms only surface when
+    // the protagonist is among their knowers (fail-closed, mirrors queryRag).
+    Object.assign(filter, await mainVisibleMemoryScope(iid))
 
     // Advanced filters (all optional; absent = today's behavior).
     if (opts.type) filter.type = opts.type
@@ -349,6 +354,9 @@ export const memoryService = {
   async listThreads(instanceId: string, playerId: string) {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
+    // Main-story tracker: a private side-chat thread surfaces only if the
+    // protagonist is among its knowers (same gate as the Recap preview).
+    const mainVisibleMemory = await mainVisibleMemoryScope(iid)
 
     const [open, resolved] = await Promise.all([
       memories()
@@ -357,6 +365,7 @@ export const memoryService = {
           player_id: pid,
           unresolved_thread: true,
           is_archived: false,
+          ...mainVisibleMemory,
         })
         .sort({ importance: -1, updated_at: -1 })
         .limit(50)
@@ -367,6 +376,7 @@ export const memoryService = {
           player_id: pid,
           resolved_at: { $ne: null },
           is_archived: false,
+          ...mainVisibleMemory,
         })
         .sort({ resolved_at: -1 })
         .limit(30)
