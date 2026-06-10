@@ -234,6 +234,52 @@ export const memoryService = {
       .toArray()
   },
 
+  /**
+   * Promise/Quest Tracker (Phase 10): the open and recently-resolved story
+   * threads — the same `unresolved_thread` atoms that feed the open-threads
+   * prompt section. Open threads rank by importance; resolved ones by when
+   * they closed. Read-only.
+   */
+  async listThreads(instanceId: string, playerId: string) {
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+
+    const [open, resolved] = await Promise.all([
+      memories()
+        .find({
+          instance_id: iid,
+          player_id: pid,
+          unresolved_thread: true,
+          is_archived: false,
+        })
+        .sort({ importance: -1, updated_at: -1 })
+        .limit(50)
+        .toArray(),
+      memories()
+        .find({
+          instance_id: iid,
+          player_id: pid,
+          resolved_at: { $ne: null },
+          is_archived: false,
+        })
+        .sort({ resolved_at: -1 })
+        .limit(30)
+        .toArray(),
+    ])
+
+    const shape = (m: (typeof open)[number]) => ({
+      id: idString(m._id),
+      text: m.text,
+      type: m.type,
+      importance: m.importance,
+      emotional_valence: m.emotional_valence || null,
+      resolved_at: m.resolved_at || null,
+      time_anchor: m.time_anchor || null,
+    })
+
+    return { open: open.map(shape), resolved: resolved.map(shape) }
+  },
+
   async editMemory(memoryId: string, playerId: string, updates: any) {
     const mid = parseObjectId(memoryId)
     const pid = parseObjectId(playerId)

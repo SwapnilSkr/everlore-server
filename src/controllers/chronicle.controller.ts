@@ -58,6 +58,17 @@ export const chronicleController = {
     return timeService.listCalendar(params.instanceId, user.id)
   },
 
+  getThreads: async ({
+    params,
+    user,
+  }: {
+    params: { instanceId: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return memoryService.listThreads(params.instanceId, user.id)
+  },
+
   getRelationships: async ({
     params,
     user,
