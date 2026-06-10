@@ -29,6 +29,19 @@ const arcSummaries = () => mongoColl.arcSummaries()
 const characters = () => mongoColl.characters()
 const users = () => mongoColl.users()
 
+async function mainVisibleMemoryScope(instanceId: ReturnType<typeof parseObjectId>) {
+  const protagonist = await mongoColl
+    .entities()
+    .findOne({ instance_id: instanceId, type: 'protagonist' }, { projection: { _id: 1 } })
+
+  return {
+    $or: [
+      { origin: { $ne: 'side_chat' as const } },
+      ...(protagonist?._id ? [{ known_by_entity_ids: protagonist._id }] : []),
+    ],
+  }
+}
+
 function continuityText(value: string, max = 220): string {
   return String(value || '')
     .replace(/\*/g, '')
@@ -385,6 +398,7 @@ export const memoryService = {
     const pid = parseObjectId(playerId)
     const instance = await worldInstances().findOne({ _id: iid, player_id: pid })
     if (!instance) throw new Error('Instance not found')
+    const mainVisibleMemory = await mainVisibleMemoryScope(iid)
 
     const [latestSummary, latestEvent, openThreads, bondCards] = await Promise.all([
       sceneSummaries().findOne(
@@ -397,7 +411,7 @@ export const memoryService = {
         { sort: { sequence: -1 }, projection: { 'data.ai_response': 1, sequence: 1 } },
       ),
       memories()
-        .find({ instance_id: iid, unresolved_thread: true, is_archived: false })
+        .find({ instance_id: iid, unresolved_thread: true, is_archived: false, ...mainVisibleMemory })
         .sort({ importance: -1, updated_at: -1 })
         .limit(5)
         .toArray(),

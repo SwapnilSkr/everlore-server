@@ -258,7 +258,7 @@ export const timeService = {
       mongoColl
         .events()
         .find(
-          { instance_id: iid, time_anchor: { $exists: true } },
+          { instance_id: iid, type: { $ne: 'side_chat' }, time_anchor: { $exists: true } },
           {
             projection: {
               sequence: 1,

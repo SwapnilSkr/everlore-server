@@ -3,6 +3,19 @@ import { parseObjectId, idString } from '../utils/mongo-id'
 import type { WorldEventDoc } from '../models/world-event.model'
 import type { MemoryDoc } from '../models/memory.model'
 
+async function mainVisibleMemoryScope(instanceId: ReturnType<typeof parseObjectId>) {
+  const protagonist = await mongoColl
+    .entities()
+    .findOne({ instance_id: instanceId, type: 'protagonist' }, { projection: { _id: 1 } })
+
+  return {
+    $or: [
+      { origin: { $ne: 'side_chat' as const } },
+      ...(protagonist?._id ? [{ known_by_entity_ids: protagonist._id }] : []),
+    ],
+  }
+}
+
 /**
  * Location Journal read surface — "what happened here before?". Events and
  * memories already carry a denormalized `location_anchor` / `location_entity_id`
@@ -17,12 +30,13 @@ export const locationService = {
     const pid = parseObjectId(playerId)
     const instance = await mongoColl.worldInstances().findOne({ _id: iid, player_id: pid })
     if (!instance) throw new Error('Instance not found')
+    const mainVisibleMemory = await mainVisibleMemoryScope(iid)
 
     const [eventAgg, memAgg] = await Promise.all([
       mongoColl
         .events()
         .aggregate([
-          { $match: { instance_id: iid, 'location_anchor.entity_id': { $ne: null } } },
+          { $match: { instance_id: iid, type: { $ne: 'side_chat' }, 'location_anchor.entity_id': { $ne: null } } },
           { $sort: { sequence: 1 } },
           {
             $group: {
@@ -43,6 +57,7 @@ export const locationService = {
               instance_id: iid,
               location_entity_id: { $ne: null },
               is_archived: false,
+              ...mainVisibleMemory,
             },
           },
           {
@@ -109,13 +124,14 @@ export const locationService = {
     const leid = parseObjectId(locationEntityId)
     const instance = await mongoColl.worldInstances().findOne({ _id: iid, player_id: pid })
     if (!instance) throw new Error('Instance not found')
+    const mainVisibleMemory = await mainVisibleMemoryScope(iid)
 
     const [entity, evs, mems] = await Promise.all([
       mongoColl.entities().findOne({ _id: leid, instance_id: iid }),
       mongoColl
         .events()
         .find(
-          { instance_id: iid, 'location_anchor.entity_id': leid },
+          { instance_id: iid, type: { $ne: 'side_chat' }, 'location_anchor.entity_id': leid },
           {
             projection: {
               sequence: 1,
@@ -132,7 +148,7 @@ export const locationService = {
         .toArray(),
       mongoColl
         .memories()
-        .find({ instance_id: iid, location_entity_id: leid, is_archived: false })
+        .find({ instance_id: iid, location_entity_id: leid, is_archived: false, ...mainVisibleMemory })
         .sort({ importance: -1 })
         .limit(50)
         .toArray(),
