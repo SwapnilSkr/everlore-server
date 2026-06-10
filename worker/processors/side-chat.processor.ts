@@ -13,26 +13,12 @@ import { countTokens } from "../../src/utils/token-counter";
 import { idString, parseObjectId } from "../../src/utils/mongo-id";
 import { classifyScene } from "../lib/nsfw-classifier";
 import { timeService } from "../../src/services/time.service";
+import { buildSideChatPacket } from "../../src/services/context-packet.service";
 import type { CharacterProfileDoc } from "../../src/models/character-profile.model";
 import type { WorldEventDoc } from "../../src/models/world-event.model";
-import type { LocationAnchorDoc } from "../../src/models/location.model";
 
 /** Conversation continuity window: prior turns with THIS character only. */
 const SIDE_CHAT_RECENT_TURNS = 8;
-
-function locationAnchorFromSession(raw: any): LocationAnchorDoc | null {
-  if (!raw?.entity_id || !raw.name) return null;
-  try {
-    return {
-      entity_id:
-        typeof raw.entity_id === "string" ? parseObjectId(raw.entity_id) : raw.entity_id,
-      name: raw.name,
-      name_normalized: raw.name_normalized || raw.name,
-    };
-  } catch {
-    return null;
-  }
-}
 
 function characterSheet(card: CharacterProfileDoc): string {
   const lines: string[] = [`Name: ${card.canonical_name}`];
@@ -82,13 +68,11 @@ export async function sideChatProcessor(job: Job) {
     // player's own character (GM worlds) — side chats are for everyone else.
     if (card.is_protagonist) throw new Error("Side chats are for side characters");
 
-    const [latest, recentChats] = await Promise.all([
-      mongoColl
-        .events()
-        .findOne(
-          { instance_id: instanceOid },
-          { sort: { sequence: -1 }, projection: { _id: 1, sequence: 1, time_anchor: 1 } },
-        ),
+    // The packet pins the active side character: their card is the canon
+    // sheet, and retrieval is scoped to what THEY can know (shared-history
+    // memories + open threads involving them).
+    const [packet, recentChats] = await Promise.all([
+      buildSideChatPacket({ instanceId, session, card }),
       mongoColl
         .events()
         .find({
@@ -101,13 +85,8 @@ export async function sideChatProcessor(job: Job) {
         .toArray() as Promise<WorldEventDoc[]>,
     ]);
     recentChats.reverse();
-    const nextSequence = (latest?.sequence || 0) + 1;
-
-    const currentTimeAnchor = session.current_time_anchor || latest?.time_anchor || null;
-    const timeContext = await timeService
-      .timelineContext(instanceId, currentTimeAnchor)
-      .catch(() => null);
-    const currentLocation = locationAnchorFromSession(session.current_location);
+    const nextSequence = packet.currentSequence + 1;
+    const { currentTimeAnchor, timeContext, currentLocation } = packet;
 
     // NSFW routing parity with main turns: world capability AND player opt-in.
     let modelId = session.model_preferences?.narration_sfw || AI_MODELS.narrationSfw;
@@ -127,6 +106,15 @@ export async function sideChatProcessor(job: Job) {
 CHARACTER SHEET (canon — never contradict it):
 ${characterSheet(card)}
 ${timeContext ? `\n${timeContext}` : ""}${currentLocation ? `\nCurrent place in the story: ${currentLocation.name}.` : ""}
+${
+  packet.memoryTexts.length
+    ? `\nWHAT ${card.canonical_name.toUpperCase()} REMEMBERS (shared history — speak from these naturally, never recite them):\n${packet.memoryTexts.map((t) => `- ${t}`).join("\n")}`
+    : ""
+}${
+  packet.openThreads.length
+    ? `\nUNRESOLVED MATTERS involving ${card.canonical_name} (may color their mood; do not force them into the conversation):\n${packet.openThreads.map((t) => `- ${t}`).join("\n")}`
+    : ""
+}
 
 RULES:
 - Respond ONLY as ${card.canonical_name}: their voice, knowledge, mood, and agenda. Stay true to the disposition and relationship meters above.
@@ -177,7 +165,7 @@ ${buildLengthDirective(session.message_length)}`;
       instanceId,
       templateId: String(session.template_id),
       previous: currentTimeAnchor,
-      previousEventId: latest?._id || null,
+      previousEventId: packet.latestEventId,
       sequence: nextSequence,
       realTime: eventCreatedAt,
       timelineId: session.active_timeline_id || currentTimeAnchor?.timeline_id || null,
