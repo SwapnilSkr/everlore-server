@@ -9,6 +9,7 @@ import { ObjectId } from 'mongodb'
 import { connectMongo, mongoColl } from '../src/config/mongo'
 import { connectRedis } from '../src/config/redis'
 import { memoryService } from '../src/services/memory.service'
+import { characterCodexService } from '../src/services/character-codex.service'
 
 const SOURCE = process.argv[2] || '6a2869768f7446e38bdb6fce'
 const SEQ = Number(process.argv[3] || 2)
@@ -94,6 +95,15 @@ async function main() {
   ok('removed-turn fact NOT present (no stale fact)', !early?.immutable_facts?.includes('betrayed the player'), `facts=[${(early?.immutable_facts || []).join(', ')}]`)
   ok('meter reflects ONLY surviving delta (50+6=56, not -)', early?.relationship?.trust === 56, `trust=${early?.relationship?.trust ?? 'none'}`)
   ok('side character born in removed turn DELETED', !late, late ? 'LateStranger wrongly survived' : 'LateStranger gone')
+
+  // Per-turn applyDeltas hot path: new card (insert) then update (dirty-write +
+  // accumulate). Exercises the refactored fold/persist used on every live turn.
+  await characterCodexService.applyDeltas({ instanceId: tempId.toString(), playerId: playerId.toString(), sequence: 10, deltas: [{ name: 'Probe', immutable_facts: ['fact A'], relationship_deltas: { trust: 5 }, is_protagonist: false }] as any })
+  await characterCodexService.applyDeltas({ instanceId: tempId.toString(), playerId: playerId.toString(), sequence: 11, deltas: [{ name: 'Probe', immutable_facts: ['fact B'], mutable_state: ['curious'], relationship_deltas: { trust: 5 }, is_protagonist: false }] as any })
+  const probe = await mongoColl.characters().findOne({ instance_id: tempId, name_normalized: 'probe' })
+  ok('applyDeltas new card mention_count=1 then update=2', probe?.mention_count === 2, `mention_count=${probe?.mention_count}`)
+  ok('applyDeltas merges facts across turns', ['fact A', 'fact B'].every((f) => probe?.immutable_facts?.includes(f)), `facts=[${(probe?.immutable_facts || []).join(', ')}]`)
+  ok('applyDeltas accumulates meter (50+5+5=60, no double-apply)', probe?.relationship?.trust === 60, `trust=${probe?.relationship?.trust}`)
 
   const inst = await mongoColl.worldInstances().findOne({ _id: tempId })
   ok('meta.total_events updated', inst?.meta?.total_events === remainingEvents.length, `meta=${inst?.meta?.total_events} actual=${remainingEvents.length}`)

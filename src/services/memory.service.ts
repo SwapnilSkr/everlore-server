@@ -387,19 +387,15 @@ export const memoryService = {
 
     if (hasLedgeredDeltas) {
       // Exact rebuild: drop the whole codex, restore protagonist identity, then
-      // replay each surviving turn's stored deltas in sequence order.
+      // replay the surviving turns' stored deltas. The replay folds entirely in
+      // memory and persists with a single bulk write, so a rewind at turn
+      // 13,567 costs the same as one at turn 13 — no per-turn DB round-trips.
       await characters().deleteMany({ instance_id: iid })
       await reseedProtagonist()
-      for (const ev of codexSurvivors) {
-        const evDeltas = ev.data?.codex_deltas
-        if (!Array.isArray(evDeltas) || evDeltas.length === 0) continue
-        await characterCodexService.applyDeltas({
-          instanceId,
-          playerId,
-          sequence: ev.sequence,
-          deltas: evDeltas,
-        })
-      }
+      const batches = codexSurvivors
+        .filter((ev) => Array.isArray(ev.data?.codex_deltas) && ev.data.codex_deltas.length > 0)
+        .map((ev) => ({ sequence: ev.sequence, deltas: ev.data!.codex_deltas! }))
+      await characterCodexService.rebuildCodexFromLedger({ instanceId, playerId, batches })
     } else {
       // Legacy worlds whose events predate ledgered deltas: there is nothing to
       // replay, so fall back to provenance pruning — keep the pre-rewind cast,

@@ -159,6 +159,172 @@ function buildAliasSet(delta: CharacterCodexDelta): string[] {
   ], 20)
 }
 
+/**
+ * In-memory working set for folding codex deltas. Cards are mutated in place;
+ * `created` holds brand-new cards (to insert), `dirty` holds existing cards that
+ * changed (to update). `byName` maps every name + alias → its card so referents
+ * resolve, and `protagonist` enforces the single-protagonist invariant.
+ */
+interface FoldState {
+  byName: Map<string, CharacterProfileDoc>
+  created: Set<CharacterProfileDoc>
+  dirty: Set<CharacterProfileDoc>
+  protagonist?: CharacterProfileDoc
+}
+
+function newFoldState(existing: CharacterProfileDoc[]): FoldState {
+  const byName = new Map<string, CharacterProfileDoc>()
+  for (const c of existing) {
+    byName.set(c.name_normalized, c)
+    for (const a of c.aliases || []) byName.set(normalizeName(a), c)
+  }
+  return {
+    byName,
+    created: new Set(),
+    dirty: new Set(),
+    protagonist: existing.find((c) => c.is_protagonist),
+  }
+}
+
+/**
+ * Fold one codex delta into the working set — the SINGLE source of truth for
+ * how a turn shapes a character card. Shared by per-turn application
+ * ({@link applyDeltas}) and the exact rewind rebuild
+ * ({@link rebuildCodexFromLedger}) so the two can never diverge. Pure (no I/O):
+ * mutates the in-memory state only.
+ */
+function foldDelta(
+  state: FoldState,
+  delta: CharacterCodexDelta,
+  sequence: number,
+  ctx: { iid: ObjectId; pid: ObjectId; now: Date },
+): void {
+  if (!shouldSetText(delta.name)) return
+
+  const candidateNames = uniqStrings([
+    delta.resolved_name || '',
+    delta.name,
+    ...(delta.aliases || []),
+  ], 10).map(normalizeName)
+
+  let target: CharacterProfileDoc | undefined
+  for (const n of candidateNames) {
+    if (!n) continue
+    target = state.byName.get(n)
+    if (target) break
+  }
+
+  // A NEW name claiming to be the protagonist is a referent of the protagonist
+  // (a role title/epithet — "the neglected son"), never a second person. Merge
+  // into the canonical card; the alias merge below makes it permanent.
+  if (!target && delta.is_protagonist === true && state.protagonist) {
+    target = state.protagonist
+  }
+
+  const aliases = buildAliasSet(delta)
+  const name = (delta.resolved_name || delta.name).trim()
+  const normalized = normalizeName(name)
+
+  if (!target) {
+    // Fresh card captures everything THIS delta carries (mention_count = 1).
+    const doc: CharacterProfileDoc = {
+      _id: new ObjectId(),
+      instance_id: ctx.iid,
+      player_id: ctx.pid,
+      canonical_name: name,
+      name_normalized: normalized,
+      aliases,
+      role: shouldSetText(delta.role) ? delta.role.trim() : undefined,
+      appearance: shouldSetText(delta.appearance) ? delta.appearance.trim() : undefined,
+      persona: shouldSetText(delta.persona) ? delta.persona.trim() : undefined,
+      immutable_facts: uniqKeepRecent(delta.immutable_facts || [], IMMUTABLE_STORE_MAX),
+      mutable_state: uniqKeepRecent(delta.mutable_state || [], MUTABLE_STATE_MAX),
+      disposition_to_player: shouldSetText(delta.disposition_to_player) ? delta.disposition_to_player.trim() : '',
+      hidden_thought: shouldSetText(delta.hidden_thought) ? delta.hidden_thought.trim() : '',
+      relationship: hasRelationshipDeltas(delta.relationship_deltas)
+        ? applyRelationshipDeltas(undefined, delta.relationship_deltas)
+        : undefined,
+      // Only ever the FIRST protagonist claim can mint the canonical card.
+      is_protagonist: delta.is_protagonist === true && !state.protagonist,
+      first_seen_sequence: sequence,
+      last_seen_sequence: sequence,
+      mention_count: 1,
+      created_at: ctx.now,
+      updated_at: ctx.now,
+    }
+    state.created.add(doc)
+    state.byName.set(doc.name_normalized, doc)
+    for (const a of doc.aliases) state.byName.set(normalizeName(a), doc)
+    if (doc.is_protagonist) state.protagonist = doc
+    return
+  }
+
+  // Merge into the existing card (mutate in place).
+  target.aliases = uniqStrings([...(target.aliases || []), ...aliases], 20)
+  target.immutable_facts = uniqKeepRecent(
+    [...(target.immutable_facts || []), ...(delta.immutable_facts || [])],
+    IMMUTABLE_STORE_MAX,
+  )
+  target.mutable_state = reconcileMutableState(
+    target.mutable_state || [],
+    delta.retire_state || [],
+    delta.mutable_state || [],
+    MUTABLE_STATE_MAX,
+  )
+  target.last_seen_sequence = sequence
+  target.updated_at = ctx.now
+  if (!target.role && shouldSetText(delta.role)) target.role = delta.role.trim()
+  if (!target.appearance && shouldSetText(delta.appearance)) target.appearance = delta.appearance.trim()
+  if (!target.persona && shouldSetText(delta.persona)) target.persona = delta.persona.trim()
+  if (shouldSetText(delta.disposition_to_player)) target.disposition_to_player = delta.disposition_to_player.trim()
+  if (shouldSetText(delta.hidden_thought)) target.hidden_thought = delta.hidden_thought.trim()
+  if (hasRelationshipDeltas(delta.relationship_deltas)) {
+    target.relationship = applyRelationshipDeltas(target.relationship, delta.relationship_deltas)
+  }
+  // Sticky protagonist promote — only while NO canonical protagonist exists
+  // (promoting a second card would split one person into two).
+  if (delta.is_protagonist === true && !target.is_protagonist && !state.protagonist) {
+    target.is_protagonist = true
+    state.protagonist = target
+  }
+  target.mention_count = (target.mention_count || 0) + 1
+  // Newly-learned referents resolve to this card for the rest of the fold.
+  for (const a of target.aliases) state.byName.set(normalizeName(a), target)
+  if (!state.created.has(target)) state.dirty.add(target)
+}
+
+/**
+ * Fold a sequence of delta batches into `existing`, then persist: insert the
+ * new cards (one bulk write) and update only the changed existing ones. One DB
+ * read of the existing cards + one insertMany + a handful of updates, no matter
+ * how many turns are folded — so a deep rewind costs the same as a shallow one.
+ */
+async function foldAndPersist(
+  iid: ObjectId,
+  pid: ObjectId,
+  existing: CharacterProfileDoc[],
+  batches: Array<{ sequence: number; deltas: CharacterCodexDelta[] }>,
+): Promise<void> {
+  const now = new Date()
+  const state = newFoldState(existing)
+  for (const batch of batches) {
+    for (const delta of batch.deltas) foldDelta(state, delta, batch.sequence, { iid, pid, now })
+  }
+  if (state.created.size > 0) {
+    try {
+      await characters().insertMany([...state.created], { ordered: false })
+    } catch {
+      // Concurrent duplicate on the (instance_id, name_normalized) unique index:
+      // the existing row wins. The codex extractor re-emits active characters
+      // every turn, so a dropped first-mention self-heals on the next turn.
+    }
+  }
+  for (const card of state.dirty) {
+    const { _id, ...rest } = card
+    await characters().updateOne({ _id }, { $set: rest })
+  }
+}
+
 export const characterCodexService = {
   async listForInstance(instanceId: string, limit: number = 30): Promise<CharacterProfileDoc[]> {
     return characters()
@@ -242,159 +408,33 @@ export const characterCodexService = {
 
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
-    const now = new Date()
 
     const existing = await characters().find({ instance_id: iid }).toArray()
-    const byName = new Map<string, CharacterProfileDoc>()
-    for (const c of existing) {
-      byName.set(c.name_normalized, c)
-      for (const a of c.aliases || []) byName.set(normalizeName(a), c)
-    }
-    // Single-protagonist invariant: at most one canonical main-character card
-    // per instance, seeded deterministically. Extractor output must never be
-    // able to mint a second one.
-    let protagonist = existing.find((c) => c.is_protagonist)
-
-    for (const delta of deltas) {
-      if (!shouldSetText(delta.name)) continue
-
-      const candidateNames = uniqStrings([
-        delta.resolved_name || '',
-        delta.name,
-        ...(delta.aliases || []),
-      ], 10).map(normalizeName)
-
-      let target: CharacterProfileDoc | undefined
-      for (const n of candidateNames) {
-        if (!n) continue
-        target = byName.get(n)
-        if (target) break
-      }
-
-      // A NEW name claiming to be the protagonist is a referent of the
-      // protagonist (a role title or epithet — "the neglected son"), never a
-      // second person. Merge into the canonical card; the alias merge below
-      // makes the resolution permanent, so the split can't recur.
-      if (!target && delta.is_protagonist === true && protagonist) {
-        target = protagonist
-      }
-
-      const aliases = buildAliasSet(delta)
-      const name = (delta.resolved_name || delta.name).trim()
-      const normalized = normalizeName(name)
-
-      // A fresh insert already captures everything THIS delta carries (facts,
-      // state, disposition, relationship, mention_count = 1). Without this flag
-      // the code below would re-merge the same delta into the new card —
-      // double-applying the relationship meter and double-counting the mention
-      // on a character's very first appearance.
-      let justInserted = false
-      if (!target) {
-        const doc: CharacterProfileDoc = {
-          _id: new ObjectId(),
-          instance_id: iid,
-          player_id: pid,
-          canonical_name: name,
-          name_normalized: normalized,
-          aliases,
-          role: shouldSetText(delta.role) ? delta.role.trim() : undefined,
-          appearance: shouldSetText(delta.appearance) ? delta.appearance.trim() : undefined,
-          persona: shouldSetText(delta.persona) ? delta.persona.trim() : undefined,
-          immutable_facts: uniqKeepRecent(delta.immutable_facts || [], IMMUTABLE_STORE_MAX),
-          mutable_state: uniqKeepRecent(delta.mutable_state || [], MUTABLE_STATE_MAX),
-          disposition_to_player: shouldSetText(delta.disposition_to_player)
-            ? delta.disposition_to_player.trim()
-            : '',
-          hidden_thought: shouldSetText(delta.hidden_thought)
-            ? delta.hidden_thought.trim()
-            : '',
-          relationship: hasRelationshipDeltas(delta.relationship_deltas)
-            ? applyRelationshipDeltas(undefined, delta.relationship_deltas)
-            : undefined,
-          // Only ever the FIRST protagonist claim can mint the canonical card.
-          is_protagonist: delta.is_protagonist === true && !protagonist,
-          first_seen_sequence: sequence,
-          last_seen_sequence: sequence,
-          mention_count: 1,
-          created_at: now,
-          updated_at: now,
-        }
-        try {
-          await characters().insertOne(doc)
-          target = doc
-          justInserted = true
-          byName.set(doc.name_normalized, doc)
-          for (const a of doc.aliases) byName.set(normalizeName(a), doc)
-          if (doc.is_protagonist) protagonist = doc
-        } catch {
-          // Concurrent duplicate on unique index: fallback to existing row.
-          target = await characters().findOne({ instance_id: iid, name_normalized: normalized }) || undefined
-        }
-      }
-
-      if (!target) continue
-      // New card is already complete from this delta — don't merge it again.
-      if (justInserted) continue
-
-      const mergedAliases = uniqStrings([...(target.aliases || []), ...aliases], 20)
-      // Keep the most recent facts on overflow (never silently drop this turn's
-      // new permanent facts); async compaction distills the list back down.
-      const mergedImmutableFacts = uniqKeepRecent(
-        [...(target.immutable_facts || []), ...(delta.immutable_facts || [])],
-        IMMUTABLE_STORE_MAX,
-      )
-      const mergedMutableState = reconcileMutableState(
-        target.mutable_state || [],
-        delta.retire_state || [],
-        delta.mutable_state || [],
-        MUTABLE_STATE_MAX,
-      )
-
-      const setFields: Record<string, unknown> = {
-        aliases: mergedAliases,
-        immutable_facts: mergedImmutableFacts,
-        mutable_state: mergedMutableState,
-        last_seen_sequence: sequence,
-        updated_at: now,
-      }
-
-      if (!target.role && shouldSetText(delta.role)) setFields.role = delta.role.trim()
-      if (!target.appearance && shouldSetText(delta.appearance)) setFields.appearance = delta.appearance.trim()
-      if (!target.persona && shouldSetText(delta.persona)) setFields.persona = delta.persona.trim()
-      if (shouldSetText(delta.disposition_to_player)) {
-        setFields.disposition_to_player = delta.disposition_to_player.trim()
-      }
-      if (shouldSetText(delta.hidden_thought)) {
-        setFields.hidden_thought = delta.hidden_thought.trim()
-      }
-      if (hasRelationshipDeltas(delta.relationship_deltas)) {
-        setFields.relationship = applyRelationshipDeltas(
-          target.relationship,
-          delta.relationship_deltas,
-        )
-      }
-      // Protagonist is a sticky flag: once a turn identifies this card as the
-      // main persona, keep it set even if a later turn omits the hint — but
-      // only while NO canonical protagonist exists. Promoting a second card
-      // would split one person into two (the catastrophic-drift case).
-      if (delta.is_protagonist === true && !target.is_protagonist && !protagonist) {
-        setFields.is_protagonist = true
-        protagonist = target
-      }
-
-      await characters().updateOne(
-        { _id: target._id },
-        {
-          $set: setFields,
-          $inc: { mention_count: 1 },
-        },
-      )
-      // Newly-learned referents must resolve to this card for the REST of this
-      // batch too, not only on the next turn.
-      for (const a of mergedAliases) byName.set(normalizeName(a), target)
-    }
-
+    await foldAndPersist(iid, pid, existing, [{ sequence, deltas }])
     return this.listForInstance(instanceId, 30)
+  },
+
+  /**
+   * Rebuild the entire emergent codex as an exact projection of the ledger by
+   * folding the supplied per-turn deltas (oldest first) over the current cards.
+   * Used by rewind: after the codex is cleared and the protagonist re-seeded,
+   * the surviving turns' stored `codex_deltas` are replayed deterministically —
+   * the whole replay folds in memory and persists with a single bulk insert
+   * (+ a couple of updates), so cost is independent of how deep the rewind is.
+   */
+  async rebuildCodexFromLedger(params: {
+    instanceId: string
+    playerId: string
+    batches: Array<{ sequence: number; deltas: CharacterCodexDelta[] }>
+  }): Promise<void> {
+    const { instanceId, playerId, batches } = params
+    if (!batches.length) return
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+    // Existing = the just-reseeded protagonist, so protagonist deltas merge into
+    // it (and rebuild its facts/state) rather than minting a duplicate.
+    const existing = await characters().find({ instance_id: iid }).toArray()
+    await foldAndPersist(iid, pid, existing, batches)
   },
 
   /** Overwrite a character's immutable_facts (used by async compaction to
