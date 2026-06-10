@@ -333,7 +333,10 @@ export const memoryService = {
     let deletedMemories = 0
     if (doomedIds.length > 0) {
       const mems = await memories()
-        .find({ instance_id: iid, source_event_ids: { $in: doomedIds } })
+        .find(
+          { instance_id: iid, source_event_ids: { $in: doomedIds } },
+          { projection: { _id: 1, pinecone_id: 1 } },
+        )
         .toArray()
       if (mems.length > 0) {
         const ns = getPineconeIndex().namespace(`mem_${instanceId}`)
@@ -380,10 +383,27 @@ export const memoryService = {
         isPlayer: !template.is_sentient,
       })
     }
-    // `survivors` (events strictly before the rewind point) is fetched in step 4
-    // below; fetch it here too for the codex replay.
-    const codexSurvivors = await events().find({ instance_id: iid }).sort({ sequence: 1 }).toArray()
-    const hasLedgeredDeltas = codexSurvivors.some((e) => Array.isArray(e.data?.codex_deltas))
+    // Load the surviving events ONCE, projecting only the fields the two
+    // replays need (state/flag/codex deltas + scene tag) — never the full prose
+    // or replay variants. Reused for both the codex rebuild here and the
+    // world-state replay in step 4, so a deep rewind doesn't pull the entire
+    // (potentially huge) transcript into memory, let alone twice.
+    const survivors = await events()
+      .find(
+        { instance_id: iid },
+        {
+          projection: {
+            sequence: 1,
+            scene_tag: 1,
+            'data.state_mutations': 1,
+            'data.flag_mutations': 1,
+            'data.codex_deltas': 1,
+          },
+        },
+      )
+      .sort({ sequence: 1 })
+      .toArray()
+    const hasLedgeredDeltas = survivors.some((e) => Array.isArray(e.data?.codex_deltas))
 
     if (hasLedgeredDeltas) {
       // Exact rebuild: drop the whole codex, restore protagonist identity, then
@@ -392,7 +412,7 @@ export const memoryService = {
       // 13,567 costs the same as one at turn 13 — no per-turn DB round-trips.
       await characters().deleteMany({ instance_id: iid })
       await reseedProtagonist()
-      const batches = codexSurvivors
+      const batches = survivors
         .filter((ev) => Array.isArray(ev.data?.codex_deltas) && ev.data.codex_deltas.length > 0)
         .map((ev) => ({ sequence: ev.sequence, deltas: ev.data!.codex_deltas! }))
       await characterCodexService.rebuildCodexFromLedger({ instanceId, playerId, batches })
@@ -423,7 +443,7 @@ export const memoryService = {
       activeFlags[key] = def.default
     }
 
-    const survivors = await events().find({ instance_id: iid }).sort({ sequence: 1 }).toArray()
+    // Reuse the single projected load fetched above (no second full scan).
     for (const ev of survivors) {
       worldState = applyStateMutations(worldState, ev.data?.state_mutations || {}, statLimits)
       activeFlags = applyFlagMutations(activeFlags, ev.data?.flag_mutations || {})
