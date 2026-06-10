@@ -23,6 +23,8 @@ export type {
 } from './world-event.model'
 export type { MemoryDoc } from './memory.model'
 export type { CharacterProfileDoc } from './character-profile.model'
+export type { EntityType, EntityDoc } from './entity.model'
+export type { EntityEdgeType, EntityEdgeDoc } from './entity-edge.model'
 export type { PersonaGender, PersonaSnapshotDoc, PersonaDoc } from './persona.model'
 export type { SceneEventRangeDoc, SceneSummaryDoc } from './scene-summary.model'
 export type { DeadLetterJobDoc } from './dead-letter-job.model'

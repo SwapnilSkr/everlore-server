@@ -11,6 +11,7 @@ import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { characterCodexService } from './character-codex.service'
+import { entityGraphService } from './entity-graph.service'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
 import { repairProseHygiene, validateProseHygiene } from '../utils/prose-hygiene'
 import { callLLM, callLLMStream, embed, AI_MODELS } from '../ai'
@@ -156,6 +157,24 @@ async function recurateMemoriesForEvent(
       { _id: event.instance_id },
       { $inc: { 'meta.total_memories': -deletedMemories } },
     )
+  }
+
+  // Graph edges asserted from the old content of this turn no longer hold;
+  // re-curation re-creates whatever the new content still supports. Entities
+  // whose ONLY reference was the deleted memories are pruned too — an edited-
+  // out first mention must not linger as an active entity.
+  try {
+    await entityGraphService.removeEventProvenance(idString(event.instance_id), [event._id])
+    const candidateEntityIds = [
+      ...new Map(
+        staleMemories
+          .flatMap((m) => [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])])
+          .map((id) => [idString(id), id] as const),
+      ).values(),
+    ]
+    await entityGraphService.pruneOrphanEntities(idString(event.instance_id), candidateEntityIds)
+  } catch (err) {
+    console.warn('Event recuration: entity graph prune failed:', (err as Error).message)
   }
 
   const memoryCurationQueue = getMemoryCurationQueue()
@@ -429,6 +448,23 @@ export const memoryService = {
       )
       const survivingProtagonist = await characters().findOne({ instance_id: iid, is_protagonist: true })
       if (!survivingProtagonist) await reseedProtagonist()
+    }
+
+    // 3c. Entity-graph repair: entities born in removed turns are deleted,
+    // edge provenance from removed events is pruned (empty edges dropped),
+    // character entities re-link to the freshly re-minted codex cards, and
+    // meter edges re-project from the rebuilt relationship ledger. Best-effort:
+    // a graph hiccup must never abort the rewind itself.
+    try {
+      await entityGraphService.repairAfterRewind({
+        instanceId,
+        playerId,
+        sequence,
+        doomedEventIds: doomedIds,
+        lastSurvivingEventId: survivors.length ? survivors[survivors.length - 1]._id : null,
+      })
+    } catch (err) {
+      console.warn('Rewind: entity graph repair failed:', (err as Error).message)
     }
 
     // 4. Replay survivors from template defaults to rebuild state.

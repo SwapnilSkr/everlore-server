@@ -6,6 +6,8 @@ import { embed, callLLM, AI_MODELS } from '../../src/ai'
 import { randomUUID } from 'crypto'
 import { getRedisClient } from '../../src/config/redis'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
+import { entityGraphService, normalizeEntityName } from '../../src/services/entity-graph.service'
+import type { EntityDoc, EntityType } from '../../src/models/entity.model'
 
 const EXTRACTION_PROMPT = `You are the memory curator for a long-running narrative world. Given one exchange between a player and the world, extract 0-3 memory atoms worth keeping long-term, and detect whether this turn resolved any previously open thread.
 
@@ -17,6 +19,7 @@ Rules for memory atoms:
 - Classify type: relationship, promise, lore, observation, emotion, secret.
 - subjects = who acts/feels in the atom; objects = who/what is affected. Use canonical roster names where possible; use "player" for the player.
 - Set unresolved_thread true ONLY for genuinely open hooks: an unkept promise, an unanswered question, an unresolved conflict, a debt, a threat still looming. Mundane ongoing states are not threads.
+- Top-level "entities": classify EVERY name used in any atom's subjects/objects with its kind: character, location, faction, item, quest, or other. Use "character" for people (including "player").
 - Flag is_nsfw if explicit content is referenced.
 - If nothing is worth remembering, return an empty array.
 - Treat "Player canonical narration facts" as events that DEFINITELY happened.
@@ -40,6 +43,9 @@ Respond ONLY with valid JSON matching this schema:
       "relationship_delta": "string or null",
       "unresolved_thread": boolean
     }
+  ],
+  "entities": [
+    { "name": "string", "kind": "character|location|faction|item|quest|other" }
   ],
   "resolved_threads": ["string"]
 }`
@@ -186,6 +192,75 @@ World: ${aiResponse}`,
     return { memoriesCreated: 0, threadsResolved }
   }
 
+  // ── Entity-graph resolution: subjects/objects → entity ids ──
+  // Strings stay on the doc (back-compat + text index); ids are what the
+  // neighborhood retrieval and rewind repair operate on. Graph failures must
+  // never fail curation.
+  let entityMap: Map<string, EntityDoc> | null = null
+  let entitySequence = 0
+  try {
+    const ev = await mongoColl
+      .events()
+      .findOne({ _id: eventOid }, { projection: { sequence: 1 } })
+    const sequence = ev?.sequence || 0
+
+    const KIND_TO_TYPE: Record<string, EntityType> = {
+      character: 'character',
+      location: 'location',
+      faction: 'faction',
+      item: 'item',
+      quest: 'quest',
+      other: 'concept',
+    }
+    const extractedKinds = new Map<string, EntityType>()
+    for (const e of Array.isArray(extracted.entities) ? extracted.entities : []) {
+      const name = normalizeEntityName(String(e?.name || ''))
+      const type = KIND_TO_TYPE[String(e?.kind || '').toLowerCase()]
+      if (name && type) extractedKinds.set(name, type)
+    }
+    // The codex roster outranks the LLM's kind guess for people we know.
+    const rosterTypes = new Map<string, EntityType>()
+    for (const c of roster) {
+      const type: EntityType = (c as any).is_protagonist ? 'protagonist' : 'character'
+      rosterTypes.set(normalizeEntityName(c.canonical_name), type)
+      for (const a of (c as any).aliases || []) rosterTypes.set(normalizeEntityName(a), type)
+    }
+
+    const mentions: { name: string; type?: EntityType }[] = []
+    const seenMentions = new Set<string>()
+    for (const mem of extracted.memories) {
+      for (const name of [...cleanNameList(mem.subjects), ...cleanNameList(mem.objects)]) {
+        const normalized = normalizeEntityName(name)
+        if (!normalized || seenMentions.has(normalized)) continue
+        seenMentions.add(normalized)
+        if (normalized === 'player' || normalized === 'the player') continue // singleton below
+        mentions.push({
+          name,
+          type: rosterTypes.get(normalized) || extractedKinds.get(normalized) || 'concept',
+        })
+      }
+    }
+    await entityGraphService.ensurePlayerEntity({ instanceId, playerId, sequence })
+    entityMap = await entityGraphService.resolveOrCreateEntities({
+      instanceId,
+      playerId,
+      sequence,
+      mentions,
+    })
+    entitySequence = sequence
+  } catch (err) {
+    console.warn('Memory entity resolution skipped:', (err as Error).message)
+  }
+  const entityIdsFor = (names: string[]): ObjectId[] => {
+    if (!entityMap) return []
+    const out: ObjectId[] = []
+    for (const name of names) {
+      const e = entityMap.get(normalizeEntityName(name))
+      if (e && !out.some((id) => id.equals(e._id))) out.push(e._id)
+    }
+    return out
+  }
+
   const index = getPineconeIndex()
   const namespace = index.namespace(`mem_${instanceId}`)
   const newMemories: any[] = []
@@ -199,6 +274,8 @@ World: ${aiResponse}`,
 
     const subjects = cleanNameList(mem.subjects)
     const objects = cleanNameList(mem.objects)
+    const subjectEntityIds = entityIdsFor(subjects)
+    const objectEntityIds = entityIdsFor(objects)
     const unresolvedThread = mem.unresolved_thread === true
 
     const embedding = await embed(text)
@@ -247,6 +324,8 @@ World: ${aiResponse}`,
       is_archived: false,
       subjects,
       objects,
+      ...(subjectEntityIds.length ? { subject_entity_ids: subjectEntityIds } : {}),
+      ...(objectEntityIds.length ? { object_entity_ids: objectEntityIds } : {}),
       ...enrichment,
       unresolved_thread: unresolvedThread,
       resolved_at: null,
@@ -255,6 +334,31 @@ World: ${aiResponse}`,
     }
     await mongoColl.memories().insertOne(memoryDoc)
     newMemories.push(memoryDoc)
+
+    // Relationship atoms also become graph edges (subject → object) so the
+    // graph can answer "what stands between these two" without re-reading
+    // memory text. Provenance = this event; rewind/edit prunes it.
+    if (
+      mem.type === 'relationship' &&
+      subjectEntityIds.length > 0 &&
+      objectEntityIds.length > 0 &&
+      !subjectEntityIds[0].equals(objectEntityIds[0])
+    ) {
+      try {
+        await entityGraphService.upsertNarrativeEdge({
+          instanceId,
+          sourceEntityId: subjectEntityIds[0],
+          targetEntityId: objectEntityIds[0],
+          type: 'relationship',
+          label: relationshipDelta || text,
+          importance: mem.importance,
+          eventId: eventOid,
+          sequence: entitySequence,
+        })
+      } catch (err) {
+        console.warn('Relationship edge upsert skipped:', (err as Error).message)
+      }
+    }
   }
 
   await mongoColl.worldInstances().updateOne(

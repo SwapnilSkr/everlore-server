@@ -240,6 +240,60 @@ export async function maintenanceProcessor(job: Job) {
       return { scanned: instances.length, scheduled }
     }
 
+    case 'repair_entity_graph': {
+      // Per-instance graph repair: prune edges whose source events were
+      // removed outside the rewind path, and backfill/relink card↔entity 1:1
+      // links (also serves as the lazy migration for pre-graph worlds).
+      const { instanceId } = job.data as { instanceId: string }
+      const instanceOid = parseObjectId(instanceId)
+      const { entityGraphService } = await import('../../src/services/entity-graph.service')
+
+      const edges = await mongoColl.entityEdges()
+        .find({ instance_id: instanceOid }, { projection: { source_event_ids: 1 } })
+        .toArray()
+      const referenced = [...new Set(edges.flatMap((e) => e.source_event_ids || []).map(idString))]
+      let prunedEdges = 0
+      if (referenced.length > 0) {
+        const existing = await mongoColl.events()
+          .find(
+            { instance_id: instanceOid, _id: { $in: referenced.map((id) => parseObjectId(id)) } },
+            { projection: { _id: 1 } },
+          )
+          .toArray()
+        const alive = new Set(existing.map((e) => idString(e._id)))
+        const dead = referenced.filter((id) => !alive.has(id))
+        if (dead.length > 0) {
+          prunedEdges = await entityGraphService.removeEventProvenance(
+            instanceId,
+            dead.map((id) => parseObjectId(id)),
+          )
+        }
+      }
+
+      const instance = await mongoColl.worldInstances().findOne(
+        { _id: instanceOid },
+        { projection: { player_id: 1 } },
+      )
+      let linkedCards = 0
+      if (instance) {
+        const cards = await mongoColl.characters().find({ instance_id: instanceOid }).toArray()
+        if (cards.length > 0) {
+          const latest = await mongoColl.events().findOne(
+            { instance_id: instanceOid },
+            { sort: { sequence: -1 }, projection: { sequence: 1 } },
+          )
+          await entityGraphService.syncCodexEntities({
+            instanceId,
+            playerId: idString(instance.player_id),
+            sequence: latest?.sequence || 0,
+            cards,
+          })
+          linkedCards = cards.length
+        }
+      }
+      return { prunedEdges, linkedCards }
+    }
+
     default:
       return { error: `Unknown maintenance task: ${task}` }
   }

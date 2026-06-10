@@ -21,6 +21,7 @@ import { extractSceneMetadata } from "../lib/metadata-extractor";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
 import { compactImmutableFacts } from "../lib/codex-compactor";
 import { characterCodexService } from "../../src/services/character-codex.service";
+import { entityGraphService } from "../../src/services/entity-graph.service";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
 import {
   getMemoryCurationQueue,
@@ -80,6 +81,7 @@ export async function generationProcessor(job: Job) {
     recentEvents,
     activeSummary,
     characterCodex = [],
+    mentionedEntityIds = [],
   } = job.data;
 
   // A continue with a time span becomes a calendar tick: story time advances.
@@ -121,6 +123,7 @@ export async function generationProcessor(job: Job) {
       ragQueryText,
       session.max_lore_results || 10,
       session.max_context_memories || 25,
+      mentionedEntityIds,
     );
     loreTexts = rag.loreTexts;
     memoryTexts = rag.memoryTexts;
@@ -534,6 +537,34 @@ export async function generationProcessor(job: Job) {
       await mongoColl
         .events()
         .updateOne({ _id: event._id }, { $set: { "data.codex_deltas": deltas } });
+
+      // Entity graph: keep card↔entity links 1:1 and project this turn's
+      // relationship meters onto typed edges. Best-effort — graph failures
+      // never break the codex pipeline.
+      try {
+        const entityMap = await entityGraphService.syncCodexEntities({
+          instanceId,
+          playerId,
+          sequence: nextSequence,
+          cards: codex,
+        });
+        const touchedCards = codex.filter(
+          (c) => c.last_seen_sequence === nextSequence && c.relationship,
+        );
+        if (touchedCards.length > 0) {
+          await entityGraphService.syncRelationshipEdges({
+            instanceId,
+            playerId,
+            sequence: nextSequence,
+            eventId: event._id,
+            cards: touchedCards,
+            entitiesByCardName: entityMap,
+            playerName: session.persona_snapshot?.name,
+          });
+        }
+      } catch (err) {
+        console.warn("entity graph sync failed:", (err as Error).message);
+      }
 
       // Memory-vector supersession: when a status was retired this turn, evict
       // the stale memory vectors so RAG can't resurface the now-false fact.

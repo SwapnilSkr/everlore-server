@@ -24,6 +24,10 @@ export interface MemoryDoc {
   subjects?: string[]
   /** Canonical entity names acted upon or affected. */
   objects?: string[]
+  /** Entity-graph ids resolved from `subjects` (strings kept for compat). */
+  subject_entity_ids?: ObjectId[]
+  /** Entity-graph ids resolved from `objects`. */
+  object_entity_ids?: ObjectId[]
   /** One-word emotional tone of the memory (e.g. "tender", "bitter"). */
   emotional_valence?: string
   /** What caused the emotional impact, when the memory carries one. */

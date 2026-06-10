@@ -9,6 +9,8 @@ import type { WorldEventDoc } from '../models/world-event.model'
 import type { MemoryDoc } from '../models/memory.model'
 import type { SceneSummaryDoc } from '../models/scene-summary.model'
 import type { CharacterProfileDoc } from '../models/character-profile.model'
+import type { EntityDoc } from '../models/entity.model'
+import type { EntityEdgeDoc } from '../models/entity-edge.model'
 import type { PersonaDoc } from '../models/persona.model'
 import type { DeadLetterJobDoc } from '../models/dead-letter-job.model'
 import type { GenerationLogDoc } from '../models/generation-log.model'
@@ -35,6 +37,8 @@ export const mongoColl = {
   memories: () => coll<WithoutId<MemoryDoc>>(COLLECTIONS.memories),
   sceneSummaries: () => coll<WithoutId<SceneSummaryDoc>>(COLLECTIONS.scene_summaries),
   characters: () => coll<WithoutId<CharacterProfileDoc>>(COLLECTIONS.characters),
+  entities: () => coll<WithoutId<EntityDoc>>(COLLECTIONS.entities),
+  entityEdges: () => coll<WithoutId<EntityEdgeDoc>>(COLLECTIONS.entity_edges),
   personas: () => coll<WithoutId<PersonaDoc>>(COLLECTIONS.personas),
   deadLetterJobs: () => coll<WithoutId<DeadLetterJobDoc>>(COLLECTIONS.dead_letter_jobs),
   generationLogs: () => coll<WithoutId<GenerationLogDoc>>(COLLECTIONS.generation_logs),

@@ -31,6 +31,8 @@ export interface CharacterProfileDoc {
   hidden_thought: string
   /** Gamified relationship ledger; absent until the first meter-moving turn. */
   relationship?: RelationshipMeters
+  /** 1:1 link to this card's entity-graph node (lazily backfilled). */
+  entity_id?: ObjectId
   /** True for the world's main sentient persona (the character the player talks
    *  TO in a sentient world). Pins them to the top of the roster and excludes
    *  them from the redundant NPC-codex prompt injection. */

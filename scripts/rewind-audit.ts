@@ -10,6 +10,7 @@ import { connectMongo, mongoColl } from '../src/config/mongo'
 import { connectRedis } from '../src/config/redis'
 import { memoryService } from '../src/services/memory.service'
 import { characterCodexService } from '../src/services/character-codex.service'
+import { entityGraphService } from '../src/services/entity-graph.service'
 
 const SOURCE = process.argv[2] || '6a2869768f7446e38bdb6fce'
 const SEQ = Number(process.argv[3] || 2)
@@ -65,6 +66,67 @@ async function main() {
     ] } },
   )
 
+  // === Seed entity graph on the clone ===
+  // Two non-character entities (one born in a surviving turn, one in a doomed
+  // turn), edges with doomed-only and mixed provenance, and an entity-linked
+  // memory from a surviving turn — exercising every rewind repair rule.
+  const clonedEvents = await mongoColl.events().find({ instance_id: tempId }).toArray()
+  const evBySeq = new Map(clonedEvents.map((e) => [e.sequence, e._id]))
+  const survEventId = evBySeq.get(survSeq)
+  const doomedEventId = evBySeq.get(SEQ)
+  const now = new Date()
+  const mkEntity = (name: string, firstSeen: number) => ({
+    _id: new ObjectId(),
+    instance_id: tempId,
+    player_id: playerId,
+    type: 'location' as const,
+    canonical_name: name,
+    name_normalized: name.toLowerCase(),
+    aliases: [],
+    status: 'active' as const,
+    first_seen_sequence: firstSeen,
+    last_seen_sequence: SEQ,
+    mention_count: 1,
+    created_at: now,
+    updated_at: now,
+  })
+  const oldKeep = mkEntity('OldKeep', survSeq)
+  const oldTower = mkEntity('OldTower', survSeq)
+  const doomedPlace = mkEntity('DoomedPlace', SEQ)
+  await mongoColl.entities().insertMany([oldKeep, oldTower, doomedPlace] as any)
+  if (survEventId && doomedEventId) {
+    // Mixed provenance: must survive with only the surviving source left.
+    await entityGraphService.upsertNarrativeEdge({
+      instanceId: tempId.toString(), sourceEntityId: oldKeep._id, targetEntityId: oldTower._id,
+      type: 'relationship', label: 'rival strongholds', importance: 3, eventId: survEventId, sequence: survSeq,
+    })
+    await entityGraphService.upsertNarrativeEdge({
+      instanceId: tempId.toString(), sourceEntityId: oldKeep._id, targetEntityId: oldTower._id,
+      type: 'relationship', label: 'rival strongholds', importance: 3, eventId: doomedEventId, sequence: SEQ,
+    })
+    // Same pair/type, DIFFERENT label, sourced only from the doomed turn:
+    // label is part of edge identity, so this must be its own edge and must
+    // die with its turn — not merge into (and re-label) the surviving edge.
+    await entityGraphService.upsertNarrativeEdge({
+      instanceId: tempId.toString(), sourceEntityId: oldKeep._id, targetEntityId: oldTower._id,
+      type: 'relationship', label: 'reconciled after the siege', importance: 3, eventId: doomedEventId, sequence: SEQ,
+    })
+    // Doomed-only provenance between SURVIVING entities: must be deleted.
+    await entityGraphService.upsertNarrativeEdge({
+      instanceId: tempId.toString(), sourceEntityId: oldTower._id, targetEntityId: oldKeep._id,
+      type: 'besieged', label: 'siege of the keep', importance: 4, eventId: doomedEventId, sequence: SEQ,
+    })
+    // Entity-linked memory from a surviving turn: must survive the rewind.
+    await mongoColl.memories().insertOne({
+      _id: new ObjectId(), instance_id: tempId, player_id: playerId,
+      text: 'The player swore to defend OldKeep.', type: 'promise', importance: 4, is_nsfw: false,
+      source_event_ids: [survEventId], pinecone_id: null, access_count: 0, last_accessed_at: now,
+      is_archived: false, subjects: ['player'], objects: ['OldKeep'],
+      subject_entity_ids: [], object_entity_ids: [oldKeep._id],
+      created_at: now, updated_at: now,
+    } as any)
+  }
+
   const protoBefore = await mongoColl.characters().findOne({ instance_id: tempId, is_protagonist: true })
   const eventsBefore = await mongoColl.events().countDocuments({ instance_id: tempId })
   console.log(`\nClone ${tempId}: ${eventsBefore} events, protagonist="${protoBefore?.canonical_name}" aliases=[${(protoBefore?.aliases || []).join(', ')}]\n`)
@@ -96,6 +158,38 @@ async function main() {
   ok('meter reflects ONLY surviving delta (50+6=56, not -)', early?.relationship?.trust === 56, `trust=${early?.relationship?.trust ?? 'none'}`)
   ok('side character born in removed turn DELETED', !late, late ? 'LateStranger wrongly survived' : 'LateStranger gone')
 
+  // === Entity-graph assertions ===
+  const doomedAfter = await mongoColl.entities().findOne({ _id: doomedPlace._id })
+  ok('entity born in removed turn DELETED', !doomedAfter, doomedAfter ? 'DoomedPlace wrongly survived' : 'DoomedPlace gone')
+  const oldKeepAfter = await mongoColl.entities().findOne({ _id: oldKeep._id })
+  ok('surviving entity kept, last_seen clamped', !!oldKeepAfter && oldKeepAfter.last_seen_sequence <= SEQ - 1, `last_seen=${oldKeepAfter?.last_seen_sequence}`)
+  const besieged = await mongoColl.entityEdges().findOne({ instance_id: tempId, type: 'besieged' })
+  ok('edge sourced ONLY from removed turn DELETED', !besieged)
+  const pairEdges = await mongoColl.entityEdges().find({ instance_id: tempId, type: 'relationship', source_entity_id: oldKeep._id }).toArray()
+  const rivalEdge = pairEdges.find((e) => e.label === 'rival strongholds')
+  ok(
+    'mixed-provenance edge pruned to surviving sources',
+    !!rivalEdge && rivalEdge.source_event_ids.length === 1 && !!survEventId && rivalEdge.source_event_ids[0].equals(survEventId),
+    `sources=${rivalEdge?.source_event_ids?.length}`,
+  )
+  ok(
+    'doomed-turn assertion on same pair/type DELETED (no stale label)',
+    pairEdges.length === 1 && rivalEdge?.label === 'rival strongholds',
+    `labels=[${pairEdges.map((e) => e.label).join('; ')}]`,
+  )
+  const keepMemory = await mongoColl.memories().findOne({ instance_id: tempId, object_entity_ids: oldKeep._id })
+  ok('entity-linked memory from surviving turn KEPT', !!keepMemory)
+  const earlyEntity = await mongoColl.entities().findOne({ instance_id: tempId, type: 'character', name_normalized: 'earlyally' })
+  ok(
+    'rebuilt card linked 1:1 to character entity',
+    !!earlyEntity && !!early?.entity_id && early.entity_id.equals(earlyEntity._id) && !!earlyEntity.character_id && earlyEntity.character_id.equals(early._id),
+    earlyEntity ? `entity=${earlyEntity._id}` : 'entity missing!',
+  )
+  const trustEdge = earlyEntity
+    ? await mongoColl.entityEdges().findOne({ instance_id: tempId, type: 'trust', source_entity_id: earlyEntity._id })
+    : null
+  ok('meter edge re-projected from rebuilt ledger (trust=56)', trustEdge?.weight === 56, `weight=${trustEdge?.weight ?? 'none'}`)
+
   // Per-turn applyDeltas hot path: new card (insert) then update (dirty-write +
   // accumulate). Exercises the refactored fold/persist used on every live turn.
   await characterCodexService.applyDeltas({ instanceId: tempId.toString(), playerId: playerId.toString(), sequence: 10, deltas: [{ name: 'Probe', immutable_facts: ['fact A'], relationship_deltas: { trust: 5 }, is_protagonist: false }] as any })
@@ -116,6 +210,8 @@ async function main() {
   await mongoColl.characters().deleteMany({ instance_id: tempId })
   await mongoColl.memories().deleteMany({ instance_id: tempId })
   await mongoColl.sceneSummaries().deleteMany({ instance_id: tempId })
+  await mongoColl.entities().deleteMany({ instance_id: tempId })
+  await mongoColl.entityEdges().deleteMany({ instance_id: tempId })
   console.log(`\nCleaned up clone ${tempId}.`)
   process.exit(process.exitCode || 0)
 }

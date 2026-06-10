@@ -6,7 +6,8 @@ import type { WorldInstanceDoc } from '../models/world-instance.model'
 import type { WorldTemplateDoc } from '../models/world-template.model'
 import { getGenerationQueue, QUEUE_RETENTION } from '../queues'
 import { instanceService } from './instance.service'
-import { rankCodexForInjection, characterCodexService } from './character-codex.service'
+import { rankCodexForInjection } from './character-codex.service'
+import { entityGraphService } from './entity-graph.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { EVENT_WINDOWS, buildEventWindow } from '../utils/event-window'
 
@@ -95,16 +96,23 @@ export const generationService = {
     // out of the recency-ranked set, pin their canonical card to the front so
     // asking about a long-dormant character surfaces their structured canon —
     // not just the loose memories hybrid retrieval already returns. Pinned-first
-    // means the prompt's per-section token budget protects them.
+    // means the prompt's per-section token budget protects them. Mentions
+    // resolve through the entity registry (characters, locations, items, …);
+    // the resolved entity ids also drive neighborhood memory retrieval in the
+    // worker. (Memory-driven pinning AFTER RAG hooks in via the
+    // retrievedEntityIds the rag provider returns — a later phase.)
+    let mentionedEntityIds: string[] = []
     if (!isContinuation && userMessage) {
       const includedIds = characterCodex
         .map((c: any) => (c._id ? idString(c._id) : ''))
         .filter(Boolean)
-      const pinned = await characterCodexService.findMentionedCharacters(
-        instanceId,
-        userMessage,
-        includedIds,
-      )
+      const { cards: pinned, mentionedEntityIds: entityIds } =
+        await entityGraphService.findMentionedCharacterCards(
+          instanceId,
+          userMessage,
+          includedIds,
+        )
+      mentionedEntityIds = entityIds
       if (pinned.length > 0) characterCodex.unshift(...(pinned as any[]))
     }
 
@@ -121,6 +129,7 @@ export const generationService = {
         recentEvents,
         activeSummary: activeSummary?.summary_text || null,
         characterCodex,
+        mentionedEntityIds,
       },
       {
         priority: 1,

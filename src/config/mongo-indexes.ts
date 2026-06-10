@@ -105,6 +105,17 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { text: "text", subjects: "text", objects: "text" },
     options: { name: "idx_memories_text_search" },
   },
+  // Entity-neighborhood retrieval: memories linked to mentioned entities.
+  {
+    collection: COLLECTIONS.memories,
+    key: { instance_id: 1, subject_entity_ids: 1 },
+    options: { name: "idx_memories_instance_subject_entities" },
+  },
+  {
+    collection: COLLECTIONS.memories,
+    key: { instance_id: 1, object_entity_ids: 1 },
+    options: { name: "idx_memories_instance_object_entities" },
+  },
   // Open-thread surfacing: unresolved promises/conflicts ranked by importance.
   {
     collection: COLLECTIONS.memories,
@@ -122,6 +133,48 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     collection: COLLECTIONS.characters,
     key: { instance_id: 1, mention_count: -1, updated_at: -1 },
     options: { name: "idx_characters_instance_rank" },
+  },
+
+  // entities (entity graph nodes) — type is part of the natural key so a
+  // character "Mira" and a location "Mira" can coexist; resolution still scans
+  // names/aliases across types.
+  {
+    collection: COLLECTIONS.entities,
+    key: { instance_id: 1, type: 1, name_normalized: 1 },
+    options: { unique: true, name: "idx_entities_instance_type_name" },
+  },
+  {
+    collection: COLLECTIONS.entities,
+    key: { instance_id: 1, name_normalized: 1 },
+    options: { name: "idx_entities_instance_name" },
+  },
+  {
+    collection: COLLECTIONS.entities,
+    key: { instance_id: 1, character_id: 1 },
+    options: { sparse: true, name: "idx_entities_instance_character" },
+  },
+
+  // entity_edges (entity graph edges). `label` is part of edge identity so
+  // each narrative ASSERTION ("betrayed…", "forgave…") is its own edge with
+  // its own event provenance — rewind/edit then prunes exactly the assertions
+  // whose source turns were removed, instead of leaving a merged edge wearing
+  // the latest label. Meter edges carry no label (null), so they stay unique
+  // per (source, target, type).
+  {
+    collection: COLLECTIONS.entity_edges,
+    key: { instance_id: 1, source_entity_id: 1, target_entity_id: 1, type: 1, label: 1 },
+    options: { unique: true, name: "idx_entity_edges_assertion" },
+  },
+  // Multikey provenance index: rewind/edit pulls removed event ids from edges.
+  {
+    collection: COLLECTIONS.entity_edges,
+    key: { instance_id: 1, source_event_ids: 1 },
+    options: { name: "idx_entity_edges_instance_sources" },
+  },
+  {
+    collection: COLLECTIONS.entity_edges,
+    key: { instance_id: 1, status: 1, importance: -1 },
+    options: { name: "idx_entity_edges_instance_status" },
   },
 
   // personas
@@ -202,6 +255,15 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   },
 ]
 
+/**
+ * Indexes superseded by a definition with DIFFERENT keys (the reconciler above
+ * only handles same-key option drift). Startup drops these if present.
+ */
+export const DEPRECATED_INDEXES: Array<{ collection: string; name: string }> = [
+  // Replaced by idx_entity_edges_assertion (label joined the unique key).
+  { collection: COLLECTIONS.entity_edges, name: "idx_entity_edges_endpoints_type" },
+]
+
 function isTextIndexDef(desired: Document): boolean {
   return Object.values(desired).some((v) => v === "text")
 }
@@ -244,6 +306,13 @@ function optionsMatch(
 }
 
 export async function ensureEverloreIndexes(db: Db): Promise<void> {
+  for (const dep of DEPRECATED_INDEXES) {
+    const collection = db.collection(dep.collection)
+    const existing = await listCollectionIndexes(collection)
+    if (existing.some((idx) => idx.name === dep.name)) {
+      await collection.dropIndex(dep.name)
+    }
+  }
   for (const def of EVERLORE_INDEXES) {
     const collection = db.collection(def.collection)
     const existing = await listCollectionIndexes(collection)

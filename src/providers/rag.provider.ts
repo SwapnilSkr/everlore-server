@@ -10,6 +10,9 @@ interface RagResult {
   /** Unresolved promises/conflicts/questions, highest-importance first. */
   openThreads: string[]
   retrievedMemoryMongoIds: string[]
+  /** Entity ids linked to the retrieved memories — the hook for memory-driven
+   *  codex pinning after RAG (collected from the Mongo-side retrieval paths). */
+  retrievedEntityIds: string[]
 }
 
 /** Reciprocal-rank-fusion constant — standard value, dampens rank-1 dominance. */
@@ -37,6 +40,9 @@ export async function queryRag(
   queryText: string,
   maxLoreResults: number,
   maxMemoryResults: number,
+  /** Entity ids mentioned in the player's turn — adds graph-neighborhood
+   *  retrieval (memories LINKED to those entities by id, not by string). */
+  mentionedEntityIds: string[] = [],
 ): Promise<RagResult> {
   const queryEmbedding = await embed(queryText)
   const index = getPineconeIndex()
@@ -65,6 +71,33 @@ export async function queryRag(
     }
   }
 
+  // Entity-neighborhood search: memories linked BY ID to the entities the
+  // player named this turn. Catches what both other paths miss — a memory that
+  // neither shares the query's wording (keyword) nor its meaning (vector) but
+  // is about the person/place being asked about.
+  const entityNeighborhoodSearch = async (): Promise<MemoryDoc[]> => {
+    if (mentionedEntityIds.length === 0) return []
+    try {
+      const ids = mentionedEntityIds.map((id) => parseObjectId(id))
+      return (await mongoColl
+        .memories()
+        .find({
+          instance_id: instanceOid,
+          is_archived: false,
+          $or: [
+            { subject_entity_ids: { $in: ids } },
+            { object_entity_ids: { $in: ids } },
+          ],
+        })
+        .sort({ importance: -1, updated_at: -1 })
+        .limit(maxMemoryResults)
+        .toArray()) as MemoryDoc[]
+    } catch (err) {
+      console.warn('Entity neighborhood search skipped:', (err as Error).message)
+      return []
+    }
+  }
+
   const openThreadSearch = (): Promise<MemoryDoc[]> =>
     mongoColl
       .memories()
@@ -77,7 +110,7 @@ export async function queryRag(
       .limit(OPEN_THREADS_LIMIT)
       .toArray() as Promise<MemoryDoc[]>
 
-  const [loreResults, memoryResults, keywordMemories, threadMemories] =
+  const [loreResults, memoryResults, keywordMemories, entityMemories, threadMemories] =
     await Promise.all([
       index.namespace(`lore_${templateId}`).query({
         vector: queryEmbedding,
@@ -90,6 +123,7 @@ export async function queryRag(
         includeMetadata: true,
       }),
       keywordSearch(),
+      entityNeighborhoodSearch(),
       openThreadSearch(),
     ])
 
@@ -147,6 +181,15 @@ export async function queryRag(
     })),
   )
 
+  addRanked(
+    entityMemories.map((m) => ({
+      key: idString(m._id),
+      text: m.text,
+      mongoId: idString(m._id),
+      importance: m.importance || 3,
+    })),
+  )
+
   // Open threads get their own prompt section — keep the general memory list
   // free of duplicates so the budget isn't spent saying the same thing twice.
   const threadIds = new Set(threadMemories.map((m) => idString(m._id)))
@@ -161,6 +204,19 @@ export async function queryRag(
     .map((c) => c.mongoId)
     .filter((id): id is string => id !== null)
 
+  // Memory-driven pinning hook: entity ids linked to the memories this query
+  // surfaced (from the Mongo-side docs already in hand — no extra fetch). A
+  // later phase can pin codex cards for these AFTER RAG.
+  const fusedIdSet = new Set(retrievedMemoryMongoIds)
+  const retrievedEntityIds = [
+    ...new Set(
+      [...keywordMemories, ...entityMemories, ...threadMemories]
+        .filter((m) => fusedIdSet.has(idString(m._id)) || threadIds.has(idString(m._id)))
+        .flatMap((m) => [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])])
+        .map((id) => idString(id)),
+    ),
+  ]
+
   const accessedIds = [...new Set([...retrievedMemoryMongoIds, ...threadIds])]
   if (accessedIds.length > 0) {
     await mongoColl.memories().updateMany(
@@ -169,5 +225,5 @@ export async function queryRag(
     )
   }
 
-  return { loreTexts, memoryTexts, openThreads, retrievedMemoryMongoIds }
+  return { loreTexts, memoryTexts, openThreads, retrievedMemoryMongoIds, retrievedEntityIds }
 }
