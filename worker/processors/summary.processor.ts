@@ -2,10 +2,20 @@ import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { callLLM, AI_MODELS } from '../../src/ai'
-import { parseObjectId } from '../../src/utils/mongo-id'
+import { parseObjectId, idString } from '../../src/utils/mongo-id'
+import { getSceneSummaryQueue, QUEUE_RETENTION } from '../../src/queues'
 import { log } from '../../src/utils/logger'
 
+/** Roll up a fixed block of consecutive scene summaries into one chapter. */
+const CHAPTER_SCENE_BLOCK = 8
+
 export async function summaryProcessor(job: Job) {
+  // The 'scene-summary' worker handles both tiers; chapter jobs are discriminated
+  // by `kind` so we don't need a second queue/worker registration.
+  if (job.data.kind === 'chapter') {
+    return chapterRollup(job)
+  }
+
   const { instanceId, sceneTag, startSequence, endSequence } = job.data
   const instanceOid = parseObjectId(instanceId)
   log.info('scene_summary.started', {
@@ -94,5 +104,124 @@ export async function summaryProcessor(job: Job) {
     summaryId: summary._id.toString(),
   })
 
+  // A completed scene may close out a chapter's worth of scenes.
+  await maybeQueueChapter(instanceOid)
+
   return { summaryId: summary._id }
+}
+
+/**
+ * Enqueue a chapter rollup when CHAPTER_SCENE_BLOCK active scene summaries have
+ * accumulated beyond the last chapter's coverage. Each scene completion rolls at
+ * most one chapter, which keeps the cost flat as a playthrough grows.
+ */
+async function maybeQueueChapter(instanceOid: ObjectId): Promise<void> {
+  const lastChapter = await mongoColl.chapterSummaries().findOne(
+    { instance_id: instanceOid },
+    { sort: { 'event_range.end_sequence': -1 } },
+  )
+  const coveredThrough = lastChapter?.event_range.end_sequence ?? 0
+
+  const pending = await mongoColl.sceneSummaries()
+    .find({
+      instance_id: instanceOid,
+      status: { $ne: 'stale' },
+      'event_range.end_sequence': { $gt: coveredThrough },
+    })
+    .sort({ 'event_range.end_sequence': 1 })
+    .toArray()
+
+  if (pending.length < CHAPTER_SCENE_BLOCK) return
+
+  const block = pending.slice(0, CHAPTER_SCENE_BLOCK)
+  const queue = getSceneSummaryQueue()
+  await queue.add(
+    'summarize',
+    {
+      kind: 'chapter',
+      instanceId: idString(instanceOid),
+      chapterIndex: (lastChapter?.chapter_index ?? 0) + 1,
+      startSequence: block[0].event_range.start_sequence,
+      endSequence: block[block.length - 1].event_range.end_sequence,
+      sceneSummaryIds: block.map((s) => idString(s._id)),
+    },
+    {
+      priority: 16,
+      removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
+      removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
+    },
+  )
+}
+
+/** Compress a block of consecutive scene summaries into one chapter paragraph. */
+async function chapterRollup(job: Job) {
+  const { instanceId, chapterIndex, startSequence, endSequence } = job.data
+  const instanceOid = parseObjectId(instanceId)
+
+  // Fetch the child scenes by EVENT RANGE, not by stored id: scene summaries are
+  // replaced (new _id) when rebuilt, so a range query stays correct across edits.
+  const scenes = await mongoColl.sceneSummaries()
+    .find({
+      instance_id: instanceOid,
+      status: { $ne: 'stale' },
+      'event_range.start_sequence': { $gte: startSequence },
+      'event_range.end_sequence': { $lte: endSequence },
+    })
+    .sort({ 'event_range.start_sequence': 1 })
+    .toArray()
+
+  if (scenes.length < 2) {
+    log.warn('chapter_summary.skipped', { jobId: job.id, instanceId, chapterIndex, scenesFound: scenes.length })
+    return { skipped: true }
+  }
+
+  const body = scenes
+    .map((s, i) => `Scene ${i + 1}: ${s.summary_text}`)
+    .join('\n\n')
+
+  const summaryText = await callLLM({
+    model: AI_MODELS.sceneSummary,
+    messages: [
+      {
+        role: 'system',
+        content: `Weave these consecutive scene summaries into a single cohesive CHAPTER summary of 2-3 paragraphs. Preserve the through-line: key decisions, relationship shifts, promises made or broken, debts, threats, and major state changes across the whole span. Keep NSFW descriptors non-explicit (e.g. "an intimate scene occurred"). The chapter must be self-contained and understandable on its own.`,
+      },
+      { role: 'user', content: body },
+    ],
+    temperature: 0.3,
+    maxTokens: 500,
+  })
+
+  const chapter = {
+    _id: new ObjectId(),
+    instance_id: instanceOid,
+    chapter_index: chapterIndex,
+    event_range: { start_sequence: startSequence, end_sequence: endSequence },
+    scene_summary_ids: scenes.map((s) => s._id),
+    summary_text: summaryText,
+    model_used: AI_MODELS.sceneSummary,
+    tokens_consumed: 0,
+    status: 'active' as const,
+    created_at: new Date(),
+  }
+
+  // Replace-on-range, mirroring scene summaries: a rebuild for the same span
+  // supersedes the prior chapter row.
+  await mongoColl.chapterSummaries().deleteMany({
+    instance_id: instanceOid,
+    'event_range.start_sequence': startSequence,
+    'event_range.end_sequence': endSequence,
+  })
+  await mongoColl.chapterSummaries().insertOne(chapter)
+
+  log.info('chapter_summary.succeeded', {
+    jobId: job.id,
+    instanceId,
+    chapterIndex,
+    startSequence,
+    endSequence,
+    chapterId: chapter._id.toString(),
+  })
+
+  return { chapterId: chapter._id }
 }

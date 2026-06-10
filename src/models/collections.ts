@@ -9,6 +9,7 @@ export const COLLECTIONS = {
   events: 'events',
   memories: 'memories',
   scene_summaries: 'scene_summaries',
+  chapter_summaries: 'chapter_summaries',
   characters: 'characters',
   entities: 'entities',
   entity_edges: 'entity_edges',

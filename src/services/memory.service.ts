@@ -24,6 +24,7 @@ const memories = () => mongoColl.memories()
 const worldInstances = () => mongoColl.worldInstances()
 const worldTemplates = () => mongoColl.worldTemplates()
 const sceneSummaries = () => mongoColl.sceneSummaries()
+const chapterSummaries = () => mongoColl.chapterSummaries()
 const characters = () => mongoColl.characters()
 const users = () => mongoColl.users()
 
@@ -125,6 +126,44 @@ async function staleSummariesCoveringEvent(event: any): Promise<number> {
       },
     )
   }
+
+  // A chapter built over any of these scenes now describes a superseded span:
+  // stale it and requeue a rebuild over the same scene set (delayed so the
+  // child scene summaries above are rebuilt first).
+  const coveringChapters = await chapterSummaries()
+    .find({
+      instance_id: event.instance_id,
+      'event_range.start_sequence': { $lte: event.sequence },
+      'event_range.end_sequence': { $gte: event.sequence },
+      status: { $ne: 'stale' },
+    })
+    .toArray()
+  if (coveringChapters.length > 0) {
+    await chapterSummaries().updateMany(
+      { _id: { $in: coveringChapters.map((c) => c._id) } },
+      { $set: { status: 'stale' } },
+    )
+    for (const c of coveringChapters) {
+      await queue.add(
+        'summarize',
+        {
+          kind: 'chapter',
+          instanceId: idString(event.instance_id),
+          chapterIndex: c.chapter_index,
+          startSequence: c.event_range.start_sequence,
+          endSequence: c.event_range.end_sequence,
+          sceneSummaryIds: c.scene_summary_ids.map((id) => idString(id)),
+        },
+        {
+          priority: 16,
+          delay: 5000,
+          removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
+        },
+      )
+    }
+  }
+
   return covering.length
 }
 
@@ -506,8 +545,12 @@ export const memoryService = {
       }
     }
 
-    // 2. Scene summaries covering the removed range.
+    // 2. Scene + chapter summaries covering the removed range.
     await sceneSummaries().deleteMany({
+      instance_id: iid,
+      'event_range.end_sequence': { $gte: sequence },
+    })
+    await chapterSummaries().deleteMany({
       instance_id: iid,
       'event_range.end_sequence': { $gte: sequence },
     })

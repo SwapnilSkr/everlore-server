@@ -253,6 +253,13 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     options: { name: "idx_scene_summaries_instance_event_start" },
   },
 
+  // chapter_summaries
+  {
+    collection: COLLECTIONS.chapter_summaries,
+    key: { instance_id: 1, "event_range.end_sequence": -1 },
+    options: { name: "idx_chapter_summaries_instance_event_end" },
+  },
+
   // world_templates
   {
     collection: COLLECTIONS.world_templates,
