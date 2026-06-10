@@ -280,6 +280,75 @@ export const memoryService = {
     return { open: open.map(shape), resolved: resolved.map(shape) }
   },
 
+  /**
+   * Memory-aware recap (Phase 10): a "Story so far" card for re-entering a
+   * world after time away. Deterministic — it reuses the latest scene summary
+   * (already LLM prose) as the spine and layers the live open threads,
+   * relationship standings, and current place/time on top. No new LLM call, so
+   * it's free to open and always reflects the current projections.
+   */
+  async buildRecap(instanceId: string, playerId: string) {
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+    const instance = await worldInstances().findOne({ _id: iid, player_id: pid })
+    if (!instance) throw new Error('Instance not found')
+
+    const [latestSummary, latestEvent, openThreads, bondCards] = await Promise.all([
+      sceneSummaries().findOne(
+        { instance_id: iid, status: { $ne: 'stale' } },
+        { sort: { 'event_range.end_sequence': -1 } },
+      ),
+      events().findOne(
+        { instance_id: iid },
+        { sort: { sequence: -1 }, projection: { 'data.ai_response': 1, sequence: 1 } },
+      ),
+      memories()
+        .find({ instance_id: iid, unresolved_thread: true, is_archived: false })
+        .sort({ importance: -1, updated_at: -1 })
+        .limit(5)
+        .toArray(),
+      // Cast members with a tracked bond, most-recently-touched first.
+      characters()
+        .find({ instance_id: iid, is_protagonist: { $ne: true }, relationship: { $exists: true } })
+        .sort({ updated_at: -1 })
+        .limit(4)
+        .toArray(),
+    ])
+
+    // Prose spine: the most recent scene summary, else a trimmed snippet of the
+    // last thing that happened so a young playthrough still gets a recap.
+    let spine: string | null = latestSummary?.summary_text || null
+    const lastResponse = latestEvent?.data?.ai_response
+    if (!spine && lastResponse) {
+      const raw = lastResponse.trim()
+      spine = raw.length > 400 ? `${raw.slice(0, 400).trimEnd()}…` : raw
+    }
+
+    return {
+      spine,
+      where: instance.current_location?.name || null,
+      when: instance.current_time_anchor?.event_time_label || null,
+      open_threads: openThreads.map((m) => ({
+        id: idString(m._id),
+        text: m.text,
+        importance: m.importance,
+      })),
+      bonds: bondCards.map((c) => ({
+        id: idString(c._id),
+        name: c.canonical_name,
+        disposition: c.disposition_to_player || null,
+        meters: c.relationship
+          ? {
+              trust: c.relationship.trust,
+              affection: c.relationship.affection,
+              fear: c.relationship.fear,
+              rivalry: c.relationship.rivalry,
+            }
+          : null,
+      })),
+    }
+  },
+
   async editMemory(memoryId: string, playerId: string, updates: any) {
     const mid = parseObjectId(memoryId)
     const pid = parseObjectId(playerId)
