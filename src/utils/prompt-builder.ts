@@ -114,6 +114,40 @@ function compactPersonaLine(input: PromptInput): string {
   return parts.join('\n')
 }
 
+/**
+ * Per-section context budgets (tokens). A safety net so no single reference
+ * section can crowd out the others or push the prompt past MAX_CONTEXT_TOKENS,
+ * AND so the recent-turn continuity below always has room (large codices and
+ * long memory lists previously squeezed recent turns toward zero). Generous on
+ * purpose: in normal worlds every ranked item fits and nothing is trimmed. When
+ * they do bite (very large worlds), items are already sorted most-relevant-first
+ * — codex by recency-weighted importance, memories by RRF, threads by
+ * importance — so only the LEAST relevant tail is dropped.
+ */
+const SECTION_TOKEN_BUDGET = {
+  codex: 1800,
+  memories: 1100,
+  lore: 450,
+  threads: 350,
+} as const
+
+/**
+ * Keep leading items (already priority-ordered) whose cumulative token cost
+ * stays within `budget`. Always keeps at least the first item so a section is
+ * never silently emptied by an over-budget head.
+ */
+function withinTokenBudget(items: string[], budget: number): string[] {
+  const kept: string[] = []
+  let used = 0
+  for (const item of items) {
+    const t = countTokens(item)
+    if (used + t > budget && kept.length > 0) break
+    used += t
+    kept.push(item)
+  }
+  return kept
+}
+
 function formatRecentTurnForContinuity(event: any): string {
   const parts = eventPlayerParts(event)
   const ai = continuityText(event.data?.ai_response || '')
@@ -301,25 +335,33 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
 - If the current beat involves one active character, keep the reply centered on that character and leave unrelated codex characters unmentioned.
 CHARACTER CARDS:
 `
+    // Build each card as a line, keeping the highest-ranked cards that fit the
+    // codex token budget (the slice is already recency-importance ranked, so a
+    // trim drops the least-relevant cards first).
+    let codexTokensUsed = 0
     for (const c of npcCodex.slice(0, 16)) {
-      dynamicContent += `- ${c.canonical_name}`
-      if (c.role) dynamicContent += ` | role: ${c.role}`
-      if (c.aliases && c.aliases.length) dynamicContent += ` | aliases: ${c.aliases.join(', ')}`
-      if (c.appearance) dynamicContent += ` | appearance: ${c.appearance}`
-      if (c.persona) dynamicContent += ` | persona: ${c.persona}`
+      let line = `- ${c.canonical_name}`
+      if (c.role) line += ` | role: ${c.role}`
+      if (c.aliases && c.aliases.length) line += ` | aliases: ${c.aliases.join(', ')}`
+      if (c.appearance) line += ` | appearance: ${c.appearance}`
+      if (c.persona) line += ` | persona: ${c.persona}`
       if (c.immutable_facts && c.immutable_facts.length) {
-        dynamicContent += ` | immutable facts: ${c.immutable_facts.slice(-14).join('; ')}`
+        line += ` | immutable facts: ${c.immutable_facts.slice(-14).join('; ')}`
       }
       if (c.mutable_state && c.mutable_state.length) {
-        dynamicContent += ` | current state: ${c.mutable_state.join('; ')}`
+        line += ` | current state: ${c.mutable_state.join('; ')}`
       }
       if (c.disposition_to_player) {
-        dynamicContent += ` | disposition toward player: ${c.disposition_to_player}`
+        line += ` | disposition toward player: ${c.disposition_to_player}`
       }
       if (c.hidden_thought) {
-        dynamicContent += ` | private thought (internal only, never quoted verbatim): ${c.hidden_thought}`
+        line += ` | private thought (internal only, never quoted verbatim): ${c.hidden_thought}`
       }
-      dynamicContent += '\n'
+      line += '\n'
+      const lineTokens = countTokens(line)
+      if (codexTokensUsed + lineTokens > SECTION_TOKEN_BUDGET.codex && codexTokensUsed > 0) break
+      codexTokensUsed += lineTokens
+      dynamicContent += line
     }
     dynamicContent += '\n'
   }
@@ -372,7 +414,7 @@ ${personaLine}
 
   if (input.retrievedLore.length > 0) {
     dynamicContent += `RELEVANT LORE DETAILS (reference only — use only if it directly applies to the current turn; do not introduce these as active scene elements by default):\n`
-    for (const lore of input.retrievedLore) {
+    for (const lore of withinTokenBudget(input.retrievedLore, SECTION_TOKEN_BUDGET.lore)) {
       dynamicContent += `- ${lore}\n`
     }
     dynamicContent += `\n`
@@ -380,7 +422,7 @@ ${personaLine}
 
   if (input.retrievedMemories.length > 0) {
     dynamicContent += `THINGS YOU REMEMBER ABOUT THIS PLAYER (reference only — use for continuity, not as a reason to change topic or summon unrelated events):\n`
-    for (const mem of input.retrievedMemories) {
+    for (const mem of withinTokenBudget(input.retrievedMemories, SECTION_TOKEN_BUDGET.memories)) {
       dynamicContent += `- ${mem}\n`
     }
     dynamicContent += `\n`
@@ -392,7 +434,7 @@ ${personaLine}
 - Let them quietly inform reactions, tension, and consequences when the current scene naturally touches them.
 - If the player's current action directly engages one, honor it faithfully — characters remember what was promised.
 `
-    for (const thread of input.openThreads) {
+    for (const thread of withinTokenBudget(input.openThreads, SECTION_TOKEN_BUDGET.threads)) {
       dynamicContent += `- ${thread}\n`
     }
     dynamicContent += `\n`
