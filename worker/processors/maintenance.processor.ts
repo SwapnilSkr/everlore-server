@@ -1,7 +1,7 @@
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
-import { embed } from '../../src/ai'
+import { embedBatch } from '../../src/ai'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { QUEUE_RETENTION } from '../../src/queues'
 import { log } from '../../src/utils/logger'
@@ -58,9 +58,31 @@ export async function maintenanceProcessor(job: Job) {
 
       if (memories.length < 2) return { merged: 0 }
 
+      // Reuse the vectors already stored in Pinecone instead of re-embedding
+      // every memory (previously one embedding API call PER memory — the
+      // dominant cost of this job at scale). Fetch by id in batches; the
+      // stored vector is identical to a fresh embed of the same text, so dedup
+      // decisions are unchanged. Only memories missing a vector fall back to a
+      // single batched embed.
       const embeddings = new Map<string, number[]>()
-      for (const mem of memories) {
-        embeddings.set(idString(mem._id), await embed(mem.text))
+      const dedupNs = getPineconeIndex().namespace(`mem_${instanceId}`)
+      const withVec = memories.filter((m) => m.pinecone_id)
+      for (let i = 0; i < withVec.length; i += 200) {
+        const batch = withVec.slice(i, i + 200)
+        try {
+          const res = await dedupNs.fetch({ ids: batch.map((m) => m.pinecone_id as string) })
+          for (const m of batch) {
+            const values = res.records?.[m.pinecone_id as string]?.values
+            if (values) embeddings.set(idString(m._id), values)
+          }
+        } catch (err) {
+          console.warn('dedup: pinecone fetch failed, will re-embed batch:', (err as Error).message)
+        }
+      }
+      const missing = memories.filter((m) => !embeddings.has(idString(m._id)))
+      if (missing.length > 0) {
+        const vecs = await embedBatch(missing.map((m) => m.text))
+        missing.forEach((m, i) => embeddings.set(idString(m._id), vecs[i]))
       }
 
       const processed = new Set<string>()
