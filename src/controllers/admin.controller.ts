@@ -70,6 +70,19 @@ export const adminController = {
       archived: boolQuery(query.archived),
     }),
 
+  listContinuityAuditStatus: async ({
+    query,
+  }: {
+    query: { page?: number; limit?: number; status?: string; stale_days?: number }
+  }) =>
+    adminService.listContinuityAuditStatus({
+      ...pageQuery(query),
+      status: ['all', 'healthy', 'unhealthy', 'missing', 'stale'].includes(query.status || '')
+        ? query.status as 'all' | 'healthy' | 'unhealthy' | 'missing' | 'stale'
+        : 'all',
+      stale_days: query.stale_days,
+    }),
+
   getContinuityAudit: async ({ params }: { params: { instanceId: string } }) =>
     continuityAuditService.audit(params.instanceId),
 

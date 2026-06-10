@@ -53,6 +53,21 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
       }),
     ]),
   })
+  .get('/instances/continuity-audits', (ctx) => adminController.listContinuityAuditStatus(ctx), {
+    query: t.Composite([
+      PageQuery,
+      t.Object({
+        status: t.Optional(t.Union([
+          t.Literal('all'),
+          t.Literal('healthy'),
+          t.Literal('unhealthy'),
+          t.Literal('missing'),
+          t.Literal('stale'),
+        ])),
+        stale_days: t.Optional(t.Numeric({ minimum: 1, maximum: 365 })),
+      }),
+    ]),
+  })
   .get('/instances/:instanceId', (ctx) => adminController.getInstance(ctx))
   // Cross-projection continuity audit (codex/entities/memories/summaries/cursors).
   .get('/instances/:instanceId/continuity-audit', (ctx) => adminController.getContinuityAudit(ctx))

@@ -240,6 +240,75 @@ export const adminService = {
     return listCollection(worldInstances(), filter, { updated_at: -1 }, opts)
   },
 
+  async listContinuityAuditStatus(opts: {
+    page?: number
+    limit?: number
+    status?: 'all' | 'healthy' | 'unhealthy' | 'missing' | 'stale'
+    stale_days?: number
+  }) {
+    const { limit, page, skip } = paging(opts)
+    const status = opts.status || 'all'
+    const filter: Record<string, unknown> = { 'meta.is_archived': { $ne: true } }
+    const staleDays = Math.min(Math.max(Number(opts.stale_days || 7), 1), 365)
+    const staleBefore = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000)
+
+    if (status === 'healthy') {
+      filter['meta.last_continuity_audit.healthy'] = true
+    } else if (status === 'unhealthy') {
+      filter['meta.last_continuity_audit.healthy'] = false
+    } else if (status === 'missing') {
+      filter['meta.last_continuity_audit'] = { $exists: false }
+    } else if (status === 'stale') {
+      filter.$or = [
+        { 'meta.last_continuity_audit': { $exists: false } },
+        { 'meta.last_continuity_audit.checked_at': { $lt: staleBefore } },
+      ]
+    }
+
+    const projection = {
+      _id: 1,
+      player_id: 1,
+      template_id: 1,
+      updated_at: 1,
+      'meta.total_events': 1,
+      'meta.last_active_at': 1,
+      'meta.last_continuity_audit': 1,
+    }
+    const sort: Record<string, 1 | -1> =
+      status === 'unhealthy'
+        ? { 'meta.last_continuity_audit.summary.fail': -1, 'meta.last_continuity_audit.summary.warn': -1, updated_at: -1 }
+        : { 'meta.last_continuity_audit.checked_at': 1, updated_at: -1 }
+
+    const [total, rows] = await Promise.all([
+      worldInstances().countDocuments(filter),
+      worldInstances()
+        .find(filter, { projection })
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .toArray(),
+    ])
+
+    return {
+      total,
+      page,
+      limit,
+      status,
+      stale_days: staleDays,
+      items: rows.map((row) =>
+        serialize({
+          _id: row._id,
+          player_id: row.player_id,
+          template_id: row.template_id,
+          total_events: row.meta?.total_events || 0,
+          last_active_at: row.meta?.last_active_at || null,
+          updated_at: row.updated_at,
+          last_continuity_audit: row.meta?.last_continuity_audit || null,
+        }),
+      ),
+    }
+  },
+
   async getInstance(instanceId: string) {
     const iid = parseObjectId(instanceId)
     const instance = await worldInstances().findOne({ _id: iid })
