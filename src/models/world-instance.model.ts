@@ -1,6 +1,7 @@
 import type { ObjectId } from 'mongodb'
 import type { PersonaSnapshotDoc } from './persona.model'
 import type { TimeAnchorDoc } from './time.model'
+import type { LocationAnchorDoc } from './location.model'
 
 export interface InstanceMilestoneDoc {
   label: string
@@ -51,6 +52,8 @@ export interface WorldInstanceDoc {
   current_time_anchor?: TimeAnchorDoc
   active_timeline_id?: string
   default_calendar_id?: ObjectId
+  /** Current known place at the end of the latest turn. */
+  current_location?: LocationAnchorDoc | null
   /** Optional reusable account-level persona selected for this instance. */
   persona_id?: ObjectId | null
   /** Snapshot of the selected persona, so long-running chats do not drift when

@@ -31,6 +31,18 @@ export interface GenerationOutput {
    * protagonist is alone or presence is unknown.
    */
   present_characters: string[]
+  /**
+   * Named place where the viewpoint ends this turn. Null/empty means the
+   * passage did not establish a place change or concrete current location.
+   */
+  current_location?: string | null
+}
+
+export function sanitizeLocationName(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const name = raw.replace(/\s+/g, ' ').trim().slice(0, 120)
+  if (!name || /^(null|none|unknown|same|unchanged|current location)$/i.test(name)) return null
+  return name
 }
 
 /**
@@ -171,6 +183,7 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
 
     // Present characters: clean, bounded list driving scene-aware bond actions.
     parsed.present_characters = sanitizePresentCharacters(parsed.present_characters)
+    parsed.current_location = sanitizeLocationName(parsed.current_location)
 
     return parsed as GenerationOutput
   } catch (err) {
@@ -210,5 +223,6 @@ function repairResponse(raw: string): GenerationOutput {
     choices: [],
     milestone: null,
     present_characters: [],
+    current_location: null,
   }
 }

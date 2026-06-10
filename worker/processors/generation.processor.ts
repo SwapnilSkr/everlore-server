@@ -121,6 +121,8 @@ export async function generationProcessor(job: Job) {
     openThreads,
     currentTimeAnchor,
     timeContext,
+    currentLocation,
+    locationContext,
   } = packet;
   const activeSummary = packet.sceneSummary;
   const nextSequence = packet.currentSequence + 1;
@@ -202,6 +204,7 @@ export async function generationProcessor(job: Job) {
     messageLength: session.message_length,
     characterCodex,
     timeContext,
+    locationContext,
     focusCharacterName: (() => {
       const focusedId = session.focus_character_id;
       if (!focusedId) return undefined;
@@ -269,7 +272,7 @@ export async function generationProcessor(job: Job) {
     finalNarrative,
     Object.keys(session.world_state || {}),
     Object.keys(session.active_flags || {}),
-    { isSentient: session.is_sentient },
+    { isSentient: session.is_sentient, currentLocationName: currentLocation?.name || null },
   );
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta };
   const proseHygieneIssues = repairedProse.issues;
@@ -297,6 +300,18 @@ export async function generationProcessor(job: Job) {
     eventTimeLabel: timeAdvanceLabel || undefined,
     timelineId: session.active_timeline_id || currentTimeAnchor?.timeline_id || null,
   });
+  const resolvedLocation = parsed.current_location
+    ? await entityGraphService.resolveLocationAnchor({
+        instanceId,
+        playerId,
+        sequence: nextSequence,
+        name: parsed.current_location,
+      }).catch((err) => {
+        console.warn("location anchor resolution failed:", (err as Error).message);
+        return null;
+      })
+    : null;
+  const locationAnchor = resolvedLocation || currentLocation || null;
 
   const event = {
     _id: new ObjectId(),
@@ -344,6 +359,7 @@ export async function generationProcessor(job: Job) {
     edit_history: [],
     scene_tag: parsed.scene_tag,
     time_anchor: timeAnchor,
+    location_anchor: locationAnchor,
     created_at: eventCreatedAt,
   };
 
@@ -398,6 +414,7 @@ export async function generationProcessor(job: Job) {
       current_time_anchor: timeAnchor,
       active_timeline_id: timeAnchor.timeline_id,
       default_calendar_id: timeAnchor.story_calendar?.calendar_id,
+      current_location: locationAnchor,
       "meta.last_active_at": new Date(),
       updated_at: new Date(),
       ...(fateThread ? { "meta.last_fate_seed_sequence": nextSequence } : {}),
@@ -432,6 +449,12 @@ export async function generationProcessor(job: Job) {
     default_calendar_id: timeAnchor.story_calendar?.calendar_id
       ? idString(timeAnchor.story_calendar.calendar_id)
       : session.default_calendar_id,
+    current_location: locationAnchor
+      ? {
+          ...locationAnchor,
+          entity_id: idString(locationAnchor.entity_id),
+        }
+      : null,
   };
   await redis.set(
     `session:${instanceId}`,
@@ -461,6 +484,12 @@ export async function generationProcessor(job: Job) {
         present_characters: parsed.present_characters,
         time_advanced: timeAdvanceLabel || null,
         time_anchor: timeAnchor,
+        location_anchor: locationAnchor
+          ? {
+              ...locationAnchor,
+              entity_id: idString(locationAnchor.entity_id),
+            }
+          : null,
         fate_thread: fateThread || null,
         event_type: event.type,
         state_diff: {

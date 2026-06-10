@@ -67,8 +67,11 @@ const METADATA_SCHEMA = {
       maxItems: 12,
       items: { type: 'string' },
     },
+    current_location: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    },
   },
-  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone', 'present_characters'],
+  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone', 'present_characters', 'current_location'],
 }
 
 function safeParseObject(raw: string): Record<string, unknown> {
@@ -97,7 +100,7 @@ export async function extractSceneMetadata(
   narrative: string,
   statKeys: string[],
   flagKeys: string[],
-  opts?: { isSentient?: boolean },
+  opts?: { isSentient?: boolean; currentLocationName?: string | null },
 ): Promise<SceneMetadata> {
   const perspective = opts?.isSentient
     ? 'The player is a person interacting with the character in the scene.'
@@ -120,6 +123,7 @@ Rules:
   The set must be distinct in spirit — mix bold / cautious / emotional / curious, and include at least one "say" and one "act" when both fit. Ground every choice in what THIS passage just established; never invent new characters, places, or facts.
 - milestone: null almost always. Set a short evocative label (3-8 words) ONLY when this passage crossed a true story landmark: a vow or marriage, a first kiss, a death of a significant character, a title/power gained, a major victory or betrayal, a life-changing decision. Routine progress is NOT a milestone.
 - present_characters: the proper names of the people (characters) physically present in the scene at the END of this passage — those in the same place as the viewpoint, able to be spoken to or acted on right now. Use the exact name as written in the prose. EXCLUDE anyone only mentioned, remembered, written about, or elsewhere; exclude the player/narrator themself. Empty array [] when the viewpoint is alone or no other character is in the scene.
+- current_location: the concrete named place where the viewpoint/protagonist is physically located at the END of the passage. Use the most specific stable place name written or strongly implied by the prose ("Old Keep", "Mira's room", "North Road"). If the passage does not establish a concrete place, or the scene simply remains where it already was, return null. Prior known location: ${opts?.currentLocationName || '(unknown)'}.
 
 Tracked stats (only these names may appear in state_mutations): ${statKeys.length ? statKeys.join(', ') : '(none)'}
 Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}`
@@ -145,6 +149,7 @@ Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length
       choices: [],
       milestone: null,
       present_characters: [],
+      current_location: null,
     }
   }
 

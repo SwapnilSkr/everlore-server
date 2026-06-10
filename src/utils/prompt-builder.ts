@@ -21,6 +21,8 @@ interface PromptInput {
   openThreads?: string[]
   /** Current story-time/timeline context from the context packet. */
   timeContext?: string | null
+  /** Current place context from the context packet. */
+  locationContext?: string | null
   sceneSummary: string | null
   recentEvents: any[]
   userMessage: string
@@ -407,6 +409,14 @@ CHARACTER CARDS:
     dynamicContent += `CURRENT STORY TIME:
 ${input.timeContext.trim()}
 - Treat sequence order, story date, and timeline branch as distinct. A flashback or alternate branch can be narrated without rewriting what the player experienced.
+
+`
+  }
+
+  if (input.locationContext && input.locationContext.trim()) {
+    dynamicContent += `CURRENT LOCATION:
+${input.locationContext.trim()}
+- Keep the next reply physically grounded in this place unless the player action, recent continuity, or the narration itself clearly moves the scene.
 
 `
   }

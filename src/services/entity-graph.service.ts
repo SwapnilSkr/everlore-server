@@ -493,6 +493,30 @@ export const entityGraphService = {
     return { cards, mentionedEntityIds: mentioned.map((e) => idString(e._id)) }
   },
 
+  async resolveLocationAnchor(params: {
+    instanceId: string
+    playerId: string
+    sequence: number
+    name?: string | null
+  }) {
+    const name = String(params.name || '').replace(/\s+/g, ' ').trim().slice(0, 120)
+    const normalized = normalizeEntityName(name)
+    if (!normalized || normalized.length < 3) return null
+    const registry = await this.resolveOrCreateEntities({
+      instanceId: params.instanceId,
+      playerId: params.playerId,
+      sequence: params.sequence,
+      mentions: [{ name, type: 'location' }],
+    })
+    const entity = registry.get(normalized)
+    if (!entity || entity.type !== 'location') return null
+    return {
+      entity_id: entity._id,
+      name: entity.canonical_name,
+      name_normalized: entity.name_normalized,
+    }
+  },
+
   /**
    * Codex cards behind a set of entity ids — used for memory-driven pinning
    * AFTER RAG: when retrieval surfaces memories about a character the prompt

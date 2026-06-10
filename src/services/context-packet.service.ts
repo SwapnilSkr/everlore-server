@@ -8,6 +8,7 @@ import { timeService } from './time.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { EVENT_WINDOWS } from '../utils/event-window'
 import type { TimeAnchorDoc } from '../models/time.model'
+import type { LocationAnchorDoc } from '../models/location.model'
 
 /** Injected codex size (recency-ranked top-K before pinning). */
 const CODEX_INJECT_LIMIT = 16
@@ -41,6 +42,8 @@ export interface ContextPacket {
   currentSequence: number
   currentTimeAnchor: TimeAnchorDoc | null
   timeContext: string | null
+  currentLocation: LocationAnchorDoc | null
+  locationContext: string | null
 }
 
 /** The session fields the packet builder reads (subset of the cached session). */
@@ -51,6 +54,20 @@ interface PacketSession {
   max_lore_results?: number
   max_context_memories?: number
   current_time_anchor?: TimeAnchorDoc | null
+  current_location?: LocationAnchorDoc | null
+}
+
+function normalizeLocationAnchor(raw: any): LocationAnchorDoc | null {
+  if (!raw?.entity_id || !raw.name) return null
+  try {
+    return {
+      entity_id: typeof raw.entity_id === 'string' ? parseObjectId(raw.entity_id) : raw.entity_id,
+      name: raw.name,
+      name_normalized: raw.name_normalized || entityGraphService.normalizeEntityName(raw.name),
+    }
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -94,6 +111,13 @@ export async function buildContextPacket(params: {
     recentEvents[recentEvents.length - 1]?.time_anchor ||
     null
   const timeContext = await timeService.timelineContext(instanceId, currentTimeAnchor)
+  const currentLocation =
+    normalizeLocationAnchor(session.current_location) ||
+    normalizeLocationAnchor(recentEvents[recentEvents.length - 1]?.location_anchor) ||
+    null
+  // Prose-facing line only — no entity id, which the narration model could
+  // echo into the story. Code consumers read packet.currentLocation instead.
+  const locationContext = currentLocation ? `Current place: ${currentLocation.name}.` : null
 
   // ── 1. Direct mentions: entities + dormant codex cards named in the input ──
   // (On a continue turn the player says nothing — nothing to resolve.)
@@ -131,6 +155,7 @@ export async function buildContextPacket(params: {
       session.max_context_memories || 25,
       mentionedEntityIds,
       currentTimeAnchor?.timeline_id || 'main',
+      currentLocation?.entity_id ? idString(currentLocation.entity_id) : null,
     )
     loreTexts = rag.loreTexts
     memoryTexts = rag.memoryTexts
@@ -219,5 +244,7 @@ export async function buildContextPacket(params: {
     currentSequence,
     currentTimeAnchor,
     timeContext,
+    currentLocation,
+    locationContext,
   }
 }

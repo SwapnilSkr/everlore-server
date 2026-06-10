@@ -101,6 +101,8 @@ export async function queryRag(
   /** Current timeline branch. New memories are scoped; legacy rows without
    *  timeline_id are still eligible on the main branch. */
   timelineId?: string | null,
+  /** Current place entity; adds "what happened here before?" retrieval. */
+  currentLocationEntityId?: string | null,
 ): Promise<RagResult> {
   const queryEmbedding = await embed(queryText)
   const index = getPineconeIndex()
@@ -161,6 +163,30 @@ export async function queryRag(
     }
   }
 
+  const locationMemorySearch = async (): Promise<MemoryDoc[]> => {
+    if (!currentLocationEntityId) return []
+    try {
+      const id = parseObjectId(currentLocationEntityId)
+      return (await mongoColl
+        .memories()
+        .find({
+          ...memoryScope(),
+          $or: [
+            { location_entity_id: id },
+            { 'location_anchor.entity_id': id },
+            { subject_entity_ids: id },
+            { object_entity_ids: id },
+          ],
+        })
+        .sort({ importance: -1, updated_at: -1 })
+        .limit(maxMemoryResults)
+        .toArray()) as MemoryDoc[]
+    } catch (err) {
+      console.warn('Location memory search skipped:', (err as Error).message)
+      return []
+    }
+  }
+
   const openThreadSearch = (): Promise<MemoryDoc[]> =>
     mongoColl
       .memories()
@@ -172,7 +198,7 @@ export async function queryRag(
       .limit(OPEN_THREADS_LIMIT)
       .toArray() as Promise<MemoryDoc[]>
 
-  const [loreResults, memoryResults, keywordMemories, entityMemories, threadMemories] =
+  const [loreResults, memoryResults, keywordMemories, entityMemories, locationMemories, threadMemories] =
     await Promise.all([
       index.namespace(`lore_${templateId}`).query({
         vector: queryEmbedding,
@@ -186,6 +212,7 @@ export async function queryRag(
       }),
       keywordSearch(),
       entityNeighborhoodSearch(),
+      locationMemorySearch(),
       openThreadSearch(),
     ])
 
@@ -288,6 +315,15 @@ export async function queryRag(
     })),
   )
 
+  addRanked(
+    locationMemories.map((m) => ({
+      key: idString(m._id),
+      text: m.text,
+      mongoId: idString(m._id),
+      importance: m.importance || 3,
+    })),
+  )
+
   // Open threads get their own prompt section — keep the general memory list
   // free of duplicates so the budget isn't spent saying the same thing twice.
   const threadIds = new Set(threadMemories.map((m) => idString(m._id)))
@@ -309,8 +345,14 @@ export async function queryRag(
   const retrievedEntityIds = [
     ...new Set(
       [...keywordMemories, ...entityMemories, ...threadMemories]
+        .concat(locationMemories)
         .filter((m) => fusedIdSet.has(idString(m._id)) || threadIds.has(idString(m._id)))
-        .flatMap((m) => [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])])
+        .flatMap((m) => [
+          ...(m.subject_entity_ids || []),
+          ...(m.object_entity_ids || []),
+          ...(m.location_entity_id ? [m.location_entity_id] : []),
+          ...(m.location_anchor?.entity_id ? [m.location_anchor.entity_id] : []),
+        ])
         .map((id) => idString(id)),
     ),
   ]

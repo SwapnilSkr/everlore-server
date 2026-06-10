@@ -58,6 +58,11 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { "meta.last_active_at": 1 },
     options: { name: "idx_world_instances_last_active" },
   },
+  {
+    collection: COLLECTIONS.world_instances,
+    key: { "current_location.entity_id": 1 },
+    options: { name: "idx_world_instances_current_location_entity" },
+  },
 
   // events
   {
@@ -84,6 +89,11 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     collection: COLLECTIONS.events,
     key: { instance_id: 1, "time_anchor.story_calendar.calendar_id": 1, "time_anchor.story_calendar.year": 1, "time_anchor.story_calendar.month": 1, "time_anchor.story_calendar.day": 1 },
     options: { name: "idx_events_instance_story_date" },
+  },
+  {
+    collection: COLLECTIONS.events,
+    key: { instance_id: 1, "location_anchor.entity_id": 1, sequence: 1 },
+    options: { name: "idx_events_instance_location_sequence" },
   },
 
   // memories
@@ -135,6 +145,11 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     collection: COLLECTIONS.memories,
     key: { instance_id: 1, "time_anchor.story_calendar.calendar_id": 1, "time_anchor.story_calendar.year": 1, "time_anchor.story_calendar.month": 1, "time_anchor.story_calendar.day": 1 },
     options: { name: "idx_memories_instance_story_date" },
+  },
+  {
+    collection: COLLECTIONS.memories,
+    key: { instance_id: 1, location_entity_id: 1, importance: -1 },
+    options: { name: "idx_memories_instance_location_importance" },
   },
   // Open-thread surfacing: unresolved promises/conflicts ranked by importance.
   {
@@ -306,6 +321,8 @@ export const DEPRECATED_INDEXES: Array<{ collection: string; name: string }> = [
   { collection: COLLECTIONS.entity_edges, name: "idx_entity_edges_endpoints_type" },
   // Replaced by idx_memories_instance_timeline_sequence (parent-branch clamps by sequence).
   { collection: COLLECTIONS.memories, name: "idx_memories_instance_timeline_importance" },
+  // Draft Phase 6A index briefly pointed at the whole object instead of entity_id.
+  { collection: COLLECTIONS.world_instances, name: "idx_world_instances_current_location" },
 ]
 
 function isTextIndexDef(desired: Document): boolean {

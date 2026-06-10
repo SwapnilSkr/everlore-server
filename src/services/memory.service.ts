@@ -416,6 +416,7 @@ export const memoryService = {
             sequence: 1,
             scene_tag: 1,
             time_anchor: 1,
+            location_anchor: 1,
             'data.state_mutations': 1,
             'data.flag_mutations': 1,
             'data.codex_deltas': 1,
@@ -502,6 +503,7 @@ export const memoryService = {
         templateId: idString(template._id),
         sequence: 0,
       }))
+    const rewindLocation = last?.location_anchor || null
 
     // 6. Persist rolled-back instance state.
     await worldInstances().updateOne(
@@ -514,6 +516,7 @@ export const memoryService = {
           current_time_anchor: rewindTimeAnchor,
           active_timeline_id: rewindTimeAnchor.timeline_id,
           default_calendar_id: rewindTimeAnchor.story_calendar?.calendar_id,
+          current_location: rewindLocation,
           focus_character_id: null,
           'meta.total_events': survivors.length,
           'meta.total_memories': Math.max(0, (instance.meta?.total_memories || 0) - deletedMemories),

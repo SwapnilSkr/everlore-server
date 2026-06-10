@@ -22,6 +22,7 @@ export type {
   WorldEventDoc,
 } from './world-event.model'
 export type { MemoryDoc } from './memory.model'
+export type { LocationAnchorDoc } from './location.model'
 export type { CharacterProfileDoc } from './character-profile.model'
 export type { ProjectionStatus, ProjectionProvenance } from './projection.model'
 export { memoryProjectionStatus } from './projection.model'

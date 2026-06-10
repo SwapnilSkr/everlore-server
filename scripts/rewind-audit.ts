@@ -124,6 +124,28 @@ async function main() {
   const oldTower = mkEntity('OldTower', survSeq)
   const doomedPlace = mkEntity('DoomedPlace', SEQ)
   await mongoColl.entities().insertMany([oldKeep, oldTower, doomedPlace] as any)
+  const oldKeepLocation = {
+    entity_id: oldKeep._id,
+    name: oldKeep.canonical_name,
+    name_normalized: oldKeep.name_normalized,
+  }
+  const doomedLocation = {
+    entity_id: doomedPlace._id,
+    name: doomedPlace.canonical_name,
+    name_normalized: doomedPlace.name_normalized,
+  }
+  await mongoColl.events().updateOne(
+    { instance_id: tempId, sequence: survSeq },
+    { $set: { location_anchor: oldKeepLocation } },
+  )
+  await mongoColl.events().updateOne(
+    { instance_id: tempId, sequence: SEQ },
+    { $set: { location_anchor: doomedLocation } },
+  )
+  await mongoColl.worldInstances().updateOne(
+    { _id: tempId },
+    { $set: { current_location: doomedLocation } },
+  )
   if (survEventId && doomedEventId) {
     // Mixed provenance: must survive with only the surviving source left.
     await entityGraphService.upsertNarrativeEdge({
@@ -234,6 +256,7 @@ async function main() {
   ok('focus_character_id cleared', !inst?.focus_character_id)
   ok('milestones after rewind pruned', (inst?.meta?.milestones || []).every((m: any) => m.sequence < SEQ))
   ok('story-time cursor rolled back to last surviving event', inst?.current_time_anchor?.sequence === survSeq, `time_sequence=${inst?.current_time_anchor?.sequence}`)
+  ok('location cursor rolled back to last surviving event', inst?.current_location?.entity_id?.equals(oldKeep._id) === true, `location=${inst?.current_location?.name || 'none'}`)
 
   // === Cleanup ===
   await mongoColl.worldInstances().deleteOne({ _id: tempId })

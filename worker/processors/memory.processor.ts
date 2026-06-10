@@ -9,6 +9,7 @@ import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { entityGraphService, normalizeEntityName } from '../../src/services/entity-graph.service'
 import type { EntityDoc, EntityType } from '../../src/models/entity.model'
 import type { TimeAnchorDoc } from '../../src/models/time.model'
+import type { LocationAnchorDoc } from '../../src/models/location.model'
 
 const EXTRACTION_PROMPT = `You are the memory curator for a long-running narrative world. Given one exchange between a player and the world, extract 0-3 memory atoms worth keeping long-term, and detect whether this turn resolved any previously open thread.
 
@@ -200,12 +201,14 @@ World: ${aiResponse}`,
   let entityMap: Map<string, EntityDoc> | null = null
   let entitySequence = 0
   let eventTimeAnchor: TimeAnchorDoc | null = null
+  let eventLocationAnchor: LocationAnchorDoc | null = null
   try {
     const ev = await mongoColl
       .events()
-      .findOne({ _id: eventOid }, { projection: { sequence: 1, time_anchor: 1 } })
+      .findOne({ _id: eventOid }, { projection: { sequence: 1, time_anchor: 1, location_anchor: 1 } })
     const sequence = ev?.sequence || 0
     eventTimeAnchor = (ev as any)?.time_anchor || null
+    eventLocationAnchor = (ev as any)?.location_anchor || null
 
     const KIND_TO_TYPE: Record<string, EntityType> = {
       character: 'character',
@@ -295,6 +298,8 @@ World: ${aiResponse}`,
     if (subjects.length > 0) vectorMetadata.subjects = subjects
     if (eventTimeAnchor?.timeline_id) vectorMetadata.timeline_id = eventTimeAnchor.timeline_id
     if (eventTimeAnchor?.sequence) vectorMetadata.sequence = eventTimeAnchor.sequence
+    if (eventLocationAnchor?.entity_id) vectorMetadata.location_entity_id = idString(eventLocationAnchor.entity_id)
+    if (eventLocationAnchor?.name) vectorMetadata.location_name = eventLocationAnchor.name
 
     await namespace.upsert({
       records: [{
@@ -333,6 +338,13 @@ World: ${aiResponse}`,
       ...(subjectEntityIds.length ? { subject_entity_ids: subjectEntityIds } : {}),
       ...(objectEntityIds.length ? { object_entity_ids: objectEntityIds } : {}),
       ...(eventTimeAnchor ? { time_anchor: eventTimeAnchor, timeline_id: eventTimeAnchor.timeline_id } : {}),
+      ...(eventLocationAnchor
+        ? {
+            location_anchor: eventLocationAnchor,
+            location_entity_id: eventLocationAnchor.entity_id,
+            location_name: eventLocationAnchor.name,
+          }
+        : {}),
       ...enrichment,
       unresolved_thread: unresolvedThread,
       resolved_at: null,

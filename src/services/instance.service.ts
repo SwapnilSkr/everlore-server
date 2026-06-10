@@ -88,6 +88,7 @@ export const instanceService = {
       mode: DEFAULT_CHAT_MODE,
       message_length: 'medium',
       focus_character_id: null,
+      current_location: null,
       current_time_anchor: initialTimeAnchor,
       active_timeline_id: initialTimeAnchor.timeline_id,
       default_calendar_id: initialTimeAnchor.story_calendar?.calendar_id,
@@ -431,6 +432,12 @@ export const instanceService = {
       current_time_anchor: instance.current_time_anchor || null,
       active_timeline_id: instance.active_timeline_id || 'main',
       default_calendar_id: instance.default_calendar_id ? idString(instance.default_calendar_id) : null,
+      current_location: instance.current_location
+        ? {
+            ...instance.current_location,
+            entity_id: idString(instance.current_location.entity_id),
+          }
+        : null,
       seed_prompt: template.seed_prompt,
       global_lore: template.global_lore,
       is_sentient: template.is_sentient,

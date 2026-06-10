@@ -42,6 +42,10 @@ function serialize(value: unknown): unknown {
   return value
 }
 
+function isObjectId(value: unknown): value is ObjectId {
+  return value instanceof ObjectId
+}
+
 function cleanPatch(input: Record<string, unknown>, extraBlocked: string[] = []): Record<string, unknown> {
   const blocked = new Set([...BLOCKED_UPDATE_KEYS, ...extraBlocked])
   const out: Record<string, unknown> = {}
@@ -442,6 +446,7 @@ export const adminService = {
       ...new Map(
         [
           ...mems.flatMap((m) => [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])]),
+          ...mems.flatMap((m) => [m.location_entity_id, m.location_anchor?.entity_id].filter(isObjectId)),
           ...edges.flatMap((e) => [e.source_entity_id, e.target_entity_id]),
         ].map((id) => [idString(id), id] as const),
       ).values(),
@@ -458,6 +463,7 @@ export const adminService = {
         type: event.type,
         scene_tag: event.scene_tag,
         time_anchor: event.time_anchor || null,
+        location_anchor: event.location_anchor || null,
         is_user_edited: event.is_user_edited,
         created_at: event.created_at,
       }),
@@ -477,6 +483,9 @@ export const adminService = {
           object_entity_ids: m.object_entity_ids || [],
           time_anchor: m.time_anchor || null,
           timeline_id: m.timeline_id || null,
+          location_anchor: m.location_anchor || null,
+          location_entity_id: m.location_entity_id || null,
+          location_name: m.location_name || null,
           unresolved_thread: m.unresolved_thread === true,
         }),
       ),

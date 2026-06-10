@@ -2,6 +2,7 @@ import type { ObjectId } from 'mongodb'
 import type { ProseHygieneIssue } from '../utils/prose-hygiene'
 import type { CharacterCodexDelta } from '../services/character-codex.service'
 import type { TimeAnchorDoc } from './time.model'
+import type { LocationAnchorDoc } from './location.model'
 
 export type StateMutationOp = 'add' | 'subtract' | 'set'
 
@@ -87,6 +88,8 @@ export interface WorldEventDoc {
   scene_tag: string
   /** Story-time anchor: sequence time, real time, calendar date, and timeline branch. */
   time_anchor?: TimeAnchorDoc
+  /** End-of-turn place anchor, when known. */
+  location_anchor?: LocationAnchorDoc | null
   created_at: Date
   updated_at?: Date
 }

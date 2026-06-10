@@ -1,6 +1,7 @@
 import type { ObjectId } from 'mongodb'
 import type { ProjectionStatus } from './projection.model'
 import type { TimeAnchorDoc } from './time.model'
+import type { LocationAnchorDoc } from './location.model'
 
 /**
  * memories — curated long-term facts with optional Pinecone vector id.
@@ -37,6 +38,10 @@ export interface MemoryDoc {
   /** Story-time anchor copied from the source event for timeline/calendar filtering. */
   time_anchor?: TimeAnchorDoc
   timeline_id?: string
+  /** Location anchor copied from the source event for place-scoped recall. */
+  location_anchor?: LocationAnchorDoc | null
+  location_entity_id?: ObjectId
+  location_name?: string
   /** One-word emotional tone of the memory (e.g. "tender", "bitter"). */
   emotional_valence?: string
   /** What caused the emotional impact, when the memory carries one. */
