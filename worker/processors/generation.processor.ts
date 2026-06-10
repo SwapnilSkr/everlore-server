@@ -529,6 +529,12 @@ export async function generationProcessor(job: Job) {
         deltas,
       });
 
+      // Ledger the applied deltas on the event so the codex is an exact
+      // rebuildable projection (rewind replays these — no stale facts).
+      await mongoColl
+        .events()
+        .updateOne({ _id: event._id }, { $set: { "data.codex_deltas": deltas } });
+
       // Memory-vector supersession: when a status was retired this turn, evict
       // the stale memory vectors so RAG can't resurface the now-false fact.
       const retiredFacts = deltas.flatMap((d) => d.retire_state || []);

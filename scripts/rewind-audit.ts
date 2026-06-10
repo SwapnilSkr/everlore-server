@@ -43,12 +43,26 @@ async function main() {
     )
   }
 
-  // Plant two synthetic side characters to prove selective deletion: one born
-  // before the rewind point (must survive), one born in a removed turn (must go).
-  await mongoColl.characters().insertMany([
-    { _id: new ObjectId(), instance_id: tempId, player_id: playerId, canonical_name: 'EarlyAlly', name_normalized: 'earlyally', aliases: [], immutable_facts: ['met the player'], mutable_state: [], disposition_to_player: '', hidden_thought: '', is_protagonist: false, first_seen_sequence: 1, last_seen_sequence: 3, mention_count: 5, created_at: new Date(), updated_at: new Date() },
-    { _id: new ObjectId(), instance_id: tempId, player_id: playerId, canonical_name: 'LateStranger', name_normalized: 'latestranger', aliases: [], immutable_facts: [], mutable_state: [], disposition_to_player: '', hidden_thought: '', is_protagonist: false, first_seen_sequence: SEQ, last_seen_sequence: SEQ, mention_count: 1, created_at: new Date(), updated_at: new Date() },
-  ] as any)
+  // Ledger codex deltas on the cloned events to exercise the EXACT-rebuild path
+  // and prove no stale facts survive:
+  //  - surviving turn (seq < SEQ): introduces EarlyAlly with a true fact + a
+  //    trust bump, so the rebuilt card must show ONLY these.
+  //  - removed turn (seq >= SEQ): adds a CONTRADICTING fact + a big trust hit to
+  //    EarlyAlly and introduces LateStranger — none of this may survive.
+  const survSeq = SEQ - 1
+  await mongoColl.events().updateOne(
+    { instance_id: tempId, sequence: survSeq },
+    { $set: { 'data.codex_deltas': [
+      { name: 'EarlyAlly', immutable_facts: ['befriended the player at the gate'], mutable_state: ['loyal ally'], relationship_deltas: { trust: 6 }, is_protagonist: false },
+    ] } },
+  )
+  await mongoColl.events().updateOne(
+    { instance_id: tempId, sequence: SEQ },
+    { $set: { 'data.codex_deltas': [
+      { name: 'EarlyAlly', immutable_facts: ['betrayed the player'], relationship_deltas: { trust: -9 }, is_protagonist: false },
+      { name: 'LateStranger', immutable_facts: ['arrived from the north'], is_protagonist: false },
+    ] } },
+  )
 
   const protoBefore = await mongoColl.characters().findOne({ instance_id: tempId, is_protagonist: true })
   const eventsBefore = await mongoColl.events().countDocuments({ instance_id: tempId })
@@ -72,12 +86,13 @@ async function main() {
   ok('exactly one protagonist after rewind', protoAfter.length === 1, `${protoAfter.length} found`)
   ok('protagonist identity preserved', protoAfter[0]?.canonical_name === protoBefore?.canonical_name, `"${protoAfter[0]?.canonical_name}"`)
   ok('protagonist aliases preserved (drift-fix referents)', (protoBefore?.aliases || []).every((a) => (protoAfter[0]?.aliases || []).includes(a)), `aliases=[${(protoAfter[0]?.aliases || []).join(', ')}]`)
-  ok('protagonist facts/state reset', (protoAfter[0]?.immutable_facts?.length || 0) === 0 && (protoAfter[0]?.mutable_state?.length || 0) === 0)
 
   const early = await mongoColl.characters().findOne({ instance_id: tempId, name_normalized: 'earlyally' })
   const late = await mongoColl.characters().findOne({ instance_id: tempId, name_normalized: 'latestranger' })
-  ok('pre-rewind side character KEPT', !!early, early ? `EarlyAlly survives, facts=[${(early.immutable_facts || []).join(', ')}]` : 'missing!')
-  ok('pre-rewind survivor last_seen clamped', (early?.last_seen_sequence ?? 99) < SEQ, `last_seen=${early?.last_seen_sequence}`)
+  ok('pre-rewind character rebuilt from ledger', !!early, early ? `EarlyAlly rebuilt, facts=[${(early.immutable_facts || []).join(', ')}]` : 'missing!')
+  ok('surviving-turn fact KEPT', !!early?.immutable_facts?.includes('befriended the player at the gate'))
+  ok('removed-turn fact NOT present (no stale fact)', !early?.immutable_facts?.includes('betrayed the player'), `facts=[${(early?.immutable_facts || []).join(', ')}]`)
+  ok('meter reflects ONLY surviving delta (50+6=56, not -)', early?.relationship?.trust === 56, `trust=${early?.relationship?.trust ?? 'none'}`)
   ok('side character born in removed turn DELETED', !late, late ? 'LateStranger wrongly survived' : 'LateStranger gone')
 
   const inst = await mongoColl.worldInstances().findOne({ _id: tempId })

@@ -1,5 +1,6 @@
 import type { ObjectId } from 'mongodb'
 import type { ProseHygieneIssue } from '../utils/prose-hygiene'
+import type { CharacterCodexDelta } from '../services/character-codex.service'
 
 export type StateMutationOp = 'add' | 'subtract' | 'set'
 
@@ -50,6 +51,11 @@ export interface EventDataDoc {
   /** Characters present in the scene at the end of this turn (scene-aware bond
    *  actions: approach vs. seek out). Empty/absent when the viewpoint is alone. */
   present_characters?: string[]
+  /** Character-codex deltas applied THIS turn (post-guard). Ledgered like
+   *  state_mutations so the codex is an exact rebuildable projection: on rewind
+   *  the surviving deltas are replayed deterministically, so no fact or meter
+   *  from a removed turn can ever linger. Absent on pre-ledger (legacy) turns. */
+  codex_deltas?: CharacterCodexDelta[]
   replay_variants?: ReplayVariantDoc[]
   selected_replay_index?: number
   state_mutations: Record<string, StateMutationDoc>

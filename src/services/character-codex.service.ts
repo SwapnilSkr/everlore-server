@@ -283,6 +283,12 @@ export const characterCodexService = {
       const name = (delta.resolved_name || delta.name).trim()
       const normalized = normalizeName(name)
 
+      // A fresh insert already captures everything THIS delta carries (facts,
+      // state, disposition, relationship, mention_count = 1). Without this flag
+      // the code below would re-merge the same delta into the new card —
+      // double-applying the relationship meter and double-counting the mention
+      // on a character's very first appearance.
+      let justInserted = false
       if (!target) {
         const doc: CharacterProfileDoc = {
           _id: new ObjectId(),
@@ -316,6 +322,7 @@ export const characterCodexService = {
         try {
           await characters().insertOne(doc)
           target = doc
+          justInserted = true
           byName.set(doc.name_normalized, doc)
           for (const a of doc.aliases) byName.set(normalizeName(a), doc)
           if (doc.is_protagonist) protagonist = doc
@@ -326,6 +333,8 @@ export const characterCodexService = {
       }
 
       if (!target) continue
+      // New card is already complete from this delta — don't merge it again.
+      if (justInserted) continue
 
       const mergedAliases = uniqStrings([...(target.aliases || []), ...aliases], 20)
       // Keep the most recent facts on overflow (never silently drop this turn's
