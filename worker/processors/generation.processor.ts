@@ -296,17 +296,6 @@ export async function generationProcessor(job: Job) {
   const previousEventId = recentEvents.length
     ? (recentEvents[recentEvents.length - 1] as any)._id
     : null;
-  const timeAnchor = await timeService.anchorForNextEvent({
-    instanceId,
-    templateId: String(session.template_id),
-    previous: currentTimeAnchor || session.current_time_anchor || null,
-    previousEventId,
-    sequence: nextSequence,
-    realTime: eventCreatedAt,
-    timeAdvancedLabel: timeAdvanceLabel,
-    eventTimeLabel: timeAdvanceLabel || undefined,
-    timelineId: session.active_timeline_id || currentTimeAnchor?.timeline_id || null,
-  });
   const resolvedLocation = parsed.current_location
     ? await entityGraphService.resolveLocationAnchor({
         instanceId,
@@ -320,6 +309,33 @@ export async function generationProcessor(job: Job) {
     : null;
   const locationAnchor = resolvedLocation || currentLocation || null;
 
+  // Travel: a player turn that carries the protagonist from one concrete place
+  // to a different one. The continue/wait tick is its own kind, so travel is a
+  // real-input-only signal. Arrival at the first known place is not travel.
+  const isTravel =
+    !isContinuation &&
+    !!currentLocation &&
+    !!resolvedLocation &&
+    idString(resolvedLocation.entity_id) !== idString(currentLocation.entity_id);
+
+  // Narrated time skips advance the calendar on any turn (travel, "weeks
+  // passed"), not just the explicit wait/continue tick. The continuation tick's
+  // label still wins when present.
+  const narratedTimeLabel = !isContinuation ? parsed.time_elapsed || undefined : undefined;
+  const effectiveTimeAdvance = timeAdvanceLabel || narratedTimeLabel;
+
+  const timeAnchor = await timeService.anchorForNextEvent({
+    instanceId,
+    templateId: String(session.template_id),
+    previous: currentTimeAnchor || session.current_time_anchor || null,
+    previousEventId,
+    sequence: nextSequence,
+    realTime: eventCreatedAt,
+    timeAdvancedLabel: effectiveTimeAdvance,
+    eventTimeLabel: effectiveTimeAdvance || undefined,
+    timelineId: session.active_timeline_id || currentTimeAnchor?.timeline_id || null,
+  });
+
   const event = {
     _id: new ObjectId(),
     instance_id: instanceOid,
@@ -327,9 +343,11 @@ export async function generationProcessor(job: Job) {
     sequence: nextSequence,
     type: timeAdvanceLabel
       ? "calendar_tick"
-      : parsed.scene_tag === "intimate"
-        ? "intimate"
-        : "narration",
+      : isTravel
+        ? "travel"
+        : parsed.scene_tag === "intimate"
+          ? "intimate"
+          : "narration",
     data: {
       player_input: storedPlayerInput,
       player_spoken_input: parsedPlayerInput.spoken,
@@ -338,7 +356,10 @@ export async function generationProcessor(job: Job) {
       choices: parsed.choices,
       milestone: parsed.milestone,
       present_characters: parsed.present_characters,
-      ...(timeAdvanceLabel ? { time_advanced: timeAdvanceLabel } : {}),
+      ...(effectiveTimeAdvance ? { time_advanced: effectiveTimeAdvance } : {}),
+      ...(isTravel && currentLocation && resolvedLocation
+        ? { travel: { from: currentLocation.name, to: resolvedLocation.name } }
+        : {}),
       ...(fateThread ? { fate_thread: fateThread } : {}),
       replay_variants: [
         {

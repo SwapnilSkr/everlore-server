@@ -36,6 +36,28 @@ export interface GenerationOutput {
    * passage did not establish a place change or concrete current location.
    */
   current_location?: string | null
+  /**
+   * In-world time the passage itself narrates elapsing this turn (e.g. "three
+   * days", "a week later"). Null when the scene is continuous. Advances the
+   * day-level calendar even on a normal turn — travel and other narrated time
+   * skips, not only the explicit wait/continue button.
+   */
+  time_elapsed?: string | null
+}
+
+/**
+ * Normalize a raw narrated-time-elapsed label. Rejects the model's "no time
+ * passed" sentinels so a continuous scene never nudges the calendar; bounds
+ * length. Returns null when nothing meaningful elapsed.
+ */
+export function sanitizeTimeElapsed(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const label = raw.replace(/\s+/g, ' ').trim().slice(0, 80)
+  if (!label) return null
+  if (/^(null|none|n\/?a|no time|moments?|instant|immediate|continuous|same (day|time)|unchanged|0)$/i.test(label)) {
+    return null
+  }
+  return label
 }
 
 export function sanitizeLocationName(raw: unknown): string | null {
@@ -184,6 +206,7 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
     // Present characters: clean, bounded list driving scene-aware bond actions.
     parsed.present_characters = sanitizePresentCharacters(parsed.present_characters)
     parsed.current_location = sanitizeLocationName(parsed.current_location)
+    parsed.time_elapsed = sanitizeTimeElapsed(parsed.time_elapsed)
 
     return parsed as GenerationOutput
   } catch (err) {
@@ -224,5 +247,6 @@ function repairResponse(raw: string): GenerationOutput {
     milestone: null,
     present_characters: [],
     current_location: null,
+    time_elapsed: null,
   }
 }

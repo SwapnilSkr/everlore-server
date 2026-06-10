@@ -70,8 +70,11 @@ const METADATA_SCHEMA = {
     current_location: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
+    time_elapsed: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    },
   },
-  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone', 'present_characters', 'current_location'],
+  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone', 'present_characters', 'current_location', 'time_elapsed'],
 }
 
 function safeParseObject(raw: string): Record<string, unknown> {
@@ -124,6 +127,7 @@ Rules:
 - milestone: null almost always. Set a short evocative label (3-8 words) ONLY when this passage crossed a true story landmark: a vow or marriage, a first kiss, a death of a significant character, a title/power gained, a major victory or betrayal, a life-changing decision. Routine progress is NOT a milestone.
 - present_characters: the proper names of the people (characters) physically present in the scene at the END of this passage — those in the same place as the viewpoint, able to be spoken to or acted on right now. Use the exact name as written in the prose. EXCLUDE anyone only mentioned, remembered, written about, or elsewhere; exclude the player/narrator themself. Empty array [] when the viewpoint is alone or no other character is in the scene.
 - current_location: the concrete named place where the viewpoint/protagonist is physically located at the END of the passage. Use the most specific stable place name written or strongly implied by the prose ("Old Keep", "Mira's room", "North Road"). If the passage does not establish a concrete place, or the scene simply remains where it already was, return null. Prior known location: ${opts?.currentLocationName || '(unknown)'}.
+- time_elapsed: how much IN-WORLD time the passage itself narrates passing during this turn — a short human label ("three days", "a week later", "a few hours", "the next morning"). Use this ONLY when the prose clearly skips or spans time (a journey, a "later that night", "weeks passed"). Return null for a continuous, real-time scene where no meaningful time elapses (most dialogue/combat turns). Do not invent time; report only what the passage states or strongly implies.
 
 Tracked stats (only these names may appear in state_mutations): ${statKeys.length ? statKeys.join(', ') : '(none)'}
 Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}`
@@ -150,6 +154,7 @@ Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length
       milestone: null,
       present_characters: [],
       current_location: null,
+      time_elapsed: null,
     }
   }
 

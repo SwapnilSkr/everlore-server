@@ -46,8 +46,13 @@ export interface EventDataDoc {
   choices?: Array<{ label: string; kind: 'act' | 'say'; send: string }>
   /** Story landmark crossed this turn (brass-seal moment), when one occurred. */
   milestone?: string | null
-  /** In-story time that passed on a calendar_tick turn (e.g. "several days"). */
+  /** In-story time that passed this turn (e.g. "several days") — set on an
+   *  explicit calendar_tick AND on any turn whose prose narrates a time skip
+   *  (travel, "weeks later"). Advances the day-level calendar. */
   time_advanced?: string
+  /** Present on `type: 'travel'` turns — where the protagonist moved between
+   *  two concrete places this turn (denormalized names for cheap rendering). */
+  travel?: { from: string; to: string }
   /** Open-thread text that seeded this turn's beat, when fate came knocking. */
   fate_thread?: string
   /** Characters present in the scene at the end of this turn (scene-aware bond
@@ -93,7 +98,7 @@ export interface WorldEventDoc {
   instance_id: ObjectId
   player_id: ObjectId
   sequence: number
-  type: 'intimate' | 'narration' | 'calendar_tick' | 'side_chat' | string
+  type: 'intimate' | 'narration' | 'calendar_tick' | 'travel' | 'side_chat' | string
   side_chat?: SideChatRefDoc
   data: EventDataDoc
   is_user_edited: boolean

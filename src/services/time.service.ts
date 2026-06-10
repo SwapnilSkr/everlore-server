@@ -35,13 +35,40 @@ function asObjectId(value: ObjectId | string): ObjectId {
   return value instanceof ObjectId ? value : parseObjectId(String(value))
 }
 
+const WORD_NUMBERS: Record<string, number> = {
+  a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7,
+  eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, couple: 2, few: 3,
+  several: 3,
+}
+
+const UNIT_DAYS: Record<string, number> = {
+  day: 1, week: 7, month: 30, season: 90, year: 365,
+}
+
+/**
+ * Days the day-level calendar should advance for a narrated time label. Parses
+ * an explicit "<amount> <unit>" (digits or small worded numbers — "three days",
+ * "2 weeks", "a month", "several days") across day/week/month/season/year, then
+ * falls back to coarse keyword detection. Hours/minutes resolve to 0 (the
+ * calendar has day precision) so a "few hours later" beat keeps the same date.
+ */
 function advanceDays(label?: string | null): number {
   const t = String(label || '').toLowerCase()
   if (!t) return 0
-  if (/\bseason\b/.test(t)) return 90
+  const m = t.match(
+    /\b(\d+|a|an|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|couple|few|several)\s+(day|week|month|season|year)s?\b/,
+  )
+  if (m) {
+    const amount = /^\d+$/.test(m[1]) ? parseInt(m[1], 10) : (WORD_NUMBERS[m[1]] ?? 1)
+    return Math.max(0, Math.min(amount, 999)) * (UNIT_DAYS[m[2]] || 1)
+  }
+  if (/\byears?\b/.test(t)) return 365
+  if (/\bseasons?\b/.test(t)) return 90
+  if (/\bmonths?\b/.test(t)) return 30
+  if (/\bweeks?\b/.test(t)) return 7
   if (/\bseveral\s+days\b|\bdays\b/.test(t)) return 3
-  if (/\bday\b/.test(t)) return 1
-  // Hours matter for prose, but the current calendar has day precision.
+  if (/\bday\b|\bnext\s+morning\b|\bovernight\b|\btomorrow\b/.test(t)) return 1
+  // Hours/minutes matter for prose, but the calendar has day precision.
   return 0
 }
 
