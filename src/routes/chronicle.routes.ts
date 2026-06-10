@@ -17,6 +17,13 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
 
   .get('/calendar/:instanceId', (ctx) => chronicleController.getCalendar(ctx))
 
+  .get('/locations/:instanceId', (ctx) => chronicleController.getLocations(ctx))
+
+  .get(
+    '/locations/:instanceId/:locationEntityId',
+    (ctx) => chronicleController.getLocationJournal(ctx),
+  )
+
   .post('/calendar/:instanceId/timeline', (ctx) => chronicleController.forkTimeline(ctx), {
     body: t.Object({
       name: t.String({ minLength: 1, maxLength: 120 }),

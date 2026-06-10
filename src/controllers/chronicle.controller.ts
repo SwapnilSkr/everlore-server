@@ -3,6 +3,7 @@ import { memoryService } from '../services/memory.service'
 import { characterCodexService } from '../services/character-codex.service'
 import { memorySupersessionService } from '../services/memory-supersession.service'
 import { timeService } from '../services/time.service'
+import { locationService } from '../services/location.service'
 import type { Static } from '@sinclair/typebox'
 import type { EditEventBody } from '../schemas/event.schema'
 import type { EditMemoryBody } from '../schemas/memory.schema'
@@ -55,6 +56,32 @@ export const chronicleController = {
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return timeService.listCalendar(params.instanceId, user.id)
+  },
+
+  getLocations: async ({
+    params,
+    user,
+  }: {
+    params: { instanceId: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return locationService.listLocations(params.instanceId, user.id)
+  },
+
+  getLocationJournal: async ({
+    params,
+    user,
+  }: {
+    params: { instanceId: string; locationEntityId: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return locationService.getLocationJournal(
+      params.instanceId,
+      user.id,
+      params.locationEntityId,
+    )
   },
 
   forkTimeline: async ({
