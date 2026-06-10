@@ -19,6 +19,16 @@ export interface InstanceMetaDoc {
   milestones?: InstanceMilestoneDoc[]
   /** Sequence of the last fate-seeded tick beat — enforces the anti-nag cooldown. */
   last_fate_seed_sequence?: number
+  /** Latest scheduled continuity (drift) audit result — detection only, written
+   *  by the `drift_audit` maintenance task. Lets an admin see projection drift
+   *  without re-running the audit. */
+  last_continuity_audit?: {
+    healthy: boolean
+    summary: { ok: number; warn: number; fail: number }
+    max_sequence: number
+    issues: Array<{ name: string; status: string; detail: string }>
+    checked_at: Date
+  }
 }
 
 export interface CurrentSceneDoc {

@@ -296,6 +296,69 @@ export async function maintenanceProcessor(job: Job) {
       return { prunedEdges, linkedCards }
     }
 
+    case 'schedule_continuity_audits': {
+      // Fan out a per-instance drift audit across active worlds with real
+      // history. Read-only detection — see the `drift_audit` task.
+      const instances = await mongoColl.worldInstances()
+        .find({ 'meta.total_events': { $gt: 5 }, 'meta.is_archived': { $ne: true } })
+        .project({ _id: 1 })
+        .limit(1000)
+        .toArray()
+
+      const { getMaintenanceQueue } = await import('../../src/queues')
+      const queue = getMaintenanceQueue()
+      for (const inst of instances) {
+        await queue.add('drift-audit', {
+          task: 'drift_audit',
+          instanceId: idString(inst._id),
+        }, {
+          priority: 25,
+          removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+        })
+      }
+      return { scheduled: instances.length }
+    }
+
+    case 'drift_audit': {
+      // Run the read-only continuity audit and RECORD the result on the
+      // instance (meta.last_continuity_audit) so drift is visible to an admin.
+      // No mutation/repair — detection only.
+      const { instanceId } = job.data as { instanceId: string }
+      const { continuityAuditService } = await import('../../src/services/continuity-audit.service')
+      const report = await continuityAuditService.audit(instanceId)
+
+      const issues = report.checks
+        .filter((c) => c.status !== 'ok')
+        .map((c) => ({ name: c.name, status: c.status, detail: c.detail }))
+
+      if (!report.healthy || report.summary.warn > 0) {
+        log.warn('continuity.drift', {
+          instanceId,
+          healthy: report.healthy,
+          summary: report.summary,
+          maxSequence: report.maxSequence,
+          issues,
+        })
+      }
+
+      await mongoColl.worldInstances().updateOne(
+        { _id: parseObjectId(instanceId) },
+        {
+          $set: {
+            'meta.last_continuity_audit': {
+              healthy: report.healthy,
+              summary: report.summary,
+              max_sequence: report.maxSequence,
+              issues,
+              checked_at: new Date(),
+            },
+          },
+        },
+      )
+      return { healthy: report.healthy, summary: report.summary, issues: issues.length }
+    }
+
     default:
       return { error: `Unknown maintenance task: ${task}` }
   }

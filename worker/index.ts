@@ -61,6 +61,12 @@ async function main() {
     removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
     removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
   })
+  await maintenanceQueue.add('continuity-audit-scheduler', { task: 'schedule_continuity_audits' }, {
+    repeat: { pattern: '30 2 * * *' },
+    priority: 25,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+  })
 
   // Graceful shutdown
   const shutdown = async () => {
