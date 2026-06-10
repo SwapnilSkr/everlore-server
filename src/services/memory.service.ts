@@ -359,27 +359,36 @@ export const memoryService = {
     // 3. The events themselves.
     await events().deleteMany({ instance_id: iid, sequence: { $gte: sequence } })
 
-    // 3b. Character codex may contain facts from removed turns; reset it so
-    // canon is rebuilt from future play instead of keeping contradictions.
-    // BUT the protagonist's identity is authored (sentient) or onboarded (GM),
-    // not emergent — like world_state it must be restored, not lost. Capture it
-    // first, blow away the codex, then deterministically re-seed the
-    // protagonist with its identity (name/persona/appearance/aliases) intact
-    // and its evolved facts/state cleared. Without this, a GM rewind orphans
-    // the player and re-opens protagonist/player identity drift.
+    // 3b. Prune the emergent codex by PROVENANCE, not wholesale. A character
+    // first introduced in a REMOVED turn never happened — delete them. A
+    // character who appeared BEFORE the rewind point survives in the retained
+    // history, so keep their card (clamping last_seen into the surviving
+    // range); the protagonist (first_seen 0) is always preserved this way.
+    // NOTE: cards carry no per-fact provenance, so a surviving character may
+    // still hold a fact or meter value shaped by a removed turn — future play
+    // reconciles that via retire_state. Capture the protagonist first as a
+    // safety net for the edge where none survives (orphaning the player would
+    // re-open protagonist/player identity drift).
     const priorProtagonist = await characters().findOne({ instance_id: iid, is_protagonist: true })
-    await characters().deleteMany({ instance_id: iid })
-    const protoName = priorProtagonist?.canonical_name || template.protagonist?.name
-    if (protoName) {
-      await characterCodexService.seedProtagonist({
-        instanceId,
-        playerId,
-        name: protoName,
-        persona: priorProtagonist?.persona ?? template.protagonist?.persona,
-        appearance: priorProtagonist?.appearance ?? template.protagonist?.appearance,
-        aliases: priorProtagonist?.aliases || [],
-        isPlayer: !template.is_sentient,
-      })
+    await characters().deleteMany({ instance_id: iid, first_seen_sequence: { $gte: sequence } })
+    await characters().updateMany(
+      { instance_id: iid, last_seen_sequence: { $gte: sequence } },
+      { $set: { last_seen_sequence: Math.max(0, sequence - 1) } },
+    )
+    const survivingProtagonist = await characters().findOne({ instance_id: iid, is_protagonist: true })
+    if (!survivingProtagonist) {
+      const protoName = priorProtagonist?.canonical_name || template.protagonist?.name
+      if (protoName) {
+        await characterCodexService.seedProtagonist({
+          instanceId,
+          playerId,
+          name: protoName,
+          persona: priorProtagonist?.persona ?? template.protagonist?.persona,
+          appearance: priorProtagonist?.appearance ?? template.protagonist?.appearance,
+          aliases: priorProtagonist?.aliases || [],
+          isPlayer: !template.is_sentient,
+        })
+      }
     }
 
     // 4. Replay survivors from template defaults to rebuild state.

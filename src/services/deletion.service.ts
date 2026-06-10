@@ -156,6 +156,12 @@ export const deletionService = {
     const template = await worldTemplates().findOne({ _id: instance.template_id })
     if (!template) throw new HttpError(404, 'Template not found')
 
+    // Preserve the player's authored/onboarded identity across a full reset:
+    // the protagonist is who you ARE, not emergent story canon, so a reset
+    // should replay the same character rather than orphan them. Captured before
+    // the codex is purged; re-seeded in step 3.
+    const priorProtagonist = await characters().findOne({ instance_id: iid, is_protagonist: true })
+
     // 1. Purge all play data (mirrors deleteInstance, minus the instance doc).
     await this.deleteInstanceData(iid, iidStr) // Pinecone mem_ namespace
     await events().deleteMany({ instance_id: iid })
@@ -190,7 +196,12 @@ export const deletionService = {
       },
     )
 
-    // 3. Re-seed the locked protagonist (sentient worlds) — present from turn 0.
+    // 3. Re-seed the protagonist so the chat reopens anchored to the player's
+    // character — present from turn 0. Sentient worlds restore from the
+    // authoritative template persona; GM worlds restore the player's own
+    // onboarded character (name/persona/appearance/aliases) so a reset never
+    // orphans them and re-opens identity drift. A GM world that never finished
+    // onboarding has no prior card — the player simply re-onboards.
     if (template.is_sentient && template.protagonist?.name) {
       await characterCodexService.seedProtagonist({
         instanceId: iidStr,
@@ -199,6 +210,16 @@ export const deletionService = {
         persona: template.protagonist.persona,
         appearance: template.protagonist.appearance,
         isPlayer: false,
+      })
+    } else if (!template.is_sentient && priorProtagonist?.canonical_name) {
+      await characterCodexService.seedProtagonist({
+        instanceId: iidStr,
+        playerId,
+        name: priorProtagonist.canonical_name,
+        persona: priorProtagonist.persona,
+        appearance: priorProtagonist.appearance,
+        aliases: priorProtagonist.aliases || [],
+        isPlayer: true,
       })
     }
 
