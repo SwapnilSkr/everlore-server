@@ -367,3 +367,75 @@ export async function queryRag(
 
   return { loreTexts, memoryTexts, openThreads, retrievedMemoryMongoIds, retrievedEntityIds }
 }
+
+export interface SummaryHit {
+  id: string
+  tier: 'scene' | 'chapter'
+  text: string
+  score: number
+  startSequence: number
+  endSequence: number
+}
+
+/**
+ * Semantic summary retrieval (Phase 9): find the scene/chapter summaries most
+ * relevant to a query, for "what happened a long time ago" recall that raw
+ * recent events and memory atoms miss. Vector search over the `sum_<instanceId>`
+ * namespace, then a Mongo status cross-check so stale (not-yet-rebuilt)
+ * summaries are never surfaced. Read-only; not yet wired into the prompt — that
+ * is the deliberate context-packet consumption step.
+ */
+export async function querySummaries(
+  instanceId: string,
+  queryText: string,
+  topK = 4,
+): Promise<SummaryHit[]> {
+  if (!queryText.trim()) return []
+  try {
+    const queryEmbedding = await embed(queryText)
+    const res = await getPineconeIndex()
+      .namespace(`sum_${instanceId}`)
+      .query({ vector: queryEmbedding, topK: topK * 2, includeMetadata: true })
+    const matches = res.matches || []
+    if (matches.length === 0) return []
+
+    // Cross-check Mongo so staled summaries (vector still present until rebuild)
+    // are excluded; also reads the authoritative current text.
+    const iid = parseObjectId(instanceId)
+    const ids = matches.map((m) => m.id)
+    const [scenes, chapters] = await Promise.all([
+      mongoColl.sceneSummaries()
+        .find({ instance_id: iid, pinecone_id: { $in: ids }, status: { $ne: 'stale' } })
+        .toArray(),
+      mongoColl.chapterSummaries()
+        .find({ instance_id: iid, pinecone_id: { $in: ids }, status: { $ne: 'stale' } })
+        .toArray(),
+    ])
+    const byVecId = new Map<string, { tier: 'scene' | 'chapter'; text: string; start: number; end: number }>()
+    for (const s of scenes) {
+      if (s.pinecone_id) byVecId.set(s.pinecone_id, { tier: 'scene', text: s.summary_text, start: s.event_range.start_sequence, end: s.event_range.end_sequence })
+    }
+    for (const c of chapters) {
+      if (c.pinecone_id) byVecId.set(c.pinecone_id, { tier: 'chapter', text: c.summary_text, start: c.event_range.start_sequence, end: c.event_range.end_sequence })
+    }
+
+    const out: SummaryHit[] = []
+    for (const m of matches) {
+      const doc = byVecId.get(m.id)
+      if (!doc) continue
+      out.push({
+        id: m.id,
+        tier: doc.tier,
+        text: doc.text,
+        score: m.score ?? 0,
+        startSequence: doc.start,
+        endSequence: doc.end,
+      })
+      if (out.length >= topK) break
+    }
+    return out
+  } catch (err) {
+    console.warn('Summary retrieval skipped:', (err as Error).message)
+    return []
+  }
+}

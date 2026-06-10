@@ -22,6 +22,8 @@ export interface ChapterSummaryDoc {
   summary_text: string
   model_used: string
   tokens_consumed: number
+  /** Pinecone vector id (namespace `sum_<instanceId>`, `chapter_<start>_<end>`). */
+  pinecone_id?: string | null
   status?: ProjectionStatus
   created_at: Date
 }

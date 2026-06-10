@@ -545,7 +545,32 @@ export const memoryService = {
       }
     }
 
-    // 2. Scene + chapter summaries covering the removed range.
+    // 2. Scene + chapter summaries covering the removed range, plus their
+    //    Pinecone vectors (summary retrieval namespace).
+    const doomedSummaries = await sceneSummaries()
+      .find(
+        { instance_id: iid, 'event_range.end_sequence': { $gte: sequence } },
+        { projection: { pinecone_id: 1 } },
+      )
+      .toArray()
+    const doomedChapters = await chapterSummaries()
+      .find(
+        { instance_id: iid, 'event_range.end_sequence': { $gte: sequence } },
+        { projection: { pinecone_id: 1 } },
+      )
+      .toArray()
+    const summaryVecIds = [...doomedSummaries, ...doomedChapters]
+      .map((s) => s.pinecone_id)
+      .filter((id): id is string => !!id)
+    if (summaryVecIds.length > 0) {
+      try {
+        await getPineconeIndex()
+          .namespace(`sum_${idString(iid)}`)
+          .deleteMany({ ids: summaryVecIds })
+      } catch (err) {
+        console.warn('rewind: summary vector cleanup failed:', (err as Error).message)
+      }
+    }
     await sceneSummaries().deleteMany({
       instance_id: iid,
       'event_range.end_sequence': { $gte: sequence },

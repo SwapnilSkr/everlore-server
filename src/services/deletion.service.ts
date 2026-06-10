@@ -369,12 +369,17 @@ export const deletionService = {
    * This is called internally by both deleteTemplate and deleteInstance.
    */
   async deleteInstanceData(instanceId: ObjectId, instanceIdStr: string): Promise<void> {
-    // Delete the memory namespace from Pinecone
+    // Delete the memory + summary namespaces from Pinecone
     try {
       await deletePineconeNamespace(`mem_${instanceIdStr}`)
     } catch (err) {
       console.warn(`Failed to delete memory vectors for instance ${instanceIdStr}:`, (err as Error).message)
       // Continue with deletion even if Pinecone cleanup fails
+    }
+    try {
+      await deletePineconeNamespace(`sum_${instanceIdStr}`)
+    } catch (err) {
+      console.warn(`Failed to delete summary vectors for instance ${instanceIdStr}:`, (err as Error).message)
     }
   },
 

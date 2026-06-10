@@ -18,6 +18,10 @@ export interface SceneSummaryDoc {
   key_facts_extracted: unknown[]
   model_used: string
   tokens_consumed: number
+  /** Pinecone vector id (namespace `sum_<instanceId>`) for semantic summary
+   *  retrieval. Deterministic per range (`scene_<start>_<end>`) so a rebuild
+   *  overwrites in place. Absent on pre-embedding rows. */
+  pinecone_id?: string | null
   /** Projection lifecycle (see projection.model): 'stale' when a source event
    *  inside event_range was edited/replayed after this summary was generated.
    *  Stale summaries are excluded from prompts and rebuilt by the summary

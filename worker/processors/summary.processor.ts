@@ -1,13 +1,48 @@
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
-import { callLLM, AI_MODELS } from '../../src/ai'
+import { getPineconeIndex } from '../../src/config/pinecone'
+import { callLLM, embed, AI_MODELS } from '../../src/ai'
 import { parseObjectId, idString } from '../../src/utils/mongo-id'
 import { getSceneSummaryQueue, QUEUE_RETENTION } from '../../src/queues'
 import { log } from '../../src/utils/logger'
 
 /** Roll up a fixed block of consecutive scene summaries into one chapter. */
 const CHAPTER_SCENE_BLOCK = 8
+
+/**
+ * Embed a summary into Pinecone for semantic summary retrieval. The vector id is
+ * deterministic per range/tier (`<tier>_<start>_<end>`) so a rebuild for the
+ * same span overwrites in place — no orphan vectors. Best-effort: an embedding
+ * failure leaves the Mongo summary intact (just not retrievable until rebuilt).
+ */
+async function embedSummary(
+  instanceOid: ReturnType<typeof parseObjectId>,
+  tier: 'scene' | 'chapter',
+  startSequence: number,
+  endSequence: number,
+  text: string,
+): Promise<string | null> {
+  const vecId = `${tier}_${startSequence}_${endSequence}`
+  try {
+    const values = await embed(text)
+    await getPineconeIndex()
+      .namespace(`sum_${idString(instanceOid)}`)
+      .upsert({
+        records: [
+          {
+            id: vecId,
+            values,
+            metadata: { tier, text, start_sequence: startSequence, end_sequence: endSequence },
+          },
+        ],
+      })
+    return vecId
+  } catch (err) {
+    log.warn('summary.embed_failed', { tier, startSequence, endSequence, error: (err as Error).message })
+    return null
+  }
+}
 
 export async function summaryProcessor(job: Job) {
   // The 'scene-summary' worker handles both tiers; chapter jobs are discriminated
@@ -68,6 +103,14 @@ export async function summaryProcessor(job: Job) {
     maxTokens: 400,
   })
 
+  const pineconeId = await embedSummary(
+    instanceOid,
+    'scene',
+    startSequence,
+    endSequence,
+    summaryResult,
+  )
+
   const summary = {
     _id: new ObjectId(),
     instance_id: instanceOid,
@@ -77,6 +120,7 @@ export async function summaryProcessor(job: Job) {
     key_facts_extracted: [],
     model_used: AI_MODELS.sceneSummary,
     tokens_consumed: 0,
+    pinecone_id: pineconeId,
     status: 'active' as const,
     created_at: new Date(),
   }
@@ -192,6 +236,14 @@ async function chapterRollup(job: Job) {
     maxTokens: 500,
   })
 
+  const pineconeId = await embedSummary(
+    instanceOid,
+    'chapter',
+    startSequence,
+    endSequence,
+    summaryText,
+  )
+
   const chapter = {
     _id: new ObjectId(),
     instance_id: instanceOid,
@@ -201,6 +253,7 @@ async function chapterRollup(job: Job) {
     summary_text: summaryText,
     model_used: AI_MODELS.sceneSummary,
     tokens_consumed: 0,
+    pinecone_id: pineconeId,
     status: 'active' as const,
     created_at: new Date(),
   }
