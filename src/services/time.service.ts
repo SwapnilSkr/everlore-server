@@ -294,6 +294,7 @@ export const timeService = {
               time_anchor: 1,
               'data.milestone': 1,
               'data.time_advanced': 1,
+              'data.travel': 1,
               created_at: 1,
             },
           },
@@ -327,6 +328,7 @@ export const timeService = {
         time_anchor: e.time_anchor,
         milestone: e.data?.milestone || null,
         time_advanced: e.data?.time_advanced || null,
+        travel: e.data?.travel || null,
         created_at: e.created_at,
       })),
     }
