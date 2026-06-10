@@ -335,6 +335,52 @@ export const characterCodexService = {
   },
 
   /**
+   * Characters DIRECTLY NAMED in `text` (the player's turn) that aren't already
+   * in `excludeIds`. The codex prompt is recency-ranked, so a long-dormant
+   * character decays out of the injected set — yet the player can still ask
+   * about them by name. Pinning their canonical card back in means asking about
+   * an old character surfaces their structured canon (facts, current state,
+   * relationship meters), not just loose retrieved memories. Whole-word match on
+   * normalized names/aliases (≥3 chars) so "Vex" hits but "vexed" doesn't.
+   */
+  async findMentionedCharacters(
+    instanceId: string,
+    text: string,
+    excludeIds: string[],
+    limit = 5,
+  ): Promise<CharacterProfileDoc[]> {
+    const clean = (text || '').trim()
+    if (clean.length < 3) return []
+    const iid = parseObjectId(instanceId)
+    const exclude = new Set(excludeIds.map(String))
+
+    // Identity-only projection of the whole cast (cheap) to scan for mentions;
+    // full cards are fetched only for the handful that actually match.
+    const roster = await characters()
+      .find(
+        { instance_id: iid, is_protagonist: { $ne: true } },
+        { projection: { canonical_name: 1, name_normalized: 1, aliases: 1 } },
+      )
+      .toArray()
+    if (roster.length === 0) return []
+
+    const haystack = ` ${normalizeName(clean)} `
+    const matchedIds: ObjectId[] = []
+    for (const c of roster) {
+      if (exclude.has(idString(c._id))) continue
+      const names = uniqStrings([c.canonical_name, ...(c.aliases || [])], 20)
+        .map(normalizeName)
+        .filter((n) => n.length >= 3)
+      if (names.some((n) => haystack.includes(` ${n} `))) {
+        matchedIds.push(c._id)
+        if (matchedIds.length >= limit) break
+      }
+    }
+    if (matchedIds.length === 0) return []
+    return characters().find({ _id: { $in: matchedIds } }).toArray()
+  },
+
+  /**
    * Deterministically create the locked protagonist card for an instance if one
    * doesn't already exist. Used for sentient worlds (the AI persona, from the
    * template) and GM worlds (the player's own character, from onboarding).

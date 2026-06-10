@@ -6,8 +6,8 @@ import type { WorldInstanceDoc } from '../models/world-instance.model'
 import type { WorldTemplateDoc } from '../models/world-template.model'
 import { getGenerationQueue, QUEUE_RETENTION } from '../queues'
 import { instanceService } from './instance.service'
-import { rankCodexForInjection } from './character-codex.service'
-import { parseObjectId } from '../utils/mongo-id'
+import { rankCodexForInjection, characterCodexService } from './character-codex.service'
+import { idString, parseObjectId } from '../utils/mongo-id'
 import { EVENT_WINDOWS, buildEventWindow } from '../utils/event-window'
 
 const users = () => mongoColl.users()
@@ -89,6 +89,23 @@ export const generationService = {
         last_seen_sequence: currentSequence,
         is_protagonist: true,
       } as any)
+    }
+
+    // Entity pinning: if the player directly names a character who has decayed
+    // out of the recency-ranked set, pin their canonical card to the front so
+    // asking about a long-dormant character surfaces their structured canon —
+    // not just the loose memories hybrid retrieval already returns. Pinned-first
+    // means the prompt's per-section token budget protects them.
+    if (!isContinuation && userMessage) {
+      const includedIds = characterCodex
+        .map((c: any) => (c._id ? idString(c._id) : ''))
+        .filter(Boolean)
+      const pinned = await characterCodexService.findMentionedCharacters(
+        instanceId,
+        userMessage,
+        includedIds,
+      )
+      if (pinned.length > 0) characterCodex.unshift(...(pinned as any[]))
     }
 
     const job = await queue.add(
