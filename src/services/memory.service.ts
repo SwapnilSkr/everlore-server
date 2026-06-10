@@ -391,8 +391,9 @@ export const memoryService = {
         { instance_id: iid, status: { $ne: 'stale' } },
         { sort: { 'event_range.end_sequence': -1 } },
       ),
+      // Main story only — a private side chat must never become the recap spine.
       events().findOne(
-        { instance_id: iid },
+        { instance_id: iid, type: { $ne: 'side_chat' } },
         { sort: { sequence: -1 }, projection: { 'data.ai_response': 1, sequence: 1 } },
       ),
       memories()
