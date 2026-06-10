@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { ProjectionStatus } from './projection.model'
 
 /**
  * memories — curated long-term facts with optional Pinecone vector id.
@@ -20,6 +21,10 @@ export interface MemoryDoc {
   access_count: number
   last_accessed_at: Date
   is_archived: boolean
+  /** Projection lifecycle (see projection.model). `is_archived` remains the
+   *  retrieval gate for back-compat; status records WHY a row left retrieval
+   *  ('superseded' vs 'archived'). Absent on pre-unification rows. */
+  status?: ProjectionStatus
   /** Canonical entity names this memory is primarily about (who acted/felt). */
   subjects?: string[]
   /** Canonical entity names acted upon or affected. */

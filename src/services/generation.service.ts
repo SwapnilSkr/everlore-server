@@ -6,16 +6,13 @@ import type { WorldInstanceDoc } from '../models/world-instance.model'
 import type { WorldTemplateDoc } from '../models/world-template.model'
 import { getGenerationQueue, QUEUE_RETENTION } from '../queues'
 import { instanceService } from './instance.service'
-import { rankCodexForInjection } from './character-codex.service'
-import { entityGraphService } from './entity-graph.service'
-import { idString, parseObjectId } from '../utils/mongo-id'
+import { parseObjectId } from '../utils/mongo-id'
 import { EVENT_WINDOWS, buildEventWindow } from '../utils/event-window'
 
 const users = () => mongoColl.users()
 const worldInstances = () => mongoColl.worldInstances()
 const worldTemplates = () => mongoColl.worldTemplates()
 const events = () => mongoColl.events()
-const sceneSummaries = () => mongoColl.sceneSummaries()
 const memories = () => mongoColl.memories()
 const characters = () => mongoColl.characters()
 
@@ -39,83 +36,11 @@ export const generationService = {
     )
     const userNsfwEnabled = player?.preferences?.nsfw_enabled === true
 
-    const iid = parseObjectId(instanceId)
-
-    const recentEvents = await events()
-      .find({ instance_id: iid })
-      .sort({ sequence: -1 })
-      .limit(EVENT_WINDOWS.promptRecentEvents)
-      .toArray()
-    recentEvents.reverse()
-
-    const activeSummary = await sceneSummaries().findOne(
-      {
-        instance_id: iid,
-        'event_range.end_sequence': {
-          $lt: recentEvents[0]?.sequence || 0,
-        },
-        // Stale = a source event inside the range was edited; the rebuild job
-        // will restore it. Until then the prompt skips the contradicted recap.
-        status: { $ne: 'stale' },
-      },
-      { sort: { 'event_range.end_sequence': -1 } },
-    )
-
+    // Context assembly (recent turns, summary, retrieval, codex selection +
+    // pinning) happens in the WORKER via the context-packet builder, AFTER
+    // retrieval — so retrieved memories can shape which codex cards inject.
+    // Dispatch stays thin: identity, session, consent, enqueue.
     const queue = getGenerationQueue()
-    // Pull a candidate pool, then rank by recency-weighted importance so the
-    // injected top-16 tracks the CURRENT cast (dormant characters decay out)
-    // rather than lifetime mention frequency.
-    const codexPool = await characters()
-      .find({ instance_id: iid })
-      .sort({ is_protagonist: -1, mention_count: -1, updated_at: -1 })
-      .limit(40)
-      .toArray()
-    const currentSequence = recentEvents.length
-      ? recentEvents[recentEvents.length - 1].sequence
-      : 0
-    const characterCodex = rankCodexForInjection(codexPool, currentSequence, 16)
-    const protagonistName = session.protagonist?.name
-    if (
-      session.is_sentient &&
-      protagonistName &&
-      !characterCodex.some((c: any) => c.is_protagonist || c.canonical_name === protagonistName)
-    ) {
-      characterCodex.unshift({
-        canonical_name: protagonistName,
-        persona: session.protagonist?.persona,
-        appearance: session.protagonist?.appearance,
-        immutable_facts: [],
-        mutable_state: [],
-        mention_count: 0,
-        last_seen_sequence: currentSequence,
-        is_protagonist: true,
-      } as any)
-    }
-
-    // Entity pinning: if the player directly names a character who has decayed
-    // out of the recency-ranked set, pin their canonical card to the front so
-    // asking about a long-dormant character surfaces their structured canon —
-    // not just the loose memories hybrid retrieval already returns. Pinned-first
-    // means the prompt's per-section token budget protects them. Mentions
-    // resolve through the entity registry (characters, locations, items, …);
-    // the resolved entity ids also drive neighborhood memory retrieval in the
-    // worker. (Memory-driven pinning AFTER RAG hooks in via the
-    // retrievedEntityIds the rag provider returns — a later phase.)
-    let mentionedEntityIds: string[] = []
-    if (!isContinuation && userMessage) {
-      const includedIds = characterCodex
-        .map((c: any) => (c._id ? idString(c._id) : ''))
-        .filter(Boolean)
-      const { cards: pinned, mentionedEntityIds: entityIds } =
-        await entityGraphService.findMentionedCharacterCards(
-          instanceId,
-          userMessage,
-          includedIds,
-        )
-      mentionedEntityIds = entityIds
-      if (pinned.length > 0) characterCodex.unshift(...(pinned as any[]))
-    }
-
     const job = await queue.add(
       'generate',
       {
@@ -126,10 +51,6 @@ export const generationService = {
         timeAdvance,
         session,
         userNsfwEnabled,
-        recentEvents,
-        activeSummary: activeSummary?.summary_text || null,
-        characterCodex,
-        mentionedEntityIds,
       },
       {
         priority: 1,

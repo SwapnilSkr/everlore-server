@@ -3,7 +3,7 @@ import { Job } from "bullmq";
 import { mongoColl } from "../../src/config/mongo";
 import { getRedisClient } from "../../src/config/redis";
 import { callLLMStream, AI_MODELS } from "../../src/ai";
-import { queryRag } from "../../src/providers/rag.provider";
+import { buildContextPacket } from "../../src/services/context-packet.service";
 import { buildPrompt } from "../../src/utils/prompt-builder";
 import { lengthMaxTokens } from "../../src/utils/narrative-styles";
 import { NSFW_MODE } from "../../src/utils/chat-modes";
@@ -78,10 +78,6 @@ export async function generationProcessor(job: Job) {
     timeAdvance,
     session,
     userNsfwEnabled,
-    recentEvents,
-    activeSummary,
-    characterCodex = [],
-    mentionedEntityIds = [],
   } = job.data;
 
   // A continue with a time span becomes a calendar tick: story time advances.
@@ -99,10 +95,6 @@ export async function generationProcessor(job: Job) {
     : parsedPlayerInput.spoken || "[No spoken dialogue from player this turn.]";
   const storedPlayerInput = isContinuation ? "" : userMessage;
   const classifyText = isContinuation ? "" : userMessage;
-  const ragQueryText = isContinuation
-    ? (recentEvents?.[recentEvents.length - 1]?.data?.ai_response as string) ||
-      "Continue the current scene."
-    : userMessage;
 
   const redis = getRedisClient();
   const lockKey = `lock:gen:${playerId}:${instanceId}`;
@@ -110,39 +102,25 @@ export async function generationProcessor(job: Job) {
   const instanceOid = parseObjectId(instanceId);
   const playerOid = parseObjectId(playerId);
 
-  let loreTexts: string[] = [];
-  let memoryTexts: string[] = [];
-  let openThreads: string[] = [];
-
-  try {
-    // Hybrid retrieval (vector + keyword + open threads) — shared with the
-    // replay path so both turn types see the same memory surface.
-    const rag = await queryRag(
-      String(session.template_id),
-      instanceId,
-      ragQueryText,
-      session.max_lore_results || 10,
-      session.max_context_memories || 25,
-      mentionedEntityIds,
-    );
-    loreTexts = rag.loreTexts;
-    memoryTexts = rag.memoryTexts;
-    openThreads = rag.openThreads;
-  } catch (err) {
-    console.warn(
-      "RAG query failed, proceeding without retrieved memories:",
-      (err as Error).message,
-    );
-  }
-
-  // Sequence is needed before generation now (fate cooldown + milestone bookkeeping).
-  const lastEvent = await mongoColl
-    .events()
-    .findOne(
-      { instance_id: instanceOid },
-      { sort: { sequence: -1 }, projection: { sequence: 1 } },
-    );
-  const nextSequence = (lastEvent?.sequence || 0) + 1;
+  // Explicit context packet, assembled here in the worker so RETRIEVAL RUNS
+  // BEFORE CODEX SELECTION: cards pin both for names in the player's input and
+  // for characters the retrieved memories are about (indirect references).
+  const packet = await buildContextPacket({
+    instanceId,
+    playerId,
+    session,
+    userMessage,
+    isContinuation,
+  });
+  const {
+    recentEvents,
+    characterCodex,
+    loreTexts,
+    memoryTexts,
+    openThreads,
+  } = packet;
+  const activeSummary = packet.sceneSummary;
+  const nextSequence = packet.currentSequence + 1;
 
   // Fate seeding: on a calendar tick, the highest-importance open thread may
   // come due — but only past the cooldown, so the world doesn't feel like a

@@ -1,6 +1,7 @@
 import { ObjectId, type Document } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import type { UserTier } from '../models/user.model'
+import { memoryProjectionStatus } from '../models/projection.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import { deletionService } from './deletion.service'
@@ -404,5 +405,108 @@ export const adminService = {
       ...idFilter('player_id', opts.player_id),
     }
     return listCollection(generationLogs(), filter, { created_at: -1 }, opts)
+  },
+
+  /**
+   * Projection inspection: everything derived from one event, in one view —
+   * the debug surface for the "projections must be traceable back to source
+   * events" invariant. Shows memories sourced from the event (with effective
+   * lifecycle status), entity edges carrying it as provenance, scene summaries
+   * covering its sequence, the ledgered codex deltas, and the entities the
+   * linked memories/edges reference.
+   */
+  async getEventProjections(eventId: string) {
+    const eid = parseObjectId(eventId)
+    const event = await events().findOne({ _id: eid })
+    if (!event) throw new HttpError(404, 'Event not found')
+    const iid = event.instance_id
+
+    const [mems, edges, summaries] = await Promise.all([
+      memories()
+        .find({ instance_id: iid, source_event_ids: eid })
+        .toArray(),
+      mongoColl
+        .entityEdges()
+        .find({ instance_id: iid, source_event_ids: eid })
+        .toArray(),
+      sceneSummaries()
+        .find({
+          instance_id: iid,
+          'event_range.start_sequence': { $lte: event.sequence },
+          'event_range.end_sequence': { $gte: event.sequence },
+        })
+        .toArray(),
+    ])
+
+    const entityIds = [
+      ...new Map(
+        [
+          ...mems.flatMap((m) => [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])]),
+          ...edges.flatMap((e) => [e.source_entity_id, e.target_entity_id]),
+        ].map((id) => [idString(id), id] as const),
+      ).values(),
+    ]
+    const ents = entityIds.length
+      ? await mongoColl.entities().find({ _id: { $in: entityIds } }).toArray()
+      : []
+
+    return {
+      event: serialize({
+        _id: event._id,
+        instance_id: event.instance_id,
+        sequence: event.sequence,
+        type: event.type,
+        scene_tag: event.scene_tag,
+        is_user_edited: event.is_user_edited,
+        created_at: event.created_at,
+      }),
+      codex_deltas: event.data?.codex_deltas || [],
+      memories: mems.map((m) =>
+        serialize({
+          _id: m._id,
+          text: m.text,
+          type: m.type,
+          importance: m.importance,
+          status: memoryProjectionStatus(m),
+          is_archived: m.is_archived,
+          has_vector: !!m.pinecone_id,
+          subjects: m.subjects || [],
+          objects: m.objects || [],
+          subject_entity_ids: m.subject_entity_ids || [],
+          object_entity_ids: m.object_entity_ids || [],
+          unresolved_thread: m.unresolved_thread === true,
+        }),
+      ),
+      entity_edges: edges.map((e) =>
+        serialize({
+          _id: e._id,
+          type: e.type,
+          label: e.label ?? null,
+          weight: e.weight ?? null,
+          importance: e.importance,
+          status: e.status,
+          source_entity_id: e.source_entity_id,
+          target_entity_id: e.target_entity_id,
+          source_event_count: (e.source_event_ids || []).length,
+        }),
+      ),
+      scene_summaries: summaries.map((s) =>
+        serialize({
+          _id: s._id,
+          scene_tag: s.scene_tag,
+          event_range: s.event_range,
+          status: s.status || 'active',
+        }),
+      ),
+      entities: ents.map((e) =>
+        serialize({
+          _id: e._id,
+          type: e.type,
+          canonical_name: e.canonical_name,
+          status: e.status,
+          character_id: e.character_id ?? null,
+        }),
+      ),
+    }
   },
 }

@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { ProjectionStatus } from './projection.model'
 
 export interface SceneEventRangeDoc {
   start_sequence: number
@@ -17,9 +18,10 @@ export interface SceneSummaryDoc {
   key_facts_extracted: unknown[]
   model_used: string
   tokens_consumed: number
-  /** Projection provenance: 'stale' when a source event inside event_range was
-   *  edited/replayed after this summary was generated. Stale summaries are
-   *  excluded from prompts and rebuilt by the summary queue. Missing = active. */
-  status?: 'active' | 'stale'
+  /** Projection lifecycle (see projection.model): 'stale' when a source event
+   *  inside event_range was edited/replayed after this summary was generated.
+   *  Stale summaries are excluded from prompts and rebuilt by the summary
+   *  queue. Missing = active. */
+  status?: ProjectionStatus
   created_at: Date
 }

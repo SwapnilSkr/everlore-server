@@ -81,11 +81,13 @@ export const memorySupersessionService = {
     }
 
     // Archive the Mongo docs (kept for provenance; just not retrievable).
+    // status 'superseded' (vs plain 'archived') records that a newer fact
+    // replaced this one, not that it merely decayed.
     if (mongoIds.size > 0) {
       try {
         await mongoColl.memories().updateMany(
           { _id: { $in: [...mongoIds].map((id) => parseObjectId(id)) } },
-          { $set: { is_archived: true, updated_at: new Date() } },
+          { $set: { is_archived: true, status: 'superseded', updated_at: new Date() } },
         )
       } catch {
         // best-effort

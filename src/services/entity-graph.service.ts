@@ -494,6 +494,46 @@ export const entityGraphService = {
   },
 
   /**
+   * Codex cards behind a set of entity ids — used for memory-driven pinning
+   * AFTER RAG: when retrieval surfaces memories about a character the prompt
+   * wasn't going to include, their structured card gets pinned too. Protagonist
+   * cards are excluded (always injected separately).
+   */
+  async characterCardsForEntities(
+    instanceId: string,
+    entityIds: string[],
+    excludeCardIds: string[],
+    limit = 3,
+  ): Promise<CharacterProfileDoc[]> {
+    if (!entityIds.length || limit <= 0) return []
+    const iid = parseObjectId(instanceId)
+    const exclude = new Set(excludeCardIds.map(String))
+    const linked = (await entities()
+      .find(
+        {
+          instance_id: iid,
+          _id: { $in: entityIds.map((id) => parseObjectId(id)) },
+          type: { $in: ['character', 'protagonist'] },
+          character_id: { $exists: true },
+        },
+        { projection: { character_id: 1 } },
+      )
+      .toArray()) as Array<{ character_id?: ObjectId }>
+    const cardIds = [
+      ...new Map(
+        linked
+          .map((e) => e.character_id)
+          .filter((id): id is ObjectId => !!id && !exclude.has(idString(id)))
+          .map((id) => [idString(id), id] as const),
+      ).values(),
+    ].slice(0, limit)
+    if (!cardIds.length) return []
+    return (await characters()
+      .find({ _id: { $in: cardIds }, is_protagonist: { $ne: true } })
+      .toArray()) as CharacterProfileDoc[]
+  },
+
+  /**
    * Pull removed events from edge provenance and delete edges with no
    * surviving source — used by event edit/replay recuration and rewind so the
    * graph never asserts something whose source turns no longer happened.

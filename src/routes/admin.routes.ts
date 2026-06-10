@@ -66,6 +66,9 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
       }),
     ]),
   })
+  // Projection inspection: every derived projection traceable to this event
+  // (memories, entity edges, covering summaries, codex deltas, entities).
+  .get('/events/:eventId/projections', (ctx) => adminController.getEventProjections(ctx))
   .patch('/events/:eventId', (ctx) => adminController.patchEvent(ctx), { body: AdminPatchBody })
   .delete('/events/:eventId', (ctx) => adminController.deleteEvent(ctx))
 

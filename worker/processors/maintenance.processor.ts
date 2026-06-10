@@ -39,6 +39,7 @@ export async function maintenanceProcessor(job: Job) {
           {
             $set: {
               is_archived: true,
+              status: 'archived',
               pinecone_id: null,
               updated_at: new Date(),
             },
@@ -141,7 +142,8 @@ export async function maintenanceProcessor(job: Job) {
 
             await mongoColl.memories().updateOne(
               { _id: discard._id },
-              { $set: { is_archived: true, pinecone_id: null } },
+              // 'superseded': the keeper row replaced this near-duplicate.
+              { $set: { is_archived: true, status: 'superseded', pinecone_id: null } },
             )
 
             processed.add(idString(discard._id))

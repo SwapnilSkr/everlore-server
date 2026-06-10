@@ -288,7 +288,7 @@ export const memoryService = {
         })
         await memories().updateOne(
           { _id: mid },
-          { $set: { pinecone_id: newVecId, is_archived: false } },
+          { $set: { pinecone_id: newVecId, is_archived: false, status: 'active' } },
         )
       }
     }

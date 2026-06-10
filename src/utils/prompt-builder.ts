@@ -115,14 +115,13 @@ function compactPersonaLine(input: PromptInput): string {
 }
 
 /**
- * Per-section context budgets (tokens). A safety net so no single reference
- * section can crowd out the others or push the prompt past MAX_CONTEXT_TOKENS,
- * AND so the recent-turn continuity below always has room (large codices and
- * long memory lists previously squeezed recent turns toward zero). Generous on
- * purpose: in normal worlds every ranked item fits and nothing is trimmed. When
- * they do bite (very large worlds), items are already sorted most-relevant-first
- * — codex by recency-weighted importance, memories by RRF, threads by
- * importance — so only the LEAST relevant tail is dropped.
+ * Per-section context budget CEILINGS (tokens). A safety net so no single
+ * reference section can crowd out the others or push the prompt past
+ * MAX_CONTEXT_TOKENS. Generous on purpose: in normal worlds every ranked item
+ * fits and nothing is trimmed. When they do bite (very large worlds), items
+ * are already sorted most-relevant-first — codex by recency-weighted
+ * importance, memories by RRF, threads by importance — so only the LEAST
+ * relevant tail is dropped.
  */
 const SECTION_TOKEN_BUDGET = {
   codex: 1800,
@@ -130,6 +129,33 @@ const SECTION_TOKEN_BUDGET = {
   lore: 450,
   threads: 350,
 } as const
+
+/**
+ * Packet-level allocation: recent-turn continuity gets a GUARANTEED floor, and
+ * the reference sections share what remains after the static prefix —
+ * proportionally (ratios mirror the ceilings above), each still capped at its
+ * ceiling. In normal worlds the pool exceeds every ceiling, so nothing
+ * changes; in worlds with a huge static prefix the reference sections shrink
+ * together instead of independently overflowing and starving recents to zero.
+ */
+const RECENTS_FLOOR_TOKENS = 1000
+/** Headroom for the small uncapped dynamic blocks (protagonist card, persona,
+ *  state/flags, directives) + the POV reminder and current turn. */
+const FIXED_OVERHEAD_TOKENS = 700
+const REFERENCE_SHARE = { codex: 0.49, memories: 0.3, lore: 0.12, threads: 0.09 } as const
+
+function allocateSectionBudgets(staticTokens: number, maxTokens: number) {
+  const pool = Math.max(
+    600, // never zero out reference context entirely, even under extreme prefixes
+    maxTokens - staticTokens - RECENTS_FLOOR_TOKENS - FIXED_OVERHEAD_TOKENS,
+  )
+  return {
+    codex: Math.min(SECTION_TOKEN_BUDGET.codex, Math.floor(pool * REFERENCE_SHARE.codex)),
+    memories: Math.min(SECTION_TOKEN_BUDGET.memories, Math.floor(pool * REFERENCE_SHARE.memories)),
+    lore: Math.min(SECTION_TOKEN_BUDGET.lore, Math.floor(pool * REFERENCE_SHARE.lore)),
+    threads: Math.min(SECTION_TOKEN_BUDGET.threads, Math.floor(pool * REFERENCE_SHARE.threads)),
+  }
+}
 
 /**
  * Keep leading items (already priority-ordered) whose cumulative token cost
@@ -273,6 +299,10 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
 
   messages.push({ role: 'system', content: staticContent })
 
+  // Reference-section budgets allocated from what the static prefix left over,
+  // with the recents floor reserved up front.
+  const sectionBudget = allocateSectionBudgets(countTokens(staticContent), input.maxTokens)
+
   // ── DYNAMIC SYSTEM PROMPT (per-turn state) ──────
   // Everything that changes each turn lives after the cacheable prefix.
   let dynamicContent = ''
@@ -359,7 +389,7 @@ CHARACTER CARDS:
       }
       line += '\n'
       const lineTokens = countTokens(line)
-      if (codexTokensUsed + lineTokens > SECTION_TOKEN_BUDGET.codex && codexTokensUsed > 0) break
+      if (codexTokensUsed + lineTokens > sectionBudget.codex && codexTokensUsed > 0) break
       codexTokensUsed += lineTokens
       dynamicContent += line
     }
@@ -414,7 +444,7 @@ ${personaLine}
 
   if (input.retrievedLore.length > 0) {
     dynamicContent += `RELEVANT LORE DETAILS (reference only — use only if it directly applies to the current turn; do not introduce these as active scene elements by default):\n`
-    for (const lore of withinTokenBudget(input.retrievedLore, SECTION_TOKEN_BUDGET.lore)) {
+    for (const lore of withinTokenBudget(input.retrievedLore, sectionBudget.lore)) {
       dynamicContent += `- ${lore}\n`
     }
     dynamicContent += `\n`
@@ -422,7 +452,7 @@ ${personaLine}
 
   if (input.retrievedMemories.length > 0) {
     dynamicContent += `THINGS YOU REMEMBER ABOUT THIS PLAYER (reference only — use for continuity, not as a reason to change topic or summon unrelated events):\n`
-    for (const mem of withinTokenBudget(input.retrievedMemories, SECTION_TOKEN_BUDGET.memories)) {
+    for (const mem of withinTokenBudget(input.retrievedMemories, sectionBudget.memories)) {
       dynamicContent += `- ${mem}\n`
     }
     dynamicContent += `\n`
@@ -434,7 +464,7 @@ ${personaLine}
 - Let them quietly inform reactions, tension, and consequences when the current scene naturally touches them.
 - If the player's current action directly engages one, honor it faithfully — characters remember what was promised.
 `
-    for (const thread of withinTokenBudget(input.openThreads, SECTION_TOKEN_BUDGET.threads)) {
+    for (const thread of withinTokenBudget(input.openThreads, sectionBudget.threads)) {
       dynamicContent += `- ${thread}\n`
     }
     dynamicContent += `\n`
@@ -451,8 +481,14 @@ ${personaLine}
   }
 
   // ── RECENT EVENTS (continuity ledger, not style examples) ───────
-  let tokenBudgetRemaining =
-    input.maxTokens - countTokens(staticContent) - countTokens(dynamicContent) - 500
+  // HARD floor: recent-turn continuity is the one section the story cannot
+  // function without, so it always gets at least RECENTS_FLOOR_TOKENS even if
+  // an oversized static prefix already ate the nominal budget (a bounded
+  // overflow of the total cap beats a continuity blackout).
+  let tokenBudgetRemaining = Math.max(
+    RECENTS_FLOOR_TOKENS,
+    input.maxTokens - countTokens(staticContent) - countTokens(dynamicContent) - 500,
+  )
 
   const continuityTurns: string[] = []
   for (const event of input.recentEvents) {

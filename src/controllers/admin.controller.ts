@@ -89,6 +89,9 @@ export const adminController = {
       player_id: query.player_id,
     }),
 
+  getEventProjections: async ({ params }: { params: { eventId: string } }) =>
+    adminService.getEventProjections(params.eventId),
+
   patchEvent: async ({ params, body }: { params: { eventId: string }; body: Record<string, unknown> }) =>
     adminService.updateEvent(params.eventId, body),
 
