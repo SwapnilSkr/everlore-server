@@ -319,6 +319,69 @@ async function main() {
 
   await entities().deleteMany({ instance_id: cg })
 
+  // === Intra-world collision fix: AREA-scoped resolution ===
+  // Same name under DIFFERENT settlements in ONE world must stay distinct; same
+  // name within ONE building must still resolve (no regression to returns).
+  console.log('\n=== Area-scoped resolution: intra-world same-name ===')
+  const aw = new ObjectId()
+  const awP = new ObjectId()
+  const awPlace = (name: string) =>
+    entities().find({ instance_id: aw, type: 'location', name_normalized: normalizeEntityName(name) }).toArray() as Promise<EntityDoc[]>
+  const seed = (name: string, kind: string, parent?: EntityDoc) => {
+    const e = mkLocation(aw, awP, name, 1)
+    e.place_kind = kind
+    e.parent_id = parent?._id ?? null
+    return e
+  }
+  const ashford = seed('Ashford', 'settlement')
+  const riverton = seed('Riverton', 'settlement')
+  const tavernA = seed('tavern', 'building', ashford) // Ashford's tavern
+  const mansion2 = seed('Mansion', 'building')
+  const dining2 = seed('dining room', 'room', mansion2)
+  const hallway2 = seed('hallway', 'room', mansion2)
+  await entities().insertMany([ashford, riverton, tavernA, mansion2, dining2, hallway2])
+
+  // A: enter "the tavern" while in Riverton (deeper) → mints a DISTINCT tavern
+  //    under Riverton (Ashford's tavern is a different area → no fuse).
+  await entityGraphService.placeLocation({
+    instanceId: idString(aw), playerId: idString(awP), sequence: 30,
+    name: 'tavern', movement: 'deeper', viewpointMoved: true, cursorEntityId: riverton._id,
+  })
+  const taverns = await awPlace('tavern')
+  ok('collision: 2 distinct "tavern" entities (one per settlement)', taverns.length === 2, `count=${taverns.length}`)
+  ok('collision: the new tavern is parented under Riverton',
+    taverns.some((t) => idString(t.parent_id) === idString(riverton._id)) &&
+      taverns.some((t) => idString(t.parent_id) === idString(ashford._id)))
+
+  // B: enter "the tavern" while in Ashford (deeper) → REUSES Ashford's tavern
+  //    (same area), does not mint a third.
+  const reuseA = await entityGraphService.placeLocation({
+    instanceId: idString(aw), playerId: idString(awP), sequence: 31,
+    name: 'tavern', movement: 'deeper', viewpointMoved: true, cursorEntityId: ashford._id,
+  })
+  ok('reuse: Ashford tavern reused, not re-minted',
+    !!reuseA && idString(reuseA.entity_id) === idString(tavernA._id) && (await awPlace('tavern')).length === 2)
+
+  // C: return to the "dining room" from the hallway (lateral, same building) →
+  //    REUSES the existing dining room (no duplicate). The non-regression case.
+  const ret = await entityGraphService.placeLocation({
+    instanceId: idString(aw), playerId: idString(awP), sequence: 32,
+    name: 'dining room', movement: 'lateral', viewpointMoved: true, cursorEntityId: hallway2._id,
+  })
+  ok('no-regress: same-building "dining room" return reuses the existing one',
+    !!ret && idString(ret.entity_id) === idString(dining2._id) && (await awPlace('dining room')).length === 1)
+
+  // D: deeper MISLABEL safety — model says "deeper" into "dining room" from the
+  //    hallway; both share the mansion area, so it still reuses (no dup).
+  await entityGraphService.placeLocation({
+    instanceId: idString(aw), playerId: idString(awP), sequence: 33,
+    name: 'dining room', movement: 'deeper', viewpointMoved: true, cursorEntityId: hallway2._id,
+  })
+  ok('no-regress: deeper-mislabel within a building does not duplicate',
+    (await awPlace('dining room')).length === 1)
+
+  await entities().deleteMany({ instance_id: aw })
+
   console.log(`\n${failures === 0 ? '✅ ALL INVARIANTS HELD' : `❌ ${failures} invariant failure(s)`}`)
   process.exit(failures === 0 ? 0 : 1)
 }

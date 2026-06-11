@@ -181,15 +181,19 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
 
   // entities (entity graph nodes) — type is part of the natural key so a
   // character "Mira" and a location "Mira" can coexist; resolution still scans
-  // names/aliases across types. world_root_id joins the unique key so the SAME
-  // place name can exist in DIFFERENT worlds/realms ("house" in two cities) — for
-  // non-location + legacy + single-world rows world_root_id is null, so the
-  // constraint reduces to the old (instance, type, name). Also serves world-scoped
-  // exact lookup. See LOCATION_GRAPH.md.
+  // names/aliases across types. world_root_id AND parent_id join the unique key so
+  // the SAME place name can exist in DIFFERENT worlds/realms ("house" in two cities)
+  // AND under DIFFERENT containers within one world ("tavern" in two settlements) —
+  // intra-world same-name collision was the open-world bug: world_root_id alone made
+  // a name unique per world, so a 2nd "tavern" couldn't mint and FUSED onto the
+  // first, bleeding place-recall. For non-location / legacy rows both fields are
+  // null, so the constraint reduces to the old (instance, type, name). Reuse-vs-mint
+  // is governed by AREA-scoped resolution (resolveLocationAnchor); this index is the
+  // race-safe enforcement. Also serves world-scoped exact lookup. See LOCATION_GRAPH.md.
   {
     collection: COLLECTIONS.entities,
-    key: { instance_id: 1, type: 1, world_root_id: 1, name_normalized: 1 },
-    options: { unique: true, name: "idx_entities_instance_type_root_name" },
+    key: { instance_id: 1, type: 1, world_root_id: 1, parent_id: 1, name_normalized: 1 },
+    options: { unique: true, name: "idx_entities_instance_type_root_parent_name" },
   },
   {
     collection: COLLECTIONS.entities,
@@ -359,6 +363,11 @@ export const DEPRECATED_INDEXES: Array<{ collection: string; name: string }> = [
   // Replaced by idx_entities_instance_type_root_name (world_root_id joined the unique
   // key so same-named places can coexist across different worlds/realms — P1 spine).
   { collection: COLLECTIONS.entities, name: "idx_entities_instance_type_name" },
+  // Replaced by idx_entities_instance_type_root_parent_name (parent_id joined the
+  // unique key so same-named places coexist under different containers in ONE world
+  // — intra-world collision fix). Looser than the old key, so no existing row can
+  // violate the new one; safe to drop + recreate at startup.
+  { collection: COLLECTIONS.entities, name: "idx_entities_instance_type_root_name" },
 ]
 
 function isTextIndexDef(desired: Document): boolean {

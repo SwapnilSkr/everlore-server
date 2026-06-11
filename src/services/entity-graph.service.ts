@@ -192,6 +192,54 @@ async function findLocationCandidates(
     .toArray()) as EntityDoc[]
 }
 
+/** Container place-kinds that define an "area" — the scope within which a place
+ *  name dedups. A place's area is its nearest such ancestor (or the top of its
+ *  chain). So "tavern" under settlement Ashford and "tavern" under settlement
+ *  Riverton are DIFFERENT areas → distinct places; "dining room" and "hallway"
+ *  under one mansion (a building) share an area → a return resolves, not duplicates.
+ *  This is the "active area" of LOCATION_GRAPH Rule 1, made concrete. */
+const AREA_KINDS = new Set(['world', 'region', 'settlement', 'building'])
+const AREA_WALK_CAP = 8
+
+function idEq(a: ObjectId | null | undefined, b: ObjectId | null | undefined): boolean {
+  if (!a && !b) return true
+  if (!a || !b) return false
+  return idString(a) === idString(b)
+}
+
+/**
+ * The AREA a place belongs to, given the id of its immediate container (parent).
+ * Walks the parent chain (cheap, indexed, depth-capped) and returns the nearest
+ * `AREA_KINDS` ancestor (including the parent itself), or the topmost ancestor if
+ * none — or null when there is no container at all (a top-level place). Pass the
+ * PARENT id (the same starting point for a candidate's parent and for an intended
+ * placement's parent), so both sides are compared consistently.
+ */
+async function resolveAreaId(
+  iid: ObjectId,
+  parentId: ObjectId | null | undefined,
+  cache?: Map<string, ObjectId | null>,
+): Promise<ObjectId | null> {
+  if (!parentId) return null
+  const key = idString(parentId)
+  if (cache?.has(key)) return cache.get(key) ?? null
+  let currentId: ObjectId | null = parentId
+  let area: ObjectId | null = parentId
+  for (let i = 0; i < AREA_WALK_CAP && currentId; i++) {
+    const node = (await entities().findOne(
+      { _id: currentId, instance_id: iid, type: 'location' },
+      { projection: { parent_id: 1, place_kind: 1 } },
+    )) as EntityDoc | null
+    if (!node) break
+    area = currentId
+    if (node.place_kind && AREA_KINDS.has(node.place_kind)) break
+    if (!node.parent_id) break
+    currentId = node.parent_id as ObjectId
+  }
+  cache?.set(key, area)
+  return area
+}
+
 /** Provenance cap per edge: enough to survive partial rewinds without growing unbounded. */
 const EDGE_SOURCE_EVENTS_MAX = 30
 /** Relationship-meter baselines (mirrors the codex ledger). */
@@ -682,6 +730,14 @@ export const entityGraphService = {
      *  implicit `null` root) so a place in another realm can never match — the
      *  cartographer passes the active root for cross-world dedup safety. */
     scope?: { rootId: ObjectId | null }
+    /** When set, a name match is valid only if the candidate shares this AREA (its
+     *  nearest settlement/building ancestor; see {@link resolveAreaId}) — so the
+     *  same name under a DIFFERENT settlement mints a distinct place instead of
+     *  fusing (intra-world collision fix), while same-area returns still resolve.
+     *  The cartographer passes the intended placement's area. Absent → name match
+     *  is world-root-wide (the lenient default, correct when there is no reliable
+     *  container signal). */
+    areaScope?: { areaId: ObjectId | null }
     /** Containment fields stamped onto a NEWLY-minted location (the cartographer
      *  decides these from movement + hints). Ignored when an existing place is
      *  matched. */
@@ -699,19 +755,43 @@ export const entityGraphService = {
     const pid = parseObjectId(params.playerId)
     const now = new Date()
     const scopeFilter = params.scope ? { world_root_id: params.scope.rootId } : {}
+    // Area gate: a candidate counts only if it shares the intended placement's area.
+    const areaCache = new Map<string, ObjectId | null>()
+    const inArea = async (e: EntityDoc): Promise<boolean> => {
+      if (!params.areaScope) return true
+      const a = await resolveAreaId(iid, e.parent_id ?? null, areaCache)
+      return idEq(a, params.areaScope.areaId)
+    }
 
     // 1. Indexed exact match on canonical name (within the world-root if scoped).
-    let entity = (await entities().findOne({
-      instance_id: iid,
-      type: 'location',
-      name_normalized: normalized,
-      status: { $ne: 'archived' },
-      ...scopeFilter,
-    })) as EntityDoc | null
+    //    With an areaScope, scan same-name rows and take the one in the same area
+    //    (same name can now coexist across areas), else the lenient single match.
+    let entity: EntityDoc | null = null
+    if (params.areaScope) {
+      const sameName = (await entities()
+        .find({ instance_id: iid, type: 'location', name_normalized: normalized, status: { $ne: 'archived' }, ...scopeFilter })
+        .toArray()) as EntityDoc[]
+      for (const cand of sameName) {
+        if (await inArea(cand)) { entity = cand; break }
+      }
+    } else {
+      entity = (await entities().findOne({
+        instance_id: iid,
+        type: 'location',
+        name_normalized: normalized,
+        status: { $ne: 'archived' },
+        ...scopeFilter,
+      })) as EntityDoc | null
+    }
 
     // 2. Bounded fuzzy match (canonical + aliases) when exact misses.
     if (!entity) {
-      const candidates = await findLocationCandidates(iid, normalized, 40, params.scope)
+      let candidates = await findLocationCandidates(iid, normalized, 40, params.scope)
+      if (params.areaScope) {
+        const kept: EntityDoc[] = []
+        for (const c of candidates) if (await inArea(c)) kept.push(c)
+        candidates = kept
+      }
       entity = pickBestLocationMatch(normalized, candidates)
     }
 
@@ -757,10 +837,13 @@ export const entityGraphService = {
       await entities().insertOne(doc)
       entity = doc
     } catch {
+      // Unique-index race: the colliding row is the one with the SAME parent + name
+      // in this world-root (the new index includes parent_id), so target it exactly.
       entity = (await entities().findOne({
         instance_id: iid,
         type: 'location',
         name_normalized: normalized,
+        parent_id: doc.parent_id ?? null,
         ...scopeFilter,
       })) as EntityDoc | null
     }
@@ -881,9 +964,16 @@ export const entityGraphService = {
       else if (movement === 'out' || movement === 'lateral') parentId = cursor?.parent_id ?? null
     }
 
+    // Dedup within the intended placement's AREA (nearest settlement/building) so a
+    // same-named place under a DIFFERENT settlement mints distinct instead of fusing,
+    // while same-building returns still resolve. Only when we have a container to
+    // anchor the area on — a parentless top-level placement keeps the lenient
+    // world-root match (and the unique index already blocks a true top-level dupe).
+    const areaScope = parentId ? { areaId: await resolveAreaId(iid, parentId) } : undefined
+
     return this.resolveLocationAnchor({
       instanceId: params.instanceId, playerId: params.playerId, sequence: params.sequence,
-      name, viewpointMoved: moved, scope: { rootId: activeRoot },
+      name, viewpointMoved: moved, scope: { rootId: activeRoot }, areaScope,
       create: { parentId, worldRootId: activeRoot },
     })
   },
