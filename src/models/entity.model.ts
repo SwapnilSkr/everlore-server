@@ -55,6 +55,16 @@ export interface EntityDoc {
   /** location entities only — enduring canonical facts about the place ("built
    *  over a buried god"). Append-only canon; bounded; pruned on rewind/edit. */
   location_facts?: LocationFactDoc[]
+  /** location entities only — the containment spine. `parent_id` is the immediate
+   *  container (room → building → settlement → …); null/absent = a world root or a
+   *  place whose parent isn't discovered yet. `world_root_id` is the denormalized
+   *  top of THIS place's chain (the world/realm it belongs to) for O(1)
+   *  world-scoped resolution + retrieval — null/absent on legacy + single-world
+   *  rows (treated as one implicit root). `place_kind` is a coarse granularity tier
+   *  for UI grouping + cartographer defaults. See LOCATION_GRAPH.md (P1). */
+  parent_id?: ObjectId | null
+  world_root_id?: ObjectId | null
+  place_kind?: 'world' | 'region' | 'settlement' | 'building' | 'area' | 'room' | string
   created_at: Date
   updated_at: Date
 }

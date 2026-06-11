@@ -7,6 +7,7 @@
  */
 import { ObjectId } from 'mongodb'
 import { connectMongo, mongoColl } from '../src/config/mongo'
+import { ensureEverloreIndexes } from '../src/config/mongo-indexes'
 import {
   entityGraphService,
   isVagueLocationLabel,
@@ -83,7 +84,8 @@ async function main() {
   }
 
   // --- DB integration ---
-  await connectMongo()
+  const db = await connectMongo()
+  await ensureEverloreIndexes(db) // bring the entities unique index up to date (world_root_id key)
   const tempId = new ObjectId()
   const playerId = new ObjectId()
   const entities = () => mongoColl.entities()
@@ -207,6 +209,101 @@ async function main() {
   ok('specific place on a move still mints', movedAfter === movedBefore + 1, `count ${movedBefore} → ${movedAfter}`)
 
   await entities().deleteMany({ instance_id: tempId })
+
+  // === Cartographer (P1): containment placement + world-roots + re-parent. ===
+  console.log('\n=== Cartographer: containment + world-roots ===')
+  const cg = new ObjectId() // isolated instance for the graph scenarios
+  const cgPlayer = new ObjectId()
+  const place = (name: string) =>
+    entities().findOne({ instance_id: cg, type: 'location', name_normalized: normalizeEntityName(name) }) as Promise<EntityDoc | null>
+
+  // Seed: mansion (root-level, parent unknown) containing the dining room.
+  const mansion = mkLocation(cg, cgPlayer, 'mansion', 1)
+  const diningRoom = mkLocation(cg, cgPlayer, 'dining room', 2)
+  diningRoom.parent_id = mansion._id
+  await entities().insertMany([mansion, diningRoom])
+
+  // deeper: from the mansion INTO the library → library.parent = mansion.
+  await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 10,
+    name: 'library', movement: 'deeper', viewpointMoved: true, cursorEntityId: mansion._id,
+  })
+  const library = await place('library')
+  ok('deeper: library parent = mansion', !!library && idString(library!.parent_id) === idString(mansion._id),
+    `parent=${library?.parent_id}`)
+
+  // out: from the dining room OUT to the foyer → foyer.parent = dining room's parent (mansion).
+  await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 11,
+    name: 'foyer', movement: 'out', viewpointMoved: true, cursorEntityId: diningRoom._id,
+  })
+  const foyer = await place('foyer')
+  ok('out: foyer parent = mansion (one level up from dining room)',
+    !!foyer && idString(foyer!.parent_id) === idString(mansion._id), `parent=${foyer?.parent_id}`)
+
+  // lateral: dining room → study (same level) → study.parent = mansion.
+  await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 12,
+    name: 'study', movement: 'lateral', viewpointMoved: true, cursorEntityId: diningRoom._id,
+  })
+  const study = await place('study')
+  ok('lateral: study parent = mansion', !!study && idString(study!.parent_id) === idString(mansion._id))
+
+  // containment_hint overrides inferred parent: "the cellar, beneath the kitchen".
+  await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 13,
+    name: 'wine cellar', containmentHint: 'the kitchen', movement: 'deeper', viewpointMoved: true,
+    cursorEntityId: diningRoom._id,
+  })
+  const kitchen = await place('the kitchen')
+  const cellar = await place('wine cellar')
+  ok('hint: wine cellar parent = the kitchen (hint beat inferred)',
+    !!cellar && !!kitchen && idString(cellar!.parent_id) === idString(kitchen!._id), `parent=${cellar?.parent_id}`)
+
+  // re-parent reveal: an UNMOVED turn names the mansion's container for the first
+  // time → mansion.parent gets filled (was unknown).
+  await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 14,
+    name: 'mansion', containmentHint: 'Veliscourt', movement: 'none', viewpointMoved: false,
+    cursorEntityId: mansion._id,
+  })
+  const mansionAfter = await place('mansion')
+  const veliscourt = await place('veliscourt')
+  ok('re-parent: mansion.parent filled with Veliscourt on reveal',
+    !!mansionAfter && !!veliscourt && idString(mansionAfter!.parent_id) === idString(veliscourt!._id),
+    `parent=${mansionAfter?.parent_id}`)
+
+  // world_shift: cross into the Shadow Realm → new root minted (self-rooted),
+  // destination hung under it.
+  await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 15,
+    name: 'obsidian throne', containmentHint: 'Shadow Realm', movement: 'world_shift', viewpointMoved: true,
+    cursorEntityId: diningRoom._id,
+  })
+  const shadow = await place('shadow realm')
+  const throne = await place('obsidian throne')
+  ok('world_shift: Shadow Realm root is self-rooted',
+    !!shadow && idString(shadow!.world_root_id) === idString(shadow!._id))
+  ok('world_shift: obsidian throne under the Shadow Realm root',
+    !!throne && idString(throne!.parent_id) === idString(shadow!._id) &&
+      idString(throne!.world_root_id) === idString(shadow!._id))
+
+  // cross-world same name: a "manor" in the main world AND in the Shadow Realm must
+  // be DISTINCT entities (the unique index now includes world_root_id).
+  await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 16,
+    name: 'manor', movement: 'lateral', viewpointMoved: true, cursorEntityId: mansion._id, // main world (root null)
+  })
+  await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 17,
+    name: 'manor', movement: 'lateral', viewpointMoved: true, cursorEntityId: throne!._id, // shadow world
+  })
+  const manors = await entities().find({ instance_id: cg, type: 'location', name_normalized: 'manor' }).toArray()
+  ok('cross-world: two "manor" entities coexist (one per realm)', manors.length === 2, `count=${manors.length}`)
+  ok('cross-world: the two manors have different world roots',
+    manors.length === 2 && idString((manors[0] as any).world_root_id ?? 'main') !== idString((manors[1] as any).world_root_id ?? 'main'))
+
+  await entities().deleteMany({ instance_id: cg })
 
   console.log(`\n${failures === 0 ? '✅ ALL INVARIANTS HELD' : `❌ ${failures} invariant failure(s)`}`)
   process.exit(failures === 0 ? 0 : 1)

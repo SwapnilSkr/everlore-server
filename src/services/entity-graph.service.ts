@@ -135,8 +135,15 @@ export function pickBestLocationMatch(
   return best?.entity ?? null
 }
 
-/** Bounded indexed candidate fetch for fuzzy location resolution (not full-registry). */
-async function findLocationCandidates(iid: ObjectId, queryNorm: string, limit = 40): Promise<EntityDoc[]> {
+/** Bounded indexed candidate fetch for fuzzy location resolution (not full-registry).
+ *  When `scope` is given, candidates are restricted to one world-root so a place in
+ *  another realm can never be a fuzzy match (cross-world dedup safety). */
+async function findLocationCandidates(
+  iid: ObjectId,
+  queryNorm: string,
+  limit = 40,
+  scope?: { rootId: ObjectId | null },
+): Promise<EntityDoc[]> {
   const tokens = significantLocationTokens(queryNorm)
   if (!tokens.length) return []
 
@@ -152,6 +159,7 @@ async function findLocationCandidates(iid: ObjectId, queryNorm: string, limit = 
       instance_id: iid,
       type: 'location',
       status: { $ne: 'archived' },
+      ...(scope ? { world_root_id: scope.rootId } : {}),
       $or: or,
     })
     .sort({ last_seen_sequence: -1, mention_count: -1 })
@@ -637,7 +645,15 @@ export const entityGraphService = {
      *  minting a generic place. A SPECIFIC place still resolves even when unmoved
      *  (a return the model under-flags must still update the cursor). */
     viewpointMoved?: boolean
-  }) {
+    /** When set, restrict exact + fuzzy matching to ONE world-root (incl. the
+     *  implicit `null` root) so a place in another realm can never match — the
+     *  cartographer passes the active root for cross-world dedup safety. */
+    scope?: { rootId: ObjectId | null }
+    /** Containment fields stamped onto a NEWLY-minted location (the cartographer
+     *  decides these from movement + hints). Ignored when an existing place is
+     *  matched. */
+    create?: { parentId?: ObjectId | null; worldRootId?: ObjectId | null; placeKind?: string }
+  }): Promise<{ entity_id: ObjectId; name: string; name_normalized: string } | null> {
     const name = String(params.name || '').replace(/\s+/g, ' ').trim().slice(0, 120)
     const normalized = normalizeEntityName(name)
     if (!normalized || normalized.length < 3) return null
@@ -649,18 +665,20 @@ export const entityGraphService = {
     const iid = parseObjectId(params.instanceId)
     const pid = parseObjectId(params.playerId)
     const now = new Date()
+    const scopeFilter = params.scope ? { world_root_id: params.scope.rootId } : {}
 
-    // 1. Indexed exact match on canonical name.
+    // 1. Indexed exact match on canonical name (within the world-root if scoped).
     let entity = (await entities().findOne({
       instance_id: iid,
       type: 'location',
       name_normalized: normalized,
       status: { $ne: 'archived' },
+      ...scopeFilter,
     })) as EntityDoc | null
 
     // 2. Bounded fuzzy match (canonical + aliases) when exact misses.
     if (!entity) {
-      const candidates = await findLocationCandidates(iid, normalized)
+      const candidates = await findLocationCandidates(iid, normalized, 40, params.scope)
       entity = pickBestLocationMatch(normalized, candidates)
     }
 
@@ -680,7 +698,10 @@ export const entityGraphService = {
       }
     }
 
-    // 3. Mint a new location entity (duplicate race → existing row wins).
+    // 3. Mint a new location entity (duplicate race → existing row wins). The
+    // unique index is (instance, type, world_root_id, name) so the same name in a
+    // different world is a distinct row, not a collision.
+    const rootId = params.create?.worldRootId ?? params.scope?.rootId ?? null
     const doc: EntityDoc = {
       _id: new ObjectId(),
       instance_id: iid,
@@ -693,6 +714,9 @@ export const entityGraphService = {
       first_seen_sequence: params.sequence,
       last_seen_sequence: params.sequence,
       mention_count: 1,
+      parent_id: params.create?.parentId ?? null,
+      world_root_id: rootId,
+      ...(params.create?.placeKind ? { place_kind: params.create.placeKind } : {}),
       created_at: now,
       updated_at: now,
     }
@@ -704,6 +728,7 @@ export const entityGraphService = {
         instance_id: iid,
         type: 'location',
         name_normalized: normalized,
+        ...scopeFilter,
       })) as EntityDoc | null
     }
     if (!entity) return null
@@ -712,6 +737,122 @@ export const entityGraphService = {
       name: entity.canonical_name,
       name_normalized: entity.name_normalized,
     }
+  },
+
+  /**
+   * The CARTOGRAPHER (P1). Turns the scene extractor's WITNESS hints
+   * (`current_place` + `containment_hint` + `movement`) into a placed location in
+   * the containment graph — the server owns the map, the model only observes.
+   * Resolves/mints the destination SCOPED to the active world-root (so a place in
+   * another realm can never collide), stamping `parent_id` / `world_root_id`:
+   *   - deeper  → parent = the place we were in
+   *   - out     → parent = the place we were in's parent (one level up)
+   *   - lateral → parent = same as the place we were in
+   *   - world_shift → mint/reuse a world-root (the realm) and hang the place under it
+   * An explicit `containment_hint` overrides the inferred parent. On an UNMOVED
+   * turn whose prose newly reveals the current place's container, the cursor is
+   * re-parented (fills an unknown parent only — never thrashes a known one).
+   * Returns the destination anchor, or null to keep the current cursor.
+   */
+  async placeLocation(params: {
+    instanceId: string
+    playerId: string
+    sequence: number
+    name?: string | null
+    containmentHint?: string | null
+    movement?: 'none' | 'deeper' | 'out' | 'lateral' | 'world_shift'
+    viewpointMoved?: boolean
+    cursorEntityId?: ObjectId | string | null
+  }): Promise<{ entity_id: ObjectId; name: string; name_normalized: string } | null> {
+    const name = String(params.name || '').replace(/\s+/g, ' ').trim().slice(0, 120)
+    const normalized = normalizeEntityName(name)
+    const movement = params.movement || (params.viewpointMoved ? 'lateral' : 'none')
+    const moved = params.viewpointMoved === true || movement !== 'none'
+    const iid = parseObjectId(params.instanceId)
+
+    // Load the current cursor entity for its place in the graph.
+    const cursor = params.cursorEntityId
+      ? ((await entities().findOne({
+          _id: typeof params.cursorEntityId === 'string' ? parseObjectId(params.cursorEntityId) : params.cursorEntityId,
+          instance_id: iid,
+          type: 'location',
+        })) as EntityDoc | null)
+      : null
+    const activeRoot: ObjectId | null = cursor?.world_root_id ?? null
+
+    // Re-parent reveal: on an unmoved turn whose prose names the CURRENT place's
+    // container for the first time, fill the cursor's unknown parent (only when
+    // it is currently unknown — never override an established parent).
+    if (!moved && cursor && (cursor.parent_id == null) && params.containmentHint && !isVagueLocationLabel(params.containmentHint)) {
+      const container = await this.resolveLocationAnchor({
+        instanceId: params.instanceId, playerId: params.playerId, sequence: params.sequence,
+        name: params.containmentHint, viewpointMoved: true, scope: { rootId: activeRoot },
+        create: { worldRootId: activeRoot },
+      })
+      if (container && idString(container.entity_id) !== idString(cursor._id)) {
+        await entities().updateOne({ _id: cursor._id }, { $set: { parent_id: container.entity_id, updated_at: new Date() } })
+      }
+    }
+
+    if (!normalized || normalized.length < 3) return null
+    // Vague label on an unmoved turn → stay put (the cursor).
+    if (!moved && isVagueLocationLabel(normalized)) return null
+
+    // World shift: mint/reuse a world-root for the realm, hang the place under it.
+    if (movement === 'world_shift') {
+      const realmName = (params.containmentHint && !isVagueLocationLabel(params.containmentHint))
+        ? params.containmentHint.replace(/\s+/g, ' ').trim().slice(0, 120)
+        : name
+      const realmNorm = normalizeEntityName(realmName)
+      let root = (await entities().findOne({
+        instance_id: iid, type: 'location', name_normalized: realmNorm,
+        $expr: { $eq: ['$world_root_id', '$_id'] },
+      })) as EntityDoc | null
+      if (!root) {
+        const rid = new ObjectId()
+        const now = new Date()
+        root = {
+          _id: rid, instance_id: iid, player_id: parseObjectId(params.playerId), type: 'location',
+          canonical_name: realmName, name_normalized: realmNorm, aliases: [], status: 'active',
+          first_seen_sequence: params.sequence, last_seen_sequence: params.sequence, mention_count: 1,
+          parent_id: null, world_root_id: rid, place_kind: 'world', created_at: now, updated_at: now,
+        }
+        try { await entities().insertOne(root) }
+        catch { root = (await entities().findOne({ instance_id: iid, type: 'location', name_normalized: realmNorm, $expr: { $eq: ['$world_root_id', '$_id'] } })) as EntityDoc | null }
+      }
+      if (!root) return null
+      // The realm itself is the destination when no distinct sub-place was named.
+      if (realmNorm === normalized) {
+        return { entity_id: root._id, name: root.canonical_name, name_normalized: root.name_normalized }
+      }
+      return this.resolveLocationAnchor({
+        instanceId: params.instanceId, playerId: params.playerId, sequence: params.sequence,
+        name, viewpointMoved: true, scope: { rootId: root._id },
+        create: { parentId: root._id, worldRootId: root._id },
+      })
+    }
+
+    // Same-world placement. Resolve an explicit container hint (scoped) to use as
+    // the parent; otherwise infer the parent from the movement direction.
+    let parentId: ObjectId | null = null
+    if (params.containmentHint && !isVagueLocationLabel(params.containmentHint)) {
+      const container = await this.resolveLocationAnchor({
+        instanceId: params.instanceId, playerId: params.playerId, sequence: params.sequence,
+        name: params.containmentHint, viewpointMoved: true, scope: { rootId: activeRoot },
+        create: { worldRootId: activeRoot },
+      })
+      if (container) parentId = container.entity_id
+    }
+    if (!parentId) {
+      if (movement === 'deeper') parentId = cursor?._id ?? null
+      else if (movement === 'out' || movement === 'lateral') parentId = cursor?.parent_id ?? null
+    }
+
+    return this.resolveLocationAnchor({
+      instanceId: params.instanceId, playerId: params.playerId, sequence: params.sequence,
+      name, viewpointMoved: moved, scope: { rootId: activeRoot },
+      create: { parentId, worldRootId: activeRoot },
+    })
   },
 
   /**

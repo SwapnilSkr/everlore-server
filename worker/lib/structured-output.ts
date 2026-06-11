@@ -46,6 +46,16 @@ export interface GenerationOutput {
    */
   current_location?: string | null
   /**
+   * Witness fields for the location-graph cartographer (P1). `containment_hint`
+   * is the immediate container of current_location, but ONLY when the passage
+   * states it (else null) — never guessed. `movement` is how current_location
+   * relates to the prior place: none | deeper (went into a sub-place) | out (left
+   * to the surrounding area) | lateral (same level) | world_shift (crossed into a
+   * different world/realm). The SERVER turns these into parent_id/world_root_id.
+   */
+  containment_hint?: string | null
+  movement?: 'none' | 'deeper' | 'out' | 'lateral' | 'world_shift'
+  /**
    * True ONLY when the passage narrates the viewpoint physically relocating to a
    * DIFFERENT place this turn (walking out, entering another room, a journey, a
    * scene-cut that moves them). The server requires this before moving the
@@ -118,6 +128,12 @@ export function sanitizeLocationName(raw: unknown): string | null {
   const name = raw.replace(/\s+/g, ' ').trim().slice(0, 120)
   if (!name || /^(null|none|unknown|same|unchanged|current location)$/i.test(name)) return null
   return name
+}
+
+const MOVEMENT_VALUES = new Set(['none', 'deeper', 'out', 'lateral', 'world_shift'])
+/** Coerce the cartographer movement hint to a known value; default "none". */
+export function sanitizeMovement(raw: unknown): 'none' | 'deeper' | 'out' | 'lateral' | 'world_shift' {
+  return typeof raw === 'string' && MOVEMENT_VALUES.has(raw) ? (raw as never) : 'none'
 }
 
 /**
@@ -260,6 +276,8 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
     parsed.present_characters = sanitizePresentCharacters(parsed.present_characters)
     parsed.characters_departed = sanitizePresentCharacters(parsed.characters_departed)
     parsed.current_location = sanitizeLocationName(parsed.current_location)
+    parsed.containment_hint = sanitizeLocationName(parsed.containment_hint)
+    parsed.movement = sanitizeMovement(parsed.movement)
     parsed.viewpoint_moved = parsed.viewpoint_moved === true
     parsed.time_elapsed = sanitizeTimeElapsed(parsed.time_elapsed)
     parsed.location_state_changes = sanitizeFactList(parsed.location_state_changes)

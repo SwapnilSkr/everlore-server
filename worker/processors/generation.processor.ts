@@ -349,12 +349,15 @@ export async function generationProcessor(job: Job) {
   // a cursor-side movement gate would wrongly strand at the place they left.
   const viewpointMoved = parsed.viewpoint_moved === true;
   const resolvedLocation = parsed.current_location
-    ? await entityGraphService.resolveLocationAnchor({
+    ? await entityGraphService.placeLocation({
         instanceId,
         playerId,
         sequence: nextSequence,
         name: parsed.current_location,
+        containmentHint: parsed.containment_hint,
+        movement: parsed.movement,
         viewpointMoved,
+        cursorEntityId: currentLocation?.entity_id ?? null,
       }).catch((err) => {
         console.warn("location anchor resolution failed:", (err as Error).message);
         return null;

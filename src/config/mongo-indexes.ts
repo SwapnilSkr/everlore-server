@@ -181,11 +181,15 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
 
   // entities (entity graph nodes) — type is part of the natural key so a
   // character "Mira" and a location "Mira" can coexist; resolution still scans
-  // names/aliases across types.
+  // names/aliases across types. world_root_id joins the unique key so the SAME
+  // place name can exist in DIFFERENT worlds/realms ("house" in two cities) — for
+  // non-location + legacy + single-world rows world_root_id is null, so the
+  // constraint reduces to the old (instance, type, name). Also serves world-scoped
+  // exact lookup. See LOCATION_GRAPH.md.
   {
     collection: COLLECTIONS.entities,
-    key: { instance_id: 1, type: 1, name_normalized: 1 },
-    options: { unique: true, name: "idx_entities_instance_type_name" },
+    key: { instance_id: 1, type: 1, world_root_id: 1, name_normalized: 1 },
+    options: { unique: true, name: "idx_entities_instance_type_root_name" },
   },
   {
     collection: COLLECTIONS.entities,
@@ -196,6 +200,12 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     collection: COLLECTIONS.entities,
     key: { instance_id: 1, character_id: 1 },
     options: { sparse: true, name: "idx_entities_instance_character" },
+  },
+  // Children lookup + subtree world_root_id refresh on re-parent (P1 spine).
+  {
+    collection: COLLECTIONS.entities,
+    key: { instance_id: 1, parent_id: 1 },
+    options: { sparse: true, name: "idx_entities_instance_parent" },
   },
 
   // entity_edges (entity graph edges). `label` is part of edge identity so
@@ -346,6 +356,9 @@ export const DEPRECATED_INDEXES: Array<{ collection: string; name: string }> = [
   { collection: COLLECTIONS.memories, name: "idx_memories_instance_timeline_importance" },
   // Draft Phase 6A index briefly pointed at the whole object instead of entity_id.
   { collection: COLLECTIONS.world_instances, name: "idx_world_instances_current_location" },
+  // Replaced by idx_entities_instance_type_root_name (world_root_id joined the unique
+  // key so same-named places can coexist across different worlds/realms — P1 spine).
+  { collection: COLLECTIONS.entities, name: "idx_entities_instance_type_name" },
 ]
 
 function isTextIndexDef(desired: Document): boolean {
