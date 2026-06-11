@@ -33,6 +33,109 @@ function uniqNames(values: string[], max = 20): string[] {
   return out
 }
 
+const LOCATION_TOKEN_STOP = new Set(['the', 'a', 'an', 'of', 'in', 'at', 'to', 'and'])
+/** Minimum Jaccard score for a conservative fuzzy location match. */
+const LOCATION_FUZZY_MIN_SCORE = 0.45
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Significant tokens for location similarity — strips articles/prepositions. */
+export function significantLocationTokens(normalized: string): string[] {
+  return normalized
+    .split(' ')
+    .map((t) => t.trim())
+    .filter((t) => t.length >= 2 && !LOCATION_TOKEN_STOP.has(t))
+}
+
+/** Normalized canonical + alias forms for one location entity. */
+function normalizedLocationNames(entity: Pick<EntityDoc, 'canonical_name' | 'name_normalized' | 'aliases'>): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of [entity.canonical_name, entity.name_normalized, ...(entity.aliases || [])]) {
+    const n = normalizeEntityName(String(raw || ''))
+    if (!n || seen.has(n)) continue
+    seen.add(n)
+    out.push(n)
+  }
+  return out
+}
+
+/**
+ * Conservative token-containment score between two normalized location names.
+ * Returns 0 when names should not merge; 1 for identical strings.
+ */
+export function scoreLocationNameMatch(queryNorm: string, candidateNorm: string): number {
+  if (!queryNorm || !candidateNorm) return 0
+  if (queryNorm === candidateNorm) return 1
+
+  const qt = significantLocationTokens(queryNorm)
+  const ct = significantLocationTokens(candidateNorm)
+  if (!qt.length || !ct.length) return 0
+
+  const shorter = qt.length <= ct.length ? qt : ct
+  const longer = qt.length <= ct.length ? ct : qt
+  const longerSet = new Set(longer)
+  if (!shorter.every((t) => longerSet.has(t))) return 0
+
+  // Single-token shorthand ("garden" → "night garden") needs a strong token.
+  if (shorter.length === 1 && shorter[0].length < 4) return 0
+
+  const union = new Set([...qt, ...ct])
+  return shorter.length / union.size
+}
+
+/** Pick the best fuzzy location match from candidates, or null if none pass threshold. */
+export function pickBestLocationMatch(
+  queryNorm: string,
+  candidates: EntityDoc[],
+  minScore = LOCATION_FUZZY_MIN_SCORE,
+): EntityDoc | null {
+  let best: { entity: EntityDoc; score: number } | null = null
+  for (const entity of candidates) {
+    for (const candidateNorm of normalizedLocationNames(entity)) {
+      const score = scoreLocationNameMatch(queryNorm, candidateNorm)
+      if (score < minScore) continue
+      if (
+        !best ||
+        score > best.score ||
+        (score === best.score &&
+          ((entity.last_seen_sequence || 0) > (best.entity.last_seen_sequence || 0) ||
+            ((entity.last_seen_sequence || 0) === (best.entity.last_seen_sequence || 0) &&
+              (entity.mention_count || 0) > (best.entity.mention_count || 0))))
+      ) {
+        best = { entity, score }
+      }
+    }
+  }
+  return best?.entity ?? null
+}
+
+/** Bounded indexed candidate fetch for fuzzy location resolution (not full-registry). */
+async function findLocationCandidates(iid: ObjectId, queryNorm: string, limit = 40): Promise<EntityDoc[]> {
+  const tokens = significantLocationTokens(queryNorm)
+  if (!tokens.length) return []
+
+  const or: Record<string, unknown>[] = []
+  for (const token of tokens) {
+    const re = escapeRegex(token)
+    or.push({ name_normalized: { $regex: re } })
+    or.push({ aliases: { $regex: re, $options: 'i' } })
+  }
+
+  return (await entities()
+    .find({
+      instance_id: iid,
+      type: 'location',
+      status: { $ne: 'archived' },
+      $or: or,
+    })
+    .sort({ last_seen_sequence: -1, mention_count: -1 })
+    .limit(limit)
+    .toArray()) as EntityDoc[]
+}
+
 /** Provenance cap per edge: enough to survive partial rewinds without growing unbounded. */
 const EDGE_SOURCE_EVENTS_MAX = 30
 /** Relationship-meter baselines (mirrors the codex ledger). */
@@ -493,6 +596,13 @@ export const entityGraphService = {
     return { cards, mentionedEntityIds: mentioned.map((e) => idString(e._id)) }
   },
 
+  /**
+   * Resolve a location name to an existing entity or create one. Uses indexed
+   * exact lookup first, then a bounded token-similarity pass over location
+   * candidates — so long-tail returns ("the garden" → "Night Garden") dedupe
+   * even when the place isn't in the 30-name extractor roster, without loading
+   * the full entity registry every turn.
+   */
   async resolveLocationAnchor(params: {
     instanceId: string
     playerId: string
@@ -502,14 +612,68 @@ export const entityGraphService = {
     const name = String(params.name || '').replace(/\s+/g, ' ').trim().slice(0, 120)
     const normalized = normalizeEntityName(name)
     if (!normalized || normalized.length < 3) return null
-    const registry = await this.resolveOrCreateEntities({
-      instanceId: params.instanceId,
-      playerId: params.playerId,
-      sequence: params.sequence,
-      mentions: [{ name, type: 'location' }],
-    })
-    const entity = registry.get(normalized)
-    if (!entity || entity.type !== 'location') return null
+
+    const iid = parseObjectId(params.instanceId)
+    const pid = parseObjectId(params.playerId)
+    const now = new Date()
+
+    // 1. Indexed exact match on canonical name.
+    let entity = (await entities().findOne({
+      instance_id: iid,
+      type: 'location',
+      name_normalized: normalized,
+      status: { $ne: 'archived' },
+    })) as EntityDoc | null
+
+    // 2. Bounded fuzzy match (canonical + aliases) when exact misses.
+    if (!entity) {
+      const candidates = await findLocationCandidates(iid, normalized)
+      entity = pickBestLocationMatch(normalized, candidates)
+    }
+
+    if (entity) {
+      await entities().updateOne(
+        { _id: entity._id },
+        {
+          $inc: { mention_count: 1 },
+          $max: { last_seen_sequence: params.sequence },
+          $set: { updated_at: now },
+        },
+      )
+      return {
+        entity_id: entity._id,
+        name: entity.canonical_name,
+        name_normalized: entity.name_normalized,
+      }
+    }
+
+    // 3. Mint a new location entity (duplicate race → existing row wins).
+    const doc: EntityDoc = {
+      _id: new ObjectId(),
+      instance_id: iid,
+      player_id: pid,
+      type: 'location',
+      canonical_name: name,
+      name_normalized: normalized,
+      aliases: [],
+      status: 'active',
+      first_seen_sequence: params.sequence,
+      last_seen_sequence: params.sequence,
+      mention_count: 1,
+      created_at: now,
+      updated_at: now,
+    }
+    try {
+      await entities().insertOne(doc)
+      entity = doc
+    } catch {
+      entity = (await entities().findOne({
+        instance_id: iid,
+        type: 'location',
+        name_normalized: normalized,
+      })) as EntityDoc | null
+    }
+    if (!entity) return null
     return {
       entity_id: entity._id,
       name: entity.canonical_name,
