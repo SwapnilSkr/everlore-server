@@ -12,6 +12,7 @@
  */
 import { ObjectId } from 'mongodb'
 import { connectMongo, coll } from '../src/config/mongo'
+import { isVagueLocationLabel } from '../src/services/entity-graph.service'
 
 const [INSTANCE, KEEP, ...DUPES] = process.argv.slice(2)
 if (!INSTANCE || !KEEP || DUPES.length === 0) {
@@ -43,8 +44,12 @@ async function main() {
     if (String(dupe._id) === String(keep._id)) { console.log(`  "${dupeName}" IS keep — skipping.`); continue }
     const de = dupe._id, ke = keep._id
 
-    // 1. Fold entity fields into keep.
-    keep.aliases = uniq([...(keep.aliases || []), ...(dupe.aliases || []), dupe.canonical_name]).slice(0, 30)
+    // 1. Fold entity fields into keep. A generic/relative dupe name ("the room",
+    // "outside") is too vague to be a safe alias — it would wrongly collapse any
+    // future "the room" (a different bedroom) into this place. Drop vague aliases.
+    keep.aliases = uniq([...(keep.aliases || []), ...(dupe.aliases || []), dupe.canonical_name])
+      .filter((a) => !isVagueLocationLabel(a))
+      .slice(0, 30)
     keep.location_facts = [...(keep.location_facts || []), ...(dupe.location_facts || [])].slice(-12)
     keep.location_state = [...(keep.location_state || []), ...(dupe.location_state || [])].slice(-12)
     keep.mention_count = (keep.mention_count || 0) + (dupe.mention_count || 0)

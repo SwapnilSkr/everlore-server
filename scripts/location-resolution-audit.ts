@@ -66,6 +66,12 @@ async function main() {
     scoreLocationNameMatch('dining hall', 'dining room') === 0,
   )
   ok('inn ↮ riverside (weak single token)', scoreLocationNameMatch('inn', 'riverside inn') === 0)
+  // Generic place-nouns are NOT distinctive: a bedroom ("the room") must not
+  // collapse into the dining room just because both contain "room".
+  ok('the room ↮ dining room (generic noun)', scoreLocationNameMatch('the room', 'dining room') === 0)
+  ok('the room ↮ great room (generic noun)', scoreLocationNameMatch('the room', 'great room') === 0)
+  ok('the hall ↮ dining hall (generic noun)', scoreLocationNameMatch('the hall', 'dining hall') === 0)
+  ok('entrance hall ↔ mansion entrance hall (still matches)', scoreLocationNameMatch('entrance hall', 'mansion entrance hall') >= 0.45)
 
   const fakeNightGarden = mkLocation(new ObjectId(), new ObjectId(), 'Night Garden', 1, ['the garden'])
   ok(

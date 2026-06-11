@@ -57,6 +57,14 @@ function uniqNames(values: string[], max = 20): string[] {
 }
 
 const LOCATION_TOKEN_STOP = new Set(['the', 'a', 'an', 'of', 'in', 'at', 'to', 'and'])
+/** Generic place nouns that are NOT distinctive on their own — "room", "hall",
+ *  etc. A name made up only of these ("the room") must not fuzzy-match a specific
+ *  place that merely shares the noun ("dining room", "great room"): a bedroom is
+ *  not the dining room. The distinctive qualifier ("dining") has to match too. */
+const GENERIC_PLACE_NOUNS = new Set([
+  'room', 'rooms', 'hall', 'halls', 'chamber', 'chambers', 'place', 'area', 'areas',
+  'spot', 'space', 'building', 'house', 'home', 'grounds', 'yard', 'quarters',
+])
 /** Minimum Jaccard score for a conservative fuzzy location match. */
 const LOCATION_FUZZY_MIN_SCORE = 0.45
 
@@ -101,6 +109,11 @@ export function scoreLocationNameMatch(queryNorm: string, candidateNorm: string)
   const longer = qt.length <= ct.length ? ct : qt
   const longerSet = new Set(longer)
   if (!shorter.every((t) => longerSet.has(t))) return 0
+
+  // A name made only of generic place-nouns ("the room", "the hall") is not a
+  // confident match for a specific place that just shares the noun — the
+  // distinctive qualifier is missing. "dining room" ≠ "the room".
+  if (shorter.every((t) => GENERIC_PLACE_NOUNS.has(t))) return 0
 
   // Single-token shorthand ("garden" → "night garden") needs a strong token.
   if (shorter.length === 1 && shorter[0].length < 4) return 0
