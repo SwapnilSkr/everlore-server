@@ -25,6 +25,17 @@ for (const t of [
   'I go back downstairs',
   'I close the door behind me',
   'I retire to my study for the night',
+  // open-world scale — settlements / realms / planets, not just rooms
+  'I travel to the city of Veliscourt',
+  'I journey to the Shadow Realm',
+  'I ride to the northern capital',
+  'I sail to the northern isles',
+  'I cross into the kingdom of Marr',
+  'I venture into the forest',
+  'I set off for the mountains',
+  'I return to my village',
+  'We board the ship and voyage across the sea',
+  'I teleport to the citadel',
 ]) check(t, detectNarratedMovement(t), true)
 
 console.log('detectNarratedMovement — NON-MOVES (expect false):')
@@ -44,7 +55,12 @@ check('my room', resolvePossessiveRoomName('*I go to my room and shut the door*'
 check('my own bedroom', resolvePossessiveRoomName('I retreat to my own bedroom', O), "Swapnil Sarkar's room")
 check('my study', resolvePossessiveRoomName('I head to my study', O), "Swapnil Sarkar's study")
 check('my chambers', resolvePossessiveRoomName('I withdraw to my chambers', O), "Swapnil Sarkar's chambers")
+check('my house (dwelling)', resolvePossessiveRoomName('I return to my house', O), "Swapnil Sarkar's house")
+check('my home (dwelling)', resolvePossessiveRoomName('I head home to my home', O), "Swapnil Sarkar's home")
 check('her chambers (not first person)', resolvePossessiveRoomName('I follow her to her chambers', O), null)
+check('my village (settlement, NOT owned)', resolvePossessiveRoomName('I return to my village', O), null)
+check('my city (settlement, NOT owned)', resolvePossessiveRoomName('I travel to my city', O), null)
+check('my kingdom (settlement, NOT owned)', resolvePossessiveRoomName('I ride to my kingdom', O), null)
 check('no possessive', resolvePossessiveRoomName('I walk into the hall', O), null)
 check('no owner', resolvePossessiveRoomName('I go to my room', null), null)
 

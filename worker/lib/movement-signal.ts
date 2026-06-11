@@ -23,16 +23,22 @@ function clean(text: string): string {
     .trim()
 }
 
-/** A direction/target word that turns a locomotion verb into an actual relocation. */
-const DIRECTION = '(?:to|into|inside|outside|out|toward|towards|back|upstairs|downstairs|through|onto|in|over to|off to)'
+/** A direction/target word that turns a locomotion verb into an actual relocation.
+ *  "for"/"towards" cover "set off for the mountains" / "ride towards the keep". */
+const DIRECTION = '(?:to|into|inside|outside|out|toward|towards|back|upstairs|downstairs|through|onto|across|over to|off to|in|for)'
 
-/** Verbs of self-locomotion that need a direction/target to count as a move. */
+/** Verbs of self-locomotion that need a direction/target to count as a move. Open-
+ *  world scale: not just walking between rooms but travelling between settlements,
+ *  realms, planets (travel/journey/ride/sail/fly/cross/venture/voyage/…). Naming
+ *  the destination stays the witness's job — these only establish that a move
+ *  HAPPENED so the cursor/presence/travel-marker stay honest when the model
+ *  under-flags it. */
 const DIRECTED_VERB =
-  '(?:go|goes|going|gone|went|head|heads|heading|headed|walk|walks|walking|walked|run|runs|running|ran|move|moves|moving|moved|step|steps|stepping|stepped|enter|enters|entering|entered|stride|strides|striding|strode|storm|storms|storming|stormed|march|marches|marching|marched|wander|wanders|wandering|wandered|slip|slips|slipping|slipped|climb|climbs|climbing|climbed|descend|descends|descending|descended|ascend|ascends|ascending|ascended|sneak|sneaks|sneaking|snuck|rush|rushes|rushing|rushed|creep|creeps|creeping|crept|hurry|hurries|hurrying|hurried|make my way|made my way|making my way|retire|retires|retiring|retired)'
+  '(?:go|goes|going|gone|went|head|heads|heading|headed|return|returns|returning|returned|walk|walks|walking|walked|run|runs|running|ran|move|moves|moving|moved|step|steps|stepping|stepped|enter|enters|entering|entered|stride|strides|striding|strode|storm|storms|storming|stormed|march|marches|marching|marched|wander|wanders|wandering|wandered|slip|slips|slipping|slipped|climb|climbs|climbing|climbed|descend|descends|descending|descended|ascend|ascends|ascending|ascended|sneak|sneaks|sneaking|snuck|rush|rushes|rushing|rushed|creep|creeps|creeping|crept|hurry|hurries|hurrying|hurried|make my way|made my way|making my way|retire|retires|retiring|retired|travel|travels|travelling|traveling|travelled|traveled|journey|journeys|journeying|journeyed|ride|rides|riding|rode|ridden|sail|sails|sailing|sailed|fly|flies|flying|flew|flown|cross|crosses|crossing|crossed|venture|ventures|venturing|ventured|voyage|voyages|voyaging|voyaged|drive|drives|driving|drove|driven|trek|treks|trekking|trekked|hike|hikes|hiking|hiked|set off|set out|sets off|sets out|setting off|setting out|proceed|proceeds|proceeding|proceeded|advance|advances|advancing|advanced|teleport|teleports|teleporting|teleported|warp|warps|warping|warped)'
 
 /** Verbs that mean "left the current place" with no direction needed. */
 const DEPARTURE_VERB =
-  '(?:exit|exits|exiting|exited|depart|departs|departing|departed|retreat|retreats|retreating|retreated|flee|flees|fleeing|fled|withdraw|withdraws|withdrawing|withdrew)'
+  '(?:exit|exits|exiting|exited|depart|departs|departing|departed|retreat|retreats|retreating|retreated|flee|flees|fleeing|fled|withdraw|withdraws|withdrawing|withdrew|disembark|disembarks|disembarking|disembarked)'
 
 // verb (+ up to one short filler word) + direction → "go to my room", "head back inside"
 const DIRECTED_MOVE = new RegExp(`\\b${DIRECTED_VERB}\\b(?:\\s+\\w+){0,2}?\\s+${DIRECTION}\\b`)
@@ -53,10 +59,16 @@ export function detectNarratedMovement(playerInput: string | null | undefined): 
   return DIRECTED_MOVE.test(t) || DEPARTURE.test(t) || LEAVE_MOVE.test(t) || DOOR_BEHIND.test(t)
 }
 
+// Personal/owned spaces only — a room or a dwelling the protagonist holds. NOT
+// settlements ("my village"/"my city"/"my kingdom" denote origin/affiliation, not
+// ownership — naming them "<owner>'s village" would be wrong; the witness names
+// those from the prose, or the vague guard keeps the cursor).
 const ROOM_NOUN_CANON: Record<string, string> = {
   room: 'room', bedroom: 'room', chamber: 'chambers', chambers: 'chambers',
   study: 'study', quarters: 'quarters', cabin: 'cabin', den: 'den', office: 'office',
   cell: 'cell', suite: 'suite', loft: 'loft', dorm: 'room',
+  house: 'house', home: 'home', apartment: 'apartment', flat: 'flat',
+  cottage: 'cottage', hut: 'hut', tent: 'tent',
 }
 
 /**
@@ -73,7 +85,7 @@ export function resolvePossessiveRoomName(
 ): string | null {
   if (!ownerName) return null
   const t = clean(playerInput || '')
-  const m = t.match(/\b(my)(?:\s+own)?\s+(room|bedroom|chamber|chambers|study|quarters|cabin|den|office|cell|suite|loft|dorm)\b/)
+  const m = t.match(/\b(my)(?:\s+own)?\s+(room|bedroom|chamber|chambers|study|quarters|cabin|den|office|cell|suite|loft|dorm|house|home|apartment|flat|cottage|hut|tent)\b/)
   if (!m) return null
   const noun = ROOM_NOUN_CANON[m[2]] || 'room'
   return `${ownerName.trim()}'s ${noun}`
