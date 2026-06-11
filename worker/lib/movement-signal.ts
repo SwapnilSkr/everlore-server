@@ -87,6 +87,18 @@ export function resolvePossessiveRoomName(
   const t = clean(playerInput || '')
   const m = t.match(/\b(my)(?:\s+own)?\s+(room|bedroom|chamber|chambers|study|quarters|cabin|den|office|cell|suite|loft|dorm|house|home|apartment|flat|cottage|hut|tent)\b/)
   if (!m) return null
+  // The room must be the DESTINATION, not the place being left. "I leave my room
+  // and head to the dining room" governs "my room" with a departure verb — naming
+  // the destination as the room would invert the move (the bug a live turn caught).
+  // Guard is proximity-anchored: a departure cue must IMMEDIATELY precede the room,
+  // so "I leave the hall and go to my room" (room is the real destination) is kept.
+  const before = t.slice(0, m.index)
+  if (
+    /\b(leave|leaves|leaving|left|exit|exits|exiting|exited|escape|escapes|escaping|escaped|flee|flees|fleeing|fled|abandon|abandons|abandoning|abandoned|depart|departs|departing|departed)\s+$/.test(before) ||
+    /\b(?:out of|away from|from)\s+$/.test(before)
+  ) {
+    return null
+  }
   const noun = ROOM_NOUN_CANON[m[2]] || 'room'
   return `${ownerName.trim()}'s ${noun}`
 }

@@ -14,6 +14,7 @@
  * there. Idempotent: re-running reuses the bedroom entity.
  */
 import { connectMongo, coll } from '../src/config/mongo'
+import { connectRedis, getRedisClient } from '../src/config/redis'
 import { ObjectId } from 'mongodb'
 
 const IID = process.argv[2] || '6a2869768f7446e38bdb6fce'
@@ -28,6 +29,7 @@ function norm(s: string): string {
 
 async function main() {
   await connectMongo()
+  await connectRedis()
   const oid = new ObjectId(IID)
   const mansionId = new ObjectId(MANSION_ID)
   const diningId = new ObjectId(DINING_ID)
@@ -97,6 +99,11 @@ async function main() {
     { $set: { last_seen_sequence: 24 }, $inc: { mention_count: -2 } },
   )
   console.log('dining room: last_seen_sequence -> 24, mention_count -= 2')
+
+  // Bust the cached session — loadSession caches `session:<iid>` for 1h, so an
+  // out-of-band cursor write here is invisible to the next turn until evicted.
+  await getRedisClient().del(`session:${IID}`)
+  console.log('session cache busted')
 
   console.log('\nDONE.')
   process.exit(0)

@@ -36,9 +36,21 @@ const VAGUE_LOCATION_LABELS = new Set<string>([
   'the chamber', 'a chamber', 'the building', 'a building', 'the space', 'this space',
 ])
 
-/** True when a place label is generic/relative (see {@link VAGUE_LOCATION_LABELS}). */
+/** A possessive-pronoun + bare room/dwelling noun ("his room", "my chamber",
+ *  "her quarters", "their house") is just as RELATIVE as "the room" — it names no
+ *  specific place until the owner is resolved, so it must never become a canonical
+ *  location of its own. A qualified possessive ("his throne room", "her war study")
+ *  keeps its distinctive word and is NOT matched. The owner-scoped form a memory
+ *  should actually carry ("Swapnil Sarkar's room") starts with a name, not a
+ *  pronoun, so it stays specific. */
+const POSSESSIVE_VAGUE_ROOM =
+  /^(?:my|his|her|their|its|our|your)\s+(?:own\s+)?(?:room|bedroom|chamber|chambers|hall|study|quarters|den|cabin|cell|office|loft|suite|dorm|place|area|space|building|house|home|apartment|flat|cottage|hut|tent)$/
+
+/** True when a place label is generic/relative (see {@link VAGUE_LOCATION_LABELS}
+ *  and {@link POSSESSIVE_VAGUE_ROOM}). */
 export function isVagueLocationLabel(name: string | null | undefined): boolean {
-  return VAGUE_LOCATION_LABELS.has(normalizeEntityName(String(name || '')))
+  const n = normalizeEntityName(String(name || ''))
+  return VAGUE_LOCATION_LABELS.has(n) || POSSESSIVE_VAGUE_ROOM.test(n)
 }
 
 function uniqNames(values: string[], max = 20): string[] {
@@ -236,6 +248,14 @@ export const entityGraphService = {
       const normalized = normalizeEntityName(name)
       if (!normalized || normalized.length < 2 || seen.has(normalized)) continue
       seen.add(normalized)
+
+      // A vague/relative location label ("room", "outside", "here") must NOT mint a
+      // standalone location entity from a memory mention — that fragments the place
+      // graph into a ghost atlas node, exactly what the cursor path's vague guard
+      // prevents. The memory already carries the real place via its location_anchor;
+      // the redundant subject/object link is pure noise. (Found by a live turn:
+      // "seeks refuge in his room" minted a bare "room" beside "<owner>'s room".)
+      if (mention.type === 'location' && isVagueLocationLabel(normalized)) continue
 
       const existing = byName.get(normalized)
       if (existing) {

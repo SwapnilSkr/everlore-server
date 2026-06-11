@@ -82,10 +82,18 @@ async function main() {
   // --- Vague-label classifier (P0): generic/relative labels are vague; a
   //     QUALIFIED place name is NOT (so "dining room" stays specific). ---
   console.log('\n=== Vague-label classification ===')
-  for (const v of ['the room', 'room', 'here', 'outside', 'inside', 'this place', 'the area']) {
+  for (const v of [
+    'the room', 'room', 'here', 'outside', 'inside', 'this place', 'the area',
+    // possessive-pronoun + bare room/dwelling noun is just as relative as "the room"
+    'his room', 'her room', 'my room', 'their chamber', 'his quarters', 'her study', 'my own room', 'their house',
+  ]) {
     ok(`"${v}" is vague`, isVagueLocationLabel(v) === true)
   }
-  for (const s of ['dining room', 'great room', 'Night Garden', 'mansion', 'throne hall', 'the foyer']) {
+  for (const s of [
+    'dining room', 'great room', 'Night Garden', 'mansion', 'throne hall', 'the foyer',
+    // a qualified possessive keeps its distinctive word; an owner-NAMED room is specific
+    'his throne room', 'her war study', "Swapnil Sarkar's room",
+  ]) {
     ok(`"${s}" is specific (NOT vague)`, isVagueLocationLabel(s) === false)
   }
 

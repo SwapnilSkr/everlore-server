@@ -58,6 +58,12 @@ check('my chambers', resolvePossessiveRoomName('I withdraw to my chambers', O), 
 check('my house (dwelling)', resolvePossessiveRoomName('I return to my house', O), "Swapnil Sarkar's house")
 check('my home (dwelling)', resolvePossessiveRoomName('I head home to my home', O), "Swapnil Sarkar's home")
 check('her chambers (not first person)', resolvePossessiveRoomName('I follow her to her chambers', O), null)
+// origin vs destination — the room is what's being LEFT, not the destination
+check('leave my room → dining room (origin)', resolvePossessiveRoomName('*I leave my room and head back down to the dining room.*', O), null)
+check('storm out of my room (origin)', resolvePossessiveRoomName('I storm out of my room', O), null)
+check('flee my chambers (origin)', resolvePossessiveRoomName('I flee my chambers', O), null)
+check('leave the hall, go to my room (room IS destination)', resolvePossessiveRoomName('I leave the hall and go to my room', O), "Swapnil Sarkar's room")
+check('return to my room after leaving dining (destination)', resolvePossessiveRoomName('I leave the dining room and retreat to my room', O), "Swapnil Sarkar's room")
 check('my village (settlement, NOT owned)', resolvePossessiveRoomName('I return to my village', O), null)
 check('my city (settlement, NOT owned)', resolvePossessiveRoomName('I travel to my city', O), null)
 check('my kingdom (settlement, NOT owned)', resolvePossessiveRoomName('I ride to my kingdom', O), null)
