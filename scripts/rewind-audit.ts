@@ -200,7 +200,14 @@ async function main() {
   const protoAfter = await mongoColl.characters().find({ instance_id: tempId, is_protagonist: true }).toArray()
   ok('exactly one protagonist after rewind', protoAfter.length === 1, `${protoAfter.length} found`)
   ok('protagonist identity preserved', protoAfter[0]?.canonical_name === protoBefore?.canonical_name, `"${protoAfter[0]?.canonical_name}"`)
-  ok('protagonist aliases preserved (drift-fix referents)', (protoBefore?.aliases || []).every((a) => (protoAfter[0]?.aliases || []).includes(a)), `aliases=[${(protoAfter[0]?.aliases || []).join(', ')}]`)
+  // Only the NON-canonical aliases are the drift-fix referents that must survive
+  // — the card builder intentionally drops any alias equal to the canonical name
+  // (a name isn't its own alias), so a redundant self-alias in legacy seed data
+  // is EXPECTED to normalize away on rebuild and must not fail this check.
+  const referentsBefore = (protoBefore?.aliases || []).filter(
+    (a) => a.trim().toLowerCase() !== (protoBefore?.canonical_name || '').trim().toLowerCase(),
+  )
+  ok('protagonist aliases preserved (drift-fix referents)', referentsBefore.every((a) => (protoAfter[0]?.aliases || []).includes(a)), `aliases=[${(protoAfter[0]?.aliases || []).join(', ')}]`)
 
   const early = await mongoColl.characters().findOne({ instance_id: tempId, name_normalized: 'earlyally' })
   const late = await mongoColl.characters().findOne({ instance_id: tempId, name_normalized: 'latestranger' })
