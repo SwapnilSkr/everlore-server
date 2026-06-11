@@ -94,26 +94,36 @@ export const memorySupersessionService = {
     // status 'superseded' (vs plain 'archived') records that a newer fact
     // replaced this one, not that it merely decayed. When the trigger is a known
     // turn, stamp the backward version-graph link too (`superseded_by_event_ids`).
+    // A matched Pinecone vector can be an ORPHAN whose `mongo_id` no longer maps to
+    // a live doc (a prior delete that left the vector behind) — its vector is still
+    // worth evicting above, but it must NOT be counted as an archived atom. Resolve
+    // to the real docs first so `archived`/`supersededIds` reflect actual atoms.
     if (mongoIds.size > 0) {
       try {
-        const set: Record<string, unknown> = {
-          is_archived: true,
-          status: 'superseded',
-          updated_at: new Date(),
+        const liveIds = (
+          await mongoColl
+            .memories()
+            .find(
+              { _id: { $in: [...mongoIds].map((id) => parseObjectId(id)) } },
+              { projection: { _id: 1 } },
+            )
+            .toArray()
+        ).map((m) => m._id)
+        if (liveIds.length > 0) {
+          const update: Record<string, unknown> = {
+            $set: { is_archived: true, status: 'superseded', updated_at: new Date() },
+          }
+          if (eventId) {
+            update.$addToSet = { superseded_by_event_ids: parseObjectId(eventId) }
+          }
+          await mongoColl.memories().updateMany({ _id: { $in: liveIds } }, update)
         }
-        const update: Record<string, unknown> = { $set: set }
-        if (eventId) {
-          update.$addToSet = { superseded_by_event_ids: parseObjectId(eventId) }
-        }
-        await mongoColl.memories().updateMany(
-          { _id: { $in: [...mongoIds].map((id) => parseObjectId(id)) } },
-          update,
-        )
+        return { archived: liveIds.length, supersededIds: liveIds.map((id) => String(id)) }
       } catch {
         // best-effort
       }
     }
 
-    return { archived: mongoIds.size, supersededIds: [...mongoIds] }
+    return { archived: 0, supersededIds: [] }
   },
 }
