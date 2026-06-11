@@ -275,11 +275,32 @@ export async function generationProcessor(job: Job) {
   });
   const finalNarrative = repairedProse.narrative;
 
+  // Anchor choice generation to the player's identity so the choice viewpoint
+  // can't drift. GM worlds: the protagonist card IS the player's character.
+  // Sentient worlds: the player is the persona talking to the locked character.
+  const protagonistCard = (characterCodex as any[]).find((c) => c.is_protagonist);
+  const choiceProtagonist = session.is_sentient
+    ? session.persona_snapshot?.name
+      ? { name: session.persona_snapshot.name, aliases: [], persona: session.persona_snapshot.description || null }
+      : null
+    : protagonistCard
+      ? {
+          name: protagonistCard.canonical_name,
+          aliases: protagonistCard.aliases || [],
+          persona: protagonistCard.persona || null,
+        }
+      : session.persona_snapshot?.name
+        ? { name: session.persona_snapshot.name, aliases: [], persona: session.persona_snapshot.description || null }
+        : null;
   const meta = await extractSceneMetadata(
     finalNarrative,
     Object.keys(session.world_state || {}),
     Object.keys(session.active_flags || {}),
-    { isSentient: session.is_sentient, currentLocationName: currentLocation?.name || null },
+    {
+      isSentient: session.is_sentient,
+      currentLocationName: currentLocation?.name || null,
+      protagonist: choiceProtagonist,
+    },
   );
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta };
   const proseHygieneIssues = repairedProse.issues;

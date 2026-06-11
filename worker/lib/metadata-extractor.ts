@@ -104,20 +104,50 @@ function safeParseObject(raw: string): Record<string, unknown> {
 }
 
 /**
- * Derive state/flag mutations, scene tag, and tone from a finished narrative.
- * Used on the NSFW path, where the uncensored model writes prose only and a
- * cheap, reliable model handles the structured bookkeeping. Falls back to a
- * no-op (scene stays `intimate` to preserve NSFW momentum) if extraction fails.
+ * Derive ALL structured fields (state/flag mutations, scene tag, tone, choices,
+ * milestone, presence, location, time) from a finished narrative. Runs on EVERY
+ * turn: the narrator is always `proseOnly` (streamed prose, uncensored-model
+ * compatible), so this cheap reliable model handles the structured bookkeeping.
+ * `opts.protagonist` anchors first-person choice generation to the player so the
+ * choice viewpoint can't drift in third-person prose. Falls back to a no-op
+ * (scene stays `intimate` to preserve NSFW momentum) if extraction fails.
  */
 export async function extractSceneMetadata(
   narrative: string,
   statKeys: string[],
   flagKeys: string[],
-  opts?: { isSentient?: boolean; currentLocationName?: string | null },
+  opts?: {
+    isSentient?: boolean
+    currentLocationName?: string | null
+    /** The player's character (GM worlds) or the player's persona (sentient
+     *  worlds) — used to anchor first-person choices to the right person so the
+     *  choice viewpoint never drifts in third-person prose. */
+    protagonist?: { name?: string | null; aliases?: string[]; persona?: string | null } | null
+  },
 ): Promise<SceneMetadata> {
+  // Resolve who "I" is for the choices. In third-person GM prose the protagonist
+  // is referred to by role ("the son", "the boy"); without naming them the
+  // extractor cannot tell which character is the player and drifts the choice POV
+  // (an external "Observe the son" label paired with a first-person "*I glance at
+  // my brother*" send). The aliases carry the merged role-titles from the codex.
+  const protagName = opts?.protagonist?.name?.trim() || null
+  const protagAliases = (opts?.protagonist?.aliases || [])
+    .map((a) => a.trim())
+    .filter((a) => a && a.toLowerCase() !== (protagName || '').toLowerCase())
+  const aliasClause = protagAliases.length
+    ? ` (the prose may refer to them as: ${protagAliases.join(', ')} — all the same person)`
+    : ''
   const perspective = opts?.isSentient
-    ? 'The player is a person interacting with the character in the scene.'
-    : "The player is the protagonist; their character acts within the world."
+    ? `The player is a person interacting with the character(s) in the scene${
+        protagName ? `; the player is "${protagName}"${aliasClause}` : ''
+      }. The choices are the PLAYER's own next moves (what they say or do), NOT the character's.`
+    : `The player IS the protagonist of this story${
+        protagName
+          ? `: "${protagName}"${aliasClause}. Whenever the prose refers to ${protagName} — by name, by role, or by pronoun — that is the player, and "I" in every choice means ${protagName}.`
+          : '; their character acts within the world.'
+      } Write every choice from ${
+        protagName || 'the protagonist'
+      }'s own first-person viewpoint. NEVER refer to the player's own character in the third person or by role in either the label or the send (e.g. do not write "Observe the son" when the player IS the son — write "Watch my brother" / "*I watch him closely*").`
 
   const system = `You are a game-state analyst for a narrative RPG engine. Given a narrative passage, determine what changed in the world and suggest next moves. Respond ONLY with JSON matching the required schema.
 
@@ -127,7 +157,7 @@ Rules:
 - scene_tag: one of dialogue, combat, romantic, intimate, exploration, existential, cosmic, mundane. Use "romantic" for affectionate/romantic but non-explicit scenes (flirting, kissing, emotional intimacy). Use "intimate" ONLY for explicit sexual content.
 - emotional_tone: a single word.
 - choices: 2-4 distinct suggested next moves for the player. ${perspective} Each is an object { label, kind, send }:
-    - label: the short chip caption shown to the player — imperative, 2-6 words, no trailing punctuation (e.g. "Take her hand", "Ask what she's hiding", "Draw your blade").
+    - label: the short chip caption shown to the player — an imperative the player gives THEMSELF, 2-6 words, no trailing punctuation (e.g. "Take her hand", "Ask what she's hiding", "Draw your blade"). It must share the send's first-person viewpoint: address other people from the player's vantage ("Confront my brother"), never narrate the player's own character from outside ("Observe the son" when the player is the son is WRONG).
     - send: the player's move, in FIRST PERSON ("I ..."), pre-formatted so the player can edit it before sending. Wrap any narrated action/gesture in *single asterisks*; write spoken words as plain text OUTSIDE the asterisks (no quotation marks). You MAY combine a brief narration and a spoken line when it fits the moment. Examples:
         - silent action → send "*I reach out and take her hand.*"
         - spoken line → send "What are you hiding from me?"
