@@ -382,6 +382,54 @@ async function main() {
 
   await entities().deleteMany({ instance_id: aw })
 
+  // === Subtree world_root_id refresh on cross-root re-parent (P1 KNOWN LIMIT) ===
+  // world_root_id is a denormalized cache of the top-of-chain; when a node moves
+  // under a parent in a DIFFERENT root, the node + every descendant must adopt it.
+  console.log('\n=== Subtree world_root_id refresh on cross-root re-parent ===')
+  const wr = new ObjectId()
+  const wrP = new ObjectId()
+  const wrRootA = new ObjectId(), wrRootB = new ObjectId(), wrNested = new ObjectId()
+  const wrKeep = new ObjectId(), wrHall = new ObjectId(), wrAlcove = new ObjectId(), wrPocketChild = new ObjectId()
+  const loc = (id: ObjectId, name: string, parent: ObjectId | null, root: ObjectId | null, kind: string) => ({
+    _id: id, instance_id: wr, player_id: wrP, type: 'location' as const,
+    canonical_name: name, name_normalized: name.toLowerCase(), aliases: [], status: 'active' as const,
+    first_seen_sequence: 1, last_seen_sequence: 1, mention_count: 1,
+    parent_id: parent, world_root_id: root, place_kind: kind, created_at: new Date(), updated_at: new Date(),
+  })
+  await entities().insertMany([
+    loc(wrRootA, 'Realm A', null, wrRootA, 'world'),
+    loc(wrRootB, 'Realm B', null, wrRootB, 'world'),
+    loc(wrKeep, 'keep', wrRootA, wrRootA, 'building'),
+    loc(wrHall, 'hall', wrKeep, wrRootA, 'room'),
+    loc(wrAlcove, 'alcove', wrHall, wrRootA, 'area'),
+    // A nested world-root hanging in the subtree: it anchors its OWN root and must
+    // NOT be rerooted, and the descent must stop at it.
+    loc(wrNested, 'Pocket Realm', wrHall, wrNested, 'world'),
+    loc(wrPocketChild, 'pocket hall', wrNested, wrNested, 'room'),
+  ] as never)
+
+  // Re-parent `keep` from Realm A to Realm B, then refresh its subtree's root.
+  await entities().updateOne({ _id: wrKeep }, { $set: { parent_id: wrRootB } })
+  const moved = await entityGraphService.refreshSubtreeWorldRoot({ instanceId: idString(wr), nodeId: wrKeep, newRootId: wrRootB })
+  const rootOf = async (id: ObjectId) => idString(((await entities().findOne({ _id: id })) as any)?.world_root_id ?? 'null')
+  ok('refresh: re-parented node adopts new root', (await rootOf(wrKeep)) === idString(wrRootB))
+  ok('refresh: child descends to new root', (await rootOf(wrHall)) === idString(wrRootB))
+  ok('refresh: grandchild descends to new root', (await rootOf(wrAlcove)) === idString(wrRootB))
+  ok('refresh: self-rooted nested world keeps its OWN root (descent stops)', (await rootOf(wrNested)) === idString(wrNested))
+  ok('refresh: child of nested world untouched', (await rootOf(wrPocketChild)) === idString(wrNested))
+  ok('refresh: modifiedCount counts only the 3 rerooted nodes', moved === 3, `count=${moved}`)
+
+  // Idempotency: a second refresh to the same root is a true no-op.
+  const again = await entityGraphService.refreshSubtreeWorldRoot({ instanceId: idString(wr), nodeId: wrKeep, newRootId: wrRootB })
+  ok('refresh: idempotent (second run updates nothing)', again === 0, `count=${again}`)
+
+  // Re-parent back under the implicit single world (newRoot null) → roots cleared.
+  await entityGraphService.refreshSubtreeWorldRoot({ instanceId: idString(wr), nodeId: wrKeep, newRootId: null })
+  ok('refresh: subtree can drop to the implicit single world (root null)',
+    (await rootOf(wrKeep)) === 'null' && (await rootOf(wrAlcove)) === 'null')
+
+  await entities().deleteMany({ instance_id: wr })
+
   console.log(`\n${failures === 0 ? '✅ ALL INVARIANTS HELD' : `❌ ${failures} invariant failure(s)`}`)
   process.exit(failures === 0 ? 0 : 1)
 }

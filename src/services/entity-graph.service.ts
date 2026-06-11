@@ -907,6 +907,21 @@ export const entityGraphService = {
       })
       if (container && idString(container.entity_id) !== idString(cursor._id)) {
         await entities().updateOne({ _id: cursor._id }, { $set: { parent_id: container.entity_id, updated_at: new Date() } })
+        // Keep the moved subtree's denormalized root consistent with its new
+        // parent. Same-root today (the container is scoped to activeRoot), so a
+        // no-op here — but this makes "a re-parent keeps world_root_id correct" an
+        // enforced invariant rather than a TODO, for when cross-root re-parents land.
+        const parentNode = (await entities().findOne(
+          { _id: container.entity_id, instance_id: iid, type: 'location' },
+          { projection: { world_root_id: 1 } },
+        )) as EntityDoc | null
+        // The parent's root: its denormalized `world_root_id` (a real root is
+        // self-referential, world_root_id == _id), or null for the implicit
+        // single world — NEVER the parent's bare id (that would invent a root).
+        const newRoot = parentNode?.world_root_id ?? null
+        if (idString(newRoot) !== idString(cursor.world_root_id ?? null)) {
+          await this.refreshSubtreeWorldRoot({ instanceId: params.instanceId, nodeId: cursor._id, newRootId: newRoot })
+        }
       }
     }
 
@@ -976,6 +991,73 @@ export const entityGraphService = {
       name, viewpointMoved: moved, scope: { rootId: activeRoot }, areaScope,
       create: { parentId, worldRootId: activeRoot },
     })
+  },
+
+  /**
+   * Refresh the denormalized `world_root_id` across a re-parented node's subtree
+   * so it matches its new parent's world-root. `world_root_id` is a cached
+   * top-of-chain (the spine truth is `parent_id`), so when a node moves under a
+   * parent in a DIFFERENT root — a future multi-world re-parent — the node and
+   * every descendant must adopt the new root or place-recall scoping reads a
+   * stale realm. (No current path crosses roots; this keeps the invariant true by
+   * construction the moment one does — closes the P1 KNOWN LIMIT.) Deterministic,
+   * idempotent BFS down `parent_id`. A self-rooted DESCENDANT (a nested world that
+   * anchors its own subtree) is never rerooted and stops the descent; only the
+   * start node may shed its old root. Bounded depth guards cycles/bad data.
+   */
+  async refreshSubtreeWorldRoot(params: {
+    instanceId: string
+    /** The re-parented node whose subtree must adopt the new root. */
+    nodeId: ObjectId
+    /** The world-root the node now belongs to (its parent's `world_root_id`, or
+     *  the parent's own `_id` when the parent IS a root). null = back under the
+     *  implicit single world. */
+    newRootId: ObjectId | null
+  }): Promise<number> {
+    const iid = parseObjectId(params.instanceId)
+    const { nodeId, newRootId } = params
+    const DEPTH_CAP = 12 // location graphs run ~5-6 deep; cap guards cycles
+    const seen = new Set<string>()
+    let frontier: ObjectId[] = [nodeId]
+    let updated = 0
+
+    for (let depth = 0; depth < DEPTH_CAP && frontier.length; depth++) {
+      const fresh = frontier.filter((id) => !seen.has(idString(id)))
+      fresh.forEach((id) => seen.add(idString(id)))
+      if (!fresh.length) break
+
+      // A node already at the target root is left untouched (idempotent, true
+      // no-op re-runs). Descendants that ARE world-roots anchor their own subtree
+      // → never rerooted; only the explicit start node sheds its root.
+      const rootGuard = depth === 0 ? {} : { $expr: { $ne: ['$world_root_id', '$_id'] } }
+      const res = await entities().updateMany(
+        { instance_id: iid, type: 'location', _id: { $in: fresh }, world_root_id: { $ne: newRootId }, ...rootGuard },
+        { $set: { world_root_id: newRootId, updated_at: new Date() } },
+      )
+      updated += res.modifiedCount || 0
+
+      // Descend, but stop at any self-rooted node (its children belong to ITS root).
+      const stopIds = depth === 0
+        ? new Set<string>()
+        : new Set(
+            (await entities()
+              .find(
+                { instance_id: iid, type: 'location', _id: { $in: fresh }, $expr: { $eq: ['$world_root_id', '$_id'] } },
+                { projection: { _id: 1 } },
+              )
+              .toArray()).map((d) => idString(d._id)),
+          )
+      const parents = fresh.filter((id) => !stopIds.has(idString(id)))
+      frontier = parents.length
+        ? (await entities()
+            .find(
+              { instance_id: iid, type: 'location', parent_id: { $in: parents } },
+              { projection: { _id: 1 } },
+            )
+            .toArray()).map((d) => d._id as ObjectId)
+        : []
+    }
+    return updated
   },
 
   /**
