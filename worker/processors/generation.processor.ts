@@ -23,6 +23,7 @@ import { compactImmutableFacts } from "../lib/codex-compactor";
 import { characterCodexService } from "../../src/services/character-codex.service";
 import { entityGraphService, isVagueLocationLabel } from "../../src/services/entity-graph.service";
 import { detectNarratedMovement, resolvePossessiveRoomName } from "../lib/movement-signal";
+import { detectNarratedTimeSkip } from "../lib/time-skip-signal";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
 import { timeService } from "../../src/services/time.service";
 import {
@@ -414,8 +415,13 @@ export async function generationProcessor(job: Job) {
 
   // Narrated time skips advance the calendar on any turn (travel, "weeks
   // passed"), not just the explicit wait/continue tick. The continuation tick's
-  // label still wins when present.
-  const narratedTimeLabel = !isContinuation ? parsed.time_elapsed || undefined : undefined;
+  // label still wins when present. Deterministic backstop: the extractor reads only
+  // the AI prose, so a skip the player wrote ("Weeks pass.") that the narrator
+  // didn't restate is lost — recover it from the player's own input (the time twin
+  // of the movement backstop). A model-reported time_elapsed still wins.
+  const narratedTimeLabel = !isContinuation
+    ? parsed.time_elapsed || detectNarratedTimeSkip(parsedPlayerInput.raw) || undefined
+    : undefined;
   const effectiveTimeAdvance = timeAdvanceLabel || narratedTimeLabel;
 
   // Presence carry-forward (deterministic — not left to the model): a continuous
