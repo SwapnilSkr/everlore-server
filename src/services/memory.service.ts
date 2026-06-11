@@ -847,7 +847,10 @@ export const memoryService = {
     const replayVariants = normalizeReplayVariants(event)
     const [editCharacterNames, editInstance] = await Promise.all([
       characterNamesForInstance(event.instance_id),
-      worldInstances().findOne({ _id: event.instance_id, player_id: pid }, { projection: { message_length: 1, narration_pov: 1, template_id: 1 } }),
+      worldInstances().findOne(
+        { _id: event.instance_id, player_id: pid },
+        { projection: { message_length: 1, narration_pov: 1, template_id: 1, world_state: 1, active_flags: 1, persona_snapshot: 1, current_location: 1 } },
+      ),
     ])
     const editTemplate = editInstance
       ? await worldTemplates().findOne({ _id: editInstance.template_id }, { projection: { is_sentient: 1 } })
@@ -864,8 +867,47 @@ export const memoryService = {
       typeof event.data?.selected_replay_index === 'number'
         ? event.data.selected_replay_index
         : Math.max(0, replayVariants.length - 1)
+    // A rewritten narrative invalidates the old chips + presence. Rather than
+    // blank them, regenerate from the NEW prose (same extractor/anchor/roster as
+    // a primary turn) and store them on the new 'edit' variant so it behaves like
+    // any other variant. Only the AI text matters here; a player-only edit leaves
+    // the prose — and its chips — unchanged.
+    let editChoices: Awaited<ReturnType<typeof extractSceneMetadata>>['choices'] | null = null
+    let editPresent: string[] | null = null
 
     if (aiChanged && typeof nextAiResponse === 'string' && nextAiResponse.trim()) {
+      const editCodex = await characters()
+        .find({ instance_id: event.instance_id })
+        .sort({ mention_count: -1, updated_at: -1 })
+        .limit(16)
+        .toArray()
+      const editProtagonistCard = (editCodex as any[]).find((c) => c.is_protagonist)
+      const editProtagonist = editTemplate?.is_sentient
+        ? editInstance?.persona_snapshot?.name
+          ? { name: editInstance.persona_snapshot.name, aliases: [] }
+          : null
+        : editProtagonistCard
+          ? { name: editProtagonistCard.canonical_name, aliases: editProtagonistCard.aliases || [] }
+          : editInstance?.persona_snapshot?.name
+            ? { name: editInstance.persona_snapshot.name, aliases: [] }
+            : null
+      const editRoster = (editCodex as any[])
+        .filter((c) => c.canonical_name && (editTemplate?.is_sentient || !c.is_protagonist))
+        .map((c) => ({ name: c.canonical_name as string, aliases: (c.aliases || []) as string[] }))
+      const editMeta = await extractSceneMetadata(
+        nextAiResponse,
+        Object.keys(editInstance?.world_state || {}),
+        Object.keys(editInstance?.active_flags || {}),
+        {
+          isSentient: !!editTemplate?.is_sentient,
+          currentLocationName: (event as any).location_anchor?.name || editInstance?.current_location?.name || null,
+          protagonist: editProtagonist,
+          roster: editRoster,
+        },
+      )
+      editChoices = editMeta.choices
+      editPresent = editMeta.present_characters
+
       nextReplayVariants = [...replayVariants]
       if (nextReplayVariants[nextReplayVariants.length - 1]?.narrative !== nextAiResponse) {
         nextReplayVariants.push({
@@ -875,6 +917,8 @@ export const memoryService = {
           created_at: new Date(),
           source: 'edit',
           prose_hygiene_issues: proseHygieneIssues,
+          choices: editChoices,
+          present_characters: editPresent,
         })
       }
       nextSelectedReplayIndex = nextReplayVariants.length - 1
@@ -897,9 +941,8 @@ export const memoryService = {
           'data.replay_variants': nextReplayVariants,
           'data.selected_replay_index': nextSelectedReplayIndex,
           'data.prose_hygiene_issues': proseHygieneIssues,
-          // A rewritten narrative invalidates the old next-move chips and the
-          // scene's presence list (who was in the room may have changed).
-          ...(aiChanged ? { 'data.choices': [], 'data.present_characters': [] } : {}),
+          // Fresh chips + presence re-derived from the rewritten narrative.
+          ...(aiChanged ? { 'data.choices': editChoices || [], 'data.present_characters': editPresent || [] } : {}),
           is_user_edited: true,
           updated_at: new Date(),
         },
@@ -924,6 +967,10 @@ export const memoryService = {
       success: true,
       memories_deleted: deletedMemories,
       recuration_queued: contentChanged,
+      // Fresh chips + presence when the narrative was rewritten, so the client
+      // can swap stale ones without a refetch (null when the prose was untouched).
+      choices: editChoices,
+      present_characters: editPresent,
     }
   },
 
