@@ -17,6 +17,7 @@ import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
 import { repairProseHygiene, validateProseHygiene } from '../utils/prose-hygiene'
 import { callLLM, callLLMStream, embed, AI_MODELS } from '../ai'
 import { classifyScene } from '../../worker/lib/nsfw-classifier'
+import { extractSceneMetadata } from '../../worker/lib/metadata-extractor'
 import { EVENT_WINDOWS } from '../utils/event-window'
 
 const events = () => mongoColl.events()
@@ -74,6 +75,8 @@ function baseReplayVariantFor(event: any) {
     model_used: event.data?.model_used || AI_MODELS.narrationSfw,
     created_at: event.created_at || new Date(),
     source: 'base',
+    choices: Array.isArray(event.data?.choices) ? event.data.choices : [],
+    present_characters: Array.isArray(event.data?.present_characters) ? event.data.present_characters : [],
     retrieval_profile: {
       lore_top_k: 10,
       memory_top_k: 25,
@@ -1133,6 +1136,35 @@ ${replayDirective || '(none)'}`,
       model: modelId,
     })
 
+    // Regenerate the tap-to-play chips + scene presence FROM THE NEW VARIANT —
+    // the old ones were derived from the pre-replay prose and are cleared below,
+    // so without this a replayed turn would show no choices. Same extractor,
+    // protagonist anchor, and roster as a primary turn (generation.processor).
+    const replayProtagonistCard = replayCodex.find((c) => c.is_protagonist)
+    const replayChoiceProtagonist = template.is_sentient
+      ? instance.persona_snapshot?.name
+        ? { name: instance.persona_snapshot.name, aliases: [] }
+        : null
+      : replayProtagonistCard
+        ? { name: replayProtagonistCard.canonical_name, aliases: replayProtagonistCard.aliases || [] }
+        : instance.persona_snapshot?.name
+          ? { name: instance.persona_snapshot.name, aliases: [] }
+          : null
+    const replayRoster = replayCodex
+      .filter((c) => c.canonical_name && (template.is_sentient || !c.is_protagonist))
+      .map((c) => ({ name: c.canonical_name as string, aliases: (c.aliases || []) as string[] }))
+    const replayMeta = await extractSceneMetadata(
+      repairedReplay.narrative,
+      Object.keys(instance.world_state || {}),
+      Object.keys(instance.active_flags || {}),
+      {
+        isSentient: template.is_sentient,
+        currentLocationName: (event as any).location_anchor?.name || instance.current_location?.name || null,
+        protagonist: replayChoiceProtagonist,
+        roster: replayRoster,
+      },
+    )
+
     const nextVariant = {
       id: randomUUID(),
       narrative: repairedReplay.narrative,
@@ -1140,6 +1172,8 @@ ${replayDirective || '(none)'}`,
       created_at: new Date(),
       source: 'replay',
       prose_hygiene_issues: repairedReplay.issues,
+      choices: replayMeta.choices,
+      present_characters: replayMeta.present_characters,
       retrieval_profile: {
         lore_top_k: loreTopK,
         memory_top_k: memoryTopK,
@@ -1164,9 +1198,10 @@ ${replayDirective || '(none)'}`,
           'data.replay_variants': nextVariants,
           'data.selected_replay_index': selectedIdx,
           'data.prose_hygiene_issues': repairedReplay.issues,
-          // Stale tap-to-play chips + presence: derived from the prior prose.
-          'data.choices': [],
-          'data.present_characters': [],
+          // Fresh tap-to-play chips + presence, re-derived from the NEW variant
+          // (the prior ones reflected the replaced prose).
+          'data.choices': replayMeta.choices,
+          'data.present_characters': replayMeta.present_characters,
           updated_at: new Date(),
         },
       } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
@@ -1239,8 +1274,10 @@ ${replayDirective || '(none)'}`,
           'data.replay_variants': variants,
           'data.selected_replay_index': variantIndex,
           'data.prose_hygiene_issues': proseHygieneIssues,
-          // Chips + presence belonged to the previously-selected variant's prose.
-          ...(changed ? { 'data.choices': [], 'data.present_characters': [] } : {}),
+          // Restore the chosen variant's own chips + presence (stored per variant),
+          // so switching variants shows matching choices with no extractor call.
+          'data.choices': Array.isArray(chosen.choices) ? chosen.choices : [],
+          'data.present_characters': Array.isArray(chosen.present_characters) ? chosen.present_characters : [],
           updated_at: new Date(),
         },
       } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,

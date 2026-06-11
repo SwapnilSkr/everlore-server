@@ -1,6 +1,7 @@
 import type { ObjectId } from 'mongodb'
 import type { ProseHygieneIssue } from '../utils/prose-hygiene'
 import type { CharacterCodexDelta } from '../services/character-codex.service'
+import type { ChoiceOption } from '../../worker/lib/structured-output'
 import type { TimeAnchorDoc } from './time.model'
 import type { LocationAnchorDoc } from './location.model'
 
@@ -31,6 +32,10 @@ export interface ReplayVariantDoc {
     recent_event_window: number
   }
   prose_hygiene_issues?: ProseHygieneIssue[]
+  /** Tap-to-play chips + scene presence derived from THIS variant's prose, so
+   *  selecting a variant restores its own chips without re-running the extractor. */
+  choices?: ChoiceOption[]
+  present_characters?: string[]
 }
 
 export interface EventDataDoc {

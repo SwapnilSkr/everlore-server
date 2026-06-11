@@ -395,6 +395,8 @@ export async function generationProcessor(job: Job) {
           model_used: modelId,
           created_at: new Date(),
           source: "base",
+          choices: parsed.choices,
+          present_characters: parsed.present_characters,
           retrieval_profile: {
             lore_top_k: session.max_lore_results || 10,
             memory_top_k: session.max_context_memories || 25,

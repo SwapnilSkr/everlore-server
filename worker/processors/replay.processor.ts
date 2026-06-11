@@ -32,11 +32,17 @@ export async function replayProcessor(job: Job) {
         eventId,
         narrative: ev?.data?.ai_response || '',
         selected_index: result.selected_index,
+        // Fresh chips + presence regenerated from the selected variant, so the
+        // replayed turn shows tap-to-play choices like a primary turn.
+        choices: ev?.data?.choices || [],
+        present_characters: ev?.data?.present_characters || [],
         variants: (ev?.data?.replay_variants || []).map((v: any) => ({
           id: v.id,
           narrative: v.narrative,
           model_used: v.model_used,
           created_at: v.created_at,
+          choices: v.choices || [],
+          present_characters: v.present_characters || [],
         })),
       }),
     )
