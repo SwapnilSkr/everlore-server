@@ -9,6 +9,7 @@ import { ObjectId } from 'mongodb'
 import { connectMongo, mongoColl } from '../src/config/mongo'
 import {
   entityGraphService,
+  isVagueLocationLabel,
   normalizeEntityName,
   pickBestLocationMatch,
   scoreLocationNameMatch,
@@ -70,6 +71,16 @@ async function main() {
     'pickBest: the garden → Night Garden',
     pickBestLocationMatch('the garden', [fakeNightGarden])?.canonical_name === 'Night Garden',
   )
+
+  // --- Vague-label classifier (P0): generic/relative labels are vague; a
+  //     QUALIFIED place name is NOT (so "dining room" stays specific). ---
+  console.log('\n=== Vague-label classification ===')
+  for (const v of ['the room', 'room', 'here', 'outside', 'inside', 'this place', 'the area']) {
+    ok(`"${v}" is vague`, isVagueLocationLabel(v) === true)
+  }
+  for (const s of ['dining room', 'great room', 'Night Garden', 'mansion', 'throne hall', 'the foyer']) {
+    ok(`"${s}" is specific (NOT vague)`, isVagueLocationLabel(s) === false)
+  }
 
   // --- DB integration ---
   await connectMongo()
@@ -152,6 +163,48 @@ async function main() {
   const after = await entities().countDocuments({ instance_id: tempId, type: 'location' })
   ok('new place created', after === before + 1, `count ${before} → ${after}`)
   ok('novel name preserved', novel?.name === 'Abandoned Watchtower')
+
+  console.log('\n=== DB: vague-label guard (P0) ===')
+  // A vague label on an UNMOVED turn must NOT mint and must return null so the
+  // caller keeps the cursor.
+  const vagueBefore = await entities().countDocuments({ instance_id: tempId, type: 'location' })
+  const vagueUnmoved = await entityGraphService.resolveLocationAnchor({
+    instanceId: idString(tempId),
+    playerId: idString(playerId),
+    sequence: 2005,
+    name: 'the room',
+    viewpointMoved: false,
+  })
+  const vagueAfter = await entities().countDocuments({ instance_id: tempId, type: 'location' })
+  ok('vague "the room" unmoved → null (keep cursor)', vagueUnmoved === null, `${JSON.stringify(vagueUnmoved)}`)
+  ok('vague "the room" unmoved → minted NOTHING', vagueAfter === vagueBefore, `count ${vagueBefore} → ${vagueAfter}`)
+
+  // A SPECIFIC place on an unmoved turn still resolves — a return the model
+  // under-flags (viewpoint_moved=false) must still update the cursor (a80bb10).
+  const specificUnmoved = await entityGraphService.resolveLocationAnchor({
+    instanceId: idString(tempId),
+    playerId: idString(playerId),
+    sequence: 2006,
+    name: 'Night Garden',
+    viewpointMoved: false,
+  })
+  ok(
+    'specific "Night Garden" unmoved → still resolves (cursor follows on return)',
+    !!specificUnmoved && idString(specificUnmoved.entity_id) === idString(nightGarden._id),
+  )
+
+  // A vague label WITH a narrated move is NOT suppressed (existing behavior;
+  // P1 cartographer will place it under the right parent).
+  const movedBefore = await entities().countDocuments({ instance_id: tempId, type: 'location' })
+  await entityGraphService.resolveLocationAnchor({
+    instanceId: idString(tempId),
+    playerId: idString(playerId),
+    sequence: 2007,
+    name: 'the antechamber',  // specific — sanity that a real move still mints
+    viewpointMoved: true,
+  })
+  const movedAfter = await entities().countDocuments({ instance_id: tempId, type: 'location' })
+  ok('specific place on a move still mints', movedAfter === movedBefore + 1, `count ${movedBefore} → ${movedAfter}`)
 
   await entities().deleteMany({ instance_id: tempId })
 

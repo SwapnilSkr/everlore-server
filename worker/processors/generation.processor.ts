@@ -354,6 +354,7 @@ export async function generationProcessor(job: Job) {
         playerId,
         sequence: nextSequence,
         name: parsed.current_location,
+        viewpointMoved,
       }).catch((err) => {
         console.warn("location anchor resolution failed:", (err as Error).message);
         return null;

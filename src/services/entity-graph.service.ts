@@ -18,6 +18,29 @@ export function normalizeEntityName(name: string): string {
     .replace(/\s+/g, ' ')
 }
 
+/**
+ * Generic / relative place labels that must NEVER become a canonical location of
+ * their own ("the room", "here", "outside", …). On a turn with no narrated
+ * movement these mean "still where we were" — i.e. the current cursor, not a new
+ * place. Matched as the WHOLE normalized label, so a QUALIFIED name stays
+ * specific ("dining room" / "great room" / "throne hall" are NOT vague — only a
+ * bare "room" / "the hall" is). This is the location analog of "a bare descriptor
+ * is never a new character". See LOCATION_GRAPH.md (P0).
+ */
+const VAGUE_LOCATION_LABELS = new Set<string>([
+  'here', 'there', 'this place', 'that place', 'the place', 'a place', 'someplace',
+  'some place', 'somewhere', 'elsewhere', 'nearby', 'around', 'this area', 'the area',
+  'the vicinity', 'this spot', 'the spot',
+  'outside', 'inside', 'indoors', 'outdoors', 'out',
+  'room', 'the room', 'a room', 'this room', 'that room', 'the hall', 'a hall',
+  'the chamber', 'a chamber', 'the building', 'a building', 'the space', 'this space',
+])
+
+/** True when a place label is generic/relative (see {@link VAGUE_LOCATION_LABELS}). */
+export function isVagueLocationLabel(name: string | null | undefined): boolean {
+  return VAGUE_LOCATION_LABELS.has(normalizeEntityName(String(name || '')))
+}
+
 function uniqNames(values: string[], max = 20): string[] {
   const out: string[] = []
   const seen = new Set<string>()
@@ -608,10 +631,20 @@ export const entityGraphService = {
     playerId: string
     sequence: number
     name?: string | null
+    /** Whether the model asserted the viewpoint physically moved this turn. A
+     *  vague/relative label ("the room", "outside") on an UNMOVED turn means
+     *  "still here" — we return null so the caller keeps the cursor instead of
+     *  minting a generic place. A SPECIFIC place still resolves even when unmoved
+     *  (a return the model under-flags must still update the cursor). */
+    viewpointMoved?: boolean
   }) {
     const name = String(params.name || '').replace(/\s+/g, ' ').trim().slice(0, 120)
     const normalized = normalizeEntityName(name)
     if (!normalized || normalized.length < 3) return null
+
+    // Vague-label guard (P0): a generic/relative label on a turn with no narrated
+    // movement never mints or matches a new place — the cursor stays put.
+    if (!params.viewpointMoved && isVagueLocationLabel(normalized)) return null
 
     const iid = parseObjectId(params.instanceId)
     const pid = parseObjectId(params.playerId)
