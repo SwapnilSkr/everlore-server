@@ -12,6 +12,7 @@
     "test:sfw": "bun run scripts/test-sfw-model.ts",
     "test:tts": "bun run scripts/test-tts-model.ts",
     "audit:choices": "bun run scripts/choice-audit.ts",
+    "audit:location": "bun run scripts/location-audit.ts",
     "audit:replay-edit": "bun run scripts/replay-edit-audit.ts",
     "seed:nsfw-lexicon": "bun run scripts/seed-nsfw-lexicon.ts",
     "gen:splash-avatars": "bun run scripts/gen-splash-avatars.ts",

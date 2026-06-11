@@ -28,14 +28,31 @@ export interface GenerationOutput {
    * Names of characters physically present in the scene at the END of this
    * turn — those the player could speak to or act on right now. Drives
    * scene-aware bond actions (approach vs. seek out). Empty when the
-   * protagonist is alone or presence is unknown.
+   * protagonist is alone or presence is unknown. NOTE: the model reports only
+   * who it sees in THIS passage; the worker folds this with the prior turn's
+   * presence (minus {@link characters_departed}) so a still-present but
+   * unnamed character isn't dropped — see generation.processor.
    */
   present_characters: string[]
+  /**
+   * Names of characters who physically LEFT the scene during this turn (walked
+   * out, were dismissed, died). The worker removes these from the carried-forward
+   * presence set so departures actually take effect. Empty almost always.
+   */
+  characters_departed?: string[]
   /**
    * Named place where the viewpoint ends this turn. Null/empty means the
    * passage did not establish a place change or concrete current location.
    */
   current_location?: string | null
+  /**
+   * True ONLY when the passage narrates the viewpoint physically relocating to a
+   * DIFFERENT place this turn (walking out, entering another room, a journey, a
+   * scene-cut that moves them). The server requires this before moving the
+   * location cursor or recording a travel event — a place merely mentioned,
+   * planned, or discussed on an unmoved turn never relocates the protagonist.
+   */
+  viewpoint_moved?: boolean
   /**
    * In-world time the passage itself narrates elapsing this turn (e.g. "three
    * days", "a week later"). Null when the scene is continuous. Advances the
@@ -241,7 +258,9 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
 
     // Present characters: clean, bounded list driving scene-aware bond actions.
     parsed.present_characters = sanitizePresentCharacters(parsed.present_characters)
+    parsed.characters_departed = sanitizePresentCharacters(parsed.characters_departed)
     parsed.current_location = sanitizeLocationName(parsed.current_location)
+    parsed.viewpoint_moved = parsed.viewpoint_moved === true
     parsed.time_elapsed = sanitizeTimeElapsed(parsed.time_elapsed)
     parsed.location_state_changes = sanitizeFactList(parsed.location_state_changes)
     parsed.location_permanent_facts = sanitizeFactList(parsed.location_permanent_facts)
@@ -284,7 +303,9 @@ function repairResponse(raw: string): GenerationOutput {
     choices: [],
     milestone: null,
     present_characters: [],
+    characters_departed: [],
     current_location: null,
+    viewpoint_moved: false,
     time_elapsed: null,
     location_state_changes: [],
     location_permanent_facts: [],

@@ -297,6 +297,16 @@ export async function generationProcessor(job: Job) {
   const choiceRoster = (characterCodex as any[])
     .filter((c) => c.canonical_name && (session.is_sentient || !c.is_protagonist))
     .map((c) => ({ name: c.canonical_name as string, aliases: (c.aliases || []) as string[] }));
+  // Presence persists across a continuous scene: seed the extractor with whoever
+  // was present at the end of the most recent main-story turn, so a character
+  // still in the room but not named this passage isn't dropped to "elsewhere".
+  const priorPresent: string[] = (() => {
+    for (let i = (recentEvents as any[]).length - 1; i >= 0; i--) {
+      const pc = (recentEvents as any[])[i]?.data?.present_characters;
+      if (Array.isArray(pc)) return pc.filter((n) => typeof n === "string");
+    }
+    return [];
+  })();
   const meta = await extractSceneMetadata(
     finalNarrative,
     Object.keys(session.world_state || {}),
@@ -304,6 +314,7 @@ export async function generationProcessor(job: Job) {
     {
       isSentient: session.is_sentient,
       currentLocationName: currentLocation?.name || null,
+      priorPresent,
       protagonist: choiceProtagonist,
       roster: choiceRoster,
     },
@@ -323,7 +334,16 @@ export async function generationProcessor(job: Job) {
   const previousEventId = recentEvents.length
     ? (recentEvents[recentEvents.length - 1] as any)._id
     : null;
-  const resolvedLocation = parsed.current_location
+  // The location cursor only REBASES when the model explicitly asserts the
+  // viewpoint physically moved this turn, or when no location exists yet (initial
+  // anchoring). On an unmoved turn we keep the prior cursor no matter what name
+  // the extractor reported — a place merely mentioned/planned can't relocate the
+  // protagonist, and we don't even mint an entity for it. This is the hysteresis
+  // that stops a single stray label from sticking for the rest of a scene.
+  const viewpointMoved = parsed.viewpoint_moved === true;
+  const shouldRebaseLocation =
+    !!parsed.current_location && (viewpointMoved || !currentLocation);
+  const resolvedLocation = shouldRebaseLocation
     ? await entityGraphService.resolveLocationAnchor({
         instanceId,
         playerId,
@@ -336,11 +356,14 @@ export async function generationProcessor(job: Job) {
     : null;
   const locationAnchor = resolvedLocation || currentLocation || null;
 
-  // Travel: a player turn that carries the protagonist from one concrete place
-  // to a different one. The continue/wait tick is its own kind, so travel is a
-  // real-input-only signal. Arrival at the first known place is not travel.
+  // Travel: a turn that physically carries the protagonist from one established
+  // place to a different one. Requires the model's explicit movement assertion
+  // (not just a differing location label), so a mentioned/planned venue never
+  // fabricates a journey. The continue/wait tick is its own kind, and arrival at
+  // the first known place is not travel.
   const isTravel =
     !isContinuation &&
+    viewpointMoved &&
     !!currentLocation &&
     !!resolvedLocation &&
     idString(resolvedLocation.entity_id) !== idString(currentLocation.entity_id);
@@ -350,6 +373,31 @@ export async function generationProcessor(job: Job) {
   // label still wins when present.
   const narratedTimeLabel = !isContinuation ? parsed.time_elapsed || undefined : undefined;
   const effectiveTimeAdvance = timeAdvanceLabel || narratedTimeLabel;
+
+  // Presence carry-forward (deterministic — not left to the model): a continuous
+  // scene keeps everyone who was here, minus anyone the model says explicitly
+  // left this turn. A scene break — the viewpoint physically moved, or in-world
+  // time skipped — starts presence fresh from whoever this passage shows. This
+  // stops a present-but-unnamed character (e.g. a quiet sibling at the table)
+  // from flickering to "elsewhere" just because one reply didn't name them.
+  const sceneBroke = viewpointMoved || !!narratedTimeLabel;
+  parsed.present_characters = (() => {
+    const thisTurn = parsed.present_characters || [];
+    if (sceneBroke) return thisTurn.slice(0, 12);
+    const departed = new Set(
+      (parsed.characters_departed || []).map((n) => n.trim().toLowerCase()),
+    );
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const name of [...priorPresent, ...thisTurn]) {
+      const key = (name || "").trim().toLowerCase();
+      if (!key || seen.has(key) || departed.has(key)) continue;
+      seen.add(key);
+      out.push(name);
+      if (out.length >= 12) break;
+    }
+    return out;
+  })();
 
   const timeAnchor = await timeService.anchorForNextEvent({
     instanceId,

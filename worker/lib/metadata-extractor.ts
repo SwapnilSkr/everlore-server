@@ -67,9 +67,15 @@ const METADATA_SCHEMA = {
       maxItems: 12,
       items: { type: 'string' },
     },
+    characters_departed: {
+      type: 'array',
+      maxItems: 12,
+      items: { type: 'string' },
+    },
     current_location: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
+    viewpoint_moved: { type: 'boolean' },
     time_elapsed: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
@@ -84,7 +90,7 @@ const METADATA_SCHEMA = {
       items: { type: 'string' },
     },
   },
-  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone', 'present_characters', 'current_location', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
+  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone', 'present_characters', 'characters_departed', 'current_location', 'viewpoint_moved', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
 }
 
 function safeParseObject(raw: string): Record<string, unknown> {
@@ -119,6 +125,9 @@ export async function extractSceneMetadata(
   opts?: {
     isSentient?: boolean
     currentLocationName?: string | null
+    /** Characters present at the END of the PRIOR turn, so a character still in
+     *  the scene but not named in this passage isn't dropped to "elsewhere". */
+    priorPresent?: string[]
     /** Who the player is in this world — their GM character or their persona —
      *  by name + any aliases. Used to anchor first-person choices to the right
      *  person so the choice viewpoint never drifts in third-person prose. */
@@ -160,6 +169,10 @@ export async function extractSceneMetadata(
   const rosterClause = roster.length
     ? `\n\nKNOWN CAST (other characters in this story — match anyone in the prose to one of these by name, alias, role, or pronoun, and ALWAYS refer to them by their CANONICAL name, the part before any parenthesis):\n${roster.map((r) => `- ${r}`).join('\n')}`
     : ''
+
+  const priorPresent = (opts?.priorPresent || []).map((p) => p.trim()).filter(Boolean)
+  const priorPresentLabel = priorPresent.length ? priorPresent.join(', ') : '(none / unknown)'
+  const priorLocationLabel = opts?.currentLocationName || '(none established yet)'
   const perspective = opts?.isSentient
     ? `The player is a person interacting with the character(s) in the scene${
         protagName ? `; the player is "${protagName}"${aliasClause}` : ''
@@ -188,8 +201,10 @@ Rules:
     - kind: "say" if send contains any spoken words (even alongside an action); "act" only for a silent action. Drives the chip's icon.
   The set must be distinct in spirit — mix bold / cautious / emotional / curious, and include at least one "say" and one "act" when both fit. Ground every choice in what THIS passage just established; never invent new characters, places, or facts. When a choice refers to another person, name them by their CANONICAL name from the KNOWN CAST below when they are one of them.
 - milestone: null almost always. Set a short evocative label (3-8 words) ONLY when this passage crossed a true story landmark: a vow or marriage, a first kiss, a death of a significant character, a title/power gained, a major victory or betrayal, a life-changing decision. Routine progress is NOT a milestone.
-- present_characters: the proper names of the people (characters) physically present in the scene at the END of this passage — those in the same place as the viewpoint, able to be spoken to or acted on right now. For anyone who matches the KNOWN CAST below, use their CANONICAL name (not the alias/role/pronoun the prose used); for a genuinely new person not in the cast, use the clearest name the prose gives. EXCLUDE anyone only mentioned, remembered, written about, or elsewhere; exclude the player/narrator themself. Empty array [] when the viewpoint is alone or no other character is in the scene.
-- current_location: the concrete named place where the viewpoint/protagonist is physically located at the END of the passage. Use the most specific stable place name written or strongly implied by the prose ("Old Keep", "Mira's room", "North Road"). If the passage does not establish a concrete place, or the scene simply remains where it already was, return null. Prior known location: ${opts?.currentLocationName || '(unknown)'}.
+- present_characters: the people who appear physically in the scene WITH the viewpoint during THIS passage — anyone who speaks, acts, or is shown to be in the room right now. (You do NOT need to re-list people from earlier who simply weren't mentioned this turn; the system carries them forward automatically. People present last turn, for your reference: [${priorPresentLabel}].) For anyone matching the KNOWN CAST, use their CANONICAL name (not the alias/role/pronoun the prose used); for a genuinely new person not in the cast, use the clearest name the prose gives. EXCLUDE the player/narrator themself, and anyone only mentioned, remembered, or written about while not actually in the room. CRUCIAL: if a person LEAVES by the end of the passage, do NOT list them here — list them in characters_departed instead, even if they spoke or acted earlier in the same passage.
+- characters_departed: the people who physically LEFT the scene by the end of this passage — walked out, exited, stormed off, were dismissed, sent away, or died — EVEN IF they spoke or acted earlier in the same passage before leaving. Use their CANONICAL name. A person who rises and leaves the room this turn belongs HERE, not in present_characters. This is the only way someone stops being "present" (the system keeps everyone else from the prior turn in the scene), so a clearly narrated exit MUST be listed. Worked example: prose says "Bram set down his cup, bowed stiffly, and strode from the hall" → characters_departed includes "Bram" (and he is NOT in present_characters). Empty array [] when no one left.
+- current_location: the place the viewpoint/protagonist is PHYSICALLY STANDING IN at the end of the passage — where this turn's action and dialogue actually happen. Report ONLY a place the prose shows them physically occupying RIGHT NOW. NEVER report a place that is merely mentioned, named, planned, anticipated, remembered, or where some future event will be held while the characters are not yet there. Worked example: if they sit at the table in the dining room discussing a party that will be held in the great room, current_location is "dining room" — NOT "great room". If the scene simply continues where it already was, return the prior known location unchanged. Return null ONLY if no place has ever been established. Prior known location (return THIS unless the viewpoint has physically moved): ${priorLocationLabel}.
+- viewpoint_moved: a boolean. true ONLY if THIS passage actually narrates the viewpoint/protagonist physically relocating FROM the prior known location TO a different place during this turn — walking out, entering another room, setting off on a journey, or a scene-cut that puts them somewhere new. In EVERY other case it is false: when they stay put, when nothing moves, and ESPECIALLY when another place is only mentioned, named, discussed, or planned. If viewpoint_moved is false, current_location MUST equal the prior known location (or null if none was ever set). When in doubt, it is false.
 - time_elapsed: how much IN-WORLD time the passage itself narrates passing during this turn — a short human label ("three days", "a week later", "a few hours", "the next morning"). Use this ONLY when the prose clearly skips or spans time (a journey, a "later that night", "weeks passed"). Return null for a continuous, real-time scene where no meaningful time elapses (most dialogue/combat turns). Do not invent time; report only what the passage states or strongly implies.
 - location_state_changes: short clauses for what BECAME TRUE about the CURRENT place this turn — its mutable condition ("the gate now lies in ruins", "the tavern has burned down", "soldiers occupy the square"). Each clause must be self-contained and name what changed. Empty array [] when the place's condition did not change (the usual case).
 - location_permanent_facts: short clauses for ENDURING, canonical facts about the current place newly established this turn ("the temple was built over a buried god", "this bridge is the only crossing for fifty miles"). These are lasting truths, not passing events or moods. Empty array [] almost always — use sparingly.
@@ -218,7 +233,9 @@ Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length
       choices: [],
       milestone: null,
       present_characters: [],
+      characters_departed: [],
       current_location: null,
+      viewpoint_moved: false,
       time_elapsed: null,
       location_state_changes: [],
       location_permanent_facts: [],
