@@ -518,6 +518,31 @@ export const entityGraphService = {
   },
 
   /**
+   * The places this world already knows, by canonical name + aliases, most
+   * recently/often seen first. Fed to the scene extractor so a RETURN to a known
+   * place reuses its canonical name instead of minting a near-duplicate location
+   * entity ("the garden" vs "night garden") — which would split the Places
+   * journal and break "go back to where I was".
+   */
+  async listKnownLocations(
+    instanceId: string,
+    limit = 30,
+  ): Promise<{ name: string; aliases: string[] }[]> {
+    const iid = parseObjectId(instanceId)
+    const docs = await entities()
+      .find(
+        { instance_id: iid, type: 'location' },
+        { projection: { canonical_name: 1, aliases: 1 } },
+      )
+      .sort({ last_seen_sequence: -1, mention_count: -1 })
+      .limit(limit)
+      .toArray()
+    return (docs as any[])
+      .filter((d) => d.canonical_name)
+      .map((d) => ({ name: d.canonical_name as string, aliases: (d.aliases || []) as string[] }))
+  },
+
+  /**
    * Record what changed about a place this turn onto its location entity.
    * `state` is mutable condition (bounded ring — newest kept), `facts` is
    * enduring canon (append-only, bounded). Both carry event provenance so a

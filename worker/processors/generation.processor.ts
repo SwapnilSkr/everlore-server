@@ -307,6 +307,11 @@ export async function generationProcessor(job: Job) {
     }
     return [];
   })();
+  // Known places so a RETURN reuses a location's canonical name instead of
+  // minting a near-duplicate entity (which would split the Places journal).
+  const knownPlaces = await entityGraphService
+    .listKnownLocations(instanceId, 30)
+    .catch(() => [] as { name: string; aliases: string[] }[]);
   const meta = await extractSceneMetadata(
     finalNarrative,
     Object.keys(session.world_state || {}),
@@ -317,6 +322,7 @@ export async function generationProcessor(job: Job) {
       priorPresent,
       protagonist: choiceProtagonist,
       roster: choiceRoster,
+      knownPlaces,
     },
   );
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta };

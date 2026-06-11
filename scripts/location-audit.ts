@@ -91,6 +91,22 @@ async function main() {
     ok(`#${s} did not report staying outside`, !has(m.current_location, /outside|garden/i), `${m.current_location}`)
   }
 
+  // === E. Return to a KNOWN place by a variant name must reuse the canonical. ===
+  console.log('\n=== E. Known-place reuse: prose says "the garden", world knows "Night Garden" ===')
+  const proseE = `*The neglected son slipped out through the glass doors and back into the garden, the night air cool against his face. The familiar hedges loomed around him once more.*`
+  for (let s = 1; s <= SAMPLES; s++) {
+    const m = await extractSceneMetadata(proseE, [], [], {
+      isSentient: false,
+      currentLocationName: 'dining room',
+      priorPresent: [],
+      protagonist,
+      roster,
+      knownPlaces: [{ name: 'Night Garden', aliases: ['the garden'] }],
+    })
+    console.log(`  — #${s}: current_location=${JSON.stringify(m.current_location)}`)
+    ok(`#${s} reused canonical "Night Garden" (not a variant)`, has(m.current_location, /night garden/i), `${m.current_location}`)
+  }
+
   // === C. Presence carry-forward: a present character not named this turn. ===
   // The model reports only whom it sees; the SERVER fold keeps the rest.
   console.log('\n=== C. Carry-forward: only the father speaks, sister + mother still at the table ===')

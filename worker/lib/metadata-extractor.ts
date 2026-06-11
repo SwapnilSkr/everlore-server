@@ -128,6 +128,9 @@ export async function extractSceneMetadata(
     /** Characters present at the END of the PRIOR turn, so a character still in
      *  the scene but not named in this passage isn't dropped to "elsewhere". */
     priorPresent?: string[]
+    /** Places this world already knows (canonical name + aliases). Lets a RETURN
+     *  to a known place reuse its canonical name instead of minting a duplicate. */
+    knownPlaces?: { name: string; aliases?: string[] }[]
     /** Who the player is in this world — their GM character or their persona —
      *  by name + any aliases. Used to anchor first-person choices to the right
      *  person so the choice viewpoint never drifts in third-person prose. */
@@ -173,6 +176,19 @@ export async function extractSceneMetadata(
   const priorPresent = (opts?.priorPresent || []).map((p) => p.trim()).filter(Boolean)
   const priorPresentLabel = priorPresent.length ? priorPresent.join(', ') : '(none / unknown)'
   const priorLocationLabel = opts?.currentLocationName || '(none established yet)'
+
+  const places = (opts?.knownPlaces || [])
+    .map((p) => {
+      const name = (p.name || '').trim()
+      if (!name) return null
+      const al = (p.aliases || []).map((a) => a.trim()).filter((a) => a && a.toLowerCase() !== name.toLowerCase())
+      return al.length ? `${name} (also called: ${al.join(', ')})` : name
+    })
+    .filter(Boolean)
+    .slice(0, 30)
+  const knownPlacesClause = places.length
+    ? `\n\nKNOWN PLACES (locations this world already has — if the viewpoint is at one of these, reuse its EXACT canonical name, the part before any parenthesis, so it isn't duplicated):\n${places.map((p) => `- ${p}`).join('\n')}`
+    : ''
   const perspective = opts?.isSentient
     ? `The player is a person interacting with the character(s) in the scene${
         protagName ? `; the player is "${protagName}"${aliasClause}` : ''
@@ -203,14 +219,14 @@ Rules:
 - milestone: null almost always. Set a short evocative label (3-8 words) ONLY when this passage crossed a true story landmark: a vow or marriage, a first kiss, a death of a significant character, a title/power gained, a major victory or betrayal, a life-changing decision. Routine progress is NOT a milestone.
 - present_characters: the people who appear physically in the scene WITH the viewpoint during THIS passage — anyone who speaks, acts, or is shown to be in the room right now. (You do NOT need to re-list people from earlier who simply weren't mentioned this turn; the system carries them forward automatically. People present last turn, for your reference: [${priorPresentLabel}].) For anyone matching the KNOWN CAST, use their CANONICAL name (not the alias/role/pronoun the prose used); for a genuinely new person not in the cast, use the clearest name the prose gives. EXCLUDE the player/narrator themself, and anyone only mentioned, remembered, or written about while not actually in the room. CRUCIAL: if a person LEAVES by the end of the passage, do NOT list them here — list them in characters_departed instead, even if they spoke or acted earlier in the same passage.
 - characters_departed: the people who physically LEFT the scene by the end of this passage — walked out, exited, stormed off, were dismissed, sent away, or died — EVEN IF they spoke or acted earlier in the same passage before leaving. Use their CANONICAL name. A person who rises and leaves the room this turn belongs HERE, not in present_characters. This is the only way someone stops being "present" (the system keeps everyone else from the prior turn in the scene), so a clearly narrated exit MUST be listed. Worked example: prose says "Bram set down his cup, bowed stiffly, and strode from the hall" → characters_departed includes "Bram" (and he is NOT in present_characters). Empty array [] when no one left.
-- current_location: the place the viewpoint/protagonist is PHYSICALLY STANDING IN at the end of the passage — where this turn's action and dialogue actually happen. Report ONLY a place the prose shows them physically occupying RIGHT NOW. NEVER report a place that is merely mentioned, named, planned, anticipated, remembered, or where some future event will be held while the characters are not yet there. Worked example: if they sit at the table in the dining room discussing a party that will be held in the great room, current_location is "dining room" — NOT "great room". If the scene simply continues where it already was, return the prior known location unchanged. Return null ONLY if no place has ever been established. Prior known location (return THIS unless the viewpoint has physically moved): ${priorLocationLabel}.
+- current_location: the place the viewpoint/protagonist is PHYSICALLY STANDING IN at the end of the passage — where this turn's action and dialogue actually happen. Report ONLY a place the prose shows them physically occupying RIGHT NOW. NEVER report a place that is merely mentioned, named, planned, anticipated, remembered, or where some future event will be held while the characters are not yet there. Worked example: if they sit at the table in the dining room discussing a party that will be held in the great room, current_location is "dining room" — NOT "great room". If the scene simply continues where it already was, return the prior known location unchanged. If the viewpoint is at a place listed in KNOWN PLACES below — including returning to one they left earlier — return that place's EXACT canonical name, never a new variant spelling ("the garden" when KNOWN PLACES has "Night Garden" → return "Night Garden"). Use a fresh name only for a place that is genuinely not yet known. Return null ONLY if no place has ever been established. Prior known location (return THIS unless the viewpoint has physically moved): ${priorLocationLabel}.
 - viewpoint_moved: a boolean. true whenever THIS passage narrates the viewpoint/protagonist physically CHANGING place — walking out, entering another room, setting off on a journey, RETURNING TO or RE-ENTERING a place they had left (e.g. coming back indoors from the garden, stepping back into the mansion), or a scene-cut that puts them somewhere new. It is false when they stay put and nothing relocates them, and ESPECIALLY when another place is only mentioned, named, discussed, or planned while they remain where they are. Rule of thumb: if current_location below differs from the prior known location because they actually went there, viewpoint_moved is true; if current_location is unchanged, it is false.
 - time_elapsed: how much IN-WORLD time the passage itself narrates passing during this turn — a short human label ("three days", "a week later", "a few hours", "the next morning"). Use this ONLY when the prose clearly skips or spans time (a journey, a "later that night", "weeks passed"). Return null for a continuous, real-time scene where no meaningful time elapses (most dialogue/combat turns). Do not invent time; report only what the passage states or strongly implies.
 - location_state_changes: short clauses for what BECAME TRUE about the CURRENT place this turn — its mutable condition ("the gate now lies in ruins", "the tavern has burned down", "soldiers occupy the square"). Each clause must be self-contained and name what changed. Empty array [] when the place's condition did not change (the usual case).
 - location_permanent_facts: short clauses for ENDURING, canonical facts about the current place newly established this turn ("the temple was built over a buried god", "this bridge is the only crossing for fifty miles"). These are lasting truths, not passing events or moods. Empty array [] almost always — use sparingly.
 
 Tracked stats (only these names may appear in state_mutations): ${statKeys.length ? statKeys.join(', ') : '(none)'}
-Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}${rosterClause}`
+Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}${rosterClause}${knownPlacesClause}`
 
   let raw: string
   try {
