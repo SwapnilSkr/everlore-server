@@ -1,4 +1,5 @@
 import { Job } from 'bullmq'
+import type { ObjectId } from 'mongodb'
 import { mongoColl } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embedBatch } from '../../src/ai'
@@ -294,6 +295,122 @@ export async function maintenanceProcessor(job: Job) {
         }
       }
       return { prunedEdges, linkedCards }
+    }
+
+    case 'repair_memory_links': {
+      // Memory version graph (Phase 2) reconcile + prune. Idempotent. Three jobs:
+      //  (1) reconcile the supersession race — for every atom marked
+      //      `superseded_by_event_ids: E`, make sure E's new correcting atoms
+      //      carry the forward `updates_memory_ids` back to it (the curator may
+      //      have run before supersession finished and missed it);
+      //  (2) drop dangling forward links to atoms that no longer exist;
+      //  (3) drop `superseded_by_event_ids` pointing at events that no longer exist.
+      const { instanceId } = job.data as { instanceId: string }
+      const instanceOid = parseObjectId(instanceId)
+
+      // (1) Reconcile forward links from the backward marks.
+      let reconciled = 0
+      const supersededAtoms = await mongoColl.memories()
+        .find(
+          { instance_id: instanceOid, superseded_by_event_ids: { $exists: true, $ne: [] } },
+          { projection: { _id: 1, superseded_by_event_ids: 1 } },
+        )
+        .toArray()
+      const oldIdsByEvent = new Map<string, ObjectId[]>()
+      for (const a of supersededAtoms) {
+        for (const ev of a.superseded_by_event_ids || []) {
+          const key = idString(ev)
+          const list = oldIdsByEvent.get(key) || []
+          list.push(a._id)
+          oldIdsByEvent.set(key, list)
+        }
+      }
+      for (const [eventIdStr, oldIds] of oldIdsByEvent) {
+        const res = await mongoColl.memories().updateMany(
+          { instance_id: instanceOid, source_event_ids: parseObjectId(eventIdStr), is_archived: false },
+          { $addToSet: { updates_memory_ids: { $each: oldIds } } },
+        )
+        reconciled += res.modifiedCount || 0
+      }
+
+      // (2) Prune dangling forward links.
+      let prunedLinks = 0
+      const linked = await mongoColl.memories()
+        .find(
+          {
+            instance_id: instanceOid,
+            $or: [
+              { updates_memory_ids: { $exists: true, $ne: [] } },
+              { extends_memory_ids: { $exists: true, $ne: [] } },
+              { derives_from_memory_ids: { $exists: true, $ne: [] } },
+            ],
+          },
+          { projection: { updates_memory_ids: 1, extends_memory_ids: 1, derives_from_memory_ids: 1 } },
+        )
+        .toArray()
+      const referenced = [
+        ...new Set(
+          linked
+            .flatMap((m) => [
+              ...(m.updates_memory_ids || []),
+              ...(m.extends_memory_ids || []),
+              ...(m.derives_from_memory_ids || []),
+            ])
+            .map(idString),
+        ),
+      ]
+      if (referenced.length > 0) {
+        const alive = new Set(
+          (
+            await mongoColl.memories()
+              .find(
+                { _id: { $in: referenced.map((id) => parseObjectId(id)) } },
+                { projection: { _id: 1 } },
+              )
+              .toArray()
+          ).map((m) => idString(m._id)),
+        )
+        const dead = referenced.filter((id) => !alive.has(id)).map((id) => parseObjectId(id))
+        if (dead.length > 0) {
+          const res = await mongoColl.memories().updateMany(
+            { instance_id: instanceOid },
+            {
+              $pull: {
+                updates_memory_ids: { $in: dead },
+                extends_memory_ids: { $in: dead },
+                derives_from_memory_ids: { $in: dead },
+              } as never,
+            },
+          )
+          prunedLinks = res.modifiedCount || 0
+        }
+      }
+
+      // (3) Prune backward marks pointing at removed events.
+      let prunedMarks = 0
+      const markEvents = [...oldIdsByEvent.keys()]
+      if (markEvents.length > 0) {
+        const aliveEvents = new Set(
+          (
+            await mongoColl.events()
+              .find(
+                { instance_id: instanceOid, _id: { $in: markEvents.map((id) => parseObjectId(id)) } },
+                { projection: { _id: 1 } },
+              )
+              .toArray()
+          ).map((e) => idString(e._id)),
+        )
+        const deadEvents = markEvents.filter((id) => !aliveEvents.has(id)).map((id) => parseObjectId(id))
+        if (deadEvents.length > 0) {
+          const res = await mongoColl.memories().updateMany(
+            { instance_id: instanceOid, superseded_by_event_ids: { $in: deadEvents } },
+            { $pull: { superseded_by_event_ids: { $in: deadEvents } } as never },
+          )
+          prunedMarks = res.modifiedCount || 0
+        }
+      }
+
+      return { reconciled, prunedLinks, prunedMarks }
     }
 
     case 'schedule_continuity_audits': {

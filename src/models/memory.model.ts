@@ -62,6 +62,22 @@ export interface MemoryDoc {
   unresolved_thread?: boolean
   /** Set when a later turn resolved this thread. */
   resolved_at?: Date | null
+  /** Memory version graph (Phase 2). Forward links FROM this atom TO earlier
+   *  atoms it evolves. `updates` = this atom supersedes/corrects the earlier one
+   *  (the earlier atom is archived `status:superseded`); `extends` = refines
+   *  canon without replacing (both stay active); `derives_from` = a higher-order
+   *  inference synthesized from earlier atoms. Currently only `updates` has a
+   *  producer (the codex-retirement supersession seam); the other two are
+   *  reserved (schema present, inert) until a refine-detection / inference pass
+   *  exists. Additive — a pre-version-graph row simply lacks them. */
+  updates_memory_ids?: ObjectId[]
+  extends_memory_ids?: ObjectId[]
+  derives_from_memory_ids?: ObjectId[]
+  /** Backward lineage: the event(s) whose codex retirement superseded this atom
+   *  (set when `status:superseded`). Race-free single-writer signal (the
+   *  supersession seam) from which the forward `updates_memory_ids` on the newer
+   *  correcting atoms is materialized/reconciled. */
+  superseded_by_event_ids?: ObjectId[]
   created_at: Date
   updated_at: Date
 }

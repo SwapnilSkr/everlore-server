@@ -28,12 +28,18 @@ export const memorySupersessionService = {
     /** Only supersede memories created strictly before this — never the fresh,
      *  correcting memory this same turn produces. Defaults to now. */
     beforeDate?: Date
-  }): Promise<{ archived: number }> {
-    const { instanceId, retiredFacts, beforeDate } = params
+    /** The turn whose codex retirement triggered this supersession. When given,
+     *  the archived atoms are stamped `superseded_by_event_ids += eventId` — the
+     *  race-free backward half of the Phase-2 version graph, from which the
+     *  curator (and the repair job) materialize the forward `updates_memory_ids`
+     *  on this event's new correcting atoms. */
+    eventId?: string
+  }): Promise<{ archived: number; supersededIds: string[] }> {
+    const { instanceId, retiredFacts, beforeDate, eventId } = params
     const facts = (retiredFacts || [])
       .map((f) => String(f || '').trim())
       .filter((f) => f.length >= 4)
-    if (!facts.length) return { archived: 0 }
+    if (!facts.length) return { archived: 0, supersededIds: [] }
 
     const namespaceName = `mem_${instanceId}`
     const namespace = getPineconeIndex().namespace(namespaceName)
@@ -60,6 +66,10 @@ export const memorySupersessionService = {
       for (const m of res.matches || []) {
         if ((m.score ?? 0) < SUPERSEDE_THRESHOLD) continue
         const meta = m.metadata || {}
+        // Privacy scope: a MAIN-story codex retirement must never evict (or link
+        // to) a PRIVATE side-chat secret. The boundary stays intact — a secret
+        // only enters the main story by being shared, which mints a main atom.
+        if (String(meta.origin || '') === 'side_chat') continue
         const createdRaw = meta.created_at ? String(meta.created_at) : ''
         const created = createdRaw ? new Date(createdRaw).getTime() : 0
         // Skip anything created this turn or later — that's the corrected fact.
@@ -69,7 +79,7 @@ export const memorySupersessionService = {
       }
     }
 
-    if (vectorIds.size === 0) return { archived: 0 }
+    if (vectorIds.size === 0) return { archived: 0, supersededIds: [] }
 
     // Remove the vectors so RAG stops retrieving the stale fact.
     for (const id of vectorIds) {
@@ -82,18 +92,28 @@ export const memorySupersessionService = {
 
     // Archive the Mongo docs (kept for provenance; just not retrievable).
     // status 'superseded' (vs plain 'archived') records that a newer fact
-    // replaced this one, not that it merely decayed.
+    // replaced this one, not that it merely decayed. When the trigger is a known
+    // turn, stamp the backward version-graph link too (`superseded_by_event_ids`).
     if (mongoIds.size > 0) {
       try {
+        const set: Record<string, unknown> = {
+          is_archived: true,
+          status: 'superseded',
+          updated_at: new Date(),
+        }
+        const update: Record<string, unknown> = { $set: set }
+        if (eventId) {
+          update.$addToSet = { superseded_by_event_ids: parseObjectId(eventId) }
+        }
         await mongoColl.memories().updateMany(
           { _id: { $in: [...mongoIds].map((id) => parseObjectId(id)) } },
-          { $set: { is_archived: true, status: 'superseded', updated_at: new Date() } },
+          update,
         )
       } catch {
         // best-effort
       }
     }
 
-    return { archived: mongoIds.size }
+    return { archived: mongoIds.size, supersededIds: [...mongoIds] }
   },
 }

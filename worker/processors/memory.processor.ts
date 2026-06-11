@@ -436,6 +436,34 @@ World: ${aiResponse}`,
     }
   }
 
+  // Memory version graph (Phase 2): materialize the forward `updates_memory_ids`
+  // on this turn's new atoms. The supersession seam (codex retirement) already
+  // stamped the OLD atoms it archived with `superseded_by_event_ids: thisEvent`
+  // (race-free single writer); here the curator — the natural owner of the new
+  // correcting atoms — points them back. Whichever of {supersession, curation}
+  // sees both materializes the link; the repair job reconciles the race. Only on
+  // MAIN turns (a side-chat atom never supersedes a main codex fact).
+  if (!sideChat && newMemories.length > 0) {
+    try {
+      const supersededByThisEvent = await mongoColl
+        .memories()
+        .find(
+          { instance_id: instanceOid, superseded_by_event_ids: eventOid },
+          { projection: { _id: 1 } },
+        )
+        .toArray()
+      if (supersededByThisEvent.length > 0) {
+        const oldIds = supersededByThisEvent.map((m) => m._id)
+        await mongoColl.memories().updateMany(
+          { _id: { $in: newMemories.map((m) => m._id) } },
+          { $addToSet: { updates_memory_ids: { $each: oldIds } }, $set: { updated_at: new Date() } },
+        )
+      }
+    } catch (err) {
+      console.warn('Memory version-link materialization skipped:', (err as Error).message)
+    }
+  }
+
   await mongoColl.worldInstances().updateOne(
     { _id: instanceOid },
     { $inc: { 'meta.total_memories': newMemories.length } },

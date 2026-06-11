@@ -524,6 +524,47 @@ export const adminService = {
       ? await mongoColl.entities().find({ _id: { $in: entityIds } }).toArray()
       : []
 
+    // Memory version graph (Phase 2): resolve the atoms these memories link to
+    // (updates/extends/derives) into id+snippet+status so the lineage is
+    // inspectable. PRIVACY: a linked atom that is a private side-chat secret is
+    // shown ONLY when the protagonist knows it (same `allowsKnowledge` gate as
+    // queryRag) — fail closed, so a stray cross-boundary link can't leak a
+    // secret's text through the admin surface.
+    const linkedMemoryIds = [
+      ...new Map(
+        mems
+          .flatMap((m) => [
+            ...(m.updates_memory_ids || []),
+            ...(m.extends_memory_ids || []),
+            ...(m.derives_from_memory_ids || []),
+          ])
+          .map((id) => [idString(id), id] as const),
+      ).values(),
+    ]
+    const protagonist = await mongoColl
+      .entities()
+      .findOne({ instance_id: iid, type: 'protagonist' }, { projection: { _id: 1 } })
+    const protagonistEntityId = protagonist?._id || null
+    const allowsKnowledge = (m: { origin?: string; known_by_entity_ids?: ObjectId[] }): boolean => {
+      if (m.origin !== 'side_chat') return true
+      if (!protagonistEntityId) return false
+      return (m.known_by_entity_ids || []).some((id) => id.equals(protagonistEntityId))
+    }
+    const linkedDocs = linkedMemoryIds.length
+      ? await memories().find({ _id: { $in: linkedMemoryIds } }).toArray()
+      : []
+    const linkedById = new Map(linkedDocs.map((m) => [idString(m._id), m]))
+    const resolveLinks = (ids: ObjectId[] | undefined) =>
+      (ids || []).map((id) => {
+        const doc = linkedById.get(idString(id))
+        const visible = doc ? allowsKnowledge(doc) : true
+        return serialize({
+          _id: id,
+          text: doc ? (visible ? doc.text : '[private — protagonist does not know]') : '[removed]',
+          status: doc ? memoryProjectionStatus(doc) : 'archived',
+        })
+      })
+
     return {
       event: serialize({
         _id: event._id,
@@ -556,6 +597,11 @@ export const adminService = {
           location_entity_id: m.location_entity_id || null,
           location_name: m.location_name || null,
           unresolved_thread: m.unresolved_thread === true,
+          // Version graph (Phase 2): what this atom evolves + what invalidated it.
+          updates_memories: resolveLinks(m.updates_memory_ids),
+          extends_memories: resolveLinks(m.extends_memory_ids),
+          derives_from_memories: resolveLinks(m.derives_from_memory_ids),
+          superseded_by_event_ids: (m.superseded_by_event_ids || []).map(idString),
         }),
       ),
       entity_edges: edges.map((e) =>

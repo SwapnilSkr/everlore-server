@@ -8,6 +8,7 @@ import { queryRag } from '../providers/rag.provider'
 import { buildPrompt } from '../utils/prompt-builder'
 import { lengthMaxTokens } from '../utils/narrative-styles'
 import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
+import type { ObjectId } from 'mongodb'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { characterCodexService } from './character-codex.service'
@@ -219,6 +220,41 @@ async function staleSummariesCoveringEvent(event: any): Promise<number> {
   return covering.length
 }
 
+/**
+ * Memory version graph (Phase 2) prune: when atoms are removed (rewind / edit
+ * re-curation / delete), any SURVIVING atom whose forward version links point at
+ * a removed atom would dangle. `$pull` the removed ids from all three link
+ * fields. Mirrors the entity-edge provenance pruning — links are a projection,
+ * so a removed source must leave no stale reference. Idempotent.
+ */
+async function pruneMemoryVersionLinks(
+  instanceId: ObjectId,
+  removedMemoryIds: ObjectId[],
+): Promise<void> {
+  if (removedMemoryIds.length === 0) return
+  try {
+    await memories().updateMany(
+      {
+        instance_id: instanceId,
+        $or: [
+          { updates_memory_ids: { $in: removedMemoryIds } },
+          { extends_memory_ids: { $in: removedMemoryIds } },
+          { derives_from_memory_ids: { $in: removedMemoryIds } },
+        ],
+      },
+      {
+        $pull: {
+          updates_memory_ids: { $in: removedMemoryIds },
+          extends_memory_ids: { $in: removedMemoryIds },
+          derives_from_memory_ids: { $in: removedMemoryIds },
+        } as never,
+      },
+    )
+  } catch (err) {
+    console.warn('Memory version-link prune skipped:', (err as Error).message)
+  }
+}
+
 async function recurateMemoriesForEvent(
   event: any,
   playerId: string,
@@ -245,6 +281,7 @@ async function recurateMemoriesForEvent(
 
     await memories().deleteMany({ _id: { $in: staleMemories.map((m) => m._id) } })
     deletedMemories = staleMemories.length
+    await pruneMemoryVersionLinks(event.instance_id, staleMemories.map((m) => m._id))
     await worldInstances().updateOne(
       { _id: event.instance_id },
       { $inc: { 'meta.total_memories': -deletedMemories } },
@@ -616,6 +653,19 @@ export const memoryService = {
         }
         await memories().deleteMany({ _id: { $in: mems.map((m) => m._id) } })
         deletedMemories = mems.length
+        await pruneMemoryVersionLinks(iid, mems.map((m) => m._id))
+      }
+    }
+    // The removed turns can no longer be a supersession trigger — drop their
+    // backward version-graph marks from any surviving (re-activated) atom.
+    if (doomedIds.length > 0) {
+      try {
+        await memories().updateMany(
+          { instance_id: iid, superseded_by_event_ids: { $in: doomedIds } },
+          { $pull: { superseded_by_event_ids: { $in: doomedIds } } as never },
+        )
+      } catch (err) {
+        console.warn('Rewind: superseded-by prune skipped:', (err as Error).message)
       }
     }
 

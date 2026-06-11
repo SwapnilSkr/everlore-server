@@ -797,6 +797,7 @@ export async function generationProcessor(job: Job) {
             instanceId,
             retiredFacts,
             beforeDate: new Date(genStart),
+            eventId: idString(event._id),
           })
           .catch((err) =>
             console.warn("memory supersession failed:", (err as Error).message),
