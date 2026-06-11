@@ -14,6 +14,24 @@ type ExistingCharacter = {
   immutable_facts?: string[]
 }
 
+/** Lowercase, strip punctuation to spaces, collapse runs — for grounding checks. */
+function normForMatch(s: string): string {
+  return (s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** True when `name` (a proper name/epithet) literally appears in the turn text.
+ *  Phrase match on the normalized strings, so "mysterious man" (coined from mood)
+ *  fails even though the bare word "man" is present. */
+function nameAppearsInText(name: string, normText: string): boolean {
+  const n = normForMatch(name)
+  if (!n || n.length < 2) return false
+  return normText.includes(` ${n} `) || normText.startsWith(`${n} `) || normText.endsWith(` ${n}`) || normText === n
+}
+
 function parseJsonObject(raw: string): Record<string, unknown> {
   try {
     return JSON.parse(raw)
@@ -87,8 +105,12 @@ export async function extractCharacterCodexDeltas(params: {
   /** Player persona name (sentient worlds): the human in the conversation.
    *  They must NEVER become a codex card — the codex tracks the world's cast. */
   playerPersonaName?: string
+  /** Canonical names of the characters physically present in the scene THIS turn.
+   *  Lets the extractor resolve a bare descriptor ("the man", "the woman") to the
+   *  person it can only be — the anchor that stops invented duplicate cards. */
+  presentCast?: string[]
 }): Promise<CharacterCodexDelta[]> {
-  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName } = params
+  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName, presentCast } = params
 
   const existingText = existing.length
     ? existing
@@ -100,6 +122,11 @@ export async function extractCharacterCodexDeltas(params: {
       })
       .join('\n')
     : '(none yet)'
+
+  const presentList = (presentCast || []).map((n) => (n || '').trim()).filter(Boolean)
+  const presentBlock = presentList.length
+    ? `\nPRESENT THIS TURN (these exact people are in the scene now): ${presentList.join(', ')}.\nA bare descriptor in the narration ("the man", "the woman", "the figure", "the stranger", "the boy") almost always refers to one of these present people — resolve it to them, never to a new card.\n`
+    : ''
 
   const protagonistBlock =
     isSentient && seedPrompt && seedPrompt.trim().length > 0
@@ -128,6 +155,8 @@ Rules:
 - ALWAYS create or update a card for any NAMED character who appears, speaks, or is referenced this turn — even with sparse detail. Do not skip newly introduced characters; capturing them promptly keeps the story consistent.
 - Prefer resolving to existing characters when aliases/titles/pronouns refer to the same person; never split one character into two cards. Before creating a NEW card, check whether the name is actually a title, epithet, or description of someone already listed (or of the player) — if so, use "resolved_name" instead of a new card.
 - Generic RELATIONAL or ROLE epithets — "the sister", "his sister", "Sister", "the twin", "Mother", "the father", "the guard", "the innkeeper" — are NOT a new person when the existing roster already has a character in that role. A shorter or vaguer label ("Sister") and a more specific one ("Twin Sister") for the same family role are the SAME person. Resolve the epithet to that existing card with "resolved_name"; never create a second card alongside it. Worked example: the roster already lists "Twin Sister"; this turn the narration says "his sister scoffed" → return that character with "resolved_name": "Twin Sister" (do NOT mint a separate "Sister" card).
+- NEVER INVENT A NAME — NON-NEGOTIABLE. A character's "name" must be a proper name or fixed epithet that LITERALLY appears in this turn's text (player input or narration). NEVER coin a label from the scene's mood, tone, or an action — do NOT produce names like "Mysterious Man", "The Stranger", "Hooded Figure", "The Visitor", "Shadowy Man" unless those exact words appear in the text. A character being secretive, unnamed, or vague is STILL one of the existing roster / present cast — describe their secrecy in their fields, do not give them a new identity.
+- A BARE DESCRIPTOR IS NEVER A NEW PERSON when a matching character is already present/listed. "the man", "the woman", "the figure", "the stranger", "the boy/girl", "the older man" → resolve to the present-cast or roster member it can only be (e.g. the only adult male in the room), via "resolved_name". This is the #1 source of accidental duplicates and is FORBIDDEN. Worked example: PRESENT THIS TURN includes "Father"; the narration says *the man tilted the screen away, shielding it from view* while being cagey about his work → that "man" IS the father → return him with "resolved_name": "Father" and capture his secrecy in his state — NEVER mint a "Mysterious Man" (or any new) card for him.
 - Return 0-6 characters (most important / most active first).
 - Keep hidden_thought private/internal (never spoken aloud), short and specific to the player.
 - immutable_facts: PERMANENT history/identity that never stops being true once it happens (e.g. "was engaged to Lord X", "gained pyromancy", "married Mira"). Append-only — only NEW permanent facts from this turn.
@@ -136,7 +165,7 @@ Rules:
 - disposition_to_player: concise sentiment toward the player right now.
 - relationship_deltas: how THIS TURN shifted the character's stance toward the player, as integer changes to four meters: trust, affection, fear, rivalry. Include ONLY meters that genuinely moved, ONLY for characters present this turn. Scale: ±1-3 for small moments (kind words, minor friction), ±4-7 for significant ones (a gift, a confession, a public insult), ±8-10 ONLY for dramatic turning points (betrayal, a life saved, a vow broken). Omit the field entirely when nothing shifted. NEVER include it for the player's own protagonist card in a Game Master world (a character has no meters toward themself).
 - is_protagonist: true ONLY for the world's main character (see below); otherwise false.
-${protagonistBlock}
+${protagonistBlock}${presentBlock}
 Existing characters (with their current state — reconcile against this):
 ${existingText}
 
@@ -182,10 +211,45 @@ Respond ONLY JSON:
 
   const parsed = parseJsonObject(raw)
   const list = Array.isArray((parsed as any).characters) ? (parsed as any).characters : []
+
+  // Deterministic anti-duplication backstop (defends the prompt rules above):
+  // a brand-new card is only allowed when its name (or an alias) actually appears
+  // in this turn's text. A name the model COINED from the scene's mood
+  // ("Mysterious Man") — not grounded in the prose — is never a real new person
+  // when a roster already exists; it is a duplicate of someone already carded.
+  // Drop the phantom mint; the genuine character is re-emitted on adjacent turns.
+  const normText = normForMatch(`${playerInput || ''} ${aiResponse || ''}`)
+  const knownNames = new Set<string>()
+  for (const c of existing) {
+    knownNames.add(normForMatch(c.canonical_name))
+    for (const a of c.aliases || []) knownNames.add(normForMatch(a))
+  }
+  for (const n of presentCast || []) knownNames.add(normForMatch(n))
+  const resolvesToKnown = (d: CharacterCodexDelta): boolean => {
+    const cands = [d.resolved_name || '', d.name, ...(d.aliases || [])].map(normForMatch)
+    return cands.some((c) => c && knownNames.has(c))
+  }
+
   const out: CharacterCodexDelta[] = []
   for (const item of list) {
     const delta = toDelta(item)
     if (!delta) continue
+    // A NEW card (resolves to no known/present character) MUST be grounded in the
+    // text. Protagonist-tagged deltas are exempt (handled by the one-protagonist
+    // invariant downstream). When the roster is empty there is nothing to dup, so
+    // the guard only engages once a cast exists.
+    if (knownNames.size > 0 && delta.is_protagonist !== true && !resolvesToKnown(delta)) {
+      const grounded =
+        nameAppearsInText(delta.name, normText) ||
+        (delta.aliases || []).some((a) => nameAppearsInText(a, normText)) ||
+        (delta.resolved_name ? nameAppearsInText(delta.resolved_name, normText) : false)
+      if (!grounded) {
+        console.warn(
+          `[codex-extractor] blocked ungrounded new card "${delta.name}" (not in turn text; likely a duplicate of an existing/present character)`,
+        )
+        continue
+      }
+    }
     out.push(delta)
     if (out.length >= 6) break
   }

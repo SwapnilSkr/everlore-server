@@ -35,7 +35,11 @@ async function main() {
   console.log(`  keep "${keep.canonical_name}" mentions=${keep.mention_count} aliases=${JSON.stringify(keep.aliases)} entity=${keep.entity_id}`)
   console.log(`  dupe "${dupe.canonical_name}" mentions=${dupe.mention_count} aliases=${JSON.stringify(dupe.aliases)} entity=${dupe.entity_id}`)
 
-  // 1. Fold the card fields.
+  // 1. Fold the card fields. Idempotent: if the dupe's name is already a keep
+  // alias, a prior run already folded these — don't re-add mention_count.
+  const alreadyFolded = (keep.aliases || []).some(
+    (a: string) => a.trim().toLowerCase() === dupe.canonical_name.trim().toLowerCase(),
+  )
   const mergedAliases = uniq([...(keep.aliases || []), ...(dupe.aliases || []), dupe.canonical_name]).slice(0, 20)
   const mergedImmutable = uniq([...(keep.immutable_facts || []), ...(dupe.immutable_facts || [])])
   const mergedMutable = uniq([...(keep.mutable_state || []), ...(dupe.mutable_state || [])])
@@ -46,7 +50,7 @@ async function main() {
       aliases: mergedAliases,
       immutable_facts: mergedImmutable,
       mutable_state: mergedMutable,
-      mention_count: (keep.mention_count || 0) + (dupe.mention_count || 0),
+      mention_count: (keep.mention_count || 0) + (alreadyFolded ? 0 : (dupe.mention_count || 0)),
       relationship: meters,
       disposition_to_player: keep.disposition_to_player || dupe.disposition_to_player,
       hidden_thought: keep.hidden_thought || dupe.hidden_thought,
@@ -65,9 +69,25 @@ async function main() {
     const m2 = await mongoColl.memories().updateMany({ instance_id: iid, object_entity_ids: de }, { $addToSet: { object_entity_ids: ke } })
     await mongoColl.memories().updateMany({ instance_id: iid, object_entity_ids: de }, { $pull: { object_entity_ids: de } })
     memRepointed = (m1.modifiedCount || 0) + (m2.modifiedCount || 0)
-    const e1 = await mongoColl.entityEdges().updateMany({ instance_id: iid, source_entity_id: de }, { $set: { source_entity_id: ke } })
-    const e2 = await mongoColl.entityEdges().updateMany({ instance_id: iid, target_entity_id: de }, { $set: { target_entity_id: ke } })
-    edgeRepointed = (e1.modifiedCount || 0) + (e2.modifiedCount || 0)
+    // Re-point per-edge: a blind updateMany collides with the unique assertion
+    // index when keep already has the same (source,target,type,label) edge. Try
+    // each, and on a duplicate-key collision drop the dupe's edge (keep's wins).
+    const repointEdges = async (field: 'source_entity_id' | 'target_entity_id') => {
+      const edges = await mongoColl.entityEdges().find({ instance_id: iid, [field]: de }).toArray()
+      let n = 0
+      for (const edge of edges as any[]) {
+        try {
+          await mongoColl.entityEdges().updateOne({ _id: edge._id }, { $set: { [field]: ke } })
+          n++
+        } catch (err: any) {
+          if (err?.code === 11000) {
+            await mongoColl.entityEdges().deleteOne({ _id: edge._id }) // keep already has this relationship
+          } else throw err
+        }
+      }
+      return n
+    }
+    edgeRepointed = (await repointEdges('source_entity_id')) + (await repointEdges('target_entity_id'))
     // Register dupe entity's names as aliases on keep's entity, then delete dupe entity.
     const dupeEnt: any = await mongoColl.entities().findOne({ _id: de })
     if (dupeEnt) {

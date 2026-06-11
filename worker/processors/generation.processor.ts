@@ -665,6 +665,7 @@ export async function generationProcessor(job: Job) {
         protagonistName: (characterCodex as any[]).find((c) => c.is_protagonist)
           ?.canonical_name,
         playerPersonaName: session.persona_snapshot?.name,
+        presentCast: parsed.present_characters,
       });
       if (!deltas.length) return;
 

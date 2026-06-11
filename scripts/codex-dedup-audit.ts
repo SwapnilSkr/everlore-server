@@ -56,9 +56,73 @@ async function main() {
     )
     ok(`#${s} no standalone "Sister" card minted`, !bareSister)
   }
+
+  // === Scenario B: the "Mysterious Man" reproduction. ===
+  // The father is in the scene, called only "the man" while being secretive about
+  // his work. The extractor must resolve "the man" to the existing Father card and
+  // must NEVER coin a "Mysterious Man" (a name found nowhere in the prose).
+  console.log(`\n=== B. Secretive father called only "the man" (the Mysterious-Man bug) ===`)
+  const inputB = `*I lean forward slightly, curiosity piqued.* What exactly do you do that's so important?`
+  const proseB = `*A thin, mirthless smile curls the man's lips as he tilts the screen away, shielding the glow from view.* "Details that are far beyond your comprehension," *he replies, his voice a chilled whisper that dismisses the inquiry as a trifle.*`
+  for (let s = 1; s <= SAMPLES; s++) {
+    const deltas = await extractCharacterCodexDeltas({
+      playerInput: inputB,
+      aiResponse: proseB,
+      existing,
+      isSentient: false,
+      protagonistName: 'Swapnil Sarkar',
+      presentCast: ['Father', 'Mother', 'Swapnil Sarkar'],
+    })
+    const summary = deltas.map((d: any) => `${d.name}${d.resolved_name ? `→${d.resolved_name}` : ''}`).join(', ')
+    console.log(`  — #${s}: [${summary}]`)
+    // HARD invariant: no card whose identity is "mysterious"/"the man"/"stranger".
+    const invented = deltas.find((d: any) => {
+      const n = norm(d.resolved_name || d.name)
+      return /myster|stranger|hooded|figure|the man|unknown man/.test(n) && !knownName(n)
+    })
+    ok(`#${s} did NOT mint an invented "Mysterious Man"-type card`, !invented,
+      invented ? `minted "${invented.name}"` : summary)
+    // If the man was extracted at all, he must be the Father.
+    const manDelta = deltas.find((d: any) => /man|father/.test(norm(d.resolved_name || d.name)))
+    if (manDelta) {
+      ok(`#${s} the secretive man resolves to "Father"`,
+        norm(manDelta.resolved_name || manDelta.name) === 'father',
+        `name="${manDelta.name}" resolved_name="${(manDelta as any).resolved_name || ''}"`)
+    }
+  }
+
+  // === Scenario C: a GENUINELY new, named character must still be created. ===
+  // The guard must not block natural introductions — only mood-coined duplicates.
+  // Here a never-before-seen person is NAMED in the prose, so a new card is right.
+  console.log(`\n=== C. New named stranger walks in (natural flow must still mint a card) ===`)
+  const inputC = `Who are you?`
+  const proseC = `*The doors swept open and a tall woman strode in, rain still beading on her cloak.* "Forgive the intrusion," *she said, inclining her head.* "I am Seraphine Vance, sent by the magistrate." *The father's pen stilled at the name.*`
+  for (let s = 1; s <= SAMPLES; s++) {
+    const deltas = await extractCharacterCodexDeltas({
+      playerInput: inputC,
+      aiResponse: proseC,
+      existing,
+      isSentient: false,
+      protagonistName: 'Swapnil Sarkar',
+      presentCast: ['Father', 'Swapnil Sarkar'],
+    })
+    const summary = deltas.map((d: any) => `${d.name}${d.resolved_name ? `→${d.resolved_name}` : ''}`).join(', ')
+    console.log(`  — #${s}: [${summary}]`)
+    const seraphine = deltas.find((d: any) => /seraphine|vance/.test(norm(d.resolved_name || d.name)))
+    ok(`#${s} the new named stranger WAS created as a card`, !!seraphine, summary)
+    if (seraphine) {
+      ok(`#${s} she is NOT resolved into an existing card`,
+        !knownName(norm(seraphine.resolved_name || seraphine.name)),
+        `name="${seraphine.name}" resolved_name="${(seraphine as any).resolved_name || ''}"`)
+    }
+  }
+
   console.log(`\n${failures === 0 ? '✅ ALL INVARIANTS HELD' : `❌ ${failures} invariant failure(s)`}`)
   process.exit(failures === 0 ? 0 : 1)
 }
+
+const knownName = (n: string) =>
+  ['father', 'mother', 'twin sister', 'swapnil sarkar', 'neglected son', 'the unseen child'].includes(n)
 
 main().catch((e) => {
   console.error(e)

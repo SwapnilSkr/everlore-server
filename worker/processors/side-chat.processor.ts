@@ -256,6 +256,7 @@ ${buildLengthDirective(session.message_length)}`;
           seedPrompt: session.seed_prompt,
           isSentient: session.is_sentient,
           playerPersonaName: session.persona_snapshot?.name,
+          presentCast: [card.canonical_name],
         });
         const cardNames = new Set(
           [card.canonical_name, ...(card.aliases || [])].map((n) => n.trim().toLowerCase()),
