@@ -21,7 +21,8 @@ import { extractSceneMetadata } from "../lib/metadata-extractor";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
 import { compactImmutableFacts } from "../lib/codex-compactor";
 import { characterCodexService } from "../../src/services/character-codex.service";
-import { entityGraphService } from "../../src/services/entity-graph.service";
+import { entityGraphService, isVagueLocationLabel } from "../../src/services/entity-graph.service";
+import { detectNarratedMovement, resolvePossessiveRoomName } from "../lib/movement-signal";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
 import { timeService } from "../../src/services/time.service";
 import {
@@ -347,15 +348,49 @@ export async function generationProcessor(job: Job) {
   // location) AND lets a real return update the cursor — even when the model
   // under-reports viewpoint_moved on a "came back inside" turn (it does), which
   // a cursor-side movement gate would wrongly strand at the place they left.
-  const viewpointMoved = parsed.viewpoint_moved === true;
-  const resolvedLocation = parsed.current_location
+  // Deterministic backstops under the witness (the small model under-reports both
+  // movement and the NAME of a personal space). The player's own narrated action is
+  // the most reliable movement signal; their possessive cue ("my room") is the most
+  // reliable owner-scoped name. See worker/lib/movement-signal.ts. The EFFECT is
+  // gated on an actual place change below, so a broad read can't fabricate a move.
+  const narratedMove = !isContinuation && detectNarratedMovement(parsedPlayerInput.raw);
+  const cursorName = currentLocation?.name || null;
+  const normEq = (a: string | null, b: string | null) =>
+    !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+  // Name override: when the player retreats to their OWN space and the model
+  // returned a vague label / nothing / just the place they were already in, give
+  // it a specific owner-scoped name so the cartographer mints a DISTINCT room
+  // instead of collapsing onto the cursor ("the room" → the dining room).
+  let placeName = parsed.current_location;
+  let placeMovement = parsed.movement;
+  const possessiveRoom = narratedMove
+    ? resolvePossessiveRoomName(parsedPlayerInput.raw, choiceProtagonist?.name || null)
+    : null;
+  if (
+    possessiveRoom &&
+    (!placeName || isVagueLocationLabel(placeName) || normEq(placeName, cursorName))
+  ) {
+    placeName = possessiveRoom;
+    // A personal room reached from the current place is a sibling under the same
+    // container (dining room → mansion ← bedroom), so place it laterally unless the
+    // model already gave a more specific movement.
+    if (!placeMovement || placeMovement === "none") placeMovement = "lateral";
+  }
+  // Corroborate the move flag: trust an explicit narrated relocation the model
+  // under-flagged, but ONLY when the resolved name is a real, different place — so
+  // an ambiguous "going to" auxiliary on a stay-put turn can't reset the scene.
+  const nameChanged =
+    !!placeName && !isVagueLocationLabel(placeName) && !normEq(placeName, cursorName);
+  const viewpointMoved =
+    parsed.viewpoint_moved === true || (narratedMove && nameChanged);
+  const resolvedLocation = placeName
     ? await entityGraphService.placeLocation({
         instanceId,
         playerId,
         sequence: nextSequence,
-        name: parsed.current_location,
+        name: placeName,
         containmentHint: parsed.containment_hint,
-        movement: parsed.movement,
+        movement: placeMovement,
         viewpointMoved,
         cursorEntityId: currentLocation?.entity_id ?? null,
       }).catch((err) => {
@@ -389,7 +424,15 @@ export async function generationProcessor(job: Job) {
   // time skipped — starts presence fresh from whoever this passage shows. This
   // stops a present-but-unnamed character (e.g. a quiet sibling at the table)
   // from flickering to "elsewhere" just because one reply didn't name them.
-  const sceneBroke = viewpointMoved || !!narratedTimeLabel;
+  // A scene break starts presence fresh. Beyond the model's move flag and a time
+  // skip, treat ANY change of the resolved location ENTITY as a break — if the
+  // cursor genuinely moved to a different place, whoever was in the old room does
+  // NOT carry into the new one (the "parents followed me into my bedroom" class).
+  const placeEntityChanged =
+    !!resolvedLocation &&
+    !!currentLocation &&
+    idString(resolvedLocation.entity_id) !== idString(currentLocation.entity_id);
+  const sceneBroke = viewpointMoved || !!narratedTimeLabel || placeEntityChanged;
   parsed.present_characters = (() => {
     const thisTurn = parsed.present_characters || [];
     if (sceneBroke) return thisTurn.slice(0, 12);

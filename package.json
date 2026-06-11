@@ -14,6 +14,7 @@
     "audit:choices": "bun run scripts/choice-audit.ts",
     "audit:location": "bun run scripts/location-audit.ts",
     "audit:location-resolution": "bun run scripts/location-resolution-audit.ts",
+    "audit:movement": "bun run scripts/movement-signal-audit.ts",
     "audit:codex-dedup": "bun run scripts/codex-dedup-audit.ts",
     "audit:replay-edit": "bun run scripts/replay-edit-audit.ts",
     "merge:character": "bun run scripts/merge-character-cards.ts",
