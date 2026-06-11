@@ -4,6 +4,20 @@ import type { WorldEventDoc } from '../models/world-event.model'
 import type { MemoryDoc } from '../models/memory.model'
 import type { EntityDoc } from '../models/entity.model'
 
+/** Clean a one-line caption for a place's moment: prefer what the player did or
+ *  said that turn, else a snippet of the narration. Strips emphasis markers and
+ *  collapses whitespace; trims to a tile-friendly length on a word boundary. */
+function eventPreview(playerInput?: string | null, aiResponse?: string | null): string | null {
+  const clean = (s?: string | null) =>
+    (s || '').replace(/[*_>#`]/g, '').replace(/\s+/g, ' ').trim()
+  const raw = clean(playerInput) || clean(aiResponse)
+  if (!raw) return null
+  if (raw.length <= 110) return raw
+  const cut = raw.slice(0, 110)
+  const lastSpace = cut.lastIndexOf(' ')
+  return `${(lastSpace > 60 ? cut.slice(0, lastSpace) : cut).trim()}…`
+}
+
 async function mainVisibleMemoryScope(instanceId: ReturnType<typeof parseObjectId>) {
   const protagonist = await mongoColl
     .entities()
@@ -180,6 +194,8 @@ export const locationService = {
               time_anchor: 1,
               location_anchor: 1,
               'data.milestone': 1,
+              'data.player_input': 1,
+              'data.ai_response': 1,
               created_at: 1,
             },
           },
@@ -217,6 +233,10 @@ export const locationService = {
         scene_tag: e.scene_tag,
         time_anchor: e.time_anchor || null,
         milestone: e.data?.milestone || null,
+        // A real one-line caption of the beat — what the player did/said here,
+        // else a snippet of the narration — so the timeline reads as actual
+        // moments, not a column of generic "Dialogue / Mundane" tags.
+        preview: eventPreview(e.data?.player_input, e.data?.ai_response),
         created_at: e.created_at,
       })),
       memories: (mems as MemoryDoc[]).map((m) => ({
