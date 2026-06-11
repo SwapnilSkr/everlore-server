@@ -123,6 +123,13 @@ export async function extractSceneMetadata(
      *  by name + any aliases. Used to anchor first-person choices to the right
      *  person so the choice viewpoint never drifts in third-person prose. */
     protagonist?: { name?: string | null; aliases?: string[] } | null
+    /** Known OTHER characters (the selected codex, excluding the player) by
+     *  canonical name + aliases. Lets the extractor return `present_characters`
+     *  and name people in choices by their CANONICAL name instead of whatever
+     *  alias/role/pronoun the prose happened to use — the app matches presence
+     *  against canonical names with an exact check, so source-normalizing here
+     *  keeps "approach vs. seek out" and the Cast presence tags correct. */
+    roster?: { name: string; aliases?: string[] }[]
   },
 ): Promise<SceneMetadata> {
   // Resolve who "I" is for the choices. In third-person GM prose the protagonist
@@ -136,6 +143,22 @@ export async function extractSceneMetadata(
     .filter((a) => a && a.toLowerCase() !== (protagName || '').toLowerCase())
   const aliasClause = protagAliases.length
     ? ` (the prose may refer to them as: ${protagAliases.join(', ')} — all the same person)`
+    : ''
+
+  // Known cast (other characters), so present_characters and choice references
+  // resolve to CANONICAL names instead of whatever alias/role/pronoun the prose
+  // used — the app matches presence against canonical names exactly.
+  const roster = (opts?.roster || [])
+    .map((r) => {
+      const name = (r.name || '').trim()
+      if (!name) return null
+      const al = (r.aliases || []).map((a) => a.trim()).filter((a) => a && a.toLowerCase() !== name.toLowerCase())
+      return al.length ? `${name} (also called: ${al.join(', ')})` : name
+    })
+    .filter(Boolean)
+    .slice(0, 24)
+  const rosterClause = roster.length
+    ? `\n\nKNOWN CAST (other characters in this story — match anyone in the prose to one of these by name, alias, role, or pronoun, and ALWAYS refer to them by their CANONICAL name, the part before any parenthesis):\n${roster.map((r) => `- ${r}`).join('\n')}`
     : ''
   const perspective = opts?.isSentient
     ? `The player is a person interacting with the character(s) in the scene${
@@ -163,16 +186,16 @@ Rules:
         - spoken line → send "What are you hiding from me?"
         - narration + speech → send "*I step closer, lowering my voice.* What are you hiding from me?"
     - kind: "say" if send contains any spoken words (even alongside an action); "act" only for a silent action. Drives the chip's icon.
-  The set must be distinct in spirit — mix bold / cautious / emotional / curious, and include at least one "say" and one "act" when both fit. Ground every choice in what THIS passage just established; never invent new characters, places, or facts.
+  The set must be distinct in spirit — mix bold / cautious / emotional / curious, and include at least one "say" and one "act" when both fit. Ground every choice in what THIS passage just established; never invent new characters, places, or facts. When a choice refers to another person, name them by their CANONICAL name from the KNOWN CAST below when they are one of them.
 - milestone: null almost always. Set a short evocative label (3-8 words) ONLY when this passage crossed a true story landmark: a vow or marriage, a first kiss, a death of a significant character, a title/power gained, a major victory or betrayal, a life-changing decision. Routine progress is NOT a milestone.
-- present_characters: the proper names of the people (characters) physically present in the scene at the END of this passage — those in the same place as the viewpoint, able to be spoken to or acted on right now. Use the exact name as written in the prose. EXCLUDE anyone only mentioned, remembered, written about, or elsewhere; exclude the player/narrator themself. Empty array [] when the viewpoint is alone or no other character is in the scene.
+- present_characters: the proper names of the people (characters) physically present in the scene at the END of this passage — those in the same place as the viewpoint, able to be spoken to or acted on right now. For anyone who matches the KNOWN CAST below, use their CANONICAL name (not the alias/role/pronoun the prose used); for a genuinely new person not in the cast, use the clearest name the prose gives. EXCLUDE anyone only mentioned, remembered, written about, or elsewhere; exclude the player/narrator themself. Empty array [] when the viewpoint is alone or no other character is in the scene.
 - current_location: the concrete named place where the viewpoint/protagonist is physically located at the END of the passage. Use the most specific stable place name written or strongly implied by the prose ("Old Keep", "Mira's room", "North Road"). If the passage does not establish a concrete place, or the scene simply remains where it already was, return null. Prior known location: ${opts?.currentLocationName || '(unknown)'}.
 - time_elapsed: how much IN-WORLD time the passage itself narrates passing during this turn — a short human label ("three days", "a week later", "a few hours", "the next morning"). Use this ONLY when the prose clearly skips or spans time (a journey, a "later that night", "weeks passed"). Return null for a continuous, real-time scene where no meaningful time elapses (most dialogue/combat turns). Do not invent time; report only what the passage states or strongly implies.
 - location_state_changes: short clauses for what BECAME TRUE about the CURRENT place this turn — its mutable condition ("the gate now lies in ruins", "the tavern has burned down", "soldiers occupy the square"). Each clause must be self-contained and name what changed. Empty array [] when the place's condition did not change (the usual case).
 - location_permanent_facts: short clauses for ENDURING, canonical facts about the current place newly established this turn ("the temple was built over a buried god", "this bridge is the only crossing for fifty miles"). These are lasting truths, not passing events or moods. Empty array [] almost always — use sparingly.
 
 Tracked stats (only these names may appear in state_mutations): ${statKeys.length ? statKeys.join(', ') : '(none)'}
-Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}`
+Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}${rosterClause}`
 
   let raw: string
   try {

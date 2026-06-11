@@ -288,6 +288,15 @@ export async function generationProcessor(job: Job) {
       : session.persona_snapshot?.name
         ? { name: session.persona_snapshot.name, aliases: [] }
         : null;
+  // Known cast for name normalization: the selected codex minus the PLAYER, so
+  // present_characters + choice references come back as canonical names the app
+  // can match exactly (instead of whatever alias/role the prose used). In GM
+  // worlds the player IS the is_protagonist card, so drop it; in sentient worlds
+  // the player is the (un-carded) persona and the is_protagonist card is the AI
+  // character the player talks to — very much an "other", so keep it.
+  const choiceRoster = (characterCodex as any[])
+    .filter((c) => c.canonical_name && (session.is_sentient || !c.is_protagonist))
+    .map((c) => ({ name: c.canonical_name as string, aliases: (c.aliases || []) as string[] }));
   const meta = await extractSceneMetadata(
     finalNarrative,
     Object.keys(session.world_state || {}),
@@ -296,6 +305,7 @@ export async function generationProcessor(job: Job) {
       isSentient: session.is_sentient,
       currentLocationName: currentLocation?.name || null,
       protagonist: choiceProtagonist,
+      roster: choiceRoster,
     },
   );
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta };
