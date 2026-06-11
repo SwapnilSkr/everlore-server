@@ -334,16 +334,15 @@ export async function generationProcessor(job: Job) {
   const previousEventId = recentEvents.length
     ? (recentEvents[recentEvents.length - 1] as any)._id
     : null;
-  // The location cursor only REBASES when the model explicitly asserts the
-  // viewpoint physically moved this turn, or when no location exists yet (initial
-  // anchoring). On an unmoved turn we keep the prior cursor no matter what name
-  // the extractor reported — a place merely mentioned/planned can't relocate the
-  // protagonist, and we don't even mint an entity for it. This is the hysteresis
-  // that stops a single stray label from sticking for the rest of a scene.
+  // The location cursor FOLLOWS the model's current_location. The tightened F1
+  // rule means current_location reports only a place the viewpoint physically
+  // occupies (never a merely-mentioned/planned venue), so trusting it here both
+  // stops the old phantom (a discussed "great room" no longer lands as the
+  // location) AND lets a real return update the cursor — even when the model
+  // under-reports viewpoint_moved on a "came back inside" turn (it does), which
+  // a cursor-side movement gate would wrongly strand at the place they left.
   const viewpointMoved = parsed.viewpoint_moved === true;
-  const shouldRebaseLocation =
-    !!parsed.current_location && (viewpointMoved || !currentLocation);
-  const resolvedLocation = shouldRebaseLocation
+  const resolvedLocation = parsed.current_location
     ? await entityGraphService.resolveLocationAnchor({
         instanceId,
         playerId,
@@ -356,11 +355,11 @@ export async function generationProcessor(job: Job) {
     : null;
   const locationAnchor = resolvedLocation || currentLocation || null;
 
-  // Travel: a turn that physically carries the protagonist from one established
-  // place to a different one. Requires the model's explicit movement assertion
-  // (not just a differing location label), so a mentioned/planned venue never
-  // fabricates a journey. The continue/wait tick is its own kind, and arrival at
-  // the first known place is not travel.
+  // The travel EVENT/marker stays conservative: it needs the model's explicit
+  // movement assertion AND a real change of established place, so a stray label
+  // can't fabricate a journey (the user's original phantom-travel complaint). A
+  // genuine relocation the model doesn't flag still updates the cursor above —
+  // it just isn't surfaced as a dated "Traveled X→Y" marker.
   const isTravel =
     !isContinuation &&
     viewpointMoved &&

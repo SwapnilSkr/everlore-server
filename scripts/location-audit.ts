@@ -76,6 +76,21 @@ async function main() {
     ok(`#${s} current_location is the garden`, has(m.current_location, /garden/i), `${m.current_location}`)
   }
 
+  // === B2. Returning indoors must update the cursor (the "stuck outside" bug). ===
+  console.log('\n=== B2. Return: walks back from the garden into the mansion (prior=outside) ===')
+  const proseB2 = `*The heavy oak doors groan as the neglected son returns to the mansion, the transition from the cool night garden to the stifling interior feeling like a descent. The warmth of the entrance hall closes around him once more.*`
+  for (let s = 1; s <= SAMPLES; s++) {
+    const m = await sampleCase(
+      { isSentient: false, currentLocationName: 'outside', priorPresent: [], protagonist, roster },
+      proseB2,
+    )
+    console.log(`  — #${s}: viewpoint_moved=${m.viewpoint_moved}  current_location=${JSON.stringify(m.current_location)}`)
+    // The cursor follows current_location server-side, so the key invariant is that
+    // current_location reports the mansion/interior — NOT the stale "outside".
+    ok(`#${s} current_location updated to the mansion interior`, has(m.current_location, /mansion|hall|interior/i) && !has(m.current_location, /^outside$|garden/i), `${m.current_location}`)
+    ok(`#${s} did not report staying outside`, !has(m.current_location, /outside|garden/i), `${m.current_location}`)
+  }
+
   // === C. Presence carry-forward: a present character not named this turn. ===
   // The model reports only whom it sees; the SERVER fold keeps the rest.
   console.log('\n=== C. Carry-forward: only the father speaks, sister + mother still at the table ===')
