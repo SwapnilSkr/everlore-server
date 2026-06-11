@@ -119,10 +119,10 @@ export async function extractSceneMetadata(
   opts?: {
     isSentient?: boolean
     currentLocationName?: string | null
-    /** The player's character (GM worlds) or the player's persona (sentient
-     *  worlds) — used to anchor first-person choices to the right person so the
-     *  choice viewpoint never drifts in third-person prose. */
-    protagonist?: { name?: string | null; aliases?: string[]; persona?: string | null } | null
+    /** Who the player is in this world — their GM character or their persona —
+     *  by name + any aliases. Used to anchor first-person choices to the right
+     *  person so the choice viewpoint never drifts in third-person prose. */
+    protagonist?: { name?: string | null; aliases?: string[] } | null
   },
 ): Promise<SceneMetadata> {
   // Resolve who "I" is for the choices. In third-person GM prose the protagonist

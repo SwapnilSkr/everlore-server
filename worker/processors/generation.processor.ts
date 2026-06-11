@@ -281,16 +281,12 @@ export async function generationProcessor(job: Job) {
   const protagonistCard = (characterCodex as any[]).find((c) => c.is_protagonist);
   const choiceProtagonist = session.is_sentient
     ? session.persona_snapshot?.name
-      ? { name: session.persona_snapshot.name, aliases: [], persona: session.persona_snapshot.description || null }
+      ? { name: session.persona_snapshot.name, aliases: [] }
       : null
     : protagonistCard
-      ? {
-          name: protagonistCard.canonical_name,
-          aliases: protagonistCard.aliases || [],
-          persona: protagonistCard.persona || null,
-        }
+      ? { name: protagonistCard.canonical_name, aliases: protagonistCard.aliases || [] }
       : session.persona_snapshot?.name
-        ? { name: session.persona_snapshot.name, aliases: [], persona: session.persona_snapshot.description || null }
+        ? { name: session.persona_snapshot.name, aliases: [] }
         : null;
   const meta = await extractSceneMetadata(
     finalNarrative,
