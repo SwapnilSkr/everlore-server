@@ -63,6 +63,22 @@ async function main() {
       await coll('memories').updateMany({ instance_id: iid, [field]: de }, { $pull: { [field]: de } })
       mem += r.modifiedCount || 0
     }
+    // 2b. Re-point the memory PLACE anchor (location_entity_id / location_anchor /
+    // location_name) — the place-scoped recall fields. Missing this strands the
+    // dupe's memories on a deleted entity (a ghost place in the atlas).
+    const placeAnchor = await coll('memories').updateMany(
+      { instance_id: iid, $or: [{ location_entity_id: de }, { 'location_anchor.entity_id': de }] },
+      {
+        $set: {
+          location_entity_id: ke,
+          location_name: keep.canonical_name,
+          'location_anchor.entity_id': ke,
+          'location_anchor.name': keep.canonical_name,
+          'location_anchor.name_normalized': keep.name_normalized,
+        },
+      },
+    )
+    mem += placeAnchor.modifiedCount || 0
 
     // 3. Re-point entity edges per-edge, dropping collisions (keep's edge wins).
     let edges = 0

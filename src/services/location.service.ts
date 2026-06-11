@@ -72,17 +72,53 @@ export const locationService = {
         .toArray(),
     ])
 
+    // The full containment spine — EVERY location entity, so empty containers
+    // (a building/region with no events of its own yet) still appear in the
+    // atlas tree. Event/memory counts are overlaid below.
+    const spine = (await mongoColl
+      .entities()
+      .find(
+        { instance_id: iid, type: 'location', status: { $ne: 'archived' } },
+        { projection: { canonical_name: 1, parent_id: 1, world_root_id: 1, place_kind: 1, first_seen_sequence: 1, last_seen_sequence: 1 } },
+      )
+      .toArray()) as EntityDoc[]
+
     const byId = new Map<string, any>()
+    for (const s of spine) {
+      byId.set(idString(s._id), {
+        entity_id: idString(s._id),
+        name: s.canonical_name || 'An unnamed place',
+        parent_id: s.parent_id ? idString(s.parent_id) : null,
+        world_root_id: s.world_root_id ? idString(s.world_root_id) : null,
+        place_kind: s.place_kind ?? null,
+        event_count: 0,
+        memory_count: 0,
+        first_seen_sequence: s.first_seen_sequence ?? null,
+        last_seen_sequence: s.last_seen_sequence ?? null,
+      })
+    }
     for (const e of eventAgg) {
       if (!e._id) continue
-      byId.set(idString(e._id), {
-        entity_id: idString(e._id),
-        name: e.name || 'An unnamed place',
-        event_count: e.event_count,
-        memory_count: 0,
-        first_seen_sequence: e.first_seen_sequence ?? null,
-        last_seen_sequence: e.last_seen_sequence ?? null,
-      })
+      const key = idString(e._id)
+      const existing = byId.get(key)
+      if (existing) {
+        existing.event_count = e.event_count
+        if ((!existing.name || existing.name === 'An unnamed place') && e.name) existing.name = e.name
+        existing.first_seen_sequence = existing.first_seen_sequence ?? e.first_seen_sequence ?? null
+        existing.last_seen_sequence = Math.max(existing.last_seen_sequence ?? -1, e.last_seen_sequence ?? -1)
+      } else {
+        byId.set(key, {
+          entity_id: key,
+          name: e.name || 'An unnamed place',
+          parent_id: null,
+          world_root_id: null,
+          place_kind: null,
+          event_count: e.event_count,
+          memory_count: 0,
+          first_seen_sequence: e.first_seen_sequence ?? null,
+          last_seen_sequence: e.last_seen_sequence ?? null,
+        })
+      }
     }
     for (const m of memAgg) {
       if (!m._id) continue
@@ -97,6 +133,9 @@ export const locationService = {
         byId.set(key, {
           entity_id: key,
           name: m.name || 'An unnamed place',
+          parent_id: null,
+          world_root_id: null,
+          place_kind: null,
           event_count: 0,
           memory_count: m.memory_count,
           first_seen_sequence: null,
