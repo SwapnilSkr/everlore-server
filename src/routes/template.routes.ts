@@ -16,6 +16,8 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
 
   .get('/mine/list', (ctx) => templateController.listMine(ctx))
 
+  .get('/mine/quota', (ctx) => templateController.quota(ctx))
+
   .get('/:id', (ctx) => templateController.getById(ctx))
 
   .post('/image/generate', (ctx) => templateController.generateImage(ctx), {

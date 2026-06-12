@@ -37,11 +37,17 @@ export const instanceService = {
     const playerOid = parseObjectId(playerId)
     const templateOid = parseObjectId(templateId)
 
-    const template = await worldTemplates().findOne({
-      _id: templateOid,
-      is_published: true,
-    })
-    if (!template) throw new HttpError(404, 'Template not found or not published')
+    // Look the template up by id alone so we can distinguish "doesn't exist"
+    // from "exists but not published" — the latter was an opaque 404 footgun.
+    const template = await worldTemplates().findOne({ _id: templateOid })
+    if (!template) throw new HttpError(404, 'Template not found')
+    if (!template.is_published) {
+      // A creator can start a playthrough on their OWN unpublished world to
+      // playtest it before publishing; anyone else gets a clear reason.
+      if (idString(template.creator_id) !== playerId) {
+        throw new HttpError(403, 'This world has not been published yet')
+      }
+    }
 
     const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
     const instanceCount = await worldInstances().countDocuments({

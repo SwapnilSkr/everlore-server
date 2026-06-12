@@ -34,7 +34,7 @@ async function main() {
     .onError(({ error, code, set }) => {
       if (error instanceof HttpError) {
         set.status = error.statusCode
-        return { error: error.message }
+        return { error: error.message, ...(error.details || {}) }
       }
 
       if (error instanceof ValidationError) {

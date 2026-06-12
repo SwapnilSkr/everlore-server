@@ -102,16 +102,43 @@ export const templateController = {
     return { target: 'world', draft: await autofillService.autofillWorld(opts) }
   },
 
+  // Daily creation budget for a creator. The client can read this BEFORE the
+  // creation flow (which spends real money on preview images) so it never lets
+  // a creator craft a whole world only to be walled at the final submit.
+  quota: async ({ user }: { user: AuthUser | null }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    const canCreate = user.tier === 'creator' || user.tier === 'premium'
+    if (!canCreate) {
+      return { can_create: false, reason: 'tier', remaining: 0, retry_after: null }
+    }
+    const rl = await rateLimit(user.id, 'template_create', { consume: false })
+    return {
+      can_create: rl.allowed,
+      reason: rl.allowed ? null : 'daily_limit',
+      remaining: rl.remaining === Infinity ? null : rl.remaining,
+      retry_after: rl.retryAfter ?? null,
+    }
+  },
+
   create: async ({ user, body }: { user: AuthUser | null; body: CreateBody }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     if (user.tier !== 'creator' && user.tier !== 'premium') {
       throw new HttpError(403, 'Creator or premium tier required')
     }
-    const rl = await rateLimit(user.id, 'template_create')
+    // Check the budget WITHOUT consuming it, so a create that fails validation
+    // (or anything downstream) doesn't burn one of the day's slots.
+    const rl = await rateLimit(user.id, 'template_create', { consume: false })
     if (!rl.allowed) {
-      throw new HttpError(429, 'Template creation rate limit exceeded. Try again later.')
+      throw new HttpError(
+        429,
+        'Daily template creation limit reached. Try again later.',
+        { retryAfter: rl.retryAfter ?? null, remaining: 0 },
+      )
     }
-    return templateService.create(user.id, body)
+    const template = await templateService.create(user.id, body)
+    // Only now spend the slot — the world actually exists.
+    await rateLimit(user.id, 'template_create')
+    return template
   },
 
   update: async ({
