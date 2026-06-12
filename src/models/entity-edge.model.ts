@@ -12,6 +12,7 @@ export type EntityEdgeType =
   | 'fear'
   | 'rivalry'
   | 'relationship'
+  | 'kinship'
   | string
 
 /**
@@ -35,8 +36,22 @@ export interface EntityEdgeDoc {
   weight?: number
   /** 1-5, mirrors memory importance; used to rank neighborhood retrieval. */
   importance: number
-  status: 'active' | 'stale' | 'archived'
+  status: 'active' | 'stale' | 'archived' | 'ended' | 'retconned'
   source_event_ids: ObjectId[]
+  // --- kinship edges (type: 'kinship') — see KINSHIP_GRAPH.md ---
+  /** CLOSED structural relation kind the engine reasons over (sibling_of, …). */
+  relation_kind?: import('../utils/kinship-ontology').RelationKind
+  /** The kind written on the auto-closed reverse edge (for provenance/debugging). */
+  inverse_kind?: import('../utils/kinship-ontology').RelationKind
+  /** Gender implied by the surface label ("sister" → f), for label↔card checks. */
+  gender_hint?: 'm' | 'f' | 'n' | null
+  /** Where the assertion came from — gates how much downstream code trusts it. */
+  assertion_source?: 'narrator' | 'character_claim' | 'inferred' | 'seed'
+  /** 0-1; ranks competing assertions (two "fathers") by confidence then recency. */
+  confidence?: number
+  /** Temporal validity: when the relation began / ended (marriage, death, reveal). */
+  since_event_sequence?: number
+  until_event_sequence?: number | null
   /** Sequence of the latest contributing turn (recency ranking + rewind clamp). */
   last_event_sequence: number
   created_at: Date

@@ -22,6 +22,7 @@ import { extractSceneMetadata } from "../lib/metadata-extractor";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
 import { compactImmutableFacts } from "../lib/codex-compactor";
 import { characterCodexService } from "../../src/services/character-codex.service";
+import { kinshipGraphService } from "../../src/services/kinship-graph.service";
 import { entityGraphService, isVagueLocationLabel, normalizeEntityName } from "../../src/services/entity-graph.service";
 import { detectNarratedMovement, resolvePossessiveRoomName } from "../lib/movement-signal";
 import { groundChoices } from "../lib/choice-grounding";
@@ -407,6 +408,13 @@ export async function generationProcessor(job: Job) {
       protagonist: choiceProtagonist,
       roster: choiceRoster,
       knownPlaces,
+      // The world premise/lore, so the extractor can tell a LITERAL ghost (a real
+      // spirit in a horror/fantasy world) from a FIGURATIVE one (a metaphor for an
+      // overlooked person in a grounded drama) instead of reifying the metaphor
+      // into a "ask her about the ghost" choice.
+      worldContext: [session.seed_prompt, session.global_lore]
+        .filter(Boolean)
+        .join("\n"),
     },
   );
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta };
@@ -425,11 +433,33 @@ export async function generationProcessor(job: Job) {
     c?.role,
     ...((c?.aliases as string[]) || []),
   ]);
+  // Authoritative source: the kinship GRAPH as it stood after PRIOR turns (a cheap
+  // pre-turn READ — the graph for THIS turn is written later on the tail). Gives
+  // the player's actual relatives' labels, perspective-correct. GM worlds anchor on
+  // the protagonist card's entity; sentient/empty fall back to cast+prose. Flag
+  // KINSHIP_GRAPH_READS=off disables consumption (write path keeps shadowing).
+  let graphLabels: string[] = [];
+  if (process.env.KINSHIP_GRAPH_READS !== "off" && !session.is_sentient) {
+    const selfReadId = protagonistCard?.entity_id ? idString(protagonistCard.entity_id) : null;
+    if (selfReadId) {
+      const summary = await kinshipGraphService
+        .kinSummary(idString(instanceId), selfReadId)
+        .catch(() => ({ kinds: new Set(), labelsByKind: {} as Record<string, string[]> }));
+      graphLabels = Object.values(summary.labelsByKind).flat() as string[];
+    }
+  }
   // Pass the grounded narrator prose so a relative introduced THIS turn (not yet
-  // in the pre-turn codex) isn't mistaken for a fabrication.
-  const groundedChoices = groundChoices(parsed.choices || [], castVocab, finalNarrative);
+  // in the pre-turn codex) isn't mistaken for a fabrication; and the world
+  // premise/lore so a SUPERNATURAL being only survives when the world establishes
+  // it as real (otherwise "Ask her about the ghost" for a metaphorical ghost in a
+  // grounded drama is dropped — the prompt rule alone is unreliable on the small
+  // model). Real ghosts in a horror world: their premise names them or they're carded.
+  const worldText = [session.seed_prompt, session.global_lore]
+    .filter(Boolean)
+    .join("\n");
+  const groundedChoices = groundChoices(parsed.choices || [], castVocab, finalNarrative, graphLabels, worldText);
   if (groundedChoices.dropped.length) {
-    log.warn("choice-grounding dropped fabricated-kin choices", {
+    log.warn("choice-grounding dropped ungrounded choices", {
       instanceId: idString(instanceId),
       sequence: nextSequence,
       dropped: groundedChoices.dropped.map((d) => ({
@@ -1080,6 +1110,45 @@ export async function generationProcessor(job: Job) {
             entitiesByCardName: entityMap,
             playerName: session.persona_snapshot?.name,
           });
+        }
+
+        // Kinship graph: typed relation ties asserted this turn → graph edges
+        // (extract → Stage-1 hygiene → Stage-2 epithet resolver → persist). Post
+        // stream, off TTFT. Self anchor = protagonist card (GM) or player (sentient).
+        const relationAssertions = deltas.flatMap((d) => d.relation_assertions || []);
+        if (relationAssertions.length > 0) {
+          const protagCard = codex.find((c) => c.is_protagonist);
+          let selfAnchorId: string | null = null;
+          if (!session.is_sentient && protagCard) {
+            const ent = entityMap.get(protagCard.name_normalized);
+            selfAnchorId = ent?._id ? idString(ent._id) : null;
+          } else {
+            const player = await entityGraphService.ensurePlayerEntity({
+              instanceId,
+              playerId,
+              name: session.persona_snapshot?.name,
+              sequence: nextSequence,
+            });
+            selfAnchorId = idString(player._id);
+          }
+          const kin = await kinshipGraphService.applyRelationAssertions({
+            instanceId,
+            sequence: nextSequence,
+            eventId: event._id,
+            assertions: relationAssertions,
+            cards: codex,
+            entitiesByCardName: entityMap,
+            selfAnchorId,
+            sceneText: finalNarrative,
+          });
+          if (kin.written > 0) {
+            log.info("kinship.graph.updated", {
+              instanceId: idString(instanceId),
+              sequence: nextSequence,
+              edges: kin.written,
+              notes: kin.notes.slice(0, 6),
+            });
+          }
         }
       } catch (err) {
         console.warn("entity graph sync failed:", (err as Error).message);

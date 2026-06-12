@@ -117,6 +117,36 @@ function toRelationshipDeltas(raw: any): CharacterCodexDelta['relationship_delta
   return Object.keys(out).length ? out : undefined
 }
 
+const RELATION_KIND_SET = new Set([
+  'parent_of', 'child_of', 'sibling_of', 'partner_of', 'progenitor_of',
+  'descendant_of', 'superior_of', 'subordinate_of', 'kin_of', 'bonded_of',
+])
+
+/** Parse the turn-level relation_assertions array (typed kinship ties). Keeps only
+ *  well-formed entries with two endpoints and a recognized structural kind. */
+function toRelationAssertions(raw: any): CharacterCodexDelta['relation_assertions'] {
+  if (!Array.isArray(raw)) return undefined
+  const out: NonNullable<CharacterCodexDelta['relation_assertions']> = []
+  for (const r of raw) {
+    const from = typeof r?.from === 'string' ? r.from.trim() : ''
+    const to = typeof r?.to === 'string' ? r.to.trim() : ''
+    const kind = typeof r?.kind === 'string' ? r.kind.trim().toLowerCase() : ''
+    if (!from || !to || !RELATION_KIND_SET.has(kind)) continue
+    if (from.toLowerCase() === to.toLowerCase()) continue // no self-relations
+    out.push({
+      from,
+      to,
+      kind,
+      label: typeof r?.label === 'string' ? r.label.trim().slice(0, 60) : undefined,
+      gender: ['m', 'f', 'n'].includes(String(r?.gender)) ? String(r.gender) : undefined,
+      polarity: r?.polarity === 'sever' ? 'sever' : 'assert',
+      source: r?.source === 'character_claim' ? 'character_claim' : 'narrator',
+    })
+    if (out.length >= 8) break
+  }
+  return out.length ? out : undefined
+}
+
 function toDelta(raw: any): CharacterCodexDelta | null {
   const name = typeof raw?.name === 'string' ? raw.name.trim() : ''
   if (!name) return null
@@ -277,6 +307,7 @@ Rules:
 - disposition_to_player: concise sentiment toward the player right now.
 - relationship_deltas: how THIS TURN shifted the character's stance toward the player, as integer changes to four meters: trust, affection, fear, rivalry. Include ONLY meters that genuinely moved, ONLY for characters present this turn. Scale: ±1-3 for small moments (kind words, minor friction), ±4-7 for significant ones (a gift, a confession, a public insult), ±8-10 ONLY for dramatic turning points (betrayal, a life saved, a vow broken). Omit the field entirely when nothing shifted. NEVER include it for the player's own protagonist card in a Game Master world (a character has no meters toward themself).
 - is_protagonist: true ONLY for the world's main character (see below); otherwise false.
+- relation_assertions (a TOP-LEVEL array, sibling to "characters" — NOT inside a character): typed family/relationship ties this turn ESTABLISHES or REVEALS between two specific people (or the player). Each: { from, to, kind, label, gender, source }. "from"/"to" are names from the cast; use "player" for the human player's own character. "kind" MUST be exactly one of: parent_of, child_of, sibling_of, partner_of, progenitor_of, descendant_of, superior_of, subordinate_of, kin_of, bonded_of — read as "from is to's <kind>". Worked example: "Mara is the player's sister" → { "from": "Mara", "to": "player", "kind": "sibling_of", "label": "sister", "gender": "f" }. Map ANY world-native term (clone-sister, sire, liege, bondmate, broodmother) to the CLOSEST kind and keep the native word in "label". gender: m|f|n implied by the label. source: "narrator" when the narration states the tie, "character_claim" when a character merely CLAIMS it (may be a lie). polarity: "sever" when a tie ENDS this turn (divorce, death, disownment), else omit. ONLY include a tie the text actually establishes or reveals THIS turn — do NOT re-list every relationship that already exists, and NEVER a figurative one ("like a brother to me"). Empty array [] when no tie is asserted.
 ${protagonistBlock}${presentBlock}
 Existing characters (with their current state — reconcile against this):
 ${existingText}
@@ -299,6 +330,9 @@ Respond ONLY JSON:
       "relationship_deltas": { "trust": 0, "affection": 0, "fear": 0, "rivalry": 0 },
       "is_protagonist": false
     }
+  ],
+  "relation_assertions": [
+    { "from": "Mara", "to": "player", "kind": "sibling_of", "label": "sister", "gender": "f", "source": "narrator" }
   ]
 }`
 
@@ -409,6 +443,14 @@ Respond ONLY JSON:
     }
     out.push(delta)
     if (out.length >= 6) break
+  }
+  // Turn-level kinship ties ride on the first delta (the kinship graph collects
+  // them via flatMap; they persist on the codex_deltas ledger for free, so a
+  // rewind replays the relationship graph too). Consumed by kinship-graph.service,
+  // never by the codex fold itself.
+  const relationAssertions = toRelationAssertions((parsed as any).relation_assertions)
+  if (relationAssertions && out.length > 0) {
+    out[0].relation_assertions = relationAssertions
   }
   return out
 }

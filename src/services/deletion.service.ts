@@ -17,6 +17,8 @@ const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
 const sceneSummaries = () => mongoColl.sceneSummaries()
 const characters = () => mongoColl.characters()
+const entities = () => mongoColl.entities()
+const entityEdges = () => mongoColl.entityEdges()
 const deadLetterJobs = () => mongoColl.deadLetterJobs()
 
 export const deletionService = {
@@ -103,6 +105,12 @@ export const deletionService = {
       await characters().deleteMany({ instance_id: { $in: instanceIds } })
     }
 
+    // Delete the entity graph (registry + edges) for these instances.
+    if (instanceIds.length > 0) {
+      await entities().deleteMany({ instance_id: { $in: instanceIds } })
+      await entityEdges().deleteMany({ instance_id: { $in: instanceIds } })
+    }
+
     if (instanceIds.length > 0) {
       await mongoColl.storyCalendars().deleteMany({ instance_id: { $in: instanceIds } })
       await mongoColl.timelineBranches().deleteMany({ instance_id: { $in: instanceIds } })
@@ -178,6 +186,14 @@ export const deletionService = {
     await mongoColl.chapterSummaries().deleteMany({ instance_id: iid })
     await mongoColl.arcSummaries().deleteMany({ instance_id: iid })
     await characters().deleteMany({ instance_id: iid })
+    // The entity graph (registry + edges: meters, narrative, kinship, locations)
+    // is per-playthrough canon, NOT identity — a reset must purge it or the old
+    // story's people/places/relationships bleed into the reused instance (a new
+    // narrator "sister" mention resurrects the prior world's Sister entity; stale
+    // kinship edges feed relativesOf). Rewind prunes the graph up to the cut
+    // (repairAfterRewind); a reset clears ALL of it. See KINSHIP_GRAPH.md.
+    await entities().deleteMany({ instance_id: iid })
+    await entityEdges().deleteMany({ instance_id: iid })
     await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
     await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
     await mongoColl.generationLogs().deleteMany({ instance_id: iid })
@@ -344,6 +360,10 @@ export const deletionService = {
 
     // Delete character codex entries
     await characters().deleteMany({ instance_id: iid })
+
+    // Delete the entity graph (registry + all edges) so no orphaned rows leak.
+    await entities().deleteMany({ instance_id: iid })
+    await entityEdges().deleteMany({ instance_id: iid })
 
     await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
     await mongoColl.timelineBranches().deleteMany({ instance_id: iid })

@@ -24,6 +24,28 @@ export type CharacterCodexDelta = {
   /** Per-turn meter shifts toward the player (already clamped to ±10 on parse). */
   relationship_deltas?: RelationshipDeltas
   is_protagonist?: boolean
+  /** Typed kinship/relation ties asserted THIS turn between two people (or the
+   *  player). Consumed by the kinship graph (KINSHIP_GRAPH.md), not the codex
+   *  fold itself. `from`/`to` are names the extractor already resolves; "player"
+   *  / "me" / the protagonist's name anchor to the player's character. */
+  relation_assertions?: RelationAssertion[]
+}
+
+export type RelationAssertion = {
+  /** One endpoint, by name/alias (or "player"/"me" for the player's character). */
+  from: string
+  /** The other endpoint, by name/alias. */
+  to: string
+  /** CLOSED structural kind read FROM `from`'s perspective ("from is to's <kind>"). */
+  kind: string
+  /** World-native term ("twin sister", "clone-brother", "my sire"). */
+  label?: string
+  /** 'm' | 'f' | 'n' gender hint implied by the label. */
+  gender?: string
+  /** assert (default) | sever (the tie ended this turn — divorce, death). */
+  polarity?: 'assert' | 'sever'
+  /** Did the NARRATOR establish it, or did a CHARACTER merely claim it (maybe a lie)? */
+  source?: 'narrator' | 'character_claim'
 }
 
 function normalizeName(name: string): string {

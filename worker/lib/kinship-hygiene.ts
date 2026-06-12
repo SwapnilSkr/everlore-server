@@ -1,0 +1,149 @@
+/**
+ * Stage 1 — deterministic kinship-graph hygiene (NO LLM). The character analog of
+ * prose-hygiene's rule-based detector. Operates on already-resolved assertions
+ * (endpoints = entity ids) and returns the cleaned, inverse-closed, confidence-
+ * ranked set of edges to write. Pure: no DB, no network → zero TTFT (runs on the
+ * post-stream tail). See KINSHIP_GRAPH.md.
+ */
+import {
+  type RelationKind, type GenderHint, INVERSE_KIND, isSymmetric,
+  surfaceToKind, isFigurativeKinship, isRelationKind,
+} from '../../src/utils/kinship-ontology'
+
+export interface ResolvedAssertion {
+  fromId: string
+  toId: string
+  kind: RelationKind
+  label?: string
+  gender?: GenderHint
+  polarity: 'assert' | 'sever'
+  source: 'narrator' | 'character_claim' | 'inferred' | 'seed'
+}
+
+export interface KinshipEdgeWrite {
+  fromId: string
+  toId: string
+  kind: RelationKind
+  inverseKind: RelationKind
+  label: string | null
+  gender: GenderHint | null
+  source: 'narrator' | 'character_claim' | 'inferred' | 'seed'
+  confidence: number
+  polarity: 'assert' | 'sever'
+}
+
+const BASE_CONFIDENCE: Record<ResolvedAssertion['source'], number> = {
+  narrator: 0.9,
+  seed: 0.8,
+  character_claim: 0.5,
+  inferred: 0.4,
+}
+
+/** Genders known per entity (from the codex cards), so a "sister" label on a
+ *  male-gendered card can be flagged. Optional — absent genders skip the check. */
+export type GenderByEntity = Map<string, GenderHint>
+
+export interface HygieneResult {
+  edges: KinshipEdgeWrite[]
+  /** Human-readable notes on what was dropped/repaired — for logs + audit. */
+  notes: string[]
+}
+
+/**
+ * Clean + close a turn's resolved assertions into the edge set to persist.
+ * Deterministic, idempotent.
+ */
+export function hygieneStage1(
+  assertions: ResolvedAssertion[],
+  genders?: GenderByEntity,
+): HygieneResult {
+  const notes: string[] = []
+  const cleaned: ResolvedAssertion[] = []
+
+  for (const a of assertions) {
+    // self-loop
+    if (!a.fromId || !a.toId || a.fromId === a.toId) {
+      notes.push(`drop self/empty (${a.kind})`)
+      continue
+    }
+    // figurative label leaked through ("like a brother", "father figure")
+    if (a.label && isFigurativeKinship(a.label)) {
+      notes.push(`drop figurative label "${a.label}"`)
+      continue
+    }
+    let kind = a.kind
+    let gender = a.gender
+    // kind↔label consistency: when the world-native label is a KNOWN surface term,
+    // trust its structural reading over a mismatched model-assigned kind, and fill
+    // a missing gender from the label.
+    if (a.label) {
+      const mapped = surfaceToKind(a.label)
+      if (mapped) {
+        if (mapped.kind !== kind && isRelationKind(mapped.kind)) {
+          notes.push(`repair kind ${kind}→${mapped.kind} from label "${a.label}"`)
+          kind = mapped.kind
+        }
+        if (!gender && mapped.gender) gender = mapped.gender
+      }
+    }
+    // gender↔card consistency: a "sister"(f) label on a male-gendered card is a
+    // mis-tag — keep the structural kind but drop the contradicted gender hint.
+    if (gender && genders) {
+      const cardG = genders.get(a.toId)
+      if (cardG && cardG !== 'n' && gender !== 'n' && cardG !== gender) {
+        notes.push(`gender mismatch on ${a.toId} (label ${gender} vs card ${cardG}) — clearing hint`)
+        gender = undefined
+      }
+    }
+    cleaned.push({ ...a, kind, gender })
+  }
+
+  // Bounded 1-hop inference WITHIN this batch only (no DB read): siblings share
+  // parents. A `sibling_of` + a `child_of` on one of the pair → the other is a
+  // child of the same parent. Tagged inferred / low confidence; capped at 1 hop
+  // because half/step/adoptive families make deeper inference unsafe.
+  const inferred: ResolvedAssertion[] = []
+  const childOf = cleaned.filter((a) => a.kind === 'child_of' && a.polarity === 'assert')
+  const siblingOf = cleaned.filter((a) => a.kind === 'sibling_of' && a.polarity === 'assert')
+  for (const sib of siblingOf) {
+    for (const co of childOf) {
+      if (co.fromId === sib.fromId && co.toId !== sib.toId) {
+        inferred.push({ fromId: sib.toId, toId: co.toId, kind: 'child_of', polarity: 'assert', source: 'inferred' })
+      }
+      if (co.fromId === sib.toId && co.toId !== sib.fromId) {
+        inferred.push({ fromId: sib.fromId, toId: co.toId, kind: 'child_of', polarity: 'assert', source: 'inferred' })
+      }
+    }
+  }
+  if (inferred.length) notes.push(`inferred ${inferred.length} child_of via sibling closure`)
+
+  // Inverse closure + dedup. Every assertion writes BOTH directions so the graph
+  // is symmetric-consistent even when the narrator states only one side.
+  const byKey = new Map<string, KinshipEdgeWrite>()
+  const emit = (e: KinshipEdgeWrite) => {
+    const key = `${e.fromId}|${e.toId}|${e.kind}`
+    const prev = byKey.get(key)
+    // On dup, keep the higher-confidence / assert-over-sever variant.
+    if (!prev || e.confidence > prev.confidence || (e.polarity === 'sever' && prev.polarity !== 'sever')) {
+      byKey.set(key, e)
+    }
+  }
+  for (const a of [...cleaned, ...inferred]) {
+    const inv = INVERSE_KIND[a.kind]
+    const confidence = BASE_CONFIDENCE[a.source]
+    emit({
+      fromId: a.fromId, toId: a.toId, kind: a.kind, inverseKind: inv,
+      label: a.label ?? null, gender: a.gender ?? null,
+      source: a.source, confidence, polarity: a.polarity,
+    })
+    // The reverse edge carries no surface label (it's the other person's view);
+    // a symmetric kind keeps the same label since the relation reads the same.
+    emit({
+      fromId: a.toId, toId: a.fromId, kind: inv, inverseKind: a.kind,
+      label: isSymmetric(a.kind) ? (a.label ?? null) : null,
+      gender: null, source: a.source, confidence, polarity: a.polarity,
+    })
+  }
+
+  return { edges: [...byKey.values()], notes }
+}
