@@ -1,6 +1,7 @@
 import { Worker, type Job } from 'bullmq'
 import { connectMongo } from '../src/config/mongo'
 import { connectRedis, getQueueRedisClient, getRedisClient } from '../src/config/redis'
+import { env } from '../src/config/env'
 import { generationProcessor } from './processors/generation.processor'
 import { generationLockKey, startGenerationLockHeartbeat } from '../src/utils/generation-lock'
 import { memoryProcessor } from './processors/memory.processor'
@@ -40,8 +41,8 @@ async function main() {
 
   const generationWorker = new Worker('generation', runGeneration, {
     connection,
-    concurrency: 3,
-    limiter: { max: 10, duration: 60000 },
+    concurrency: env.GENERATION_CONCURRENCY,
+    limiter: { max: env.GENERATION_RATE_MAX, duration: 60000 },
   })
 
   const memoryWorker = new Worker('memory-curation', memoryProcessor, {

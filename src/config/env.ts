@@ -32,6 +32,15 @@ const optionalEnvVars = {
   DISABLE_OTP_RATE_LIMIT: 'false',
   ADMIN_USERNAME: '',
   ADMIN_PASSWORD: '',
+  // Throughput knobs — defaults are the safe production values. Crank these via
+  // env for a parallel QA fleet (see AUTOCHAT_PLAYBOOK.md) without weakening the
+  // committed defaults. GENERATION_CONCURRENCY = simultaneous turns the worker
+  // runs; GENERATION_RATE_MAX = turns/min the worker accepts; CHAT_RATE_MAX =
+  // player turns/60s; TEMPLATE_CREATE_RATE_MAX = worlds created per 24h.
+  GENERATION_CONCURRENCY: '3',
+  GENERATION_RATE_MAX: '10',
+  CHAT_RATE_MAX: '10',
+  TEMPLATE_CREATE_RATE_MAX: '5',
 } as const
 
 export interface Env {
@@ -59,6 +68,10 @@ export interface Env {
   DISABLE_OTP_RATE_LIMIT: boolean
   ADMIN_USERNAME: string
   ADMIN_PASSWORD: string
+  GENERATION_CONCURRENCY: number
+  GENERATION_RATE_MAX: number
+  CHAT_RATE_MAX: number
+  TEMPLATE_CREATE_RATE_MAX: number
 }
 
 function loadEnv(): Env {
@@ -95,6 +108,10 @@ function loadEnv(): Env {
     DISABLE_OTP_RATE_LIMIT: process.env.DISABLE_OTP_RATE_LIMIT === 'true',
     ADMIN_USERNAME: process.env.ADMIN_USERNAME || optionalEnvVars.ADMIN_USERNAME,
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || optionalEnvVars.ADMIN_PASSWORD,
+    GENERATION_CONCURRENCY: Number(process.env.GENERATION_CONCURRENCY || optionalEnvVars.GENERATION_CONCURRENCY),
+    GENERATION_RATE_MAX: Number(process.env.GENERATION_RATE_MAX || optionalEnvVars.GENERATION_RATE_MAX),
+    CHAT_RATE_MAX: Number(process.env.CHAT_RATE_MAX || optionalEnvVars.CHAT_RATE_MAX),
+    TEMPLATE_CREATE_RATE_MAX: Number(process.env.TEMPLATE_CREATE_RATE_MAX || optionalEnvVars.TEMPLATE_CREATE_RATE_MAX),
   }
 }
 

@@ -4,9 +4,11 @@ import { getRedisClient } from '../config/redis'
 const OTP_ACTIONS = new Set(['otp_send', 'otp_verify'])
 
 const LIMITS: Record<string, { max: number; windowSeconds: number }> = {
-  chat: { max: 10, windowSeconds: 60 },
+  // chat + template_create caps are env-tunable so a parallel QA fleet can crank
+  // them without weakening the committed defaults (see AUTOCHAT_PLAYBOOK.md).
+  chat: { max: env.CHAT_RATE_MAX, windowSeconds: 60 },
   memory_edit: { max: 30, windowSeconds: 3600 },
-  template_create: { max: 5, windowSeconds: 86400 },
+  template_create: { max: env.TEMPLATE_CREATE_RATE_MAX, windowSeconds: 86400 },
   image_generate: { max: 40, windowSeconds: 3600 },
   autofill: { max: 30, windowSeconds: 3600 },
   auth_attempt: { max: 10, windowSeconds: 300 },
