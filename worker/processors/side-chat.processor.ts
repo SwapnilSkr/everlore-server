@@ -17,6 +17,7 @@ import { timeService } from "../../src/services/time.service";
 import { buildSideChatPacket } from "../../src/services/context-packet.service";
 import { getMemoryCurationQueue, QUEUE_RETENTION } from "../../src/queues";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
+import { projectSideChatDeltas } from "../lib/side-chat-privacy";
 import { characterCodexService } from "../../src/services/character-codex.service";
 import { entityGraphService } from "../../src/services/entity-graph.service";
 import type { CharacterProfileDoc } from "../../src/models/character-profile.model";
@@ -261,11 +262,20 @@ ${buildLengthDirective(session.message_length)}`;
         const cardNames = new Set(
           [card.canonical_name, ...(card.aliases || [])].map((n) => n.trim().toLowerCase()),
         );
-        const scoped = deltas.filter((d) =>
+        // PRIVACY GATE (fail-closed): a side chat is a one-on-one conversation
+        // the protagonist/main narrator did NOT witness. Anything the character
+        // reveals here (a secret name, a hidden plan, an inner thought) must
+        // NEVER bleed into the MAIN narration prompt — the codex card is injected
+        // there verbatim with NO known_by gate. projectSideChatDeltas keeps only
+        // the meters/disposition (how they FEEL toward the player, which Bonds is
+        // meant to evolve from side chats) and strips every narration-visible
+        // content field. See worker/lib/side-chat-privacy.ts.
+        const ownCardDeltas = deltas.filter((d) =>
           [d.resolved_name, d.name].some(
             (n) => typeof n === "string" && cardNames.has(n.trim().toLowerCase()),
           ),
         );
+        const scoped = projectSideChatDeltas(ownCardDeltas);
         if (!scoped.length) return;
 
         const codex = await characterCodexService.applyDeltas({
@@ -345,6 +355,9 @@ ${buildLengthDirective(session.message_length)}`;
         playerNarrationFacts: [],
         aiResponse: narrative,
         sceneTag: "side_chat",
+        isSentient: !!session.is_sentient,
+        playerPersonaName: session.persona_snapshot?.name || null,
+        protagonistName: card.is_protagonist ? card.canonical_name : session.protagonist?.name || null,
         sideChat: {
           characterId: idString(card._id),
           characterName: card.canonical_name,
