@@ -275,6 +275,66 @@ export const timeService = {
     }
   },
 
+  /**
+   * Re-derive an EXISTING instance's default calendar from its template and
+   * update it IN PLACE (keeps the calendar `_id`, so every stored time anchor
+   * still resolves — only the month/era/weekday NAMES change). Repairs worlds
+   * seeded before genre-aware calendars existed (the old hardcoded fantasy
+   * default on a modern world). Also rewrites the denormalized `era` on the
+   * instance cursor + event anchors so historical dates render consistently.
+   * Caller must bust the `session:<iid>` cache after (out-of-band instance write).
+   */
+  async rederiveDefaultCalendar(
+    instanceId: string,
+  ): Promise<{ updated: boolean; name?: string; months?: number; era?: string | null }> {
+    const iid = parseObjectId(instanceId)
+    const instance = await mongoColl.worldInstances().findOne({ _id: iid })
+    if (!instance) return { updated: false }
+    const calendar = (await mongoColl.storyCalendars().findOne({
+      instance_id: iid,
+      is_default: true,
+    })) as StoryCalendarDoc | null
+    if (!calendar) return { updated: false }
+
+    let spec: CalendarSpec | null = null
+    if (instance.template_id) {
+      const template = (await mongoColl.worldTemplates().findOne(
+        { _id: instance.template_id },
+        { projection: { title: 1, description: 1, seed_prompt: 1, global_lore: 1 } },
+      )) as { title?: string; description?: string; seed_prompt?: string; global_lore?: string } | null
+      if (template) spec = await deriveCalendarSpec(template)
+    }
+    // No template / failed derivation → the real Gregorian calendar (never leave
+    // a modern world on the old fantasy default).
+    const resolved: CalendarSpec =
+      spec ?? { name: DEFAULT_CALENDAR_NAME, eras: [], months: GREGORIAN_MONTHS, weekdays: GREGORIAN_WEEKDAYS }
+    const newEra = resolved.eras[0] ?? null
+
+    await mongoColl.storyCalendars().updateOne(
+      { _id: calendar._id },
+      {
+        $set: {
+          name: resolved.name,
+          eras: resolved.eras,
+          months: resolved.months,
+          weekdays: resolved.weekdays,
+          updated_at: new Date(),
+        },
+      },
+    )
+    if ((instance as { current_time_anchor?: TimeAnchorDoc }).current_time_anchor?.story_calendar) {
+      await mongoColl.worldInstances().updateOne(
+        { _id: iid },
+        { $set: { 'current_time_anchor.story_calendar.era': newEra } },
+      )
+    }
+    await mongoColl.events().updateMany(
+      { instance_id: iid, 'time_anchor.story_calendar': { $exists: true } },
+      { $set: { 'time_anchor.story_calendar.era': newEra } },
+    )
+    return { updated: true, name: resolved.name, months: resolved.months.length, era: newEra }
+  },
+
   async ensureMainTimeline(instanceId: string, forkedAtSequence = 0): Promise<TimelineBranchDoc> {
     const iid = parseObjectId(instanceId)
     const existing = (await mongoColl.timelineBranches().findOne({
