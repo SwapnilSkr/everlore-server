@@ -55,6 +55,73 @@ function openingCharacterName(events: any[], names: string[]): string | null {
   return null;
 }
 
+/** Normalize a persona/character name for identity comparison. */
+function normalizePersonaName(value: string): string {
+  return (value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s'-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Deterministically pull the name the PLAYER introduces for THEMSELVES from
+ * their first-person input ("I'm Kael", "my name is Swapnil", "call me Alex",
+ * "I am Lena"). Sentient worlds frequently start with no authored persona name,
+ * so the player names themselves in chat — and that name must NOT become a codex
+ * card alongside the existing "The Player" entity (the dual-identity bug). Only a
+ * proper-cased name (1-3 tokens) is accepted, so an "I am tired" never matches.
+ */
+export function detectSelfIntroName(input: string): string | null {
+  const text = String(input || "").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  // Capture a Proper-Cased name (1-3 tokens) immediately after a first-person
+  // self-introduction trigger. The trigger match is case-insensitive; the
+  // captured name must still be Proper-Cased (enforced post-capture) so "I am
+  // tired" never matches but "I am Lena" does.
+  const proper = `([A-Za-z][A-Za-z'’-]+(?:\\s+[A-Za-z'’-]+){0,2})`;
+  const patterns = [
+    new RegExp(`\\b(?:my name is|call me|i am called|they call me|name['’]s)\\s+${proper}`, "i"),
+    new RegExp(`\\b(?:i am|i['’]m|im)\\s+${proper}`, "i"),
+  ];
+  // Frequent first-person continuations that look like a name but aren't.
+  const STOP = new Set([
+    "sorry", "here", "fine", "okay", "ok", "good", "ready", "back", "afraid",
+    "sure", "glad", "happy", "tired", "done", "not", "the", "a", "an", "going",
+    "trying", "looking", "just", "still", "so", "really", "very",
+  ]);
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m || !m[1]) continue;
+    const name = m[1].trim();
+    const firstToken = name.split(/\s+/)[0] || "";
+    // The first token must be capitalized in the ORIGINAL text — a real name.
+    if (!/^[A-Z]/.test(firstToken)) continue;
+    if (STOP.has(name.toLowerCase()) || STOP.has(firstToken.toLowerCase())) continue;
+    return name;
+  }
+  return null;
+}
+
+function positiveLocationStateFromInput(input: string, placeName?: string | null): string[] {
+  const text = String(input || "").toLowerCase();
+  if (!text) return [];
+  const place = placeName || "the current place";
+  if (/\b(sanctify|sanctifies|sanctified|consecrate|consecrates|consecrated|bless|blessed)\b/.test(text)) {
+    return [`${place} has been sanctified`];
+  }
+  if (/\b(heal|heals|healed|restore|restores|restored|renew|renews|renewed|repair|repairs|repaired)\b/.test(text)) {
+    return [`${place} has been restored`];
+  }
+  if (/\b(cleanse|cleanses|cleansed|purify|purifies|purified)\b/.test(text)) {
+    return [`${place} has been cleansed`];
+  }
+  if (/\b(seal|seals|sealed)\b/.test(text)) {
+    return [`${place} has been sealed`];
+  }
+  return [];
+}
+
 const MAX_CONTEXT_TOKENS = 6000;
 /** Turns of one continuous scene that fold into a single recap (non-overlapping). */
 const SCENE_SUMMARY_BLOCK = 12;
@@ -457,6 +524,15 @@ export async function generationProcessor(job: Job) {
     }
     return out;
   })();
+  if (session.is_sentient) {
+    const aiName =
+      (characterCodex as any[]).find((c) => c.is_protagonist)?.canonical_name ||
+      session.protagonist?.name ||
+      null;
+    if (aiName && !parsed.present_characters.some((n) => n.trim().toLowerCase() === aiName.trim().toLowerCase())) {
+      parsed.present_characters = [aiName, ...parsed.present_characters].slice(0, 12);
+    }
+  }
 
   const timeAnchor = await timeService.anchorForNextEvent({
     instanceId,
@@ -528,6 +604,18 @@ export async function generationProcessor(job: Job) {
   };
 
   await mongoColl.events().insertOne(event);
+
+  const backedState = positiveLocationStateFromInput(
+    parsedPlayerInput.raw,
+    locationAnchor?.name || currentLocation?.name || null,
+  );
+  if (backedState.length > 0) {
+    const existing = new Set((parsed.location_state_changes || []).map((s) => s.toLowerCase()));
+    parsed.location_state_changes = [
+      ...(parsed.location_state_changes || []),
+      ...backedState.filter((s) => !existing.has(s.toLowerCase())),
+    ].slice(0, 6);
+  }
 
   // Record what changed about the current place this turn onto its location
   // entity (mutable state + enduring canon, both event-sourced for rewind/edit
@@ -725,16 +813,71 @@ export async function generationProcessor(job: Job) {
 
       // Sentient worlds: the player is the persona TALKING TO the world's main
       // character — they are not part of the cast. Drop any delta that would
-      // card them, no matter what the extractor produced.
-      const personaName = (session.persona_snapshot?.name || "").trim().toLowerCase();
-      if (session.is_sentient && personaName) {
-        const refersToPlayer = (d: (typeof deltas)[number]) =>
-          [d.name, d.resolved_name, ...(d.aliases || [])].some(
-            (n) => (n || "").trim().toLowerCase() === personaName,
-          );
-        for (let i = deltas.length - 1; i >= 0; i--) {
-          if (refersToPlayer(deltas[i])) deltas.splice(i, 1);
+      // card them, no matter what the extractor produced. The player's identity
+      // is the UNION of: the authored persona name, the existing player entity's
+      // canonical name + aliases (learned on prior turns), and any name the
+      // player introduces for THEMSELVES THIS turn ("I'm Kael", "call me Alex").
+      // The last one is the gap that minted Alex/Swapnil/Kael cards: sentient
+      // worlds often start with no persona name, so the only signal that "Kael"
+      // is the player is their own self-introduction — which must card nothing.
+      if (session.is_sentient) {
+        const playerNames = new Set<string>();
+        const addName = (n: string | null | undefined) => {
+          const norm = normalizePersonaName(n || "");
+          if (norm) playerNames.add(norm);
+        };
+        addName(session.persona_snapshot?.name);
+        let selfIntroName: string | null = null;
+        try {
+          const playerEntity = await mongoColl
+            .entities()
+            .findOne(
+              { instance_id: instanceOid, type: "player" },
+              { projection: { canonical_name: 1, aliases: 1 } },
+            );
+          if (playerEntity) {
+            // "The Player" / "player" are generic sentinels, not a real name a
+            // card could collide with — skip them so they don't over-match.
+            for (const n of [playerEntity.canonical_name, ...(playerEntity.aliases || [])]) {
+              const norm = normalizePersonaName(n || "");
+              if (norm && norm !== "the player" && norm !== "player") playerNames.add(norm);
+            }
+          }
+          selfIntroName = detectSelfIntroName(parsedPlayerInput.raw);
+          if (selfIntroName) addName(selfIntroName);
+        } catch (err) {
+          console.warn("player self-name resolution skipped:", (err as Error).message);
         }
+
+        if (playerNames.size > 0) {
+          const refersToPlayer = (d: (typeof deltas)[number]) =>
+            [d.name, d.resolved_name, ...(d.aliases || [])]
+              .map((n) => normalizePersonaName(n || ""))
+              .some((n) => n && playerNames.has(n));
+          for (let i = deltas.length - 1; i >= 0; i--) {
+            if (refersToPlayer(deltas[i])) deltas.splice(i, 1);
+          }
+        }
+
+        // Persist a freshly-introduced player name onto the player entity so the
+        // guard still catches it on later turns where the player doesn't restate
+        // it (the extractor would otherwise re-mint the card the moment the main
+        // character addresses them by name).
+        if (selfIntroName) {
+          const norm = normalizePersonaName(selfIntroName);
+          if (norm && norm !== "the player" && norm !== "player") {
+            mongoColl
+              .entities()
+              .updateOne(
+                { instance_id: instanceOid, type: "player" },
+                { $addToSet: { aliases: norm }, $set: { updated_at: new Date() } },
+              )
+              .catch((err) =>
+                console.warn("player self-name persist skipped:", (err as Error).message),
+              );
+          }
+        }
+
         if (!deltas.length) return;
       }
 
@@ -863,6 +1006,9 @@ export async function generationProcessor(job: Job) {
       playerNarrationFacts: parsedPlayerInput.narrationFacts,
       aiResponse: parsed.narrative,
       sceneTag: parsed.scene_tag,
+      isSentient: !!session.is_sentient,
+      playerPersonaName: session.persona_snapshot?.name || null,
+      protagonistName: (characterCodex as any[]).find((c) => c.is_protagonist)?.canonical_name || session.protagonist?.name || null,
     },
     {
       priority: 5,

@@ -19,6 +19,7 @@
     "audit:codex-dedup": "bun run scripts/codex-dedup-audit.ts",
     "audit:replay-edit": "bun run scripts/replay-edit-audit.ts",
     "audit:memory-links": "bun run scripts/memory-links-audit.ts",
+    "audit:side-chat-privacy": "bun run scripts/side-chat-privacy-audit.ts",
     "merge:character": "bun run scripts/merge-character-cards.ts",
     "merge:location": "bun run scripts/merge-location-entities.ts",
     "seed:nsfw-lexicon": "bun run scripts/seed-nsfw-lexicon.ts",
