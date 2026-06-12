@@ -1,6 +1,7 @@
 import { Job } from 'bullmq'
 import { getRedisClient } from '../../src/config/redis'
 import { memoryService } from '../../src/services/memory.service'
+import { generationLockKey } from '../../src/utils/generation-lock'
 
 /**
  * Streaming replay: generates an alternative response for an existing turn and
@@ -12,10 +13,9 @@ export async function replayProcessor(job: Job) {
   const { instanceId, playerId, eventId } = job.data
   const redis = getRedisClient()
   const channel = `user:${playerId}:events`
-  const lockKey = `lock:gen:${playerId}:${instanceId}`
+  const lockKey = generationLockKey(playerId, instanceId)
 
   try {
-    await redis.expire(lockKey, 240)
     const result = await memoryService.replayEvent(eventId, playerId, (chunk) => {
       redis.publish(
         channel,

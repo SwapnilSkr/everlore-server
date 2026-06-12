@@ -3,13 +3,13 @@ import { generationService } from './generation.service'
 import { verifyWsToken, type AuthUser } from '../middleware/auth'
 import { rateLimit } from '../middleware/rate-limit'
 import { log } from '../utils/logger'
+import { GENERATION_LOCK_TTL_SECONDS, generationLockKey } from '../utils/generation-lock'
 
 /** Underlying Bun socket — stable identity; Elysia passes a new `ElysiaWS` wrapper per event. */
 type RawWs = { send: (data: string) => void }
 
 const activeConnections = new Map<string, Set<RawWs>>()
-const GENERATION_LOCK_TTL_SECONDS = 240
-const REPLAY_LOCK_TTL_SECONDS = 240
+const REPLAY_LOCK_TTL_SECONDS = GENERATION_LOCK_TTL_SECONDS
 
 /** Closes all WebSocket connections for a user (e.g. after account deletion). */
 export function disconnectUserSockets(userId: string): void {
@@ -156,7 +156,7 @@ export const playWsService = {
           return
         }
 
-        const lockKey = `lock:gen:${user.id}:${instanceId}`
+        const lockKey = generationLockKey(user.id, instanceId)
         const locked = await redis.set(lockKey, 'pending', 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
@@ -204,7 +204,7 @@ export const playWsService = {
           return
         }
 
-        const lockKey = `lock:gen:${user.id}:${instanceId}`
+        const lockKey = generationLockKey(user.id, instanceId)
         const locked = await redis.set(lockKey, 'pending', 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
@@ -253,7 +253,7 @@ export const playWsService = {
 
         // Side chats share the per-instance generation lock: one turn at a
         // time, whether the player is in the main story or a private chat.
-        const lockKey = `lock:gen:${user.id}:${instanceId}`
+        const lockKey = generationLockKey(user.id, instanceId)
         const locked = await redis.set(lockKey, 'pending', 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
@@ -308,7 +308,7 @@ export const playWsService = {
           return
         }
 
-        const lockKey = `lock:gen:${user.id}:${instanceId}`
+        const lockKey = generationLockKey(user.id, instanceId)
         const locked = await redis.set(lockKey, 'pending', 'EX', REPLAY_LOCK_TTL_SECONDS, 'NX')
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))

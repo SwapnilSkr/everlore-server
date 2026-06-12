@@ -1,7 +1,8 @@
-import { Worker } from 'bullmq'
+import { Worker, type Job } from 'bullmq'
 import { connectMongo } from '../src/config/mongo'
-import { connectRedis, getQueueRedisClient } from '../src/config/redis'
+import { connectRedis, getQueueRedisClient, getRedisClient } from '../src/config/redis'
 import { generationProcessor } from './processors/generation.processor'
+import { generationLockKey, startGenerationLockHeartbeat } from '../src/utils/generation-lock'
 import { memoryProcessor } from './processors/memory.processor'
 import { summaryProcessor } from './processors/summary.processor'
 import { maintenanceProcessor } from './processors/maintenance.processor'
@@ -19,7 +20,25 @@ async function main() {
 
   const connection = getQueueRedisClient()
 
-  const generationWorker = new Worker('generation', generationProcessor, {
+  // Keep the per-instance turn lock alive while a turn actually runs, with a
+  // short TTL — so if THIS process dies mid-turn the player is freed within the
+  // heartbeat window instead of waiting out the (much longer) dispatch TTL.
+  // Covers chat, continue, side_chat, and replay (all routed through here).
+  const runGeneration = async (job: Job) => {
+    const { playerId, instanceId } = job.data || {}
+    if (!playerId || !instanceId) return generationProcessor(job)
+    const stopHeartbeat = startGenerationLockHeartbeat(
+      getRedisClient(),
+      generationLockKey(playerId, instanceId),
+    )
+    try {
+      return await generationProcessor(job)
+    } finally {
+      stopHeartbeat()
+    }
+  }
+
+  const generationWorker = new Worker('generation', runGeneration, {
     connection,
     concurrency: 3,
     limiter: { max: 10, duration: 60000 },
@@ -101,38 +120,60 @@ async function main() {
     })
   }
 
-  // Dead letter handling for generation failures
+  // Generation failure handling. A turn can fail on a transient hiccup and then
+  // succeed on retry, so we tell the player what's happening at each stage:
+  //  - intermediate attempt failed, more remain → `generation_retrying` (the
+  //    stream is still coming; don't show a dead end)
+  //  - final attempt failed → `generation_failed` + dead-letter + release lock
   generationWorker.on('failed', async (job, err) => {
-    if (job && job.attemptsMade >= (job.opts.attempts || 1)) {
+    if (!job) return
+    const attemptsAllowed = job.opts.attempts || 1
+    const isFinalAttempt = job.attemptsMade >= attemptsAllowed
+    const redis = getRedisClient()
+
+    if (!isFinalAttempt) {
       try {
-        const { mongoColl } = await import('../src/config/mongo')
-        const { getRedisClient } = await import('../src/config/redis')
-        const { ObjectId } = await import('mongodb')
-        const redis = getRedisClient()
-
-        await mongoColl.deadLetterJobs().insertOne({
-          _id: new ObjectId(),
-          queue: 'generation',
-          jobId: job.id,
-          data: job.data,
-          error: err.message,
-          stack: err.stack,
-          failedAt: new Date(),
-        })
-
         await redis.publish(
           `user:${job.data.playerId}:events`,
           JSON.stringify({
-            type: 'generation_failed',
+            type: 'generation_retrying',
             instanceId: job.data.instanceId,
-            message: 'The world could not respond. Please try again.',
+            attempt: job.attemptsMade,
+            maxAttempts: attemptsAllowed,
           }),
         )
-
-        await redis.del(`lock:gen:${job.data.playerId}:${job.data.instanceId}`)
-      } catch (dlqErr) {
-        console.error('Failed to handle dead letter:', (dlqErr as Error).message)
+      } catch (retryErr) {
+        console.error('Failed to publish retry notice:', (retryErr as Error).message)
       }
+      return
+    }
+
+    try {
+      const { mongoColl } = await import('../src/config/mongo')
+      const { ObjectId } = await import('mongodb')
+
+      await mongoColl.deadLetterJobs().insertOne({
+        _id: new ObjectId(),
+        queue: 'generation',
+        jobId: job.id,
+        data: job.data,
+        error: err.message,
+        stack: err.stack,
+        failedAt: new Date(),
+      })
+
+      await redis.publish(
+        `user:${job.data.playerId}:events`,
+        JSON.stringify({
+          type: 'generation_failed',
+          instanceId: job.data.instanceId,
+          message: 'The world could not respond. Please try again.',
+        }),
+      )
+
+      await redis.del(generationLockKey(job.data.playerId, job.data.instanceId))
+    } catch (dlqErr) {
+      console.error('Failed to handle dead letter:', (dlqErr as Error).message)
     }
   })
 

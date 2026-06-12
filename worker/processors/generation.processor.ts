@@ -15,6 +15,7 @@ import {
 import { countTokens } from "../../src/utils/token-counter";
 import { repairProseHygiene } from "../../src/utils/prose-hygiene";
 import { idString, parseObjectId } from "../../src/utils/mongo-id";
+import { generationLockKey } from "../../src/utils/generation-lock";
 import { classifyScene } from "../lib/nsfw-classifier";
 import { type GenerationOutput } from "../lib/structured-output";
 import { extractSceneMetadata } from "../lib/metadata-extractor";
@@ -106,8 +107,9 @@ export async function generationProcessor(job: Job) {
   const classifyText = isContinuation ? "" : userMessage;
 
   const redis = getRedisClient();
-  const lockKey = `lock:gen:${playerId}:${instanceId}`;
-  await redis.expire(lockKey, 240);
+  // The turn lock's TTL is kept alive by the worker-level heartbeat (see
+  // worker/index.ts); we only need to release it explicitly on success below.
+  const lockKey = generationLockKey(playerId, instanceId);
   const instanceOid = parseObjectId(instanceId);
   const playerOid = parseObjectId(playerId);
 
@@ -251,7 +253,6 @@ export async function generationProcessor(job: Job) {
     },
   );
   const latencyMs = Date.now() - genStart;
-  await redis.expire(lockKey, 240);
 
   await redis.publish(
     channel,

@@ -11,6 +11,7 @@ import {
 } from "../../src/utils/narrative-styles";
 import { countTokens } from "../../src/utils/token-counter";
 import { idString, parseObjectId } from "../../src/utils/mongo-id";
+import { generationLockKey } from "../../src/utils/generation-lock";
 import { classifyScene } from "../lib/nsfw-classifier";
 import { timeService } from "../../src/services/time.service";
 import { buildSideChatPacket } from "../../src/services/context-packet.service";
@@ -57,8 +58,8 @@ export async function sideChatProcessor(job: Job) {
     job.data;
   const redis = getRedisClient();
   const channel = `user:${playerId}:events`;
-  const lockKey = `lock:gen:${playerId}:${instanceId}`;
-  await redis.expire(lockKey, 240);
+  // TTL is kept alive by the worker-level heartbeat; we release on completion below.
+  const lockKey = generationLockKey(playerId, instanceId);
   const instanceOid = parseObjectId(instanceId);
   const playerOid = parseObjectId(playerId);
 
@@ -160,7 +161,6 @@ ${buildLengthDirective(session.message_length)}`;
       },
     );
     const narrative = reply.trim();
-    await redis.expire(lockKey, 240);
 
     const eventCreatedAt = new Date();
     // No timeAdvancedLabel → the story date is carried unchanged; only the
