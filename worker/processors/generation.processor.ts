@@ -16,14 +16,15 @@ import { countTokens } from "../../src/utils/token-counter";
 import { repairProseHygiene } from "../../src/utils/prose-hygiene";
 import { idString, parseObjectId } from "../../src/utils/mongo-id";
 import { generationLockKey } from "../../src/utils/generation-lock";
-import { classifyScene } from "../lib/nsfw-classifier";
+import { scoreScene, classifyBorderlineIntent } from "../lib/nsfw-classifier";
 import { type GenerationOutput } from "../lib/structured-output";
 import { extractSceneMetadata } from "../lib/metadata-extractor";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
 import { compactImmutableFacts } from "../lib/codex-compactor";
 import { characterCodexService } from "../../src/services/character-codex.service";
-import { entityGraphService, isVagueLocationLabel } from "../../src/services/entity-graph.service";
+import { entityGraphService, isVagueLocationLabel, normalizeEntityName } from "../../src/services/entity-graph.service";
 import { detectNarratedMovement, resolvePossessiveRoomName } from "../lib/movement-signal";
+import { groundChoices } from "../lib/choice-grounding";
 import { detectNarratedTimeSkip } from "../lib/time-skip-signal";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
 import { timeService } from "../../src/services/time.service";
@@ -241,16 +242,29 @@ export async function generationProcessor(job: Job) {
     session.model_preferences?.narration_sfw || AI_MODELS.narrationSfw;
   let isNsfwTurn = false;
 
-  // 'Ardent' chat mode is the structured NSFW on-ramp: when the world allows it
-  // and the player opted in, it forces the explicit path. Otherwise the weighted
-  // lexicon classifier decides automatically.
+  // 'Ardent' chat mode is the structured NSFW on-ramp and the PRIMARY intent
+  // signal: when the world allows it and the player opted in, it forces the
+  // explicit path. Otherwise THIS turn routes on the deterministic lexicon score
+  // alone — pure regex/string work, no network — so NOTHING is added to TTFT.
+  // Clean-language intent the word list misses (score 1–2) can't be judged here
+  // without an LLM call, and that call would sit on the critical path before the
+  // first token. Instead we flag the turn as borderline and run the intent check
+  // AFTER the stream (see `nsfwIntent` below), persisting a signal that arms the
+  // NEXT turn's momentum. Cost: a one-turn lag on the first clean escalation —
+  // the irreducible floor under a zero-TTFT constraint.
   const modeWantsNsfw = session.mode === NSFW_MODE;
-  const sceneClassification =
-    session.is_nsfw_capable && userNsfwEnabled
-      ? modeWantsNsfw
-        ? "nsfw"
-        : classifyScene(classifyText, recentEvents)
-      : "sfw";
+  let sceneClassification: "sfw" | "nsfw" = "sfw";
+  let borderlineForIntent = false;
+  if (session.is_nsfw_capable && userNsfwEnabled) {
+    if (modeWantsNsfw) {
+      sceneClassification = "nsfw";
+    } else {
+      const scored = scoreScene(classifyText, recentEvents);
+      sceneClassification = scored.decision;
+      borderlineForIntent =
+        scored.decision === "sfw" && scored.score >= 1 && scored.score <= 2;
+    }
+  }
   if (sceneClassification === "nsfw") {
     modelId =
       session.model_preferences?.narration_nsfw || AI_MODELS.narrationNsfw;
@@ -398,6 +412,34 @@ export async function generationProcessor(job: Job) {
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta };
   const proseHygieneIssues = repairedProse.issues;
 
+  // Closed-check backstop on the choices: the metadata model is *told* never to
+  // invent characters, but nothing enforced it — a small model would fabricate a
+  // relative the cast doesn't have ("Encourage my brother" when the player has
+  // only a sister) and the bad choice reached the player. Drop any choice that
+  // references a kinship relation no codex card carries. Pure string work, off
+  // the TTFT path (the prose already streamed) → zero added latency. Every kin
+  // the cast DOES have is whitelisted, so a valid "confront my sister" survives.
+  const castVocab = (characterCodex as any[]).flatMap((c) => [
+    c?.canonical_name,
+    c?.name_normalized,
+    c?.role,
+    ...((c?.aliases as string[]) || []),
+  ]);
+  // Pass the grounded narrator prose so a relative introduced THIS turn (not yet
+  // in the pre-turn codex) isn't mistaken for a fabrication.
+  const groundedChoices = groundChoices(parsed.choices || [], castVocab, finalNarrative);
+  if (groundedChoices.dropped.length) {
+    log.warn("choice-grounding dropped fabricated-kin choices", {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      dropped: groundedChoices.dropped.map((d) => ({
+        term: d.term,
+        label: d.choice.label,
+      })),
+    });
+  }
+  parsed.choices = groundedChoices.choices;
+
   const newWorldState = applyStateMutations(
     session.world_state,
     parsed.state_mutations,
@@ -507,19 +549,112 @@ export async function generationProcessor(job: Job) {
     !!currentLocation &&
     idString(resolvedLocation.entity_id) !== idString(currentLocation.entity_id);
   const sceneBroke = viewpointMoved || !!narratedTimeLabel || placeEntityChanged;
+  // Resolve every presence name to a CANONICAL identity before set ops, using the
+  // SAME registry the codex resolves with (normalizeEntityName over each card's
+  // canonical_name + aliases). Without this, "the captain" and "Bram" are two
+  // different lowercased strings — so a carried alias is dropped or double-counted.
+  // Unknown walk-ons (no matching card) fall back to their normalized string, so
+  // they are de-duped/departed correctly but never dropped.
+  // presenceKeyOf → canonical IDENTITY key (for set ops); presenceDisplayOf →
+  // the card's canonical SPELLING (for the surfaced label), so a carried alias
+  // shows as "Bram", not whichever string happened to appear first. Unknown
+  // walk-ons fall back to their own normalized key / original string.
+  // normalizeEntityName does NOT strip leading articles, so "the father" never
+  // matched the "father" card and leaked as a phantom present-character; and a
+  // model-confabulated alias like "Sister Thompson" (Sister + surname, not a
+  // real alias) split off as its own ghost. So beyond canonical/normalized/alias
+  // keys we also index the ARTICLE-STRIPPED form ("the father" → "father") and a
+  // conflict-safe FIRST TOKEN ("Sister Thompson"/"Mara Thompson" → the Sister
+  // card) — the latter only when that token maps unambiguously to a single card.
+  const articleStrip = (s: string) => s.replace(/^(?:the|a|an)\s+/, "").trim();
+  const { presenceKeyOf, presenceDisplayOf, presenceIsKnown } = (() => {
+    const byName = new Map<string, string>();
+    const displayByKey = new Map<string, string>();
+    const knownKeys = new Set<string>();
+    // First-token → card, with collision detection: a token shared by two cards
+    // (e.g. a common surname) is ambiguous and must NOT resolve to either.
+    const firstTokenMap = new Map<string, string>();
+    const ambiguousTokens = new Set<string>();
+    const addAlias = (raw: string, canonKey: string) => {
+      const k = normalizeEntityName(String(raw || ""));
+      if (!k) return;
+      byName.set(k, canonKey);
+      const stripped = articleStrip(k);
+      if (stripped && stripped !== k) byName.set(stripped, canonKey);
+      const tok = stripped.split(" ")[0];
+      if (tok) {
+        const prior = firstTokenMap.get(tok);
+        if (prior && prior !== canonKey) ambiguousTokens.add(tok);
+        else firstTokenMap.set(tok, canonKey);
+      }
+    };
+    for (const c of characterCodex as any[]) {
+      const canon = c?.canonical_name;
+      if (!canon) continue;
+      const canonKey = normalizeEntityName(String(canon));
+      if (!canonKey) continue;
+      knownKeys.add(canonKey);
+      displayByKey.set(canonKey, String(canon));
+      addAlias(String(canon), canonKey);
+      if (c?.name_normalized) addAlias(String(c.name_normalized), canonKey);
+      for (const a of (c?.aliases || []) as string[]) addAlias(String(a || ""), canonKey);
+    }
+    for (const tok of ambiguousTokens) firstTokenMap.delete(tok);
+    const keyOf = (name: string): string => {
+      const n = normalizeEntityName(String(name || ""));
+      const stripped = articleStrip(n);
+      return (
+        byName.get(n) ||
+        byName.get(stripped) ||
+        firstTokenMap.get(stripped.split(" ")[0]) ||
+        stripped ||
+        n
+      );
+    };
+    return {
+      presenceKeyOf: keyOf,
+      presenceDisplayOf: (name: string): string =>
+        displayByKey.get(keyOf(name)) || name,
+      presenceIsKnown: (name: string): boolean => knownKeys.has(keyOf(name)),
+    };
+  })();
+  // The player must never appear in their own scene's present-cast. In a GM world
+  // the player IS the is_protagonist card, so exclude that identity; in a sentient
+  // world the is_protagonist card is the AI the player talks to (an "other") and
+  // is force-added below, so it stays.
+  const playerPresenceKey =
+    !session.is_sentient && protagonistCard?.canonical_name
+      ? presenceKeyOf(String(protagonistCard.canonical_name))
+      : null;
+  // A label that resolved to NO card AND is generic — an article-led role tag
+  // ("the son") or an all-lowercase common noun ("guard") — is the player under a
+  // role title or scene-dressing, not a trackable person. Drop it. An unresolved
+  // CAPITALIZED proper name (a genuine new walk-on) is kept.
+  const isGenericLabel = (raw: string): boolean => {
+    const t = String(raw || "").trim();
+    if (!t) return true;
+    if (/^(?:the|a|an)\s+/i.test(t)) return true;
+    if (!/[A-ZÀ-Þ]/.test(t)) return true;
+    return false;
+  };
   parsed.present_characters = (() => {
-    const thisTurn = parsed.present_characters || [];
-    if (sceneBroke) return thisTurn.slice(0, 12);
+    const candidates = sceneBroke
+      ? (parsed.present_characters || [])
+      : [...priorPresent, ...(parsed.present_characters || [])];
     const departed = new Set(
-      (parsed.characters_departed || []).map((n) => n.trim().toLowerCase()),
+      (parsed.characters_departed || [])
+        .map((n) => presenceKeyOf(n))
+        .filter(Boolean),
     );
     const out: string[] = [];
     const seen = new Set<string>();
-    for (const name of [...priorPresent, ...thisTurn]) {
-      const key = (name || "").trim().toLowerCase();
+    for (const name of candidates) {
+      const key = presenceKeyOf(name);
       if (!key || seen.has(key) || departed.has(key)) continue;
+      if (playerPresenceKey && key === playerPresenceKey) continue;
+      if (!presenceIsKnown(name) && isGenericLabel(name)) continue;
       seen.add(key);
-      out.push(name);
+      out.push(presenceDisplayOf(name));
       if (out.length >= 12) break;
     }
     return out;
@@ -529,7 +664,7 @@ export async function generationProcessor(job: Job) {
       (characterCodex as any[]).find((c) => c.is_protagonist)?.canonical_name ||
       session.protagonist?.name ||
       null;
-    if (aiName && !parsed.present_characters.some((n) => n.trim().toLowerCase() === aiName.trim().toLowerCase())) {
+    if (aiName && !parsed.present_characters.some((n) => presenceKeyOf(n) === presenceKeyOf(aiName))) {
       parsed.present_characters = [aiName, ...parsed.present_characters].slice(0, 12);
     }
   }
@@ -545,6 +680,16 @@ export async function generationProcessor(job: Job) {
     eventTimeLabel: effectiveTimeAdvance || undefined,
     timelineId: session.active_timeline_id || currentTimeAnchor?.timeline_id || null,
   });
+
+  // Off the TTFT path (the prose already streamed): for a borderline turn, ask
+  // the cheap intent judge whether the PLAYER expressed sexual intent in clean
+  // language the lexicon missed. This does NOT change the turn that just streamed;
+  // it persists `nsfw_intent` so scoreScene's momentum routes the NEXT turn to the
+  // explicit model. Gated + fail-safe: classifyBorderlineIntent returns 'sfw' when
+  // disabled or on any error. An already-explicit turn arms momentum directly.
+  const nsfwIntent = borderlineForIntent
+    ? (await classifyBorderlineIntent(classifyText)) === "nsfw"
+    : sceneClassification === "nsfw";
 
   const event = {
     _id: new ObjectId(),
@@ -598,6 +743,7 @@ export async function generationProcessor(job: Job) {
     is_user_edited: false,
     edit_history: [],
     scene_tag: parsed.scene_tag,
+    ...(nsfwIntent ? { nsfw_intent: true } : {}),
     time_anchor: timeAnchor,
     location_anchor: locationAnchor,
     created_at: eventCreatedAt,
@@ -866,15 +1012,22 @@ export async function generationProcessor(job: Job) {
         if (selfIntroName) {
           const norm = normalizePersonaName(selfIntroName);
           if (norm && norm !== "the player" && norm !== "player") {
-            mongoColl
-              .entities()
-              .updateOne(
-                { instance_id: instanceOid, type: "player" },
-                { $addToSet: { aliases: norm }, $set: { updated_at: new Date() } },
-              )
-              .catch((err) =>
-                console.warn("player self-name persist skipped:", (err as Error).message),
-              );
+            // AWAIT (not fire-and-forget): the per-instance turn lock serializes
+            // turns, so persisting the player's self-intro alias BEFORE this turn
+            // releases its lock guarantees the next turn's guard reads it. A
+            // fire-and-forget write raced the following extractions — "I'm
+            // Swapnil" at seq 2 still let seq 6 mint a "Swapnil" codex card
+            // because the alias hadn't landed when seq 6's guard read the entity.
+            try {
+              await mongoColl
+                .entities()
+                .updateOne(
+                  { instance_id: instanceOid, type: "player" },
+                  { $addToSet: { aliases: norm }, $set: { updated_at: new Date() } },
+                );
+            } catch (err) {
+              console.warn("player self-name persist skipped:", (err as Error).message);
+            }
           }
         }
 

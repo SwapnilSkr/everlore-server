@@ -39,6 +39,10 @@ export interface MemoryDoc {
   subjects?: string[]
   /** Canonical entity names acted upon or affected. */
   objects?: string[]
+  /** Curator-emitted alternate phrasings/synonyms for this fact, comma-joined.
+   *  Embedded WITH the atom and part of the text index so the memory is found
+   *  when a later turn is worded differently from `text`. */
+  search_terms?: string
   /** Entity-graph ids resolved from `subjects` (strings kept for compat). */
   subject_entity_ids?: ObjectId[]
   /** Entity-graph ids resolved from `objects`. */

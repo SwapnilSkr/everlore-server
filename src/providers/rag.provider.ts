@@ -1,5 +1,6 @@
 import { getPineconeIndex } from '../config/pinecone'
-import { embed } from '../ai'
+import { embed, callLLM, AI_MODELS } from '../ai'
+import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import type { MemoryDoc } from '../models/memory.model'
@@ -19,6 +20,93 @@ interface RagResult {
 const RRF_K = 60
 /** Max open threads surfaced per turn (kept small: these are always injected). */
 const OPEN_THREADS_LIMIT = 5
+/** How many top fused candidates the re-ranker scores (keeps the LLM call cheap). */
+const RERANK_POOL_SIZE = 45
+/** Per-candidate snippet length sent to the re-ranker (cost control). */
+const RERANK_SNIPPET_CHARS = 240
+/** Blend weight for the LLM relevance score vs. the existing fused score.
+ *  0.7 lets relevance dominate while fused rank still breaks ties / backstops. */
+const RERANK_BLEND = 0.7
+
+/**
+ * Relevance re-ranking over the FUSED candidate pool (risk A).
+ *
+ * Top-K by fused rank means a trivially-similar memory can crowd out a crucial
+ * but differently-worded one ("persistence ≠ recall"). This pass asks a cheap
+ * aux judge to score each candidate's true relevance to the current turn,
+ * then BLENDS that with the existing fused score, and returns the reordered
+ * pool. Gated behind RAG_RERANK_ENABLED; one batched call ranks the whole pool
+ * (id + short snippet only — never full atoms). DEFENSIVE: on any error, empty
+ * pool, or malformed output it returns the input order unchanged — never throws.
+ */
+async function rerankFused(
+  queryText: string,
+  pool: FusedCandidate[],
+): Promise<FusedCandidate[]> {
+  if (!env.RAG_RERANK_ENABLED) return pool
+  if (pool.length <= 1 || !queryText.trim()) return pool
+
+  const candidates = pool.slice(0, RERANK_POOL_SIZE)
+  try {
+    const lines = candidates.map(
+      (c, i) => `${i}: ${c.text.slice(0, RERANK_SNIPPET_CHARS).replace(/\s+/g, ' ').trim()}`,
+    )
+    const raw = await callLLM({
+      model: AI_MODELS.cheapRank,
+      temperature: 0,
+      maxTokens: 700,
+      timeoutMs: 8000,
+      responseFormat: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content:
+            'You score how RELEVANT each candidate memory is to answering or continuing the current story turn. ' +
+            'Reward memories that are ABOUT the same people, places, promises, or facts the turn needs — even when worded differently. ' +
+            'Penalize memories that merely share surface words but are off-topic. ' +
+            'Return ONLY JSON: {"scores":[{"id":<index>,"score":<0-100>}, ...]} covering every candidate index.',
+        },
+        {
+          role: 'user',
+          content: `CURRENT TURN:\n${queryText.slice(0, 1200)}\n\nCANDIDATES:\n${lines.join('\n')}`,
+        },
+      ],
+    })
+
+    const parsed = JSON.parse(raw) as { scores?: Array<{ id: number; score: number }> }
+    const scores = parsed?.scores
+    if (!Array.isArray(scores) || scores.length === 0) return pool
+
+    const relById = new Map<number, number>()
+    for (const s of scores) {
+      if (typeof s?.id === 'number' && typeof s?.score === 'number') {
+        relById.set(s.id, Math.min(Math.max(s.score, 0), 100) / 100)
+      }
+    }
+    if (relById.size === 0) return pool
+
+    // Normalize fused scores to 0..1 so the blend weights are comparable.
+    const maxFused = Math.max(...candidates.map((c) => c.score), 1e-9)
+    const reordered = candidates
+      .map((c, i) => {
+        const rel = relById.get(i)
+        // A candidate the judge omitted keeps its fused-only standing (rel = its
+        // own normalized fused score → blend is a no-op for it).
+        const fusedNorm = c.score / maxFused
+        const relScore = rel === undefined ? fusedNorm : rel
+        const blended = RERANK_BLEND * relScore + (1 - RERANK_BLEND) * fusedNorm
+        return { c, blended }
+      })
+      .sort((a, b) => b.blended - a.blended)
+      .map((x) => x.c)
+
+    // Re-ranked pool first, then any tail beyond RERANK_POOL_SIZE in fused order.
+    return [...reordered, ...pool.slice(RERANK_POOL_SIZE)]
+  } catch (err) {
+    console.warn('RAG re-rank skipped (fallback to fused order):', (err as Error).message)
+    return pool
+  }
+}
 
 type FusedCandidate = {
   key: string
@@ -365,10 +453,13 @@ export async function queryRag(
   // Open threads get their own prompt section — keep the general memory list
   // free of duplicates so the budget isn't spent saying the same thing twice.
   const threadIds = new Set(threadMemories.map((m) => idString(m._id)))
-  const fused = [...candidates.values()]
+  const fusedPool = [...candidates.values()]
     .filter((c) => !c.mongoId || !threadIds.has(c.mongoId))
     .sort((a, b) => b.score - a.score)
-    .slice(0, maxMemoryResults)
+  // Relevance re-rank over the fused pool BEFORE the top-K slice (gated; falls
+  // back to fused order on any error). Then take the final maxMemoryResults.
+  const reranked = await rerankFused(queryText, fusedPool)
+  const fused = reranked.slice(0, maxMemoryResults)
 
   const memoryTexts = fused.map((c) => c.text)
   const openThreads = threadMemories.map((m) => m.text)

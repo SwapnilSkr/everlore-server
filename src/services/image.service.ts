@@ -38,9 +38,13 @@ const STYLE_HINT: Record<string, string> = {
 }
 const DEFAULT_HINT = 'high-quality character illustration, cinematic lighting'
 
+// NOTE: never say "phone background" here — the image model takes it literally and
+// renders the art INSIDE a smartphone mockup (notch, status bar). Ask for a
+// full-bleed vertical illustration and explicitly negate any device/frame.
 const COMPOSITION =
-  'vertical portrait composition suited to a phone background, single clear focal subject, ' +
-  'atmospheric depth, no text, no watermark, no logo, no UI'
+  'tall vertical 9:16 full-bleed illustration filling the entire frame edge to edge, ' +
+  'single clear focal subject, atmospheric depth, no phone, no smartphone, no device, ' +
+  'no screen, no frame, no border, no mockup, no text, no watermark, no logo, no UI'
 
 /**
  * Wrap a concrete visual-description CORE line with the art-style hint (mapped

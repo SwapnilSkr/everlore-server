@@ -109,6 +109,10 @@ export interface WorldEventDoc {
   is_user_edited: boolean
   edit_history: EventEditHistoryEntry[]
   scene_tag: string
+  /** Set off the TTFT path by the post-turn intent judge when the player expressed
+   *  clean-language sexual intent the lexicon missed. Read by scoreScene momentum to
+   *  route the NEXT turn explicit. Absent (not false) when no intent was detected. */
+  nsfw_intent?: boolean
   /** Story-time anchor: sequence time, real time, calendar date, and timeline branch. */
   time_anchor?: TimeAnchorDoc
   /** End-of-turn place anchor, when known. */

@@ -131,8 +131,8 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   // collection (Mongo limit); subjects/objects are entity-name arrays.
   {
     collection: COLLECTIONS.memories,
-    key: { text: "text", subjects: "text", objects: "text" },
-    options: { name: "idx_memories_text_search" },
+    key: { text: "text", subjects: "text", objects: "text", search_terms: "text" },
+    options: { name: "idx_memories_text_search_v2" },
   },
   // Entity-neighborhood retrieval: memories linked to mentioned entities.
   {
@@ -358,6 +358,10 @@ export const DEPRECATED_INDEXES: Array<{ collection: string; name: string }> = [
   { collection: COLLECTIONS.entity_edges, name: "idx_entity_edges_endpoints_type" },
   // Replaced by idx_memories_instance_timeline_sequence (parent-branch clamps by sequence).
   { collection: COLLECTIONS.memories, name: "idx_memories_instance_timeline_importance" },
+  // Replaced by idx_memories_text_search_v2 (search_terms joined the text index so a
+  // memory is found under alternate phrasings). Mongo allows one text index per
+  // collection, so the old one must be dropped before the v2 is created.
+  { collection: COLLECTIONS.memories, name: "idx_memories_text_search" },
   // Draft Phase 6A index briefly pointed at the whole object instead of entity_id.
   { collection: COLLECTIONS.world_instances, name: "idx_world_instances_current_location" },
   // Replaced by idx_entities_instance_type_root_name (world_root_id joined the unique

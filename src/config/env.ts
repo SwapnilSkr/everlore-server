@@ -30,6 +30,18 @@ const optionalEnvVars = {
   TWILIO_VERIFY_SERVICE_SID: '',
   /** When true, OTP send/verify skip Redis rate limits (local dev only). */
   DISABLE_OTP_RATE_LIMIT: 'false',
+  // ── Cheap-LLM signal flags (default OFF — both fall back to today's behavior) ──
+  // Cheap aux model used by the optional re-rank / borderline-intent passes.
+  // Keep this NON-Claude (cost). gpt-4o-mini is in OPENAI_MODELS so it uses the
+  // direct OpenAI key; any other id routes via OpenRouter (see src/ai/client.ts).
+  CHEAP_RANK_MODEL: 'gpt-4o-mini',
+  /** Re-rank the fused RAG candidate pool for true relevance before the final
+   *  top-K slice (risk A). Off ⇒ existing fused order is used unchanged. */
+  RAG_RERANK_ENABLED: 'false',
+  /** For BORDERLINE nsfw lexicon scores (1–2) only, defer to a Haiku intent
+   *  classifier (risk G). Off ⇒ borderline stays SFW as today. Chat-mode
+   *  (Ardent) opt-in is the primary signal and is independent of this flag. */
+  NSFW_INTENT_DEFER_ENABLED: 'false',
   ADMIN_USERNAME: '',
   ADMIN_PASSWORD: '',
   // Throughput knobs — defaults are the safe production values. Crank these via
@@ -66,6 +78,9 @@ export interface Env {
   TWILIO_AUTH_TOKEN: string
   TWILIO_VERIFY_SERVICE_SID: string
   DISABLE_OTP_RATE_LIMIT: boolean
+  CHEAP_RANK_MODEL: string
+  RAG_RERANK_ENABLED: boolean
+  NSFW_INTENT_DEFER_ENABLED: boolean
   ADMIN_USERNAME: string
   ADMIN_PASSWORD: string
   GENERATION_CONCURRENCY: number
@@ -106,6 +121,9 @@ function loadEnv(): Env {
     TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN || optionalEnvVars.TWILIO_AUTH_TOKEN,
     TWILIO_VERIFY_SERVICE_SID: process.env.TWILIO_VERIFY_SERVICE_SID || optionalEnvVars.TWILIO_VERIFY_SERVICE_SID,
     DISABLE_OTP_RATE_LIMIT: process.env.DISABLE_OTP_RATE_LIMIT === 'true',
+    CHEAP_RANK_MODEL: process.env.CHEAP_RANK_MODEL || optionalEnvVars.CHEAP_RANK_MODEL,
+    RAG_RERANK_ENABLED: process.env.RAG_RERANK_ENABLED === 'true',
+    NSFW_INTENT_DEFER_ENABLED: process.env.NSFW_INTENT_DEFER_ENABLED === 'true',
     ADMIN_USERNAME: process.env.ADMIN_USERNAME || optionalEnvVars.ADMIN_USERNAME,
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || optionalEnvVars.ADMIN_PASSWORD,
     GENERATION_CONCURRENCY: Number(process.env.GENERATION_CONCURRENCY || optionalEnvVars.GENERATION_CONCURRENCY),

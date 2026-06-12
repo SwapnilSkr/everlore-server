@@ -485,15 +485,23 @@ export const timeService = {
         .sort({ 'time_anchor.timeline_id': 1, 'time_anchor.story_calendar.year': 1, 'time_anchor.story_calendar.month': 1, 'time_anchor.story_calendar.day': 1, sequence: 1 })
         .toArray(),
     ])
-    return {
-      calendars: calendars.map((c) => ({
+    const serializedCalendars = calendars.map((c) => ({
         id: idString(c._id),
         name: c.name,
         eras: c.eras,
         months: c.months,
+        month_names: (c.months || []).map((m) => m.name),
+        season_names: [],
+        year_count: null,
         weekdays: c.weekdays || [],
         is_default: c.is_default === true,
-      })),
+      }))
+    const primaryCalendar = serializedCalendars.find((c) => c.is_default) || serializedCalendars[0] || null
+    return {
+      calendars: serializedCalendars,
+      month_names: primaryCalendar?.month_names || [],
+      season_names: primaryCalendar?.season_names || [],
+      year_count: primaryCalendar?.year_count || null,
       timelines: timelines.map((t) => ({
         id: idString(t._id),
         timeline_id: t.timeline_id,

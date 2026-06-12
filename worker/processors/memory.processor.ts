@@ -20,9 +20,11 @@ Rules for memory atoms:
 - Rate importance 1-5 (5 = critical plot point or vow, 1 = minor detail).
 - Classify type: relationship, promise, lore, observation, emotion, secret.
 - subjects = who acts/feels in the atom; objects = who/what is affected. Use canonical roster names where possible; use "player" for the player.
+- NEVER invent, extend, or merge a name. Use each person's name EXACTLY as it appears in the text or roster. Do not attach a surname, title, or epithet from one character to another who lacks one (if the player is "Kade" and a different character is "Mara Chen", never write "Kade Chen"). Keep distinct people distinct — never fuse two characters because their names share a fragment, and never give one character another's codename/alias unless the text explicitly equates them.
 - Set unresolved_thread true ONLY for genuinely open hooks: an unkept promise, an unanswered question, an unresolved conflict, a debt, a threat still looming. Mundane ongoing states are not threads.
 - Top-level "entities": classify EVERY name used in any atom's subjects/objects with its kind: character, location, faction, item, quest, or other. Use "character" for people (including "player").
 - Flag is_nsfw if explicit content is referenced.
+- retrieval_terms: 3-6 short, lowercase alternate ways a LATER turn might refer to this fact — synonyms, the roles/objects/places involved, and the gist in different words — so the memory is still found when the future turn is worded differently from the atom. Example: atom "Mira forgave the player after the ash-bridge betrayal" → ["forgiveness", "betrayal at the ash bridge", "mira's trust", "making amends", "broken promise"]. Keep each a short phrase, not a sentence. Return [] only if truly none apply.
 - If nothing is worth remembering, return an empty array.
 - Treat "Player canonical narration facts" as events that DEFINITELY happened.
 
@@ -43,7 +45,8 @@ Respond ONLY with valid JSON matching this schema:
       "emotional_cause": "string or null",
       "emotional_effect": "string or null",
       "relationship_delta": "string or null",
-      "unresolved_thread": boolean
+      "unresolved_thread": boolean,
+      "retrieval_terms": ["string"]
     }
   ],
   "entities": [
@@ -66,6 +69,125 @@ function cleanNameList(value: unknown, max = 6): string[] {
     .filter(Boolean)
     .slice(0, max)
     .map((v) => v.slice(0, 80))
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function uniqCorrections(values: string[]): string[] {
+  const out: string[] = []
+  const seen = new Set<string>()
+  for (const raw of values) {
+    const value = raw.replace(/\s+/g, ' ').trim()
+    if (!value || value.length < 2) continue
+    const key = value.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(value.slice(0, 80))
+    if (out.length >= 4) break
+  }
+  return out
+}
+
+/**
+ * Deterministic correction detector for common player phrasing:
+ * "Mira, not Mara", "my sister's name is Mira, not Mara", "actually Mira not Mara".
+ * Returns the OLD term(s) after "not", which should be retired from active memory
+ * atoms if this turn also curates a correcting atom.
+ */
+function extractExplicitCorrections(input: string): string[] {
+  const text = String(input || '').replace(/\s+/g, ' ').trim()
+  if (!text) return []
+  const oldTerms: string[] = []
+  const proper = `[A-Z][A-Za-z0-9'’-]*(?:\\s+[A-Z][A-Za-z0-9'’-]*){0,3}`
+  for (const match of text.matchAll(new RegExp(`\\bnot\\s+(${proper})\\b`, 'g'))) {
+    oldTerms.push(match[1])
+  }
+  for (const match of text.matchAll(new RegExp(`\\b(?:actually|it is|it's|its)\\s+${proper}\\s*,?\\s+not\\s+(${proper})\\b`, 'gi'))) {
+    oldTerms.push(match[1])
+  }
+  return uniqCorrections(oldTerms)
+}
+
+function hasFirstPersonPlayerFact(input: string): boolean {
+  const t = String(input || '').toLowerCase()
+  return /\b(my|mine|i am|i'm|i have|i've|call me|my name is|remember that i)\b/.test(t)
+}
+
+function normalizePlayerFactAttribution(params: {
+  extracted: any
+  isSentient?: boolean
+  sideChat?: unknown
+  playerInput: string
+  protagonistName?: string | null
+}) {
+  const { extracted, isSentient, sideChat, playerInput, protagonistName } = params
+  if (!isSentient || sideChat || !protagonistName || !hasFirstPersonPlayerFact(playerInput)) return
+  const protagNorm = normalizeEntityName(protagonistName)
+  if (!protagNorm || !Array.isArray(extracted.memories)) return
+  const protagRe = new RegExp(`\\b${escapeRegExp(protagonistName)}\\b`, 'gi')
+  for (const mem of extracted.memories) {
+    const names = [
+      ...cleanNameList(mem.subjects),
+      ...cleanNameList(mem.objects),
+    ].map(normalizeEntityName)
+    if (!names.includes(protagNorm)) continue
+    mem.subjects = cleanNameList(mem.subjects).map((n) =>
+      normalizeEntityName(n) === protagNorm ? 'player' : n,
+    )
+    mem.objects = cleanNameList(mem.objects).map((n) =>
+      normalizeEntityName(n) === protagNorm ? 'player' : n,
+    )
+    if (typeof mem.text === 'string') {
+      mem.text = mem.text.replace(protagRe, 'the player')
+    }
+  }
+}
+
+async function supersedeExplicitCorrections(params: {
+  instanceOid: ObjectId
+  eventOid: ObjectId
+  oldTerms: string[]
+  namespaceName: string
+}): Promise<number> {
+  const { instanceOid, eventOid, oldTerms, namespaceName } = params
+  if (!oldTerms.length) return 0
+  const clauses = oldTerms.map((term) => {
+    const re = new RegExp(`\\b${escapeRegExp(term)}\\b`, 'i')
+    return { $or: [{ text: re }, { subjects: re }, { objects: re }] }
+  })
+  const stale = await mongoColl
+    .memories()
+    .find({
+      instance_id: instanceOid,
+      is_archived: false,
+      origin: { $ne: 'side_chat' },
+      source_event_ids: { $ne: eventOid },
+      $or: clauses,
+    })
+    .limit(20)
+    .toArray()
+  if (!stale.length) return 0
+
+  const namespace = getPineconeIndex().namespace(namespaceName)
+  for (const memory of stale) {
+    if (!memory.pinecone_id) continue
+    try {
+      await namespace.deleteOne({ id: memory.pinecone_id })
+    } catch (err) {
+      console.warn('Correction vector delete skipped:', (err as Error).message)
+    }
+  }
+
+  const result = await mongoColl.memories().updateMany(
+    { _id: { $in: stale.map((m) => m._id) } },
+    {
+      $set: { is_archived: true, status: 'superseded', updated_at: new Date() },
+      $addToSet: { superseded_by_event_ids: eventOid },
+    },
+  )
+  return result.modifiedCount || 0
 }
 
 /** Mark earlier open-thread memories matched by this turn's payoffs as resolved. */
@@ -123,6 +245,9 @@ export async function memoryProcessor(job: Job) {
     playerNarrationFacts = [],
     aiResponse,
     sceneTag,
+    isSentient = false,
+    playerPersonaName = null,
+    protagonistName = null,
     /** Present when the exchange is a PRIVATE side-character chat: atoms get
      *  origin 'side_chat' + known_by participant scoping. */
     sideChat = null,
@@ -135,6 +260,9 @@ export async function memoryProcessor(job: Job) {
     playerNarrationFacts?: string[]
     aiResponse: string
     sceneTag: string
+    isSentient?: boolean
+    playerPersonaName?: string | null
+    protagonistName?: string | null
     sideChat?: {
       characterId: string
       characterName: string
@@ -166,6 +294,9 @@ export async function memoryProcessor(job: Job) {
         })
         .join('\n')
     : '- (no known characters yet)'
+  const identityContext = isSentient
+    ? `\nIdentity boundary:\n- This is a sentient/character conversation. The protagonist/main character${protagonistName ? ` is "${protagonistName}"` : ''}; the human player${playerPersonaName ? ` may be called "${playerPersonaName}"` : ''} is separate.\n- Any fact in Player input using "I", "me", or "my" belongs to the player. Use subject "player" for those facts, NEVER the protagonist/main character.\n- The narration speaks to/for the player ("you"/first person). A first-person sensation, feeling, or perception in the NARRATION ("a shiver runs through me", "my heart races", "I notice…") is the PLAYER's — use subject "player", NEVER attribute it to the main character. The main character is the subject only when the prose shows THEM acting or feeling by their own name.\n- Player-mentioned off-screen relatives or possessions are facts about the player, not new present characters.\n`
+    : `\nIdentity boundary:\n- This is a GM world: the player speaks as the protagonist. Use "player" for the player's own first-person facts in memory subjects unless a specific other character acted.\n`
 
   const result = await callLLM({
     model: AI_MODELS.memoryCuration,
@@ -181,6 +312,7 @@ export async function memoryProcessor(job: Job) {
 
 Character roster (canonical names for resolution):
 ${rosterLines}
+${identityContext}
 
 Player (raw input): ${playerInput}
 Player spoken dialogue: ${playerSpokenInput || '(none)'}
@@ -204,6 +336,7 @@ World: ${aiResponse}`,
     console.warn('Memory extraction returned invalid JSON:', result)
     return { memoriesCreated: 0 }
   }
+  normalizePlayerFactAttribution({ extracted, isSentient, sideChat, playerInput, protagonistName })
 
   // Close earlier open threads this turn paid off — even when no new atom was
   // worth storing (a quiet fulfillment is still a resolution).
@@ -319,7 +452,8 @@ World: ${aiResponse}`,
   }
 
   const index = getPineconeIndex()
-  const namespace = index.namespace(`mem_${instanceId}`)
+  const namespaceName = `mem_${instanceId}`
+  const namespace = index.namespace(namespaceName)
   const newMemories: any[] = []
 
   for (const mem of extracted.memories) {
@@ -335,7 +469,12 @@ World: ${aiResponse}`,
     const objectEntityIds = entityIdsFor(objects)
     const unresolvedThread = mem.unresolved_thread === true
 
-    const embedding = await embed(text)
+    // Alternate phrasings the curator emitted: embed them WITH the atom so a future
+    // turn worded differently still lands close in vector space, and store them as
+    // search_terms (indexed for keyword recall). The displayed `text` stays clean.
+    const retrievalTerms = cleanNameList(mem.retrieval_terms, 8).map((t) => t.toLowerCase())
+    const embedInput = retrievalTerms.length ? `${text}\n${retrievalTerms.join(', ')}` : text
+    const embedding = await embed(embedInput)
 
     const vectorMetadata: Record<string, string | number | boolean | string[]> = {
       text,
@@ -391,6 +530,7 @@ World: ${aiResponse}`,
       ...(sideChat ? { origin: 'side_chat' as const, known_by_entity_ids: knownByEntityIds } : {}),
       subjects,
       objects,
+      ...(retrievalTerms.length ? { search_terms: retrievalTerms.join(', ') } : {}),
       ...(subjectEntityIds.length ? { subject_entity_ids: subjectEntityIds } : {}),
       ...(objectEntityIds.length ? { object_entity_ids: objectEntityIds } : {}),
       ...(eventTimeAnchor ? { time_anchor: eventTimeAnchor, timeline_id: eventTimeAnchor.timeline_id } : {}),
@@ -432,6 +572,27 @@ World: ${aiResponse}`,
         })
       } catch (err) {
         console.warn('Relationship edge upsert skipped:', (err as Error).message)
+      }
+    }
+  }
+
+  if (!sideChat && newMemories.length > 0) {
+    const explicitOldTerms = extractExplicitCorrections(playerInput)
+    if (explicitOldTerms.length > 0) {
+      try {
+        const superseded = await supersedeExplicitCorrections({
+          instanceOid,
+          eventOid,
+          oldTerms: explicitOldTerms,
+          namespaceName,
+        })
+        if (superseded > 0) {
+          console.log(
+            `[memory] superseded ${superseded} atom(s) via explicit correction: ${explicitOldTerms.join(', ')}`,
+          )
+        }
+      } catch (err) {
+        console.warn('Explicit correction supersession skipped:', (err as Error).message)
       }
     }
   }

@@ -57,6 +57,12 @@ export const AI_MODELS = {
   /** Embedding model for ALL vector stores (world lore + per-instance memories). */
   embedding: process.env.MODEL_EMBEDDING || 'text-embedding-3-small',
 
+  /** Cheap judge for optional, gated signal passes: memory-recall re-ranking
+   *  (RAG_RERANK_ENABLED) and borderline-NSFW intent (NSFW_INTENT_DEFER_ENABLED).
+   *  Default gpt-4o-mini (direct OpenAI key). Keep NON-Claude for cost; any
+   *  non-OpenAI id routes via OpenRouter — see ./client.ts. Set CHEAP_RANK_MODEL. */
+  cheapRank: env.CHEAP_RANK_MODEL,
+
   /** Image generation (world/character avatars + chat backgrounds). OpenRouter,
    *  modalities:["image","text"]. Default Seedream 4.5 — anime-strong, cheap,
    *  fast. Override via IMAGE_MODEL. See server/IMAGE_MODELS.md for alternates. */

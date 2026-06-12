@@ -281,6 +281,22 @@ function foldDelta(
   if (hasRelationshipDeltas(delta.relationship_deltas)) {
     target.relationship = applyRelationshipDeltas(target.relationship, delta.relationship_deltas)
   }
+  // Explicit rename/correction: the extractor may resolve a newly supplied name
+  // to an existing card ("Mira" resolved to old "Mara"). Promote the new proper
+  // name to canonical while retaining the old canonical as an alias, so rewind's
+  // ledger replay does not re-mint the stale name.
+  if (
+    !target.is_protagonist &&
+    shouldSetText(delta.resolved_name) &&
+    shouldSetText(delta.name) &&
+    normalizeName(delta.resolved_name) === normalizeName(target.canonical_name) &&
+    normalizeName(delta.name) !== normalizeName(target.canonical_name)
+  ) {
+    const oldName = target.canonical_name
+    target.canonical_name = delta.name.trim().slice(0, 120)
+    target.name_normalized = normalizeName(target.canonical_name)
+    target.aliases = uniqStrings([oldName, ...(target.aliases || []), ...aliases], 20)
+  }
   // Sticky protagonist promote — only while NO canonical protagonist exists
   // (promoting a second card would split one person into two).
   if (delta.is_protagonist === true && !target.is_protagonist && !state.protagonist) {
@@ -289,6 +305,7 @@ function foldDelta(
   }
   target.mention_count = (target.mention_count || 0) + 1
   // Newly-learned referents resolve to this card for the rest of the fold.
+  state.byName.set(target.name_normalized, target)
   for (const a of target.aliases) state.byName.set(normalizeName(a), target)
   if (!state.created.has(target)) state.dirty.add(target)
 }
@@ -598,16 +615,31 @@ export const characterCodexService = {
     const instance = await mongoColl.worldInstances().findOne({ _id: iid, player_id: pid })
     if (!instance) throw new HttpError(404, 'Instance not found')
 
+    const template = await mongoColl.worldTemplates().findOne(
+      { _id: instance.template_id },
+      { projection: { kind: 1, is_sentient: 1 } },
+    )
+    const includeProtagonistBond = template?.kind === 'character' || template?.is_sentient === true
+    const cardFilter = includeProtagonistBond
+      ? { instance_id: iid }
+      : { instance_id: iid, is_protagonist: { $ne: true } }
+
     const cards = await characters()
-      .find({ instance_id: iid, is_protagonist: { $ne: true } })
+      .find(cardFilter)
       .sort({ mention_count: -1, updated_at: -1 })
       .limit(40)
       .toArray()
 
-    // The "you" side of the bond: player/protagonist entities for this instance.
+    // The "you" side of the bond. In sentient/character worlds the protagonist
+    // card is the companion, so do not also treat the protagonist entity as
+    // "self" or its moments can collapse onto itself. GM worlds keep the old
+    // protagonist fallback because the player is the protagonist there.
+    const selfTypes: Array<'player' | 'protagonist'> = includeProtagonistBond
+      ? ['player']
+      : ['player', 'protagonist']
     const selfEntities = await mongoColl
       .entities()
-      .find({ instance_id: iid, type: { $in: ['player', 'protagonist'] } })
+      .find({ instance_id: iid, type: { $in: selfTypes } })
       .project({ _id: 1 })
       .toArray()
     const selfIds = selfEntities.map((e) => e._id as ObjectId)

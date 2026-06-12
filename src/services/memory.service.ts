@@ -20,6 +20,7 @@ import { callLLM, callLLMStream, embed, AI_MODELS } from '../ai'
 import { classifyScene } from '../../worker/lib/nsfw-classifier'
 import { extractSceneMetadata } from '../../worker/lib/metadata-extractor'
 import { EVENT_WINDOWS } from '../utils/event-window'
+import { HttpError } from '../utils/http-error'
 
 const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
@@ -255,6 +256,129 @@ async function pruneMemoryVersionLinks(
   }
 }
 
+async function pruneDanglingMemoryVersionLinks(instanceId: ObjectId): Promise<void> {
+  const linked = await memories()
+    .find(
+      {
+        instance_id: instanceId,
+        $or: [
+          { updates_memory_ids: { $exists: true, $ne: [] } },
+          { extends_memory_ids: { $exists: true, $ne: [] } },
+          { derives_from_memory_ids: { $exists: true, $ne: [] } },
+        ],
+      },
+      { projection: { updates_memory_ids: 1, extends_memory_ids: 1, derives_from_memory_ids: 1 } },
+    )
+    .toArray()
+  const referenced = [
+    ...new Set(
+      linked
+        .flatMap((m) => [
+          ...(m.updates_memory_ids || []),
+          ...(m.extends_memory_ids || []),
+          ...(m.derives_from_memory_ids || []),
+        ])
+        .map(idString),
+    ),
+  ]
+  if (referenced.length === 0) return
+  const alive = new Set(
+    (
+      await memories()
+        .find(
+          { _id: { $in: referenced.map((id) => parseObjectId(id)) } },
+          { projection: { _id: 1 } },
+        )
+        .toArray()
+    ).map((m) => idString(m._id)),
+  )
+  const dead = referenced.filter((id) => !alive.has(id)).map((id) => parseObjectId(id))
+  if (dead.length === 0) return
+  await pruneMemoryVersionLinks(instanceId, dead)
+}
+
+async function pruneAsymmetricMemoryUpdates(instanceId: ObjectId): Promise<void> {
+  const linked = await memories()
+    .find(
+      { instance_id: instanceId, updates_memory_ids: { $exists: true, $ne: [] } },
+      { projection: { updates_memory_ids: 1, source_event_ids: 1 } },
+    )
+    .toArray()
+  if (!linked.length) return
+  const oldIds = [
+    ...new Set(linked.flatMap((m) => m.updates_memory_ids || []).map(idString)),
+  ].map((id) => parseObjectId(id))
+  const oldDocs = oldIds.length
+    ? await memories()
+        .find(
+          { _id: { $in: oldIds } },
+          { projection: { _id: 1, superseded_by_event_ids: 1, status: 1, is_archived: 1 } },
+        )
+        .toArray()
+    : []
+  const oldById = new Map(oldDocs.map((m) => [idString(m._id), m]))
+  for (const m of linked) {
+    const sourceEvents = new Set((m.source_event_ids || []).map(idString))
+    const invalid = (m.updates_memory_ids || []).filter((oldId) => {
+      const old = oldById.get(idString(oldId))
+      if (!old || old.status !== 'superseded' || old.is_archived !== true) return true
+      return !(old.superseded_by_event_ids || []).some((ev) => sourceEvents.has(idString(ev)))
+    })
+    if (invalid.length > 0) {
+      await memories().updateOne(
+        { _id: m._id },
+        { $pull: { updates_memory_ids: { $in: invalid } }, $set: { updated_at: new Date() } } as never,
+      )
+    }
+  }
+}
+
+async function pruneDanglingMemoryEntityRefs(instanceId: ObjectId): Promise<void> {
+  const mems = await memories()
+    .find(
+      {
+        instance_id: instanceId,
+        is_archived: false,
+        $or: [
+          { subject_entity_ids: { $exists: true, $ne: [] } },
+          { object_entity_ids: { $exists: true, $ne: [] } },
+        ],
+      },
+      { projection: { subject_entity_ids: 1, object_entity_ids: 1 } },
+    )
+    .toArray()
+  const refs = [
+    ...new Set(
+      mems
+        .flatMap((m) => [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])])
+        .map(idString),
+    ),
+  ]
+  if (!refs.length) return
+  const alive = new Set(
+    (
+      await mongoColl
+        .entities()
+        .find(
+          { instance_id: instanceId, _id: { $in: refs.map((id) => parseObjectId(id)) } },
+          { projection: { _id: 1 } },
+        )
+        .toArray()
+    ).map((e) => idString(e._id)),
+  )
+  const dead = refs.filter((id) => !alive.has(id)).map((id) => parseObjectId(id))
+  if (!dead.length) return
+  await memories().updateMany(
+    { instance_id: instanceId },
+    {
+      $pull: {
+        subject_entity_ids: { $in: dead },
+        object_entity_ids: { $in: dead },
+      },
+    } as never,
+  )
+}
+
 async function recurateMemoriesForEvent(
   event: any,
   playerId: string,
@@ -282,6 +406,8 @@ async function recurateMemoriesForEvent(
     await memories().deleteMany({ _id: { $in: staleMemories.map((m) => m._id) } })
     deletedMemories = staleMemories.length
     await pruneMemoryVersionLinks(event.instance_id, staleMemories.map((m) => m._id))
+    await pruneDanglingMemoryVersionLinks(event.instance_id)
+    await pruneAsymmetricMemoryUpdates(event.instance_id)
     await worldInstances().updateOne(
       { _id: event.instance_id },
       { $inc: { 'meta.total_memories': -deletedMemories } },
@@ -485,10 +611,18 @@ export const memoryService = {
       spine = raw.length > 400 ? `${raw.slice(0, 400).trimEnd()}…` : raw
     }
 
+    const currentPlace = instance.current_location?.name || null
+    const currentWhen =
+      instance.current_time_anchor?.event_time_label ||
+      instance.current_time_anchor?.story_calendar?.label ||
+      null
+
     return {
       spine,
-      where: instance.current_location?.name || null,
-      when: instance.current_time_anchor?.event_time_label || null,
+      recap_text: spine,
+      where: currentPlace,
+      current_place: currentPlace,
+      when: currentWhen,
       open_threads: openThreads.map((m) => ({
         id: idString(m._id),
         text: m.text,
@@ -804,6 +938,13 @@ export const memoryService = {
     } catch (err) {
       console.warn('Rewind: entity graph repair failed:', (err as Error).message)
     }
+    try {
+      await pruneDanglingMemoryEntityRefs(iid)
+      await pruneDanglingMemoryVersionLinks(iid)
+      await pruneAsymmetricMemoryUpdates(iid)
+    } catch (err) {
+      console.warn('Rewind: memory graph cleanup failed:', (err as Error).message)
+    }
 
     // 4. Replay survivors from template defaults to rebuild state.
     const statLimits: Record<string, { min: number; max: number }> = {}
@@ -878,6 +1019,18 @@ export const memoryService = {
     const eid = parseObjectId(eventId)
     const pid = parseObjectId(playerId)
 
+    if (typeof updates.ai_response === 'string' && updates.ai_response.trim().length === 0) {
+      throw new HttpError(400, 'ai_response cannot be empty.')
+    }
+    if (typeof updates.player_input === 'string' && updates.player_input.trim().length === 0) {
+      throw new HttpError(400, 'player_input cannot be empty.')
+    }
+    const hasAiResponse = typeof updates.ai_response === 'string'
+    const hasPlayerInput = typeof updates.player_input === 'string'
+    if (!hasAiResponse && !hasPlayerInput) {
+      throw new HttpError(400, 'No editable event fields provided. Use ai_response and/or player_input.')
+    }
+
     const event = await events().findOne({
       _id: eid,
       player_id: pid,
@@ -894,6 +1047,9 @@ export const memoryService = {
       typeof updates.player_input === 'string' &&
       updates.player_input !== event.data.player_input
     const contentChanged = aiChanged || playerChanged
+    if (!contentChanged) {
+      throw new HttpError(400, 'Event edit did not change ai_response or player_input.')
+    }
     const replayVariants = normalizeReplayVariants(event)
     const [editCharacterNames, editInstance] = await Promise.all([
       characterNamesForInstance(event.instance_id),

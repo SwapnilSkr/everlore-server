@@ -18,6 +18,10 @@ export function normalizeEntityName(name: string): string {
     .replace(/\s+/g, ' ')
 }
 
+function normalizeLocationName(name: string): string {
+  return normalizeEntityName(name).replace(/^(?:the|a|an)\s+/, '')
+}
+
 /**
  * Generic / relative place labels that must NEVER become a canonical location of
  * their own ("the room", "here", "outside", …). On a turn with no narrated
@@ -303,7 +307,37 @@ export const entityGraphService = {
       // prevents. The memory already carries the real place via its location_anchor;
       // the redundant subject/object link is pure noise. (Found by a live turn:
       // "seeks refuge in his room" minted a bare "room" beside "<owner>'s room".)
-      if (mention.type === 'location' && isVagueLocationLabel(normalized)) continue
+      if (mention.type === 'location') {
+        if (isVagueLocationLabel(normalized)) continue
+        // Route memory-mention places through the SAME canonical resolver the
+        // cursor uses (article-stripped + fuzzy + existing-atlas dedup) instead
+        // of this naive byName path, which keyed on the article-kept form and so
+        // fragmented "the Wildwood" / "Wildwood" / "Wildwood Forest" into 3 nodes
+        // (run a–d cluster D). viewpointMoved:true so a SPECIFIC named place still
+        // resolves/mints; vague labels are already filtered above.
+        const anchor = await this.resolveLocationAnchor({
+          instanceId,
+          playerId,
+          sequence,
+          name,
+          viewpointMoved: true,
+        })
+        if (anchor) {
+          // Store under the article-kept key the caller looks up by
+          // (entityMap.get(normalizeEntityName(name))). resolveLocationAnchor
+          // already bumped mention_count/last_seen, so don't touch it again.
+          const prior = byName.get(normalized)
+          byName.set(normalized, {
+            ...(prior || {}),
+            _id: anchor.entity_id,
+            instance_id: iid,
+            type: 'location',
+            canonical_name: anchor.name,
+            name_normalized: anchor.name_normalized,
+          } as EntityDoc)
+        }
+        continue
+      }
 
       const existing = byName.get(normalized)
       if (existing) {
@@ -744,7 +778,7 @@ export const entityGraphService = {
     create?: { parentId?: ObjectId | null; worldRootId?: ObjectId | null; placeKind?: string }
   }): Promise<{ entity_id: ObjectId; name: string; name_normalized: string } | null> {
     const name = String(params.name || '').replace(/\s+/g, ' ').trim().slice(0, 120)
-    const normalized = normalizeEntityName(name)
+    const normalized = normalizeLocationName(name)
     if (!normalized || normalized.length < 3) return null
 
     // Vague-label guard (P0): a generic/relative label on a turn with no narrated
@@ -881,7 +915,7 @@ export const entityGraphService = {
     cursorEntityId?: ObjectId | string | null
   }): Promise<{ entity_id: ObjectId; name: string; name_normalized: string } | null> {
     const name = String(params.name || '').replace(/\s+/g, ' ').trim().slice(0, 120)
-    const normalized = normalizeEntityName(name)
+    const normalized = normalizeLocationName(name)
     const movement = params.movement || (params.viewpointMoved ? 'lateral' : 'none')
     const moved = params.viewpointMoved === true || movement !== 'none'
     const iid = parseObjectId(params.instanceId)
@@ -925,16 +959,13 @@ export const entityGraphService = {
       }
     }
 
-    if (!normalized || normalized.length < 3) return null
-    // Vague label on an unmoved turn → stay put (the cursor).
-    if (!moved && isVagueLocationLabel(normalized)) return null
-
     // World shift: mint/reuse a world-root for the realm, hang the place under it.
     if (movement === 'world_shift') {
       const realmName = (params.containmentHint && !isVagueLocationLabel(params.containmentHint))
         ? params.containmentHint.replace(/\s+/g, ' ').trim().slice(0, 120)
         : name
-      const realmNorm = normalizeEntityName(realmName)
+      const realmNorm = normalizeLocationName(realmName)
+      if (!realmNorm || realmNorm.length < 3) return null
       let root = (await entities().findOne({
         instance_id: iid, type: 'location', name_normalized: realmNorm,
         $expr: { $eq: ['$world_root_id', '$_id'] },
@@ -953,7 +984,7 @@ export const entityGraphService = {
       }
       if (!root) return null
       // The realm itself is the destination when no distinct sub-place was named.
-      if (realmNorm === normalized) {
+      if (!normalized || realmNorm === normalized) {
         return { entity_id: root._id, name: root.canonical_name, name_normalized: root.name_normalized }
       }
       return this.resolveLocationAnchor({
@@ -962,6 +993,10 @@ export const entityGraphService = {
         create: { parentId: root._id, worldRootId: root._id },
       })
     }
+
+    if (!normalized || normalized.length < 3) return null
+    // Vague label on an unmoved turn → stay put (the cursor).
+    if (!moved && isVagueLocationLabel(normalized)) return null
 
     // Same-world placement. Resolve an explicit container hint (scoped) to use as
     // the parent; otherwise infer the parent from the movement direction.
@@ -1314,6 +1349,15 @@ export const entityGraphService = {
       })
       deletedEdges += edgeRes.deletedCount || 0
       await entities().deleteMany({ _id: { $in: ids } })
+      // A memory that SURVIVES the rewind (its source turn predates the cut) may
+      // still reference one of these now-deleted entities in its subject/object
+      // refs — the entity was first seen in a removed turn but named earlier.
+      // Pull the dangling ids so continuity-audit's memory_entity_refs check
+      // stays clean (cluster N1: orphan memory → missing entity after rewind).
+      await mongoColl.memories().updateMany(
+        { instance_id: iid, $or: [{ subject_entity_ids: { $in: ids } }, { object_entity_ids: { $in: ids } }] },
+        { $pull: { subject_entity_ids: { $in: ids }, object_entity_ids: { $in: ids } } } as never,
+      )
     }
     await entities().updateMany(
       { instance_id: iid, last_seen_sequence: { $gte: sequence } },
