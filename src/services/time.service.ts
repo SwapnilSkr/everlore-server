@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
+import { callLLM, AI_MODELS } from '../ai'
 import type {
   StoryCalendarDateDoc,
   StoryCalendarDoc,
@@ -25,6 +26,113 @@ const DEFAULT_MONTHS = [
   'Starwane',
   'Yearsend',
 ].map((name) => ({ name, days: 30 }))
+
+// Real-world calendar — the deterministic fallback AND what a modern/contemporary/
+// historical/realistic-sci-fi world should use, so a noir or startup world never
+// shows fantasy month names. (Leap years ignored; the date math is day-level.)
+const GREGORIAN_MONTHS = [
+  { name: 'January', days: 31 }, { name: 'February', days: 28 },
+  { name: 'March', days: 31 }, { name: 'April', days: 30 },
+  { name: 'May', days: 31 }, { name: 'June', days: 30 },
+  { name: 'July', days: 31 }, { name: 'August', days: 31 },
+  { name: 'September', days: 30 }, { name: 'October', days: 31 },
+  { name: 'November', days: 30 }, { name: 'December', days: 31 },
+]
+const GREGORIAN_WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+
+interface CalendarSpec {
+  name: string
+  eras: string[]
+  months: { name: string; days: number }[]
+  weekdays: string[]
+}
+
+// The model is a WITNESS that only CLASSIFIES the setting; the server owns the
+// structure. This is deliberate: the small model happily invents atmospheric
+// month names for a "modern" cyberpunk/noir world (observed: Neon Divide got
+// "Neonrise/Surveillance/Flicker"), so we never let it author the months for a
+// real-world setting — modern always gets the deterministic Gregorian calendar.
+const CALENDAR_DERIVE_PROMPT = `You classify the SETTING of an interactive-story world and, only for non-Earth worlds, design its calendar.
+
+First decide "setting":
+- "modern" — the world uses the REAL human/Earth calendar. This includes present-day, contemporary, historical Earth, near-future, CYBERPUNK, noir, dystopian, post-apocalyptic Earth, and human space colonies. If real human months (January, etc.) would make sense, it is "modern".
+- "fantasy" — a genuinely non-Earth world with its OWN reckoning of time: high/epic fantasy, mythic, alien planets, other planes/realms (e.g. a shadow realm), other-world sci-fi.
+
+If "modern": return setting only (the server supplies the real calendar). You may still give a "name".
+If "fantasy": INVENT a calendar fitting THIS world's specific tone — themed month names, weekday names, a fitting era. Derive names from the world's own flavour (an alien world feels alien; a shadow realm shadowy); do NOT reuse generic boilerplate. 8-14 months, each "days" 20-40, 5-10 weekdays, names <= 20 chars, 0-2 eras.
+
+Respond ONLY with JSON: {"setting":"modern|fantasy","name":"<calendar name>","eras":["..."],"months":[{"name":"...","days":30}],"weekdays":["..."]}`
+
+function buildCalendarSpec(parsed: unknown): CalendarSpec | null {
+  if (!parsed || typeof parsed !== 'object') return null
+  const p = parsed as Record<string, unknown>
+  const name = cleanLabel(p.name as string)?.slice(0, 60) || DEFAULT_CALENDAR_NAME
+  // Modern / real-Earth → the REAL calendar, server-owned + deterministic, so a
+  // stylized-but-modern world (cyberpunk, noir) can never get invented months.
+  if (String(p.setting || '').toLowerCase() !== 'fantasy') {
+    return { name, eras: [], months: GREGORIAN_MONTHS, weekdays: GREGORIAN_WEEKDAYS }
+  }
+  // Fantasy / alien / otherworldly → use the model's themed calendar (validated).
+  const months = (Array.isArray(p.months) ? p.months : [])
+    .map((m) => {
+      const mm = (m || {}) as Record<string, unknown>
+      const monthName = cleanLabel(mm.name as string)?.slice(0, 24)
+      const days = Math.round(Number(mm.days))
+      return monthName && Number.isFinite(days) && days >= 1 && days <= 100
+        ? { name: monthName, days }
+        : null
+    })
+    .filter((m): m is { name: string; days: number } => m !== null)
+    .slice(0, 24)
+  // Too few months to be a usable themed calendar → fall back to Gregorian.
+  if (months.length < 4) return null
+  const weekdays = (Array.isArray(p.weekdays) ? p.weekdays : [])
+    .map((w) => cleanLabel(w as string)?.slice(0, 24))
+    .filter((w): w is string => !!w)
+    .slice(0, 14)
+  const eras = (Array.isArray(p.eras) ? p.eras : [])
+    .map((e) => cleanLabel(e as string)?.slice(0, 40))
+    .filter((e): e is string => !!e)
+    .slice(0, 4)
+  return { name, eras, months, weekdays: weekdays.length ? weekdays : GREGORIAN_WEEKDAYS }
+}
+
+/**
+ * Derive a world-appropriate calendar from the template's premise via the cheap
+ * model: a modern/realistic world gets the real Gregorian calendar; a fantasy/
+ * alien/shadow realm gets a themed calendar generated to fit its tone. Returns
+ * null on any failure or junk output so the caller falls back to Gregorian — the
+ * seed must never break instance creation.
+ */
+async function deriveCalendarSpec(template: {
+  title?: string
+  description?: string
+  seed_prompt?: string
+  global_lore?: string
+}): Promise<CalendarSpec | null> {
+  try {
+    const premise = [template.title, template.description, template.seed_prompt, template.global_lore]
+      .filter(Boolean)
+      .join('\n')
+      .slice(0, 1500)
+      .trim()
+    if (!premise) return null
+    const raw = await callLLM({
+      model: AI_MODELS.metadata,
+      temperature: 0.4,
+      maxTokens: 500,
+      responseFormat: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: CALENDAR_DERIVE_PROMPT },
+        { role: 'user', content: `World premise:\n${premise}` },
+      ],
+    })
+    return buildCalendarSpec(JSON.parse(raw))
+  } catch (err) {
+    console.warn('Calendar derivation failed, using Gregorian:', (err as Error).message)
+    return null
+  }
+}
 
 function cleanLabel(value?: string | null): string | undefined {
   const v = String(value || '').replace(/\s+/g, ' ').trim()
@@ -128,15 +236,30 @@ export const timeService = {
     })) as StoryCalendarDoc | null
     if (existing) return existing
 
+    // Derive a world-appropriate calendar from the template (modern/realistic →
+    // Gregorian; fantasy/alien/shadow → a themed calendar generated to fit the
+    // world's tone). One-time per instance — every later call hits the early
+    // return above, so this LLM cost never touches the turn hot path. Falls back
+    // to the real Gregorian calendar on any failure, NEVER the old generic
+    // fantasy default that mismatched modern worlds.
+    let spec: CalendarSpec | null = null
+    if (templateId) {
+      const template = (await mongoColl.worldTemplates().findOne(
+        { _id: parseObjectId(templateId) },
+        { projection: { title: 1, description: 1, seed_prompt: 1, global_lore: 1 } },
+      )) as { title?: string; description?: string; seed_prompt?: string; global_lore?: string } | null
+      if (template) spec = await deriveCalendarSpec(template)
+    }
+
     const now = new Date()
     const doc: StoryCalendarDoc = {
       _id: new ObjectId(),
       ...(templateId ? { template_id: parseObjectId(templateId) } : {}),
       instance_id: iid,
-      name: DEFAULT_CALENDAR_NAME,
-      eras: ['First Era'],
-      months: DEFAULT_MONTHS,
-      weekdays: ['Sunsday', 'Moonday', 'Starsday', 'Windsday', 'Earthday', 'Firesday', 'Watersday'],
+      name: spec?.name || DEFAULT_CALENDAR_NAME,
+      eras: spec?.eras ?? [],
+      months: spec?.months ?? GREGORIAN_MONTHS,
+      weekdays: spec?.weekdays ?? GREGORIAN_WEEKDAYS,
       is_default: true,
       created_at: now,
       updated_at: now,
