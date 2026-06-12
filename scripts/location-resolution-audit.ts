@@ -228,8 +228,15 @@ async function main() {
   console.log('\n=== Cartographer: containment + world-roots ===')
   const cg = new ObjectId() // isolated instance for the graph scenarios
   const cgPlayer = new ObjectId()
-  const place = (name: string) =>
-    entities().findOne({ instance_id: cg, type: 'location', name_normalized: normalizeEntityName(name) }) as Promise<EntityDoc | null>
+  const place = (name: string) => {
+    const raw = normalizeEntityName(name)
+    const articleless = raw.replace(/^(?:the|a|an)\s+/, '')
+    return entities().findOne({
+      instance_id: cg,
+      type: 'location',
+      name_normalized: { $in: [...new Set([raw, articleless])] },
+    }) as Promise<EntityDoc | null>
+  }
 
   // Seed: mansion (root-level, parent unknown) containing the dining room.
   const mansion = mkLocation(cg, cgPlayer, 'mansion', 1)

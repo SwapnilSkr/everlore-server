@@ -37,6 +37,15 @@ function sameChoices(a: Choice[] = [], b: Choice[] = []): boolean {
 function fmt(choices: Choice[] = []): string {
   return choices.length ? choices.map((c) => `[${c.kind}] ${c.label}`).join(' | ') : '(none)'
 }
+async function rejects(label: string, fn: () => Promise<unknown>, messageIncludes: string) {
+  try {
+    await fn()
+    ok(label, false, 'resolved unexpectedly')
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    ok(label, msg.includes(messageIncludes), msg)
+  }
+}
 
 async function main() {
   await connectMongo()
@@ -95,7 +104,20 @@ async function main() {
     ok('select(replay) restores non-empty chips', ev.data.choices?.length >= 2 && sameChoices(ev.data.choices, replayChoices),
       fmt(ev.data.choices))
 
-    // 4. EDIT (rewrite prose) — regenerates chips, returns them, stores on 'edit' variant.
+    // 4. EDIT rejects stale/wrong request fields instead of marking a no-op.
+    console.log('--- editEvent { narrative } wrong field ---')
+    await rejects(
+      'edit rejects wrong field instead of no-op recuration',
+      () => memoryService.editEvent(eid, String(playerId), { narrative: 'wrong key' }),
+      'No editable event fields provided',
+    )
+    await rejects(
+      'edit rejects empty ai_response',
+      () => memoryService.editEvent(eid, String(playerId), { ai_response: '' }),
+      'ai_response cannot be empty',
+    )
+
+    // 5. EDIT (rewrite prose) — regenerates chips, returns them, stores on 'edit' variant.
     console.log('--- editEvent { ai_response } ---')
     const rewrite = `*I draw a slow breath and step into the candlelight, no longer willing to stand unseen at the edge of my own family.* "I'm here too," *I say, and the words land heavier than I meant them to.*`
     const editRes: any = await memoryService.editEvent(eid, String(playerId), { ai_response: rewrite })
@@ -109,7 +131,7 @@ async function main() {
     ok("edit variant is 'edit' source w/ its own chips", lastVar?.source === 'edit' && sameChoices(lastVar?.choices, editRes.choices),
       `source=${lastVar?.source}`)
 
-    // 5. EDIT (player input only) — prose unchanged → chips untouched, returns null.
+    // 6. EDIT (player input only) — prose unchanged → chips untouched, returns null.
     console.log('--- editEvent { player_input } only ---')
     const beforePlayerEdit: Choice[] = ev.data.choices || []
     const playerEditRes: any = await memoryService.editEvent(eid, String(playerId), { player_input: '*I square my shoulders.*' })
