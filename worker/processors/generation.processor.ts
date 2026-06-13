@@ -667,6 +667,51 @@ export async function generationProcessor(job: Job) {
     if (!/[A-ZÀ-Þ]/.test(t)) return true;
     return false;
   };
+  // Family-role NPCs are often introduced before they have proper-name cards,
+  // especially GM premises like "your father / mother / twin sister". The
+  // metadata model may surface them as lowercase labels ("sister", "father").
+  // Those are generic-looking, but they are real scene participants and must
+  // seed codex extraction. Keep child/self-facing labels out so the player does
+  // not become a separate "Son" / "Child" card.
+  const trackableFamilyLabels = new Set([
+    "father",
+    "mother",
+    "mom",
+    "dad",
+    "parent",
+    "parents",
+    "sister",
+    "brother",
+    "sibling",
+    "twin sister",
+    "twin brother",
+    "twin",
+    "wife",
+    "husband",
+    "spouse",
+    "partner",
+    "fiancee",
+    "fiance",
+    "girlfriend",
+    "boyfriend",
+    "cousin",
+    "aunt",
+    "uncle",
+    "grandmother",
+    "grandfather",
+    "grandma",
+    "grandpa",
+  ]);
+  const familyPresenceLabel = (raw: string): string | null => {
+    const n = articleStrip(normalizeEntityName(String(raw || "")))
+      .replace(/^(?:my|your|his|her|their|our)\s+/, "")
+      .trim();
+    if (!trackableFamilyLabels.has(n)) return null;
+    return n
+      .split(" ")
+      .map((part) => part ? part[0].toUpperCase() + part.slice(1) : part)
+      .join(" ");
+  };
   parsed.present_characters = (() => {
     const candidates = sceneBroke
       ? (parsed.present_characters || [])
@@ -682,9 +727,10 @@ export async function generationProcessor(job: Job) {
       const key = presenceKeyOf(name);
       if (!key || seen.has(key) || departed.has(key)) continue;
       if (playerPresenceKey && key === playerPresenceKey) continue;
-      if (!presenceIsKnown(name) && isGenericLabel(name)) continue;
+      const familyLabel = !presenceIsKnown(name) ? familyPresenceLabel(name) : null;
+      if (!presenceIsKnown(name) && isGenericLabel(name) && !familyLabel) continue;
       seen.add(key);
-      out.push(presenceDisplayOf(name));
+      out.push(familyLabel || presenceDisplayOf(name));
       if (out.length >= 12) break;
     }
     return out;
