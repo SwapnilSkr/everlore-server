@@ -388,6 +388,21 @@ ${buildLengthDirective(session.message_length)}`;
             })),
           }),
         );
+
+        // Tell the Chronicle projection surfaces (Bonds/Threads/Recap/Codex) to
+        // refresh: a side chat just mutated relationship meters + codex via
+        // applyDeltas/syncRelationshipEdges above, but those surfaces only listen
+        // for this frame. Emitted ONCE per side-chat turn, after the mutations
+        // land. Same channel/envelope convention as the frames above.
+        await redis.publish(
+          channel,
+          JSON.stringify({
+            type: "world_projection_updated",
+            instance_id: instanceId,
+            scopes: ["bonds", "threads", "recap", "codex"],
+            source: "side_chat",
+          }),
+        );
       } catch (err) {
         console.warn("side-chat codex update failed:", (err as Error).message);
       }

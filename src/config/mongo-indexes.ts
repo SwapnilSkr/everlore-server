@@ -205,6 +205,14 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { instance_id: 1, character_id: 1 },
     options: { sparse: true, name: "idx_entities_instance_character" },
   },
+  // Bounded candidate lookup for free-text mention matching: query only entities
+  // whose normalized name/alias tokens intersect the input's tokens, instead of
+  // loading the whole (stub-heavy) registry. Multikey over name_tokens[].
+  {
+    collection: COLLECTIONS.entities,
+    key: { instance_id: 1, name_tokens: 1 },
+    options: { name: "idx_entities_instance_name_tokens" },
+  },
   // Children lookup + subtree world_root_id refresh on re-parent (P1 spine).
   {
     collection: COLLECTIONS.entities,
@@ -382,6 +390,20 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     collection: COLLECTIONS.projection_checkpoint_chunks,
     key: { instance_id: 1, sequence: 1 },
     options: { name: "idx_projection_checkpoint_chunks_instance_sequence" },
+  },
+
+  // location_stats (materialized Places projection: one row per place per
+  // instance, maintained incrementally so the Places tab never re-aggregates the
+  // whole world). Natural key + the most-recently-seen-first read.
+  {
+    collection: COLLECTIONS.location_stats,
+    key: { instance_id: 1, entity_id: 1 },
+    options: { unique: true, name: "uniq_location_stats_instance_entity" },
+  },
+  {
+    collection: COLLECTIONS.location_stats,
+    key: { instance_id: 1, last_seen_sequence: -1 },
+    options: { name: "idx_location_stats_instance_last_seen" },
   },
 ]
 

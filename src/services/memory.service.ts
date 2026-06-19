@@ -257,9 +257,28 @@ async function projectLatestReplayTurn(params: {
     activeFlags[key] = def.default
   }
 
+  // FINDING 1: resume from the most recent projection checkpoint strictly BEFORE
+  // this turn and replay only the SUFFIX of prior turns' deltas, rather than
+  // scanning every prior event. Same final state — purely O(n)->O(suffix).
+  // Falls back to a full prior-event scan when no usable checkpoint exists.
+  const snapshot = await projectionCheckpointService
+    .instanceStateBefore(instanceId, eventSequence - 1, { mustBeBefore: eventSequence })
+    .catch(() => null)
+  const priorScanGt = snapshot ? snapshot.sequence : -1
+  if (snapshot) {
+    // Seed from the checkpoint, but keep any template-default keys the snapshot
+    // lacks (a stat added after the checkpoint was written).
+    worldState = { ...worldState, ...(snapshot.world_state || {}) }
+    activeFlags = { ...activeFlags, ...(snapshot.active_flags || {}) }
+  }
+
   const projectionEvents = await events()
     .find(
-      { instance_id: event.instance_id, sequence: { $lt: eventSequence }, type: { $ne: 'side_chat' } },
+      {
+        instance_id: event.instance_id,
+        sequence: { $lt: eventSequence, $gt: priorScanGt },
+        type: { $ne: 'side_chat' },
+      },
       { projection: { sequence: 1, scene_tag: 1, 'data.state_mutations': 1, 'data.flag_mutations': 1 } },
     )
     .sort({ sequence: 1 })
@@ -271,14 +290,47 @@ async function projectLatestReplayTurn(params: {
   worldState = applyStateMutations(worldState, meta.state_mutations || {}, statLimits)
   activeFlags = applyFlagMutations(activeFlags, meta.flag_mutations || {})
 
+  // Scene turn-count: walk the tail (this turn + the suffix) back to the first
+  // scene-tag change. If the run of matching tags reaches the start of the
+  // suffix without breaking and we haven't hit the summary threshold, the run
+  // may extend behind the checkpoint — fall back to a full prior-event scan so
+  // the count stays exact.
   const sceneEvents = [
     ...projectionEvents.map((ev) => ({ scene_tag: ev.scene_tag })),
     { scene_tag: meta.scene_tag },
   ]
   let rawTurnCount = 0
+  let runReachedSuffixStart = false
   for (let i = sceneEvents.length - 1; i >= 0; i--) {
-    if (sceneEvents[i].scene_tag === meta.scene_tag) rawTurnCount++
-    else break
+    if (sceneEvents[i].scene_tag === meta.scene_tag) {
+      rawTurnCount++
+      if (i === 0) runReachedSuffixStart = true
+    } else {
+      runReachedSuffixStart = false
+      break
+    }
+  }
+  if (
+    snapshot &&
+    runReachedSuffixStart &&
+    rawTurnCount < SCENE_SUMMARY_BLOCK &&
+    priorScanGt >= 0
+  ) {
+    const behindCheckpoint = await events()
+      .find(
+        {
+          instance_id: event.instance_id,
+          sequence: { $lte: priorScanGt },
+          type: { $ne: 'side_chat' },
+        },
+        { projection: { scene_tag: 1 } },
+      )
+      .sort({ sequence: -1 })
+      .toArray()
+    for (const ev of behindCheckpoint) {
+      if (ev.scene_tag === meta.scene_tag) rawTurnCount++
+      else break
+    }
   }
   const shouldSummarize = rawTurnCount >= SCENE_SUMMARY_BLOCK
   const currentScene = {
@@ -1459,8 +1511,26 @@ export const memoryService = {
       activeFlags[key] = def.default
     }
 
-    // Reuse the single projected load fetched above (no second full scan).
-    for (const ev of survivors) {
+    // FINDING 2: resume from the most recent projection checkpoint at/before the
+    // last surviving turn and replay only the SUFFIX of survivor deltas, instead
+    // of folding every surviving turn. Same final state; falls back to a full
+    // survivor replay when no usable checkpoint exists. `survivors` itself is
+    // still loaded in full above for the codex/kinship/graph rebuilds.
+    const lastSurvivingSeq = survivors.length ? survivors[survivors.length - 1].sequence : 0
+    const stateSnapshot =
+      lastSurvivingSeq > 0
+        ? await projectionCheckpointService
+            .instanceStateBefore(instanceId, lastSurvivingSeq)
+            .catch(() => null)
+        : null
+    if (stateSnapshot) {
+      worldState = { ...worldState, ...(stateSnapshot.world_state || {}) }
+      activeFlags = { ...activeFlags, ...(stateSnapshot.active_flags || {}) }
+    }
+    const stateSuffix = stateSnapshot
+      ? survivors.filter((ev) => ev.sequence > stateSnapshot.sequence)
+      : survivors
+    for (const ev of stateSuffix) {
       worldState = applyStateMutations(worldState, ev.data?.state_mutations || {}, statLimits)
       activeFlags = applyFlagMutations(activeFlags, ev.data?.flag_mutations || {})
     }
@@ -1512,6 +1582,22 @@ export const memoryService = {
 
     // 7. Drop the cached session so the next generation uses fresh state.
     await getRedisClient().del(`session:${instanceId}`)
+
+    // Tell every connected client which projections this rewind invalidated so
+    // they can refetch the affected surfaces (see SHARED CONTRACT v1 item 4).
+    try {
+      await getRedisClient().publish(
+        `user:${playerId}:events`,
+        JSON.stringify({
+          type: 'world_projection_updated',
+          instance_id: instanceId,
+          scopes: ['bonds', 'threads', 'recap', 'places', 'calendar', 'codex', 'presence'],
+          source: 'rewind',
+        }),
+      )
+    } catch (err) {
+      console.warn('Rewind: world_projection_updated publish failed:', (err as Error).message)
+    }
 
     return { success: true, deletedEvents: doomedIds.length, deletedMemories }
   },
@@ -1633,6 +1719,7 @@ export const memoryService = {
           prose_hygiene_issues: proseHygieneIssues,
           choices: editChoices,
           present_characters: editPresent,
+          trackable_mentions: editTrackableMentions || [],
         })
       }
       nextSelectedReplayIndex = nextReplayVariants.length - 1
@@ -1681,6 +1768,25 @@ export const memoryService = {
         nextAiResponse || '',
       )
       await staleSummariesCoveringEvent(event)
+    }
+
+    // Notify clients which projections this edit invalidated (SHARED CONTRACT v1
+    // item 4). An AI rewrite can move bonds/threads/codex/places/etc.; a
+    // player-only edit only reshapes recap/threads.
+    try {
+      await getRedisClient().publish(
+        `user:${playerId}:events`,
+        JSON.stringify({
+          type: 'world_projection_updated',
+          instance_id: idString(event.instance_id),
+          scopes: aiChanged
+            ? ['bonds', 'threads', 'recap', 'places', 'calendar', 'codex', 'presence']
+            : ['threads', 'recap'],
+          source: 'edit',
+        }),
+      )
+    } catch (err) {
+      console.warn('editEvent: world_projection_updated publish failed:', (err as Error).message)
     }
 
     return {
@@ -1941,6 +2047,7 @@ ${replayDirective || '(none)'}`,
       prose_hygiene_issues: repairedReplay.issues,
       choices: replayMeta.choices,
       present_characters: replayMeta.present_characters,
+      trackable_mentions: replayTrackableMentions,
       state_mutations: replayMeta.state_mutations,
       flag_mutations: replayMeta.flag_mutations,
       scene_tag: replayMeta.scene_tag,
@@ -2019,12 +2126,23 @@ ${replayDirective || '(none)'}`,
     })
 
     const updated = await events().findOne({ _id: eid })
+    // Post-replay instance projection for the replay_complete frame (SHARED
+    // CONTRACT v1 item 3) so the client can update the Play instance directly.
+    // current_time_anchor is unchanged by replay, so read it from the instance.
+    const instance_state = {
+      world_state: replayProjection.worldState,
+      active_flags: replayProjection.activeFlags,
+      current_scene: replayProjection.currentScene,
+      current_location: replayProjection.locationAnchor,
+      current_time_anchor: (instance as any).current_time_anchor ?? null,
+    }
     return {
       success: true,
       event: updated,
       replay_count: nextVariants.length,
       selected_index: selectedIdx,
       memories_deleted: deletedMemories,
+      instance_state,
     }
   },
 
@@ -2109,18 +2227,6 @@ ${replayDirective || '(none)'}`,
             codex: selectedCodex as any[],
         })
         : null
-    const nextVariants = [...variants]
-    if (selectedProjection) {
-      nextVariants[variantIndex] = {
-        ...chosen,
-        prose_hygiene_issues: proseHygieneIssues,
-        choices: selectedProjection.meta.choices,
-        present_characters: selectedProjection.meta.present_characters,
-        state_mutations: selectedProjection.meta.state_mutations,
-        flag_mutations: selectedProjection.meta.flag_mutations,
-        scene_tag: selectedProjection.meta.scene_tag,
-      }
-    }
     const selectedCodexDeltas =
       changed && selectedProjection && selectedInstance && selectedTemplate
         ? await extractReplayCodexDeltas({
@@ -2142,6 +2248,20 @@ ${replayDirective || '(none)'}`,
           })
         : null
     const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas)
+
+    const nextVariants = [...variants]
+    if (selectedProjection) {
+      nextVariants[variantIndex] = {
+        ...chosen,
+        prose_hygiene_issues: proseHygieneIssues,
+        choices: selectedProjection.meta.choices,
+        present_characters: selectedProjection.meta.present_characters,
+        trackable_mentions: selectedTrackableMentions ?? chosen.trackable_mentions ?? [],
+        state_mutations: selectedProjection.meta.state_mutations,
+        flag_mutations: selectedProjection.meta.flag_mutations,
+        scene_tag: selectedProjection.meta.scene_tag,
+      }
+    }
 
     await events().updateOne(
       { _id: eid },
@@ -2218,6 +2338,24 @@ ${replayDirective || '(none)'}`,
         }).catch((err) => {
           console.warn('Replay selection: codex/kinship rebuild skipped:', (err as Error).message)
         })
+      }
+    }
+
+    if (changed) {
+      // Selecting a different variant re-projects the turn — same surfaces an
+      // edit touches (SHARED CONTRACT v1 item 4).
+      try {
+        await getRedisClient().publish(
+          `user:${playerId}:events`,
+          JSON.stringify({
+            type: 'world_projection_updated',
+            instance_id: idString(event.instance_id),
+            scopes: ['bonds', 'threads', 'recap', 'places', 'calendar', 'codex', 'presence'],
+            source: 'edit',
+          }),
+        )
+      } catch (err) {
+        console.warn('selectReplayVariant: world_projection_updated publish failed:', (err as Error).message)
       }
     }
 

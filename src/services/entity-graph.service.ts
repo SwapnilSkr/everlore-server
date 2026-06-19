@@ -24,6 +24,40 @@ function normalizeLocationName(name: string): string {
   return normalizeEntityName(name).replace(/^(?:the|a|an)\s+/, '')
 }
 
+/** Min token length that participates in indexed mention matching — mirrors the
+ *  ≥3-char whole-word rule in findEntitiesMentioned ("Vex" hits, "of"/"an" don't). */
+const ENTITY_TOKEN_MIN = 3
+
+/** Normalized lowercase WORD tokens (≥3 chars) of an entity's canonical name +
+ *  aliases — the indexed `name_tokens` field used for bounded candidate lookup. */
+export function entityNameTokens(canonicalName: string, aliases: string[] = []): string[] {
+  const out = new Set<string>()
+  for (const raw of [canonicalName, ...aliases]) {
+    for (const tok of normalizeEntityName(String(raw || '')).split(' ')) {
+      if (tok.length >= ENTITY_TOKEN_MIN) out.add(tok)
+    }
+  }
+  return [...out]
+}
+
+/** Candidate tokens FROM the input text. Capitalization is the strongest cue for
+ *  a proper noun, but we also keep all ≥3-char normalized words so a lowercased or
+ *  mid-sentence name still matches — the indexed query is just a candidate FILTER;
+ *  the exact whole-word check downstream preserves matching semantics. */
+function inputCandidateTokens(text: string): string[] {
+  const out = new Set<string>()
+  // Capitalized runs ("Captain Vex") → their individual normalized tokens.
+  for (const m of text.match(/\b[A-Z][a-zA-Z'’-]+/g) || []) {
+    const n = normalizeEntityName(m)
+    if (n.length >= ENTITY_TOKEN_MIN) out.add(n)
+  }
+  // All normalized words too (covers lowercased mentions + alias words).
+  for (const tok of normalizeEntityName(text).split(' ')) {
+    if (tok.length >= ENTITY_TOKEN_MIN) out.add(tok)
+  }
+  return [...out]
+}
+
 /**
  * Generic / relative place labels that must NEVER become a canonical location of
  * their own ("the room", "here", "outside", …). On a turn with no narrated
@@ -265,6 +299,7 @@ function isStubStatus(s: string | undefined): boolean {
 /** Cap on per-entity witness provenance — enough to survive partial rewinds. */
 const STUB_SOURCE_EVENTS_MAX = 30
 
+
 async function loadEntityRegistry(iid: ObjectId): Promise<Map<string, EntityDoc>> {
   const all = (await entities()
     .find({ instance_id: iid, status: { $ne: 'archived' } })
@@ -365,6 +400,7 @@ export const entityGraphService = {
         canonical_name: name.slice(0, 120),
         name_normalized: normalized,
         aliases: [],
+        name_tokens: entityNameTokens(name.slice(0, 120)),
         status: 'active',
         first_seen_sequence: sequence,
         last_seen_sequence: sequence,
@@ -454,6 +490,7 @@ export const entityGraphService = {
           canonical_name: card.canonical_name,
           name_normalized: card.name_normalized,
           aliases: uniqNames(card.aliases || []),
+          name_tokens: entityNameTokens(card.canonical_name, uniqNames(card.aliases || [])),
           character_id: card._id,
           status: 'active',
           first_seen_sequence: card.first_seen_sequence ?? sequence,
@@ -487,6 +524,7 @@ export const entityGraphService = {
           entity.type = wantType
           entity.status = 'active'
           entity.aliases = mergedAliases
+          entity.name_tokens = entityNameTokens(card.canonical_name, mergedAliases)
           entity.last_seen_sequence = Math.max(
             entity.last_seen_sequence || 0,
             card.last_seen_sequence || 0,
@@ -579,6 +617,7 @@ export const entityGraphService = {
       // "player"/"the player" always resolve here — memory atoms use "player"
       // as the canonical subject for the human.
       aliases: ['player', 'the player'].filter((a) => a !== normalizeEntityName(trimmed)),
+      name_tokens: entityNameTokens(trimmed.slice(0, 120), ['player', 'the player']),
       status: 'active',
       first_seen_sequence: 0,
       last_seen_sequence: sequence,
@@ -677,6 +716,7 @@ export const entityGraphService = {
       canonical_name: trimmed,
       name_normalized: normalized,
       aliases: [],
+      name_tokens: entityNameTokens(trimmed),
       status: 'stub',
       first_seen_sequence: sequence,
       last_seen_sequence: sequence,
@@ -1053,10 +1093,21 @@ export const entityGraphService = {
     )
   },
 
+  entityNameTokens,
+
   /**
    * Entities DIRECTLY NAMED in `text` — the registry-backed generalization of
    * the codex-only mention scan. Whole-word match on normalized names/aliases
    * (≥3 chars) so "Vex" hits but "vexed" doesn't.
+   *
+   * SCALABILITY: instead of loading the WHOLE non-archived registry (O(registry);
+   * dominated by dormant stubs over a long game), we first extract the candidate
+   * name tokens from the input text, then query only the entities whose indexed
+   * `name_tokens` share one of those tokens — a bounded candidate set. The exact
+   * whole-word match is then applied in-process over just those candidates, so
+   * the RESULTS are identical to the old full scan; only the rows examined shrink.
+   * Legacy rows without `name_tokens` are healed by a one-time per-instance
+   * backfill the first time this runs for an instance.
    */
   async findEntitiesMentioned(
     instanceId: string,
@@ -1068,24 +1119,40 @@ export const entityGraphService = {
     const iid = parseObjectId(instanceId)
     const limit = opts.limit ?? 8
 
-    const filter: Record<string, unknown> = { instance_id: iid, status: { $ne: 'archived' } }
-    if (opts.types?.length) filter.type = { $in: opts.types }
-    const roster = (await entities()
-      .find(filter, {
-        projection: {
-          canonical_name: 1,
-          name_normalized: 1,
-          aliases: 1,
-          type: 1,
-          character_id: 1,
-        },
-      })
-      .toArray()) as EntityDoc[]
-    if (roster.length === 0) return []
+    const tokens = inputCandidateTokens(clean)
+    if (!tokens.length) return []
+
+    const baseFilter: Record<string, unknown> = { instance_id: iid, status: { $ne: 'archived' } }
+    if (opts.types?.length) baseFilter.type = { $in: opts.types }
+
+    const projection = { canonical_name: 1, name_normalized: 1, aliases: 1, type: 1, character_id: 1, name_tokens: 1 }
+    const fetchCandidates = () =>
+      entities()
+        .find({ ...baseFilter, name_tokens: { $in: tokens } }, { projection })
+        // Cap the candidate fan-out: a common token still bounds the scan, and the
+        // exact match below is cheap. Generous vs. the small `limit` of true hits.
+        .limit(Math.max(limit * 25, 100))
+        .toArray() as Promise<EntityDoc[]>
+
+    let candidates = await fetchCandidates()
+
+    // Self-heal: if NOTHING matched the token index but the instance has entities,
+    // legacy rows may predate `name_tokens` — backfill once, then retry the query.
+    if (candidates.length === 0) {
+      const hasUntokenized = await entities().countDocuments(
+        { instance_id: iid, name_tokens: { $exists: false } },
+        { limit: 1 },
+      )
+      if (hasUntokenized > 0) {
+        await this.backfillEntityTokens(instanceId)
+        candidates = await fetchCandidates()
+      }
+    }
+    if (candidates.length === 0) return []
 
     const haystack = ` ${normalizeEntityName(clean)} `
     const matched: EntityDoc[] = []
-    for (const e of roster) {
+    for (const e of candidates) {
       const names = uniqNames([e.canonical_name, ...(e.aliases || [])])
         .map(normalizeEntityName)
         .filter((n) => n.length >= 3)
@@ -1095,6 +1162,35 @@ export const entityGraphService = {
       }
     }
     return matched
+  },
+
+  /**
+   * One-time backfill of the indexed `name_tokens` field for an instance's
+   * entities (legacy rows that predate the field). Idempotent; bounded by the
+   * instance's entity count; safe to run live. Only writes rows whose tokens
+   * actually changed.
+   */
+  async backfillEntityTokens(instanceId: string): Promise<{ updated: number }> {
+    const iid = parseObjectId(instanceId)
+    const rows = (await entities()
+      .find({ instance_id: iid }, { projection: { canonical_name: 1, aliases: 1, name_tokens: 1 } })
+      .toArray()) as EntityDoc[]
+    const ops = rows
+      .map((e) => {
+        const tokens = entityNameTokens(e.canonical_name, e.aliases || [])
+        const current = e.name_tokens || []
+        const same = current.length === tokens.length && tokens.every((t) => current.includes(t))
+        if (same) return null
+        return {
+          updateOne: {
+            filter: { _id: e._id },
+            update: { $set: { name_tokens: tokens } },
+          },
+        }
+      })
+      .filter(Boolean) as Array<{ updateOne: { filter: unknown; update: unknown } }>
+    if (ops.length) await entities().bulkWrite(ops as never, { ordered: false })
+    return { updated: ops.length }
   },
 
   /**
@@ -1233,6 +1329,7 @@ export const entityGraphService = {
       canonical_name: name,
       name_normalized: normalized,
       aliases: [],
+      name_tokens: entityNameTokens(name),
       status: 'active',
       first_seen_sequence: params.sequence,
       last_seen_sequence: params.sequence,

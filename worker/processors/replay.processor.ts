@@ -37,6 +37,9 @@ export async function replayProcessor(job: Job) {
         choices: ev?.data?.choices || [],
         present_characters: ev?.data?.present_characters || [],
         trackable_mentions: ev?.data?.trackable_mentions || [],
+        // FINDING 6 / SHARED CONTRACT v1 item 3: refreshed instance projection so
+        // the client updates the Play instance, not just the event.
+        instance_state: (result as any).instance_state || null,
         variants: (ev?.data?.replay_variants || []).map((v: any) => ({
           id: v.id,
           narrative: v.narrative,
@@ -44,7 +47,23 @@ export async function replayProcessor(job: Job) {
           created_at: v.created_at,
           choices: v.choices || [],
           present_characters: v.present_characters || [],
+          // FINDING 7: each variant carries its own underline data so browsing a
+          // variant restores correct trackable mentions without re-classifying.
+          trackable_mentions: v.trackable_mentions || [],
         })),
+      }),
+    )
+
+    // SHARED CONTRACT v1 item 4: a replay re-projects the latest turn, so notify
+    // clients which surfaces changed (chips/presence + codex/bonds/places via the
+    // post-replay rebuild).
+    redis.publish(
+      channel,
+      JSON.stringify({
+        type: 'world_projection_updated',
+        instance_id: instanceId,
+        scopes: ['bonds', 'threads', 'recap', 'places', 'calendar', 'codex', 'presence'],
+        source: 'replay',
       }),
     )
   } catch (err) {

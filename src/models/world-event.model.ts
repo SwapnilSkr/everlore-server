@@ -36,6 +36,10 @@ export interface ReplayVariantDoc {
    *  selecting a variant restores its own chips without re-running the extractor. */
   choices?: ChoiceOption[]
   present_characters?: string[]
+  /** Backend-OWNED trackable mentions derived from THIS variant's prose, so
+   *  browsing/committing a variant carries its own underline data without
+   *  re-running the canon-gap classifier. Same shape as EventDataDoc. */
+  trackable_mentions?: Array<{ key: string; display: string; tier: import('../../worker/lib/presence-gap-detector').MentionTier; evidence: string }>
 }
 
 /** One ledgered location change this turn — the rebuildable projection of the

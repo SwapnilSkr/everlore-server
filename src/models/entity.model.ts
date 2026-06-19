@@ -48,6 +48,13 @@ export interface EntityDoc {
   canonical_name: string
   name_normalized: string
   aliases: string[]
+  /** Indexed, normalized lowercase WORD tokens of canonical_name + aliases
+   *  (≥3 chars), e.g. "Captain Vex" → ["captain","vex"]. Lets mention matching
+   *  query only the entities whose name shares a token with the input text — a
+   *  bounded candidate fetch — instead of scanning the whole (stub-heavy)
+   *  registry. Populated on write; {@link entityGraphService.backfillEntityTokens}
+   *  fills legacy rows. Optional so legacy/unbackfilled rows stay valid. */
+  name_tokens?: string[]
   /** 1:1 link to the codex card for player/protagonist/character entities. */
   character_id?: ObjectId
   /** Lifecycle of a graph node:

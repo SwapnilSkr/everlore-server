@@ -145,6 +145,15 @@ export const projectionCheckpointService = {
               entities: entities.length,
               entity_edges: entityEdges.length,
             },
+            // Snapshot the instance projection so suffix-replay can resume from
+            // here (findings 1 & 2) instead of scanning every prior turn.
+            instance_state: {
+              world_state: (instance as any).world_state || {},
+              active_flags: (instance as any).active_flags || {},
+              current_scene: (instance as any).current_scene ?? null,
+              current_location: (instance as any).current_location ?? null,
+              current_time_anchor: (instance as any).current_time_anchor ?? null,
+            },
             completed_at: new Date(),
           },
         },
@@ -158,6 +167,98 @@ export const projectionCheckpointService = {
       )
       throw err
     }
+  },
+
+  /**
+   * The instance-state snapshot stored on the most recent usable checkpoint at or
+   * before [beforeOrAtSequence], for suffix-replay (findings 1 & 2). Returns null
+   * when no checkpoint exists or it predates the instance_state field, so callers
+   * fall back to a full replay from template defaults.
+   */
+  async instanceStateBefore(
+    instanceId: string,
+    beforeOrAtSequence: number,
+    opts: { mustBeBefore?: number } = {},
+  ): Promise<{
+    sequence: number
+    world_state: Record<string, number>
+    active_flags: Record<string, unknown>
+    current_scene?: unknown
+    current_location?: unknown
+    current_time_anchor?: unknown
+  } | null> {
+    const cp = await this.latestBefore(instanceId, beforeOrAtSequence)
+    if (!cp || !cp.instance_state) return null
+    if (typeof opts.mustBeBefore === 'number' && cp.sequence >= opts.mustBeBefore) return null
+    return {
+      sequence: cp.sequence,
+      world_state: cp.instance_state.world_state || {},
+      active_flags: cp.instance_state.active_flags || {},
+      current_scene: cp.instance_state.current_scene,
+      current_location: cp.instance_state.current_location,
+      current_time_anchor: cp.instance_state.current_time_anchor,
+    }
+  },
+
+  /**
+   * READ-ONLY drift audit (finding 12). Snapshot-based location/entity RESTORE is
+   * intentionally disabled (conservative), but a checkpoint still stores entity +
+   * location snapshots. This compares the stored snapshot against the live
+   * projection and returns the diff WITHOUT mutating anything, so we can detect
+   * when the checkpoint and the projection have drifted apart.
+   */
+  async auditCheckpointDrift(instanceId: string) {
+    const iid = parseObjectId(instanceId)
+    const cp = await checkpoints().findOne(
+      { instance_id: iid, kind: 'world_projection', status: 'active' },
+      { sort: { sequence: -1 } },
+    )
+    if (!cp) return { checkpoint: false as const, reason: 'no_checkpoint' as const }
+
+    const [snapEntities, snapEdges, liveEntities, liveEdges] = await Promise.all([
+      readChunkDocs<any>(cp._id, 'entities'),
+      readChunkDocs<any>(cp._id, 'entity_edges'),
+      mongoColl.entities().find({ instance_id: iid }).toArray(),
+      mongoColl.entityEdges().find({ instance_id: iid }).toArray(),
+    ])
+
+    const idSet = (docs: any[]) => new Set(docs.map((d) => idString(d?._id)).filter(Boolean))
+    const snapEntityIds = idSet(snapEntities)
+    const liveEntityIds = idSet(liveEntities)
+    const snapEdgeIds = idSet(snapEdges)
+    const liveEdgeIds = idSet(liveEdges)
+
+    const diff = (a: Set<string>, b: Set<string>) => [...a].filter((x) => !b.has(x))
+
+    const result = {
+      checkpoint: true as const,
+      sequence: cp.sequence,
+      entities: {
+        snapshot: snapEntityIds.size,
+        live: liveEntityIds.size,
+        only_in_snapshot: diff(snapEntityIds, liveEntityIds),
+        only_in_live: diff(liveEntityIds, snapEntityIds),
+      },
+      entity_edges: {
+        snapshot: snapEdgeIds.size,
+        live: liveEdgeIds.size,
+        only_in_snapshot: diff(snapEdgeIds, liveEdgeIds),
+        only_in_live: diff(liveEdgeIds, snapEdgeIds),
+      },
+    }
+    const drifted =
+      result.entities.only_in_snapshot.length > 0 ||
+      result.entities.only_in_live.length > 0 ||
+      result.entity_edges.only_in_snapshot.length > 0 ||
+      result.entity_edges.only_in_live.length > 0
+    if (drifted) {
+      console.warn(
+        `[checkpoint-drift] instance=${instanceId} seq=${cp.sequence} ` +
+          `entities(+snap=${result.entities.only_in_snapshot.length},+live=${result.entities.only_in_live.length}) ` +
+          `edges(+snap=${result.entity_edges.only_in_snapshot.length},+live=${result.entity_edges.only_in_live.length})`,
+      )
+    }
+    return { ...result, drifted }
   },
 
   async restoreCodexAndKinship(checkpointId: ObjectId) {

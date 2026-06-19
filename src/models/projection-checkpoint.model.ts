@@ -20,6 +20,17 @@ export interface ProjectionCheckpointDoc {
     entities: number
     entity_edges: number
   }
+  /** Instance state captured at this checkpoint's sequence so suffix-replay
+   *  (memory.service replay/select + rewind) can resume from the checkpoint
+   *  rather than scanning every prior turn. Optional for checkpoints written
+   *  before this field existed; callers fall back to a full replay then. */
+  instance_state?: {
+    world_state: Record<string, number>
+    active_flags: Record<string, unknown>
+    current_scene?: unknown
+    current_location?: unknown
+    current_time_anchor?: unknown
+  }
   created_at: Date
   completed_at?: Date
   error?: string

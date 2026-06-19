@@ -23,6 +23,7 @@ export const COLLECTIONS = {
   projection_anomalies: 'projection_anomalies',
   projection_checkpoints: 'projection_checkpoints',
   projection_checkpoint_chunks: 'projection_checkpoint_chunks',
+  location_stats: 'location_stats',
 } as const
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS]

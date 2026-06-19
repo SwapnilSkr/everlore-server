@@ -26,6 +26,7 @@ import { classifyPresenceCodexGaps } from "../lib/presence-gap-detector";
 import { characterCodexService } from "../../src/services/character-codex.service";
 import { kinshipGraphService } from "../../src/services/kinship-graph.service";
 import { entityGraphService, isVagueLocationLabel, normalizeEntityName } from "../../src/services/entity-graph.service";
+import { locationService } from "../../src/services/location.service";
 import { detectNarratedMovement, resolvePossessiveRoomName } from "../lib/movement-signal";
 import { auditChoices } from "../lib/choice-grounding-audit";
 import { detectProjectionAnomalies } from "../lib/projection-anomaly-detector";
@@ -997,6 +998,17 @@ export async function generationProcessor(job: Job) {
   };
 
   await mongoColl.events().insertOne(event);
+
+  // Refresh the materialized location_stats projection for the place this turn was
+  // anchored to — AFTER the event is inserted, so its event_count / last_seen_sequence
+  // include this turn (resolving the anchor earlier happens before the insert).
+  // Fire-and-forget: projection maintenance never blocks or fails the player's turn.
+  if (locationAnchor?.entity_id) {
+    void locationService.refreshLocationStat(
+      idString(instanceId),
+      idString(locationAnchor.entity_id),
+    );
+  }
 
   const backedState = positiveLocationStateFromInput(
     parsedPlayerInput.raw,

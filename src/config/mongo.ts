@@ -20,6 +20,7 @@ import type { GenerationLogDoc } from '../models/generation-log.model'
 import type { NsfwTermDoc } from '../models/nsfw-term.model'
 import type { ProjectionAnomalyDoc } from '../models/projection-anomaly.model'
 import type { ProjectionCheckpointChunkDoc, ProjectionCheckpointDoc } from '../models/projection-checkpoint.model'
+import type { LocationStatsDoc } from '../models/location-stats.model'
 
 let client: MongoClient | null = null
 let database: Db | null = null
@@ -55,6 +56,7 @@ export const mongoColl = {
   projectionAnomalies: () => coll<WithoutId<ProjectionAnomalyDoc>>(COLLECTIONS.projection_anomalies),
   projectionCheckpoints: () => coll<WithoutId<ProjectionCheckpointDoc>>(COLLECTIONS.projection_checkpoints),
   projectionCheckpointChunks: () => coll<WithoutId<ProjectionCheckpointChunkDoc>>(COLLECTIONS.projection_checkpoint_chunks),
+  locationStats: () => coll<WithoutId<LocationStatsDoc>>(COLLECTIONS.location_stats),
 } as const
 
 export async function connectMongo(): Promise<Db> {

@@ -7,6 +7,7 @@ import { randomUUID } from 'crypto'
 import { getRedisClient } from '../../src/config/redis'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { entityGraphService, normalizeEntityName } from '../../src/services/entity-graph.service'
+import { locationService } from '../../src/services/location.service'
 import type { EntityDoc, EntityType } from '../../src/models/entity.model'
 import type { TimeAnchorDoc } from '../../src/models/time.model'
 import type { LocationAnchorDoc } from '../../src/models/location.model'
@@ -629,6 +630,20 @@ World: ${aiResponse}`,
     { _id: instanceOid },
     { $inc: { 'meta.total_memories': newMemories.length } },
   )
+
+  // Curation just created location-linked memories, so the memory_count for those
+  // places changed — refresh the materialized location_stats projection for each
+  // affected place (distinct location_entity_ids). Fire-and-forget: projection
+  // maintenance must never block or fail curation.
+  const touchedLocationIds = new Set(
+    newMemories
+      .map((m) => m.location_entity_id as ObjectId | undefined)
+      .filter((id): id is ObjectId => !!id)
+      .map((id) => idString(id)),
+  )
+  for (const locId of touchedLocationIds) {
+    void locationService.refreshLocationStat(instanceId, locId)
+  }
 
   await redis.publish(`user:${playerId}:events`, JSON.stringify({
     type: 'memories_curated',

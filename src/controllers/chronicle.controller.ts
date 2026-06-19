@@ -377,8 +377,11 @@ export const chronicleController = {
    *     still-uncarded endpoint so the tie is captured immediately).
    *  4. Ledgers the synthetic delta on the most recent main-story event's
    *     codex_deltas so a rewind replays the card (the world stays an exact
-   *     projection of the ledger). Kinship edges are not ledger-replayed today,
-   *     so a rewind past this point may drop the edge.
+   *     projection of the ledger). The relation assertion rides on the same
+   *     codex delta, so kinship edges ARE ledger-replayed now: a rewind rebuilds
+   *     the typed edges from the surviving codex_deltas (kinshipGraphService
+   *     .rebuildFromLedger), so a rewind past this point reconstructs the edge
+   *     deterministically rather than dropping it.
    */
   trackEntity: async ({
     params,
@@ -559,6 +562,24 @@ export const chronicleController = {
       )
     } catch (err) {
       console.warn('track codex publish failed:', (err as Error).message)
+    }
+
+    // SHARED CONTRACT v1 item 4: a track repairs the codex (and possibly a
+    // kinship edge), so notify clients which projection surfaces changed.
+    try {
+      await getRedisClient().publish(
+        `user:${user.id}:events`,
+        JSON.stringify({
+          type: 'world_projection_updated',
+          instance_id: params.instanceId,
+          scopes: relationAssertion
+            ? ['bonds', 'codex', 'presence']
+            : ['codex', 'presence'],
+          source: 'track',
+        }),
+      )
+    } catch (err) {
+      console.warn('track world_projection_updated publish failed:', (err as Error).message)
     }
 
     return {
