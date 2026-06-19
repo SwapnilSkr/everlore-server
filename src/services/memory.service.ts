@@ -11,6 +11,7 @@ import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import type { ObjectId } from 'mongodb'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
+import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
 import { characterCodexService } from './character-codex.service'
 import { entityGraphService } from './entity-graph.service'
 import { timeService } from './time.service'
@@ -405,41 +406,68 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
     playerName: instance.persona_snapshot?.name,
   })
 
-  const relationAssertions = deltas.flatMap((d) => d.relation_assertions || [])
-  if (relationAssertions.length > 0) {
-    const protagCard = codex.find((c) => c.is_protagonist)
-    let selfAnchorId: string | null = null
-    if (!template.is_sentient && protagCard) {
-      const ent = entityMap.get(protagCard.name_normalized)
-      selfAnchorId = ent?._id ? idString(ent._id) : null
-    } else {
-      const player = await entityGraphService.ensurePlayerEntity({
+  if (forceExactRebuild) {
+    // Exact rebuild: the codex was dropped + replayed, so rebuild the kinship graph
+    // from the whole surviving ledger (authority + sever/retcon order reconstructed
+    // exactly) rather than re-applying only this one event's assertions.
+    await kinshipGraphService
+      .rebuildFromLedger({
         instanceId,
         playerId,
-        name: instance.persona_snapshot?.name,
-        sequence: event.sequence,
+        isSentient: !!template.is_sentient,
+        playerName: instance.persona_snapshot?.name,
       })
-      selfAnchorId = idString(player._id)
-    }
-    await kinshipGraphService.applyRelationAssertions({
-      instanceId,
-      sequence: event.sequence,
-      eventId: event._id,
-      assertions: relationAssertions,
-      cards: codex,
-      entitiesByCardName: entityMap,
-      selfAnchorId,
-      sceneText: narrative,
-      ensureStub: (name: string) =>
-        entityGraphService.ensureStubEntity({
+      .catch((err) => {
+        console.warn('Replay projection: kinship graph rebuild failed:', (err as Error).message)
+      })
+  } else {
+    // Incremental: merge this turn's LLM assertions with a deterministic pass over
+    // its input + prose, then apply on top of the existing edges.
+    const parsedInput = parsePlayerInput(event.data?.player_input || '')
+    const relationAssertions = mergeRelationAssertions(
+      deltas.flatMap((d) => d.relation_assertions || []),
+      extractKinshipAssertions({
+        corrections: parsedInput.corrections,
+        narrationFacts: parsedInput.narrationFacts,
+        claims: parsedInput.claims,
+        prose: narrative,
+      }),
+    )
+    if (relationAssertions.length > 0) {
+      const protagCard = codex.find((c) => c.is_protagonist)
+      let selfAnchorId: string | null = null
+      if (!template.is_sentient && protagCard) {
+        const ent = entityMap.get(protagCard.name_normalized)
+        selfAnchorId = ent?._id ? idString(ent._id) : null
+      } else {
+        const player = await entityGraphService.ensurePlayerEntity({
           instanceId,
           playerId,
+          name: instance.persona_snapshot?.name,
           sequence: event.sequence,
-          name,
-        }),
-    }).catch((err) => {
-      console.warn('Replay projection: kinship graph write failed:', (err as Error).message)
-    })
+        })
+        selfAnchorId = idString(player._id)
+      }
+      await kinshipGraphService.applyRelationAssertions({
+        instanceId,
+        sequence: event.sequence,
+        eventId: event._id,
+        assertions: relationAssertions,
+        cards: codex,
+        entitiesByCardName: entityMap,
+        selfAnchorId,
+        sceneText: narrative,
+        ensureStub: (name: string) =>
+          entityGraphService.ensureStubEntity({
+            instanceId,
+            playerId,
+            sequence: event.sequence,
+            name,
+          }),
+      }).catch((err) => {
+        console.warn('Replay projection: kinship graph write failed:', (err as Error).message)
+      })
+    }
   }
 
   await publishCodexUpdated(playerId, instance, codex)
@@ -1277,6 +1305,22 @@ export const memoryService = {
       })
     } catch (err) {
       console.warn('Rewind: entity graph repair failed:', (err as Error).message)
+    }
+    // 3d. Kinship graph: when the codex was exactly rebuilt from the ledger, rebuild
+    // the typed relationship edges from the same surviving ledger so authority and
+    // sever/retcon order are reconstructed exactly (not just provenance-pruned).
+    // Best-effort; a kinship hiccup must never abort the rewind.
+    if (hasLedgeredDeltas) {
+      try {
+        await kinshipGraphService.rebuildFromLedger({
+          instanceId,
+          playerId,
+          isSentient: !!template.is_sentient,
+          playerName: instance.persona_snapshot?.name,
+        })
+      } catch (err) {
+        console.warn('Rewind: kinship graph rebuild failed:', (err as Error).message)
+      }
     }
     try {
       await pruneDanglingMemoryEntityRefs(iid)

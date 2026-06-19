@@ -7,7 +7,10 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { parseObjectId, idString } from '../utils/mongo-id'
-import { normalizeEntityName } from './entity-graph.service'
+import { normalizeEntityName, entityGraphService } from './entity-graph.service'
+import { characterCodexService } from './character-codex.service'
+import { parsePlayerInput } from '../utils/player-input-parser'
+import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
 import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { EntityDoc } from '../models/entity.model'
 import {
@@ -19,6 +22,7 @@ import type { RelationAssertion } from './character-codex.service'
 
 const entityEdges = () => mongoColl.entityEdges()
 const entities = () => mongoColl.entities()
+const events = () => mongoColl.events()
 const EDGE_SOURCE_EVENTS_MAX = 30
 
 /** Player self-references that resolve to the player's own character entity. */
@@ -186,6 +190,112 @@ export const kinshipGraphService = {
       written++
     }
     return { written, notes }
+  },
+
+  /**
+   * FULL kinship-graph rebuild from the event ledger — the canonical repair. Drops
+   * every kinship edge for the instance, then replays EACH surviving event's
+   * relation assertions in sequence order, merging the LLM-ledgered assertions with
+   * a fresh deterministic pass over that turn's player input + prose (so authority
+   * — a player_correction can retcon, a claim stays soft — is reconstructed exactly
+   * as the live path produced it). Inverse edges + sever/retcon polarity are handled
+   * by applyRelationAssertions/hygiene per turn, so replaying in order yields an
+   * exact projection.
+   *
+   * Call after the CODEX has been rebuilt (rewind/replay-exact repair, admin
+   * repair, projection audit) — it reads the current codex/entities to resolve
+   * endpoints. Offline only (it may fire epithet-resolver LLM calls per turn); never
+   * on the live TTFT path. Best-effort: per-turn failures are collected, not thrown.
+   */
+  async rebuildFromLedger(params: {
+    instanceId: string
+    playerId: string
+    isSentient: boolean
+    playerName?: string | null
+    /** Include side-chat events' assertions (default false — main ledger only). */
+    includeSideChat?: boolean
+  }): Promise<{ written: number; events: number; notes: string[] }> {
+    const { instanceId, playerId, isSentient, playerName, includeSideChat } = params
+    const iid = parseObjectId(instanceId)
+    const notes: string[] = []
+
+    // 1. Drop existing kinship edges — the rebuild is the new source of truth.
+    const del = await entityEdges().deleteMany({ instance_id: iid, type: 'kinship' })
+    if (del.deletedCount) notes.push(`cleared ${del.deletedCount} kinship edge(s)`)
+
+    // 2. Resolve the codex → entity map + self anchor once (stable across the loop).
+    const codex = await characterCodexService.listForInstance(instanceId, 200)
+    const latestSeq = await events()
+      .find({ instance_id: iid }, { projection: { sequence: 1 } })
+      .sort({ sequence: -1 })
+      .limit(1)
+      .toArray()
+    const anchorSeq = latestSeq[0]?.sequence ?? 0
+    const entityMap = await entityGraphService.syncCodexEntities({
+      instanceId,
+      playerId,
+      sequence: anchorSeq,
+      cards: codex,
+    })
+    let selfAnchorId: string | null = null
+    const protagCard = codex.find((c) => c.is_protagonist)
+    if (!isSentient && protagCard) {
+      const ent = entityMap.get(protagCard.name_normalized)
+      selfAnchorId = ent?._id ? idString(ent._id) : null
+    } else {
+      const player = await entityGraphService.ensurePlayerEntity({
+        instanceId,
+        playerId,
+        name: playerName ?? undefined,
+        sequence: anchorSeq,
+      })
+      selfAnchorId = idString(player._id)
+    }
+
+    // 3. Replay each event's assertions (LLM ledger ∪ deterministic) in order.
+    const typeFilter = includeSideChat ? {} : { type: { $ne: 'side_chat' } }
+    const ledger = await events()
+      .find(
+        { instance_id: iid, ...typeFilter },
+        { projection: { sequence: 1, _id: 1, 'data.codex_deltas': 1, 'data.player_input': 1, 'data.ai_response': 1 } },
+      )
+      .sort({ sequence: 1 })
+      .toArray()
+
+    let written = 0
+    let touched = 0
+    for (const ev of ledger) {
+      const llm = (ev.data?.codex_deltas || []).flatMap((d) => d.relation_assertions || [])
+      const parsed = parsePlayerInput(ev.data?.player_input || '')
+      const deterministic = extractKinshipAssertions({
+        corrections: parsed.corrections,
+        narrationFacts: parsed.narrationFacts,
+        claims: parsed.claims,
+        prose: ev.data?.ai_response || '',
+      })
+      const merged = mergeRelationAssertions(llm, deterministic)
+      if (!merged.length) continue
+      touched++
+      try {
+        const res = await kinshipGraphService.applyRelationAssertions({
+          instanceId,
+          sequence: ev.sequence,
+          eventId: ev._id as ObjectId,
+          assertions: merged,
+          cards: codex,
+          entitiesByCardName: entityMap,
+          selfAnchorId,
+          sceneText: ev.data?.ai_response || '',
+          ensureStub: (name: string) =>
+            entityGraphService.ensureStubEntity({ instanceId, playerId, sequence: ev.sequence, name }),
+        })
+        written += res.written
+      } catch (err) {
+        notes.push(`seq ${ev.sequence}: apply failed — ${(err as Error).message}`)
+      }
+    }
+    notes.push(`replayed ${touched} event(s) with assertions`)
+    return { written, events: touched, notes }
   },
 
   /**
