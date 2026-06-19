@@ -28,6 +28,7 @@ import { kinshipGraphService } from "../../src/services/kinship-graph.service";
 import { entityGraphService, isVagueLocationLabel, normalizeEntityName } from "../../src/services/entity-graph.service";
 import { detectNarratedMovement, resolvePossessiveRoomName } from "../lib/movement-signal";
 import { auditChoices } from "../lib/choice-grounding-audit";
+import { detectProjectionAnomalies } from "../lib/projection-anomaly-detector";
 import { detectNarratedTimeSkip } from "../lib/time-skip-signal";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
 import { timeService } from "../../src/services/time.service";
@@ -1390,6 +1391,50 @@ export async function generationProcessor(job: Job) {
               notes: kin.notes.slice(0, 6),
             });
           }
+        }
+
+        // Projection anomaly logging (§12): compare the prose against what the
+        // projection recorded and persist any inconsistencies fire-and-forget for
+        // a debug/admin surface. Never affects the turn. `knownCardNames` is the
+        // PRE-turn card set, so deltas naming an absent person are "new this turn".
+        try {
+          const newCardNames = deltas
+            .map((d) => d.resolved_name || d.name)
+            .filter((n) => n && !knownCardNames.has(normalizeEntityName(n)));
+          const findings = detectProjectionAnomalies({
+            prose: rawNarrative,
+            presentNames: parsed.present_characters,
+            codexNames: [...knownCardNames],
+            stubNames: stubResult.ensured,
+            hadRelationAssertion: relationAssertions.length > 0,
+            droppedChoices: audited.dropped,
+            locationAnchorName: locationAnchor?.name ?? null,
+            newCardNames,
+          });
+          if (findings.length) {
+            await mongoColl.projectionAnomalies().insertMany(
+              findings.map((f) => ({
+                _id: new ObjectId(),
+                instance_id: instanceOid,
+                player_id: playerOid,
+                event_id: event._id,
+                sequence: nextSequence,
+                type: f.type,
+                severity: f.severity,
+                details: f.details,
+                created_at: new Date(),
+                resolved_at: null,
+              })),
+            );
+            log.info("projection.anomalies", {
+              instanceId: idString(instanceId),
+              sequence: nextSequence,
+              count: findings.length,
+              types: findings.map((f) => f.type),
+            });
+          }
+        } catch (err) {
+          console.warn("projection anomaly logging skipped:", (err as Error).message);
         }
       } catch (err) {
         console.warn("entity graph sync failed:", (err as Error).message);
