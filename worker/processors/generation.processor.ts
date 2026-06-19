@@ -22,7 +22,7 @@ import { type GenerationOutput } from "../lib/structured-output";
 import { extractSceneMetadata } from "../lib/metadata-extractor";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
 import { compactImmutableFacts } from "../lib/codex-compactor";
-import { detectPresenceCodexGapsDetailed } from "../lib/presence-gap-detector";
+import { classifyPresenceCodexGaps } from "../lib/presence-gap-detector";
 import { characterCodexService } from "../../src/services/character-codex.service";
 import { kinshipGraphService } from "../../src/services/kinship-graph.service";
 import { entityGraphService, isVagueLocationLabel, normalizeEntityName } from "../../src/services/entity-graph.service";
@@ -812,14 +812,25 @@ export async function generationProcessor(job: Job) {
   }
   const selfIntroForGap = session.is_sentient ? detectSelfIntroName(parsedPlayerInput.raw) : null;
   if (selfIntroForGap) presenceGapExcludes.push(selfIntroForGap);
-  const visiblePresenceGaps = detectPresenceCodexGapsDetailed(rawNarrative, {
+  // Backend-OWNED trackable mentions: classify the turn's presence/codex gaps into
+  // confidence tiers. Only confirmed + probable join present_characters and mint
+  // stubs; mentioned_only are surfaced to the frontend to optionally track (the app
+  // no longer decides canon gaps itself). Off TTFT — prose already streamed.
+  const classifiedMentions = classifyPresenceCodexGaps(rawNarrative, {
     present: parsed.present_characters,
     codex: [...knownCardNames],
     exclude: presenceGapExcludes,
   });
-  if (visiblePresenceGaps.length) {
+  const trackableMentions = classifiedMentions.map((m) => ({
+    key: m.key,
+    display: m.display,
+    tier: m.tier,
+    evidence: m.evidence,
+  }));
+  const presentGaps = classifiedMentions.filter((m) => m.tier === "confirmed" || m.tier === "probable");
+  if (presentGaps.length) {
     const presentSeen = new Set(parsed.present_characters.map((n) => normalizeEntityName(n)));
-    for (const gap of visiblePresenceGaps) {
+    for (const gap of presentGaps) {
       if (parsed.present_characters.length >= 12) break;
       if (!gap.key || presentSeen.has(gap.key)) continue;
       presentSeen.add(gap.key);
@@ -828,7 +839,8 @@ export async function generationProcessor(job: Job) {
     log.info("presence.gaps.stubbed.live", {
       instanceId: idString(instanceId),
       sequence: nextSequence,
-      gaps: visiblePresenceGaps.map((g) => g.key).slice(0, 8),
+      gaps: presentGaps.map((g) => `${g.key}:${g.tier}`).slice(0, 8),
+      mentioned_only: classifiedMentions.filter((m) => m.tier === "mentioned_only").map((m) => m.key).slice(0, 8),
     });
   }
   const stubResult = await entityGraphService
@@ -907,6 +919,7 @@ export async function generationProcessor(job: Job) {
       choices: parsed.choices,
       milestone: parsed.milestone,
       present_characters: parsed.present_characters,
+      ...(trackableMentions.length ? { trackable_mentions: trackableMentions } : {}),
       ...(effectiveTimeAdvance ? { time_advanced: effectiveTimeAdvance } : {}),
       ...(isTravel && currentLocation && resolvedLocation
         ? { travel: { from: currentLocation.name, to: resolvedLocation.name } }
@@ -1098,6 +1111,7 @@ export async function generationProcessor(job: Job) {
         choices: parsed.choices,
         milestone: parsed.milestone,
         present_characters: parsed.present_characters,
+        trackable_mentions: trackableMentions,
         time_advanced: timeAdvanceLabel || null,
         time_anchor: timeAnchor,
         location_anchor: locationAnchor

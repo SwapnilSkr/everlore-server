@@ -63,6 +63,12 @@ export interface EventDataDoc {
   /** Characters present in the scene at the end of this turn (scene-aware bond
    *  actions: approach vs. seek out). Empty/absent when the viewpoint is alone. */
   present_characters?: string[]
+  /** Backend-OWNED trackable mentions: people the prose surfaced this turn that
+   *  weren't already present/carded, each with a confidence tier. The frontend
+   *  renders these instead of running its own canon-gap detection. Confirmed +
+   *  probable are auto-added to present_characters and stubbed; mentioned_only are
+   *  surfaced for the player to optionally track. */
+  trackable_mentions?: Array<{ key: string; display: string; tier: import('../../worker/lib/presence-gap-detector').MentionTier; evidence: string }>
   /** Character-codex deltas applied THIS turn (post-guard). Ledgered like
    *  state_mutations so the codex is an exact rebuildable projection: on rewind
    *  the surviving deltas are replayed deterministically, so no fact or meter
