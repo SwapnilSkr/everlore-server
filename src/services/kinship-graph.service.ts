@@ -48,8 +48,16 @@ export const kinshipGraphService = {
     /** The player's own character entity id (protagonist card in GM; player in sentient). */
     selfAnchorId: string | null
     sceneText: string
+    /** WITNESS → ENTITY-STUB fallback: when an assertion endpoint (e.g. "Mara")
+     *  has no codex card, the caller may provide this to ensure a stub entity
+     *  exists for the name so the typed edge is WRITTEN against it instead of
+     *  being dropped. This is the fix for "Mara is sister but Mara has no card
+     *  → the edge disappears": the tie is captured now against a stub, and when
+     *  Mara later earns a card the stub promotes and the edge survives. Returns
+     *  the entity id (stub OR an existing real one), or null to drop. */
+    ensureStub?: (name: string) => Promise<string | null>
   }): Promise<{ written: number; notes: string[] }> {
-    const { instanceId, sequence, eventId, assertions, cards, entitiesByCardName, selfAnchorId, sceneText } = params
+    const { instanceId, sequence, eventId, assertions, cards, entitiesByCardName, selfAnchorId, sceneText, ensureStub } = params
     if (!assertions?.length) return { written: 0, notes: [] }
 
     // name → entity id, from the codex cards (canonical + aliases) and the player.
@@ -89,11 +97,25 @@ export const kinshipGraphService = {
       }
     }
 
-    // Build resolved assertions (drop any whose endpoints still don't resolve).
+    // Build resolved assertions. Endpoints resolve first to codex cards (and the
+    // player), then — when an endpoint has no card — to a STUB entity via the
+    // caller's ensureStub fallback, so a typed tie ("Mara is the player's sister")
+    // is CAPTURED against a stub instead of being silently dropped. The stub
+    // promotes to a full entity when Mara later earns a card, and this edge
+    // survives. Only drop an endpoint that neither resolves nor stubs.
     const resolved: ResolvedAssertion[] = []
+    const stubbedNames = new Set<string>()
     for (const a of assertions) {
-      const fromId = resolveName(a.from)
-      const toId = resolveName(a.to)
+      let fromId = resolveName(a.from)
+      let toId = resolveName(a.to)
+      if (!fromId && ensureStub) {
+        const stub = await ensureStub(a.from).catch(() => null)
+        if (stub) { fromId = stub; stubbedNames.add(a.from.trim()) }
+      }
+      if (!toId && ensureStub) {
+        const stub = await ensureStub(a.to).catch(() => null)
+        if (stub) { toId = stub; stubbedNames.add(a.to.trim()) }
+      }
       if (!fromId || !toId || !isRelationKind(a.kind)) continue
       resolved.push({
         fromId, toId, kind: a.kind as RelationKind,
@@ -103,8 +125,11 @@ export const kinshipGraphService = {
       })
     }
     if (!resolved.length) return { written: 0, notes: ['no resolvable endpoints'] }
+    const notes: string[] = []
+    if (stubbedNames.size) notes.push(`stubbed ${stubbedNames.size} uncarded endpoint(s): ${[...stubbedNames].slice(0, 8).join(', ')}`)
 
-    const { edges, notes } = hygieneStage1(resolved)
+    const { edges, notes: hygieneNotes } = hygieneStage1(resolved)
+    notes.push(...hygieneNotes)
     const iid = parseObjectId(instanceId)
     const now = new Date()
     let written = 0

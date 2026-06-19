@@ -455,12 +455,17 @@ export const entityGraphService = {
         byCharId.set(idString(card._id), entity)
       } else {
         // Sync identity drift: renamed card, new aliases, re-minted card _id
-        // (rewind rebuilds cards with fresh ids), protagonist promotion.
+        // (rewind rebuilds cards with fresh ids), protagonist promotion, and
+        // STUB → ACTIVE promotion: a scene-participant / kinship stub entity
+        // (status 'stub', no character_id) is upgraded to a full canonical
+        // entity the moment a codex card mints for this name. The unique index
+        // made the stub and the card-name match, so this is the same row.
         const mergedAliases = uniqNames([...(entity.aliases || []), ...(card.aliases || [])])
         const dirty =
           !entity.character_id?.equals(card._id) ||
           entity.canonical_name !== card.canonical_name ||
           entity.type !== wantType ||
+          entity.status !== 'active' ||
           mergedAliases.length !== (entity.aliases || []).length ||
           (entity.last_seen_sequence || 0) < (card.last_seen_sequence || 0)
         if (dirty) {
@@ -468,6 +473,7 @@ export const entityGraphService = {
           entity.canonical_name = card.canonical_name
           entity.name_normalized = card.name_normalized
           entity.type = wantType
+          entity.status = 'active'
           entity.aliases = mergedAliases
           entity.last_seen_sequence = Math.max(
             entity.last_seen_sequence || 0,
@@ -574,6 +580,173 @@ export const entityGraphService = {
     } catch {
       return (await entities().findOne({ instance_id: iid, type: 'player' })) as EntityDoc
     }
+  },
+
+  /**
+   * Ensure a STUB entity exists for a witnessed-but-uncarded person name. This
+   * is the WITNESS → ENTITY-STUB tier of the world model: a scene participant or
+   * a kinship endpoint that has no codex card yet gets a lightweight graph node
+   * (status 'stub', no character_id) so the graph — kinship edges, choice
+   * grounding, presence, memory links — can reference it by id BEFORE a full
+   * card exists. Stubs are high-recall/low-authority: they are NOT injected as
+   * codex canon and NOT shown in the Bonds ledger (that reads cards). The moment
+   * a codex card mints for this name, {@link syncCodexEntities} promotes the
+   * stub to 'active' and links character_id — the same row, never a duplicate.
+   *
+   * Idempotent + race-safe: the (instance, type, world_root_id, parent_id, name)
+   * unique index means a concurrent real character entity for the same name wins
+   * the insert and is returned here (so a stub is never minted beside a card).
+   * Returns the entity id (stub OR an existing real one) so callers can write
+   * edges against it; null only on a transient failure.
+   */
+  async ensureStubEntity(params: {
+    instanceId: string
+    playerId: string
+    sequence: number
+    name: string
+  }): Promise<string | null> {
+    const { instanceId, playerId, sequence, name } = params
+    const trimmed = (name || '').trim().slice(0, 120)
+    if (!trimmed) return null
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+    const normalized = normalizeEntityName(trimmed)
+    if (!normalized) return null
+
+    // An existing character/protagonist entity (stub or active) for this name
+    // already satisfies the call — return it rather than mint a duplicate.
+    const existing = await entities().findOne({
+      instance_id: iid,
+      type: { $in: ['character', 'protagonist'] },
+      name_normalized: normalized,
+    })
+    if (existing) {
+      if (existing.status === 'stub') {
+        await entities().updateOne(
+          { _id: existing._id },
+          {
+            $inc: { mention_count: 1 },
+            $max: { last_seen_sequence: sequence },
+            $set: { updated_at: new Date() },
+          },
+        )
+      }
+      return idString(existing._id)
+    }
+
+    const now = new Date()
+    const doc: EntityDoc = {
+      _id: new ObjectId(),
+      instance_id: iid,
+      player_id: pid,
+      type: 'character',
+      canonical_name: trimmed,
+      name_normalized: normalized,
+      aliases: [],
+      status: 'stub',
+      first_seen_sequence: sequence,
+      last_seen_sequence: sequence,
+      mention_count: 1,
+      created_at: now,
+      updated_at: now,
+    }
+    try {
+      await entities().insertOne(doc)
+      return idString(doc._id)
+    } catch {
+      // Unique-index race with a concurrent stub/card for the same name: the
+      // winner is the canonical row — return it so the caller still gets a id.
+      const winner = await entities().findOne({
+        instance_id: iid,
+        type: { $in: ['character', 'protagonist'] },
+        name_normalized: normalized,
+      })
+      return winner ? idString(winner._id) : null
+    }
+  },
+
+  /**
+   * Promote the scene's witnessed-but-uncarded participants to stub entities
+   * (the WITNESS → ENTITY-STUB tier). For every name in `presentNames` that is
+   * NOT already a known codex card, ensure a stub entity exists with this turn's
+   * provenance. `knownCardNames` is the set of normalized canonical+alias names
+   * that already have a card, so we don't wastefully stub a name that's already
+   * canon (the unique index would just return the real row anyway). Returns the
+   * set of normalized names a stub was ensured for this turn (for logging /
+   * audits). Best-effort: failures never break the turn pipeline.
+   */
+  async ensureSceneParticipantStubs(params: {
+    instanceId: string
+    playerId: string
+    sequence: number
+    presentNames: string[]
+    knownCardNames: Set<string>
+  }): Promise<{ ensured: string[]; promoted: string[] }> {
+    const { instanceId, playerId, sequence, presentNames, knownCardNames } = params
+    const ensured: string[] = []
+    const promoted: string[] = []
+    for (const raw of presentNames || []) {
+      const normalized = normalizeEntityName(raw)
+      if (!normalized || knownCardNames.has(normalized)) continue
+      const id = await this.ensureStubEntity({ instanceId, playerId, sequence, name: raw })
+      if (id) ensured.push(normalized)
+    }
+    return { ensured, promoted }
+  },
+
+  /**
+   * Archive old, unpromoted character stubs once they have fallen well out of
+   * the active window and have no live graph edges. This keeps the witness tier
+   * from becoming a permanent junk drawer while preserving any stub that still
+   * carries kinship/relationship provenance and might later promote to a card.
+   */
+  async archiveStaleStubs(params: {
+    instanceId: string
+    sequence: number
+    maxAge?: number
+  }): Promise<{ archived: number }> {
+    const { instanceId, sequence, maxAge = 120 } = params
+    const iid = parseObjectId(instanceId)
+    const cutoff = Math.max(0, sequence - maxAge)
+    const candidates = (await entities()
+      .find(
+        {
+          instance_id: iid,
+          type: 'character',
+          status: 'stub',
+          character_id: { $exists: false },
+          last_seen_sequence: { $lt: cutoff },
+        },
+        { projection: { _id: 1 } },
+      )
+      .limit(200)
+      .toArray()) as Pick<EntityDoc, '_id'>[]
+    if (!candidates.length) return { archived: 0 }
+
+    const ids = candidates.map((c) => c._id)
+    const activeEdges = await entityEdges()
+      .find(
+        {
+          instance_id: iid,
+          status: 'active',
+          $or: [{ source_entity_id: { $in: ids } }, { target_entity_id: { $in: ids } }],
+        },
+        { projection: { source_entity_id: 1, target_entity_id: 1 } },
+      )
+      .toArray()
+    const referenced = new Set<string>()
+    for (const edge of activeEdges) {
+      if (edge.source_entity_id) referenced.add(idString(edge.source_entity_id))
+      if (edge.target_entity_id) referenced.add(idString(edge.target_entity_id))
+    }
+    const archiveIds = ids.filter((id) => !referenced.has(idString(id)))
+    if (!archiveIds.length) return { archived: 0 }
+
+    const res = await entities().updateMany(
+      { instance_id: iid, _id: { $in: archiveIds }, status: 'stub' },
+      { $set: { status: 'archived', updated_at: new Date() } },
+    )
+    return { archived: res.modifiedCount || 0 }
   },
 
   /**
@@ -995,8 +1168,35 @@ export const entityGraphService = {
     }
 
     if (!normalized || normalized.length < 3) return null
-    // Vague label on an unmoved turn → stay put (the cursor).
-    if (!moved && isVagueLocationLabel(normalized)) return null
+    // Vague labels never mint real places. On an unmoved turn they mean "stay
+    // put"; on an outward move, resolve to the known container when there is one
+    // ("outside" from a room → the building/area), otherwise keep the cursor.
+    if (isVagueLocationLabel(normalized)) {
+      if (moved && movement === 'out' && cursor?.parent_id) {
+        const parent = (await entities().findOne({
+          _id: cursor.parent_id,
+          instance_id: iid,
+          type: 'location',
+          status: { $ne: 'archived' },
+        })) as EntityDoc | null
+        if (parent) {
+          await entities().updateOne(
+            { _id: parent._id },
+            {
+              $inc: { mention_count: 1 },
+              $max: { last_seen_sequence: params.sequence },
+              $set: { updated_at: new Date() },
+            },
+          )
+          return {
+            entity_id: parent._id,
+            name: parent.canonical_name,
+            name_normalized: parent.name_normalized,
+          }
+        }
+      }
+      return null
+    }
 
     // Same-world placement. Resolve an explicit container hint (scoped) to use as
     // the parent; otherwise infer the parent from the movement direction.
@@ -1109,7 +1309,7 @@ export const entityGraphService = {
     const iid = parseObjectId(instanceId)
     const docs = await entities()
       .find(
-        { instance_id: iid, type: 'location' },
+        { instance_id: iid, type: 'location', status: { $ne: 'archived' } },
         { projection: { canonical_name: 1, aliases: 1 } },
       )
       .sort({ last_seen_sequence: -1, mention_count: -1 })

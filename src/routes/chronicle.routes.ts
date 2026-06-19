@@ -103,3 +103,22 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
   .post('/rewind/:instanceId', (ctx) => chronicleController.rewind(ctx), {
     body: t.Object({ sequence: t.Number({ minimum: 1 }) }),
   })
+
+  .post('/track/:instanceId', (ctx) => chronicleController.trackEntity(ctx), {
+    body: t.Object({
+      name: t.String({ minLength: 1, maxLength: 120 }),
+      role: t.Optional(t.String({ maxLength: 200 })),
+      appearance: t.Optional(t.String({ maxLength: 600 })),
+      persona: t.Optional(t.String({ maxLength: 1000 })),
+      relation_kind: t.Optional(
+        t.String({
+          enum: [
+            'parent_of', 'child_of', 'sibling_of', 'partner_of', 'progenitor_of',
+            'descendant_of', 'superior_of', 'subordinate_of', 'kin_of', 'bonded_of',
+          ],
+        }),
+      ),
+      relation_label: t.Optional(t.String({ maxLength: 60 })),
+      relation_to: t.Optional(t.String({ maxLength: 120 })),
+    }),
+  })

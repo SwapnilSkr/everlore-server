@@ -99,6 +99,39 @@ console.log('choice-grounding — graphLabels source (perspective-correct):')
   check('sister kept via graph', r.choices.map((c) => c.label), ['Comfort my sister'])
 }
 
+console.log('choice-grounding — fresh kin perspective anchoring:')
+{
+  const unanchored = groundChoices(
+    [{ label: 'Ask my sister', kind: 'say', send: 'What happened?' }],
+    [],
+    "Mara's sister steps into the hall.",
+    [],
+    '',
+    { protagonist: { name: 'Kael', aliases: [] }, isSentient: false },
+  )
+  check('Mara sister does not license my sister', unanchored.dropped.map((d) => d.term), ['perspective:sister'])
+
+  const anchored = groundChoices(
+    [{ label: 'Ask my sister', kind: 'say', send: 'What happened?' }],
+    [],
+    "Kael's sister steps into the hall.",
+    [],
+    '',
+    { protagonist: { name: 'Kael', aliases: [] }, isSentient: false },
+  )
+  check('protagonist sister licenses my sister', anchored.choices.map((c) => c.label), ['Ask my sister'])
+
+  const your = groundChoices(
+    [{ label: 'Ask my sister', kind: 'say', send: 'What happened?' }],
+    [],
+    'Your sister steps into the hall.',
+    [],
+    '',
+    { protagonist: { name: 'Kael', aliases: [] }, isSentient: false },
+  )
+  check('your sister licenses my sister', your.choices.map((c) => c.label), ['Ask my sister'])
+}
+
 console.log('choice-grounding — supernatural reification (world-gated):')
 {
   const ghostChoice = [

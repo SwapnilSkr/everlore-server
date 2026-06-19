@@ -179,9 +179,43 @@ function mentionsTerm(text: string, term: string): boolean {
   return new RegExp(`\\b${term}s?\\b`, 'i').test(text)
 }
 
+function mentionsPossessiveKin(text: string, term: string): boolean {
+  return new RegExp(`\\b(?:my|our)\\s+${term}s?\\b`, 'i').test(text)
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 /** Split arbitrary cast strings (names, aliases, role labels) into bare tokens. */
 function tokenize(s: string): string[] {
   return s.toLowerCase().split(/[^a-zà-ÿ]+/i).filter(Boolean)
+}
+
+function playerAnchoredKinGroups(
+  groundingText: string | undefined,
+  opts?: { protagonist?: { name?: string | null; aliases?: string[] } | null; isSentient?: boolean },
+): Set<string> {
+  const groups = new Set<string>()
+  const text = groundingText || ''
+  if (!text) return groups
+  const anchors = [
+    ...(opts?.protagonist?.name ? [opts.protagonist.name] : []),
+    ...(opts?.protagonist?.aliases || []),
+  ].map((a) => String(a || '').trim()).filter(Boolean)
+
+  for (const term of KIN_TERMS) {
+    const group = KIN_GROUPS[term]
+    if (new RegExp(`\\byour\\s+${term}s?\\b`, 'i').test(text)) groups.add(group)
+    if (!opts?.isSentient && new RegExp(`\\bmy\\s+${term}s?\\b`, 'i').test(text)) groups.add(group)
+    for (const anchor of anchors) {
+      const escaped = escapeRegExp(anchor)
+      if (new RegExp(`\\b${escaped}(?:'s|’s)\\s+${term}s?\\b`, 'i').test(text)) {
+        groups.add(group)
+      }
+    }
+  }
+  return groups
 }
 
 export interface GroundableChoice {
@@ -211,8 +245,10 @@ export function groundChoices<T extends GroundableChoice>(
   groundingText?: string,
   graphLabels?: string[],
   worldText?: string,
+  opts?: { protagonist?: { name?: string | null; aliases?: string[] } | null; isSentient?: boolean },
 ): ChoiceGroundingResult<T> {
   const knownGroups = new Set<string>()
+  const playerOwnedGroups = playerAnchoredKinGroups(groundingText, opts)
   // Supernatural beings the world actually establishes — from the WORLD premise/
   // lore and the carded cast/entities (NOT the prose, which may use the word as a
   // metaphor). If a being's group is here, choices may reference it; otherwise a
@@ -235,7 +271,10 @@ export function groundChoices<T extends GroundableChoice>(
     if (!v) continue
     for (const tok of tokenize(v)) {
       const group = KIN_GROUPS[tok]
-      if (group) knownGroups.add(group)
+      if (group) {
+        knownGroups.add(group)
+        playerOwnedGroups.add(group)
+      }
     }
   }
   // (2) The kinship GRAPH — the player's ACTUAL relatives' surface labels, the
@@ -246,7 +285,10 @@ export function groundChoices<T extends GroundableChoice>(
     if (!v) continue
     for (const tok of tokenize(v)) {
       const group = KIN_GROUPS[tok]
-      if (group) knownGroups.add(group)
+      if (group) {
+        knownGroups.add(group)
+        playerOwnedGroups.add(group)
+      }
     }
   }
   // (3) The grounded narrator: any kin term it uses this turn is real even if the
@@ -265,6 +307,9 @@ export function groundChoices<T extends GroundableChoice>(
     const fabricated = KIN_TERMS.find(
       (term) => !knownGroups.has(KIN_GROUPS[term]) && mentionsTerm(text, term),
     )
+    const perspectiveMismatch = KIN_TERMS.find(
+      (term) => mentionsPossessiveKin(text, term) && !playerOwnedGroups.has(KIN_GROUPS[term]),
+    )
     // Reified metaphor: in a GROUNDED world only, a supernatural being not
     // established as real (premise/lore or a carded entity). Supernatural-capable
     // worlds are never policed — a ghost/dragon/alien may freely come up.
@@ -273,7 +318,7 @@ export function groundChoices<T extends GroundableChoice>(
       : SUPERNATURAL_TERMS.find(
           (term) => !knownSupernatural.has(SUPERNATURAL_GROUPS[term]) && mentionsTerm(text, term),
         )
-    const reason = fabricated || ungroundedBeing
+    const reason = perspectiveMismatch ? `perspective:${perspectiveMismatch}` : fabricated || ungroundedBeing
     if (reason) dropped.push({ choice: c, term: reason })
     else kept.push(c)
   }

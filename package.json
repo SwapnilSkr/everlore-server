@@ -18,6 +18,7 @@
     "audit:time-skip": "bun run scripts/time-skip-audit.ts",
     "audit:codex-dedup": "bun run scripts/codex-dedup-audit.ts",
     "audit:kinship": "bun run scripts/kinship-audit.ts",
+    "audit:presence-codex-gap": "bun run scripts/presence-codex-gap-audit.ts",
     "audit:replay-edit": "bun run scripts/replay-edit-audit.ts",
     "audit:memory-links": "bun run scripts/memory-links-audit.ts",
     "audit:side-chat-privacy": "bun run scripts/side-chat-privacy-audit.ts",

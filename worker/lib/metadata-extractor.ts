@@ -4,8 +4,62 @@ import { enforceSchema, type GenerationOutput } from './structured-output'
 /** Structured fields derived from a narrative — everything except the prose itself. */
 export type SceneMetadata = Omit<GenerationOutput, 'narrative'>
 
-/** Schema mirrors the generation envelope minus `narrative` (callLLM uses strict:false). */
-const METADATA_SCHEMA = {
+/**
+ * The metadata pass is SPLIT into two focused LLM calls so the most fragile
+ * half (the SCENE WITNESS: who is present / where / how time moved) can fail
+ * without corrupting the CHOICE/STAT half, and vice versa. `extractSceneMetadata`
+ * runs both in parallel and merges — every caller (main turn, edit, replay) gets
+ * the isolation for free with an identical return shape. See METADATA_SPLIT.md.
+ */
+
+/** WITNESS schema — the fragile, low-token scene-observation half: presence,
+ *  departures, location, movement, time, and place facts. A bad/truncated
+ *  witness response falls back to safe defaults and never touches choices. */
+const WITNESS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    present_characters: {
+      type: 'array',
+      maxItems: 12,
+      items: { type: 'string' },
+    },
+    characters_departed: {
+      type: 'array',
+      maxItems: 12,
+      items: { type: 'string' },
+    },
+    current_location: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    },
+    containment_hint: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    },
+    movement: {
+      type: 'string',
+      enum: ['none', 'deeper', 'out', 'lateral', 'world_shift'],
+    },
+    viewpoint_moved: { type: 'boolean' },
+    time_elapsed: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    },
+    location_state_changes: {
+      type: 'array',
+      maxItems: 6,
+      items: { type: 'string' },
+    },
+    location_permanent_facts: {
+      type: 'array',
+      maxItems: 6,
+      items: { type: 'string' },
+    },
+  },
+  required: ['present_characters', 'characters_departed', 'current_location', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
+}
+
+/** CHOICE/STAT schema — the player-moves + bookkeeping half: choices, scene tag,
+ *  tone, milestone, stat/flag mutations. Isolated from the witness half. */
+const CHOICE_META_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
@@ -62,42 +116,28 @@ const METADATA_SCHEMA = {
     milestone: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
-    present_characters: {
-      type: 'array',
-      maxItems: 12,
-      items: { type: 'string' },
-    },
-    characters_departed: {
-      type: 'array',
-      maxItems: 12,
-      items: { type: 'string' },
-    },
-    current_location: {
-      anyOf: [{ type: 'string' }, { type: 'null' }],
-    },
-    containment_hint: {
-      anyOf: [{ type: 'string' }, { type: 'null' }],
-    },
-    movement: {
-      type: 'string',
-      enum: ['none', 'deeper', 'out', 'lateral', 'world_shift'],
-    },
-    viewpoint_moved: { type: 'boolean' },
-    time_elapsed: {
-      anyOf: [{ type: 'string' }, { type: 'null' }],
-    },
-    location_state_changes: {
-      type: 'array',
-      maxItems: 6,
-      items: { type: 'string' },
-    },
-    location_permanent_facts: {
-      type: 'array',
-      maxItems: 6,
-      items: { type: 'string' },
-    },
   },
-  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone', 'present_characters', 'characters_departed', 'current_location', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
+  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone'],
+}
+
+/** Default for the WITNESS half — used when its call fails so a witness outage
+ *  never throws or pollutes the choice half. Presence/location stay empty/unchanged. */
+const WITNESS_FALLBACK: SceneMetadata = {
+  present_characters: [],
+  characters_departed: [],
+  current_location: null,
+  containment_hint: null,
+  movement: 'none',
+  viewpoint_moved: false,
+  time_elapsed: null,
+  location_state_changes: [],
+  location_permanent_facts: [],
+  state_mutations: {},
+  flag_mutations: {},
+  scene_tag: 'dialogue',
+  emotional_tone: 'neutral',
+  choices: [],
+  milestone: null,
 }
 
 function safeParseObject(raw: string): Record<string, unknown> {
@@ -159,37 +199,37 @@ Rules:
  * choice viewpoint can't drift in third-person prose. Falls back to a no-op
  * (scene stays `intimate` to preserve NSFW momentum) if extraction fails.
  */
-export async function extractSceneMetadata(
-  narrative: string,
-  statKeys: string[],
-  flagKeys: string[],
-  opts?: {
-    isSentient?: boolean
-    currentLocationName?: string | null
-    /** Characters present at the END of the PRIOR turn, so a character still in
-     *  the scene but not named in this passage isn't dropped to "elsewhere". */
-    priorPresent?: string[]
-    /** Places this world already knows (canonical name + aliases). Lets a RETURN
-     *  to a known place reuse its canonical name instead of minting a duplicate. */
-    knownPlaces?: { name: string; aliases?: string[] }[]
-    /** Who the player is in this world — their GM character or their persona —
-     *  by name + any aliases. Used to anchor first-person choices to the right
-     *  person so the choice viewpoint never drifts in third-person prose. */
-    protagonist?: { name?: string | null; aliases?: string[] } | null
-    /** Known OTHER characters (the selected codex, excluding the player) by
-     *  canonical name + aliases. Lets the extractor return `present_characters`
-     *  and name people in choices by their CANONICAL name instead of whatever
-     *  alias/role/pronoun the prose happened to use — the app matches presence
-     *  against canonical names with an exact check, so source-normalizing here
-     *  keeps "approach vs. seek out" and the Cast presence tags correct. */
-    roster?: { name: string; aliases?: string[] }[]
-    /** A short description of the WORLD's nature (premise/lore), so the extractor
-     *  can judge whether an unusual noun in the prose is LITERAL or FIGURATIVE —
-     *  e.g. "the ghost in the doorway" is a real spirit in a horror world but a
-     *  metaphor for an overlooked person in a grounded drama. */
-    worldContext?: string | null
-  },
-): Promise<SceneMetadata> {
+type MetadataOpts = {
+  isSentient?: boolean
+  currentLocationName?: string | null
+  /** Characters present at the END of the PRIOR turn, so a character still in
+   *  the scene but not named in this passage isn't dropped to "elsewhere". */
+  priorPresent?: string[]
+  /** Places this world already knows (canonical name + aliases). Lets a RETURN
+   *  to a known place reuse its canonical name instead of minting a duplicate. */
+  knownPlaces?: { name: string; aliases?: string[] }[]
+  /** Who the player is in this world — their GM character or their persona —
+   *  by name + any aliases. Used to anchor first-person choices to the right
+   *  person so the choice viewpoint never drifts in third-person prose. */
+  protagonist?: { name?: string | null; aliases?: string[] } | null
+  /** Known OTHER characters (the selected codex, excluding the player) by
+   *  canonical name + aliases. Lets the extractor return `present_characters`
+   *  and name people in choices by their CANONICAL name instead of whatever
+   *  alias/role/pronoun the prose happened to use — the app matches presence
+   *  against canonical names with an exact check, so source-normalizing here
+   *  keeps "approach vs. seek out" and the Cast presence tags correct. */
+  roster?: { name: string; aliases?: string[] }[]
+  /** A short description of the WORLD's nature (premise/lore), so the extractor
+   *  can judge whether an unusual noun in the prose is LITERAL or FIGURATIVE —
+   *  e.g. "the ghost in the doorway" is a real spirit in a horror world but a
+   *  metaphor for an overlooked person in a grounded drama. */
+  worldContext?: string | null
+}
+
+/** Build the STATIC rules + dynamic CONTEXT system prompt shared by both halves.
+ *  Keeping all per-turn/per-world values after the rules lets OpenAI prompt
+ *  caching reuse the ~2.5K-token rules prefix across turns and worlds. */
+function buildMetadataSystem(opts: MetadataOpts | undefined, statKeys: string[], flagKeys: string[]): string {
   // Resolve who "I" is for the choices. In third-person GM prose the protagonist
   // is referred to by role ("the son", "the boy"); without naming them the
   // extractor cannot tell which character is the player and drifts the choice POV
@@ -254,9 +294,6 @@ export async function extractSceneMetadata(
           : '; their character acts within the world.'
       }`
 
-  // STATIC rules prefix (cacheable) + a CONTEXT tail holding everything dynamic.
-  // Keeping all per-turn/per-world values after the rules lets OpenAI prompt
-  // caching reuse the ~2.5K-token rules prefix across turns and worlds.
   // Order within the dynamic tail by how much the rules LEAN on it: WORLD MODE and
   // WORLD CONTEXT (the figurative-vs-literal signal) go FIRST so a small model
   // doesn't have to reach past long roster/place lists to apply them; the bulky
@@ -270,43 +307,134 @@ Prior known location (return THIS unless the viewpoint has physically moved): ${
 People present at the end of last turn (carried forward automatically — for your reference): ${priorPresentLabel}
 Tracked stats (only these names may appear in state_mutations): ${statKeys.length ? statKeys.join(', ') : '(none)'}
 Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}${rosterClause}${knownPlacesClause}`
-  const system = METADATA_RULES + context
+  return METADATA_RULES + context
+}
 
-  let raw: string
+/** Reuse enforceSchema's field validation on a raw half-response by injecting a
+ *  placeholder narrative (enforceSchema requires one) and returning the full
+ *  validated GenerationOutput; each half picks its own fields. */
+function validateHalf(raw: string): GenerationOutput {
+  return enforceSchema(JSON.stringify({ narrative: 'placeholder', ...safeParseObject(raw) }))
+}
+
+/**
+ * WITNESS half — the dedicated low-token scene observation: who is present, who
+ * left, where the viewpoint stands, how it moved, how time elapsed, and what
+ * changed about the place. Isolated from the choice/stat half so a witness
+ * failure (truncation, bad JSON) falls back to safe defaults and never corrupts
+ * the choices/stats, and vice versa. Returns a full SceneMetadata with only the
+ * witness fields populated; the rest are the safe fallback.
+ */
+export async function extractSceneWitness(
+  narrative: string,
+  opts?: MetadataOpts,
+): Promise<SceneMetadata> {
+  const system = buildMetadataSystem(opts, [], [])
   try {
-    raw = await callLLM({
+    const raw = await callLLM({
       model: AI_MODELS.metadata,
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: narrative },
       ],
       temperature: 0.2,
-      maxTokens: 500,
-      responseSchema: METADATA_SCHEMA,
+      maxTokens: 450,
+      responseSchema: WITNESS_SCHEMA,
     })
-  } catch {
+    const v = validateHalf(raw)
     return {
-      state_mutations: {},
-      flag_mutations: {},
-      scene_tag: 'intimate',
-      emotional_tone: 'neutral',
-      choices: [],
-      milestone: null,
-      present_characters: [],
-      characters_departed: [],
-      current_location: null,
-      viewpoint_moved: false,
-      time_elapsed: null,
-      location_state_changes: [],
-      location_permanent_facts: [],
+      ...WITNESS_FALLBACK,
+      present_characters: v.present_characters,
+      characters_departed: v.characters_departed ?? [],
+      current_location: v.current_location ?? null,
+      containment_hint: v.containment_hint ?? null,
+      movement: v.movement ?? 'none',
+      viewpoint_moved: v.viewpoint_moved === true,
+      time_elapsed: v.time_elapsed ?? null,
+      location_state_changes: v.location_state_changes ?? [],
+      location_permanent_facts: v.location_permanent_facts ?? [],
     }
+  } catch {
+    return WITNESS_FALLBACK
   }
+}
 
-  // Reuse enforceSchema's field validation by injecting a placeholder narrative,
-  // then drop it — keeps mutation/tag validation in one place.
-  const validated = enforceSchema(
-    JSON.stringify({ narrative: 'placeholder', ...safeParseObject(raw) }),
-  )
-  const { narrative: _omit, ...meta } = validated
-  return meta
+/**
+ * CHOICE/STAT half — suggested player moves, scene tag, tone, milestone, and
+ * stat/flag mutations. Kept together (they share one JSON pass) but isolated
+ * from the witness half. Falls back to an `intimate` scene tag to preserve NSFW
+ * momentum (matching the legacy no-op fallback) on failure.
+ */
+export async function extractChoiceMetadata(
+  narrative: string,
+  statKeys: string[],
+  flagKeys: string[],
+  opts?: MetadataOpts,
+): Promise<SceneMetadata> {
+  const system = buildMetadataSystem(opts, statKeys, flagKeys)
+  try {
+    const raw = await callLLM({
+      model: AI_MODELS.metadata,
+      messages: [
+        { role: 'system', content: system },
+        { role: 'user', content: narrative },
+      ],
+      temperature: 0.2,
+      maxTokens: 350,
+      responseSchema: CHOICE_META_SCHEMA,
+    })
+    const v = validateHalf(raw)
+    return {
+      ...WITNESS_FALLBACK,
+      state_mutations: v.state_mutations,
+      flag_mutations: v.flag_mutations,
+      scene_tag: v.scene_tag,
+      emotional_tone: v.emotional_tone,
+      choices: v.choices,
+      milestone: v.milestone,
+    }
+  } catch {
+    return { ...WITNESS_FALLBACK, scene_tag: 'intimate' }
+  }
+}
+
+/**
+ * Derive ALL structured fields (state/flag mutations, scene tag, tone, choices,
+ * milestone, presence, location, time) from a finished narrative by running the
+ * WITNESS and CHOICE/STAT halves in parallel and merging. Runs on EVERY turn:
+ * the narrator is always `proseOnly` (streamed prose, uncensored-model
+ * compatible), so this cheap reliable model handles the structured bookkeeping.
+ * `opts.protagonist` anchors first-person choice generation to the player so the
+ * choice viewpoint can't drift in third-person prose. A failure in one half
+ * falls back to safe defaults for ONLY that half — the other half is unaffected.
+ */
+export async function extractSceneMetadata(
+  narrative: string,
+  statKeys: string[],
+  flagKeys: string[],
+  opts?: MetadataOpts,
+): Promise<SceneMetadata> {
+  const [witness, choice] = await Promise.all([
+    extractSceneWitness(narrative, opts),
+    extractChoiceMetadata(narrative, statKeys, flagKeys, opts),
+  ])
+  return {
+    // WITNESS half
+    present_characters: witness.present_characters,
+    characters_departed: witness.characters_departed,
+    current_location: witness.current_location,
+    containment_hint: witness.containment_hint,
+    movement: witness.movement,
+    viewpoint_moved: witness.viewpoint_moved,
+    time_elapsed: witness.time_elapsed,
+    location_state_changes: witness.location_state_changes,
+    location_permanent_facts: witness.location_permanent_facts,
+    // CHOICE/STAT half
+    state_mutations: choice.state_mutations,
+    flag_mutations: choice.flag_mutations,
+    scene_tag: choice.scene_tag,
+    emotional_tone: choice.emotional_tone,
+    choices: choice.choices,
+    milestone: choice.milestone,
+  }
 }

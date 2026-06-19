@@ -21,6 +21,7 @@ import { type GenerationOutput } from "../lib/structured-output";
 import { extractSceneMetadata } from "../lib/metadata-extractor";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
 import { compactImmutableFacts } from "../lib/codex-compactor";
+import { detectPresenceCodexGapsDetailed } from "../lib/presence-gap-detector";
 import { characterCodexService } from "../../src/services/character-codex.service";
 import { kinshipGraphService } from "../../src/services/kinship-graph.service";
 import { entityGraphService, isVagueLocationLabel, normalizeEntityName } from "../../src/services/entity-graph.service";
@@ -345,12 +346,21 @@ export async function generationProcessor(job: Job) {
     }),
   );
 
+  // RAW witness prose: what the model actually generated (and what the player
+  // saw stream by). All world-state extractors (metadata, choice grounding,
+  // codex, kinship, memory) witness THIS, not the hygiene-repaired prose, so
+  // canonical-name anchors the model produced are never erased before
+  // extraction. The hygiene pass below is COSMETIC — it only shapes the
+  // persisted/displayed transcript (data.ai_response +
+  // generation_complete.narrative), never what the extractors read.
+  const rawNarrative = prose.trim();
+
   const characterNames = (characterCodex || []).map(
     (c: any) => c.canonical_name,
   );
   const previousOpeningName = openingCharacterName(recentEvents || [], characterNames);
   const repairedProse = await repairProseHygiene({
-    narrative: prose.trim(),
+    narrative: rawNarrative,
     characterNames,
     messageLength: session.message_length,
     playerAddressMode: session.is_sentient ? "you" : session.narration_pov === "first" ? "you" : "role",
@@ -398,7 +408,7 @@ export async function generationProcessor(job: Job) {
     .listKnownLocations(instanceId, 30)
     .catch(() => [] as { name: string; aliases: string[] }[]);
   const meta = await extractSceneMetadata(
-    finalNarrative,
+    rawNarrative,
     Object.keys(session.world_state || {}),
     Object.keys(session.active_flags || {}),
     {
@@ -457,7 +467,14 @@ export async function generationProcessor(job: Job) {
   const worldText = [session.seed_prompt, session.global_lore]
     .filter(Boolean)
     .join("\n");
-  const groundedChoices = groundChoices(parsed.choices || [], castVocab, finalNarrative, graphLabels, worldText);
+  const groundedChoices = groundChoices(
+    parsed.choices || [],
+    castVocab,
+    rawNarrative,
+    graphLabels,
+    worldText,
+    { protagonist: choiceProtagonist, isSentient: !!session.is_sentient },
+  );
   if (groundedChoices.dropped.length) {
     log.warn("choice-grounding dropped ungrounded choices", {
       instanceId: idString(instanceId),
@@ -672,7 +689,14 @@ export async function generationProcessor(job: Job) {
   // metadata model may surface them as lowercase labels ("sister", "father").
   // Those are generic-looking, but they are real scene participants and must
   // seed codex extraction. Keep child/self-facing labels out so the player does
-  // not become a separate "Son" / "Child" card.
+  // not become a separate "Son" / "Child" card. TITLED role NPCs (butler,
+  // captain, king, queen, prince, princess, lord, lady) are premise-backed in
+  // the same way — the narration names the role, the character has no proper
+  // name yet — so they are kept too. This list mirrors the
+  // FAMILY_ROLE_WORDS set in scripts/presence-codex-gap-audit.ts and the
+  // _familyRoleWords set in play_cubit.dart so the backend presence filter,
+  // the audit, and the client miss-detector agree on what a "premise-backed
+  // role NPC" is.
   const trackableFamilyLabels = new Set([
     "father",
     "mother",
@@ -701,6 +725,14 @@ export async function generationProcessor(job: Job) {
     "grandfather",
     "grandma",
     "grandpa",
+    "butler",
+    "captain",
+    "king",
+    "queen",
+    "prince",
+    "princess",
+    "lord",
+    "lady",
   ]);
   const familyPresenceLabel = (raw: string): string | null => {
     const n = articleStrip(normalizeEntityName(String(raw || "")))
@@ -744,6 +776,85 @@ export async function generationProcessor(job: Job) {
       parsed.present_characters = [aiName, ...parsed.present_characters].slice(0, 12);
     }
   }
+
+  // WITNESS → ENTITY-STUB tier: every present person the scene just showed who
+  // isn't already a codex card gets a lightweight stub entity before the turn is
+  // released. Codex extraction remains async below, but stubs must exist before
+  // the next turn can start so kinship/choice/memory graph reads do not race.
+  const knownCardNames = new Set<string>();
+  for (const c of (characterCodex as any[]) || []) {
+    if (!c?.canonical_name) continue;
+    knownCardNames.add(normalizeEntityName(c.canonical_name));
+    for (const a of (c.aliases || []) as string[]) {
+      const n = normalizeEntityName(a);
+      if (n) knownCardNames.add(n);
+    }
+  }
+  if (session.is_sentient) {
+    if (session.persona_snapshot?.name) {
+      knownCardNames.add(normalizeEntityName(session.persona_snapshot.name));
+    }
+    const selfIntro = detectSelfIntroName(parsedPlayerInput.raw);
+    if (selfIntro) knownCardNames.add(normalizeEntityName(selfIntro));
+  }
+  const presenceGapExcludes: string[] = [];
+  if (session.is_sentient && session.persona_snapshot?.name) {
+    presenceGapExcludes.push(session.persona_snapshot.name);
+  }
+  const selfIntroForGap = session.is_sentient ? detectSelfIntroName(parsedPlayerInput.raw) : null;
+  if (selfIntroForGap) presenceGapExcludes.push(selfIntroForGap);
+  const visiblePresenceGaps = detectPresenceCodexGapsDetailed(rawNarrative, {
+    present: parsed.present_characters,
+    codex: [...knownCardNames],
+    exclude: presenceGapExcludes,
+  });
+  if (visiblePresenceGaps.length) {
+    const presentSeen = new Set(parsed.present_characters.map((n) => normalizeEntityName(n)));
+    for (const gap of visiblePresenceGaps) {
+      if (parsed.present_characters.length >= 12) break;
+      if (!gap.key || presentSeen.has(gap.key)) continue;
+      presentSeen.add(gap.key);
+      parsed.present_characters.push(gap.display);
+    }
+    log.info("presence.gaps.stubbed.live", {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      gaps: visiblePresenceGaps.map((g) => g.key).slice(0, 8),
+    });
+  }
+  const stubResult = await entityGraphService
+    .ensureSceneParticipantStubs({
+      instanceId,
+      playerId,
+      sequence: nextSequence,
+      presentNames: parsed.present_characters,
+      knownCardNames,
+    })
+    .catch((err) => {
+      console.warn("scene participant stubs skipped:", (err as Error).message);
+      return { ensured: [] as string[], promoted: [] as string[] };
+    });
+  if (stubResult.ensured.length) {
+    log.info("scene.participant.stubs", {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      ensured: stubResult.ensured,
+    });
+  }
+  entityGraphService
+    .archiveStaleStubs({ instanceId, sequence: nextSequence })
+    .then((res) => {
+      if (res.archived > 0) {
+        log.info("scene.participant.stubs.archived", {
+          instanceId: idString(instanceId),
+          sequence: nextSequence,
+          archived: res.archived,
+        });
+      }
+    })
+    .catch((err) => {
+      console.warn("stale stub archival skipped:", (err as Error).message);
+    });
 
   const timeAnchor = await timeService.anchorForNextEvent({
     instanceId,
@@ -1013,7 +1124,7 @@ export async function generationProcessor(job: Job) {
     try {
       const deltas = await extractCharacterCodexDeltas({
         playerInput: parsedPlayerInput.raw,
-        aiResponse: parsed.narrative,
+        aiResponse: rawNarrative,
         existing: (characterCodex || []).map((c: any) => ({
           canonical_name: c.canonical_name,
           aliases: c.aliases || [],
@@ -1185,7 +1296,18 @@ export async function generationProcessor(job: Job) {
             cards: codex,
             entitiesByCardName: entityMap,
             selfAnchorId,
-            sceneText: finalNarrative,
+            sceneText: rawNarrative,
+            // Stub uncarded endpoints (e.g. a just-named "Mara" the codex didn't
+            // card yet) so the typed tie is written against a stub entity now;
+            // it promotes when the card lands. Closes the "edge disappears
+            // because the endpoint has no card" gap.
+            ensureStub: (name: string) =>
+              entityGraphService.ensureStubEntity({
+                instanceId,
+                playerId,
+                sequence: nextSequence,
+                name,
+              }).then((id) => id),
           });
           if (kin.written > 0) {
             log.info("kinship.graph.updated", {
@@ -1272,7 +1394,7 @@ export async function generationProcessor(job: Job) {
       playerInput: parsedPlayerInput.raw,
       playerSpokenInput: parsedPlayerInput.spoken,
       playerNarrationFacts: parsedPlayerInput.narrationFacts,
-      aiResponse: parsed.narrative,
+      aiResponse: rawNarrative,
       sceneTag: parsed.scene_tag,
       isSentient: !!session.is_sentient,
       playerPersonaName: session.persona_snapshot?.name || null,

@@ -526,20 +526,19 @@ export function validateProseHygiene(
         }
       }
 
+      // Two mentions of a canonical name is NATURAL and is the anchor downstream
+      // extraction (presence/codex/kinship) needs to see the world the player
+      // just saw — only flag repetition that genuinely hurts readability (≥3),
+      // and when the repair runs it must PRESERVE at least one full name anchor
+      // (see the repair prompt) so hygiene improves readability without erasing
+      // the very names the extractors rely on.
       const mentionCount = countOccurrences(trimmed, name);
-      if (mentionCount >= 2) {
+      if (mentionCount >= 3) {
         issues.push({
           code: "repeated_full_character_name",
           severity: "warning",
           message:
             "Response repeats a full canonical character name too often for natural prose.",
-          detail: `${name}: ${mentionCount}`,
-        });
-      } else if (mentionCount >= 3) {
-        issues.push({
-          code: "repeated_character_name",
-          severity: "warning",
-          message: "Response repeats a character name too often for one turn.",
           detail: `${name}: ${mentionCount}`,
         });
       }
@@ -620,6 +619,7 @@ Rules:
 - Use a character's name only when needed for clarity: first entrance, reintroduction, direct address, multiple ambiguous actors, or explicit contrast.
 - If the character is already clear, remove the name and use pronouns, role descriptors, action, body language, silence, setting, or dialogue.
 - Avoid full canonical names in ordinary narration. If a name is unavoidable, prefer a short first name unless formality or disambiguation truly requires the full name.
+- PRESERVE AT LEAST ONE FULL CANONICAL NAME per character who appears. Never reduce a character to zero name mentions — readers need a clear anchor for who is in the scene, and the same prose feeds downstream world-state extraction (presence, codex, kinship) which needs the canonical spelling to survive. Only remove REDUNDANT repeats beyond the first clear one; keep the first entrance or reintroduction mention.
 - Do not start consecutive sentences with the same character name.
 - If the previous turn opened with a character name, do not open this rewrite with that same name.
 - Do not open this rewrite with any name listed as an opening to avoid; begin with pronoun, action, body language, speech, or setting instead.

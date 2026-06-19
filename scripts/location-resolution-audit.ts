@@ -262,6 +262,27 @@ async function main() {
   ok('out: foyer parent = mansion (one level up from dining room)',
     !!foyer && idString(foyer!.parent_id) === idString(mansion._id), `parent=${foyer?.parent_id}`)
 
+  const vagueOutBefore = await entities().countDocuments({ instance_id: cg, type: 'location' })
+  const outside = await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 11.1,
+    name: 'outside', movement: 'out', viewpointMoved: true, cursorEntityId: diningRoom._id,
+  })
+  const vagueOutAfter = await entities().countDocuments({ instance_id: cg, type: 'location' })
+  ok('out + vague "outside" resolves to parent, not a new outside node',
+    !!outside && idString(outside.entity_id) === idString(mansion._id), `${JSON.stringify(outside)}`)
+  ok('out + vague "outside" minted NOTHING', vagueOutAfter === vagueOutBefore,
+    `count ${vagueOutBefore} → ${vagueOutAfter}`)
+
+  const vagueRoomBefore = await entities().countDocuments({ instance_id: cg, type: 'location' })
+  const movedRoom = await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 11.2,
+    name: 'the room', movement: 'lateral', viewpointMoved: true, cursorEntityId: diningRoom._id,
+  })
+  const vagueRoomAfter = await entities().countDocuments({ instance_id: cg, type: 'location' })
+  ok('moved vague "the room" returns null', movedRoom === null, `${JSON.stringify(movedRoom)}`)
+  ok('moved vague "the room" minted NOTHING', vagueRoomAfter === vagueRoomBefore,
+    `count ${vagueRoomBefore} → ${vagueRoomAfter}`)
+
   // lateral: dining room → study (same level) → study.parent = mansion.
   await entityGraphService.placeLocation({
     instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 12,

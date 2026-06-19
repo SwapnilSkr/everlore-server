@@ -45,7 +45,15 @@ export interface EntityDoc {
   aliases: string[]
   /** 1:1 link to the codex card for player/protagonist/character entities. */
   character_id?: ObjectId
-  status: 'active' | 'archived'
+  /** Lifecycle of a graph node:
+   *  - 'stub': a witnessed-but-uncarded entity (a scene participant or a kinship
+   *    endpoint) that exists so the graph can reference it before a full codex
+   *    card exists. High recall, low authority: NOT injected as canon, NOT shown
+   *    in the Bonds ledger (that reads cards). Promoted to 'active' the moment a
+   *    codex card mints for this name (syncCodexEntities links character_id).
+   *  - 'active': a full canonical entity backed by a codex card (or a location).
+   *  - 'archived': dormant / superseded. */
+  status: 'stub' | 'active' | 'archived'
   first_seen_sequence: number
   last_seen_sequence: number
   mention_count: number
