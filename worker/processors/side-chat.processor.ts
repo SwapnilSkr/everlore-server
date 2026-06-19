@@ -18,6 +18,10 @@ import { buildSideChatPacket } from "../../src/services/context-packet.service";
 import { getMemoryCurationQueue, QUEUE_RETENTION } from "../../src/queues";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
 import { projectSideChatDeltas } from "../lib/side-chat-privacy";
+import {
+  resolveSideChatReachability,
+  reachabilityFraming,
+} from "../lib/side-chat-reachability";
 import { characterCodexService } from "../../src/services/character-codex.service";
 import { entityGraphService } from "../../src/services/entity-graph.service";
 import type { CharacterProfileDoc } from "../../src/models/character-profile.model";
@@ -94,6 +98,42 @@ export async function sideChatProcessor(job: Job) {
     const nextSequence = packet.currentSequence + 1;
     const { currentTimeAnchor, timeContext, currentLocation } = packet;
 
+    // REACHABILITY (§10): decide HOW this character is reachable from the world
+    // state so we (a) hard-block a chat with someone dead/permanently gone and
+    // (b) frame the conversation correctly (in person vs. remote vs. distant).
+    // Uses the recent MAIN scene (present_characters) + the character's card state.
+    const recentMain = (await mongoColl
+      .events()
+      .find(
+        { instance_id: instanceOid, type: { $ne: "side_chat" } },
+        { projection: { sequence: 1, "data.present_characters": 1 } },
+      )
+      .sort({ sequence: -1 })
+      .limit(6)
+      .toArray()) as WorldEventDoc[];
+    const latestPresent = recentMain[0]?.data?.present_characters || [];
+    const recentPresent = recentMain.flatMap((e) => e.data?.present_characters || []);
+    const worldText = [session.seed_prompt, session.global_lore].filter(Boolean).join("\n");
+    const reachability = resolveSideChatReachability({
+      characterNames: [card.canonical_name, ...(card.aliases || [])],
+      latestPresent,
+      recentPresent,
+      cardState: card.mutable_state || [],
+      worldText,
+      lastSeenSequence: card.last_seen_sequence,
+      currentSequence: packet.currentSequence,
+    });
+    if (!reachability.allowed) {
+      // Surfaced to the client as a normal side-chat error with a clear reason
+      // (e.g. the character has died) — no turn is generated or persisted.
+      throw new Error(reachability.reason || `${card.canonical_name} is not reachable`);
+    }
+    // The player's own entity (read-only) for the participants list — best-effort.
+    const playerEntityDoc = await mongoColl
+      .entities()
+      .findOne({ instance_id: instanceOid, type: "player" }, { projection: { _id: 1 } });
+    const playerEntityId = playerEntityDoc?._id || null;
+
     // NSFW routing parity with main turns: world capability AND player opt-in.
     let modelId = session.model_preferences?.narration_sfw || AI_MODELS.narrationSfw;
     const sceneClassification =
@@ -122,8 +162,11 @@ ${
     : ""
 }
 
+REACHABILITY: ${reachabilityFraming(reachability.mode, card.canonical_name, currentLocation?.name) || `${card.canonical_name} is available to talk.`}
+
 RULES:
 - Respond ONLY as ${card.canonical_name}: their voice, knowledge, mood, and agenda. Stay true to the disposition and relationship meters above.
+- Honor the REACHABILITY note above: never describe ${card.canonical_name} as physically present when they are reached remotely or across a distance.
 - ${card.canonical_name} only knows what they have personally witnessed, been told, or could plausibly infer. They are not a narrator and have no out-of-character knowledge.
 - Never speak, act, or decide for ${personaName}.
 - This is an intimate, conversational register — dialogue first, with brief physical beats. No scene-setting paragraphs, no plot advancement, no new locations or characters.
@@ -186,6 +229,16 @@ ${buildLengthDirective(session.message_length)}`;
         character_id: card._id,
         character_entity_id: card.entity_id || null,
         character_name: card.canonical_name,
+        mode: reachability.mode,
+        // A 1:1 side chat is private — the main narrator did not witness it (the
+        // codex/memory privacy gates below depend on this). participants are the
+        // entity ids in the room; mainline_effect stays false for an ordinary beat.
+        visibility_scope: "private" as const,
+        participants: [
+          ...(card.entity_id ? [card.entity_id] : []),
+          ...(playerEntityId ? [playerEntityId] : []),
+        ],
+        mainline_effect: false,
       },
       data: {
         player_input: userMessage,
@@ -380,6 +433,7 @@ ${buildLengthDirective(session.message_length)}`;
         type: "side_chat_complete",
         instanceId,
         character: { id: idString(card._id), name: card.canonical_name },
+        reachability: { mode: reachability.mode, reason: reachability.reason },
         event: {
           id: idString(event._id),
           sequence: nextSequence,

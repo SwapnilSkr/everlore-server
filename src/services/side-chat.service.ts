@@ -1,6 +1,8 @@
 import { mongoColl } from '../config/mongo'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import type { WorldEventDoc } from '../models/world-event.model'
+import type { CharacterProfileDoc } from '../models/character-profile.model'
+import { resolveSideChatReachability } from '../../worker/lib/side-chat-reachability'
 
 const THREAD_PAGE_SIZE = 30
 
@@ -15,6 +17,47 @@ async function assertOwnership(instanceId: string, playerId: string) {
 
 /** Read surface for private side-character conversations (Phase 7). */
 export const sideChatService = {
+  /**
+   * Pre-gate for the UI: can the player side-chat this character right now, and on
+   * what footing (present / nearby / reachable_remote / seek_required / blocked)?
+   * Mirrors the worker's gate (same resolver) so the app can disable / annotate the
+   * affordance before sending. Read-only.
+   */
+  async checkReachability(instanceId: string, playerId: string, characterId: string) {
+    const instance = await assertOwnership(instanceId, playerId)
+    const iid = parseObjectId(instanceId)
+    const card = (await mongoColl.characters().findOne({
+      _id: parseObjectId(characterId),
+      instance_id: iid,
+    })) as CharacterProfileDoc | null
+    if (!card) throw new Error('Character not found')
+    if (card.is_protagonist) {
+      return { allowed: false, mode: 'blocked' as const, reason: 'This is the main character — talk to them in the story.' }
+    }
+    const template = await mongoColl
+      .worldTemplates()
+      .findOne({ _id: instance.template_id }, { projection: { seed_prompt: 1, global_lore: 1 } })
+    const recentMain = (await mongoColl
+      .events()
+      .find(
+        { instance_id: iid, type: { $ne: 'side_chat' } },
+        { projection: { sequence: 1, 'data.present_characters': 1 } },
+      )
+      .sort({ sequence: -1 })
+      .limit(6)
+      .toArray()) as WorldEventDoc[]
+    const currentSequence = recentMain[0]?.sequence ?? 0
+    return resolveSideChatReachability({
+      characterNames: [card.canonical_name, ...(card.aliases || [])],
+      latestPresent: recentMain[0]?.data?.present_characters || [],
+      recentPresent: recentMain.flatMap((e) => e.data?.present_characters || []),
+      cardState: card.mutable_state || [],
+      worldText: [template?.seed_prompt, template?.global_lore].filter(Boolean).join('\n'),
+      lastSeenSequence: card.last_seen_sequence,
+      currentSequence,
+    })
+  },
+
   /** One row per character the player has side-chatted with, latest first. */
   async listThreads(instanceId: string, playerId: string) {
     await assertOwnership(instanceId, playerId)

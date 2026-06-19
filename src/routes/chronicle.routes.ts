@@ -42,6 +42,11 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
     (ctx) => chronicleController.getSideChatThread(ctx),
   )
 
+  .get(
+    '/side-chats/:instanceId/:characterId/reachability',
+    (ctx) => chronicleController.getSideChatReachability(ctx),
+  )
+
   .post('/calendar/:instanceId/timeline', (ctx) => chronicleController.forkTimeline(ctx), {
     body: t.Object({
       name: t.String({ minLength: 1, maxLength: 120 }),

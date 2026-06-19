@@ -115,6 +115,19 @@ export interface SideChatRefDoc {
   character_id: ObjectId
   character_entity_id: ObjectId | null
   character_name: string
+  /** How the character was reachable for this chat (present/nearby/remote/seek) —
+   *  drives prompt framing + lets the UI explain the conversation's footing.
+   *  See worker/lib/side-chat-reachability.ts. */
+  mode?: import('../../worker/lib/side-chat-reachability').SideChatMode
+  /** Who could KNOW what was said. A 1:1 side chat is 'private' by default (the
+   *  main narrator didn't witness it); reserved for future public/local group
+   *  side chats. See world-authority.VisibilityScope. */
+  visibility_scope?: import('../utils/world-authority').VisibilityScope
+  /** Entity ids of the conversation participants (player + character). */
+  participants?: ObjectId[]
+  /** Whether this chat may influence the MAIN story (false for an ordinary private
+   *  beat; a hook for future consequence propagation). */
+  mainline_effect?: boolean
 }
 
 /**

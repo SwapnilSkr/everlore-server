@@ -178,6 +178,17 @@ export const chronicleController = {
     })
   },
 
+  getSideChatReachability: async ({
+    params,
+    user,
+  }: {
+    params: { instanceId: string; characterId: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return sideChatService.checkReachability(params.instanceId, user.id, params.characterId)
+  },
+
   forkTimeline: async ({
     params,
     body,
