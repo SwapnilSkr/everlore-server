@@ -167,7 +167,15 @@ export async function generationProcessor(job: Job) {
   // On a "continue" turn the player says nothing — the world advances on its
   // own. We feed the model a directive (but store no player input on the event).
   const parsedPlayerInput = isContinuation
-    ? { raw: "", spoken: "", narrationFacts: [] as string[] }
+    ? {
+        raw: "",
+        spoken: "",
+        narrationFacts: [] as string[],
+        corrections: [] as string[],
+        claims: [] as string[],
+        actionFacts: [] as string[],
+        fragments: [],
+      }
     : parsePlayerInput(userMessage);
 
   const promptUserMessage = isContinuation
