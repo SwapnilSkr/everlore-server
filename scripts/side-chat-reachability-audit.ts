@@ -43,7 +43,7 @@ ok('seen 3 turns ago → nearby', resolveSideChatReachability({ ...base, lastSee
 ok('modern world, absent → reachable_remote', resolveSideChatReachability({ ...base, worldText: 'A modern city of smartphones and traffic.' }).mode === 'reachable_remote')
 ok('magic link world → reachable_remote', resolveSideChatReachability({ ...base, worldText: 'Mages speak mind-to-mind across the realm via telepathy.' }).mode === 'reachable_remote')
 ok('grounded world, absent → seek_required', resolveSideChatReachability({ ...base, worldText: 'A medieval village of farmers and mud.' }).mode === 'seek_required')
-ok('seek_required is still allowed (soft)', resolveSideChatReachability({ ...base, worldText: 'A medieval village.' }).allowed === true)
+ok('seek_required is disabled until sought out', resolveSideChatReachability({ ...base, worldText: 'A medieval village.' }).allowed === false)
 
 // worldHasRemoteComm unit checks.
 ok('phone → remote', worldHasRemoteComm('she sent a text message') === true)

@@ -16,7 +16,7 @@
 export type SideChatMode = 'present' | 'nearby' | 'reachable_remote' | 'seek_required' | 'blocked'
 
 export interface SideChatReachability {
-  /** false only for `blocked`; the soft modes are allowed but framed differently. */
+  /** false for hard blocks and for `seek_required`, which must become a main-story seek/contact action first. */
   allowed: boolean
   mode: SideChatMode
   /** Short human reason (shown to the player / logged). */
@@ -113,10 +113,10 @@ export function resolveSideChatReachability(input: ReachabilityInput): SideChatR
     return { allowed: true, mode: 'reachable_remote', reason: `${display} can be reached remotely` }
   }
 
-  // 5. SEEK_REQUIRED — known but not here and not remotely reachable. Allowed as a
-  //    soft mode (framed as reaching across distance / from memory), since the
-  //    Bonds feature is a meta-conversation; the prompt acknowledges the distance.
-  return { allowed: true, mode: 'seek_required', reason: `${display} is not here — you reach out across the distance` }
+  // 5. SEEK_REQUIRED — known but not here and not remotely reachable. Do not allow
+  //    a direct side chat; the player must seek/contact them through the main story
+  //    first so the chronicle explains how the conversation becomes possible.
+  return { allowed: false, mode: 'seek_required', reason: `${display} is not here — seek them out in the story first` }
 }
 
 /** A short prompt fragment that frames the conversation per reachability mode, so
@@ -130,7 +130,7 @@ export function reachabilityFraming(mode: SideChatMode, characterName: string, p
     case 'reachable_remote':
       return `${characterName} is NOT physically present — this conversation reaches them remotely (a call, message, or magical link). Do not describe them as in the room; speak as if across a distance.`
     case 'seek_required':
-      return `${characterName} is NOT physically present and there is no clear means of contact — frame this as the player reaching out across distance or recalling them; ${characterName} is not in the room. Do not narrate them physically entering the scene.`
+      return `${characterName} is NOT physically present and there is no clear means of contact. A direct side chat should not start until the player seeks them out in the main story.`
     default:
       return ''
   }

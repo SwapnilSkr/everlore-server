@@ -955,7 +955,7 @@ export async function generationProcessor(job: Job) {
       choices: parsed.choices,
       milestone: parsed.milestone,
       present_characters: parsed.present_characters,
-      ...(trackableMentions.length ? { trackable_mentions: trackableMentions } : {}),
+      trackable_mentions: trackableMentions,
       ...(locationDeltas.length ? { location_deltas: locationDeltas } : {}),
       ...(effectiveTimeAdvance ? { time_advanced: effectiveTimeAdvance } : {}),
       ...(isTravel && currentLocation && resolvedLocation
