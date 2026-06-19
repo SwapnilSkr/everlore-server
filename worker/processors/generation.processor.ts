@@ -33,6 +33,7 @@ import { detectNarratedTimeSkip } from "../lib/time-skip-signal";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
 import { timeService } from "../../src/services/time.service";
 import {
+  getMaintenanceQueue,
   getMemoryCurationQueue,
   getSceneSummaryQueue,
   QUEUE_RETENTION,
@@ -1551,6 +1552,23 @@ export async function generationProcessor(job: Job) {
         removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
       },
     );
+  }
+
+  if (nextSequence > 0 && nextSequence % 500 === 0 && event.type !== "side_chat") {
+    getMaintenanceQueue()
+      .add(
+        "projection-checkpoint",
+        { task: "create_projection_checkpoint", instanceId },
+        {
+          priority: 30,
+          delay: 2000,
+          removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+        },
+      )
+      .catch((err) => {
+        console.warn("projection checkpoint enqueue failed:", (err as Error).message);
+      });
   }
 
   return { eventId: eventIdStr, sequence: nextSequence };

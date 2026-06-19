@@ -360,6 +360,29 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { instance_id: 1, type: 1 },
     options: { name: "idx_projection_anomalies_instance_type" },
   },
+
+  // projection_checkpoints (chunked world projection snapshots for scalable
+  // replay/rewind repair: restore latest checkpoint, then replay only the suffix).
+  {
+    collection: COLLECTIONS.projection_checkpoints,
+    key: { instance_id: 1, kind: 1, status: 1, sequence: -1 },
+    options: { name: "idx_projection_checkpoints_latest" },
+  },
+  {
+    collection: COLLECTIONS.projection_checkpoints,
+    key: { instance_id: 1, sequence: 1 },
+    options: { unique: true, name: "uniq_projection_checkpoint_instance_sequence" },
+  },
+  {
+    collection: COLLECTIONS.projection_checkpoint_chunks,
+    key: { checkpoint_id: 1, kind: 1, index: 1 },
+    options: { name: "idx_projection_checkpoint_chunks_checkpoint_kind" },
+  },
+  {
+    collection: COLLECTIONS.projection_checkpoint_chunks,
+    key: { instance_id: 1, sequence: 1 },
+    options: { name: "idx_projection_checkpoint_chunks_instance_sequence" },
+  },
 ]
 
 /**

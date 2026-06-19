@@ -25,6 +25,7 @@ import { classifyPresenceCodexGaps } from '../../worker/lib/presence-gap-detecto
 import { EVENT_WINDOWS } from '../utils/event-window'
 import { HttpError } from '../utils/http-error'
 import { kinshipGraphService } from './kinship-graph.service'
+import { projectionCheckpointService } from './projection-checkpoint.service'
 
 const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
@@ -377,6 +378,21 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
 }) {
   const { event, playerId, instance, template, narrative, deltas, forceExactRebuild } = params
   const instanceId = idString(event.instance_id)
+  if (forceExactRebuild) {
+    try {
+      const checkpointed = await rebuildCodexKinshipFromCheckpoint({
+        instanceId,
+        playerId,
+        instance,
+        template,
+        beforeOrAtSequence: Math.max(0, event.sequence - 1),
+        checkpointMustBeBefore: event.sequence,
+      })
+      if (checkpointed.used) return checkpointed.codex || characterCodexService.listForInstance(instanceId, 200)
+    } catch (err) {
+      console.warn('Replay projection: checkpoint rebuild failed, falling back to full ledger:', (err as Error).message)
+    }
+  }
   const priorProtagonist = await characters().findOne({ instance_id: event.instance_id, is_protagonist: true })
   const ledgerEvents = await events()
     .find(
@@ -498,6 +514,65 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
 
   await publishCodexUpdated(playerId, instance, codex)
   return codex
+}
+
+async function rebuildCodexKinshipFromCheckpoint(params: {
+  instanceId: string
+  playerId: string
+  instance: any
+  template: any
+  beforeOrAtSequence: number
+  checkpointMustBeBefore?: number
+}): Promise<{ used: boolean; checkpointSequence?: number; suffixEvents?: number; codex?: any[] }> {
+  const { instanceId, playerId, instance, template, beforeOrAtSequence, checkpointMustBeBefore } = params
+  const latest = await projectionCheckpointService.latestBefore(instanceId, beforeOrAtSequence)
+  if (!latest) return { used: false }
+  if (typeof checkpointMustBeBefore === 'number' && latest.sequence >= checkpointMustBeBefore) {
+    return { used: false }
+  }
+
+  await projectionCheckpointService.restoreCodexAndKinship(latest._id)
+
+  const iid = parseObjectId(instanceId)
+  const suffix = await events()
+    .find(
+      { instance_id: iid, type: { $ne: 'side_chat' }, sequence: { $gt: latest.sequence } },
+      { projection: { sequence: 1, 'data.codex_deltas': 1 } },
+    )
+    .sort({ sequence: 1 })
+    .toArray()
+  const batches = suffix
+    .filter((ev) => Array.isArray(ev.data?.codex_deltas) && ev.data.codex_deltas.length > 0)
+    .map((ev) => ({ sequence: ev.sequence, deltas: ev.data!.codex_deltas! }))
+  if (batches.length > 0) {
+    await characterCodexService.rebuildCodexFromLedger({ instanceId, playerId, batches })
+  }
+
+  const codex = await characterCodexService.listForInstance(instanceId, 200)
+  const entityMap = await entityGraphService.syncCodexEntities({
+    instanceId,
+    playerId,
+    sequence: beforeOrAtSequence,
+    cards: codex,
+  })
+  await entityGraphService.syncRelationshipEdges({
+    instanceId,
+    playerId,
+    sequence: beforeOrAtSequence,
+    eventId: null,
+    cards: codex,
+    entitiesByCardName: entityMap,
+    playerName: instance.persona_snapshot?.name,
+  })
+  await kinshipGraphService.applyLedgerSince({
+    instanceId,
+    playerId,
+    isSentient: !!template.is_sentient,
+    playerName: instance.persona_snapshot?.name,
+    fromSequence: latest.sequence,
+  })
+  await publishCodexUpdated(playerId, instance, codex)
+  return { used: true, checkpointSequence: latest.sequence, suffixEvents: suffix.length, codex }
 }
 
 /**
@@ -1290,7 +1365,23 @@ export const memoryService = {
       .toArray()
     const hasLedgeredDeltas = survivors.some((e) => Array.isArray(e.data?.codex_deltas))
 
+    let usedCheckpointRebuild = false
     if (hasLedgeredDeltas) {
+      try {
+        const checkpointed = await rebuildCodexKinshipFromCheckpoint({
+          instanceId,
+          playerId,
+          instance,
+          template,
+          beforeOrAtSequence: Math.max(0, sequence - 1),
+        })
+        usedCheckpointRebuild = checkpointed.used
+      } catch (err) {
+        console.warn('Rewind: checkpoint rebuild failed, falling back to full ledger:', (err as Error).message)
+      }
+    }
+
+    if (hasLedgeredDeltas && !usedCheckpointRebuild) {
       // Exact rebuild: drop the whole codex, restore protagonist identity, then
       // replay the surviving turns' stored deltas. The replay folds entirely in
       // memory and persists with a single bulk write, so a rewind at turn
@@ -1336,7 +1427,7 @@ export const memoryService = {
     // the typed relationship edges from the same surviving ledger so authority and
     // sever/retcon order are reconstructed exactly (not just provenance-pruned).
     // Best-effort; a kinship hiccup must never abort the rewind.
-    if (hasLedgeredDeltas) {
+    if (hasLedgeredDeltas && !usedCheckpointRebuild) {
       try {
         await kinshipGraphService.rebuildFromLedger({
           instanceId,

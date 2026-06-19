@@ -19,6 +19,7 @@ import type { DeadLetterJobDoc } from '../models/dead-letter-job.model'
 import type { GenerationLogDoc } from '../models/generation-log.model'
 import type { NsfwTermDoc } from '../models/nsfw-term.model'
 import type { ProjectionAnomalyDoc } from '../models/projection-anomaly.model'
+import type { ProjectionCheckpointChunkDoc, ProjectionCheckpointDoc } from '../models/projection-checkpoint.model'
 
 let client: MongoClient | null = null
 let database: Db | null = null
@@ -52,6 +53,8 @@ export const mongoColl = {
   generationLogs: () => coll<WithoutId<GenerationLogDoc>>(COLLECTIONS.generation_logs),
   nsfwLexicon: () => coll<WithoutId<NsfwTermDoc>>(COLLECTIONS.nsfw_lexicon),
   projectionAnomalies: () => coll<WithoutId<ProjectionAnomalyDoc>>(COLLECTIONS.projection_anomalies),
+  projectionCheckpoints: () => coll<WithoutId<ProjectionCheckpointDoc>>(COLLECTIONS.projection_checkpoints),
+  projectionCheckpointChunks: () => coll<WithoutId<ProjectionCheckpointChunkDoc>>(COLLECTIONS.projection_checkpoint_chunks),
 } as const
 
 export async function connectMongo(): Promise<Db> {

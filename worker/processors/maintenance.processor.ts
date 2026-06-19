@@ -476,6 +476,46 @@ export async function maintenanceProcessor(job: Job) {
       return { healthy: report.healthy, summary: report.summary, issues: issues.length }
     }
 
+    case 'schedule_projection_checkpoints': {
+      const instances = await mongoColl.worldInstances()
+        .find({ 'meta.total_events': { $gt: 250 }, 'meta.is_archived': { $ne: true } })
+        .project({ _id: 1 })
+        .limit(1000)
+        .toArray()
+
+      const { projectionCheckpointService } = await import('../../src/services/projection-checkpoint.service')
+      const { getMaintenanceQueue } = await import('../../src/queues')
+      const queue = getMaintenanceQueue()
+      let scheduled = 0
+      for (const inst of instances) {
+        const instanceId = idString(inst._id)
+        const latest = await mongoColl.events().findOne(
+          { instance_id: inst._id, type: { $ne: 'side_chat' } },
+          { sort: { sequence: -1 }, projection: { sequence: 1 } },
+        )
+        const latestSeq = latest?.sequence || 0
+        if (latestSeq < 250) continue
+        const checkpoint = await projectionCheckpointService.latestBefore(instanceId, latestSeq)
+        if (checkpoint && latestSeq - checkpoint.sequence < 500) continue
+        await queue.add('projection-checkpoint', {
+          task: 'create_projection_checkpoint',
+          instanceId,
+        }, {
+          priority: 30,
+          removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+        })
+        scheduled++
+      }
+      return { scanned: instances.length, scheduled }
+    }
+
+    case 'create_projection_checkpoint': {
+      const { instanceId } = job.data as { instanceId: string }
+      const { projectionCheckpointService } = await import('../../src/services/projection-checkpoint.service')
+      return projectionCheckpointService.create(instanceId)
+    }
+
     default:
       return { error: `Unknown maintenance task: ${task}` }
   }

@@ -184,7 +184,7 @@ export const kinshipGraphService = {
           updated_at: now,
         },
         $max: { importance: 3 },
-        $setOnInsert: { created_at: now, since_event_sequence: sequence, source_event_ids: [] },
+        $setOnInsert: { created_at: now, since_event_sequence: sequence },
         $push: { source_event_ids: { $each: [eventId], $slice: -EDGE_SOURCE_EVENTS_MAX } },
       } as never, { upsert: true })
       written++
@@ -295,6 +295,97 @@ export const kinshipGraphService = {
       }
     }
     notes.push(`replayed ${touched} event(s) with assertions`)
+    return { written, events: touched, notes }
+  },
+
+  /**
+   * Apply only the suffix of the kinship ledger after a restored checkpoint.
+   * Unlike rebuildFromLedger, this does NOT clear existing kinship edges: the
+   * checkpoint already restored the prefix projection, so this replays only
+   * events with sequence > fromSequence.
+   */
+  async applyLedgerSince(params: {
+    instanceId: string
+    playerId: string
+    isSentient: boolean
+    fromSequence: number
+    playerName?: string | null
+    includeSideChat?: boolean
+  }): Promise<{ written: number; events: number; notes: string[] }> {
+    const { instanceId, playerId, isSentient, fromSequence, playerName, includeSideChat } = params
+    const iid = parseObjectId(instanceId)
+    const notes: string[] = []
+
+    const codex = await characterCodexService.listForInstance(instanceId, 200)
+    const latestSeq = await events()
+      .find({ instance_id: iid }, { projection: { sequence: 1 } })
+      .sort({ sequence: -1 })
+      .limit(1)
+      .toArray()
+    const anchorSeq = latestSeq[0]?.sequence ?? fromSequence
+    const entityMap = await entityGraphService.syncCodexEntities({
+      instanceId,
+      playerId,
+      sequence: anchorSeq,
+      cards: codex,
+    })
+    let selfAnchorId: string | null = null
+    const protagCard = codex.find((c) => c.is_protagonist)
+    if (!isSentient && protagCard) {
+      const ent = entityMap.get(protagCard.name_normalized)
+      selfAnchorId = ent?._id ? idString(ent._id) : null
+    } else {
+      const player = await entityGraphService.ensurePlayerEntity({
+        instanceId,
+        playerId,
+        name: playerName ?? undefined,
+        sequence: anchorSeq,
+      })
+      selfAnchorId = idString(player._id)
+    }
+
+    const typeFilter = includeSideChat ? {} : { type: { $ne: 'side_chat' } }
+    const ledger = await events()
+      .find(
+        { instance_id: iid, sequence: { $gt: fromSequence }, ...typeFilter },
+        { projection: { sequence: 1, _id: 1, 'data.codex_deltas': 1, 'data.player_input': 1, 'data.ai_response': 1 } },
+      )
+      .sort({ sequence: 1 })
+      .toArray()
+
+    let written = 0
+    let touched = 0
+    for (const ev of ledger) {
+      const llm = (ev.data?.codex_deltas || []).flatMap((d) => d.relation_assertions || [])
+      const parsed = parsePlayerInput(ev.data?.player_input || '')
+      const deterministic = extractKinshipAssertions({
+        corrections: parsed.corrections,
+        narrationFacts: parsed.narrationFacts,
+        claims: parsed.claims,
+        prose: ev.data?.ai_response || '',
+      })
+      const merged = mergeRelationAssertions(llm, deterministic)
+      if (!merged.length) continue
+      touched++
+      try {
+        const res = await kinshipGraphService.applyRelationAssertions({
+          instanceId,
+          sequence: ev.sequence,
+          eventId: ev._id as ObjectId,
+          assertions: merged,
+          cards: codex,
+          entitiesByCardName: entityMap,
+          selfAnchorId,
+          sceneText: ev.data?.ai_response || '',
+          ensureStub: (name: string) =>
+            entityGraphService.ensureStubEntity({ instanceId, playerId, sequence: ev.sequence, name }),
+        })
+        written += res.written
+      } catch (err) {
+        notes.push(`seq ${ev.sequence}: apply failed — ${(err as Error).message}`)
+      }
+    }
+    notes.push(`replayed suffix ${touched} event(s) with assertions`)
     return { written, events: touched, notes }
   },
 
