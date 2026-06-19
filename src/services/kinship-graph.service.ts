@@ -13,7 +13,7 @@ import type { EntityDoc } from '../models/entity.model'
 import {
   type RelationKind, type GenderHint, RELATION_KINDS, isRelationKind,
 } from '../utils/kinship-ontology'
-import { hygieneStage1, type ResolvedAssertion } from '../../worker/lib/kinship-hygiene'
+import { hygieneStage1, type ResolvedAssertion, type KinshipEdgeSource } from '../../worker/lib/kinship-hygiene'
 import { resolveEpithets } from '../../worker/lib/kinship-epithet-resolver'
 import type { RelationAssertion } from './character-codex.service'
 
@@ -23,6 +23,20 @@ const EDGE_SOURCE_EVENTS_MAX = 30
 
 /** Player self-references that resolve to the player's own character entity. */
 const PLAYER_ALIASES = new Set(['player', 'the player', 'me', 'myself', 'i', 'self', 'you'])
+
+const KINSHIP_EDGE_SOURCES = new Set<KinshipEdgeSource>([
+  'player_correction', 'player_narration', 'narrator', 'seed', 'player_claim', 'character_claim', 'inferred',
+])
+/** Coerce a RelationAssertion.source (WorldFactSource, possibly legacy/undefined)
+ *  to a kinship edge source. Sources the edge layer doesn't model collapse to the
+ *  nearest neighbour: side_chat/system_seed/inference → narrator/seed/inferred. */
+function toKinshipEdgeSource(source: string | undefined): KinshipEdgeSource {
+  if (source && KINSHIP_EDGE_SOURCES.has(source as KinshipEdgeSource)) return source as KinshipEdgeSource
+  if (source === 'system_seed') return 'seed'
+  if (source === 'inference') return 'inferred'
+  if (source === 'side_chat') return 'narrator'
+  return 'narrator'
+}
 
 export interface Relative {
   entityId: string
@@ -121,7 +135,9 @@ export const kinshipGraphService = {
         fromId, toId, kind: a.kind as RelationKind,
         label: a.label, gender: (a.gender as GenderHint) || undefined,
         polarity: a.polarity === 'sever' ? 'sever' : 'assert',
-        source: a.source === 'character_claim' ? 'character_claim' : 'narrator',
+        // Preserve the assertion's authority (player_correction outranks narrator,
+        // a player_claim is softer). Unknown/legacy values fall back to narrator.
+        source: toKinshipEdgeSource(a.source),
       })
     }
     if (!resolved.length) return { written: 0, notes: ['no resolvable endpoints'] }

@@ -8,6 +8,7 @@ import { buildPrompt } from "../../src/utils/prompt-builder";
 import { lengthMaxTokens } from "../../src/utils/narrative-styles";
 import { NSFW_MODE } from "../../src/utils/chat-modes";
 import { parsePlayerInput } from "../../src/utils/player-input-parser";
+import { extractKinshipAssertions, mergeRelationAssertions } from "../lib/kinship-pattern-extractor";
 import {
   applyStateMutations,
   applyFlagMutations,
@@ -1280,7 +1281,21 @@ export async function generationProcessor(job: Job) {
         // Kinship graph: typed relation ties asserted this turn → graph edges
         // (extract → Stage-1 hygiene → Stage-2 epithet resolver → persist). Post
         // stream, off TTFT. Self anchor = protagonist card (GM) or player (sentient).
-        const relationAssertions = deltas.flatMap((d) => d.relation_assertions || []);
+        // Merge the LLM's relation assertions with a deterministic pass over the
+        // player's own input + prose, so a clearly-stated tie carries the RIGHT
+        // authority (a player_correction can retcon, a claim stays soft) even when
+        // the LLM missed it or could only stamp 'narrator'. Authority-aware: the
+        // stronger source wins a collision. Off TTFT (post-stream tail).
+        const deterministicAssertions = extractKinshipAssertions({
+          corrections: parsedPlayerInput.corrections,
+          narrationFacts: parsedPlayerInput.narrationFacts,
+          claims: parsedPlayerInput.claims,
+          prose: rawNarrative,
+        });
+        const relationAssertions = mergeRelationAssertions(
+          deltas.flatMap((d) => d.relation_assertions || []),
+          deterministicAssertions,
+        );
         if (relationAssertions.length > 0) {
           const protagCard = codex.find((c) => c.is_protagonist);
           let selfAnchorId: string | null = null;
