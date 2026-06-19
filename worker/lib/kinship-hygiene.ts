@@ -10,6 +10,19 @@ import {
   surfaceToKind, isFigurativeKinship, isRelationKind,
 } from '../../src/utils/kinship-ontology'
 
+/** Provenance an edge can carry. Extends the original narrator/character/inference/
+ *  seed set with the PLAYER-authored sources (a player can correct/narrate/claim a
+ *  tie) so a player_correction can outrank narration. Mirrors WorldFactSource but
+ *  kept as its own narrow union to stay a pure, dependency-light module. */
+export type KinshipEdgeSource =
+  | 'player_correction'
+  | 'player_narration'
+  | 'narrator'
+  | 'seed'
+  | 'player_claim'
+  | 'character_claim'
+  | 'inferred'
+
 export interface ResolvedAssertion {
   fromId: string
   toId: string
@@ -17,7 +30,7 @@ export interface ResolvedAssertion {
   label?: string
   gender?: GenderHint
   polarity: 'assert' | 'sever'
-  source: 'narrator' | 'character_claim' | 'inferred' | 'seed'
+  source: KinshipEdgeSource
 }
 
 export interface KinshipEdgeWrite {
@@ -27,14 +40,17 @@ export interface KinshipEdgeWrite {
   inverseKind: RelationKind
   label: string | null
   gender: GenderHint | null
-  source: 'narrator' | 'character_claim' | 'inferred' | 'seed'
+  source: KinshipEdgeSource
   confidence: number
   polarity: 'assert' | 'sever'
 }
 
-const BASE_CONFIDENCE: Record<ResolvedAssertion['source'], number> = {
+const BASE_CONFIDENCE: Record<KinshipEdgeSource, number> = {
+  player_correction: 1.0,
+  player_narration: 0.9,
   narrator: 0.9,
   seed: 0.8,
+  player_claim: 0.65,
   character_claim: 0.5,
   inferred: 0.4,
 }

@@ -12,6 +12,8 @@
     "test:sfw": "bun run scripts/test-sfw-model.ts",
     "test:tts": "bun run scripts/test-tts-model.ts",
     "audit:choices": "bun run scripts/choice-audit.ts",
+    "audit:choice-grounding": "bun run scripts/choice-grounding-audit.ts",
+    "audit:side-chat-reachability": "bun run scripts/side-chat-reachability-audit.ts",
     "audit:location": "bun run scripts/location-audit.ts",
     "audit:location-resolution": "bun run scripts/location-resolution-audit.ts",
     "audit:movement": "bun run scripts/movement-signal-audit.ts",

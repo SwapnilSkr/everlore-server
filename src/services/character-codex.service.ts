@@ -3,6 +3,7 @@ import { mongoColl } from '../config/mongo'
 import type { CharacterProfileDoc, RelationshipMeters } from '../models/character-profile.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
+import type { WorldFactSource } from '../utils/world-authority'
 
 const characters = () => mongoColl.characters()
 
@@ -44,8 +45,13 @@ export type RelationAssertion = {
   gender?: string
   /** assert (default) | sever (the tie ended this turn — divorce, death). */
   polarity?: 'assert' | 'sever'
-  /** Did the NARRATOR establish it, or did a CHARACTER merely claim it (maybe a lie)? */
-  source?: 'narrator' | 'character_claim'
+  /** WHO established this tie, on the shared authority ladder. The narrow legacy
+   *  values ('narrator' | 'character_claim') are still valid; the wider set lets a
+   *  player_correction retcon a tie and a deterministic pass mark its provenance.
+   *  See world-authority.ts. */
+  source?: WorldFactSource
+  /** Trust in [0,1]; defaults from `source` via confidenceFor() when absent. */
+  confidence?: number
 }
 
 function normalizeName(name: string): string {

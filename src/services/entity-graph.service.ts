@@ -4,9 +4,11 @@ import type { EntityDoc, EntityType, LocationFactDoc } from '../models/entity.mo
 import type { CharacterProfileDoc, RelationshipMeters } from '../models/character-profile.model'
 import { characterCodexService } from './character-codex.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { type WorldFactSource, confidenceFor } from '../utils/world-authority'
 
 const entities = () => mongoColl.entities()
 const entityEdges = () => mongoColl.entityEdges()
+const memories = () => mongoColl.memories()
 const characters = () => mongoColl.characters()
 
 /** Same normalization as the codex so the two registries resolve identically. */
@@ -253,6 +255,16 @@ const METER_KEYS = ['trust', 'affection', 'fear', 'rivalry'] as const
 export type EntityMention = { name: string; type?: EntityType }
 
 /** Name/alias → entity lookup map for one instance. */
+/** The witness-tier statuses — a node that exists for graph reference but has no
+ *  codex card yet. All of these promote to 'active' when a card mints, and all
+ *  bump provenance on re-witness. */
+const STUB_STATUSES = ['stub', 'dormant_stub', 'anchored_stub'] as const
+function isStubStatus(s: string | undefined): boolean {
+  return s === 'stub' || s === 'dormant_stub' || s === 'anchored_stub'
+}
+/** Cap on per-entity witness provenance — enough to survive partial rewinds. */
+const STUB_SOURCE_EVENTS_MAX = 30
+
 async function loadEntityRegistry(iid: ObjectId): Promise<Map<string, EntityDoc>> {
   const all = (await entities()
     .find({ instance_id: iid, status: { $ne: 'archived' } })
@@ -604,8 +616,16 @@ export const entityGraphService = {
     playerId: string
     sequence: number
     name: string
+    /** A coarse role/descriptor for an unnamed witness ("the butler"). */
+    roleLabel?: string
+    /** 0-1 confidence this is a real trackable person (from the presence tier). */
+    confidence?: number
+    /** The event that witnessed this stub — kept as wakeable provenance. */
+    sourceEventId?: ObjectId
+    /** The place this stub was witnessed in — wakes the stub on return there. */
+    locationEntityId?: ObjectId | null
   }): Promise<string | null> {
-    const { instanceId, playerId, sequence, name } = params
+    const { instanceId, playerId, sequence, name, roleLabel, confidence, sourceEventId, locationEntityId } = params
     const trimmed = (name || '').trim().slice(0, 120)
     if (!trimmed) return null
     const iid = parseObjectId(instanceId)
@@ -621,14 +641,28 @@ export const entityGraphService = {
       name_normalized: normalized,
     })
     if (existing) {
-      if (existing.status === 'stub') {
+      if (isStubStatus(existing.status) || existing.status === 'archived') {
+        // Re-witnessing bumps provenance and WAKES a dormant/archived stub back to
+        // active witnessing (it earned a fresh sighting). An anchored stub stays
+        // anchored; an active (carded) entity is left to syncCodexEntities.
+        const set: Record<string, unknown> = { updated_at: new Date() }
+        if (existing.status === 'dormant_stub' || existing.status === 'archived') {
+          set.status = 'anchored_stub'
+          set.last_wake_reason = 're-witnessed'
+        }
+        if (locationEntityId) set.last_location_entity_id = locationEntityId
+        if (roleLabel && !existing.role_label) set.role_label = roleLabel.slice(0, 80)
+        if (typeof confidence === 'number') set.confidence = Math.max(existing.confidence ?? 0, confidence)
         await entities().updateOne(
           { _id: existing._id },
           {
-            $inc: { mention_count: 1 },
+            $inc: { mention_count: 1, witness_count: 1 },
             $max: { last_seen_sequence: sequence },
-            $set: { updated_at: new Date() },
-          },
+            $set: set,
+            ...(sourceEventId
+              ? { $push: { source_event_ids: { $each: [sourceEventId], $slice: -STUB_SOURCE_EVENTS_MAX } } }
+              : {}),
+          } as never,
         )
       }
       return idString(existing._id)
@@ -647,6 +681,11 @@ export const entityGraphService = {
       first_seen_sequence: sequence,
       last_seen_sequence: sequence,
       mention_count: 1,
+      witness_count: 1,
+      ...(roleLabel ? { role_label: roleLabel.slice(0, 80) } : {}),
+      ...(typeof confidence === 'number' ? { confidence } : {}),
+      ...(sourceEventId ? { source_event_ids: [sourceEventId] } : {}),
+      ...(locationEntityId ? { first_location_entity_id: locationEntityId, last_location_entity_id: locationEntityId } : {}),
       created_at: now,
       updated_at: now,
     }
@@ -681,30 +720,52 @@ export const entityGraphService = {
     sequence: number
     presentNames: string[]
     knownCardNames: Set<string>
+    /** The event witnessing these participants — kept as wakeable provenance. */
+    sourceEventId?: ObjectId
+    /** The place they were witnessed in — wakes the stub on return there. */
+    locationEntityId?: ObjectId | null
+    /** Per-name confidence (from the presence tier: confirmed=0.9, probable=0.6),
+     *  keyed by NORMALIZED name. Low-confidence one-offs archive first. */
+    confidenceByName?: Map<string, number>
   }): Promise<{ ensured: string[]; promoted: string[] }> {
-    const { instanceId, playerId, sequence, presentNames, knownCardNames } = params
+    const { instanceId, playerId, sequence, presentNames, knownCardNames, sourceEventId, locationEntityId, confidenceByName } = params
     const ensured: string[] = []
     const promoted: string[] = []
     for (const raw of presentNames || []) {
       const normalized = normalizeEntityName(raw)
       if (!normalized || knownCardNames.has(normalized)) continue
-      const id = await this.ensureStubEntity({ instanceId, playerId, sequence, name: raw })
+      const id = await this.ensureStubEntity({
+        instanceId,
+        playerId,
+        sequence,
+        name: raw,
+        sourceEventId,
+        locationEntityId,
+        confidence: confidenceByName?.get(normalized),
+      })
       if (id) ensured.push(normalized)
     }
     return { ensured, promoted }
   },
 
   /**
-   * Archive old, unpromoted character stubs once they have fallen well out of
-   * the active window and have no live graph edges. This keeps the witness tier
-   * from becoming a permanent junk drawer while preserving any stub that still
-   * carries kinship/relationship provenance and might later promote to a card.
+   * Reconcile the witness-tier lifecycle for stubs that have fallen out of the
+   * active window. Instead of the old binary stub→archived, each stale stub is
+   * routed by PROVENANCE so a long-dormant uncarded character survives at turn 30k
+   * without bloating context:
+   *  - has a live kinship/relationship edge, a memory reference, or repeated
+   *    witnessing → 'anchored_stub' (kept indefinitely, wakeable).
+   *  - has SOME provenance (a source event, a role, a location, was once witnessed
+   *    more than once) but is cold → 'dormant_stub' (preserved, woken by a cue).
+   *  - unreferenced, low-confidence, single-witness noise → 'archived'.
+   * Idempotent; bounded; best-effort. (Kept the name `archiveStaleStubs` for the
+   * caller; it now does the full reconciliation.)
    */
   async archiveStaleStubs(params: {
     instanceId: string
     sequence: number
     maxAge?: number
-  }): Promise<{ archived: number }> {
+  }): Promise<{ archived: number; anchored: number; dormant: number }> {
     const { instanceId, sequence, maxAge = 120 } = params
     const iid = parseObjectId(instanceId)
     const cutoff = Math.max(0, sequence - maxAge)
@@ -713,17 +774,18 @@ export const entityGraphService = {
         {
           instance_id: iid,
           type: 'character',
-          status: 'stub',
+          status: { $in: ['stub', 'dormant_stub', 'anchored_stub'] },
           character_id: { $exists: false },
           last_seen_sequence: { $lt: cutoff },
         },
-        { projection: { _id: 1 } },
+        { projection: { _id: 1, status: 1, confidence: 1, witness_count: 1, mention_count: 1, role_label: 1, source_event_ids: 1, last_location_entity_id: 1 } },
       )
-      .limit(200)
-      .toArray()) as Pick<EntityDoc, '_id'>[]
-    if (!candidates.length) return { archived: 0 }
+      .limit(300)
+      .toArray()) as Pick<EntityDoc, '_id' | 'status' | 'confidence' | 'witness_count' | 'mention_count' | 'role_label' | 'source_event_ids' | 'last_location_entity_id'>[]
+    if (!candidates.length) return { archived: 0, anchored: 0, dormant: 0 }
 
     const ids = candidates.map((c) => c._id)
+    // Anchor signal 1: a live graph edge (kinship/relationship) points at the stub.
     const activeEdges = await entityEdges()
       .find(
         {
@@ -734,19 +796,160 @@ export const entityGraphService = {
         { projection: { source_entity_id: 1, target_entity_id: 1 } },
       )
       .toArray()
-    const referenced = new Set<string>()
+    const edged = new Set<string>()
     for (const edge of activeEdges) {
-      if (edge.source_entity_id) referenced.add(idString(edge.source_entity_id))
-      if (edge.target_entity_id) referenced.add(idString(edge.target_entity_id))
+      if (edge.source_entity_id) edged.add(idString(edge.source_entity_id))
+      if (edge.target_entity_id) edged.add(idString(edge.target_entity_id))
     }
-    const archiveIds = ids.filter((id) => !referenced.has(idString(id)))
-    if (!archiveIds.length) return { archived: 0 }
+    // Anchor signal 2: a memory references the stub (subject/object/known_by/place).
+    const memEntityFilter = { $in: ids }
+    const memRefs = await memories()
+      .find(
+        {
+          instance_id: iid,
+          $or: [
+            { subject_entity_ids: memEntityFilter },
+            { object_entity_ids: memEntityFilter },
+            { known_by_entity_ids: memEntityFilter },
+          ],
+        },
+        { projection: { subject_entity_ids: 1, object_entity_ids: 1, known_by_entity_ids: 1 } },
+      )
+      .toArray()
+    const memoried = new Set<string>()
+    for (const m of memRefs) {
+      for (const id of [...(m.subject_entity_ids || []), ...(m.object_entity_ids || []), ...(m.known_by_entity_ids || [])]) {
+        memoried.add(idString(id))
+      }
+    }
 
-    const res = await entities().updateMany(
-      { instance_id: iid, _id: { $in: archiveIds }, status: 'stub' },
-      { $set: { status: 'archived', updated_at: new Date() } },
-    )
-    return { archived: res.modifiedCount || 0 }
+    const toAnchor: ObjectId[] = []
+    const toDormant: ObjectId[] = []
+    const toArchive: ObjectId[] = []
+    for (const c of candidates) {
+      const id = idString(c._id)
+      const witnessed = (c.witness_count ?? c.mention_count ?? 1)
+      const hasAnchor = edged.has(id) || memoried.has(id) || witnessed >= 3
+      const hasProvenance =
+        witnessed >= 2 || !!c.role_label || (c.source_event_ids?.length ?? 0) > 0 || !!c.last_location_entity_id
+      const lowConfidence = (c.confidence ?? 0) < 0.6
+      if (hasAnchor) {
+        if (c.status !== 'anchored_stub') toAnchor.push(c._id)
+      } else if (hasProvenance && !lowConfidence) {
+        if (c.status !== 'dormant_stub') toDormant.push(c._id)
+      } else if (witnessed <= 1 && lowConfidence) {
+        toArchive.push(c._id)
+      } else if (c.status !== 'dormant_stub') {
+        toDormant.push(c._id)
+      }
+    }
+
+    const now = new Date()
+    if (toAnchor.length) {
+      await entities().updateMany(
+        { instance_id: iid, _id: { $in: toAnchor } },
+        { $set: { status: 'anchored_stub', updated_at: now } },
+      )
+    }
+    if (toDormant.length) {
+      await entities().updateMany(
+        { instance_id: iid, _id: { $in: toDormant } },
+        { $set: { status: 'dormant_stub', updated_at: now } },
+      )
+    }
+    let archived = 0
+    if (toArchive.length) {
+      const res = await entities().updateMany(
+        { instance_id: iid, _id: { $in: toArchive }, character_id: { $exists: false } },
+        { $set: { status: 'archived', updated_at: now } },
+      )
+      archived = res.modifiedCount || 0
+    }
+    return { archived, anchored: toAnchor.length, dormant: toDormant.length }
+  },
+
+  /**
+   * Wake dormant/anchored stubs that match a turn's CUES, so a long-uncarded
+   * character resurfaces exactly when relevant rather than being injected wholesale.
+   * Cues: an explicit name/alias in the player input, a kinship/relationship edge
+   * to a present entity, or the current location. Marks `last_wake_reason` and
+   * returns the woken entity ids (for the RAG entity neighbourhood / context). Read
+   * + a light status flip; safe to call on the live path (bounded, indexed).
+   */
+  async wakeStubsByCues(params: {
+    instanceId: string
+    names?: string[]
+    presentEntityIds?: string[]
+    locationEntityId?: string | null
+    limit?: number
+  }): Promise<{ entityIds: string[]; reasons: Record<string, string> }> {
+    const { instanceId, names = [], presentEntityIds = [], locationEntityId, limit = 12 } = params
+    const iid = parseObjectId(instanceId)
+    const woken = new Map<string, string>() // id → reason
+
+    const dormantFilter = {
+      instance_id: iid,
+      type: 'character' as const,
+      status: { $in: ['dormant_stub', 'anchored_stub'] as EntityDoc['status'][] },
+      character_id: { $exists: false },
+    }
+
+    // Cue 1: named in the input (by canonical name or alias, normalized).
+    const normNames = names.map((n) => normalizeEntityName(n)).filter(Boolean)
+    if (normNames.length) {
+      const byName = (await entities()
+        .find({ ...dormantFilter, $or: [{ name_normalized: { $in: normNames } }, { aliases: { $in: normNames } }] }, { projection: { _id: 1 } })
+        .limit(limit)
+        .toArray()) as Pick<EntityDoc, '_id'>[]
+      for (const e of byName) woken.set(idString(e._id), 'named in input')
+    }
+    // Cue 2: a kinship/relationship edge ties a dormant stub to a present entity.
+    if (presentEntityIds.length && woken.size < limit) {
+      const presentOids = presentEntityIds.map((id) => parseObjectId(id))
+      const edges = await entityEdges()
+        .find(
+          { instance_id: iid, status: 'active', $or: [{ source_entity_id: { $in: presentOids } }, { target_entity_id: { $in: presentOids } }] },
+          { projection: { source_entity_id: 1, target_entity_id: 1 } },
+        )
+        .toArray()
+      const neighborIds = new Set<string>()
+      const presentSet = new Set(presentEntityIds)
+      for (const e of edges) {
+        for (const side of [e.source_entity_id, e.target_entity_id]) {
+          const s = side ? idString(side) : ''
+          if (s && !presentSet.has(s)) neighborIds.add(s)
+        }
+      }
+      if (neighborIds.size) {
+        const neighbors = (await entities()
+          .find({ ...dormantFilter, _id: { $in: [...neighborIds].map((id) => parseObjectId(id)) } }, { projection: { _id: 1 } })
+          .limit(limit)
+          .toArray()) as Pick<EntityDoc, '_id'>[]
+        for (const e of neighbors) if (!woken.has(idString(e._id))) woken.set(idString(e._id), 'kin/relationship edge')
+      }
+    }
+    // Cue 3: the current location is where this stub was last witnessed.
+    if (locationEntityId && woken.size < limit) {
+      const here = (await entities()
+        .find({ ...dormantFilter, last_location_entity_id: parseObjectId(locationEntityId) }, { projection: { _id: 1 } })
+        .limit(limit)
+        .toArray()) as Pick<EntityDoc, '_id'>[]
+      for (const e of here) if (!woken.has(idString(e._id))) woken.set(idString(e._id), 'same place')
+    }
+
+    if (woken.size) {
+      const now = new Date()
+      // Flip dormant → anchored (it just proved relevant) + record why.
+      await Promise.all(
+        [...woken.entries()].map(([id, reason]) =>
+          entities().updateOne(
+            { _id: parseObjectId(id) },
+            { $set: { status: 'anchored_stub', last_wake_reason: reason, updated_at: now } },
+          ),
+        ),
+      )
+    }
+    return { entityIds: [...woken.keys()], reasons: Object.fromEntries(woken) }
   },
 
   /**
@@ -1335,10 +1538,16 @@ export const entityGraphService = {
     eventId: ObjectId
     state?: string[]
     facts?: string[]
+    /** Authority of these place-facts (narrator by default; a player narration of
+     *  a place change outranks it). Stamped on each persisted entry. */
+    source?: WorldFactSource
+    confidence?: number
   }): Promise<void> {
     const state = (params.state || []).map((s) => s.trim()).filter(Boolean)
     const facts = (params.facts || []).map((s) => s.trim()).filter(Boolean)
     if (!state.length && !facts.length) return
+    const source: WorldFactSource = params.source ?? 'narrator'
+    const confidence = typeof params.confidence === 'number' ? params.confidence : confidenceFor(source)
     const iid = parseObjectId(params.instanceId)
     const entity = (await entities().findOne(
       { _id: params.locationEntityId, instance_id: iid, type: 'location' },
@@ -1358,7 +1567,7 @@ export const entityGraphService = {
         const key = text.toLowerCase()
         if (existing.has(key)) continue
         existing.add(key)
-        out.push({ text, source_event_id: params.eventId, source_sequence: params.sequence, created_at: now })
+        out.push({ text, source_event_id: params.eventId, source_sequence: params.sequence, created_at: now, source, confidence })
       }
       return out
     }

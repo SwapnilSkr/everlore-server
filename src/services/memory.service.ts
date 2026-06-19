@@ -11,6 +11,7 @@ import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import type { ObjectId } from 'mongodb'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
+import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
 import { characterCodexService } from './character-codex.service'
 import { entityGraphService } from './entity-graph.service'
 import { timeService } from './time.service'
@@ -20,6 +21,7 @@ import { callLLM, callLLMStream, embed, AI_MODELS } from '../ai'
 import { classifyScene } from '../../worker/lib/nsfw-classifier'
 import { extractSceneMetadata } from '../../worker/lib/metadata-extractor'
 import { extractCharacterCodexDeltas } from '../../worker/lib/character-codex-extractor'
+import { classifyPresenceCodexGaps } from '../../worker/lib/presence-gap-detector'
 import { EVENT_WINDOWS } from '../utils/event-window'
 import { HttpError } from '../utils/http-error'
 import { kinshipGraphService } from './kinship-graph.service'
@@ -133,6 +135,31 @@ function carryReplayPresence(
     if (out.length >= 12) break
   }
   return out
+}
+
+function trackableMentionsForProse(params: {
+  prose: string
+  present: string[]
+  codex: any[]
+  exclude?: string[]
+}) {
+  const codexNames: string[] = []
+  for (const c of params.codex || []) {
+    if (c?.canonical_name) codexNames.push(c.canonical_name)
+    for (const a of c?.aliases || []) {
+      if (a) codexNames.push(a)
+    }
+  }
+  return classifyPresenceCodexGaps(params.prose, {
+    present: params.present,
+    codex: codexNames,
+    exclude: params.exclude || [],
+  }).map((m) => ({
+    key: m.key,
+    display: m.display,
+    tier: m.tier,
+    evidence: m.evidence,
+  }))
 }
 
 const SCENE_SUMMARY_BLOCK = 12
@@ -405,41 +432,68 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
     playerName: instance.persona_snapshot?.name,
   })
 
-  const relationAssertions = deltas.flatMap((d) => d.relation_assertions || [])
-  if (relationAssertions.length > 0) {
-    const protagCard = codex.find((c) => c.is_protagonist)
-    let selfAnchorId: string | null = null
-    if (!template.is_sentient && protagCard) {
-      const ent = entityMap.get(protagCard.name_normalized)
-      selfAnchorId = ent?._id ? idString(ent._id) : null
-    } else {
-      const player = await entityGraphService.ensurePlayerEntity({
+  if (forceExactRebuild) {
+    // Exact rebuild: the codex was dropped + replayed, so rebuild the kinship graph
+    // from the whole surviving ledger (authority + sever/retcon order reconstructed
+    // exactly) rather than re-applying only this one event's assertions.
+    await kinshipGraphService
+      .rebuildFromLedger({
         instanceId,
         playerId,
-        name: instance.persona_snapshot?.name,
-        sequence: event.sequence,
+        isSentient: !!template.is_sentient,
+        playerName: instance.persona_snapshot?.name,
       })
-      selfAnchorId = idString(player._id)
-    }
-    await kinshipGraphService.applyRelationAssertions({
-      instanceId,
-      sequence: event.sequence,
-      eventId: event._id,
-      assertions: relationAssertions,
-      cards: codex,
-      entitiesByCardName: entityMap,
-      selfAnchorId,
-      sceneText: narrative,
-      ensureStub: (name: string) =>
-        entityGraphService.ensureStubEntity({
+      .catch((err) => {
+        console.warn('Replay projection: kinship graph rebuild failed:', (err as Error).message)
+      })
+  } else {
+    // Incremental: merge this turn's LLM assertions with a deterministic pass over
+    // its input + prose, then apply on top of the existing edges.
+    const parsedInput = parsePlayerInput(event.data?.player_input || '')
+    const relationAssertions = mergeRelationAssertions(
+      deltas.flatMap((d) => d.relation_assertions || []),
+      extractKinshipAssertions({
+        corrections: parsedInput.corrections,
+        narrationFacts: parsedInput.narrationFacts,
+        claims: parsedInput.claims,
+        prose: narrative,
+      }),
+    )
+    if (relationAssertions.length > 0) {
+      const protagCard = codex.find((c) => c.is_protagonist)
+      let selfAnchorId: string | null = null
+      if (!template.is_sentient && protagCard) {
+        const ent = entityMap.get(protagCard.name_normalized)
+        selfAnchorId = ent?._id ? idString(ent._id) : null
+      } else {
+        const player = await entityGraphService.ensurePlayerEntity({
           instanceId,
           playerId,
+          name: instance.persona_snapshot?.name,
           sequence: event.sequence,
-          name,
-        }),
-    }).catch((err) => {
-      console.warn('Replay projection: kinship graph write failed:', (err as Error).message)
-    })
+        })
+        selfAnchorId = idString(player._id)
+      }
+      await kinshipGraphService.applyRelationAssertions({
+        instanceId,
+        sequence: event.sequence,
+        eventId: event._id,
+        assertions: relationAssertions,
+        cards: codex,
+        entitiesByCardName: entityMap,
+        selfAnchorId,
+        sceneText: narrative,
+        ensureStub: (name: string) =>
+          entityGraphService.ensureStubEntity({
+            instanceId,
+            playerId,
+            sequence: event.sequence,
+            name,
+          }),
+      }).catch((err) => {
+        console.warn('Replay projection: kinship graph write failed:', (err as Error).message)
+      })
+    }
   }
 
   await publishCodexUpdated(playerId, instance, codex)
@@ -1278,6 +1332,22 @@ export const memoryService = {
     } catch (err) {
       console.warn('Rewind: entity graph repair failed:', (err as Error).message)
     }
+    // 3d. Kinship graph: when the codex was exactly rebuilt from the ledger, rebuild
+    // the typed relationship edges from the same surviving ledger so authority and
+    // sever/retcon order are reconstructed exactly (not just provenance-pruned).
+    // Best-effort; a kinship hiccup must never abort the rewind.
+    if (hasLedgeredDeltas) {
+      try {
+        await kinshipGraphService.rebuildFromLedger({
+          instanceId,
+          playerId,
+          isSentient: !!template.is_sentient,
+          playerName: instance.persona_snapshot?.name,
+        })
+      } catch (err) {
+        console.warn('Rewind: kinship graph rebuild failed:', (err as Error).message)
+      }
+    }
     try {
       await pruneDanglingMemoryEntityRefs(iid)
       await pruneDanglingMemoryVersionLinks(iid)
@@ -1420,6 +1490,7 @@ export const memoryService = {
     // the prose — and its chips — unchanged.
     let editChoices: Awaited<ReturnType<typeof extractSceneMetadata>>['choices'] | null = null
     let editPresent: string[] | null = null
+    let editTrackableMentions: ReturnType<typeof trackableMentionsForProse> | null = null
 
     if (aiChanged && typeof nextAiResponse === 'string' && nextAiResponse.trim()) {
       const editCodex = await characters()
@@ -1453,6 +1524,12 @@ export const memoryService = {
       )
       editChoices = editMeta.choices
       editPresent = editMeta.present_characters
+      editTrackableMentions = trackableMentionsForProse({
+        prose: nextAiResponse,
+        present: editPresent,
+        codex: editCodex,
+        exclude: editInstance?.persona_snapshot?.name ? [editInstance.persona_snapshot.name] : [],
+      })
 
       nextReplayVariants = [...replayVariants]
       if (nextReplayVariants[nextReplayVariants.length - 1]?.narrative !== nextAiResponse) {
@@ -1488,7 +1565,13 @@ export const memoryService = {
           'data.selected_replay_index': nextSelectedReplayIndex,
           'data.prose_hygiene_issues': proseHygieneIssues,
           // Fresh chips + presence re-derived from the rewritten narrative.
-          ...(aiChanged ? { 'data.choices': editChoices || [], 'data.present_characters': editPresent || [] } : {}),
+          ...(aiChanged
+            ? {
+                'data.choices': editChoices || [],
+                'data.present_characters': editPresent || [],
+                'data.trackable_mentions': editTrackableMentions || [],
+              }
+            : {}),
           is_user_edited: true,
           updated_at: new Date(),
         },
@@ -1517,6 +1600,7 @@ export const memoryService = {
       // can swap stale ones without a refetch (null when the prose was untouched).
       choices: editChoices,
       present_characters: editPresent,
+      trackable_mentions: editTrackableMentions,
     }
   },
 
@@ -1749,6 +1833,12 @@ ${replayDirective || '(none)'}`,
       narrative: repairedReplay.narrative,
       presentCharacters: replayMeta.present_characters,
     })
+    const replayTrackableMentions = trackableMentionsForProse({
+      prose: repairedReplay.narrative,
+      present: replayMeta.present_characters,
+      codex: replayCodex,
+      exclude: instance.persona_snapshot?.name ? [instance.persona_snapshot.name] : [],
+    })
     const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas)
 
     const nextVariant = {
@@ -1791,6 +1881,7 @@ ${replayDirective || '(none)'}`,
           // reflected the replaced prose).
           'data.choices': replayMeta.choices,
           'data.present_characters': replayMeta.present_characters,
+          'data.trackable_mentions': replayTrackableMentions,
           'data.state_mutations': replayMeta.state_mutations,
           'data.flag_mutations': replayMeta.flag_mutations,
           'data.codex_deltas': replayCodexDeltas,
@@ -1950,6 +2041,15 @@ ${replayDirective || '(none)'}`,
             presentCharacters: selectedProjection.meta.present_characters,
           })
         : null
+    const selectedTrackableMentions =
+      changed && selectedProjection && selectedInstance
+        ? trackableMentionsForProse({
+            prose: nextAi,
+            present: selectedProjection.meta.present_characters,
+            codex: selectedCodex,
+            exclude: selectedInstance.persona_snapshot?.name ? [selectedInstance.persona_snapshot.name] : [],
+          })
+        : null
     const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas)
 
     await events().updateOne(
@@ -1972,6 +2072,7 @@ ${replayDirective || '(none)'}`,
           // fields cannot leave stale chips/presence/state behind.
           'data.choices': selectedProjection?.meta.choices ?? (Array.isArray(chosen.choices) ? chosen.choices : []),
           'data.present_characters': selectedProjection?.meta.present_characters ?? (Array.isArray(chosen.present_characters) ? chosen.present_characters : []),
+          ...(selectedTrackableMentions ? { 'data.trackable_mentions': selectedTrackableMentions } : {}),
           ...(selectedCodexDeltas ? { 'data.codex_deltas': selectedCodexDeltas } : {}),
           ...(selectedProjection
             ? {

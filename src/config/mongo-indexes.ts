@@ -347,6 +347,19 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { weight: 1, is_phrase: 1 },
     options: { name: "idx_nsfw_lexicon_weight_phrase" },
   },
+
+  // projection_anomalies (debug/admin surface: by instance, recent first; and a
+  // type filter for "how often does extraction drop X")
+  {
+    collection: COLLECTIONS.projection_anomalies,
+    key: { instance_id: 1, sequence: -1 },
+    options: { name: "idx_projection_anomalies_instance_seq" },
+  },
+  {
+    collection: COLLECTIONS.projection_anomalies,
+    key: { instance_id: 1, type: 1 },
+    options: { name: "idx_projection_anomalies_instance_type" },
+  },
 ]
 
 /**

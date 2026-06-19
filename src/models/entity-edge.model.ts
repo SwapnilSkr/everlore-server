@@ -45,8 +45,10 @@ export interface EntityEdgeDoc {
   inverse_kind?: import('../utils/kinship-ontology').RelationKind
   /** Gender implied by the surface label ("sister" → f), for label↔card checks. */
   gender_hint?: 'm' | 'f' | 'n' | null
-  /** Where the assertion came from — gates how much downstream code trusts it. */
-  assertion_source?: 'narrator' | 'character_claim' | 'inferred' | 'seed'
+  /** Where the assertion came from — gates how much downstream code trusts it.
+   *  Player-authored sources (correction/narration/claim) let a player retcon a
+   *  tie; see kinship-hygiene.KinshipEdgeSource / world-authority.WorldFactSource. */
+  assertion_source?: import('../../worker/lib/kinship-hygiene').KinshipEdgeSource
   /** 0-1; ranks competing assertions (two "fathers") by confidence then recency. */
   confidence?: number
   /** Temporal validity: when the relation began / ended (marriage, death, reveal). */

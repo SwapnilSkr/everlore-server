@@ -8,6 +8,7 @@ import { buildPrompt } from "../../src/utils/prompt-builder";
 import { lengthMaxTokens } from "../../src/utils/narrative-styles";
 import { NSFW_MODE } from "../../src/utils/chat-modes";
 import { parsePlayerInput } from "../../src/utils/player-input-parser";
+import { extractKinshipAssertions, mergeRelationAssertions } from "../lib/kinship-pattern-extractor";
 import {
   applyStateMutations,
   applyFlagMutations,
@@ -21,12 +22,13 @@ import { type GenerationOutput } from "../lib/structured-output";
 import { extractSceneMetadata } from "../lib/metadata-extractor";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
 import { compactImmutableFacts } from "../lib/codex-compactor";
-import { detectPresenceCodexGapsDetailed } from "../lib/presence-gap-detector";
+import { classifyPresenceCodexGaps } from "../lib/presence-gap-detector";
 import { characterCodexService } from "../../src/services/character-codex.service";
 import { kinshipGraphService } from "../../src/services/kinship-graph.service";
 import { entityGraphService, isVagueLocationLabel, normalizeEntityName } from "../../src/services/entity-graph.service";
 import { detectNarratedMovement, resolvePossessiveRoomName } from "../lib/movement-signal";
-import { groundChoices } from "../lib/choice-grounding";
+import { auditChoices } from "../lib/choice-grounding-audit";
+import { detectProjectionAnomalies } from "../lib/projection-anomaly-detector";
 import { detectNarratedTimeSkip } from "../lib/time-skip-signal";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
 import { timeService } from "../../src/services/time.service";
@@ -167,7 +169,15 @@ export async function generationProcessor(job: Job) {
   // On a "continue" turn the player says nothing — the world advances on its
   // own. We feed the model a directive (but store no player input on the event).
   const parsedPlayerInput = isContinuation
-    ? { raw: "", spoken: "", narrationFacts: [] as string[] }
+    ? {
+        raw: "",
+        spoken: "",
+        narrationFacts: [] as string[],
+        corrections: [] as string[],
+        claims: [] as string[],
+        actionFacts: [] as string[],
+        fragments: [],
+      }
     : parsePlayerInput(userMessage);
 
   const promptUserMessage = isContinuation
@@ -467,7 +477,11 @@ export async function generationProcessor(job: Job) {
   const worldText = [session.seed_prompt, session.global_lore]
     .filter(Boolean)
     .join("\n");
-  const groundedChoices = groundChoices(
+  // Audit + REPAIR ungrounded choices (fabricated/wrong-perspective kin, reified
+  // metaphor beings) in place rather than dropping them, so the player keeps a full
+  // set of grounded options ("attack the ghost" → "investigate the presence").
+  // Unrepairable / duplicate-after-repair choices are still dropped. Off TTFT.
+  const audited = auditChoices(
     parsed.choices || [],
     castVocab,
     rawNarrative,
@@ -475,17 +489,17 @@ export async function generationProcessor(job: Job) {
     worldText,
     { protagonist: choiceProtagonist, isSentient: !!session.is_sentient },
   );
-  if (groundedChoices.dropped.length) {
-    log.warn("choice-grounding dropped ungrounded choices", {
+  if (audited.repairedCount > 0 || audited.dropped.length > 0) {
+    log.warn("choice-grounding audited choices", {
       instanceId: idString(instanceId),
       sequence: nextSequence,
-      dropped: groundedChoices.dropped.map((d) => ({
-        term: d.term,
-        label: d.choice.label,
-      })),
+      repaired: audited.results
+        .filter((r) => r.repaired)
+        .map((r) => ({ from: r.choice.label, to: r.repaired!.label, issue: r.issues[0]?.type })),
+      dropped: audited.dropped.map((d) => ({ label: d.choice.label, issue: d.issues[0]?.type })),
     });
   }
-  parsed.choices = groundedChoices.choices;
+  parsed.choices = audited.choices;
 
   const newWorldState = applyStateMutations(
     session.world_state,
@@ -803,14 +817,25 @@ export async function generationProcessor(job: Job) {
   }
   const selfIntroForGap = session.is_sentient ? detectSelfIntroName(parsedPlayerInput.raw) : null;
   if (selfIntroForGap) presenceGapExcludes.push(selfIntroForGap);
-  const visiblePresenceGaps = detectPresenceCodexGapsDetailed(rawNarrative, {
+  // Backend-OWNED trackable mentions: classify the turn's presence/codex gaps into
+  // confidence tiers. Only confirmed + probable join present_characters and mint
+  // stubs; mentioned_only are surfaced to the frontend to optionally track (the app
+  // no longer decides canon gaps itself). Off TTFT — prose already streamed.
+  const classifiedMentions = classifyPresenceCodexGaps(rawNarrative, {
     present: parsed.present_characters,
     codex: [...knownCardNames],
     exclude: presenceGapExcludes,
   });
-  if (visiblePresenceGaps.length) {
+  const trackableMentions = classifiedMentions.map((m) => ({
+    key: m.key,
+    display: m.display,
+    tier: m.tier,
+    evidence: m.evidence,
+  }));
+  const presentGaps = classifiedMentions.filter((m) => m.tier === "confirmed" || m.tier === "probable");
+  if (presentGaps.length) {
     const presentSeen = new Set(parsed.present_characters.map((n) => normalizeEntityName(n)));
-    for (const gap of visiblePresenceGaps) {
+    for (const gap of presentGaps) {
       if (parsed.present_characters.length >= 12) break;
       if (!gap.key || presentSeen.has(gap.key)) continue;
       presentSeen.add(gap.key);
@@ -819,8 +844,18 @@ export async function generationProcessor(job: Job) {
     log.info("presence.gaps.stubbed.live", {
       instanceId: idString(instanceId),
       sequence: nextSequence,
-      gaps: visiblePresenceGaps.map((g) => g.key).slice(0, 8),
+      gaps: presentGaps.map((g) => `${g.key}:${g.tier}`).slice(0, 8),
+      mentioned_only: classifiedMentions.filter((m) => m.tier === "mentioned_only").map((m) => m.key).slice(0, 8),
     });
+  }
+  // Witness-tier provenance: confidence per stub from the presence tier (confirmed
+  // > probable), plus this turn's event + place, so a stub can later wake by name,
+  // kin edge, or returning to where it was seen (see entity stub lifecycle, §5).
+  const eventId = new ObjectId();
+  const stubConfidenceByName = new Map<string, number>();
+  for (const m of classifiedMentions) {
+    if (m.tier === "confirmed") stubConfidenceByName.set(m.key, 0.9);
+    else if (m.tier === "probable") stubConfidenceByName.set(m.key, 0.6);
   }
   const stubResult = await entityGraphService
     .ensureSceneParticipantStubs({
@@ -829,6 +864,9 @@ export async function generationProcessor(job: Job) {
       sequence: nextSequence,
       presentNames: parsed.present_characters,
       knownCardNames,
+      sourceEventId: eventId,
+      locationEntityId: locationAnchor?.entity_id ?? null,
+      confidenceByName: stubConfidenceByName,
     })
     .catch((err) => {
       console.warn("scene participant stubs skipped:", (err as Error).message);
@@ -844,11 +882,13 @@ export async function generationProcessor(job: Job) {
   entityGraphService
     .archiveStaleStubs({ instanceId, sequence: nextSequence })
     .then((res) => {
-      if (res.archived > 0) {
-        log.info("scene.participant.stubs.archived", {
+      if (res.archived > 0 || res.anchored > 0 || res.dormant > 0) {
+        log.info("scene.participant.stubs.reconciled", {
           instanceId: idString(instanceId),
           sequence: nextSequence,
           archived: res.archived,
+          anchored: res.anchored,
+          dormant: res.dormant,
         });
       }
     })
@@ -878,8 +918,25 @@ export async function generationProcessor(job: Job) {
     ? (await classifyBorderlineIntent(classifyText)) === "nsfw"
     : sceneClassification === "nsfw";
 
+  // Ledger this turn's location changes (anchor + containment + state + enduring
+  // facts), authority-tagged, so the place graph is a rebuildable projection like
+  // codex_deltas/relation_assertions. Witness-derived → narrator authority.
+  const locationDeltas: import("../../src/models/world-event.model").LocationDeltaDoc[] = [];
+  if (locationAnchor?.name && parsed.viewpoint_moved) {
+    locationDeltas.push({ type: "location_anchor", name: locationAnchor.name, source: "narrator", confidence: 0.9, sequence: nextSequence });
+  }
+  if (parsed.containment_hint) {
+    locationDeltas.push({ type: "containment", name: parsed.containment_hint, source: "narrator", confidence: 0.9, sequence: nextSequence });
+  }
+  for (const s of parsed.location_state_changes || []) {
+    locationDeltas.push({ type: "location_state", name: s, source: "narrator", confidence: 0.9, sequence: nextSequence });
+  }
+  for (const f of parsed.location_permanent_facts || []) {
+    locationDeltas.push({ type: "location_fact", name: f, source: "narrator", confidence: 0.9, sequence: nextSequence });
+  }
+
   const event = {
-    _id: new ObjectId(),
+    _id: eventId,
     instance_id: instanceOid,
     player_id: playerOid,
     sequence: nextSequence,
@@ -898,6 +955,8 @@ export async function generationProcessor(job: Job) {
       choices: parsed.choices,
       milestone: parsed.milestone,
       present_characters: parsed.present_characters,
+      trackable_mentions: trackableMentions,
+      ...(locationDeltas.length ? { location_deltas: locationDeltas } : {}),
       ...(effectiveTimeAdvance ? { time_advanced: effectiveTimeAdvance } : {}),
       ...(isTravel && currentLocation && resolvedLocation
         ? { travel: { from: currentLocation.name, to: resolvedLocation.name } }
@@ -1089,6 +1148,7 @@ export async function generationProcessor(job: Job) {
         choices: parsed.choices,
         milestone: parsed.milestone,
         present_characters: parsed.present_characters,
+        trackable_mentions: trackableMentions,
         time_advanced: timeAdvanceLabel || null,
         time_anchor: timeAnchor,
         location_anchor: locationAnchor
@@ -1272,7 +1332,21 @@ export async function generationProcessor(job: Job) {
         // Kinship graph: typed relation ties asserted this turn → graph edges
         // (extract → Stage-1 hygiene → Stage-2 epithet resolver → persist). Post
         // stream, off TTFT. Self anchor = protagonist card (GM) or player (sentient).
-        const relationAssertions = deltas.flatMap((d) => d.relation_assertions || []);
+        // Merge the LLM's relation assertions with a deterministic pass over the
+        // player's own input + prose, so a clearly-stated tie carries the RIGHT
+        // authority (a player_correction can retcon, a claim stays soft) even when
+        // the LLM missed it or could only stamp 'narrator'. Authority-aware: the
+        // stronger source wins a collision. Off TTFT (post-stream tail).
+        const deterministicAssertions = extractKinshipAssertions({
+          corrections: parsedPlayerInput.corrections,
+          narrationFacts: parsedPlayerInput.narrationFacts,
+          claims: parsedPlayerInput.claims,
+          prose: rawNarrative,
+        });
+        const relationAssertions = mergeRelationAssertions(
+          deltas.flatMap((d) => d.relation_assertions || []),
+          deterministicAssertions,
+        );
         if (relationAssertions.length > 0) {
           const protagCard = codex.find((c) => c.is_protagonist);
           let selfAnchorId: string | null = null;
@@ -1317,6 +1391,50 @@ export async function generationProcessor(job: Job) {
               notes: kin.notes.slice(0, 6),
             });
           }
+        }
+
+        // Projection anomaly logging (§12): compare the prose against what the
+        // projection recorded and persist any inconsistencies fire-and-forget for
+        // a debug/admin surface. Never affects the turn. `knownCardNames` is the
+        // PRE-turn card set, so deltas naming an absent person are "new this turn".
+        try {
+          const newCardNames = deltas
+            .map((d) => d.resolved_name || d.name)
+            .filter((n) => n && !knownCardNames.has(normalizeEntityName(n)));
+          const findings = detectProjectionAnomalies({
+            prose: rawNarrative,
+            presentNames: parsed.present_characters,
+            codexNames: [...knownCardNames],
+            stubNames: stubResult.ensured,
+            hadRelationAssertion: relationAssertions.length > 0,
+            droppedChoices: audited.dropped,
+            locationAnchorName: locationAnchor?.name ?? null,
+            newCardNames,
+          });
+          if (findings.length) {
+            await mongoColl.projectionAnomalies().insertMany(
+              findings.map((f) => ({
+                _id: new ObjectId(),
+                instance_id: instanceOid,
+                player_id: playerOid,
+                event_id: event._id,
+                sequence: nextSequence,
+                type: f.type,
+                severity: f.severity,
+                details: f.details,
+                created_at: new Date(),
+                resolved_at: null,
+              })),
+            );
+            log.info("projection.anomalies", {
+              instanceId: idString(instanceId),
+              sequence: nextSequence,
+              count: findings.length,
+              types: findings.map((f) => f.type),
+            });
+          }
+        } catch (err) {
+          console.warn("projection anomaly logging skipped:", (err as Error).message);
         }
       } catch (err) {
         console.warn("entity graph sync failed:", (err as Error).message);

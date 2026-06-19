@@ -36,6 +36,7 @@ export async function replayProcessor(job: Job) {
         // replayed turn shows tap-to-play choices like a primary turn.
         choices: ev?.data?.choices || [],
         present_characters: ev?.data?.present_characters || [],
+        trackable_mentions: ev?.data?.trackable_mentions || [],
         variants: (ev?.data?.replay_variants || []).map((v: any) => ({
           id: v.id,
           narrative: v.narrative,

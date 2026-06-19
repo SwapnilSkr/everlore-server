@@ -26,6 +26,11 @@ export interface LocationFactDoc {
   source_event_id: ObjectId
   source_sequence: number
   created_at: Date
+  /** WHO established this place-fact, on the shared authority ladder (narrator by
+   *  default; a player narration/correction outranks it). See world-authority.ts. */
+  source?: import('../utils/world-authority').WorldFactSource
+  /** Trust in [0,1]; defaults from `source` when absent. */
+  confidence?: number
 }
 
 /**
@@ -46,17 +51,44 @@ export interface EntityDoc {
   /** 1:1 link to the codex card for player/protagonist/character entities. */
   character_id?: ObjectId
   /** Lifecycle of a graph node:
-   *  - 'stub': a witnessed-but-uncarded entity (a scene participant or a kinship
-   *    endpoint) that exists so the graph can reference it before a full codex
-   *    card exists. High recall, low authority: NOT injected as canon, NOT shown
-   *    in the Bonds ledger (that reads cards). Promoted to 'active' the moment a
-   *    codex card mints for this name (syncCodexEntities links character_id).
+   *  - 'stub': a freshly witnessed-but-uncarded entity (a scene participant or a
+   *    kinship endpoint) that exists so the graph can reference it before a full
+   *    codex card exists. High recall, low authority: NOT injected as canon, NOT
+   *    shown in the Bonds ledger (that reads cards).
+   *  - 'anchored_stub': a stub that earned PROVENANCE — a kinship/relationship
+   *    edge, a memory reference, a location association, or repeated witnessing.
+   *    Survives indefinitely (never archived) because something points at it.
+   *  - 'dormant_stub': an OLD stub with some provenance but long out of the active
+   *    window — preserved (not noise) and WAKABLE by name/alias/edge/location/
+   *    memory cue, but not surfaced until a cue hits.
    *  - 'active': a full canonical entity backed by a codex card (or a location).
-   *  - 'archived': dormant / superseded. */
-  status: 'stub' | 'active' | 'archived'
+   *    A stub is promoted to 'active' the moment a codex card mints for this name
+   *    (syncCodexEntities links character_id) — same row, never a duplicate.
+   *  - 'archived': unreferenced low-confidence one-off noise, retired to keep the
+   *    witness tier from becoming a junk drawer. */
+  status: 'stub' | 'dormant_stub' | 'anchored_stub' | 'active' | 'archived'
   first_seen_sequence: number
   last_seen_sequence: number
   mention_count: number
+  // ── stub provenance (the witness tier) — drives anchoring + waking ──
+  /** Bounded list of event ids that witnessed this entity, for rewind pruning and
+   *  "wake by source event". Newest last. */
+  source_event_ids?: ObjectId[]
+  /** The location entity this stub was first / most-recently witnessed in, so a
+   *  dormant stub can wake when the viewpoint returns to that place. */
+  first_location_entity_id?: ObjectId | null
+  last_location_entity_id?: ObjectId | null
+  /** A coarse role/descriptor the prose gave an unnamed witness ("the butler",
+   *  "the veiled pianist") — helps resolve + display a stub before it earns a card. */
+  role_label?: string
+  /** 0-1 confidence the stub is a real trackable person (from the presence tier
+   *  that minted it: confirmed > probable). Low-confidence one-offs archive first. */
+  confidence?: number
+  /** How many distinct turns witnessed this entity (≥ mention_count is per-prose). */
+  witness_count?: number
+  /** Why a dormant stub was last woken ("named in input", "kin edge", "same place",
+   *  "memory hit") — for logs/audit/debug. */
+  last_wake_reason?: string
   /** location entities only — mutable world state of the place ("the gate now
    *  lies in ruins"). Newest last; bounded; pruned on rewind/edit. */
   location_state?: LocationFactDoc[]
