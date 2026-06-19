@@ -843,6 +843,15 @@ export async function generationProcessor(job: Job) {
       mentioned_only: classifiedMentions.filter((m) => m.tier === "mentioned_only").map((m) => m.key).slice(0, 8),
     });
   }
+  // Witness-tier provenance: confidence per stub from the presence tier (confirmed
+  // > probable), plus this turn's event + place, so a stub can later wake by name,
+  // kin edge, or returning to where it was seen (see entity stub lifecycle, §5).
+  const eventId = new ObjectId();
+  const stubConfidenceByName = new Map<string, number>();
+  for (const m of classifiedMentions) {
+    if (m.tier === "confirmed") stubConfidenceByName.set(m.key, 0.9);
+    else if (m.tier === "probable") stubConfidenceByName.set(m.key, 0.6);
+  }
   const stubResult = await entityGraphService
     .ensureSceneParticipantStubs({
       instanceId,
@@ -850,6 +859,9 @@ export async function generationProcessor(job: Job) {
       sequence: nextSequence,
       presentNames: parsed.present_characters,
       knownCardNames,
+      sourceEventId: eventId,
+      locationEntityId: locationAnchor?.entity_id ?? null,
+      confidenceByName: stubConfidenceByName,
     })
     .catch((err) => {
       console.warn("scene participant stubs skipped:", (err as Error).message);
@@ -865,11 +877,13 @@ export async function generationProcessor(job: Job) {
   entityGraphService
     .archiveStaleStubs({ instanceId, sequence: nextSequence })
     .then((res) => {
-      if (res.archived > 0) {
-        log.info("scene.participant.stubs.archived", {
+      if (res.archived > 0 || res.anchored > 0 || res.dormant > 0) {
+        log.info("scene.participant.stubs.reconciled", {
           instanceId: idString(instanceId),
           sequence: nextSequence,
           archived: res.archived,
+          anchored: res.anchored,
+          dormant: res.dormant,
         });
       }
     })
@@ -900,7 +914,7 @@ export async function generationProcessor(job: Job) {
     : sceneClassification === "nsfw";
 
   const event = {
-    _id: new ObjectId(),
+    _id: eventId,
     instance_id: instanceOid,
     player_id: playerOid,
     sequence: nextSequence,

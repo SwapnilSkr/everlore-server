@@ -259,6 +259,26 @@ export async function buildContextPacket(params: {
     } catch (err) {
       console.warn('Context packet: mention resolution skipped:', (err as Error).message)
     }
+
+    // Wake long-dormant uncarded characters that THIS turn's cues make relevant —
+    // named in the input, tied by a kin/relationship edge to someone present, or
+    // tied to the current place — so a character last seen thousands of turns ago
+    // resurfaces exactly when it matters (not injected wholesale). Woken stub ids
+    // join the RAG entity neighbourhood below so their memories are retrievable.
+    try {
+      const nameCues = (userMessage.match(/\b[A-Z][a-zà-ÿ'’-]+\b/g) || []).slice(0, 16)
+      const woken = await entityGraphService.wakeStubsByCues({
+        instanceId,
+        names: nameCues,
+        presentEntityIds: mentionedEntityIds,
+        locationEntityId: currentLocation?.entity_id ? idString(currentLocation.entity_id) : null,
+      })
+      if (woken.entityIds.length) {
+        mentionedEntityIds = [...new Set([...mentionedEntityIds, ...woken.entityIds])]
+      }
+    } catch (err) {
+      console.warn('Context packet: stub wake skipped:', (err as Error).message)
+    }
   }
 
   // ── 2. Retrieval (vector + keyword + entity neighborhood + open threads) ──
