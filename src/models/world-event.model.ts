@@ -38,6 +38,19 @@ export interface ReplayVariantDoc {
   present_characters?: string[]
 }
 
+/** One ledgered location change this turn — the rebuildable projection of the
+ *  place graph, mirroring codex_deltas/relation_assertions. Each carries its
+ *  authority source + confidence so a rebuild reconstructs the place exactly and a
+ *  player-narrated place-fact can outrank a narrator one. See world-authority.ts. */
+export interface LocationDeltaDoc {
+  type: 'location_anchor' | 'location_fact' | 'location_state' | 'containment'
+  /** The place name (anchor/containment) or the fact/state clause text. */
+  name: string
+  source: import('../utils/world-authority').WorldFactSource
+  confidence: number
+  sequence: number
+}
+
 export interface EventDataDoc {
   player_input: string
   /** Spoken dialogue outside narration markers. */
@@ -74,6 +87,9 @@ export interface EventDataDoc {
    *  the surviving deltas are replayed deterministically, so no fact or meter
    *  from a removed turn can ever linger. Absent on pre-ledger (legacy) turns. */
   codex_deltas?: CharacterCodexDelta[]
+  /** This turn's location changes, ledgered with authority for an exact rebuild of
+   *  the place graph (anchor + containment + state + enduring facts). */
+  location_deltas?: LocationDeltaDoc[]
   replay_variants?: ReplayVariantDoc[]
   selected_replay_index?: number
   state_mutations: Record<string, StateMutationDoc>

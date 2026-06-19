@@ -26,6 +26,11 @@ export interface LocationFactDoc {
   source_event_id: ObjectId
   source_sequence: number
   created_at: Date
+  /** WHO established this place-fact, on the shared authority ladder (narrator by
+   *  default; a player narration/correction outranks it). See world-authority.ts. */
+  source?: import('../utils/world-authority').WorldFactSource
+  /** Trust in [0,1]; defaults from `source` when absent. */
+  confidence?: number
 }
 
 /**

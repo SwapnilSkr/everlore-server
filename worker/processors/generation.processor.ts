@@ -917,6 +917,23 @@ export async function generationProcessor(job: Job) {
     ? (await classifyBorderlineIntent(classifyText)) === "nsfw"
     : sceneClassification === "nsfw";
 
+  // Ledger this turn's location changes (anchor + containment + state + enduring
+  // facts), authority-tagged, so the place graph is a rebuildable projection like
+  // codex_deltas/relation_assertions. Witness-derived → narrator authority.
+  const locationDeltas: import("../../src/models/world-event.model").LocationDeltaDoc[] = [];
+  if (locationAnchor?.name && parsed.viewpoint_moved) {
+    locationDeltas.push({ type: "location_anchor", name: locationAnchor.name, source: "narrator", confidence: 0.9, sequence: nextSequence });
+  }
+  if (parsed.containment_hint) {
+    locationDeltas.push({ type: "containment", name: parsed.containment_hint, source: "narrator", confidence: 0.9, sequence: nextSequence });
+  }
+  for (const s of parsed.location_state_changes || []) {
+    locationDeltas.push({ type: "location_state", name: s, source: "narrator", confidence: 0.9, sequence: nextSequence });
+  }
+  for (const f of parsed.location_permanent_facts || []) {
+    locationDeltas.push({ type: "location_fact", name: f, source: "narrator", confidence: 0.9, sequence: nextSequence });
+  }
+
   const event = {
     _id: eventId,
     instance_id: instanceOid,
@@ -938,6 +955,7 @@ export async function generationProcessor(job: Job) {
       milestone: parsed.milestone,
       present_characters: parsed.present_characters,
       ...(trackableMentions.length ? { trackable_mentions: trackableMentions } : {}),
+      ...(locationDeltas.length ? { location_deltas: locationDeltas } : {}),
       ...(effectiveTimeAdvance ? { time_advanced: effectiveTimeAdvance } : {}),
       ...(isTravel && currentLocation && resolvedLocation
         ? { travel: { from: currentLocation.name, to: resolvedLocation.name } }

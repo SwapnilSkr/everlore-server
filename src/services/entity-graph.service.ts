@@ -4,6 +4,7 @@ import type { EntityDoc, EntityType, LocationFactDoc } from '../models/entity.mo
 import type { CharacterProfileDoc, RelationshipMeters } from '../models/character-profile.model'
 import { characterCodexService } from './character-codex.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { type WorldFactSource, confidenceFor } from '../utils/world-authority'
 
 const entities = () => mongoColl.entities()
 const entityEdges = () => mongoColl.entityEdges()
@@ -1537,10 +1538,16 @@ export const entityGraphService = {
     eventId: ObjectId
     state?: string[]
     facts?: string[]
+    /** Authority of these place-facts (narrator by default; a player narration of
+     *  a place change outranks it). Stamped on each persisted entry. */
+    source?: WorldFactSource
+    confidence?: number
   }): Promise<void> {
     const state = (params.state || []).map((s) => s.trim()).filter(Boolean)
     const facts = (params.facts || []).map((s) => s.trim()).filter(Boolean)
     if (!state.length && !facts.length) return
+    const source: WorldFactSource = params.source ?? 'narrator'
+    const confidence = typeof params.confidence === 'number' ? params.confidence : confidenceFor(source)
     const iid = parseObjectId(params.instanceId)
     const entity = (await entities().findOne(
       { _id: params.locationEntityId, instance_id: iid, type: 'location' },
@@ -1560,7 +1567,7 @@ export const entityGraphService = {
         const key = text.toLowerCase()
         if (existing.has(key)) continue
         existing.add(key)
-        out.push({ text, source_event_id: params.eventId, source_sequence: params.sequence, created_at: now })
+        out.push({ text, source_event_id: params.eventId, source_sequence: params.sequence, created_at: now, source, confidence })
       }
       return out
     }
