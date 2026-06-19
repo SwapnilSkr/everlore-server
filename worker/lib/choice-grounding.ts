@@ -230,6 +230,103 @@ export interface ChoiceGroundingResult<T extends GroundableChoice> {
   dropped: { choice: T; term: string }[]
 }
 
+export interface GroundingOpts {
+  protagonist?: { name?: string | null; aliases?: string[] } | null
+  isSentient?: boolean
+}
+
+/** The resolved grounding facts for a turn — what kin/being references the world
+ *  can actually support. Computed once, shared by the drop pass (groundChoices)
+ *  and the repair pass (auditChoices). */
+export interface GroundingContext {
+  knownGroups: Set<string>
+  playerOwnedGroups: Set<string>
+  knownSupernatural: Set<string>
+  worldCapable: boolean
+}
+
+/** Build the grounding context from the cast vocab, kinship graph labels, this
+ *  turn's grounded prose, and the world premise/lore. (Extracted so the repair
+ *  audit reasons over the SAME facts as the drop filter.) */
+export function computeGroundingContext(
+  castVocab: string[],
+  groundingText?: string,
+  graphLabels?: string[],
+  worldText?: string,
+  opts?: GroundingOpts,
+): GroundingContext {
+  const knownGroups = new Set<string>()
+  const playerOwnedGroups = playerAnchoredKinGroups(groundingText, opts)
+  const worldCapable = worldAllowsSupernatural(worldText)
+  const knownSupernatural = new Set<string>()
+  for (const v of [...(castVocab || []), worldText || '']) {
+    if (!v) continue
+    for (const tok of tokenize(v)) {
+      const group = SUPERNATURAL_GROUPS[tok] || SUPERNATURAL_GROUPS[tok.replace(/s$/, '')]
+      if (group) knownSupernatural.add(group)
+    }
+  }
+  for (const v of castVocab) {
+    if (!v) continue
+    for (const tok of tokenize(v)) {
+      const group = KIN_GROUPS[tok]
+      if (group) {
+        knownGroups.add(group)
+        playerOwnedGroups.add(group)
+      }
+    }
+  }
+  for (const v of graphLabels || []) {
+    if (!v) continue
+    for (const tok of tokenize(v)) {
+      const group = KIN_GROUPS[tok]
+      if (group) {
+        knownGroups.add(group)
+        playerOwnedGroups.add(group)
+      }
+    }
+  }
+  if (groundingText) {
+    for (const term of KIN_TERMS) {
+      if (mentionsTerm(groundingText, term)) knownGroups.add(KIN_GROUPS[term])
+    }
+  }
+  return { knownGroups, playerOwnedGroups, knownSupernatural, worldCapable }
+}
+
+/** A single grounding problem with a choice. */
+export interface ChoiceGroundingIssue {
+  type: 'fabricated_kin' | 'perspective_kin' | 'ungrounded_being'
+  /** The offending surface term ("brother", "ghost"). */
+  term: string
+  /** The relation/being GROUP the term belongs to. */
+  group: string
+}
+
+/** Classify ONE choice's text against the grounding context — the shared core of
+ *  both the drop filter and the repair audit. Returns every issue found (empty =
+ *  grounded). Order: perspective mismatch, fabricated kin, ungrounded being. */
+export function classifyChoiceGrounding(text: string, ctx: GroundingContext): ChoiceGroundingIssue[] {
+  const issues: ChoiceGroundingIssue[] = []
+  const perspective = KIN_TERMS.find(
+    (term) => mentionsPossessiveKin(text, term) && !ctx.playerOwnedGroups.has(KIN_GROUPS[term]),
+  )
+  if (perspective) issues.push({ type: 'perspective_kin', term: perspective, group: KIN_GROUPS[perspective] })
+  const fabricated = KIN_TERMS.find(
+    (term) => !ctx.knownGroups.has(KIN_GROUPS[term]) && mentionsTerm(text, term),
+  )
+  if (fabricated && !issues.some((i) => i.term === fabricated)) {
+    issues.push({ type: 'fabricated_kin', term: fabricated, group: KIN_GROUPS[fabricated] })
+  }
+  if (!ctx.worldCapable) {
+    const being = SUPERNATURAL_TERMS.find(
+      (term) => !ctx.knownSupernatural.has(SUPERNATURAL_GROUPS[term]) && mentionsTerm(text, term),
+    )
+    if (being) issues.push({ type: 'ungrounded_being', term: being, group: SUPERNATURAL_GROUPS[being] })
+  }
+  return issues
+}
+
 /**
  * Filter `choices` to those whose kinship references the cast can actually
  * support. `castVocab` is every known name/alias/role string for every codex
@@ -245,82 +342,21 @@ export function groundChoices<T extends GroundableChoice>(
   groundingText?: string,
   graphLabels?: string[],
   worldText?: string,
-  opts?: { protagonist?: { name?: string | null; aliases?: string[] } | null; isSentient?: boolean },
+  opts?: GroundingOpts,
 ): ChoiceGroundingResult<T> {
-  const knownGroups = new Set<string>()
-  const playerOwnedGroups = playerAnchoredKinGroups(groundingText, opts)
-  // Supernatural beings the world actually establishes — from the WORLD premise/
-  // lore and the carded cast/entities (NOT the prose, which may use the word as a
-  // metaphor). If a being's group is here, choices may reference it; otherwise a
-  // reference is a reified metaphor and is dropped.
-  // A supernatural-capable WORLD (fantasy/horror/sci-fi/myth, per its premise/lore)
-  // is never policed — beings may freely come up. Only a grounded realist world
-  // gets the metaphor guard.
-  const worldCapable = worldAllowsSupernatural(worldText)
-  const knownSupernatural = new Set<string>()
-  for (const v of [...(castVocab || []), worldText || '']) {
-    if (!v) continue
-    for (const tok of tokenize(v)) {
-      // Match singular or plural ("ghosts"/"spirits" in a premise → ghost group).
-      const group = SUPERNATURAL_GROUPS[tok] || SUPERNATURAL_GROUPS[tok.replace(/s$/, '')]
-      if (group) knownSupernatural.add(group)
-    }
-  }
-  // (1) Cast role text — the legacy heuristic (perspective-imperfect but permissive).
-  for (const v of castVocab) {
-    if (!v) continue
-    for (const tok of tokenize(v)) {
-      const group = KIN_GROUPS[tok]
-      if (group) {
-        knownGroups.add(group)
-        playerOwnedGroups.add(group)
-      }
-    }
-  }
-  // (2) The kinship GRAPH — the player's ACTUAL relatives' surface labels, the
-  // authoritative perspective-correct source ("sister" → sister group, distinct
-  // from "brother"). Durable across turns even when this passage's role text is
-  // silent. See kinship-graph.service relativesOf / kinSummary.
-  for (const v of graphLabels || []) {
-    if (!v) continue
-    for (const tok of tokenize(v)) {
-      const group = KIN_GROUPS[tok]
-      if (group) {
-        knownGroups.add(group)
-        playerOwnedGroups.add(group)
-      }
-    }
-  }
-  // (3) The grounded narrator: any kin term it uses this turn is real even if the
-  // (pre-turn) codex/graph hasn't carded the relative yet.
-  if (groundingText) {
-    for (const term of KIN_TERMS) {
-      if (mentionsTerm(groundingText, term)) knownGroups.add(KIN_GROUPS[term])
-    }
-  }
-
+  const ctx = computeGroundingContext(castVocab, groundingText, graphLabels, worldText, opts)
   const kept: T[] = []
   const dropped: { choice: T; term: string }[] = []
   for (const c of choices || []) {
     const text = `${c?.label || ''} ${c?.send || ''}`
-    // Fabricated kinship: a kin relation the cast/graph/prose doesn't support.
-    const fabricated = KIN_TERMS.find(
-      (term) => !knownGroups.has(KIN_GROUPS[term]) && mentionsTerm(text, term),
-    )
-    const perspectiveMismatch = KIN_TERMS.find(
-      (term) => mentionsPossessiveKin(text, term) && !playerOwnedGroups.has(KIN_GROUPS[term]),
-    )
-    // Reified metaphor: in a GROUNDED world only, a supernatural being not
-    // established as real (premise/lore or a carded entity). Supernatural-capable
-    // worlds are never policed — a ghost/dragon/alien may freely come up.
-    const ungroundedBeing = worldCapable
-      ? undefined
-      : SUPERNATURAL_TERMS.find(
-          (term) => !knownSupernatural.has(SUPERNATURAL_GROUPS[term]) && mentionsTerm(text, term),
-        )
-    const reason = perspectiveMismatch ? `perspective:${perspectiveMismatch}` : fabricated || ungroundedBeing
-    if (reason) dropped.push({ choice: c, term: reason })
-    else kept.push(c)
+    const issues = classifyChoiceGrounding(text, ctx)
+    if (issues.length) {
+      const primary = issues[0]
+      const reason = primary.type === 'perspective_kin' ? `perspective:${primary.term}` : primary.term
+      dropped.push({ choice: c, term: reason })
+    } else {
+      kept.push(c)
+    }
   }
   return { choices: kept, dropped }
 }

@@ -27,7 +27,7 @@ import { characterCodexService } from "../../src/services/character-codex.servic
 import { kinshipGraphService } from "../../src/services/kinship-graph.service";
 import { entityGraphService, isVagueLocationLabel, normalizeEntityName } from "../../src/services/entity-graph.service";
 import { detectNarratedMovement, resolvePossessiveRoomName } from "../lib/movement-signal";
-import { groundChoices } from "../lib/choice-grounding";
+import { auditChoices } from "../lib/choice-grounding-audit";
 import { detectNarratedTimeSkip } from "../lib/time-skip-signal";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
 import { timeService } from "../../src/services/time.service";
@@ -476,7 +476,11 @@ export async function generationProcessor(job: Job) {
   const worldText = [session.seed_prompt, session.global_lore]
     .filter(Boolean)
     .join("\n");
-  const groundedChoices = groundChoices(
+  // Audit + REPAIR ungrounded choices (fabricated/wrong-perspective kin, reified
+  // metaphor beings) in place rather than dropping them, so the player keeps a full
+  // set of grounded options ("attack the ghost" → "investigate the presence").
+  // Unrepairable / duplicate-after-repair choices are still dropped. Off TTFT.
+  const audited = auditChoices(
     parsed.choices || [],
     castVocab,
     rawNarrative,
@@ -484,17 +488,17 @@ export async function generationProcessor(job: Job) {
     worldText,
     { protagonist: choiceProtagonist, isSentient: !!session.is_sentient },
   );
-  if (groundedChoices.dropped.length) {
-    log.warn("choice-grounding dropped ungrounded choices", {
+  if (audited.repairedCount > 0 || audited.dropped.length > 0) {
+    log.warn("choice-grounding audited choices", {
       instanceId: idString(instanceId),
       sequence: nextSequence,
-      dropped: groundedChoices.dropped.map((d) => ({
-        term: d.term,
-        label: d.choice.label,
-      })),
+      repaired: audited.results
+        .filter((r) => r.repaired)
+        .map((r) => ({ from: r.choice.label, to: r.repaired!.label, issue: r.issues[0]?.type })),
+      dropped: audited.dropped.map((d) => ({ label: d.choice.label, issue: d.issues[0]?.type })),
     });
   }
-  parsed.choices = groundedChoices.choices;
+  parsed.choices = audited.choices;
 
   const newWorldState = applyStateMutations(
     session.world_state,
