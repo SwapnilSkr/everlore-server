@@ -7,6 +7,7 @@ import {
 } from './narrative-styles'
 import { buildModeDirective, modeReminderLabel } from './chat-modes'
 import { parsePlayerInput } from './player-input-parser'
+import { CHOICE_TAIL_INSTRUCTION } from '../../worker/lib/choice-tail'
 import type { PersonaSnapshotDoc } from '../models/persona.model'
 
 interface PromptInput {
@@ -36,6 +37,11 @@ interface PromptInput {
    *  Used for the uncensored NSFW model, whose structured metadata is extracted
    *  by a separate pass. */
   proseOnly?: boolean
+  /** When true (proseOnly only), the narrator also appends a sentinel-delimited
+   *  CHOICES tail after the prose, so the tap-to-play choices are generated WITH the
+   *  narrator's full context instead of a context-starved second pass. The worker
+   *  strips the tail from the player stream and parses it (see worker/lib/choice-tail). */
+  emitChoices?: boolean
   /** Narration person. Defaults to third. */
   narrationPov?: 'first' | 'third'
   /** Chat MODE key (see chat-modes.ts) — how the chat flows. Player-chosen. */
@@ -298,6 +304,12 @@ Write your reply as in-character story prose. Follow this style EXACTLY:
 - The player may include their OWN *actions or narration in asterisks* (in any point of view). Treat these as canonical events that truly happen in the story — honor them and react; do not override or contradict them. Their unmarked text is what the player says aloud.
 - Vivid and emotionally resonant; match the requested length and voice below.
 - Output ONLY the story. No JSON, no field names, no headings, no bullet points, no commentary before or after. Never break character.`
+    // Narrator-emitted choices (Option A): a static, cacheable instruction asking
+    // for a sentinel-delimited CHOICES tail after the prose. The narrator already
+    // holds the full context, so its choices are grounded at the source.
+    if (input.emitChoices) {
+      staticContent += CHOICE_TAIL_INSTRUCTION
+    }
   } else {
     staticContent += `RESPONSE FORMAT:
 You MUST respond with valid JSON containing these fields:

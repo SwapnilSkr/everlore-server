@@ -18,7 +18,8 @@ import { repairProseHygiene } from "../../src/utils/prose-hygiene";
 import { idString, parseObjectId } from "../../src/utils/mongo-id";
 import { generationLockKey } from "../../src/utils/generation-lock";
 import { scoreScene, classifyBorderlineIntent } from "../lib/nsfw-classifier";
-import { type GenerationOutput } from "../lib/structured-output";
+import { type GenerationOutput, type ChoiceOption, sanitizeChoices } from "../lib/structured-output";
+import { makeChoiceTailFilter, parseChoiceTail } from "../lib/choice-tail";
 import { extractSceneMetadata } from "../lib/metadata-extractor";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
 import { compactImmutableFacts } from "../lib/codex-compactor";
@@ -285,6 +286,12 @@ export async function generationProcessor(job: Job) {
     isNsfwTurn = true;
   }
 
+  // Option A spike: when on, the narrator emits its own tap-to-play choices in a
+  // sentinel-delimited tail (generated WITH full context — see worker/lib/choice-tail),
+  // and we skip nothing else. Off by default so it ships additively; if the narrator
+  // omits/malforms the tail we fall straight back to the metadata-pass choices below.
+  const useNarratorChoices = process.env.NARRATOR_CHOICES === "on";
+
   const prompt = buildPrompt({
     seedPrompt: session.seed_prompt,
     isSentient: session.is_sentient,
@@ -323,6 +330,7 @@ export async function generationProcessor(job: Job) {
     // arrive (low TTFT), and uncensored models can't do the JSON envelope anyway.
     // Structured fields (stats/flags/scene tag) are derived in a cheap pass below.
     proseOnly: true,
+    emitChoices: useNarratorChoices,
   });
 
   // Stream the narrative token-by-token so the player sees words within ~1s
@@ -331,7 +339,34 @@ export async function generationProcessor(job: Job) {
   const channel = `user:${playerId}:events`;
   const genStart = Date.now();
   let ttftMs = 0;
-  const prose = await callLLMStream(
+  // When the narrator emits its own choices, strip the trailing CHOICES block out
+  // of the player-facing delta stream so the marker/choices never render as prose.
+  const choiceFilter = useNarratorChoices ? makeChoiceTailFilter() : null;
+  const publishDelta = (delta: string) => {
+    if (!delta) return;
+    redis.publish(
+      channel,
+      JSON.stringify({ type: "generation_delta", instanceId, delta }),
+    );
+  };
+  // The visible stream ends — and the typing indicator stops — when this fires. We
+  // send it the INSTANT the choices sentinel is seen (the story prose is complete
+  // there), not after the model finishes writing the hidden choices tail. Guarded
+  // so it's published exactly once.
+  let streamEnded = false;
+  const publishStreamEnd = (narrative: string) => {
+    if (streamEnded) return;
+    streamEnded = true;
+    redis.publish(
+      channel,
+      JSON.stringify({
+        type: "generation_stream_end",
+        instanceId,
+        narrative: narrative.trim(),
+      }),
+    );
+  };
+  const fullCompletion = await callLLMStream(
     {
       model: modelId,
       messages: prompt.messages,
@@ -341,22 +376,42 @@ export async function generationProcessor(job: Job) {
     (chunk) => {
       // First streamed delta = the latency the player actually feels.
       if (ttftMs === 0) ttftMs = Date.now() - genStart;
-      redis.publish(
-        channel,
-        JSON.stringify({ type: "generation_delta", instanceId, delta: chunk }),
-      );
+      publishDelta(choiceFilter ? choiceFilter.push(chunk) : chunk);
+      // Once the sentinel arrives, all prose is in and the rest is hidden choices —
+      // close the visible stream now so the indicator doesn't hang through them.
+      if (choiceFilter && choiceFilter.inTail()) publishStreamEnd(choiceFilter.prose());
     },
   );
+  // Flush the small held-back tail (kept so a partial sentinel never flashes).
+  if (choiceFilter) publishDelta(choiceFilter.end());
+  // The prose the player saw — with the choices tail removed when present.
+  const prose = choiceFilter ? choiceFilter.prose() : fullCompletion;
+  // Narrator-grounded choices parsed from the tail (empty → fall back below).
+  const narratorChoices: ChoiceOption[] = choiceFilter
+    ? sanitizeChoices(parseChoiceTail(choiceFilter.choiceBlock()))
+    : [];
   const latencyMs = Date.now() - genStart;
 
-  await redis.publish(
-    channel,
-    JSON.stringify({
-      type: "generation_stream_end",
-      instanceId,
-      narrative: prose.trim(),
-    }),
-  );
+  // No tail (flag off, or narrator emitted none) → close the stream now, as before.
+  publishStreamEnd(prose);
+
+  // The narrator's choices are ready NOW — parsed from the streamed tail, before any
+  // of the post-prose bookkeeping (hygiene repair, witness/stat metadata) runs. Ship
+  // them immediately so the chips appear the moment the prose settles, instead of
+  // waiting on generation_complete (which is gated on those passes). generation_complete
+  // still carries the final, audited choices and reconciles them. When the narrator
+  // emitted no usable tail we send nothing here and the client shows a "preparing
+  // options" hint until the metadata-pass choices arrive with generation_complete.
+  if (narratorChoices.length > 0) {
+    redis.publish(
+      channel,
+      JSON.stringify({
+        type: "choices_ready",
+        instanceId,
+        choices: narratorChoices,
+      }),
+    );
+  }
 
   // RAW witness prose: what the model actually generated (and what the player
   // saw stream by). All world-state extractors (metadata, choice grounding,
@@ -440,6 +495,26 @@ export async function generationProcessor(job: Job) {
     },
   );
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta };
+  // Option A: when the narrator produced grounded choices, they REPLACE the
+  // context-starved metadata-pass choices (everything else — presence, location,
+  // stats, scene tag — still comes from the cheap extraction passes, which is
+  // correct: those are extraction, choices are generation). The auditChoices net
+  // below still runs, now demoted from primary defense to a thin backstop. If the
+  // narrator emitted no/malformed tail, parsed.choices keeps the metadata-pass set
+  // → identical to today's behavior, zero regression.
+  if (narratorChoices.length > 0) {
+    parsed.choices = narratorChoices;
+    log.info("choices.narrator.used", {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      count: narratorChoices.length,
+    });
+  } else if (useNarratorChoices) {
+    log.warn("choices.narrator.fallback", {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+    });
+  }
   const proseHygieneIssues = repairedProse.issues;
 
   // Closed-check backstop on the choices: the metadata model is *told* never to
@@ -828,13 +903,14 @@ export async function generationProcessor(job: Job) {
     codex: [...knownCardNames],
     exclude: presenceGapExcludes,
   });
-  const trackableMentions = classifiedMentions.map((m) => ({
+  const actionableMentions = classifiedMentions.filter((m) => m.tier === "confirmed" || m.tier === "probable");
+  const trackableMentions = actionableMentions.map((m) => ({
     key: m.key,
     display: m.display,
     tier: m.tier,
     evidence: m.evidence,
   }));
-  const presentGaps = classifiedMentions.filter((m) => m.tier === "confirmed" || m.tier === "probable");
+  const presentGaps = actionableMentions;
   if (presentGaps.length) {
     const presentSeen = new Set(parsed.present_characters.map((n) => normalizeEntityName(n)));
     for (const gap of presentGaps) {

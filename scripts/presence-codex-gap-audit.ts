@@ -2,7 +2,7 @@
  * Pure-function audit for the shared WITNESS -> ENTITY-STUB -> CANON gap
  * detector. No DB / no LLM. Run: bun run audit:presence-codex-gap
  */
-import { detectPresenceCodexGaps } from '../worker/lib/presence-gap-detector'
+import { classifyPresenceCodexGaps, detectPresenceCodexGaps } from '../worker/lib/presence-gap-detector'
 
 let pass = 0
 let fail = 0
@@ -73,6 +73,22 @@ console.log('gap detector - child/self-facing labels are NOT candidates:')
 {
   const prose = `The son watched his father leave.`
   check('son excluded, father covered', detectPresenceCodexGaps(prose, { present: ['Father'], stubs: ['Father'] }), [])
+}
+
+console.log('gap detector - bare abstract mentions are not actionable:')
+{
+  const prose = `Silence is the only thing the neglected son owns in this house.`
+  check(
+    'Silence is only mentioned_only, not an actionable gap',
+    classifyPresenceCodexGaps(prose, {}).map((m) => `${m.key}:${m.tier}`),
+    ['silence:mentioned_only'],
+  )
+}
+
+console.log('gap detector - family role synonyms are covered:')
+{
+  const prose = `"Did you see the latest post, Dad?" the girl asks.`
+  check('Father present covers Dad mention', detectPresenceCodexGaps(prose, { present: ['Father'] }), [])
 }
 
 console.log('gap detector - robust to prose-hygiene pronoun substitution:')

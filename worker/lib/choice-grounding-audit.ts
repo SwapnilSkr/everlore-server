@@ -2,13 +2,12 @@
  * General choice-grounding AUDIT + repair (§9). The drop filter (groundChoices)
  * removes a choice that references something the world can't support — but dropping
  * shrinks the player's options. This layer instead REPAIRS the misunderstanding in
- * place wherever it can, treating an ungrounded choice as a category error to be
- * reframed, not deleted:
+ * place where it can do so without preserving the false premise:
  *   - an unconfirmed supernatural being ("attack the ghost" in a grounded world)
- *     becomes "investigate the presence" — curiosity, not a reified metaphor.
+ *     is dropped instead of rewritten; there is no generic repair that does not
+ *     keep the category error alive.
  *   - an absent / wrong-perspective kin relation ("hug my sister" when there is no
- *     sister) becomes "ask about the connection" — an investigation, not a
- *     fabricated certainty.
+ *     sister) becomes a neutral response to the moment, not a fabricated certainty.
  * A choice with no sensible repair (or whose repair would duplicate another choice)
  * is dropped. Pure string work, no model call, off the TTFT path — same as the
  * drop filter it builds on. Reuses the SHARED grounding context + classifier so it
@@ -48,19 +47,14 @@ function repairChoice<T extends GroundableChoice>(choice: T, issues: ChoiceGroun
   const primary = issues[0]
   if (!primary) return null
   if (primary.type === 'ungrounded_being') {
-    return {
-      ...choice,
-      label: 'Investigate the presence',
-      kind: 'act',
-      send: '*I look closer, trying to make sense of what I am seeing.*',
-    }
+    return null
   }
-  // fabricated_kin / perspective_kin → reframe the assumed relation as a question.
+  // fabricated_kin / perspective_kin → remove the assumed relation entirely.
   return {
     ...choice,
-    label: 'Ask about the connection',
-    kind: 'say',
-    send: 'How do we know each other?',
+    label: 'Respond to the moment',
+    kind: 'act',
+    send: '*I respond to what is actually happening, without assuming more than I know.*',
   }
 }
 

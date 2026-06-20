@@ -60,6 +60,39 @@ const STOP = new Set<string>([
   'good', 'bad', 'sure', 'fine', 'right', 'left', 'maybe', 'enough',
 ])
 
+const FAMILY_ROLE_EQUIV: Record<string, string> = {
+  dad: 'father',
+  daddy: 'father',
+  papa: 'father',
+  pop: 'father',
+  pops: 'father',
+  mom: 'mother',
+  mommy: 'mother',
+  mum: 'mother',
+  mama: 'mother',
+  momma: 'mother',
+  grandma: 'grandmother',
+  grandpa: 'grandfather',
+  sibling: 'sibling',
+  sister: 'sister',
+  brother: 'brother',
+  father: 'father',
+  mother: 'mother',
+  parent: 'parent',
+  parents: 'parent',
+  'twin sister': 'sister',
+  'twin brother': 'brother',
+  twin: 'sibling',
+}
+
+function coverageKeys(name: string): string[] {
+  const key = normalizeName(name)
+  if (!key) return []
+  const stripped = key.replace(/^(?:the|a|an|my|your|his|her|their|our)\s+/, '').trim()
+  const role = FAMILY_ROLE_EQUIV[stripped]
+  return role ? [key, `role:${role}`] : [key]
+}
+
 export interface VisibleNameCandidate {
   key: string
   display: string
@@ -126,10 +159,11 @@ export function detectPresenceCodexGapsDetailed(
     ...(tracked.stubs || []),
     ...(tracked.exclude || []),
   ]) {
-    const key = normalizeName(n)
-    if (key) covered.add(key)
+    for (const key of coverageKeys(n)) covered.add(key)
   }
-  return visibleNameCandidatesDetailed(prose).filter((c) => !covered.has(c.key))
+  return visibleNameCandidatesDetailed(prose).filter((c) =>
+    coverageKeys(c.key).every((key) => !covered.has(key)),
+  )
 }
 
 export function detectPresenceCodexGaps(prose: string, tracked: TrackedNames): string[] {

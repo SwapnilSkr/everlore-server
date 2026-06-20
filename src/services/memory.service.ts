@@ -155,12 +155,14 @@ function trackableMentionsForProse(params: {
     present: params.present,
     codex: codexNames,
     exclude: params.exclude || [],
-  }).map((m) => ({
-    key: m.key,
-    display: m.display,
-    tier: m.tier,
-    evidence: m.evidence,
-  }))
+  })
+    .filter((m) => m.tier === 'confirmed' || m.tier === 'probable')
+    .map((m) => ({
+      key: m.key,
+      display: m.display,
+      tier: m.tier,
+      evidence: m.evidence,
+    }))
 }
 
 const SCENE_SUMMARY_BLOCK = 12

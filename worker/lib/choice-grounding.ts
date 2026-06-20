@@ -206,8 +206,9 @@ function playerAnchoredKinGroups(
 
   for (const term of KIN_TERMS) {
     const group = KIN_GROUPS[term]
-    if (new RegExp(`\\byour\\s+${term}s?\\b`, 'i').test(text)) groups.add(group)
-    if (!opts?.isSentient && new RegExp(`\\bmy\\s+${term}s?\\b`, 'i').test(text)) groups.add(group)
+    const descriptors = '(?:\\w+\\s+){0,2}'
+    if (new RegExp(`\\byour\\s+${descriptors}${term}s?\\b`, 'i').test(text)) groups.add(group)
+    if (!opts?.isSentient && new RegExp(`\\bmy\\s+${descriptors}${term}s?\\b`, 'i').test(text)) groups.add(group)
     for (const anchor of anchors) {
       const escaped = escapeRegExp(anchor)
       if (new RegExp(`\\b${escaped}(?:'s|’s)\\s+${term}s?\\b`, 'i').test(text)) {
@@ -257,6 +258,12 @@ export function computeGroundingContext(
 ): GroundingContext {
   const knownGroups = new Set<string>()
   const playerOwnedGroups = playerAnchoredKinGroups(groundingText, opts)
+  for (const group of playerAnchoredKinGroups(worldText, opts)) {
+    playerOwnedGroups.add(group)
+  }
+  for (const group of playerOwnedGroups) {
+    knownGroups.add(group)
+  }
   const worldCapable = worldAllowsSupernatural(worldText)
   const knownSupernatural = new Set<string>()
   for (const v of [...(castVocab || []), worldText || '']) {

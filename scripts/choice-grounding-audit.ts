@@ -33,7 +33,8 @@ console.log('choice-grounding repair audit:\n')
   ok('kin issue typed', ['fabricated_kin', 'perspective_kin'].includes(r.results[0]?.issues[0]?.type as string))
 }
 
-// 3. Reified metaphor being in a GROUNDED world is repaired to investigation.
+// 3. Reified metaphor being in a GROUNDED world is dropped, not repaired into
+// another generic chip that keeps the category error alive.
 {
   const r = auditChoices(
     [C('Attack the ghost', '*I lunge at the ghost.*')],
@@ -42,8 +43,8 @@ console.log('choice-grounding repair audit:\n')
     [],
     'A grounded family drama. No magic, nothing supernatural.',
   )
-  ok('ungrounded being repaired (kept)', r.choices.length === 1 && r.repairedCount === 1, JSON.stringify(r.choices))
-  ok('being repair reframes as investigation', /presence|investigate|look/i.test(`${r.choices[0]?.label}`))
+  ok('ungrounded being dropped', r.choices.length === 0 && r.dropped.length === 1, JSON.stringify(r))
+  ok('being was not template-repaired', r.repairedCount === 0)
   ok('being issue typed', r.results[0]?.issues[0]?.type === 'ungrounded_being')
 }
 
@@ -68,6 +69,20 @@ console.log('choice-grounding repair audit:\n')
   )
   const labels = r.choices.map((c) => c.label.toLowerCase())
   ok('no duplicate repaired labels', new Set(labels).size === labels.length, JSON.stringify(labels))
+}
+
+// 6. GM premise kinship ("your twin sister") licenses first-person sibling choices
+// before the codex/kinship graph has caught up on this first scene.
+{
+  const r = auditChoices(
+    [C('Confront my sister', 'Why do you pretend I am not here?', 'say')],
+    [],
+    'The sister leans into their father, showing him something on her phone.',
+    [],
+    'You are unseen by your father, your mother, and your twin sister.',
+    { protagonist: { name: 'Swapnil', aliases: [] }, isSentient: false },
+  )
+  ok('GM premise licenses my sister choice', r.choices.length === 1 && r.repairedCount === 0 && r.results[0]?.grounded === true)
 }
 
 console.log(`\nchoice-grounding repair audit: ${pass} passed, ${fail} failed`)
