@@ -9,6 +9,7 @@ import { lengthMaxTokens } from "../../src/utils/narrative-styles";
 import { NSFW_MODE } from "../../src/utils/chat-modes";
 import { parsePlayerInput } from "../../src/utils/player-input-parser";
 import { extractKinshipAssertions, mergeRelationAssertions } from "../lib/kinship-pattern-extractor";
+import { extractLifecycleTransitions } from "../lib/kinship-transition-extractor";
 import {
   applyStateMutations,
   applyFlagMutations,
@@ -23,7 +24,7 @@ import { makeChoiceTailFilter, parseChoiceTail } from "../lib/choice-tail";
 import { extractSceneMetadata } from "../lib/metadata-extractor";
 import { extractCharacterCodexDeltas } from "../lib/character-codex-extractor";
 import { compactImmutableFacts } from "../lib/codex-compactor";
-import { classifyPresenceCodexGaps } from "../lib/presence-gap-detector";
+import { classifyPresenceCodexGaps, isActionableMention } from "../lib/presence-gap-detector";
 import { characterCodexService } from "../../src/services/character-codex.service";
 import { kinshipGraphService } from "../../src/services/kinship-graph.service";
 import { entityGraphService, isVagueLocationLabel, normalizeEntityName } from "../../src/services/entity-graph.service";
@@ -402,6 +403,9 @@ export async function generationProcessor(job: Job) {
   // still carries the final, audited choices and reconciles them. When the narrator
   // emitted no usable tail we send nothing here and the client shows a "preparing
   // options" hint until the metadata-pass choices arrive with generation_complete.
+  // Guard: choices_ready is published AT MOST ONCE per turn. The fallback path
+  // below re-publishes here only if this narrator-path publish didn't fire.
+  let choicesReadySent = false;
   if (narratorChoices.length > 0) {
     redis.publish(
       channel,
@@ -411,6 +415,7 @@ export async function generationProcessor(job: Job) {
         choices: narratorChoices,
       }),
     );
+    choicesReadySent = true;
   }
 
   // RAW witness prose: what the model actually generated (and what the player
@@ -426,7 +431,12 @@ export async function generationProcessor(job: Job) {
     (c: any) => c.canonical_name,
   );
   const previousOpeningName = openingCharacterName(recentEvents || [], characterNames);
-  const repairedProse = await repairProseHygiene({
+  // Hygiene repair is COSMETIC and witnesses only rawNarrative; it does NOT feed
+  // extractSceneMetadata (which also reads rawNarrative, not the repaired prose —
+  // see the RAW witness note above). The two passes are independent, so fire
+  // hygiene now and await it together with metadata below via Promise.all,
+  // overlapping the two LLM round-trips and cutting fallback latency.
+  const repairedProsePromise = repairProseHygiene({
     narrative: rawNarrative,
     characterNames,
     messageLength: session.message_length,
@@ -435,7 +445,6 @@ export async function generationProcessor(job: Job) {
     avoidOpeningNames: characterNames,
     model: modelId,
   });
-  const finalNarrative = repairedProse.narrative;
 
   // Anchor choice generation to the player's identity so the choice viewpoint
   // can't drift. GM worlds: the protagonist card IS the player's character.
@@ -474,7 +483,7 @@ export async function generationProcessor(job: Job) {
   const knownPlaces = await entityGraphService
     .listKnownLocations(instanceId, 30)
     .catch(() => [] as { name: string; aliases: string[] }[]);
-  const meta = await extractSceneMetadata(
+  const metaPromise = extractSceneMetadata(
     rawNarrative,
     Object.keys(session.world_state || {}),
     Object.keys(session.active_flags || {}),
@@ -494,6 +503,10 @@ export async function generationProcessor(job: Job) {
         .join("\n"),
     },
   );
+  // Await both independent LLM passes together (started above), overlapping their
+  // round-trips instead of running hygiene then metadata sequentially.
+  const [repairedProse, meta] = await Promise.all([repairedProsePromise, metaPromise]);
+  const finalNarrative = repairedProse.narrative;
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta };
   // Option A: when the narrator produced grounded choices, they REPLACE the
   // context-starved metadata-pass choices (everything else — presence, location,
@@ -577,6 +590,26 @@ export async function generationProcessor(job: Job) {
     });
   }
   parsed.choices = audited.choices;
+
+  // Fallback-path early delivery: the narrator emitted no usable tail, so no
+  // choices_ready fired at the prose-settle point above. parsed.choices now holds
+  // the FINAL, audited metadata-pass choices — the same set generation_complete
+  // will carry. Ship them NOW, before the remaining bookkeeping (DB writes,
+  // codex/kinship/memory) and before generation_complete, so the chips appear the
+  // instant they exist instead of after the whole turn finalizes. The client's
+  // choices_ready handler updates the still-optimistic event's choices; safe
+  // because generation_complete hasn't fired yet.
+  if (!choicesReadySent && (parsed.choices?.length ?? 0) > 0) {
+    redis.publish(
+      channel,
+      JSON.stringify({
+        type: "choices_ready",
+        instanceId,
+        choices: parsed.choices,
+      }),
+    );
+    choicesReadySent = true;
+  }
 
   const newWorldState = applyStateMutations(
     session.world_state,
@@ -895,15 +928,18 @@ export async function generationProcessor(job: Job) {
   const selfIntroForGap = session.is_sentient ? detectSelfIntroName(parsedPlayerInput.raw) : null;
   if (selfIntroForGap) presenceGapExcludes.push(selfIntroForGap);
   // Backend-OWNED trackable mentions: classify the turn's presence/codex gaps into
-  // confidence tiers. Only confirmed + probable join present_characters and mint
-  // stubs; mentioned_only are surfaced to the frontend to optionally track (the app
-  // no longer decides canon gaps itself). Off TTFT — prose already streamed.
+  // confidence tiers. Only CONFIRMED (a person-grammar signal: speech/action verb,
+  // address, appositive, title, or possessive-kinship) joins present_characters and
+  // mints stubs — see isActionableMention. Probable/mentioned_only are NOT actionable:
+  // candidates are keyed on capitalization alone, so a repeated capitalized adverb
+  // ("Downstairs") would otherwise be stubbed as a person. The signal gate kills that
+  // class without a stop-word denylist. Off TTFT — prose already streamed.
   const classifiedMentions = classifyPresenceCodexGaps(rawNarrative, {
     present: parsed.present_characters,
     codex: [...knownCardNames],
     exclude: presenceGapExcludes,
   });
-  const actionableMentions = classifiedMentions.filter((m) => m.tier === "confirmed" || m.tier === "probable");
+  const actionableMentions = classifiedMentions.filter(isActionableMention);
   const trackableMentions = actionableMentions.map((m) => ({
     key: m.key,
     display: m.display,
@@ -1436,7 +1472,16 @@ export async function generationProcessor(job: Job) {
           deltas.flatMap((d) => d.relation_assertions || []),
           deterministicAssertions,
         );
-        if (relationAssertions.length > 0) {
+        // TRANSITION channel — death/disownment/divorce/reveal evolving an EXISTING
+        // tie. Deterministic, off TTFT. Applied even when no new tie is asserted
+        // (e.g. "my father died" carries no assertion, only a transition).
+        const lifecycleTransitions = extractLifecycleTransitions({
+          corrections: parsedPlayerInput.corrections,
+          narrationFacts: parsedPlayerInput.narrationFacts,
+          claims: parsedPlayerInput.claims,
+          prose: rawNarrative,
+        });
+        if (relationAssertions.length > 0 || lifecycleTransitions.length > 0) {
           const protagCard = codex.find((c) => c.is_protagonist);
           let selfAnchorId: string | null = null;
           if (!session.is_sentient && protagCard) {
@@ -1471,6 +1516,7 @@ export async function generationProcessor(job: Job) {
                 sequence: nextSequence,
                 name,
               }).then((id) => id),
+            transitions: lifecycleTransitions,
           });
           if (kin.written > 0) {
             log.info("kinship.graph.updated", {

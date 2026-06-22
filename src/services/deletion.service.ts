@@ -3,6 +3,7 @@ import { mongoColl } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
 import { deletePineconeNamespace } from './pinecone-cleanup.service'
 import { characterCodexService } from './character-codex.service'
+import { kinshipGraphService } from './kinship-graph.service'
 import { isDefaultCoverUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
 import { timeService } from './time.service'
@@ -228,8 +229,11 @@ export const deletionService = {
           'meta.total_memories': 0,
           'meta.total_tokens_consumed': 0,
           'meta.last_active_at': new Date(),
+          // Clear the seed guard so premise kinship re-seeds for the reused instance.
+          'meta.kinship_seeded': false,
           updated_at: new Date(),
         },
+        $unset: { seed_relation_assertions: '' },
       },
     )
 
@@ -258,6 +262,14 @@ export const deletionService = {
         aliases: priorProtagonist.aliases || [],
         isPlayer: true,
       })
+    }
+
+    // Re-seed premise kinship: the reset purged the graph + cleared meta.kinship_seeded
+    // above, so the authored family is laid down fresh for the reused instance.
+    if (await characters().findOne({ instance_id: iid, is_protagonist: true })) {
+      await kinshipGraphService
+        .seedPremiseKinship({ instanceId: iidStr, playerId })
+        .catch(() => undefined)
     }
 
     // 4. Re-seed the opening line so the chat reopens with the greeting.

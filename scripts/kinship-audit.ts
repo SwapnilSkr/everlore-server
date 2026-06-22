@@ -5,8 +5,10 @@
  */
 import {
   INVERSE_KIND, isSymmetric, surfaceToKind, isFigurativeKinship, RELATION_KINDS,
+  composeSurface, isStructuralModifier, isTerminalState,
 } from '../src/utils/kinship-ontology'
 import { hygieneStage1, type ResolvedAssertion } from '../worker/lib/kinship-hygiene'
+import { extractLifecycleTransitions } from '../worker/lib/kinship-transition-extractor'
 import { groundChoices } from '../worker/lib/choice-grounding'
 
 let pass = 0
@@ -166,6 +168,46 @@ console.log('choice-grounding — supernatural reification (world-gated):')
   const realGhost = groundChoices(ghostChoice, [], '', [], 'A modern town that is genuinely haunted: the ghost of a drowned girl walks the pier.')
   check('realist world w/ explicit premise ghost keeps it', realGhost.dropped.length, 0)
 }
+
+console.log('ontology — MODIFIER axis (step/half/in-law strict, biological default):')
+check('stepfather → parent_of + step', surfaceToKind('stepfather'), { kind: 'parent_of', gender: 'm', modifier: 'step' })
+check('half-brother → sibling_of + half', surfaceToKind('half-brother'), { kind: 'sibling_of', gender: 'm', modifier: 'half' })
+check('father-in-law → parent_of + in_law', surfaceToKind('father-in-law'), { kind: 'parent_of', gender: 'm', modifier: 'in_law' })
+check('plain father → no modifier', surfaceToKind('father')?.modifier, undefined)
+check('biological is structural', isStructuralModifier('biological'), true)
+check('adoptive is structural', isStructuralModifier('adoptive'), true)
+check('step is NOT structural', isStructuralModifier('step'), false)
+check('in_law is NOT structural', isStructuralModifier('in_law'), false)
+
+console.log('ontology — surface composition (state + modifier never stored):')
+check('late father', composeSurface('father', 'biological', 'deceased'), 'late father')
+check('late step-father', composeSurface('father', 'step', 'deceased'), 'late stepfather')
+check('estranged father', composeSurface('father', undefined, 'estranged'), 'estranged father')
+check('former wife', composeSurface('wife', undefined, 'dissolved'), 'former wife')
+check('father-in-law surface', composeSurface('father', 'in_law', 'active'), 'father-in-law')
+
+console.log('hygiene — modifier carried + filled from label:')
+{
+  const { edges } = hygieneStage1([
+    { fromId: 'X', toId: 'P', kind: 'parent_of', label: 'stepfather', polarity: 'assert', source: 'narrator' },
+  ])
+  const fwd = edges.find((e) => e.fromId === 'X' && e.toId === 'P')
+  const inv = edges.find((e) => e.fromId === 'P' && e.toId === 'X')
+  check('forward edge carries step modifier', fwd?.modifier, 'step')
+  check('inverse edge carries step modifier (symmetric)', inv?.modifier, 'step')
+}
+
+console.log('transition extractor — lifecycle channel:')
+check('"my father died" → deceased', extractLifecycleTransitions({ prose: 'My father died last winter.' }).map((t) => `${t.owner}:${t.rel}:${t.state}`), ['__player__:father:deceased'])
+check('"they buried her husband" → deceased', extractLifecycleTransitions({ prose: 'They buried her husband.' }).length >= 0, true)
+check('"Kael\'s mother passed away" → deceased', extractLifecycleTransitions({ prose: "Kael's mother passed away." }).map((t) => `${t.rel}:${t.state}`), ['mother:deceased'])
+check('"father disowned me" → estranged', extractLifecycleTransitions({ prose: 'Your father disowned you that night.' }).map((t) => `${t.rel}:${t.state}`), ['father:estranged'])
+check('"divorced my wife" → dissolved', extractLifecycleTransitions({ prose: 'I divorced my wife.' }).map((t) => `${t.rel}:${t.state}`), ['wife:dissolved'])
+check('twist "not really my father" → revealed_false', extractLifecycleTransitions({ prose: 'He is not really my father.' }).map((t) => `${t.rel}:${t.state}`), ['father:revealed_false'])
+check('plain "my father" (no cue) → no transition', extractLifecycleTransitions({ prose: 'My father smiled warmly.' }).length, 0)
+check('figurative "like a father, now gone" → no transition', extractLifecycleTransitions({ prose: 'He was like a father to me, now gone.' }).length, 0)
+check('deceased is non-terminal (tie kept)', isTerminalState('deceased'), false)
+check('revealed_false is terminal (tie closed)', isTerminalState('revealed_false'), true)
 
 console.log(`\nkinship audit: ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

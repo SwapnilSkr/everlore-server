@@ -103,6 +103,7 @@ function toAssertion(tie: RawTie, source: WorldFactSource): RelationAssertion | 
     kind: mapped.kind,
     label: tie.rel.toLowerCase(),
     gender: mapped.gender,
+    modifier: mapped.modifier,
     polarity: tie.negated ? 'sever' : 'assert',
     source,
   }

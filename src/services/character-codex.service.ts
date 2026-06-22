@@ -43,6 +43,9 @@ export type RelationAssertion = {
   label?: string
   /** 'm' | 'f' | 'n' gender hint implied by the label. */
   gender?: string
+  /** MODIFIER axis — step/half/adoptive/foster/in_law; absent ⇒ biological. Lets a
+   *  step-father be stored as parent_of without satisfying biological inference. */
+  modifier?: string
   /** assert (default) | sever (the tie ended this turn — divorce, death). */
   polarity?: 'assert' | 'sever'
   /** WHO established this tie, on the shared authority ladder. The narrow legacy

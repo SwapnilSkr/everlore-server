@@ -14,15 +14,22 @@ import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/
 import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { EntityDoc } from '../models/entity.model'
 import {
-  type RelationKind, type GenderHint, RELATION_KINDS, isRelationKind,
+  type RelationKind, type GenderHint, type RelationModifier, type LifecycleState,
+  RELATION_KINDS, isRelationKind, isRelationModifier, isStructuralModifier,
+  surfaceToKind, isTerminalState, INVERSE_KIND,
 } from '../utils/kinship-ontology'
 import { hygieneStage1, type ResolvedAssertion, type KinshipEdgeSource } from '../../worker/lib/kinship-hygiene'
 import { resolveEpithets } from '../../worker/lib/kinship-epithet-resolver'
+import { type LifecycleTransition, extractLifecycleTransitions, TRANSITION_PLAYER, TRANSITION_PROTAGONIST } from '../../worker/lib/kinship-transition-extractor'
+import { extractPremiseKinship } from '../../worker/lib/premise-kinship-extractor'
 import type { RelationAssertion } from './character-codex.service'
 
 const entityEdges = () => mongoColl.entityEdges()
 const entities = () => mongoColl.entities()
 const events = () => mongoColl.events()
+const worldInstances = () => mongoColl.worldInstances()
+const worldTemplates = () => mongoColl.worldTemplates()
+const characters = () => mongoColl.characters()
 const EDGE_SOURCE_EVENTS_MAX = 30
 
 /** Player self-references that resolve to the player's own character entity. */
@@ -74,9 +81,12 @@ export const kinshipGraphService = {
      *  Mara later earns a card the stub promotes and the edge survives. Returns
      *  the entity id (stub OR an existing real one), or null to drop. */
     ensureStub?: (name: string) => Promise<string | null>
+    /** TRANSITION channel — lifecycle state changes to evolve existing ties this
+     *  turn (death/disownment/divorce/reveal). Applied after the assert edges land. */
+    transitions?: LifecycleTransition[]
   }): Promise<{ written: number; notes: string[] }> {
-    const { instanceId, sequence, eventId, assertions, cards, entitiesByCardName, selfAnchorId, sceneText, ensureStub } = params
-    if (!assertions?.length) return { written: 0, notes: [] }
+    const { instanceId, sequence, eventId, assertions, cards, entitiesByCardName, selfAnchorId, sceneText, ensureStub, transitions } = params
+    if (!assertions?.length && !transitions?.length) return { written: 0, notes: [] }
 
     // name → entity id, from the codex cards (canonical + aliases) and the player.
     const nameToId = new Map<string, string>()
@@ -138,13 +148,22 @@ export const kinshipGraphService = {
       resolved.push({
         fromId, toId, kind: a.kind as RelationKind,
         label: a.label, gender: (a.gender as GenderHint) || undefined,
+        modifier: isRelationModifier(a.modifier) ? a.modifier : undefined,
         polarity: a.polarity === 'sever' ? 'sever' : 'assert',
         // Preserve the assertion's authority (player_correction outranks narrator,
         // a player_claim is softer). Unknown/legacy values fall back to narrator.
         source: toKinshipEdgeSource(a.source),
       })
     }
-    if (!resolved.length) return { written: 0, notes: ['no resolvable endpoints'] }
+    if (!resolved.length) {
+      // No new ties this turn, but a transition (death/divorce/reveal) can still
+      // evolve an EXISTING tie — apply those before bailing.
+      if (transitions?.length) {
+        const tr = await this.applyLifecycleTransitions({ instanceId, sequence, transitions, resolveName, selfAnchorId }).catch(() => ({ changed: 0, notes: [] as string[] }))
+        return { written: tr.changed, notes: tr.notes }
+      }
+      return { written: 0, notes: ['no resolvable endpoints'] }
+    }
     const notes: string[] = []
     if (stubbedNames.size) notes.push(`stubbed ${stubbedNames.size} uncarded endpoint(s): ${[...stubbedNames].slice(0, 8).join(', ')}`)
 
@@ -166,7 +185,7 @@ export const kinshipGraphService = {
         // not deletion, so a later turn can reference "your late husband".
         await entityEdges().updateOne(match, {
           $set: { status: 'ended', until_event_sequence: sequence, last_event_sequence: sequence, updated_at: now },
-          $setOnInsert: { created_at: now, since_event_sequence: sequence, importance: 3, source_event_ids: [], confidence: e.confidence, label: e.label, gender_hint: e.gender, inverse_kind: e.inverseKind, assertion_source: e.source },
+          $setOnInsert: { created_at: now, since_event_sequence: sequence, importance: 3, source_event_ids: [], confidence: e.confidence, label: e.label, gender_hint: e.gender, relation_modifier: e.modifier ?? 'biological', inverse_kind: e.inverseKind, assertion_source: e.source },
         } as never, { upsert: true })
         written++
         continue
@@ -176,6 +195,7 @@ export const kinshipGraphService = {
           status: 'active',
           label: e.label,
           gender_hint: e.gender,
+          relation_modifier: e.modifier ?? 'biological',
           inverse_kind: e.inverseKind,
           assertion_source: e.source,
           confidence: e.confidence,
@@ -189,7 +209,229 @@ export const kinshipGraphService = {
       } as never, { upsert: true })
       written++
     }
+
+    // STEP 1 — co-parent inference (DB-backed): the partner of a parent is a parent
+    // too. Runs AFTER this turn's edges land so it sees both the freshly-asserted and
+    // the prior graph (the common case: "her husband" arrives turns after the mother
+    // was established). Gated + low-confidence + correctable; see deriveCoParents.
+    const coParent = await this.deriveCoParents({ instanceId, sequence, eventId, touched: resolved }).catch(() => ({ written: 0, notes: [] as string[] }))
+    written += coParent.written
+    notes.push(...coParent.notes)
+
+    // TRANSITION channel — evolve existing ties' lifecycle state (death/disownment/
+    // divorce/reveal). NOT authority-gated by seed; see applyLifecycleTransitions.
+    if (transitions?.length) {
+      const tr = await this.applyLifecycleTransitions({
+        instanceId, sequence, transitions, resolveName, selfAnchorId,
+      }).catch(() => ({ changed: 0, notes: [] as string[] }))
+      written += tr.changed
+      notes.push(...tr.notes)
+    }
     return { written, notes }
+  },
+
+  /**
+   * STEP 1 — derive co-parent edges. For every `partner_of(X, P)` where `P` is a
+   * `parent_of(C)`, infer `parent_of(X, C)`. Reads the live graph (so it spans turns,
+   * unlike the pure batch sibling-closure in hygiene). STRICTLY gated for accuracy:
+   *  - only fires when BOTH feeding edges are STRUCTURAL (biological/adoptive/foster);
+   *    a step/half/in-law partner or parent yields NO biological inference.
+   *  - the inferred edge is `source: 'inferred'` (confidence 0.4), so ANY explicit
+   *    later statement ("X is C's stepfather", narrator 0.9) overrides it.
+   *  - never overwrites an existing parent edge between X and C.
+   * Best-effort; returns the count + notes. Off TTFT (post-stream).
+   */
+  async deriveCoParents(params: {
+    instanceId: string
+    sequence: number
+    eventId: ObjectId
+    touched: ResolvedAssertion[]
+  }): Promise<{ written: number; notes: string[] }> {
+    const { instanceId, sequence, eventId, touched } = params
+    const iid = parseObjectId(instanceId)
+    // Endpoints this turn touched a partner_of or parent_of on — the only places a
+    // new co-parent could appear, so we don't rescan the whole graph each turn.
+    const seeds = new Set<string>()
+    for (const a of touched) {
+      if (a.polarity !== 'assert') continue
+      if (a.kind === 'partner_of' || a.kind === 'parent_of' || a.kind === 'child_of') {
+        seeds.add(a.fromId); seeds.add(a.toId)
+      }
+    }
+    if (seeds.size === 0) return { written: 0, notes: [] }
+    const seedOids = [...seeds].map((s) => parseObjectId(s))
+    const rows = await entityEdges().find({
+      instance_id: iid, type: 'kinship', status: 'active',
+      relation_kind: { $in: ['partner_of', 'parent_of'] },
+      $or: [{ source_entity_id: { $in: seedOids } }, { target_entity_id: { $in: seedOids } }],
+    }).toArray()
+    const isStruct = (m: unknown) => isStructuralModifier(isRelationModifier(m) ? m : undefined)
+    // partners[p] = set of structural partners of p ; parentsOf[c] = structural parents of c
+    const partnersOf = new Map<string, Set<string>>()
+    const parentEdges: { parent: string; child: string }[] = []
+    for (const r of rows as any[]) {
+      const from = idString(r.source_entity_id), to = idString(r.target_entity_id)
+      if (!isStruct(r.relation_modifier)) continue
+      if (r.relation_kind === 'partner_of') {
+        if (!partnersOf.has(from)) partnersOf.set(from, new Set())
+        partnersOf.get(from)!.add(to)
+      } else if (r.relation_kind === 'parent_of') {
+        parentEdges.push({ parent: from, child: to })
+      }
+    }
+    // Existing parent_of(x→c) pairs, to never duplicate / override an explicit tie.
+    const existingParent = new Set(parentEdges.map((e) => `${e.parent}|${e.child}`))
+    const now = new Date()
+    let written = 0
+    const notes: string[] = []
+    for (const { parent, child } of parentEdges) {
+      for (const partner of partnersOf.get(parent) || []) {
+        if (partner === child) continue
+        const key = `${partner}|${child}`
+        if (existingParent.has(key)) continue
+        existingParent.add(key)
+        // Write parent_of(partner→child) + inverse child_of, low-confidence inferred,
+        // biological modifier (the partner is presented as a co-parent). Upsert only
+        // on insert-or-weaker so a real assertion never gets clobbered by inference.
+        for (const [f, t, kind, inv] of [
+          [partner, child, 'parent_of', 'child_of'],
+          [child, partner, 'child_of', 'parent_of'],
+        ] as const) {
+          const res = await entityEdges().updateOne(
+            { instance_id: iid, source_entity_id: parseObjectId(f), target_entity_id: parseObjectId(t), type: 'kinship', relation_kind: kind },
+            {
+              $setOnInsert: {
+                status: 'active', label: null, gender_hint: null, relation_modifier: 'biological',
+                inverse_kind: inv, assertion_source: 'inferred', confidence: 0.4,
+                until_event_sequence: null, importance: 2, source_event_ids: [eventId],
+                created_at: now, since_event_sequence: sequence,
+              },
+              $set: { last_event_sequence: sequence, updated_at: now },
+            } as never,
+            { upsert: true },
+          )
+          if (res.upsertedCount) written++
+        }
+        notes.push(`inferred co-parent ${partner}→${child}`)
+      }
+    }
+    return { written, notes }
+  },
+
+  /**
+   * TRANSITION channel — apply lifecycle transitions to EXISTING ties. A transition
+   * names an owner + a kin word ("my father died"); we find the owner's matching
+   * relation edge(s) and set their `relation_state` (deceased/estranged/dissolved/
+   * revealed_false) on BOTH directions. Death/estrangement keep the tie live (history
+   * preserved — "your late father"); a divorce or a twist closes it. NOT blocked by
+   * seed authority: the story is allowed to evolve a tie the premise established.
+   */
+  async applyLifecycleTransitions(params: {
+    instanceId: string
+    sequence: number
+    transitions: LifecycleTransition[]
+    resolveName: (raw: string) => string | null
+    selfAnchorId: string | null
+  }): Promise<{ changed: number; notes: string[] }> {
+    const { instanceId, sequence, transitions, resolveName, selfAnchorId } = params
+    const iid = parseObjectId(instanceId)
+    const now = new Date()
+    let changed = 0
+    const notes: string[] = []
+    for (const t of transitions) {
+      const ownerId = t.owner === TRANSITION_PLAYER || t.owner === TRANSITION_PROTAGONIST
+        ? selfAnchorId
+        : resolveName(t.owner)
+      if (!ownerId) continue
+      const mapped = surfaceToKind(t.rel)
+      if (!mapped) continue
+      // "owner's <rel>" = an edge "X is owner's <rel>": source=X, target=owner, kind.
+      const filter: any = {
+        instance_id: iid, type: 'kinship', status: 'active',
+        relation_kind: mapped.kind, target_entity_id: parseObjectId(ownerId),
+      }
+      if (mapped.gender) filter.gender_hint = mapped.gender
+      const matches = await entityEdges().find(filter).toArray()
+      const terminal = isTerminalState(t.state)
+      for (const m of matches as any[]) {
+        const x = idString(m.source_entity_id)
+        for (const [f, to, kind] of [
+          [x, ownerId, mapped.kind],
+          [ownerId, x, INVERSE_KIND[mapped.kind as RelationKind]],
+        ] as const) {
+          await entityEdges().updateOne(
+            { instance_id: iid, source_entity_id: parseObjectId(f), target_entity_id: parseObjectId(to), type: 'kinship', relation_kind: kind },
+            {
+              $set: {
+                relation_state: t.state,
+                ...(terminal ? { status: t.state === 'revealed_false' ? 'retconned' : 'ended', until_event_sequence: sequence } : {}),
+                last_event_sequence: sequence, updated_at: now,
+              },
+            } as never,
+          )
+        }
+        changed++
+        notes.push(`transition ${mapped.kind} of ${t.owner} → ${t.state}`)
+      }
+    }
+    return { changed, notes }
+  },
+
+  /**
+   * STEP 0 — premise kinship seeding. ONE-TIME, off TTFT (instance setup, not a turn).
+   * Extracts the family the authored premise + protagonist persona establish, anchors
+   * the premise's "you" to the protagonist, and writes them as highest-authority
+   * `system_seed` edges so every later turn (and the co-parent inference) builds on a
+   * correct base. Idempotent via `meta.kinship_seeded`. The authored ties are also
+   * stored on the instance (`seed_relation_assertions`) so a rebuild re-applies them
+   * first — see rebuildFromLedger. Best-effort; never throws.
+   */
+  async seedPremiseKinship(params: { instanceId: string; playerId: string }): Promise<{ seeded: number; notes: string[] }> {
+    const { instanceId, playerId } = params
+    const iid = parseObjectId(instanceId)
+    const instance = await worldInstances().findOne({ _id: iid })
+    if (!instance) return { seeded: 0, notes: ['no instance'] }
+    if ((instance as any).meta?.kinship_seeded) return { seeded: 0, notes: ['already seeded'] }
+    const protag = await characters().findOne({ instance_id: iid, is_protagonist: true })
+    if (!protag) return { seeded: 0, notes: ['no protagonist yet — seed deferred'] }
+
+    // The premise lives on the TEMPLATE (not denormalized onto the instance).
+    const template = await worldTemplates().findOne(
+      { _id: (instance as any).template_id }, { projection: { seed_prompt: 1, global_lore: 1 } },
+    )
+    const premise = [String((template as any)?.seed_prompt || ''), String((template as any)?.global_lore || '')]
+      .filter(Boolean).join('\n\n')
+    const assertions = await extractPremiseKinship({
+      premise, persona: (protag as any).persona, protagonistName: (protag as any).canonical_name,
+    }).catch(() => [] as RelationAssertion[])
+    // Anchor: any endpoint that names the protagonist becomes "player" so it resolves
+    // to the single protagonist entity (never a duplicate stub).
+    const protagNorm = normalizeEntityName((protag as any).canonical_name)
+    const normed = assertions.map((a) => ({
+      ...a,
+      from: normalizeEntityName(a.from) === protagNorm ? 'player' : a.from,
+      to: normalizeEntityName(a.to) === protagNorm ? 'player' : a.to,
+    }))
+    if (!normed.length) {
+      await worldInstances().updateOne({ _id: iid }, { $set: { 'meta.kinship_seeded': true } })
+      return { seeded: 0, notes: ['premise establishes no kinship'] }
+    }
+    const selfAnchorId = await entityGraphService
+      .ensureStubEntity({ instanceId, playerId, sequence: 0, name: (protag as any).canonical_name })
+      .catch(() => null)
+    const entityMap = new Map<string, EntityDoc>()
+    if (selfAnchorId) entityMap.set((protag as any).name_normalized, { _id: parseObjectId(selfAnchorId) } as EntityDoc)
+    const res = await this.applyRelationAssertions({
+      instanceId, sequence: 0, eventId: new ObjectId(),
+      assertions: normed, cards: [protag as unknown as CharacterProfileDoc], entitiesByCardName: entityMap,
+      selfAnchorId, sceneText: premise,
+      ensureStub: (n) => entityGraphService.ensureStubEntity({ instanceId, playerId, sequence: 0, name: n }).then((id) => id),
+    }).catch(() => ({ written: 0, notes: [] as string[] }))
+    await worldInstances().updateOne(
+      { _id: iid },
+      { $set: { seed_relation_assertions: normed, 'meta.kinship_seeded': true } },
+    )
+    return { seeded: res.written, notes: res.notes }
   },
 
   /**
@@ -252,6 +494,25 @@ export const kinshipGraphService = {
       selfAnchorId = idString(player._id)
     }
 
+    // 2b. Re-apply the authored premise seed FIRST (sequence 0), so a rebuild never
+    // loses the system_seed canon. Stored on the instance by seedPremiseKinship.
+    const seedAssertions = ((await worldInstances().findOne(
+      { _id: iid }, { projection: { seed_relation_assertions: 1 } },
+    )) as any)?.seed_relation_assertions as RelationAssertion[] | undefined
+    if (seedAssertions?.length) {
+      try {
+        const res = await kinshipGraphService.applyRelationAssertions({
+          instanceId, sequence: 0, eventId: new ObjectId(),
+          assertions: seedAssertions, cards: codex, entitiesByCardName: entityMap,
+          selfAnchorId, sceneText: '',
+          ensureStub: (name: string) => entityGraphService.ensureStubEntity({ instanceId, playerId, sequence: 0, name }),
+        })
+        notes.push(`re-seeded ${res.written} premise edge(s)`)
+      } catch (err) {
+        notes.push(`seed re-apply failed — ${(err as Error).message}`)
+      }
+    }
+
     // 3. Replay each event's assertions (LLM ledger ∪ deterministic) in order.
     const typeFilter = includeSideChat ? {} : { type: { $ne: 'side_chat' } }
     const ledger = await events()
@@ -274,7 +535,13 @@ export const kinshipGraphService = {
         prose: ev.data?.ai_response || '',
       })
       const merged = mergeRelationAssertions(llm, deterministic)
-      if (!merged.length) continue
+      const transitions = extractLifecycleTransitions({
+        corrections: parsed.corrections,
+        narrationFacts: parsed.narrationFacts,
+        claims: parsed.claims,
+        prose: ev.data?.ai_response || '',
+      })
+      if (!merged.length && !transitions.length) continue
       touched++
       try {
         const res = await kinshipGraphService.applyRelationAssertions({
@@ -288,6 +555,7 @@ export const kinshipGraphService = {
           sceneText: ev.data?.ai_response || '',
           ensureStub: (name: string) =>
             entityGraphService.ensureStubEntity({ instanceId, playerId, sequence: ev.sequence, name }),
+          transitions,
         })
         written += res.written
       } catch (err) {
@@ -365,7 +633,13 @@ export const kinshipGraphService = {
         prose: ev.data?.ai_response || '',
       })
       const merged = mergeRelationAssertions(llm, deterministic)
-      if (!merged.length) continue
+      const transitions = extractLifecycleTransitions({
+        corrections: parsed.corrections,
+        narrationFacts: parsed.narrationFacts,
+        claims: parsed.claims,
+        prose: ev.data?.ai_response || '',
+      })
+      if (!merged.length && !transitions.length) continue
       touched++
       try {
         const res = await kinshipGraphService.applyRelationAssertions({
@@ -379,6 +653,7 @@ export const kinshipGraphService = {
           sceneText: ev.data?.ai_response || '',
           ensureStub: (name: string) =>
             entityGraphService.ensureStubEntity({ instanceId, playerId, sequence: ev.sequence, name }),
+          transitions,
         })
         written += res.written
       } catch (err) {

@@ -2,7 +2,7 @@
  * Pure-function audit for the shared WITNESS -> ENTITY-STUB -> CANON gap
  * detector. No DB / no LLM. Run: bun run audit:presence-codex-gap
  */
-import { classifyPresenceCodexGaps, detectPresenceCodexGaps } from '../worker/lib/presence-gap-detector'
+import { classifyPresenceCodexGaps, detectPresenceCodexGaps, isActionableMention } from '../worker/lib/presence-gap-detector'
 
 let pass = 0
 let fail = 0
@@ -83,6 +83,20 @@ console.log('gap detector - bare abstract mentions are not actionable:')
     classifyPresenceCodexGaps(prose, {}).map((m) => `${m.key}:${m.tier}`),
     ['silence:mentioned_only'],
   )
+}
+
+console.log('gap detector - repeated capitalized adverb is NOT an actionable person:')
+{
+  // "Downstairs" capitalizes sentence-initially and repeats, so it lands in `probable`
+  // on capitalization alone — but it never occupies a person slot, so the person-signal
+  // gate must keep it out of the actionable (stub/present/trackable) set. A real walk-on
+  // in the same prose earns a `confirmed` action signal and stays actionable.
+  const prose = `Downstairs, a door slammed. Downstairs, the noise grew. *Bram stepped into the hall.*`
+  const actionable = classifyPresenceCodexGaps(prose, {})
+    .filter(isActionableMention)
+    .map((m) => m.key)
+    .sort()
+  check('Downstairs excluded, Bram kept', actionable, ['bram'])
 }
 
 console.log('gap detector - family role synonyms are covered:')

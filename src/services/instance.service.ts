@@ -7,6 +7,7 @@ import { getRedisClient } from '../config/redis'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { characterCodexService } from './character-codex.service'
+import { kinshipGraphService } from './kinship-graph.service'
 import { personaService } from './persona.service'
 import { timeService } from './time.service'
 import { isValidMessageLength } from '../utils/narrative-styles'
@@ -123,6 +124,11 @@ export const instanceService = {
         appearance: template.protagonist.appearance,
         isPlayer: false,
       })
+      // Step 0 — seed the authored premise family as system_seed kinship (one-time,
+      // off any turn). Best-effort: a failure must never block instance creation.
+      await kinshipGraphService
+        .seedPremiseKinship({ instanceId: idString(_id), playerId })
+        .catch(() => undefined)
     }
 
     // Opening line: if the template greets the player, seed it as the first event
@@ -393,6 +399,12 @@ export const instanceService = {
       persona: data.identity,
       isPlayer: true,
     })
+    // Step 0 — GM worlds seed kinship at onboarding (the protagonist now exists):
+    // the world premise + the player's authored persona ("my late sister"), anchored
+    // to the player. One-time, off any turn; best-effort.
+    await kinshipGraphService
+      .seedPremiseKinship({ instanceId, playerId })
+      .catch(() => undefined)
     return {
       protagonist: card
         ? { id: idString(card._id), canonical_name: card.canonical_name }

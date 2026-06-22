@@ -6,7 +6,7 @@
  * post-stream tail). See KINSHIP_GRAPH.md.
  */
 import {
-  type RelationKind, type GenderHint, INVERSE_KIND, isSymmetric,
+  type RelationKind, type GenderHint, type RelationModifier, INVERSE_KIND, isSymmetric,
   surfaceToKind, isFigurativeKinship, isRelationKind,
 } from '../../src/utils/kinship-ontology'
 
@@ -29,6 +29,7 @@ export interface ResolvedAssertion {
   kind: RelationKind
   label?: string
   gender?: GenderHint
+  modifier?: RelationModifier
   polarity: 'assert' | 'sever'
   source: KinshipEdgeSource
 }
@@ -40,6 +41,7 @@ export interface KinshipEdgeWrite {
   inverseKind: RelationKind
   label: string | null
   gender: GenderHint | null
+  modifier: RelationModifier | null
   source: KinshipEdgeSource
   confidence: number
   polarity: 'assert' | 'sever'
@@ -89,9 +91,10 @@ export function hygieneStage1(
     }
     let kind = a.kind
     let gender = a.gender
+    let modifier = a.modifier
     // kind↔label consistency: when the world-native label is a KNOWN surface term,
-    // trust its structural reading over a mismatched model-assigned kind, and fill
-    // a missing gender from the label.
+    // trust its structural reading over a mismatched model-assigned kind, and fill a
+    // missing gender/modifier from the label ("stepfather" → step, "father" → none).
     if (a.label) {
       const mapped = surfaceToKind(a.label)
       if (mapped) {
@@ -100,6 +103,7 @@ export function hygieneStage1(
           kind = mapped.kind
         }
         if (!gender && mapped.gender) gender = mapped.gender
+        if (!modifier && mapped.modifier) modifier = mapped.modifier
       }
     }
     // gender↔card consistency: a "sister"(f) label on a male-gendered card is a
@@ -111,7 +115,7 @@ export function hygieneStage1(
         gender = undefined
       }
     }
-    cleaned.push({ ...a, kind, gender })
+    cleaned.push({ ...a, kind, gender, modifier })
   }
 
   // Bounded 1-hop inference WITHIN this batch only (no DB read): siblings share
@@ -149,15 +153,16 @@ export function hygieneStage1(
     const confidence = BASE_CONFIDENCE[a.source]
     emit({
       fromId: a.fromId, toId: a.toId, kind: a.kind, inverseKind: inv,
-      label: a.label ?? null, gender: a.gender ?? null,
+      label: a.label ?? null, gender: a.gender ?? null, modifier: a.modifier ?? null,
       source: a.source, confidence, polarity: a.polarity,
     })
     // The reverse edge carries no surface label (it's the other person's view);
-    // a symmetric kind keeps the same label since the relation reads the same.
+    // a symmetric kind keeps the same label since the relation reads the same. The
+    // modifier IS symmetric (a step-tie is step from both sides), so it carries over.
     emit({
       fromId: a.toId, toId: a.fromId, kind: inv, inverseKind: a.kind,
       label: isSymmetric(a.kind) ? (a.label ?? null) : null,
-      gender: null, source: a.source, confidence, polarity: a.polarity,
+      gender: null, modifier: a.modifier ?? null, source: a.source, confidence, polarity: a.polarity,
     })
   }
 

@@ -175,9 +175,28 @@ export function detectPresenceCodexGaps(prose: string, tracked: TrackedNames): s
  * track. `confirmed` — the prose shows them acting/speaking/addressed here, so they
  * are present; `probable` — named more than once but without a strong present-signal;
  * `mentioned_only` — a single bare mention (likely talked-about, not in the room).
- * Only confirmed + probable should mint stubs / join present_characters.
+ *
+ * ONLY `confirmed` is actionable (mints stubs / joins present_characters / ships as a
+ * trackable mention) — see {@link isActionableMention}. `probable` is deliberately NOT
+ * actionable: candidates are detected by CAPITALIZATION alone, so a repeated capitalized
+ * word with no person-grammar signal ("Downstairs", "Upstairs", "Meanwhile") lands in
+ * `probable` and would otherwise be stubbed as a person. The person-signal gate (a
+ * speech/action verb, address, appositive, title, or possessive-kinship — all of which
+ * promote to `confirmed`) is what tells a real walk-on apart from a capitalized adverb,
+ * WITHOUT an endlessly-growing stop-word denylist. A genuinely present person reliably
+ * earns a `confirmed` signal the moment they act or speak; until then this backstop
+ * stays quiet and the metadata witness pass remains the primary presence source.
  */
 export type MentionTier = 'confirmed' | 'probable' | 'mentioned_only'
+
+/**
+ * Whether a classified mention is strong enough to mint a stub, claim presence, and
+ * surface as a backend-owned trackable mention. Person-signal gate: `confirmed` only.
+ * Shared by the live generation path and the audit so the two cannot drift.
+ */
+export function isActionableMention(m: { tier: MentionTier }): boolean {
+  return m.tier === 'confirmed'
+}
 
 export interface MentionCandidate extends VisibleNameCandidate {
   tier: MentionTier
@@ -198,6 +217,18 @@ const TITLE_WORDS =
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * Whether the token is capitalized somewhere it ISN'T forced to be — preceded by a
+ * lowercase word or a comma. A genuine proper noun keeps its capital mid-sentence
+ * ("…said Mara", "Bram and Mara"); a sentence-adverb only capitalizes at the start of
+ * a sentence ("Downstairs, a door slammed." / "Meanwhile, …"). Used to stop the
+ * position-fragile confirmations (appositive/possessive/repeat) from promoting a
+ * capitalized adverb to a tracked person — without a stop-word denylist.
+ */
+function appearsMidSentence(display: string, prose: string): boolean {
+  return new RegExp(`[a-z0-9,]\\s+${escapeRe(display)}\\b`).test(prose)
 }
 
 /** Decide the tier for one candidate display name within `prose`. */
@@ -248,7 +279,19 @@ export function classifyPresenceCodexGaps(prose: string, tracked: TrackedNames):
       return !new RegExp(`\\b${escapeRe(c.display)}\\s+[A-Z][a-z]`).test(text)
     })
     .map((c) => {
-      const { tier, evidence, count } = tierFor(c.display, text)
+      let { tier, evidence, count } = tierFor(c.display, text)
+      // Verb/title signals are position-robust — a comma or sentence start can't fake
+      // "Mara said" / "Captain Mara". The rest (appositive, possessive, repeat) CAN be
+      // faked by a capitalized sentence-adverb ("Downstairs, a door slammed"), so when
+      // they're the only evidence and the token never appears mid-sentence, demote it.
+      const robust =
+        evidence === 'dialogue attribution' ||
+        evidence === 'action in scene' ||
+        evidence === 'title-name'
+      if (tier !== 'mentioned_only' && !robust && !appearsMidSentence(c.display, text)) {
+        tier = 'mentioned_only'
+        evidence = 'sentence-initial only, no person signal'
+      }
       return { ...c, tier, evidence, count }
     })
 }

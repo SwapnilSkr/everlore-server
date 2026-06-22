@@ -43,6 +43,13 @@ export interface EntityEdgeDoc {
   relation_kind?: import('../utils/kinship-ontology').RelationKind
   /** The kind written on the auto-closed reverse edge (for provenance/debugging). */
   inverse_kind?: import('../utils/kinship-ontology').RelationKind
+  /** MODIFIER axis — biological(default)/step/half/adoptive/foster/in_law. Orthogonal
+   *  to the kind so inference (co-parent) can tell a step-father from a father. */
+  relation_modifier?: import('../utils/kinship-ontology').RelationModifier
+  /** LIFECYCLE STATE — how the tie stands now (active/deceased/estranged/dissolved/
+   *  revealed_false). Set by the TRANSITION channel; the surface ("late father") is
+   *  composed from kind+modifier+state, never stored. */
+  relation_state?: import('../utils/kinship-ontology').LifecycleState
   /** Gender implied by the surface label ("sister" → f), for label↔card checks. */
   gender_hint?: 'm' | 'f' | 'n' | null
   /** Where the assertion came from — gates how much downstream code trusts it.
