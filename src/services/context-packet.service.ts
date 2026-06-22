@@ -50,6 +50,9 @@ export interface ContextPacket {
    *  are NOT in the current place ("Mara was last seen in the Ash Tavern"), so a
    *  "go find X" / "where is X" turn resolves against canon. */
   positionFacts: string[]
+  /** CANON BRIEF (companions) — who is travelling WITH the player right now, surfaced
+   *  so the narrator keeps them present by default (they don't show in positionFacts). */
+  companionFacts: string[]
   /** Sequence of the latest existing event (0 on a fresh world). */
   currentSequence: number
   currentTimeAnchor: TimeAnchorDoc | null
@@ -67,6 +70,9 @@ interface PacketSession {
   max_context_memories?: number
   current_time_anchor?: TimeAnchorDoc | null
   current_location?: LocationAnchorDoc | null
+  /** Companions explicitly travelling with the player (cache stores entity_id as a
+   *  string). Surfaced to the narrator as present-by-default. */
+  travelling_with?: Array<{ entity_id?: string; name: string }> | null
 }
 
 function normalizeLocationAnchor(raw: any): LocationAnchorDoc | null {
@@ -450,7 +456,19 @@ export async function buildContextPacket(params: {
       })
   }
 
-  // ── 5. Canon brief (positions): where active-cast characters were last seen, for
+  // ── 5. Canon brief (companions): who is travelling WITH the player (from the prior
+  //    turn's persisted party). Surfaced as present-by-default, and excluded from the
+  //    "elsewhere" position lines below so they're never reported as off-screen.
+  const party = (session.travelling_with || []).filter((m) => m && m.name)
+  const partyNameKeys = new Set(party.map((m) => m.name.trim().toLowerCase()))
+  const companionFacts: string[] =
+    party.length > 0
+      ? [
+          `Travelling with you right now: ${party.map((m) => m.name).join(', ')}. Keep them present in the scene by default — do not drop or forget them across a move or a time skip unless the story shows them parting.`,
+        ]
+      : []
+
+  // ── 6. Canon brief (positions): where active-cast characters were last seen, for
   //    those who aren't in the current place — powers "go find X" / "where is X".
   let positionFacts: string[] = []
   const codexEntityIds = characterCodex
@@ -463,7 +481,8 @@ export async function buildContextPacket(params: {
         entityIds: codexEntityIds,
         currentLocationId: currentLocation?.entity_id ? idString(currentLocation.entity_id) : null,
       })
-      .then((rows) => rows.map((r) => `${r.name} was last seen in ${r.place}.`))
+      // A companion travelling WITH the player is never "elsewhere".
+      .then((rows) => rows.filter((r) => !partyNameKeys.has(r.name.trim().toLowerCase())).map((r) => `${r.name} was last seen in ${r.place}.`))
       .catch((err) => {
         console.warn('Context packet: character positions skipped:', (err as Error).message)
         return []
@@ -482,6 +501,7 @@ export async function buildContextPacket(params: {
     retrievedEntityIds,
     relationshipFacts,
     positionFacts,
+    companionFacts,
     currentSequence,
     currentTimeAnchor,
     timeContext,

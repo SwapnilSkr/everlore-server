@@ -76,6 +76,8 @@ interface PromptInput {
   /** CANON BRIEF (positions) — where active characters were last seen when elsewhere
    *  ("Mara was last seen in the Ash Tavern"), so "go find X" stays grounded. */
   positionFacts?: string[]
+  /** CANON BRIEF (companions) — who is travelling WITH the player, present by default. */
+  companionFacts?: string[]
 }
 
 interface PromptMessage {
@@ -462,6 +464,17 @@ ${input.locationContext.trim()}
 - This is a SPECIFIC place; do not confuse it with a similarly-named place elsewhere.
 
 `
+  }
+
+  // CANON BRIEF (companions) — who is travelling WITH the player. Present by default,
+  // so the narrator keeps them in the scene across moves/time skips (the one explicit
+  // "who is with you" signal — present_characters is not otherwise prompt-injected).
+  if (input.companionFacts && input.companionFacts.length > 0) {
+    dynamicContent += `COMPANIONS (canon — present with the player by default):\n`
+    for (const fact of input.companionFacts) {
+      dynamicContent += `- ${fact}\n`
+    }
+    dynamicContent += `\n`
   }
 
   // CANON BRIEF (positions) — where off-screen characters were last seen, so a

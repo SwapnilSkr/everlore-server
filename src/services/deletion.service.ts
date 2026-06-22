@@ -222,6 +222,7 @@ export const deletionService = {
           current_scene: { tag: 'dialogue', turn_count: 0, summary_pending: false },
           focus_character_id: null,
           current_location: null,
+          travelling_with: [],
           current_time_anchor: initialTimeAnchor,
           active_timeline_id: initialTimeAnchor.timeline_id,
           default_calendar_id: initialTimeAnchor.story_calendar?.calendar_id,

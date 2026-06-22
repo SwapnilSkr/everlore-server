@@ -33,6 +33,7 @@ import { detectNarratedMovement, resolvePossessiveRoomName } from "../lib/moveme
 import { auditChoices } from "../lib/choice-grounding-audit";
 import { detectProjectionAnomalies } from "../lib/projection-anomaly-detector";
 import { detectNarratedTimeSkip } from "../lib/time-skip-signal";
+import { detectCompanionJoins, detectCompanionDepartures } from "../lib/party-signal";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
 import { timeService } from "../../src/services/time.service";
 import {
@@ -306,6 +307,7 @@ export async function generationProcessor(job: Job) {
     relevantSummaries: packet.relevantSummaries,
     relationshipFacts: packet.relationshipFacts,
     positionFacts: packet.positionFacts,
+    companionFacts: packet.companionFacts,
     recentEvents,
     userMessage: tickDirective ?? promptUserMessage,
     userSpokenInput: parsedPlayerInput.spoken,
@@ -870,9 +872,54 @@ export async function generationProcessor(job: Job) {
       .map((part) => part ? part[0].toUpperCase() + part.slice(1) : part)
       .join(" ");
   };
+  // ── TRAVELLING-WITH party (open-world limit #2) ──────────────────────────────
+  // Companions who explicitly joined the player PERSIST across a scene break, unlike
+  // co-located locals which reset. Opt-in + entity-bounded: a join counts only for a
+  // real character (a known card or someone present this turn), never the player/
+  // protagonist; cleared by an EXPLICIT parting (distinct from a mere scene-exit). An
+  // empty set ⇒ identical to prior behaviour, so a solo player is unaffected.
+  const partySignalText = `${parsedPlayerInput.raw}\n${rawNarrative}`;
+  const partyDepartures = detectCompanionDepartures(partySignalText);
+  const partyDepartedKeys = new Set(
+    partyDepartures.map((d) => presenceKeyOf(d.name)).filter(Boolean),
+  );
+  const partyRosterKeys = new Set<string>();
+  for (const c of characterCodex as any[]) {
+    const ck = presenceKeyOf(c.canonical_name);
+    if (ck) partyRosterKeys.add(ck);
+    for (const a of c.aliases || []) {
+      const ak = presenceKeyOf(a);
+      if (ak) partyRosterKeys.add(ak);
+    }
+  }
+  const partyPresentKeys = new Set(
+    (parsed.present_characters || []).map((n) => presenceKeyOf(n)).filter(Boolean),
+  );
+  const partyProtagKey = (() => {
+    const p = (characterCodex as any[]).find((c) => c.is_protagonist);
+    return p ? presenceKeyOf(p.canonical_name) : null;
+  })();
+  const partyByKey = new Map<string, string>();
+  // Carry forward the prior party, minus anyone who explicitly parted this turn.
+  for (const m of session.travelling_with || []) {
+    const k = presenceKeyOf(m.name);
+    if (k && !partyDepartedKeys.has(k)) partyByKey.set(k, m.name);
+  }
+  // Add explicit joiners — gated to real, non-protagonist characters.
+  for (const n of detectCompanionJoins(partySignalText)) {
+    const k = presenceKeyOf(n);
+    if (!k || partyDepartedKeys.has(k)) continue;
+    if (playerPresenceKey && k === playerPresenceKey) continue;
+    if (partyProtagKey && k === partyProtagKey) continue;
+    if (!partyRosterKeys.has(k) && !partyPresentKeys.has(k)) continue;
+    partyByKey.set(k, presenceDisplayOf(n));
+  }
+  if (partyProtagKey) partyByKey.delete(partyProtagKey);
+  const partyNames = [...partyByKey.values()].slice(0, 6);
+
   parsed.present_characters = (() => {
     const candidates = sceneBroke
-      ? (parsed.present_characters || [])
+      ? [...(parsed.present_characters || []), ...partyNames]
       : [...priorPresent, ...(parsed.present_characters || [])];
     const departed = new Set(
       (parsed.characters_departed || [])
@@ -1203,6 +1250,44 @@ export async function generationProcessor(job: Job) {
   const shouldSummarize = sameScene && rawTurnCount >= SCENE_SUMMARY_BLOCK;
   const newTurnCount = shouldSummarize ? 0 : rawTurnCount;
 
+  // Resolve the travelling-with party to entity-bounded rows (drop any name that
+  // doesn't map to a real character entity), to persist on the instance. A departed
+  // companion with a stated destination that matches a KNOWN place updates their
+  // position (no off-screen minting — fog-of-war), so "where is X" stays truthful.
+  let travellingWith: Array<{ entity_id: import("mongodb").ObjectId; name: string }> = [];
+  if (partyNames.length) {
+    const partyNorms = partyNames.map((n) => normalizeEntityName(n));
+    const partyEntities = (await mongoColl
+      .entities()
+      .find(
+        { instance_id: instanceOid, type: { $in: ["character", "protagonist"] }, name_normalized: { $in: partyNorms } },
+        { projection: { _id: 1, canonical_name: 1, name_normalized: 1 } },
+      )
+      .toArray()
+      .catch(() => [])) as Array<{ _id: import("mongodb").ObjectId; canonical_name?: string; name_normalized?: string }>;
+    const byNorm = new Map(partyEntities.map((e) => [e.name_normalized || "", e]));
+    for (const n of partyNames) {
+      const e = byNorm.get(normalizeEntityName(n));
+      if (e?._id) travellingWith.push({ entity_id: e._id, name: e.canonical_name || n });
+    }
+  }
+  for (const d of partyDepartures) {
+    if (!d.destination) continue;
+    const place = (await mongoColl
+      .entities()
+      .findOne(
+        { instance_id: instanceOid, type: "location", name_normalized: normalizeEntityName(d.destination) },
+        { projection: { _id: 1 } },
+      )
+      .catch(() => null)) as { _id: import("mongodb").ObjectId } | null;
+    if (place?._id) {
+      void mongoColl.entities().updateMany(
+        { instance_id: instanceOid, type: { $in: ["character", "protagonist"] }, name_normalized: normalizeEntityName(d.name) },
+        { $set: { last_location_entity_id: place._id, last_location_sequence: nextSequence, updated_at: new Date() } } as never,
+      );
+    }
+  }
+
   const instanceUpdate: Record<string, unknown> = {
     $set: {
       world_state: newWorldState,
@@ -1216,6 +1301,7 @@ export async function generationProcessor(job: Job) {
       active_timeline_id: timeAnchor.timeline_id,
       default_calendar_id: timeAnchor.story_calendar?.calendar_id,
       current_location: locationAnchor,
+      travelling_with: travellingWith,
       "meta.last_active_at": new Date(),
       updated_at: new Date(),
       ...(fateThread ? { "meta.last_fate_seed_sequence": nextSequence } : {}),
@@ -1256,6 +1342,9 @@ export async function generationProcessor(job: Job) {
           entity_id: idString(locationAnchor.entity_id),
         }
       : null,
+    // JSON-safe (entity_id as string) — the party read only uses the name, but keep
+    // the id so a future consumer can resolve without a lookup.
+    travelling_with: travellingWith.map((m) => ({ entity_id: idString(m.entity_id), name: m.name })),
   };
   await redis.set(
     `session:${instanceId}`,

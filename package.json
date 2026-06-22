@@ -18,6 +18,7 @@
     "audit:location": "bun run scripts/location-audit.ts",
     "audit:location-resolution": "bun run scripts/location-resolution-audit.ts",
     "audit:movement": "bun run scripts/movement-signal-audit.ts",
+    "audit:party-signal": "bun run scripts/party-signal-audit.ts",
     "audit:time-skip": "bun run scripts/time-skip-audit.ts",
     "audit:codex-dedup": "bun run scripts/codex-dedup-audit.ts",
     "audit:kinship": "bun run scripts/kinship-audit.ts",

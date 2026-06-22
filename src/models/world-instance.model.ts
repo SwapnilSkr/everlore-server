@@ -64,6 +64,12 @@ export interface WorldInstanceDoc {
   default_calendar_id?: ObjectId
   /** Current known place at the end of the latest turn. */
   current_location?: LocationAnchorDoc | null
+  /** TRAVELLING-WITH party — characters who explicitly joined the player and persist
+   *  across scene breaks (a move or a time skip), unlike co-located locals which
+   *  reset. Opt-in only: grows on explicit join signals, cleared on explicit
+   *  partings. Entity-bounded (real cards/stubs), excludes the protagonist. Empty
+   *  for a solo player. See LOCATION_GRAPH.md open-world limit #2. */
+  travelling_with?: Array<{ entity_id: ObjectId; name: string }>
   /** Optional reusable account-level persona selected for this instance. */
   persona_id?: ObjectId | null
   /** Snapshot of the selected persona, so long-running chats do not drift when
