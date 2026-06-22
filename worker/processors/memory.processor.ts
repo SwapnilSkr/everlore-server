@@ -21,6 +21,7 @@ Rules for memory atoms:
 - Rate importance 1-5 (5 = critical plot point or vow, 1 = minor detail).
 - Classify type: relationship, promise, lore, observation, emotion, secret.
 - subjects = who acts/feels in the atom; objects = who/what is affected. Use canonical roster names where possible; use "player" for the player.
+- RESOLVE BACK-REFERENCES using the "Preceding narration" below: when the player's input points at something just said ("stuff like that", "what you said", "things like that", "that", "such things"), resolve it to the ACTUAL content from the preceding narration before writing the atom — never store the vague pointer. Worked example: preceding narration said "Never trust your enemies." and the player says "my father used to say stuff like that" → atom: 'The player's father used to say things like "never trust your enemies."' with subject "father" (or his name if known). ATTRIBUTE a quote, saying, belief, or trait to the PERSON it belongs to (here the father), so it becomes a memory ABOUT that person — list them in subjects so it attaches to their card/entity. Only do this when the player actually attributes it to someone; otherwise treat it as a normal observation.
 - NEVER invent, extend, or merge a name. Use each person's name EXACTLY as it appears in the text or roster. Do not attach a surname, title, or epithet from one character to another who lacks one (if the player is "Kade" and a different character is "Mara Chen", never write "Kade Chen"). Keep distinct people distinct — never fuse two characters because their names share a fragment, and never give one character another's codename/alias unless the text explicitly equates them.
 - Set unresolved_thread true ONLY for genuinely open hooks: an unkept promise, an unanswered question, an unresolved conflict, a debt, a threat still looming. Mundane ongoing states are not threads.
 - Top-level "entities": classify EVERY name used in any atom's subjects/objects with its kind: character, location, faction, item, quest, or other. Use "character" for people (including "player").
@@ -245,6 +246,7 @@ export async function memoryProcessor(job: Job) {
     playerSpokenInput = '',
     playerNarrationFacts = [],
     aiResponse,
+    precedingAiResponse = null,
     sceneTag,
     isSentient = false,
     playerPersonaName = null,
@@ -260,6 +262,9 @@ export async function memoryProcessor(job: Job) {
     playerSpokenInput?: string
     playerNarrationFacts?: string[]
     aiResponse: string
+    /** The PRIOR turn's narration — context for resolving back-references in this
+     *  turn's input ("stuff like that" → what was just said). */
+    precedingAiResponse?: string | null
     sceneTag: string
     isSentient?: boolean
     playerPersonaName?: string | null
@@ -315,6 +320,7 @@ Character roster (canonical names for resolution):
 ${rosterLines}
 ${identityContext}
 
+${precedingAiResponse ? `Preceding narration (the line(s) just before this turn — use ONLY to resolve back-references like "stuff like that"; do not re-extract its events as new memories):\n${String(precedingAiResponse).slice(0, 700)}\n` : ''}
 Player (raw input): ${playerInput}
 Player spoken dialogue: ${playerSpokenInput || '(none)'}
 Player canonical narration facts:

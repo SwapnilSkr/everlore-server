@@ -85,6 +85,10 @@ export interface EntityDoc {
    *  dormant stub can wake when the viewpoint returns to that place. */
   first_location_entity_id?: ObjectId | null
   last_location_entity_id?: ObjectId | null
+  /** Sequence at which last_location_entity_id was recorded — powers "X was last
+   *  seen here N turns ago" in the Canon Brief (character-position half). Updated
+   *  every turn a character is present, for carded characters AND stubs. */
+  last_location_sequence?: number
   /** A coarse role/descriptor the prose gave an unnamed witness ("the butler",
    *  "the veiled pianist") — helps resolve + display a stub before it earns a card. */
   role_label?: string

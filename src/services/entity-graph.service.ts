@@ -745,6 +745,127 @@ export const entityGraphService = {
   },
 
   /**
+   * CANON BRIEF (positions, WRITE) — record where the present cast is THIS turn.
+   * Every character entity matching a present name (carded OR stub) gets its
+   * `last_location_entity_id` + `last_location_sequence` set to the current place.
+   * One bulk update, deterministic, off TTFT. This is what makes "where is X" /
+   * "go find X" answerable — presence is "who is here now", this is "where everyone
+   * was last seen". Best-effort: never throws into the turn pipeline.
+   */
+  async recordCharacterLocations(params: {
+    instanceId: string
+    names: string[]
+    locationEntityId: string | null
+    sequence: number
+  }): Promise<number> {
+    const { instanceId, names, locationEntityId, sequence } = params
+    if (!locationEntityId || !names?.length) return 0
+    const normalized = [...new Set(names.map((n) => normalizeEntityName(n)).filter(Boolean))]
+    if (!normalized.length) return 0
+    try {
+      const res = await entities().updateMany(
+        {
+          instance_id: parseObjectId(instanceId),
+          type: { $in: ['character', 'protagonist'] },
+          name_normalized: { $in: normalized },
+        },
+        {
+          $set: {
+            last_location_entity_id: parseObjectId(locationEntityId),
+            last_location_sequence: sequence,
+            updated_at: new Date(),
+          },
+        } as never,
+      )
+      return res.modifiedCount || 0
+    } catch {
+      return 0
+    }
+  },
+
+  /**
+   * The containment chain of a location entity, immediate-parent first, bounded.
+   * `[{ name: "Marcus's penthouse" }, { name: "Downtown" }]`. Used by the Canon
+   * Brief to give the narrator owner-scoped, ancestry-aware place identity so it
+   * never confuses two same-named places. Walks the `parent_id` spine (P1 graph).
+   */
+  async placeAncestry(instanceId: string, entityId: string, max = 5): Promise<string[]> {
+    const iid = parseObjectId(instanceId)
+    const out: string[] = []
+    const seen = new Set<string>()
+    let cursor: ObjectId | null = null
+    try {
+      let node = (await entities().findOne(
+        { _id: parseObjectId(entityId), instance_id: iid, type: 'location' },
+        { projection: { canonical_name: 1, parent_id: 1 } },
+      )) as { canonical_name?: string; parent_id?: ObjectId | null } | null
+      // Skip the node itself (the caller already has the current place name); walk up.
+      cursor = node?.parent_id ?? null
+      while (cursor && out.length < max) {
+        const key = idString(cursor)
+        if (seen.has(key)) break
+        seen.add(key)
+        node = (await entities().findOne(
+          { _id: cursor, instance_id: iid, type: 'location' },
+          { projection: { canonical_name: 1, parent_id: 1 } },
+        )) as { canonical_name?: string; parent_id?: ObjectId | null } | null
+        if (!node?.canonical_name) break
+        out.push(node.canonical_name)
+        cursor = node.parent_id ?? null
+      }
+    } catch {
+      /* best-effort */
+    }
+    return out
+  },
+
+  /**
+   * CANON BRIEF (positions, READ) — where the given characters were last seen, for
+   * those NOT at `currentLocationId` (i.e. elsewhere). Returns compact rows the
+   * brief renders as "Mara was last seen in the Ash Tavern". Bounded; one query.
+   */
+  async characterPositions(params: {
+    instanceId: string
+    entityIds: string[]
+    currentLocationId: string | null
+    limit?: number
+  }): Promise<Array<{ name: string; place: string; sequence: number }>> {
+    const { instanceId, entityIds, currentLocationId, limit = 6 } = params
+    const ids = [...new Set((entityIds || []).filter(Boolean))]
+    if (!ids.length) return []
+    const iid = parseObjectId(instanceId)
+    const rows = (await entities()
+      .find(
+        {
+          instance_id: iid,
+          _id: { $in: ids.map(parseObjectId) },
+          type: { $in: ['character', 'protagonist'] },
+          last_location_entity_id: { $ne: null },
+        },
+        { projection: { canonical_name: 1, last_location_entity_id: 1, last_location_sequence: 1 } },
+      )
+      .toArray()) as Array<{ canonical_name?: string; last_location_entity_id?: ObjectId | null; last_location_sequence?: number }>
+    const elsewhere = rows.filter(
+      (r) => r.last_location_entity_id && (!currentLocationId || idString(r.last_location_entity_id) !== currentLocationId),
+    )
+    if (!elsewhere.length) return []
+    const placeIds = [...new Set(elsewhere.map((r) => idString(r.last_location_entity_id!)))]
+    const places = (await entities()
+      .find({ _id: { $in: placeIds.map(parseObjectId) }, instance_id: iid }, { projection: { canonical_name: 1 } })
+      .toArray()) as Array<{ _id: ObjectId; canonical_name?: string }>
+    const placeName = new Map(places.map((p) => [idString(p._id), p.canonical_name || '']))
+    const out: Array<{ name: string; place: string; sequence: number }> = []
+    for (const r of elsewhere) {
+      const place = placeName.get(idString(r.last_location_entity_id!)) || ''
+      if (!r.canonical_name || !place) continue
+      out.push({ name: r.canonical_name, place, sequence: r.last_location_sequence || 0 })
+    }
+    // Most-recently-seen first; cap.
+    out.sort((a, b) => b.sequence - a.sequence)
+    return out.slice(0, limit)
+  },
+
+  /**
    * Promote the scene's witnessed-but-uncarded participants to stub entities
    * (the WITNESS → ENTITY-STUB tier). For every name in `presentNames` that is
    * NOT already a known codex card, ensure a stub entity exists with this turn's

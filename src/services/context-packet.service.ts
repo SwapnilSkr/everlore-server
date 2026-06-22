@@ -4,6 +4,7 @@ import type { WorldEventDoc } from '../models/world-event.model'
 import { queryRag, querySummaries } from '../providers/rag.provider'
 import { rankCodexForInjection } from './character-codex.service'
 import { entityGraphService } from './entity-graph.service'
+import { kinshipGraphService } from './kinship-graph.service'
 import { timeService } from './time.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { EVENT_WINDOWS } from '../utils/event-window'
@@ -41,6 +42,14 @@ export interface ContextPacket {
   openThreads: string[]
   /** Entity ids linked to retrieved memories (provenance of the memory pins). */
   retrievedEntityIds: string[]
+  /** CANON BRIEF (relationships) — compact, always-on kinship facts for the turn's
+   *  active cast, incl. lifecycle state ("father (deceased)"). Surfaces the kinship
+   *  graph to the NARRATOR, not just the choice guard. */
+  relationshipFacts: string[]
+  /** CANON BRIEF (positions) — where active-cast characters were last seen when they
+   *  are NOT in the current place ("Mara was last seen in the Ash Tavern"), so a
+   *  "go find X" / "where is X" turn resolves against canon. */
+  positionFacts: string[]
   /** Sequence of the latest existing event (0 on a fresh world). */
   currentSequence: number
   currentTimeAnchor: TimeAnchorDoc | null
@@ -241,7 +250,30 @@ export async function buildContextPacket(params: {
     null
   // Prose-facing line only — no entity id, which the narration model could
   // echo into the story. Code consumers read packet.currentLocation instead.
-  const locationContext = currentLocation ? `Current place: ${currentLocation.name}.` : null
+  // Enriched with the containment ANCESTRY (owner-scoped identity, so "Marcus's
+  // penthouse, within Downtown" can't be confused with another penthouse) and the
+  // place's canon facts + current condition (the MAIN packet previously omitted
+  // these — only side chats had them).
+  let locationContext = currentLocation ? `Current place: ${currentLocation.name}.` : null
+  if (currentLocation) {
+    const [ancestry, placeEntity] = await Promise.all([
+      entityGraphService
+        .placeAncestry(instanceId, idString(currentLocation.entity_id))
+        .catch(() => [] as string[]),
+      mongoColl
+        .entities()
+        .findOne(
+          { _id: currentLocation.entity_id, instance_id: iid, type: 'location' },
+          { projection: { location_state: 1, location_facts: 1 } },
+        )
+        .catch(() => null) as Promise<{ location_state?: Array<{ text: string }>; location_facts?: Array<{ text: string }> } | null>,
+    ])
+    if (ancestry.length) locationContext += ` (within ${ancestry.join(', ')})`
+    const facts = (placeEntity?.location_facts || []).slice(-3).map((f) => f.text)
+    const state = (placeEntity?.location_state || []).slice(-3).map((f) => f.text)
+    if (facts.length) locationContext += `\nAbout this place: ${facts.join(' ')}`
+    if (state.length) locationContext += `\nCurrent condition: ${state.join(' ')}`
+  }
 
   // ── 1. Direct mentions: entities + dormant codex cards named in the input ──
   // (On a continue turn the player says nothing — nothing to resolve.)
@@ -395,6 +427,49 @@ export async function buildContextPacket(params: {
     } as unknown as CharacterProfileDoc)
   }
 
+  // ── 4. Canon brief (relationships): kinship facts for the active cast, surfaced
+  //    to the narrator. ACTIVE = protagonist + injected codex + mentioned + memory-
+  //    linked entities. One indexed graph read; skipped via KINSHIP_GRAPH_READS=off.
+  let relationshipFacts: string[] = []
+  if (process.env.KINSHIP_GRAPH_READS !== 'off') {
+    const selfEntityId =
+      (characterCodex.find((c) => c.is_protagonist)?.entity_id &&
+        idString(characterCodex.find((c) => c.is_protagonist)!.entity_id!)) ||
+      null
+    const activeEntityIds = [
+      ...(selfEntityId ? [selfEntityId] : []),
+      ...characterCodex.map((c) => (c.entity_id ? idString(c.entity_id) : '')).filter(Boolean),
+      ...mentionedEntityIds,
+      ...retrievedEntityIds,
+    ]
+    relationshipFacts = await kinshipGraphService
+      .kinshipBrief(instanceId, activeEntityIds, selfEntityId)
+      .catch((err) => {
+        console.warn('Context packet: kinship brief skipped:', (err as Error).message)
+        return []
+      })
+  }
+
+  // ── 5. Canon brief (positions): where active-cast characters were last seen, for
+  //    those who aren't in the current place — powers "go find X" / "where is X".
+  let positionFacts: string[] = []
+  const codexEntityIds = characterCodex
+    .map((c) => (c.entity_id ? idString(c.entity_id) : ''))
+    .filter(Boolean)
+  if (codexEntityIds.length > 0) {
+    positionFacts = await entityGraphService
+      .characterPositions({
+        instanceId,
+        entityIds: codexEntityIds,
+        currentLocationId: currentLocation?.entity_id ? idString(currentLocation.entity_id) : null,
+      })
+      .then((rows) => rows.map((r) => `${r.name} was last seen in ${r.place}.`))
+      .catch((err) => {
+        console.warn('Context packet: character positions skipped:', (err as Error).message)
+        return []
+      })
+  }
+
   return {
     recentEvents,
     sceneSummary: summaryDoc?.summary_text || null,
@@ -405,6 +480,8 @@ export async function buildContextPacket(params: {
     memoryTexts,
     openThreads,
     retrievedEntityIds,
+    relationshipFacts,
+    positionFacts,
     currentSequence,
     currentTimeAnchor,
     timeContext,

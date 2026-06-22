@@ -16,7 +16,7 @@ import type { EntityDoc } from '../models/entity.model'
 import {
   type RelationKind, type GenderHint, type RelationModifier, type LifecycleState,
   RELATION_KINDS, isRelationKind, isRelationModifier, isStructuralModifier,
-  surfaceToKind, isTerminalState, INVERSE_KIND,
+  isLifecycleState, surfaceToKind, composeSurface, isTerminalState, INVERSE_KIND,
 } from '../utils/kinship-ontology'
 import { hygieneStage1, type ResolvedAssertion, type KinshipEdgeSource } from '../../worker/lib/kinship-hygiene'
 import { resolveEpithets } from '../../worker/lib/kinship-epithet-resolver'
@@ -54,8 +54,18 @@ export interface Relative {
   name: string
   label: string | null
   confidence: number
+  modifier?: RelationModifier
+  state?: LifecycleState
 }
 export type RelativesByKind = Partial<Record<RelationKind, Relative[]>>
+
+/** Fallback surface word when an edge carries no world-native label (e.g. the
+ *  auto-closed inverse edge). Keeps the Canon Brief readable. */
+const DEFAULT_KIN_LABEL: Record<RelationKind, string> = {
+  parent_of: 'parent', child_of: 'child', sibling_of: 'sibling', partner_of: 'partner',
+  progenitor_of: 'progenitor', descendant_of: 'descendant', superior_of: 'superior',
+  subordinate_of: 'subordinate', kin_of: 'relative', bonded_of: 'bonded companion',
+}
 
 export const kinshipGraphService = {
   /**
@@ -690,6 +700,8 @@ export const kinshipGraphService = {
         name: nameById.get(tid) || tid,
         label: (e.label as string) ?? null,
         confidence: typeof e.confidence === 'number' ? e.confidence : 0.5,
+        modifier: isRelationModifier(e.relation_modifier) ? e.relation_modifier : undefined,
+        state: isLifecycleState(e.relation_state) ? e.relation_state : undefined,
       })
     }
     for (const kind of RELATION_KINDS) {
@@ -716,5 +728,86 @@ export const kinshipGraphService = {
       labelsByKind[kind] = list.map((r) => r.label).filter(Boolean) as string[]
     }
     return { kinds, labelsByKind }
+  },
+
+  /**
+   * CANON BRIEF (relationships half) — compact, always-on relationship facts for the
+   * turn's ACTIVE entities, so the NARRATOR (not just the choice guard) knows how the
+   * people in play are related and their lifecycle state. This is the read-path that
+   * makes the kinship graph visible to prose: "Aldric is your father (deceased — do
+   * not portray as alive)", "Mara is your sister", "Bram is Mara's husband".
+   *
+   * One indexed query over edges touching any active entity (either endpoint, so a
+   * relative who isn't on-screen still surfaces). Deterministic, no LLM, off TTFT
+   * (runs concurrently with RAG in the context packet). Bounded: pairs touching the
+   * protagonist rank first, then ties among active entities, capped at `limit` lines.
+   */
+  async kinshipBrief(
+    instanceId: string,
+    activeEntityIds: string[],
+    selfEntityId: string | null,
+    limit = 14,
+  ): Promise<string[]> {
+    const ids = [...new Set((activeEntityIds || []).filter(Boolean))]
+    if (!ids.length) return []
+    const iid = parseObjectId(instanceId)
+    const oids = ids.map(parseObjectId)
+    const edges = await entityEdges()
+      .find({
+        instance_id: iid, type: 'kinship', status: 'active',
+        $or: [{ source_entity_id: { $in: oids } }, { target_entity_id: { $in: oids } }],
+      })
+      .toArray()
+    if (!edges.length) return []
+    const endpointIds = new Set<string>()
+    for (const e of edges) {
+      endpointIds.add(idString(e.source_entity_id))
+      endpointIds.add(idString(e.target_entity_id))
+    }
+    const ents = await entities()
+      .find({ _id: { $in: [...endpointIds].map(parseObjectId) } }, { projection: { canonical_name: 1 } })
+      .toArray()
+    const nameById = new Map(ents.map((e) => [idString(e._id), e.canonical_name as string]))
+    const activeSet = new Set(ids)
+    // Collapse each unordered pair to ONE edge — prefer the one carrying a label so
+    // "Aldric is your father" wins over the unlabelled inverse "you are Aldric's child".
+    const byPair = new Map<string, (typeof edges)[number]>()
+    for (const e of edges) {
+      const a = idString(e.source_entity_id), b = idString(e.target_entity_id)
+      const key = [a, b].sort().join('|')
+      const prev = byPair.get(key)
+      if (!prev || (e.label && !prev.label)) byPair.set(key, e)
+    }
+    // Rank: pairs involving the protagonist first, then pairs wholly among active
+    // entities, then the rest — so the most relevant relationships survive the cap.
+    const rankOfEdge = (e: (typeof edges)[number]): number => {
+      const a = idString(e.source_entity_id), b = idString(e.target_entity_id)
+      if (selfEntityId && (a === selfEntityId || b === selfEntityId)) return 0
+      if (activeSet.has(a) && activeSet.has(b)) return 1
+      return 2
+    }
+    const ordered = [...byPair.values()].sort((x, y) => rankOfEdge(x) - rankOfEdge(y))
+    const lines: string[] = []
+    for (const e of ordered) {
+      const kind = e.relation_kind
+      if (!isRelationKind(kind)) continue
+      const fromId = idString(e.source_entity_id), toId = idString(e.target_entity_id)
+      const label = (e.label as string) || DEFAULT_KIN_LABEL[kind] || 'relative'
+      const surface = composeSurface(
+        label,
+        isRelationModifier(e.relation_modifier) ? e.relation_modifier : undefined,
+        isLifecycleState(e.relation_state) ? e.relation_state : undefined,
+      )
+      const subj = fromId === selfEntityId ? 'You' : (nameById.get(fromId) || null)
+      const objName = toId === selfEntityId ? 'your' : (nameById.get(toId) ? `${nameById.get(toId)}'s` : null)
+      if (!subj || !objName) continue
+      const verb = subj === 'You' ? 'are' : 'is'
+      let line = `${subj} ${verb} ${objName} ${surface}.`
+      if (e.relation_state === 'deceased') line += ' (Deceased — do not portray as alive or present.)'
+      else if (e.relation_state === 'estranged') line += ' (Estranged.)'
+      lines.push(line)
+      if (lines.length >= limit) break
+    }
+    return lines
   },
 }

@@ -304,6 +304,8 @@ export async function generationProcessor(job: Job) {
     openThreads,
     sceneSummary: activeSummary,
     relevantSummaries: packet.relevantSummaries,
+    relationshipFacts: packet.relationshipFacts,
+    positionFacts: packet.positionFacts,
     recentEvents,
     userMessage: tickDirective ?? promptUserMessage,
     userSpokenInput: parsedPlayerInput.spoken,
@@ -1120,6 +1122,14 @@ export async function generationProcessor(job: Job) {
       idString(instanceId),
       idString(locationAnchor.entity_id),
     );
+    // Canon Brief (positions): stamp every present character's last-known location
+    // to here, so a later "go find X" / "where is X" resolves. Off the response path.
+    void entityGraphService.recordCharacterLocations({
+      instanceId: idString(instanceId),
+      names: parsed.present_characters || [],
+      locationEntityId: idString(locationAnchor.entity_id),
+      sequence: nextSequence,
+    });
   }
 
   const backedState = positiveLocationStateFromInput(
@@ -1648,6 +1658,10 @@ export async function generationProcessor(job: Job) {
       playerSpokenInput: parsedPlayerInput.spoken,
       playerNarrationFacts: parsedPlayerInput.narrationFacts,
       aiResponse: rawNarrative,
+      // The prior turn's narration, so the curator can resolve anaphora that points
+      // BACK ("my father used to say stuff like that" → the line that was just said)
+      // and attribute the referenced content to the right person.
+      precedingAiResponse: recentEvents[recentEvents.length - 1]?.data?.ai_response || null,
       sceneTag: parsed.scene_tag,
       isSentient: !!session.is_sentient,
       playerPersonaName: session.persona_snapshot?.name || null,

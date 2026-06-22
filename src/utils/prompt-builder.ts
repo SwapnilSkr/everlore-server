@@ -69,6 +69,13 @@ interface PromptInput {
   }>
   /** Optional focused character id/name chosen by player for this instance. */
   focusCharacterName?: string
+  /** CANON BRIEF (relationships) — compact kinship facts incl. lifecycle state
+   *  ("Aldric is your father (deceased)"). Always-on, high-priority, derived from
+   *  the kinship graph so the narrator can't contradict established ties. */
+  relationshipFacts?: string[]
+  /** CANON BRIEF (positions) — where active characters were last seen when elsewhere
+   *  ("Mara was last seen in the Ash Tavern"), so "go find X" stays grounded. */
+  positionFacts?: string[]
 }
 
 interface PromptMessage {
@@ -383,6 +390,19 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
     }
   }
 
+  // CANON BRIEF — established relationships (incl. lifecycle state). Placed before
+  // the cast list and framed as hard canon: these are derived from the structured
+  // kinship graph, so they must never be contradicted (this is what stops "your
+  // father died" on turn N becoming "you meet your father" on turn N+10). Small +
+  // bounded (≤14 lines) so it's never trimmed.
+  if (input.relationshipFacts && input.relationshipFacts.length > 0) {
+    dynamicContent += `ESTABLISHED RELATIONSHIPS (canon — treat as settled fact; never contradict, reverse, or forget these):\n`
+    for (const fact of input.relationshipFacts) {
+      dynamicContent += `- ${fact}\n`
+    }
+    dynamicContent += `\n`
+  }
+
   if (npcCodex.length > 0) {
     dynamicContent += `CANONICAL CHARACTER CODEX (continuity reference only — not the current scene roster):
 - Never contradict these facts when a listed character is actually relevant.
@@ -439,8 +459,19 @@ ${input.timeContext.trim()}
     dynamicContent += `CURRENT LOCATION:
 ${input.locationContext.trim()}
 - Keep the next reply physically grounded in this place unless the player action, recent continuity, or the narration itself clearly moves the scene.
+- This is a SPECIFIC place; do not confuse it with a similarly-named place elsewhere.
 
 `
+  }
+
+  // CANON BRIEF (positions) — where off-screen characters were last seen, so a
+  // "go find X" / "where is X" turn is grounded instead of teleporting them in.
+  if (input.positionFacts && input.positionFacts.length > 0) {
+    dynamicContent += `WHERE OTHERS ARE (last known positions — canon; a character is only present here if the scene says so, otherwise they are where this says):\n`
+    for (const fact of input.positionFacts) {
+      dynamicContent += `- ${fact}\n`
+    }
+    dynamicContent += `\n`
   }
 
   const personaLine = compactPersonaLine(input)
