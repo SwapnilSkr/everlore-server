@@ -25,7 +25,7 @@ function clean(text: string): string {
 
 /** A direction/target word that turns a locomotion verb into an actual relocation.
  *  "for"/"towards" cover "set off for the mountains" / "ride towards the keep". */
-const DIRECTION = '(?:to|into|inside|outside|out|toward|towards|back|upstairs|downstairs|through|onto|across|over to|off to|in|for)'
+const DIRECTION = '(?:to|into|inside|outside|out|toward|towards|back|upstairs|downstairs|up|down|through|onto|across|over to|off to|in|for)'
 
 /** Verbs of self-locomotion that need a direction/target to count as a move. Open-
  *  world scale: not just walking between rooms but travelling between settlements,
@@ -40,8 +40,11 @@ const DIRECTED_VERB =
 const DEPARTURE_VERB =
   '(?:exit|exits|exiting|exited|depart|departs|departing|departed|retreat|retreats|retreating|retreated|flee|flees|fleeing|fled|withdraw|withdraws|withdrawing|withdrew|disembark|disembarks|disembarking|disembarked)'
 
-// verb (+ up to one short filler word) + direction → "go to my room", "head back inside"
-const DIRECTED_MOVE = new RegExp(`\\b${DIRECTED_VERB}\\b(?:\\s+\\w+){0,2}?\\s+${DIRECTION}\\b`)
+// verb (+ a short filler run) + direction → "go to my room", "head back inside", and
+// — with the wider window — "head down the hall into my room" (a multi-word phrase can
+// sit between the verb and the direction). Recall-favouring on purpose: a stray match on
+// a stay-put turn is inert because the caller only acts when the resolved place changed.
+const DIRECTED_MOVE = new RegExp(`\\b${DIRECTED_VERB}\\b(?:\\s+\\w+){0,4}?\\s+${DIRECTION}\\b`)
 const DEPARTURE = new RegExp(`\\b${DEPARTURE_VERB}\\b`)
 // "leave/left" only counts with a place-ish object or clause end (not "leave me alone")
 const LEAVE_MOVE = /\b(?:leave|leaves|leaving|left)\b(?!\s+(?:me|him|her|them|us|it|you)\b)/

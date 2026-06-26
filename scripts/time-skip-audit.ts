@@ -31,6 +31,19 @@ check('the next morning', detectNarratedTimeSkip('The next morning, I wake early
 check('overnight', detectNarratedTimeSkip('I let it rest overnight.'), 'overnight')
 check('tomorrow', detectNarratedTimeSkip('I will deal with it tomorrow.'), 'tomorrow')
 checkUnit('Years later, the wound still aches.', 'year') // "years"+later → "years" (advanceDays → 365)
+// enrichment (June 26): more unambiguous passage idioms (gated by a leading span)
+checkUnit('The weeks flew by in a blur.', 'week')
+checkUnit('The days wore on as we marched.', 'day')
+checkUnit('Hours ticked by in the cell.', 'hour')
+checkUnit('The long months stretched on.', 'month')
+// symmetric named-period markers + bare "hours later"
+check('the next evening', detectNarratedTimeSkip('The next evening, the feast began.'), 'the next evening')
+check('the following night', detectNarratedTimeSkip('The following night, I slipped out.'), 'the following night')
+checkUnit('Hours later, I woke in the dark.', 'hour') // caught as an hour-scale span
+// "spend an explicit span" verbs — stay/remain/linger (gated by amount+unit)
+checkUnit('I stay three days at the inn.', 'day')
+checkUnit('I remain in the city for a month.', 'month')
+checkUnit('We linger two weeks in the valley.', 'week')
 
 console.log('NON-SKIPS (expect null):')
 for (const t of [
@@ -40,6 +53,13 @@ for (const t of [
   'I have a few coins left in my pocket.',     // "few" but no time unit
   'Why are you so focused on your phone?',
   'I think about the long days ahead.',        // contemplation, no passage
+  // new passage verbs must NOT fire without a leading time-unit (no false positives)
+  'Birds fly by the window as I watch.',       // "fly by" but no duration
+  'I wear on a heavy cloak against the cold.', // "wear on" but no duration
+  'I stretch on the cold stone floor.',        // "stretch on" but no duration
+  'The clock ticks by on the wall.',           // "ticks by" but "clock" is no unit
+  'I stay calm and remain at the table.',      // stay/remain but no amount+unit
+  'I linger by the window for a while.',        // "a while" is no time unit
   '',
 ]) check(t, detectNarratedTimeSkip(t), null)
 

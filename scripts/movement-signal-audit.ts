@@ -36,6 +36,13 @@ for (const t of [
   'I return to my village',
   'We board the ship and voyage across the sea',
   'I teleport to the citadel',
+  // recall recovery (June 26): a multi-word phrase between the verb and the
+  // direction used to slip past the old {0,2} window — the live playtest gap.
+  'I head down the hall into my room and shut the door',
+  'I make my way down the corridor toward the throne room',
+  // bare up/down as a direction particle after a locomotion verb
+  'I walk down the stairs',
+  'I climb up to the rampart',
 ]) check(t, detectNarratedMovement(t), true)
 
 console.log('detectNarratedMovement — NON-MOVES (expect false):')
@@ -46,6 +53,9 @@ for (const t of [
   'I think about the garden we used to visit',
   'I sit in silence',
   'Why are you so focused on your phone?',
+  // the widened window is still BOUNDED — a direction word far past the verb
+  // (here "for" is 8 words after "go") must NOT trigger a phantom move.
+  'I go and quietly grab the old rusty key for her',
   '',
 ]) check(t, detectNarratedMovement(t), false)
 
