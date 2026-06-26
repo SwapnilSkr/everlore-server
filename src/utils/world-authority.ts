@@ -118,6 +118,43 @@ export function isHardCanon(source: WorldFactSource): boolean {
   return SOURCE_RANK[source] <= SOURCE_RANK.narrator
 }
 
+/**
+ * CONSUMPTION tier — how strongly a derived fact should be SURFACED to the
+ * narrator, decided from its confidence at read time (NOT at write time). This is
+ * the blast-radius control: a wrong low-confidence signal degrades to a soft hint
+ * that quietly fizzles instead of a hard line the narrator must honor.
+ *  - `canon`  → assert as fact ("Aldric is your father.")
+ *  - `hint`   → soft, hedged ("You have the sense Aldric may be your father.")
+ *  - `hidden` → do not surface as canon (retrievable only).
+ */
+export type ConfidenceTier = 'canon' | 'hint' | 'hidden'
+
+/** At/above this confidence a fact is asserted as canon. Mirrors `isHardCanon`'s
+ *  intent (narrator-and-above ≈ 0.9, side_chat 0.75 still canon). */
+export const CANON_MIN_CONFIDENCE = 0.7
+/** At/above this (but below canon) a fact is surfaced as a soft hint. Below it the
+ *  fact is hidden. character_claim (0.5) and inferred co-parents (0.4) → hint;
+ *  the inference floor (0.35) → hidden. */
+export const HINT_MIN_CONFIDENCE = 0.4
+
+/**
+ * Map a confidence to its consumption tier.
+ *
+ * IMPORTANT: a MISSING confidence means the fact predates confidence tracking, so
+ * we trust it exactly as the old (untiered) code did — it defaults to `canon`, not
+ * to a demoted tier. Only a fact carrying an EXPLICIT low number is ever softened
+ * or hidden. `fallback` lets a caller override that default if it has reason to.
+ */
+export function confidenceTier(
+  confidence: number | null | undefined,
+  fallback: ConfidenceTier = 'canon',
+): ConfidenceTier {
+  if (typeof confidence !== 'number' || Number.isNaN(confidence)) return fallback
+  if (confidence >= CANON_MIN_CONFIDENCE) return 'canon'
+  if (confidence >= HINT_MIN_CONFIDENCE) return 'hint'
+  return 'hidden'
+}
+
 /** Visibility of a fact — who in the world is allowed to KNOW it. Drives whether a
  *  side-chat / private fact may enter the player-visible main context. */
 export type VisibilityScope =

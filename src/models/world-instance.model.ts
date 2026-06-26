@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { WorldFactSource } from '../utils/world-authority'
 import type { PersonaSnapshotDoc } from './persona.model'
 import type { TimeAnchorDoc } from './time.model'
 import type { LocationAnchorDoc } from './location.model'
@@ -69,7 +70,15 @@ export interface WorldInstanceDoc {
    *  reset. Opt-in only: grows on explicit join signals, cleared on explicit
    *  partings. Entity-bounded (real cards/stubs), excludes the protagonist. Empty
    *  for a solo player. See LOCATION_GRAPH.md open-world limit #2. */
-  travelling_with?: Array<{ entity_id: ObjectId; name: string }>
+  travelling_with?: Array<{
+    entity_id: ObjectId
+    name: string
+    /** Authority of the signal that put them in the party (player narration outranks
+     *  narrator prose); drives the §5 companion-brief tier. Absent on legacy rows. */
+    source?: WorldFactSource
+    /** [0,1] confidence derived from `source`; absent legacy rows are trusted as canon. */
+    confidence?: number
+  }>
   /** Optional reusable account-level persona selected for this instance. */
   persona_id?: ObjectId | null
   /** Snapshot of the selected persona, so long-running chats do not drift when

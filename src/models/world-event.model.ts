@@ -55,6 +55,19 @@ export interface LocationDeltaDoc {
   sequence: number
 }
 
+/** This turn's time advance as an authority-tagged delta, the time twin of
+ *  LocationDeltaDoc: records WHO drove the skip (player narration / narrator prose /
+ *  continuation tick) + confidence, so the timeline is a rebuildable projection and a
+ *  player-narrated skip can outrank a narrator one. The bare `time_advanced` string is
+ *  kept for the existing calendar consumers. See world-authority.ts. */
+export interface TimeDeltaDoc {
+  /** The advance label fed to `advanceDays` ("three days", "the next morning"). */
+  label: string
+  source: import('../utils/world-authority').WorldFactSource
+  confidence: number
+  sequence: number
+}
+
 export interface EventDataDoc {
   player_input: string
   /** Spoken dialogue outside narration markers. */
@@ -94,6 +107,9 @@ export interface EventDataDoc {
   /** This turn's location changes, ledgered with authority for an exact rebuild of
    *  the place graph (anchor + containment + state + enduring facts). */
   location_deltas?: LocationDeltaDoc[]
+  /** This turn's time advance, authority-tagged for a rebuildable timeline (parallel
+   *  to location_deltas). Present only when time actually advanced. */
+  time_delta?: TimeDeltaDoc
   replay_variants?: ReplayVariantDoc[]
   selected_replay_index?: number
   state_mutations: Record<string, StateMutationDoc>

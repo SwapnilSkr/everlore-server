@@ -10,6 +10,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { EVENT_WINDOWS } from '../utils/event-window'
 import type { TimeAnchorDoc } from '../models/time.model'
 import type { LocationAnchorDoc } from '../models/location.model'
+import { type WorldFactSource, confidenceTier } from '../utils/world-authority'
 
 /** Injected codex size (recency-ranked top-K before pinning). */
 const CODEX_INJECT_LIMIT = 16
@@ -17,6 +18,11 @@ const CODEX_INJECT_LIMIT = 16
 const CODEX_POOL_LIMIT = 40
 /** Cards pinned because RETRIEVED MEMORIES are about them (indirect mentions). */
 const MEMORY_PIN_LIMIT = 3
+/** Position-brief recency tier (§6): a character last seen within this many
+ *  sequences is asserted as canon ("was last seen in X"); a staler position is
+ *  hedged to a hint so the narrator won't teleport them back to a place they
+ *  likely left long ago. The recency analog of the kinship brief's confidence tier. */
+const FRESH_POSITION_WINDOW = 30
 
 /**
  * Everything one turn's prompt is assembled from, gathered in ONE place and in
@@ -72,7 +78,7 @@ interface PacketSession {
   current_location?: LocationAnchorDoc | null
   /** Companions explicitly travelling with the player (cache stores entity_id as a
    *  string). Surfaced to the narrator as present-by-default. */
-  travelling_with?: Array<{ entity_id?: string; name: string }> | null
+  travelling_with?: Array<{ entity_id?: string; name: string; source?: WorldFactSource; confidence?: number }> | null
 }
 
 function normalizeLocationAnchor(raw: any): LocationAnchorDoc | null {
@@ -436,6 +442,14 @@ export async function buildContextPacket(params: {
   // ── 4. Canon brief (relationships): kinship facts for the active cast, surfaced
   //    to the narrator. ACTIVE = protagonist + injected codex + mentioned + memory-
   //    linked entities. One indexed graph read; skipped via KINSHIP_GRAPH_READS=off.
+  //    CONSUMPTION-TIERED: kinshipBrief now grades each edge by confidence
+  //    (world-authority.confidenceTier) — high → asserted as canon, medium → soft
+  //    "possibly/unconfirmed" hint, low → dropped. This is the blast-radius control:
+  //    a wrong low-confidence tie degrades to a hint instead of a hard line.
+  //    The position brief (§6) applies the same tier vocabulary via a RECENCY signal;
+  //    the companion brief (§5) via the membership confidence now carried on
+  //    travelling_with (tagged in generation.processor by the authority of the join
+  //    text — player narration outranks narrator prose).
   let relationshipFacts: string[] = []
   if (process.env.KINSHIP_GRAPH_READS !== 'off') {
     const selfEntityId =
@@ -460,13 +474,26 @@ export async function buildContextPacket(params: {
   //    turn's persisted party). Surfaced as present-by-default, and excluded from the
   //    "elsewhere" position lines below so they're never reported as off-screen.
   const party = (session.travelling_with || []).filter((m) => m && m.name)
+  // partyNameKeys still covers the WHOLE party (any tier) so §6 never double-reports
+  // a companion as "elsewhere". CONSUMPTION-TIERED by membership confidence: a strong
+  // (player/narrator) join is asserted as present; a low-confidence one — once a weak
+  // detection path exists — is hedged; hidden-tier members drop out. Legacy rows carry
+  // no confidence → confidenceTier defaults them to canon, so today's behavior is
+  // unchanged until party-signal starts emitting weaker tiers.
   const partyNameKeys = new Set(party.map((m) => m.name.trim().toLowerCase()))
-  const companionFacts: string[] =
-    party.length > 0
-      ? [
-          `Travelling with you right now: ${party.map((m) => m.name).join(', ')}. Keep them present in the scene by default — do not drop or forget them across a move or a time skip unless the story shows them parting.`,
-        ]
-      : []
+  const canonParty = party.filter((m) => confidenceTier(m.confidence) === 'canon')
+  const hintParty = party.filter((m) => confidenceTier(m.confidence) === 'hint')
+  const companionFacts: string[] = []
+  if (canonParty.length > 0) {
+    companionFacts.push(
+      `Travelling with you right now: ${canonParty.map((m) => m.name).join(', ')}. Keep them present in the scene by default — do not drop or forget them across a move or a time skip unless the story shows them parting.`,
+    )
+  }
+  if (hintParty.length > 0) {
+    companionFacts.push(
+      `Possibly still travelling with you (unconfirmed): ${hintParty.map((m) => m.name).join(', ')}.`,
+    )
+  }
 
   // ── 6. Canon brief (positions): where active-cast characters were last seen, for
   //    those who aren't in the current place — powers "go find X" / "where is X".
@@ -482,7 +509,18 @@ export async function buildContextPacket(params: {
         currentLocationId: currentLocation?.entity_id ? idString(currentLocation.entity_id) : null,
       })
       // A companion travelling WITH the player is never "elsewhere".
-      .then((rows) => rows.filter((r) => !partyNameKeys.has(r.name.trim().toLowerCase())).map((r) => `${r.name} was last seen in ${r.place}.`))
+      .then((rows) =>
+        rows
+          .filter((r) => !partyNameKeys.has(r.name.trim().toLowerCase()))
+          .map((r) => {
+            // Recency tiering (the §6 analog of §4's confidence tiering): a fresh
+            // position is canon; a stale one degrades to a hedged hint.
+            const age = currentSequence - (r.sequence || 0)
+            return age <= FRESH_POSITION_WINDOW
+              ? `${r.name} was last seen in ${r.place}.`
+              : `${r.name} was last seen in ${r.place}, though that was a while ago — they may have moved since.`
+          }),
+      )
       .catch((err) => {
         console.warn('Context packet: character positions skipped:', (err as Error).message)
         return []

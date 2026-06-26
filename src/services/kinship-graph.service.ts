@@ -10,6 +10,7 @@ import { parseObjectId, idString } from '../utils/mongo-id'
 import { normalizeEntityName, entityGraphService } from './entity-graph.service'
 import { characterCodexService } from './character-codex.service'
 import { parsePlayerInput } from '../utils/player-input-parser'
+import { confidenceTier } from '../utils/world-authority'
 import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
 import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { EntityDoc } from '../models/entity.model'
@@ -791,6 +792,13 @@ export const kinshipGraphService = {
     for (const e of ordered) {
       const kind = e.relation_kind
       if (!isRelationKind(kind)) continue
+      // Consumption tiering: surface a low-confidence tie as a soft HINT (or drop
+      // it) rather than asserting it as hard canon, so a wrong inferred edge (e.g.
+      // a derived co-parent at 0.4) can't force the narrator's hand. An UNTAGGED
+      // legacy edge (no confidence recorded) defaults to canon — trusted exactly
+      // as the old untiered code treated it.
+      const tier = confidenceTier(typeof e.confidence === 'number' ? e.confidence : null)
+      if (tier === 'hidden') continue
       const fromId = idString(e.source_entity_id), toId = idString(e.target_entity_id)
       const label = (e.label as string) || DEFAULT_KIN_LABEL[kind] || 'relative'
       const surface = composeSurface(
@@ -802,9 +810,16 @@ export const kinshipGraphService = {
       const objName = toId === selfEntityId ? 'your' : (nameById.get(toId) ? `${nameById.get(toId)}'s` : null)
       if (!subj || !objName) continue
       const verb = subj === 'You' ? 'are' : 'is'
-      let line = `${subj} ${verb} ${objName} ${surface}.`
-      if (e.relation_state === 'deceased') line += ' (Deceased — do not portray as alive or present.)'
-      else if (e.relation_state === 'estranged') line += ' (Estranged.)'
+      let line: string
+      if (tier === 'hint') {
+        // Hedged + no hard lifecycle directive — the whole tie is uncorroborated,
+        // so its death/estrangement state is uncertain too.
+        line = `Possibly: ${subj} ${verb} ${objName} ${surface}. (Unconfirmed — treat as a hunch, not established fact.)`
+      } else {
+        line = `${subj} ${verb} ${objName} ${surface}.`
+        if (e.relation_state === 'deceased') line += ' (Deceased — do not portray as alive or present.)'
+        else if (e.relation_state === 'estranged') line += ' (Estranged.)'
+      }
       lines.push(line)
       if (lines.length >= limit) break
     }

@@ -10,6 +10,9 @@ import {
 import { hygieneStage1, type ResolvedAssertion } from '../worker/lib/kinship-hygiene'
 import { extractLifecycleTransitions } from '../worker/lib/kinship-transition-extractor'
 import { groundChoices } from '../worker/lib/choice-grounding'
+import {
+  confidenceTier, CANON_MIN_CONFIDENCE, HINT_MIN_CONFIDENCE, confidenceFor,
+} from '../src/utils/world-authority'
 
 let pass = 0
 let fail = 0
@@ -208,6 +211,27 @@ check('plain "my father" (no cue) → no transition', extractLifecycleTransition
 check('figurative "like a father, now gone" → no transition', extractLifecycleTransitions({ prose: 'He was like a father to me, now gone.' }).length, 0)
 check('deceased is non-terminal (tie kept)', isTerminalState('deceased'), false)
 check('revealed_false is terminal (tie closed)', isTerminalState('revealed_false'), true)
+
+console.log('canon brief — consumption tiering (confidenceTier):')
+// Boundaries: at/above CANON_MIN → canon; [HINT_MIN, CANON_MIN) → hint; below → hidden.
+check('high confidence → canon', confidenceTier(0.95), 'canon')
+check('canon threshold is inclusive', confidenceTier(CANON_MIN_CONFIDENCE), 'canon')
+check('just below canon → hint', confidenceTier(CANON_MIN_CONFIDENCE - 0.01), 'hint')
+check('hint threshold is inclusive', confidenceTier(HINT_MIN_CONFIDENCE), 'hint')
+check('just below hint → hidden', confidenceTier(HINT_MIN_CONFIDENCE - 0.01), 'hidden')
+// The legacy trap: a missing/NaN confidence must default to canon, NOT a demoted
+// tier — untagged edges predate tracking and were always treated as hard canon.
+check('missing confidence → canon (legacy trust)', confidenceTier(undefined), 'canon')
+check('null confidence → canon (legacy trust)', confidenceTier(null), 'canon')
+check('NaN confidence → canon (legacy trust)', confidenceTier(NaN), 'canon')
+check('explicit fallback override honored', confidenceTier(undefined, 'hidden'), 'hidden')
+// Real source baselines land where the kinship brief intends them to.
+check('narrator (0.9) → canon', confidenceTier(confidenceFor('narrator')), 'canon')
+check('player_correction (1.0) → canon', confidenceTier(confidenceFor('player_correction')), 'canon')
+check('side_chat (0.75) → canon', confidenceTier(confidenceFor('side_chat')), 'canon')
+check('character_claim (0.5) → hint', confidenceTier(confidenceFor('character_claim')), 'hint')
+check('inferred co-parent (0.4) → hint', confidenceTier(0.4), 'hint')
+check('inference floor (0.35) → hidden', confidenceTier(confidenceFor('inference')), 'hidden')
 
 console.log(`\nkinship audit: ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)

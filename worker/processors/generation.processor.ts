@@ -34,6 +34,7 @@ import { auditChoices } from "../lib/choice-grounding-audit";
 import { detectProjectionAnomalies } from "../lib/projection-anomaly-detector";
 import { detectNarratedTimeSkip } from "../lib/time-skip-signal";
 import { detectCompanionJoins, detectCompanionDepartures } from "../lib/party-signal";
+import { type WorldFactSource, SOURCE_RANK, confidenceFor, isWorldFactSource } from "../../src/utils/world-authority";
 import { memorySupersessionService } from "../../src/services/memory-supersession.service";
 import { timeService } from "../../src/services/time.service";
 import {
@@ -667,8 +668,15 @@ export async function generationProcessor(job: Job) {
   // an ambiguous "going to" auxiliary on a stay-put turn can't reset the scene.
   const nameChanged =
     !!placeName && !isVagueLocationLabel(placeName) && !normEq(placeName, cursorName);
-  const viewpointMoved =
-    parsed.viewpoint_moved === true || (narratedMove && nameChanged);
+  const witnessAssertedMove = parsed.viewpoint_moved === true;
+  const playerDroveMove = narratedMove && nameChanged;
+  const viewpointMoved = witnessAssertedMove || playerDroveMove;
+  // Provenance of the move (world-authority), for the location_anchor ledger delta:
+  // the player's OWN narrated relocation outranks the witness's assertion, and when
+  // BOTH signals agree the move is corroborated → confidence above either alone.
+  const moveSource: WorldFactSource = playerDroveMove ? "player_narration" : "narrator";
+  const moveConfidence =
+    playerDroveMove && witnessAssertedMove ? 0.95 : confidenceFor(moveSource);
   const resolvedLocation = placeName
     ? await entityGraphService.placeLocation({
         instanceId,
@@ -704,10 +712,28 @@ export async function generationProcessor(job: Job) {
   // the AI prose, so a skip the player wrote ("Weeks pass.") that the narrator
   // didn't restate is lost — recover it from the player's own input (the time twin
   // of the movement backstop). A model-reported time_elapsed still wins.
+  const witnessTimeLabel = !isContinuation ? parsed.time_elapsed || undefined : undefined;
+  const playerTimeLabel = !isContinuation
+    ? detectNarratedTimeSkip(parsedPlayerInput.raw) || undefined
+    : undefined;
   const narratedTimeLabel = !isContinuation
-    ? parsed.time_elapsed || detectNarratedTimeSkip(parsedPlayerInput.raw) || undefined
+    ? witnessTimeLabel || playerTimeLabel
     : undefined;
   const effectiveTimeAdvance = timeAdvanceLabel || narratedTimeLabel;
+  // Provenance of the time advance (world-authority), for the rebuildable time_delta:
+  // a continuation tick and a player-narrated skip are player-authored; a witness-
+  // reported skip is narrator authority; witness + player agreement is corroborated.
+  let timeSource: WorldFactSource | null = null;
+  let timeConfidence = 0;
+  if (effectiveTimeAdvance) {
+    if (timeAdvanceLabel || (!witnessTimeLabel && playerTimeLabel)) {
+      timeSource = "player_narration";
+      timeConfidence = confidenceFor("player_narration");
+    } else {
+      timeSource = "narrator";
+      timeConfidence = witnessTimeLabel && playerTimeLabel ? 0.95 : confidenceFor("narrator");
+    }
+  }
 
   // Presence carry-forward (deterministic — not left to the model): a continuous
   // scene keeps everyone who was here, minus anyone the model says explicitly
@@ -899,23 +925,48 @@ export async function generationProcessor(job: Job) {
     const p = (characterCodex as any[]).find((c) => c.is_protagonist);
     return p ? presenceKeyOf(p.canonical_name) : null;
   })();
-  const partyByKey = new Map<string, string>();
+  // Party membership now carries PROVENANCE (world-authority), so the §5 companion
+  // brief can tier it: who put them in the party, and how confident we are.
+  type PartyMember = { name: string; source: WorldFactSource; confidence: number };
+  const partyByKey = new Map<string, PartyMember>();
   // Carry forward the prior party, minus anyone who explicitly parted this turn.
+  // Preserve each member's stored provenance; a legacy row without one predates
+  // tracking → trusted as narrator/canon (the same legacy-trust default the tier
+  // helper uses), never silently demoted.
   for (const m of session.travelling_with || []) {
     const k = presenceKeyOf(m.name);
-    if (k && !partyDepartedKeys.has(k)) partyByKey.set(k, m.name);
-  }
-  // Add explicit joiners — gated to real, non-protagonist characters.
-  for (const n of detectCompanionJoins(partySignalText)) {
-    const k = presenceKeyOf(n);
     if (!k || partyDepartedKeys.has(k)) continue;
-    if (playerPresenceKey && k === playerPresenceKey) continue;
-    if (partyProtagKey && k === partyProtagKey) continue;
-    if (!partyRosterKeys.has(k) && !partyPresentKeys.has(k)) continue;
-    partyByKey.set(k, presenceDisplayOf(n));
+    const source = isWorldFactSource((m as { source?: unknown }).source)
+      ? ((m as { source?: WorldFactSource }).source as WorldFactSource)
+      : "narrator";
+    const confidence = typeof (m as { confidence?: unknown }).confidence === "number"
+      ? (m as { confidence: number }).confidence
+      : confidenceFor(source);
+    partyByKey.set(k, { name: m.name, source, confidence });
   }
+  // Add explicit joiners — gated to real, non-protagonist characters — TAGGED by the
+  // authority of the text they appeared in: the player's own narration ("I bring Mara")
+  // outranks the narrator's prose ("Mara joins you"). On a collision keep the stronger.
+  const addJoins = (names: string[], source: WorldFactSource) => {
+    for (const n of names) {
+      const k = presenceKeyOf(n);
+      if (!k || partyDepartedKeys.has(k)) continue;
+      if (playerPresenceKey && k === playerPresenceKey) continue;
+      if (partyProtagKey && k === partyProtagKey) continue;
+      if (!partyRosterKeys.has(k) && !partyPresentKeys.has(k)) continue;
+      const prev = partyByKey.get(k);
+      if (prev && SOURCE_RANK[prev.source] <= SOURCE_RANK[source]) continue;
+      partyByKey.set(k, { name: presenceDisplayOf(n), source, confidence: confidenceFor(source) });
+    }
+  };
+  addJoins(detectCompanionJoins(parsedPlayerInput.raw), "player_narration");
+  addJoins(detectCompanionJoins(rawNarrative), "narrator");
   if (partyProtagKey) partyByKey.delete(partyProtagKey);
-  const partyNames = [...partyByKey.values()].slice(0, 6);
+  const partyMembers = [...partyByKey.values()].slice(0, 6);
+  const partyNames = partyMembers.map((m) => m.name);
+  const partyProvByName = new Map(
+    partyMembers.map((m) => [normalizeEntityName(m.name), m]),
+  );
 
   parsed.present_characters = (() => {
     const candidates = sceneBroke
@@ -1083,10 +1134,13 @@ export async function generationProcessor(job: Job) {
 
   // Ledger this turn's location changes (anchor + containment + state + enduring
   // facts), authority-tagged, so the place graph is a rebuildable projection like
-  // codex_deltas/relation_assertions. Witness-derived → narrator authority.
+  // codex_deltas/relation_assertions. Containment/state/facts are witness-derived →
+  // narrator authority; the ANCHOR (the move) carries the real move provenance, so a
+  // player-narrated relocation the witness under-flagged is still ledgered (and
+  // outranks a narrator one on rebuild).
   const locationDeltas: import("../../src/models/world-event.model").LocationDeltaDoc[] = [];
-  if (locationAnchor?.name && parsed.viewpoint_moved) {
-    locationDeltas.push({ type: "location_anchor", name: locationAnchor.name, source: "narrator", confidence: 0.9, sequence: nextSequence });
+  if (locationAnchor?.name && viewpointMoved) {
+    locationDeltas.push({ type: "location_anchor", name: locationAnchor.name, source: moveSource, confidence: moveConfidence, sequence: nextSequence });
   }
   if (parsed.containment_hint) {
     locationDeltas.push({ type: "containment", name: parsed.containment_hint, source: "narrator", confidence: 0.9, sequence: nextSequence });
@@ -1121,6 +1175,9 @@ export async function generationProcessor(job: Job) {
       trackable_mentions: trackableMentions,
       ...(locationDeltas.length ? { location_deltas: locationDeltas } : {}),
       ...(effectiveTimeAdvance ? { time_advanced: effectiveTimeAdvance } : {}),
+      ...(effectiveTimeAdvance && timeSource
+        ? { time_delta: { label: effectiveTimeAdvance, source: timeSource, confidence: timeConfidence, sequence: nextSequence } }
+        : {}),
       ...(isTravel && currentLocation && resolvedLocation
         ? { travel: { from: currentLocation.name, to: resolvedLocation.name } }
         : {}),
@@ -1254,7 +1311,12 @@ export async function generationProcessor(job: Job) {
   // doesn't map to a real character entity), to persist on the instance. A departed
   // companion with a stated destination that matches a KNOWN place updates their
   // position (no off-screen minting — fog-of-war), so "where is X" stays truthful.
-  let travellingWith: Array<{ entity_id: import("mongodb").ObjectId; name: string }> = [];
+  let travellingWith: Array<{
+    entity_id: import("mongodb").ObjectId;
+    name: string;
+    source: WorldFactSource;
+    confidence: number;
+  }> = [];
   if (partyNames.length) {
     const partyNorms = partyNames.map((n) => normalizeEntityName(n));
     const partyEntities = (await mongoColl
@@ -1268,7 +1330,16 @@ export async function generationProcessor(job: Job) {
     const byNorm = new Map(partyEntities.map((e) => [e.name_normalized || "", e]));
     for (const n of partyNames) {
       const e = byNorm.get(normalizeEntityName(n));
-      if (e?._id) travellingWith.push({ entity_id: e._id, name: e.canonical_name || n });
+      if (e?._id) {
+        const prov = partyProvByName.get(normalizeEntityName(n));
+        const source = prov?.source ?? "narrator";
+        travellingWith.push({
+          entity_id: e._id,
+          name: e.canonical_name || n,
+          source,
+          confidence: prov?.confidence ?? confidenceFor(source),
+        });
+      }
     }
   }
   for (const d of partyDepartures) {
@@ -1344,7 +1415,7 @@ export async function generationProcessor(job: Job) {
       : null,
     // JSON-safe (entity_id as string) — the party read only uses the name, but keep
     // the id so a future consumer can resolve without a lookup.
-    travelling_with: travellingWith.map((m) => ({ entity_id: idString(m.entity_id), name: m.name })),
+    travelling_with: travellingWith.map((m) => ({ entity_id: idString(m.entity_id), name: m.name, source: m.source, confidence: m.confidence })),
   };
   await redis.set(
     `session:${instanceId}`,
