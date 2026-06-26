@@ -34,7 +34,7 @@ const DIRECTION = '(?:to|into|inside|outside|out|toward|towards|back|upstairs|do
  *  HAPPENED so the cursor/presence/travel-marker stay honest when the model
  *  under-flags it. */
 const DIRECTED_VERB =
-  '(?:go|goes|going|gone|went|head|heads|heading|headed|return|returns|returning|returned|walk|walks|walking|walked|run|runs|running|ran|move|moves|moving|moved|step|steps|stepping|stepped|enter|enters|entering|entered|stride|strides|striding|strode|storm|storms|storming|stormed|march|marches|marching|marched|wander|wanders|wandering|wandered|slip|slips|slipping|slipped|climb|climbs|climbing|climbed|descend|descends|descending|descended|ascend|ascends|ascending|ascended|sneak|sneaks|sneaking|snuck|rush|rushes|rushing|rushed|creep|creeps|creeping|crept|hurry|hurries|hurrying|hurried|make my way|made my way|making my way|retire|retires|retiring|retired|travel|travels|travelling|traveling|travelled|traveled|journey|journeys|journeying|journeyed|ride|rides|riding|rode|ridden|sail|sails|sailing|sailed|fly|flies|flying|flew|flown|cross|crosses|crossing|crossed|venture|ventures|venturing|ventured|voyage|voyages|voyaging|voyaged|drive|drives|driving|drove|driven|trek|treks|trekking|trekked|hike|hikes|hiking|hiked|set off|set out|sets off|sets out|setting off|setting out|proceed|proceeds|proceeding|proceeded|advance|advances|advancing|advanced|teleport|teleports|teleporting|teleported|warp|warps|warping|warped)'
+  '(?:go|goes|going|gone|went|head|heads|heading|headed|return|returns|returning|returned|walk|walks|walking|walked|run|runs|running|ran|move|moves|moving|moved|step|steps|stepping|stepped|enter|enters|entering|entered|stride|strides|striding|strode|storm|storms|storming|stormed|march|marches|marching|marched|wander|wanders|wandering|wandered|slip|slips|slipping|slipped|climb|climbs|climbing|climbed|descend|descends|descending|descended|ascend|ascends|ascending|ascended|sneak|sneaks|sneaking|snuck|rush|rushes|rushing|rushed|creep|creeps|creeping|crept|hurry|hurries|hurrying|hurried|make my way|made my way|making my way|retire|retires|retiring|retired|travel|travels|travelling|traveling|travelled|traveled|journey|journeys|journeying|journeyed|ride|rides|riding|rode|ridden|sail|sails|sailing|sailed|fly|flies|flying|flew|flown|cross|crosses|crossing|crossed|venture|ventures|venturing|ventured|voyage|voyages|voyaging|voyaged|drive|drives|driving|drove|driven|trek|treks|trekking|trekked|hike|hikes|hiking|hiked|set off|set out|sets off|sets out|setting off|setting out|proceed|proceeds|proceeding|proceeded|advance|advances|advancing|advanced|teleport|teleports|teleporting|teleported|warp|warps|warping|warped|clamber|clambers|clambering|clambered)'
 
 /** Verbs that mean "left the current place" with no direction needed. */
 const DEPARTURE_VERB =
@@ -72,6 +72,11 @@ const ROOM_NOUN_CANON: Record<string, string> = {
   cell: 'cell', suite: 'suite', loft: 'loft', dorm: 'room',
   house: 'house', home: 'home', apartment: 'apartment', flat: 'flat',
   cottage: 'cottage', hut: 'hut', tent: 'tent',
+  // more owned rooms (attic/basement/workshop/studio/garret) and dwellings
+  // (penthouse/villa/bungalow/lodge) — still personal spaces, never settlements.
+  attic: 'attic', basement: 'basement', workshop: 'workshop', studio: 'studio',
+  garret: 'garret', penthouse: 'penthouse', villa: 'villa', bungalow: 'bungalow',
+  lodge: 'lodge',
 }
 
 /**
@@ -88,7 +93,7 @@ export function resolvePossessiveRoomName(
 ): string | null {
   if (!ownerName) return null
   const t = clean(playerInput || '')
-  const m = t.match(/\b(my)(?:\s+own)?\s+(room|bedroom|chamber|chambers|study|quarters|cabin|den|office|cell|suite|loft|dorm|house|home|apartment|flat|cottage|hut|tent)\b/)
+  const m = t.match(/\b(my)(?:\s+own)?\s+(room|bedroom|chamber|chambers|study|quarters|cabin|den|office|cell|suite|loft|dorm|house|home|apartment|flat|cottage|hut|tent|attic|basement|workshop|studio|garret|penthouse|villa|bungalow|lodge)\b/)
   if (!m) return null
   // The room must be the DESTINATION, not the place being left. "I leave my room
   // and head to the dining room" governs "my room" with a departure verb — naming

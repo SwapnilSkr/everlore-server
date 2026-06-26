@@ -38,8 +38,10 @@ const DURATION_PASSAGE = new RegExp(
 )
 // 2. spending/waiting an EXPLICIT amount of time: "I spend three days", "waited a week".
 //    Requires an amount (not bare "spend weeks") to avoid habitual "train every day".
+//    The trailing (?!['’]) rejects a POSSESSIVE — "spend three days' wages" measures
+//    money, not a span actually spent, so it must not advance the calendar.
 const SPEND_DURATION = new RegExp(
-  `\\b(?:spend|spends|spent|wait|waits|waited|sleep|sleeps|slept|rest|rests|rested|train|trains|trained|labor|labour|laboured|toil|toiled|stay|stays|stayed|remain|remains|remained|linger|lingers|lingered)\\b(?:\\s+\\w+){0,4}?\\s+(${AMOUNT}\\s+${UNIT})\\b`,
+  `\\b(?:spend|spends|spent|wait|waits|waited|sleep|sleeps|slept|rest|rests|rested|train|trains|trained|labor|labour|laboured|toil|toiled|stay|stays|stayed|remain|remains|remained|linger|lingers|lingered)\\b(?:\\s+\\w+){0,4}?\\s+(${AMOUNT}\\s+${UNIT})(?!['’])\\b`,
 )
 // 3. an explicit forward range: "after three weeks", "over the next month".
 const RANGE_DURATION = new RegExp(
@@ -49,8 +51,13 @@ const RANGE_DURATION = new RegExp(
 //    The "the next/following <period>" set is symmetric across times of day, and
 //    "hours later" mirrors the existing days/weeks/months/years-later beats (a bare
 //    span with no leading amount, which §1 needs).
+// `overnight` only counts in ADVERBIAL position (followed by a clause boundary /
+// conjunction), so "rest overnight." / "Overnight, …" fire but the ADJECTIVE "an
+// overnight success/bag" does not. `tomorrow` is rejected after a contemplation
+// preposition ("worry about tomorrow", "no tomorrow") — there it's a concept, not a
+// skip — while "Tomorrow, …" / "deal with it tomorrow" still fire.
 const NAMED_PERIOD =
-  /\b(?:the next morning|next morning|the following morning|the following day|the next day|the next evening|the next afternoon|the next night|the following evening|the following afternoon|the following night|by morning|by dawn|by daybreak|by nightfall|come morning|come dawn|overnight|tomorrow|the following week|the following month|the following year|the next week|the next month|the next year|hours later|weeks later|days later|months later|years later)\b/
+  /\b(?:the next morning|next morning|the following morning|the following day|the next day|the next evening|the next afternoon|the next night|the following evening|the following afternoon|the following night|by morning|by dawn|by daybreak|by nightfall|come morning|come dawn|overnight(?=[.,;:!?]|\s+(?:and|before|then|but|so|while|as|until)\b|\s*$)|(?<!\b(?:about|for|of|on|over|no)\s)tomorrow|the following week|the following month|the following year|the next week|the next month|the next year|hours later|weeks later|days later|months later|years later)\b/
 
 /**
  * A time-skip label parsed from the player's narrated action, or null. The string

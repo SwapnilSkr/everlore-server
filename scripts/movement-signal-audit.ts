@@ -43,6 +43,8 @@ for (const t of [
   // bare up/down as a direction particle after a locomotion verb
   'I walk down the stairs',
   'I climb up to the rampart',
+  // physical-locomotion verb with no adjective/noun homograph (gated by a direction)
+  'I clamber up the cliff face',
 ]) check(t, detectNarratedMovement(t), true)
 
 console.log('detectNarratedMovement — NON-MOVES (expect false):')
@@ -56,6 +58,12 @@ for (const t of [
   // the widened window is still BOUNDED — a direction word far past the verb
   // (here "for" is 8 words after "go") must NOT trigger a phantom move.
   'I go and quietly grab the old rusty key for her',
+  // ADJECTIVE/NOUN homographs of locomotion verbs must NOT read as movement, even
+  // when a direction word trails (these are why swim/stagger/limp/tiptoe were rejected)
+  'It was a staggering amount to pay',          // "staggering" = adjective, not a move
+  'I clean the swimming pool to a shine',       // "swimming pool" = noun phrase
+  'I stand on tiptoe to reach the shelf',       // "on tiptoe to" = no move
+  'It was a limp excuse to offer',              // "limp" = adjective
   '',
 ]) check(t, detectNarratedMovement(t), false)
 
@@ -66,6 +74,9 @@ check('my own bedroom', resolvePossessiveRoomName('I retreat to my own bedroom',
 check('my study', resolvePossessiveRoomName('I head to my study', O), "Swapnil Sarkar's study")
 check('my chambers', resolvePossessiveRoomName('I withdraw to my chambers', O), "Swapnil Sarkar's chambers")
 check('my house (dwelling)', resolvePossessiveRoomName('I return to my house', O), "Swapnil Sarkar's house")
+check('my penthouse (dwelling)', resolvePossessiveRoomName('I head up to my penthouse', O), "Swapnil Sarkar's penthouse")
+check('my workshop (room)', resolvePossessiveRoomName('I slip into my workshop', O), "Swapnil Sarkar's workshop")
+check('my basement (room)', resolvePossessiveRoomName('I go down to my basement', O), "Swapnil Sarkar's basement")
 check('my home (dwelling)', resolvePossessiveRoomName('I head home to my home', O), "Swapnil Sarkar's home")
 check('her chambers (not first person)', resolvePossessiveRoomName('I follow her to her chambers', O), null)
 // origin vs destination — the room is what's being LEFT, not the destination

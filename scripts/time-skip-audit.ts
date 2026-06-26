@@ -29,7 +29,10 @@ checkUnit('Over the next week I rebuild the wall.', 'week')
 checkUnit('A few hours later, the storm breaks.', 'hour')
 check('the next morning', detectNarratedTimeSkip('The next morning, I wake early.'), 'the next morning')
 check('overnight', detectNarratedTimeSkip('I let it rest overnight.'), 'overnight')
+check('overnight + conjunction', detectNarratedTimeSkip('I rest overnight before the march.'), 'overnight')
+check('overnight leading', detectNarratedTimeSkip('Overnight, the snow buried the camp.'), 'overnight')
 check('tomorrow', detectNarratedTimeSkip('I will deal with it tomorrow.'), 'tomorrow')
+check('tomorrow leading', detectNarratedTimeSkip('Tomorrow, I set out at dawn.'), 'tomorrow')
 checkUnit('Years later, the wound still aches.', 'year') // "years"+later → "years" (advanceDays → 365)
 // enrichment (June 26): more unambiguous passage idioms (gated by a leading span)
 checkUnit('The weeks flew by in a blur.', 'week')
@@ -60,6 +63,12 @@ for (const t of [
   'The clock ticks by on the wall.',           // "ticks by" but "clock" is no unit
   'I stay calm and remain at the table.',      // stay/remain but no amount+unit
   'I linger by the window for a while.',        // "a while" is no time unit
+  // homograph FPs fixed this pass (must NOT advance the calendar)
+  'I worry about tomorrow constantly.',         // "about tomorrow" = a concept
+  'I live like there is no tomorrow.',          // "no tomorrow" = idiom
+  'It was an overnight success to celebrate.',  // "overnight" = adjective
+  'I pack an overnight bag for the trip.',      // "overnight bag" = adjective
+  "I spend three days' wages on it.",           // "days' wages" = money, not a span
   '',
 ]) check(t, detectNarratedTimeSkip(t), null)
 
