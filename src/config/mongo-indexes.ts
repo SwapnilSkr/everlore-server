@@ -369,6 +369,14 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     options: { name: "idx_projection_anomalies_instance_type" },
   },
 
+  // signal_ledger (FP/FN measurement: per-turn signal tallies, by instance recent
+  // first; aggregations scan by instance and filter player_corrected for precision)
+  {
+    collection: COLLECTIONS.signal_ledger,
+    key: { instance_id: 1, sequence: -1 },
+    options: { name: "idx_signal_ledger_instance_seq" },
+  },
+
   // projection_checkpoints (chunked world projection snapshots for scalable
   // replay/rewind repair: restore latest checkpoint, then replay only the suffix).
   {

@@ -32,6 +32,7 @@ import { locationService } from "../../src/services/location.service";
 import { detectNarratedMovement, resolvePossessiveRoomName } from "../lib/movement-signal";
 import { auditChoices } from "../lib/choice-grounding-audit";
 import { detectProjectionAnomalies } from "../lib/projection-anomaly-detector";
+import { buildSignalLedger } from "../lib/signal-ledger";
 import { detectNarratedTimeSkip } from "../lib/time-skip-signal";
 import { detectCompanionJoins, detectCompanionDepartures } from "../lib/party-signal";
 import { type WorldFactSource, SOURCE_RANK, confidenceFor, isWorldFactSource } from "../../src/utils/world-authority";
@@ -947,6 +948,9 @@ export async function generationProcessor(job: Job) {
   // Add explicit joiners — gated to real, non-protagonist characters — TAGGED by the
   // authority of the text they appeared in: the player's own narration ("I bring Mara")
   // outranks the narrator's prose ("Mara joins you"). On a collision keep the stronger.
+  // Ledger accounting (FP/FN measurement): fresh joins committed this turn carry
+  // their confidence; carry-forward and source-upgrades are not fresh detections.
+  const freshPartyJoinConfidences: number[] = [];
   const addJoins = (names: string[], source: WorldFactSource) => {
     for (const n of names) {
       const k = presenceKeyOf(n);
@@ -956,11 +960,18 @@ export async function generationProcessor(job: Job) {
       if (!partyRosterKeys.has(k) && !partyPresentKeys.has(k)) continue;
       const prev = partyByKey.get(k);
       if (prev && SOURCE_RANK[prev.source] <= SOURCE_RANK[source]) continue;
-      partyByKey.set(k, { name: presenceDisplayOf(n), source, confidence: confidenceFor(source) });
+      const confidence = confidenceFor(source);
+      if (!prev) freshPartyJoinConfidences.push(confidence);
+      partyByKey.set(k, { name: presenceDisplayOf(n), source, confidence });
     }
   };
-  addJoins(detectCompanionJoins(parsedPlayerInput.raw), "player_narration");
-  addJoins(detectCompanionJoins(rawNarrative), "narrator");
+  const playerJoinNames = detectCompanionJoins(parsedPlayerInput.raw);
+  const narratorJoinNames = detectCompanionJoins(rawNarrative);
+  const partyJoinsDetected = new Set(
+    [...playerJoinNames, ...narratorJoinNames].map(presenceKeyOf).filter(Boolean),
+  ).size;
+  addJoins(playerJoinNames, "player_narration");
+  addJoins(narratorJoinNames, "narrator");
   if (partyProtagKey) partyByKey.delete(partyProtagKey);
   const partyMembers = [...partyByKey.values()].slice(0, 6);
   const partyNames = partyMembers.map((m) => m.name);
@@ -1642,6 +1653,8 @@ export async function generationProcessor(job: Job) {
           deltas.flatMap((d) => d.relation_assertions || []),
           deterministicAssertions,
         );
+        // Committed kinship edge count, hoisted for the FP/FN signal ledger below.
+        let kinWritten = 0;
         // TRANSITION channel — death/disownment/divorce/reveal evolving an EXISTING
         // tie. Deterministic, off TTFT. Applied even when no new tie is asserted
         // (e.g. "my father died" carries no assertion, only a transition).
@@ -1688,6 +1701,7 @@ export async function generationProcessor(job: Job) {
               }).then((id) => id),
             transitions: lifecycleTransitions,
           });
+          kinWritten = kin.written;
           if (kin.written > 0) {
             log.info("kinship.graph.updated", {
               instanceId: idString(instanceId),
@@ -1702,6 +1716,7 @@ export async function generationProcessor(job: Job) {
         // projection recorded and persist any inconsistencies fire-and-forget for
         // a debug/admin surface. Never affects the turn. `knownCardNames` is the
         // PRE-turn card set, so deltas naming an absent person are "new this turn".
+        let missCandidates = 0; // FN ground-truth for the signal ledger below.
         try {
           const newCardNames = deltas
             .map((d) => d.resolved_name || d.name)
@@ -1716,6 +1731,15 @@ export async function generationProcessor(job: Job) {
             locationAnchorName: locationAnchor?.name ?? null,
             newCardNames,
           });
+          // FN candidates = "miss" findings (prose named a person/kin/place the
+          // projection didn't record). Drift findings (ungrounded choice, card with
+          // no prose anchor) are not recall misses, so they don't count here.
+          const MISS_TYPES = new Set([
+            "prose_person_untracked",
+            "kinship_phrase_no_edge",
+            "location_phrase_no_anchor",
+          ]);
+          missCandidates = findings.filter((f) => MISS_TYPES.has(f.type)).length;
           if (findings.length) {
             await mongoColl.projectionAnomalies().insertMany(
               findings.map((f) => ({
@@ -1740,6 +1764,51 @@ export async function generationProcessor(job: Job) {
           }
         } catch (err) {
           console.warn("projection anomaly logging skipped:", (err as Error).message);
+        }
+
+        // FP/FN signal ledger: one compact row per turn recording detected-vs-
+        // committed for every instrumented detector, the tier mix of what committed,
+        // plus the recall (miss_candidates) + precision (player_corrected) ground
+        // truths. Fire-and-forget; aggregations tune enrichment against this data.
+        try {
+          const presenceTiers = { confirmed: 0, probable: 0, mentioned: 0 };
+          for (const m of trackableMentions) {
+            if (m.tier === "confirmed") presenceTiers.confirmed++;
+            else if (m.tier === "probable") presenceTiers.probable++;
+            else presenceTiers.mentioned++;
+          }
+          const ledger = buildSignalLedger({
+            movement: {
+              detected: narratedMove,
+              committed: !!locationAnchor?.name && viewpointMoved,
+              source: moveSource,
+              confidence: moveConfidence,
+            },
+            time: {
+              detected: !!(witnessTimeLabel || playerTimeLabel || timeAdvanceLabel),
+              committed: !!effectiveTimeAdvance,
+              source: timeSource ?? undefined,
+              confidence: timeSource ? timeConfidence : undefined,
+            },
+            party: { detected: partyJoinsDetected, committedConfidences: freshPartyJoinConfidences },
+            kinship: { detected: relationAssertions.length, committed: kinWritten },
+            presence: presenceTiers,
+            playerCorrected: parsedPlayerInput.corrections.length > 0,
+            missCandidates,
+          });
+          await mongoColl.signalLedger().insertOne({
+            _id: new ObjectId(),
+            instance_id: instanceOid,
+            player_id: playerOid,
+            event_id: event._id,
+            sequence: nextSequence,
+            player_corrected: ledger.player_corrected,
+            miss_candidates: ledger.miss_candidates,
+            signals: ledger.signals,
+            created_at: new Date(),
+          });
+        } catch (err) {
+          console.warn("signal ledger logging skipped:", (err as Error).message);
         }
       } catch (err) {
         console.warn("entity graph sync failed:", (err as Error).message);

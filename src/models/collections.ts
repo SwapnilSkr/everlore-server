@@ -21,6 +21,7 @@ export const COLLECTIONS = {
   generation_logs: 'generation_logs',
   nsfw_lexicon: 'nsfw_lexicon',
   projection_anomalies: 'projection_anomalies',
+  signal_ledger: 'signal_ledger',
   projection_checkpoints: 'projection_checkpoints',
   projection_checkpoint_chunks: 'projection_checkpoint_chunks',
   location_stats: 'location_stats',

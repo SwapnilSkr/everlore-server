@@ -20,6 +20,8 @@
     "audit:movement": "bun run scripts/movement-signal-audit.ts",
     "audit:party-signal": "bun run scripts/party-signal-audit.ts",
     "audit:time-skip": "bun run scripts/time-skip-audit.ts",
+    "audit:signal-ledger": "bun run scripts/signal-ledger-audit.ts",
+    "report:signal-ledger": "bun run scripts/signal-ledger-report.ts",
     "audit:codex-dedup": "bun run scripts/codex-dedup-audit.ts",
     "audit:kinship": "bun run scripts/kinship-audit.ts",
     "audit:presence-codex-gap": "bun run scripts/presence-codex-gap-audit.ts",
