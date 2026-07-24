@@ -8,7 +8,8 @@ import { locationService } from '../services/location.service'
 import { sideChatService } from '../services/side-chat.service'
 import { entityGraphService, normalizeEntityName } from '../services/entity-graph.service'
 import { kinshipGraphService } from '../services/kinship-graph.service'
-import { isRelationKind } from '../utils/kinship-ontology'
+import { isRelationKind, surfaceToKind } from '../utils/kinship-ontology'
+import { relationCandidateService } from '../services/relation-candidate.service'
 import { mongoColl } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
 import type { EntityDoc } from '../models/entity.model'
@@ -18,6 +19,14 @@ import type { EditMemoryBody } from '../schemas/memory.schema'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import { EVENT_WINDOWS } from '../utils/event-window'
+import { ObjectId } from 'mongodb'
+import { randomUUID } from 'crypto'
+import {
+  GENERATION_LOCK_TTL_SECONDS,
+  generationLockKey,
+  releaseGenerationLock,
+  startGenerationLockHeartbeat,
+} from '../utils/generation-lock'
 
 type EditEvent = Static<typeof EditEventBody>
 type EditMemory = Static<typeof EditMemoryBody>
@@ -108,6 +117,189 @@ export const chronicleController = {
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return characterCodexService.listRelationships(params.instanceId, user.id)
+  },
+
+  getConfirmedKinship: async ({
+    params,
+    user,
+  }: {
+    params: { instanceId: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    const instance = await mongoColl.worldInstances().findOne({
+      _id: parseObjectId(params.instanceId),
+      player_id: parseObjectId(user.id),
+    })
+    if (!instance) throw new HttpError(404, 'World not found')
+    const template = await mongoColl.worldTemplates().findOne(
+      { _id: instance.template_id },
+      { projection: { is_sentient: 1 } },
+    )
+    return {
+      relations: await kinshipGraphService.confirmedRelationsToSelf(
+        params.instanceId,
+        template?.is_sentient ? 'player' : 'protagonist',
+      ),
+    }
+  },
+
+  setKinship: async ({ params, body, user }: {
+    params: { instanceId: string }
+    body: { character: string; relation: string; correction?: boolean; replaces_relation?: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    const instance = await mongoColl.worldInstances().findOne({ _id: parseObjectId(params.instanceId), player_id: parseObjectId(user.id) })
+    if (!instance) throw new HttpError(404, 'World not found')
+    const mapped = surfaceToKind(body.relation)
+    const replacement = body.replaces_relation ? surfaceToKind(body.replaces_relation) : null
+    if (!mapped || !body.character.trim() || (body.correction && !replacement)) throw new HttpError(400, 'Invalid relationship')
+    const template = await mongoColl.worldTemplates().findOne({ _id: instance.template_id }, { projection: { is_sentient: 1 } })
+    const cards = await characterCodexService.listForInstance(params.instanceId, 100)
+    const entityMap = await entityGraphService.syncCodexEntities({ instanceId: params.instanceId, playerId: user.id, sequence: Math.max(0, ...cards.map((card) => card.last_seen_sequence)), cards })
+    let selfAnchorId: string | null = null
+    if (template?.is_sentient) {
+      selfAnchorId = idString((await entityGraphService.ensurePlayerEntity({ instanceId: params.instanceId, playerId: user.id, sequence: Math.max(0, ...cards.map((card) => card.last_seen_sequence)) }))._id)
+    } else {
+      const protagonist = cards.find((card) => card.is_protagonist)
+      const entity = protagonist ? entityMap.get(protagonist.name_normalized) : null
+      selfAnchorId = entity?._id ? idString(entity._id) : null
+    }
+    if (!selfAnchorId) throw new HttpError(409, 'Player character is not established yet')
+    const assertions: RelationAssertion[] = [{ from: body.character.trim(), to: 'player', kind: mapped.kind, label: body.relation, gender: mapped.gender, modifier: mapped.modifier, polarity: 'assert', source: body.correction ? 'player_correction' : 'player_narration' }]
+    if (replacement && replacement.kind !== mapped.kind) assertions.unshift({ from: body.character.trim(), to: 'player', kind: replacement.kind, label: body.replaces_relation, gender: replacement.gender, modifier: replacement.modifier, polarity: 'sever', source: 'player_correction' })
+    const written = await kinshipGraphService.applyRelationAssertions({
+      instanceId: params.instanceId, sequence: Math.max(0, ...cards.map((card) => card.last_seen_sequence)), eventId: new ObjectId(), assertions, cards, entitiesByCardName: entityMap, selfAnchorId, sceneText: '',
+      ensureStub: (name) => entityGraphService.ensureStubEntity({ instanceId: params.instanceId, playerId: user.id, sequence: 0, name }),
+    })
+    if (!written.written) throw new HttpError(409, 'Could not resolve this character safely')
+    // Relationship-sheet edits are authorial canon, not chat turns. Persist a
+    // compact ordered overlay after the graph write so rewind/replay rebuilds
+    // reapply the exact same asserts/severs after the authored premise seed.
+    // Keeping this outside the event ledger intentionally means rewinding prose
+    // never undoes an explicit player correction made in the canon controls.
+    await mongoColl.worldInstances().updateOne(
+      { _id: parseObjectId(params.instanceId), player_id: parseObjectId(user.id) },
+      {
+        $push: {
+          manual_relation_assertions: {
+            $each: assertions,
+            $slice: -120,
+          },
+        },
+        $set: { updated_at: new Date() },
+      } as never,
+    )
+    return { saved: true }
+  },
+
+  getRelationCandidates: async ({
+    params,
+    user,
+  }: {
+    params: { instanceId: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    const rows = await relationCandidateService.listOpen(params.instanceId, user.id)
+    return { candidates: rows.map((candidate) => relationCandidateService.toClient(candidate)) }
+  },
+
+  resolveRelationCandidate: async ({
+    params,
+    body,
+    user,
+  }: {
+    params: { candidateId: string }
+    body: { action: 'accept' | 'reject' | 'defer'; relation?: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    const candidate = await relationCandidateService.getOpen(params.candidateId, user.id)
+    if (!candidate) throw new HttpError(404, 'Relationship review not found')
+
+    if (body.action !== 'accept') {
+      const ok = await relationCandidateService.resolve({
+        candidateId: params.candidateId,
+        playerId: user.id,
+        status: body.action === 'reject' ? 'rejected' : 'deferred',
+      })
+      return { resolved: ok }
+    }
+
+    const relation = String(body.relation || candidate.relation).toLowerCase()
+    const mapped = surfaceToKind(relation)
+    if (!mapped) throw new HttpError(400, 'Unsupported relationship')
+    const conflict = await mongoColl.entityEdges().findOne({
+      instance_id: candidate.instance_id,
+      type: 'kinship',
+      status: 'active',
+      $or: [
+        { source_entity_id: candidate.character_entity_id, target_entity_id: candidate.player_entity_id },
+        { source_entity_id: candidate.player_entity_id, target_entity_id: candidate.character_entity_id },
+      ],
+    })
+    if (conflict) {
+      throw new HttpError(409, 'A confirmed relationship already exists. Use a correction instead.')
+    }
+
+    const cards = await characterCodexService.listForInstance(idString(candidate.instance_id), 100)
+    const entitiesByCardName = await entityGraphService.syncCodexEntities({
+      instanceId: idString(candidate.instance_id),
+      playerId: user.id,
+      sequence: candidate.sequence,
+      cards,
+    })
+    const assertions: RelationAssertion[] = [{
+      from: candidate.character_name,
+      to: 'player',
+      kind: mapped.kind,
+      label: relation,
+      gender: mapped.gender,
+      modifier: mapped.modifier,
+      polarity: 'assert',
+      source: 'player_correction',
+    }]
+    const result = await kinshipGraphService.applyRelationAssertions({
+      instanceId: idString(candidate.instance_id),
+      sequence: candidate.sequence,
+      eventId: candidate.source_event_id,
+      assertions,
+      cards,
+      entitiesByCardName,
+      selfAnchorId: idString(candidate.player_entity_id),
+      sceneText: candidate.evidence,
+      ensureStub: (name) => entityGraphService.ensureStubEntity({
+        instanceId: idString(candidate.instance_id),
+        playerId: user.id,
+        sequence: candidate.sequence,
+        name,
+      }),
+    })
+    if (!result.written) throw new HttpError(409, 'Could not resolve this character safely')
+    // Candidate acceptance is the player's explicit canon decision, even though
+    // it was prompted by story evidence. Persist it with the other non-chat
+    // relationship edits so a graph rebuild cannot erase the confirmation.
+    await mongoColl.worldInstances().updateOne(
+      { _id: candidate.instance_id, player_id: parseObjectId(user.id) },
+      {
+        $push: {
+          manual_relation_assertions: {
+            $each: assertions,
+            $slice: -120,
+          },
+        },
+        $set: { updated_at: new Date() },
+      } as never,
+    )
+    await relationCandidateService.resolve({
+      candidateId: params.candidateId,
+      playerId: user.id,
+      status: 'accepted',
+      relation,
+    })
+    return { resolved: true, relation }
   },
 
   getCharacterMemories: async ({
@@ -300,6 +492,20 @@ export const chronicleController = {
       characterId: params.characterId,
       updates: body,
     })
+    // A rename changes presentation, never identity. Synchronize the one
+    // card's existing entity row now (rather than waiting for the next turn),
+    // so all typed edges and alias lookup immediately resolve to the new name.
+    try {
+      await entityGraphService.syncCodexEntities({
+        instanceId: result.instanceId,
+        playerId: user.id,
+        sequence: result.character.last_seen_sequence,
+        cards: [result.character],
+      })
+    } catch {
+      // Generation also syncs cards to entities. A temporary graph hiccup must
+      // not reject an otherwise valid character edit.
+    }
     // Facts this edit removed → evict matching memory vectors so RAG can't
     // resurface them and contradict the player's edit.
     if (result.retiredFacts.length > 0) {
@@ -318,6 +524,7 @@ export const chronicleController = {
         persona: c.persona,
         immutable_facts: c.immutable_facts,
         mutable_state: c.mutable_state,
+        interaction_hints: c.interaction_hints || [],
         disposition_to_player: c.disposition_to_player,
         hidden_thought: c.hidden_thought,
         mention_count: c.mention_count,
@@ -336,7 +543,29 @@ export const chronicleController = {
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return memoryService.rewindToSequence(params.instanceId, user.id, body.sequence)
+    const redis = getRedisClient()
+    const lockKey = generationLockKey(user.id, params.instanceId)
+    const lockValue = `rewind:${randomUUID()}`
+    const acquired = await redis.set(
+      lockKey,
+      lockValue,
+      'EX',
+      GENERATION_LOCK_TTL_SECONDS,
+      'NX',
+    )
+    if (!acquired) {
+      throw new HttpError(409, 'Another story operation is still in progress. Please wait for it to finish.')
+    }
+
+    // A rewind may rebuild several projections and outlive the normal dispatch
+    // TTL. Keep the shared lock alive, then release only our own value.
+    const stopHeartbeat = startGenerationLockHeartbeat(redis, lockKey, lockValue)
+    try {
+      return await memoryService.rewindToSequence(params.instanceId, user.id, body.sequence)
+    } finally {
+      stopHeartbeat()
+      await releaseGenerationLock(redis, lockKey, lockValue).catch(() => {})
+    }
   },
 
   replayEvent: async ({
@@ -552,6 +781,7 @@ export const chronicleController = {
             persona: c.persona,
             immutable_facts: c.immutable_facts,
             mutable_state: c.mutable_state,
+            interaction_hints: c.interaction_hints || [],
             disposition_to_player: c.disposition_to_player,
             hidden_thought: c.hidden_thought,
             relationship: c.relationship || null,
@@ -592,6 +822,7 @@ export const chronicleController = {
         persona: tracked.persona,
         immutable_facts: tracked.immutable_facts,
         mutable_state: tracked.mutable_state,
+        interaction_hints: tracked.interaction_hints || [],
         disposition_to_player: tracked.disposition_to_player,
         hidden_thought: tracked.hidden_thought,
         mention_count: tracked.mention_count,

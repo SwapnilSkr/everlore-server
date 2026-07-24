@@ -6,7 +6,9 @@ import { instanceController } from '../controllers/instance.controller'
 export const instanceRoutes = new Elysia({ prefix: '/instances' })
   .use(authPlugin)
 
-  .get('/', (ctx) => instanceController.list(ctx), { query: InstanceQueryParams })
+  .get('/', (ctx) => instanceController.list(ctx), {
+    query: InstanceQueryParams,
+  })
 
   .get('/play-status/:templateId', (ctx) => instanceController.playStatus(ctx))
 
@@ -14,7 +16,9 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
 
   .get('/:id', (ctx) => instanceController.getById(ctx))
 
-  .post('/', (ctx) => instanceController.create(ctx), { body: CreateInstanceBody })
+  .post('/', (ctx) => instanceController.create(ctx), {
+    body: CreateInstanceBody,
+  })
 
   .post('/:id/archive', (ctx) => instanceController.archive(ctx))
 
@@ -31,13 +35,11 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
 
   .patch('/:id/settings', (ctx) => instanceController.updateSettings(ctx), {
     body: t.Object({
-      narration_pov: t.Optional(
-        t.Union([t.Literal('first'), t.Literal('third')]),
-      ),
+      narration_pov: t.Optional(t.Union([t.Literal('first'), t.Literal('third')])),
       mode: t.Optional(t.String({ maxLength: 40 })),
-      message_length: t.Optional(
-        t.Union([t.Literal('short'), t.Literal('medium'), t.Literal('long')]),
-      ),
+      message_length: t.Optional(t.Union([t.Literal('short'), t.Literal('medium'), t.Literal('long')])),
+      narrative_style_override: t.Optional(t.Nullable(t.String({ maxLength: 50 }))),
+      narration_tone: t.Optional(t.String({ maxLength: 40 })),
       focus_character_id: t.Optional(t.Nullable(t.String())),
       persona_id: t.Optional(t.Nullable(t.String())),
     }),

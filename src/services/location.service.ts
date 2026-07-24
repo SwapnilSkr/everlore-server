@@ -280,9 +280,11 @@ export const locationService = {
       const row = byId.get(key) ?? mk(e._id as ObjectId)
       row.event_count = e.event_count
       if ((!row.name || row.name === 'An unnamed place') && e.name) row.name = e.name
-      row.first_seen_sequence = row.first_seen_sequence ?? e.first_seen_sequence ?? null
-      row.last_seen_sequence = Math.max(row.last_seen_sequence ?? -1, e.last_seen_sequence ?? -1)
-      if (row.last_seen_sequence === -1) row.last_seen_sequence = null
+      // An entity can be discovered by a mention before the player ever visits
+      // it. Once events are actually anchored, visit history must come from
+      // those anchors—not from the entity's incidental discovery sequence.
+      row.first_seen_sequence = e.first_seen_sequence ?? row.first_seen_sequence ?? null
+      row.last_seen_sequence = e.last_seen_sequence ?? row.last_seen_sequence ?? null
       byId.set(key, row)
     }
     for (const m of memAgg) {

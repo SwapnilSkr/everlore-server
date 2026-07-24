@@ -58,6 +58,27 @@ function continuityText(value: string, max = 220): string {
     .slice(0, max)
 }
 
+/**
+ * Formatting normalization for replay alternatives.  A replay is a deliberate
+ * request for a new telling; accepting the same response with different
+ * asterisks/whitespace is never useful.  Keep this exact rather than fuzzy so
+ * a legitimately similar beat is not rejected merely for sharing vocabulary.
+ */
+function normalizedNarrative(value: string): string {
+  return String(value || '')
+    .replace(/[“”]/g, '"')
+    .replace(/[*_`]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase()
+}
+
+function duplicatesExistingReplay(narrative: string, variants: Array<{ narrative?: string }>): boolean {
+  const normalized = normalizedNarrative(narrative)
+  if (!normalized) return false
+  return variants.some((variant) => normalizedNarrative(variant.narrative || '') === normalized)
+}
+
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
@@ -117,18 +138,23 @@ function carryReplayPresence(
   locationChanged: boolean,
 ): string[] {
   const sceneBroke = meta.viewpoint_moved === true || !!meta.time_elapsed || locationChanged
-  const candidates = sceneBroke
-    ? meta.present_characters || []
-    : [...priorPresent, ...(meta.present_characters || [])]
+  const candidates = sceneBroke ? meta.present_characters || [] : [...priorPresent, ...(meta.present_characters || [])]
   const departed = new Set(
     (meta.characters_departed || [])
-      .map((name) => String(name || '').replace(/\s+/g, ' ').trim().toLowerCase())
+      .map((name) =>
+        String(name || '')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .toLowerCase(),
+      )
       .filter(Boolean),
   )
   const seen = new Set<string>()
   const out: string[] = []
   for (const raw of candidates) {
-    const name = String(raw || '').replace(/\s+/g, ' ').trim()
+    const name = String(raw || '')
+      .replace(/\s+/g, ' ')
+      .trim()
     const key = name.toLowerCase()
     if (!name || seen.has(key) || departed.has(key)) continue
     seen.add(key)
@@ -138,12 +164,7 @@ function carryReplayPresence(
   return out
 }
 
-function trackableMentionsForProse(params: {
-  prose: string
-  present: string[]
-  codex: any[]
-  exclude?: string[]
-}) {
+function trackableMentionsForProse(params: { prose: string; present: string[]; codex: any[]; exclude?: string[] }) {
   const codexNames: string[] = []
   for (const c of params.codex || []) {
     if (c?.canonical_name) codexNames.push(c.canonical_name)
@@ -180,7 +201,11 @@ async function projectLatestReplayTurn(params: {
   const eventSequence = Number(event.sequence || 0)
 
   const priorEvents = await events()
-    .find({ instance_id: event.instance_id, sequence: { $lt: eventSequence }, type: { $ne: 'side_chat' } })
+    .find({
+      instance_id: event.instance_id,
+      sequence: { $lt: eventSequence },
+      type: { $ne: 'side_chat' },
+    })
     .sort({ sequence: -1 })
     .limit(EVENT_WINDOWS.promptRecentEvents)
     .toArray()
@@ -198,13 +223,19 @@ async function projectLatestReplayTurn(params: {
       ? { name: instance.persona_snapshot.name, aliases: [] }
       : null
     : protagonistCard
-      ? { name: protagonistCard.canonical_name, aliases: protagonistCard.aliases || [] }
+      ? {
+          name: protagonistCard.canonical_name,
+          aliases: protagonistCard.aliases || [],
+        }
       : instance.persona_snapshot?.name
         ? { name: instance.persona_snapshot.name, aliases: [] }
         : null
   const roster = (codex as any[])
     .filter((c) => c.canonical_name && (template.is_sentient || !c.is_protagonist))
-    .map((c) => ({ name: c.canonical_name as string, aliases: (c.aliases || []) as string[] }))
+    .map((c) => ({
+      name: c.canonical_name as string,
+      aliases: (c.aliases || []) as string[],
+    }))
   const knownPlaces = await entityGraphService
     .listKnownLocations(instanceId, 30)
     .catch(() => [] as { name: string; aliases: string[] }[])
@@ -243,9 +274,7 @@ async function projectLatestReplayTurn(params: {
     : null
   const locationAnchor = resolvedLocation || priorLocation || null
   const locationChanged =
-    !!resolvedLocation &&
-    !!priorLocation &&
-    idString(resolvedLocation.entity_id) !== idString(priorLocation.entity_id)
+    !!resolvedLocation && !!priorLocation && idString(resolvedLocation.entity_id) !== idString(priorLocation.entity_id)
   meta.present_characters = carryReplayPresence(meta, priorPresent, locationChanged)
 
   const statLimits: Record<string, { min: number; max: number }> = {}
@@ -264,7 +293,9 @@ async function projectLatestReplayTurn(params: {
   // scanning every prior event. Same final state — purely O(n)->O(suffix).
   // Falls back to a full prior-event scan when no usable checkpoint exists.
   const snapshot = await projectionCheckpointService
-    .instanceStateBefore(instanceId, eventSequence - 1, { mustBeBefore: eventSequence })
+    .instanceStateBefore(instanceId, eventSequence - 1, {
+      mustBeBefore: eventSequence,
+    })
     .catch(() => null)
   const priorScanGt = snapshot ? snapshot.sequence : -1
   if (snapshot) {
@@ -281,7 +312,14 @@ async function projectLatestReplayTurn(params: {
         sequence: { $lt: eventSequence, $gt: priorScanGt },
         type: { $ne: 'side_chat' },
       },
-      { projection: { sequence: 1, scene_tag: 1, 'data.state_mutations': 1, 'data.flag_mutations': 1 } },
+      {
+        projection: {
+          sequence: 1,
+          scene_tag: 1,
+          'data.state_mutations': 1,
+          'data.flag_mutations': 1,
+        },
+      },
     )
     .sort({ sequence: 1 })
     .toArray()
@@ -297,10 +335,7 @@ async function projectLatestReplayTurn(params: {
   // suffix without breaking and we haven't hit the summary threshold, the run
   // may extend behind the checkpoint — fall back to a full prior-event scan so
   // the count stays exact.
-  const sceneEvents = [
-    ...projectionEvents.map((ev) => ({ scene_tag: ev.scene_tag })),
-    { scene_tag: meta.scene_tag },
-  ]
+  const sceneEvents = [...projectionEvents.map((ev) => ({ scene_tag: ev.scene_tag })), { scene_tag: meta.scene_tag }]
   let rawTurnCount = 0
   let runReachedSuffixStart = false
   for (let i = sceneEvents.length - 1; i >= 0; i--) {
@@ -312,12 +347,7 @@ async function projectLatestReplayTurn(params: {
       break
     }
   }
-  if (
-    snapshot &&
-    runReachedSuffixStart &&
-    rawTurnCount < SCENE_SUMMARY_BLOCK &&
-    priorScanGt >= 0
-  ) {
+  if (snapshot && runReachedSuffixStart && rawTurnCount < SCENE_SUMMARY_BLOCK && priorScanGt >= 0) {
     const behindCheckpoint = await events()
       .find(
         {
@@ -397,6 +427,7 @@ function codexSocketPayload(codex: any[]) {
     persona: c.persona,
     immutable_facts: c.immutable_facts,
     mutable_state: c.mutable_state,
+    interaction_hints: c.interaction_hints || [],
     disposition_to_player: c.disposition_to_player,
     hidden_thought: c.hidden_thought,
     relationship: c.relationship || null,
@@ -447,7 +478,10 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
       console.warn('Replay projection: checkpoint rebuild failed, falling back to full ledger:', (err as Error).message)
     }
   }
-  const priorProtagonist = await characters().findOne({ instance_id: event.instance_id, is_protagonist: true })
+  const priorProtagonist = await characters().findOne({
+    instance_id: event.instance_id,
+    is_protagonist: true,
+  })
   const ledgerEvents = await events()
     .find(
       { instance_id: event.instance_id, type: { $ne: 'side_chat' } },
@@ -474,7 +508,11 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
       })
     }
     if (batches.length > 0) {
-      await characterCodexService.rebuildCodexFromLedger({ instanceId, playerId, batches })
+      await characterCodexService.rebuildCodexFromLedger({
+        instanceId,
+        playerId,
+        batches,
+      })
     }
   } else if (deltas.length > 0) {
     await characterCodexService.applyDeltas({
@@ -544,25 +582,27 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
         })
         selfAnchorId = idString(player._id)
       }
-      await kinshipGraphService.applyRelationAssertions({
-        instanceId,
-        sequence: event.sequence,
-        eventId: event._id,
-        assertions: relationAssertions,
-        cards: codex,
-        entitiesByCardName: entityMap,
-        selfAnchorId,
-        sceneText: narrative,
-        ensureStub: (name: string) =>
-          entityGraphService.ensureStubEntity({
-            instanceId,
-            playerId,
-            sequence: event.sequence,
-            name,
-          }),
-      }).catch((err) => {
-        console.warn('Replay projection: kinship graph write failed:', (err as Error).message)
-      })
+      await kinshipGraphService
+        .applyRelationAssertions({
+          instanceId,
+          sequence: event.sequence,
+          eventId: event._id,
+          assertions: relationAssertions,
+          cards: codex,
+          entitiesByCardName: entityMap,
+          selfAnchorId,
+          sceneText: narrative,
+          ensureStub: (name: string) =>
+            entityGraphService.ensureStubEntity({
+              instanceId,
+              playerId,
+              sequence: event.sequence,
+              name,
+            }),
+        })
+        .catch((err) => {
+          console.warn('Replay projection: kinship graph write failed:', (err as Error).message)
+        })
     }
   }
 
@@ -577,7 +617,12 @@ async function rebuildCodexKinshipFromCheckpoint(params: {
   template: any
   beforeOrAtSequence: number
   checkpointMustBeBefore?: number
-}): Promise<{ used: boolean; checkpointSequence?: number; suffixEvents?: number; codex?: any[] }> {
+}): Promise<{
+  used: boolean
+  checkpointSequence?: number
+  suffixEvents?: number
+  codex?: any[]
+}> {
   const { instanceId, playerId, instance, template, beforeOrAtSequence, checkpointMustBeBefore } = params
   const latest = await projectionCheckpointService.latestBefore(instanceId, beforeOrAtSequence)
   if (!latest) return { used: false }
@@ -590,7 +635,11 @@ async function rebuildCodexKinshipFromCheckpoint(params: {
   const iid = parseObjectId(instanceId)
   const suffix = await events()
     .find(
-      { instance_id: iid, type: { $ne: 'side_chat' }, sequence: { $gt: latest.sequence } },
+      {
+        instance_id: iid,
+        type: { $ne: 'side_chat' },
+        sequence: { $gt: latest.sequence },
+      },
       { projection: { sequence: 1, 'data.codex_deltas': 1 } },
     )
     .sort({ sequence: 1 })
@@ -599,7 +648,11 @@ async function rebuildCodexKinshipFromCheckpoint(params: {
     .filter((ev) => Array.isArray(ev.data?.codex_deltas) && ev.data.codex_deltas.length > 0)
     .map((ev) => ({ sequence: ev.sequence, deltas: ev.data!.codex_deltas! }))
   if (batches.length > 0) {
-    await characterCodexService.rebuildCodexFromLedger({ instanceId, playerId, batches })
+    await characterCodexService.rebuildCodexFromLedger({
+      instanceId,
+      playerId,
+      batches,
+    })
   }
 
   const codex = await characterCodexService.listForInstance(instanceId, 200)
@@ -626,7 +679,12 @@ async function rebuildCodexKinshipFromCheckpoint(params: {
     fromSequence: latest.sequence,
   })
   await publishCodexUpdated(playerId, instance, codex)
-  return { used: true, checkpointSequence: latest.sequence, suffixEvents: suffix.length, codex }
+  return {
+    used: true,
+    checkpointSequence: latest.sequence,
+    suffixEvents: suffix.length,
+    codex,
+  }
 }
 
 /**
@@ -645,10 +703,7 @@ async function staleSummariesCoveringEvent(event: any): Promise<number> {
     .toArray()
   if (covering.length === 0) return 0
 
-  await sceneSummaries().updateMany(
-    { _id: { $in: covering.map((s) => s._id) } },
-    { $set: { status: 'stale' } },
-  )
+  await sceneSummaries().updateMany({ _id: { $in: covering.map((s) => s._id) } }, { $set: { status: 'stale' } })
 
   const queue = getSceneSummaryQueue()
   for (const s of covering) {
@@ -717,10 +772,7 @@ async function staleSummariesCoveringEvent(event: any): Promise<number> {
     })
     .toArray()
   if (coveringArcs.length > 0) {
-    await arcSummaries().updateMany(
-      { _id: { $in: coveringArcs.map((a) => a._id) } },
-      { $set: { status: 'stale' } },
-    )
+    await arcSummaries().updateMany({ _id: { $in: coveringArcs.map((a) => a._id) } }, { $set: { status: 'stale' } })
     for (const a of coveringArcs) {
       await queue.add(
         'summarize',
@@ -751,10 +803,7 @@ async function staleSummariesCoveringEvent(event: any): Promise<number> {
  * fields. Mirrors the entity-edge provenance pruning — links are a projection,
  * so a removed source must leave no stale reference. Idempotent.
  */
-async function pruneMemoryVersionLinks(
-  instanceId: ObjectId,
-  removedMemoryIds: ObjectId[],
-): Promise<void> {
+async function pruneMemoryVersionLinks(instanceId: ObjectId, removedMemoryIds: ObjectId[]): Promise<void> {
   if (removedMemoryIds.length === 0) return
   try {
     await memories().updateMany(
@@ -790,7 +839,13 @@ async function pruneDanglingMemoryVersionLinks(instanceId: ObjectId): Promise<vo
           { derives_from_memory_ids: { $exists: true, $ne: [] } },
         ],
       },
-      { projection: { updates_memory_ids: 1, extends_memory_ids: 1, derives_from_memory_ids: 1 } },
+      {
+        projection: {
+          updates_memory_ids: 1,
+          extends_memory_ids: 1,
+          derives_from_memory_ids: 1,
+        },
+      },
     )
     .toArray()
   const referenced = [
@@ -808,10 +863,7 @@ async function pruneDanglingMemoryVersionLinks(instanceId: ObjectId): Promise<vo
   const alive = new Set(
     (
       await memories()
-        .find(
-          { _id: { $in: referenced.map((id) => parseObjectId(id)) } },
-          { projection: { _id: 1 } },
-        )
+        .find({ _id: { $in: referenced.map((id) => parseObjectId(id)) } }, { projection: { _id: 1 } })
         .toArray()
     ).map((m) => idString(m._id)),
   )
@@ -823,19 +875,29 @@ async function pruneDanglingMemoryVersionLinks(instanceId: ObjectId): Promise<vo
 async function pruneAsymmetricMemoryUpdates(instanceId: ObjectId): Promise<void> {
   const linked = await memories()
     .find(
-      { instance_id: instanceId, updates_memory_ids: { $exists: true, $ne: [] } },
+      {
+        instance_id: instanceId,
+        updates_memory_ids: { $exists: true, $ne: [] },
+      },
       { projection: { updates_memory_ids: 1, source_event_ids: 1 } },
     )
     .toArray()
   if (!linked.length) return
-  const oldIds = [
-    ...new Set(linked.flatMap((m) => m.updates_memory_ids || []).map(idString)),
-  ].map((id) => parseObjectId(id))
+  const oldIds = [...new Set(linked.flatMap((m) => m.updates_memory_ids || []).map(idString))].map((id) =>
+    parseObjectId(id),
+  )
   const oldDocs = oldIds.length
     ? await memories()
         .find(
           { _id: { $in: oldIds } },
-          { projection: { _id: 1, superseded_by_event_ids: 1, status: 1, is_archived: 1 } },
+          {
+            projection: {
+              _id: 1,
+              superseded_by_event_ids: 1,
+              status: 1,
+              is_archived: 1,
+            },
+          },
         )
         .toArray()
     : []
@@ -848,10 +910,10 @@ async function pruneAsymmetricMemoryUpdates(instanceId: ObjectId): Promise<void>
       return !(old.superseded_by_event_ids || []).some((ev) => sourceEvents.has(idString(ev)))
     })
     if (invalid.length > 0) {
-      await memories().updateOne(
-        { _id: m._id },
-        { $pull: { updates_memory_ids: { $in: invalid } }, $set: { updated_at: new Date() } } as never,
-      )
+      await memories().updateOne({ _id: m._id }, {
+        $pull: { updates_memory_ids: { $in: invalid } },
+        $set: { updated_at: new Date() },
+      } as never)
     }
   }
 }
@@ -862,20 +924,13 @@ async function pruneDanglingMemoryEntityRefs(instanceId: ObjectId): Promise<void
       {
         instance_id: instanceId,
         is_archived: false,
-        $or: [
-          { subject_entity_ids: { $exists: true, $ne: [] } },
-          { object_entity_ids: { $exists: true, $ne: [] } },
-        ],
+        $or: [{ subject_entity_ids: { $exists: true, $ne: [] } }, { object_entity_ids: { $exists: true, $ne: [] } }],
       },
       { projection: { subject_entity_ids: 1, object_entity_ids: 1 } },
     )
     .toArray()
   const refs = [
-    ...new Set(
-      mems
-        .flatMap((m) => [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])])
-        .map(idString),
-    ),
+    ...new Set(mems.flatMap((m) => [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])]).map(idString)),
   ]
   if (!refs.length) return
   const alive = new Set(
@@ -883,7 +938,10 @@ async function pruneDanglingMemoryEntityRefs(instanceId: ObjectId): Promise<void
       await mongoColl
         .entities()
         .find(
-          { instance_id: instanceId, _id: { $in: refs.map((id) => parseObjectId(id)) } },
+          {
+            instance_id: instanceId,
+            _id: { $in: refs.map((id) => parseObjectId(id)) },
+          },
           { projection: { _id: 1 } },
         )
         .toArray()
@@ -891,15 +949,12 @@ async function pruneDanglingMemoryEntityRefs(instanceId: ObjectId): Promise<void
   )
   const dead = refs.filter((id) => !alive.has(id)).map((id) => parseObjectId(id))
   if (!dead.length) return
-  await memories().updateMany(
-    { instance_id: instanceId },
-    {
-      $pull: {
-        subject_entity_ids: { $in: dead },
-        object_entity_ids: { $in: dead },
-      },
-    } as never,
-  )
+  await memories().updateMany({ instance_id: instanceId }, {
+    $pull: {
+      subject_entity_ids: { $in: dead },
+      object_entity_ids: { $in: dead },
+    },
+  } as never)
 }
 
 async function recurateMemoriesForEvent(
@@ -911,9 +966,7 @@ async function recurateMemoriesForEvent(
   aiResponse: string,
 ): Promise<number> {
   let deletedMemories = 0
-  const staleMemories = await memories()
-    .find({ instance_id: event.instance_id, source_event_ids: event._id })
-    .toArray()
+  const staleMemories = await memories().find({ instance_id: event.instance_id, source_event_ids: event._id }).toArray()
 
   if (staleMemories.length > 0) {
     const ns = getPineconeIndex().namespace(`mem_${idString(event.instance_id)}`)
@@ -926,15 +979,17 @@ async function recurateMemoriesForEvent(
       }
     }
 
-    await memories().deleteMany({ _id: { $in: staleMemories.map((m) => m._id) } })
+    await memories().deleteMany({
+      _id: { $in: staleMemories.map((m) => m._id) },
+    })
     deletedMemories = staleMemories.length
-    await pruneMemoryVersionLinks(event.instance_id, staleMemories.map((m) => m._id))
+    await pruneMemoryVersionLinks(
+      event.instance_id,
+      staleMemories.map((m) => m._id),
+    )
     await pruneDanglingMemoryVersionLinks(event.instance_id)
     await pruneAsymmetricMemoryUpdates(event.instance_id)
-    await worldInstances().updateOne(
-      { _id: event.instance_id },
-      { $inc: { 'meta.total_memories': -deletedMemories } },
-    )
+    await worldInstances().updateOne({ _id: event.instance_id }, { $inc: { 'meta.total_memories': -deletedMemories } })
   }
 
   // Graph edges asserted from the old content of this turn no longer hold;
@@ -990,15 +1045,14 @@ export const memoryService = {
     const pid = parseObjectId(playerId)
     // Timeline is the MAIN-story chronicle; private side chats have their own
     // thread view and never appear here (a side_chat type filter is ignored).
-    const filter: Record<string, unknown> = { instance_id: iid, player_id: pid, type: { $ne: 'side_chat' } }
+    const filter: Record<string, unknown> = {
+      instance_id: iid,
+      player_id: pid,
+      type: { $ne: 'side_chat' },
+    }
     if (opts.type && opts.type !== 'side_chat') filter.type = opts.type
 
-    const evs = await events()
-      .find(filter)
-      .sort({ sequence: -1 })
-      .skip(skip)
-      .limit(limit)
-      .toArray()
+    const evs = await events().find(filter).sort({ sequence: -1 }).skip(skip).limit(limit).toArray()
 
     const total = await events().countDocuments(filter)
     return { events: evs.reverse(), total, page: opts.page || 1 }
@@ -1007,7 +1061,10 @@ export const memoryService = {
   async getMemories(instanceId: string, playerId: string, opts: any) {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
-    const filter: Record<string, unknown> = { instance_id: iid, player_id: pid }
+    const filter: Record<string, unknown> = {
+      instance_id: iid,
+      player_id: pid,
+    }
     if (!opts.includeArchived) filter.is_archived = false
     // Echoes is a MAIN-story surface: private side-chat atoms only surface when
     // the protagonist is among their knowers (fail-closed, mirrors queryRag).
@@ -1031,10 +1088,7 @@ export const memoryService = {
         .toArray()
     }
 
-    return memories()
-      .find(filter)
-      .sort({ importance: -1, updated_at: -1 })
-      .toArray()
+    return memories().find(filter).sort({ importance: -1, updated_at: -1 }).toArray()
   },
 
   /**
@@ -1098,7 +1152,10 @@ export const memoryService = {
   async buildRecap(instanceId: string, playerId: string) {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
-    const instance = await worldInstances().findOne({ _id: iid, player_id: pid })
+    const instance = await worldInstances().findOne({
+      _id: iid,
+      player_id: pid,
+    })
     if (!instance) throw new Error('Instance not found')
     const mainVisibleMemory = await mainVisibleMemoryScope(iid)
 
@@ -1110,16 +1167,28 @@ export const memoryService = {
       // Main story only — a private side chat must never become the recap spine.
       events().findOne(
         { instance_id: iid, type: { $ne: 'side_chat' } },
-        { sort: { sequence: -1 }, projection: { 'data.ai_response': 1, sequence: 1 } },
+        {
+          sort: { sequence: -1 },
+          projection: { 'data.ai_response': 1, sequence: 1 },
+        },
       ),
       memories()
-        .find({ instance_id: iid, unresolved_thread: true, is_archived: false, ...mainVisibleMemory })
+        .find({
+          instance_id: iid,
+          unresolved_thread: true,
+          is_archived: false,
+          ...mainVisibleMemory,
+        })
         .sort({ importance: -1, updated_at: -1 })
         .limit(5)
         .toArray(),
       // Cast members with a tracked bond, most-recently-touched first.
       characters()
-        .find({ instance_id: iid, is_protagonist: { $ne: true }, relationship: { $exists: true } })
+        .find({
+          instance_id: iid,
+          is_protagonist: { $ne: true },
+          relationship: { $exists: true },
+        })
         .sort({ updated_at: -1 })
         .limit(4)
         .toArray(),
@@ -1136,9 +1205,7 @@ export const memoryService = {
 
     const currentPlace = instance.current_location?.name || null
     const currentWhen =
-      instance.current_time_anchor?.event_time_label ||
-      instance.current_time_anchor?.story_calendar?.label ||
-      null
+      instance.current_time_anchor?.event_time_label || instance.current_time_anchor?.story_calendar?.label || null
 
     return {
       spine,
@@ -1212,24 +1279,34 @@ export const memoryService = {
 
       if (memory.pinecone_id) {
         await namespace.upsert({
-          records: [{
-            id: memory.pinecone_id,
-            values: newEmbedding,
-            metadata: vectorMetadata,
-          }],
+          records: [
+            {
+              id: memory.pinecone_id,
+              values: newEmbedding,
+              metadata: vectorMetadata,
+            },
+          ],
         })
       } else {
         const newVecId = randomUUID()
         await namespace.upsert({
-          records: [{
-            id: newVecId,
-            values: newEmbedding,
-            metadata: vectorMetadata,
-          }],
+          records: [
+            {
+              id: newVecId,
+              values: newEmbedding,
+              metadata: vectorMetadata,
+            },
+          ],
         })
         await memories().updateOne(
           { _id: mid },
-          { $set: { pinecone_id: newVecId, is_archived: false, status: 'active' } },
+          {
+            $set: {
+              pinecone_id: newVecId,
+              is_archived: false,
+              status: 'active',
+            },
+          },
         )
       }
     }
@@ -1254,10 +1331,7 @@ export const memoryService = {
     }
 
     await memories().deleteOne({ _id: mid })
-    await worldInstances().updateOne(
-      { _id: memory.instance_id },
-      { $inc: { 'meta.total_memories': -1 } },
-    )
+    await worldInstances().updateOne({ _id: memory.instance_id }, { $inc: { 'meta.total_memories': -1 } })
 
     return { success: true }
   },
@@ -1277,10 +1351,15 @@ export const memoryService = {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
 
-    const instance = await worldInstances().findOne({ _id: iid, player_id: pid })
+    const instance = await worldInstances().findOne({
+      _id: iid,
+      player_id: pid,
+    })
     if (!instance) throw new Error('Instance not found')
 
-    const template = await worldTemplates().findOne({ _id: instance.template_id })
+    const template = await worldTemplates().findOne({
+      _id: instance.template_id,
+    })
     if (!template) throw new Error('Template not found')
 
     // Events being removed: the chosen turn and everything after it.
@@ -1293,10 +1372,7 @@ export const memoryService = {
     let deletedMemories = 0
     if (doomedIds.length > 0) {
       const mems = await memories()
-        .find(
-          { instance_id: iid, source_event_ids: { $in: doomedIds } },
-          { projection: { _id: 1, pinecone_id: 1 } },
-        )
+        .find({ instance_id: iid, source_event_ids: { $in: doomedIds } }, { projection: { _id: 1, pinecone_id: 1 } })
         .toArray()
       if (mems.length > 0) {
         const ns = getPineconeIndex().namespace(`mem_${instanceId}`)
@@ -1310,7 +1386,10 @@ export const memoryService = {
         }
         await memories().deleteMany({ _id: { $in: mems.map((m) => m._id) } })
         deletedMemories = mems.length
-        await pruneMemoryVersionLinks(iid, mems.map((m) => m._id))
+        await pruneMemoryVersionLinks(
+          iid,
+          mems.map((m) => m._id),
+        )
       }
     }
     // The removed turns can no longer be a supersession trigger — drop their
@@ -1329,22 +1408,13 @@ export const memoryService = {
     // 2. Scene + chapter summaries covering the removed range, plus their
     //    Pinecone vectors (summary retrieval namespace).
     const doomedSummaries = await sceneSummaries()
-      .find(
-        { instance_id: iid, 'event_range.end_sequence': { $gte: sequence } },
-        { projection: { pinecone_id: 1 } },
-      )
+      .find({ instance_id: iid, 'event_range.end_sequence': { $gte: sequence } }, { projection: { pinecone_id: 1 } })
       .toArray()
     const doomedChapters = await chapterSummaries()
-      .find(
-        { instance_id: iid, 'event_range.end_sequence': { $gte: sequence } },
-        { projection: { pinecone_id: 1 } },
-      )
+      .find({ instance_id: iid, 'event_range.end_sequence': { $gte: sequence } }, { projection: { pinecone_id: 1 } })
       .toArray()
     const doomedArcs = await arcSummaries()
-      .find(
-        { instance_id: iid, 'event_range.end_sequence': { $gte: sequence } },
-        { projection: { pinecone_id: 1 } },
-      )
+      .find({ instance_id: iid, 'event_range.end_sequence': { $gte: sequence } }, { projection: { pinecone_id: 1 } })
       .toArray()
     const summaryVecIds = [...doomedSummaries, ...doomedChapters, ...doomedArcs]
       .map((s) => s.pinecone_id)
@@ -1372,7 +1442,10 @@ export const memoryService = {
     })
 
     // 3. The events themselves.
-    await events().deleteMany({ instance_id: iid, sequence: { $gte: sequence } })
+    await events().deleteMany({
+      instance_id: iid,
+      sequence: { $gte: sequence },
+    })
 
     // 3b. Rebuild the character codex as an EXACT projection of the surviving
     // ledger. The per-turn codex deltas are stored on each event (like
@@ -1381,7 +1454,10 @@ export const memoryService = {
     // removed turn can linger. The protagonist's authored/onboarded identity is
     // re-seeded first so replayed deltas attach to it; its evolved facts/state
     // then rebuild from the surviving deltas too.
-    const priorProtagonist = await characters().findOne({ instance_id: iid, is_protagonist: true })
+    const priorProtagonist = await characters().findOne({
+      instance_id: iid,
+      is_protagonist: true,
+    })
     const reseedProtagonist = async () => {
       const protoName = priorProtagonist?.canonical_name || template.protagonist?.name
       if (!protoName) return
@@ -1444,20 +1520,33 @@ export const memoryService = {
       await reseedProtagonist()
       const batches = survivors
         .filter((ev) => Array.isArray(ev.data?.codex_deltas) && ev.data.codex_deltas.length > 0)
-        .map((ev) => ({ sequence: ev.sequence, deltas: ev.data!.codex_deltas! }))
-      await characterCodexService.rebuildCodexFromLedger({ instanceId, playerId, batches })
+        .map((ev) => ({
+          sequence: ev.sequence,
+          deltas: ev.data!.codex_deltas!,
+        }))
+      await characterCodexService.rebuildCodexFromLedger({
+        instanceId,
+        playerId,
+        batches,
+      })
     } else {
       // Legacy worlds whose events predate ledgered deltas: there is nothing to
       // replay, so fall back to provenance pruning — keep the pre-rewind cast,
       // delete only characters first introduced in removed turns, clamp
       // survivors' last_seen. New play accrues deltas, so a later rewind of the
       // same world becomes exact.
-      await characters().deleteMany({ instance_id: iid, first_seen_sequence: { $gte: sequence } })
+      await characters().deleteMany({
+        instance_id: iid,
+        first_seen_sequence: { $gte: sequence },
+      })
       await characters().updateMany(
         { instance_id: iid, last_seen_sequence: { $gte: sequence } },
         { $set: { last_seen_sequence: Math.max(0, sequence - 1) } },
       )
-      const survivingProtagonist = await characters().findOne({ instance_id: iid, is_protagonist: true })
+      const survivingProtagonist = await characters().findOne({
+        instance_id: iid,
+        is_protagonist: true,
+      })
       if (!survivingProtagonist) await reseedProtagonist()
     }
 
@@ -1521,17 +1610,13 @@ export const memoryService = {
     const lastSurvivingSeq = survivors.length ? survivors[survivors.length - 1].sequence : 0
     const stateSnapshot =
       lastSurvivingSeq > 0
-        ? await projectionCheckpointService
-            .instanceStateBefore(instanceId, lastSurvivingSeq)
-            .catch(() => null)
+        ? await projectionCheckpointService.instanceStateBefore(instanceId, lastSurvivingSeq).catch(() => null)
         : null
     if (stateSnapshot) {
       worldState = { ...worldState, ...(stateSnapshot.world_state || {}) }
       activeFlags = { ...activeFlags, ...(stateSnapshot.active_flags || {}) }
     }
-    const stateSuffix = stateSnapshot
-      ? survivors.filter((ev) => ev.sequence > stateSnapshot.sequence)
-      : survivors
+    const stateSuffix = stateSnapshot ? survivors.filter((ev) => ev.sequence > stateSnapshot.sequence) : survivors
     for (const ev of stateSuffix) {
       worldState = applyStateMutations(worldState, ev.data?.state_mutations || {}, statLimits)
       activeFlags = applyFlagMutations(activeFlags, ev.data?.flag_mutations || {})
@@ -1561,7 +1646,11 @@ export const memoryService = {
         $set: {
           world_state: worldState,
           active_flags: activeFlags,
-          current_scene: { tag: sceneTag, turn_count: turnCount, summary_pending: false },
+          current_scene: {
+            tag: sceneTag,
+            turn_count: turnCount,
+            summary_pending: false,
+          },
           current_time_anchor: rewindTimeAnchor,
           active_timeline_id: rewindTimeAnchor.timeline_id,
           default_calendar_id: rewindTimeAnchor.story_calendar?.calendar_id,
@@ -1629,12 +1718,8 @@ export const memoryService = {
     const nextAiResponse = updates.ai_response ?? event.data.ai_response
     const nextPlayerInput = updates.player_input ?? event.data.player_input
     const parsedPlayerInput = parsePlayerInput(nextPlayerInput || '')
-    const aiChanged =
-      typeof updates.ai_response === 'string' &&
-      updates.ai_response !== event.data.ai_response
-    const playerChanged =
-      typeof updates.player_input === 'string' &&
-      updates.player_input !== event.data.player_input
+    const aiChanged = typeof updates.ai_response === 'string' && updates.ai_response !== event.data.ai_response
+    const playerChanged = typeof updates.player_input === 'string' && updates.player_input !== event.data.player_input
     const contentChanged = aiChanged || playerChanged
     if (!contentChanged) {
       throw new HttpError(400, 'Event edit did not change ai_response or player_input.')
@@ -1644,7 +1729,17 @@ export const memoryService = {
       characterNamesForInstance(event.instance_id),
       worldInstances().findOne(
         { _id: event.instance_id, player_id: pid },
-        { projection: { message_length: 1, narration_pov: 1, template_id: 1, world_state: 1, active_flags: 1, persona_snapshot: 1, current_location: 1 } },
+        {
+          projection: {
+            message_length: 1,
+            narration_pov: 1,
+            template_id: 1,
+            world_state: 1,
+            active_flags: 1,
+            persona_snapshot: 1,
+            current_location: 1,
+          },
+        },
       ),
     ])
     const editTemplate = editInstance
@@ -1683,13 +1778,19 @@ export const memoryService = {
           ? { name: editInstance.persona_snapshot.name, aliases: [] }
           : null
         : editProtagonistCard
-          ? { name: editProtagonistCard.canonical_name, aliases: editProtagonistCard.aliases || [] }
+          ? {
+              name: editProtagonistCard.canonical_name,
+              aliases: editProtagonistCard.aliases || [],
+            }
           : editInstance?.persona_snapshot?.name
             ? { name: editInstance.persona_snapshot.name, aliases: [] }
             : null
       const editRoster = (editCodex as any[])
         .filter((c) => c.canonical_name && (editTemplate?.is_sentient || !c.is_protagonist))
-        .map((c) => ({ name: c.canonical_name as string, aliases: (c.aliases || []) as string[] }))
+        .map((c) => ({
+          name: c.canonical_name as string,
+          aliases: (c.aliases || []) as string[],
+        }))
       const editMeta = await extractSceneMetadata(
         nextAiResponse,
         Object.keys(editInstance?.world_state || {}),
@@ -1727,36 +1828,33 @@ export const memoryService = {
       nextSelectedReplayIndex = nextReplayVariants.length - 1
     }
 
-    await events().updateOne(
-      { _id: eid },
-      {
-        $push: {
-          edit_history: {
-            previous_data: event.data,
-            edited_at: new Date(),
-          },
+    await events().updateOne({ _id: eid }, {
+      $push: {
+        edit_history: {
+          previous_data: event.data,
+          edited_at: new Date(),
         },
-        $set: {
-          'data.ai_response': nextAiResponse,
-          'data.player_input': nextPlayerInput,
-          'data.player_spoken_input': parsedPlayerInput.spoken,
-          'data.player_narration_facts': parsedPlayerInput.narrationFacts,
-          'data.replay_variants': nextReplayVariants,
-          'data.selected_replay_index': nextSelectedReplayIndex,
-          'data.prose_hygiene_issues': proseHygieneIssues,
-          // Fresh chips + presence re-derived from the rewritten narrative.
-          ...(aiChanged
-            ? {
-                'data.choices': editChoices || [],
-                'data.present_characters': editPresent || [],
-                'data.trackable_mentions': editTrackableMentions || [],
-              }
-            : {}),
-          is_user_edited: true,
-          updated_at: new Date(),
-        },
-      } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
-    )
+      },
+      $set: {
+        'data.ai_response': nextAiResponse,
+        'data.player_input': nextPlayerInput,
+        'data.player_spoken_input': parsedPlayerInput.spoken,
+        'data.player_narration_facts': parsedPlayerInput.narrationFacts,
+        'data.replay_variants': nextReplayVariants,
+        'data.selected_replay_index': nextSelectedReplayIndex,
+        'data.prose_hygiene_issues': proseHygieneIssues,
+        // Fresh chips + presence re-derived from the rewritten narrative.
+        ...(aiChanged
+          ? {
+              'data.choices': editChoices || [],
+              'data.present_characters': editPresent || [],
+              'data.trackable_mentions': editTrackableMentions || [],
+            }
+          : {}),
+        is_user_edited: true,
+        updated_at: new Date(),
+      },
+    } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>)
 
     let deletedMemories = 0
 
@@ -1808,11 +1906,7 @@ export const memoryService = {
    * the narration is streamed token-by-token through the callback (used by the
    * streaming worker path); otherwise it is generated in one shot (REST).
    */
-  async replayEvent(
-    eventId: string,
-    playerId: string,
-    onDelta?: (chunk: string) => void,
-  ) {
+  async replayEvent(eventId: string, playerId: string, onDelta?: (chunk: string) => void) {
     const eid = parseObjectId(eventId)
     const pid = parseObjectId(playerId)
 
@@ -1831,15 +1925,17 @@ export const memoryService = {
       throw new Error('Replay is only available for the latest turn. Rewind first for earlier turns.')
     }
 
-    const instance = await worldInstances().findOne({ _id: event.instance_id, player_id: pid })
+    const instance = await worldInstances().findOne({
+      _id: event.instance_id,
+      player_id: pid,
+    })
     if (!instance) throw new Error('Instance not found')
-    const template = await worldTemplates().findOne({ _id: instance.template_id })
+    const template = await worldTemplates().findOne({
+      _id: instance.template_id,
+    })
     if (!template) throw new Error('Template not found')
 
-    const player = await users().findOne(
-      { _id: pid },
-      { projection: { 'preferences.nsfw_enabled': 1 } },
-    )
+    const player = await users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } })
     const userNsfwEnabled = player?.preferences?.nsfw_enabled === true
 
     const parsed = parsePlayerInput(event.data.player_input || '')
@@ -1848,12 +1944,21 @@ export const memoryService = {
 
     // Incremental retrieval widening per replay, bounded aggressively.
     const factor = Math.min(1 + replayDepth * 0.35, 2.5)
-    const loreTopK = Math.min(Math.max(Math.round((template.max_lore_results || 10) * factor), template.max_lore_results || 10), 40)
-    const memoryTopK = Math.min(Math.max(Math.round((template.max_context_memories || 25) * factor), template.max_context_memories || 25), 80)
+    const loreTopK = Math.min(
+      Math.max(Math.round((template.max_lore_results || 10) * factor), template.max_lore_results || 10),
+      40,
+    )
+    const memoryTopK = Math.min(
+      Math.max(Math.round((template.max_context_memories || 25) * factor), template.max_context_memories || 25),
+      80,
+    )
     const recentWindow = Math.min(6 + replayDepth * 2, 20)
 
     const priorEvents = await events()
-      .find({ instance_id: event.instance_id, sequence: { $lt: event.sequence } })
+      .find({
+        instance_id: event.instance_id,
+        sequence: { $lt: event.sequence },
+      })
       .sort({ sequence: -1 })
       .limit(recentWindow)
       .toArray()
@@ -1892,13 +1997,7 @@ export const memoryService = {
     }
 
     const ragQuery = parsed.raw || event.data.ai_response || template.seed_prompt
-    const rag = await queryRag(
-      idString(template._id),
-      idString(event.instance_id),
-      ragQuery,
-      loreTopK,
-      memoryTopK,
-    )
+    const rag = await queryRag(idString(template._id), idString(event.instance_id), ragQuery, loreTopK, memoryTopK)
 
     const mode = instance.mode || DEFAULT_CHAT_MODE
     const modeWantsNsfw = mode === NSFW_MODE
@@ -1908,9 +2007,10 @@ export const memoryService = {
           ? 'nsfw'
           : classifyScene(parsed.raw, priorEvents)
         : 'sfw'
-    const modelId = sceneClass === 'nsfw'
-      ? (template.model_preferences?.narration_nsfw || AI_MODELS.narrationNsfw)
-      : (template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw)
+    const modelId =
+      sceneClass === 'nsfw'
+        ? template.model_preferences?.narration_nsfw || AI_MODELS.narrationNsfw
+        : template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw
 
     const prompt = buildPrompt({
       seedPrompt: template.seed_prompt,
@@ -1931,6 +2031,8 @@ export const memoryService = {
       narrationPov: instance.narration_pov || 'third',
       chatMode: mode,
       narrativeStyle: template.narrative_style || '',
+      narrationTone: instance.narration_tone,
+      toneExampleSeed: idString(instance._id),
       styleNotes: template.style_notes || '',
       playerPersona: instance.persona_snapshot || null,
       messageLength: instance.message_length || 'medium',
@@ -1944,7 +2046,10 @@ export const memoryService = {
 
     const replayDirective = replayVariants
       .slice(-3)
-      .map((v, i) => `Variant ${replayVariants.length - Math.min(3, replayVariants.length) + i + 1}: ${continuityText(v.narrative || '')}`)
+      .map(
+        (v, i) =>
+          `Variant ${replayVariants.length - Math.min(3, replayVariants.length) + i + 1}: ${continuityText(v.narrative || '')}`,
+      )
       .join('\n')
 
     // The replay directive MUST sit BEFORE the final user turn. If appended
@@ -1987,7 +2092,13 @@ ${replayDirective || '(none)'}`,
     const replayMaxTokens = lengthMaxTokens(instance.message_length || 'medium')
     const replayNarrative = onDelta
       ? await callLLMStream(
-          { model: modelId, messages: replayMessages, temperature: replayTemp, maxTokens: replayMaxTokens },
+          {
+            model: modelId,
+            messages: replayMessages,
+            temperature: replayTemp,
+            maxTokens: replayMaxTokens,
+            sessionId: idString(instance._id),
+          },
           onDelta,
         )
       : await callLLM({
@@ -1995,12 +2106,17 @@ ${replayDirective || '(none)'}`,
           messages: replayMessages,
           temperature: replayTemp,
           maxTokens: replayMaxTokens,
+          sessionId: idString(instance._id),
         })
     const repairedReplay = await repairProseHygiene({
       narrative: replayNarrative.trim(),
       characterNames: replayCodex.map((c) => c.canonical_name),
       messageLength: instance.message_length || 'medium',
-      playerAddressMode: template.is_sentient ? 'you' : (instance.narration_pov || 'third') === 'first' ? 'you' : 'role',
+      playerAddressMode: template.is_sentient
+        ? 'you'
+        : (instance.narration_pov || 'third') === 'first'
+          ? 'you'
+          : 'role',
       previousOpeningNames: (() => {
         const previousOpeningName = openingCharacterName(
           priorEvents,
@@ -2009,8 +2125,21 @@ ${replayDirective || '(none)'}`,
         return previousOpeningName ? [previousOpeningName] : []
       })(),
       avoidOpeningNames: replayCodex.map((c) => c.canonical_name),
-      model: modelId,
+      // Replay repair follows the same reliable formatting path as live turns.
+      model: AI_MODELS.metadata,
     })
+
+    // A replay must never overwrite the selected version with the same prose.
+    // The model may vary only Markdown markers while returning an otherwise
+    // identical completion; normalize those cosmetic differences before the
+    // comparison.  The client restores the original event on this error, so an
+    // unhelpful duplicate cannot become canonical or pollute rewind history.
+    if (duplicatesExistingReplay(repairedReplay.narrative, replayVariants)) {
+      throw new HttpError(
+        422,
+        'That replay matched the existing response. Nothing was changed; please try Replay again.',
+      )
+    }
 
     // Regenerate the turn projections FROM THE NEW VARIANT. Replay is limited to
     // the latest turn, so we can safely recompute the instance's current state
@@ -2062,35 +2191,32 @@ ${replayDirective || '(none)'}`,
     const nextVariants = [...replayVariants, nextVariant]
     const selectedIdx = nextVariants.length - 1
 
-    await events().updateOne(
-      { _id: eid },
-      {
-        $push: {
-          edit_history: {
-            previous_data: event.data,
-            edited_at: new Date(),
-          },
+    await events().updateOne({ _id: eid }, {
+      $push: {
+        edit_history: {
+          previous_data: event.data,
+          edited_at: new Date(),
         },
-        $set: {
-          'data.ai_response': nextVariant.narrative,
-          'data.model_used': modelId,
-          'data.replay_variants': nextVariants,
-          'data.selected_replay_index': selectedIdx,
-          'data.prose_hygiene_issues': repairedReplay.issues,
-          // Fresh projections, re-derived from the NEW variant (the prior ones
-          // reflected the replaced prose).
-          'data.choices': replayMeta.choices,
-          'data.present_characters': replayMeta.present_characters,
-          'data.trackable_mentions': replayTrackableMentions,
-          'data.state_mutations': replayMeta.state_mutations,
-          'data.flag_mutations': replayMeta.flag_mutations,
-          'data.codex_deltas': replayCodexDeltas,
-          scene_tag: replayMeta.scene_tag,
-          location_anchor: replayProjection.locationAnchor,
-          updated_at: new Date(),
-        },
-      } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
-    )
+      },
+      $set: {
+        'data.ai_response': nextVariant.narrative,
+        'data.model_used': modelId,
+        'data.replay_variants': nextVariants,
+        'data.selected_replay_index': selectedIdx,
+        'data.prose_hygiene_issues': repairedReplay.issues,
+        // Fresh projections, re-derived from the NEW variant (the prior ones
+        // reflected the replaced prose).
+        'data.choices': replayMeta.choices,
+        'data.present_characters': replayMeta.present_characters,
+        'data.trackable_mentions': replayTrackableMentions,
+        'data.state_mutations': replayMeta.state_mutations,
+        'data.flag_mutations': replayMeta.flag_mutations,
+        'data.codex_deltas': replayCodexDeltas,
+        scene_tag: replayMeta.scene_tag,
+        location_anchor: replayProjection.locationAnchor,
+        updated_at: new Date(),
+      },
+    } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>)
 
     await worldInstances().updateOne(
       { _id: event.instance_id, player_id: pid },
@@ -2207,16 +2333,19 @@ ${replayDirective || '(none)'}`,
           },
         )
       : null
-    const proseHygieneIssues =
-      Array.isArray(chosen.prose_hygiene_issues)
-        ? chosen.prose_hygiene_issues
-        : validateProseHygiene({
-            narrative: nextAi,
-            characterNames: selectedCharacterNames,
-            messageLength: selectedInstance?.message_length || 'medium',
-            playerAddressMode: selectedTemplate?.is_sentient ? 'you' : selectedInstance?.narration_pov === 'first' ? 'you' : 'role',
-            avoidOpeningNames: selectedCharacterNames,
-          })
+    const proseHygieneIssues = Array.isArray(chosen.prose_hygiene_issues)
+      ? chosen.prose_hygiene_issues
+      : validateProseHygiene({
+          narrative: nextAi,
+          characterNames: selectedCharacterNames,
+          messageLength: selectedInstance?.message_length || 'medium',
+          playerAddressMode: selectedTemplate?.is_sentient
+            ? 'you'
+            : selectedInstance?.narration_pov === 'first'
+              ? 'you'
+              : 'role',
+          avoidOpeningNames: selectedCharacterNames,
+        })
 
     const selectedProjection =
       changed && selectedInstance && selectedTemplate
@@ -2227,7 +2356,7 @@ ${replayDirective || '(none)'}`,
             template: selectedTemplate,
             narrative: nextAi,
             codex: selectedCodex as any[],
-        })
+          })
         : null
     const selectedCodexDeltas =
       changed && selectedProjection && selectedInstance && selectedTemplate
@@ -2247,17 +2376,29 @@ ${replayDirective || '(none)'}`,
             present: selectedProjection.meta.present_characters,
             codex: selectedCodex,
             exclude: selectedInstance.persona_snapshot?.name ? [selectedInstance.persona_snapshot.name] : [],
-          })
+        })
         : null
     const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas)
+
+    // Choices/presence are part of a replay variant's player-facing snapshot.
+    // Do not overwrite a stored variant's chips merely because choosing it also
+    // reprojects state: a second metadata extraction is nondeterministic and
+    // made the base variant display a different menu from the one it saved.
+    // Only legacy variants with no saved snapshot fall back to re-extraction.
+    const selectedChoices = Array.isArray(chosen.choices) && chosen.choices.length > 0
+      ? chosen.choices
+      : selectedProjection?.meta.choices ?? []
+    const selectedPresentCharacters = Array.isArray(chosen.present_characters)
+      ? chosen.present_characters
+      : selectedProjection?.meta.present_characters ?? []
 
     const nextVariants = [...variants]
     if (selectedProjection) {
       nextVariants[variantIndex] = {
         ...chosen,
         prose_hygiene_issues: proseHygieneIssues,
-        choices: selectedProjection.meta.choices,
-        present_characters: selectedProjection.meta.present_characters,
+        choices: selectedChoices,
+        present_characters: selectedPresentCharacters,
         trackable_mentions: selectedTrackableMentions ?? chosen.trackable_mentions ?? [],
         state_mutations: selectedProjection.meta.state_mutations,
         flag_mutations: selectedProjection.meta.flag_mutations,
@@ -2265,40 +2406,37 @@ ${replayDirective || '(none)'}`,
       }
     }
 
-    await events().updateOne(
-      { _id: eid },
-      {
-        $push: {
-          edit_history: {
-            previous_data: event.data,
-            edited_at: new Date(),
-          },
+    await events().updateOne({ _id: eid }, {
+      $push: {
+        edit_history: {
+          previous_data: event.data,
+          edited_at: new Date(),
         },
-        $set: {
-          'data.ai_response': nextAi,
-          'data.model_used': chosen.model_used || event.data.model_used,
-          'data.replay_variants': nextVariants,
-          'data.selected_replay_index': variantIndex,
-          'data.prose_hygiene_issues': proseHygieneIssues,
-          // Restore the chosen variant's projections. If this selection changes
-          // canonical prose, re-extract so older variants that predate projection
-          // fields cannot leave stale chips/presence/state behind.
-          'data.choices': selectedProjection?.meta.choices ?? (Array.isArray(chosen.choices) ? chosen.choices : []),
-          'data.present_characters': selectedProjection?.meta.present_characters ?? (Array.isArray(chosen.present_characters) ? chosen.present_characters : []),
-          ...(selectedTrackableMentions ? { 'data.trackable_mentions': selectedTrackableMentions } : {}),
-          ...(selectedCodexDeltas ? { 'data.codex_deltas': selectedCodexDeltas } : {}),
-          ...(selectedProjection
-            ? {
-                'data.state_mutations': selectedProjection.meta.state_mutations,
-                'data.flag_mutations': selectedProjection.meta.flag_mutations,
-                scene_tag: selectedProjection.meta.scene_tag,
-                location_anchor: selectedProjection.locationAnchor,
-              }
-            : {}),
-          updated_at: new Date(),
-        },
-      } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>,
-    )
+      },
+      $set: {
+        'data.ai_response': nextAi,
+        'data.model_used': chosen.model_used || event.data.model_used,
+        'data.replay_variants': nextVariants,
+        'data.selected_replay_index': variantIndex,
+        'data.prose_hygiene_issues': proseHygieneIssues,
+        // Restore the chosen variant's projections. If this selection changes
+        // canonical prose, re-extract so older variants that predate projection
+        // fields cannot leave stale chips/presence/state behind.
+        'data.choices': selectedChoices,
+        'data.present_characters': selectedPresentCharacters,
+        ...(selectedTrackableMentions ? { 'data.trackable_mentions': selectedTrackableMentions } : {}),
+        ...(selectedCodexDeltas ? { 'data.codex_deltas': selectedCodexDeltas } : {}),
+        ...(selectedProjection
+          ? {
+              'data.state_mutations': selectedProjection.meta.state_mutations,
+              'data.flag_mutations': selectedProjection.meta.flag_mutations,
+              scene_tag: selectedProjection.meta.scene_tag,
+              location_anchor: selectedProjection.locationAnchor,
+            }
+          : {}),
+        updated_at: new Date(),
+      },
+    } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>)
 
     if (selectedProjection) {
       await worldInstances().updateOne(

@@ -19,6 +19,7 @@ import {
   isBareDescriptorName,
   isPlayerMentionedRelative,
 } from "../worker/lib/character-codex-extractor";
+import { isEphemeralPersonDescriptor, isNonPersonRole } from "../src/services/character-codex.service";
 import { classifyScene } from "../worker/lib/nsfw-classifier";
 import type { CharacterCodexDelta } from "../src/services/character-codex.service";
 
@@ -37,6 +38,20 @@ for (const n of ["Merchant", "the merchant", "a guard", "the stranger", "an old 
 console.log("=== B2b.1 proper / qualified names are NOT bare ===");
 for (const n of ["Merchant Voss", "Mira", "the iron merchant of Ashford", "Captain", "Elara"]) {
   ok(`"${n}" is NOT a bare descriptor`, !isBareDescriptorName(n));
+}
+
+console.log("=== B2b.1b places and objects are never character-card roles ===");
+for (const role of ["location", "landmark", "city", "building", "artifact", "vehicle"]) {
+  ok(`"${role}" is not a person role`, isNonPersonRole(role));
+}
+ok("" + "barista" + " remains a person role", !isNonPersonRole("barista"));
+
+console.log("=== B2b.1c scene descriptions are never durable identity aliases ===");
+for (const label of ["the man", "a woman", "the man in a dark suit", "a masked figure", "the stranger with a knife"]) {
+  ok(`"${label}" is ephemeral`, isEphemeralPersonDescriptor(label));
+}
+for (const label of ["Charles", "the butler", "Vico Rossi", "Mother"]) {
+  ok(`"${label}" is not an ephemeral descriptor`, !isEphemeralPersonDescriptor(label));
 }
 
 console.log("\n=== B2b.2 absent player-relative blocked even when named by narration ===");
@@ -75,7 +90,10 @@ ok(
 ok("single ambiguous 'intimate' → sfw", classifyScene("We shared an intimate dinner by candlelight.", []) === "sfw");
 ok("romance 'caress' → sfw", classifyScene("She caressed his hand softly.", []) === "sfw");
 ok("plain scene → sfw", classifyScene("I walk to the market and buy bread.", []) === "sfw");
-ok("hardcore single strong term → nsfw", classifyScene("She wanted to fuck right there.", []) === "nsfw");
+// Profanity alone is deliberately not sexual intent; this protects ordinary
+// arguments from being routed to the adult narrator. Explicit anatomy/grammar
+// still routes NSFW in the cases above and in the dedicated classifier suite.
+ok("profanity alone → sfw", classifyScene("She wanted to fuck right there.", []) === "sfw");
 
 console.log(`\n${failures === 0 ? "✅ ALL INVARIANTS HELD" : `❌ ${failures} FAILED`}`);
 process.exit(failures === 0 ? 0 : 1);

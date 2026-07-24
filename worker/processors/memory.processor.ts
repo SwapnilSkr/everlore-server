@@ -403,9 +403,16 @@ World: ${aiResponse}`,
         if (!normalized || seenMentions.has(normalized)) continue
         seenMentions.add(normalized)
         if (normalized === 'player' || normalized === 'the player') continue // singleton below
+        const type = rosterTypes.get(normalized) || extractedKinds.get(normalized) || 'concept'
+        // A memory curator sees descriptive prose, not an authoritative movement
+        // action. It must never mint a new place from a phrase such as "father's
+        // study" after the player deliberately travelled to "Parent's room".
+        // Visited locations are created only by the generation location seam;
+        // memories already retain that event's location anchor for retrieval.
+        if (type === 'location') continue
         mentions.push({
           name,
-          type: rosterTypes.get(normalized) || extractedKinds.get(normalized) || 'concept',
+          type,
         })
       }
     }

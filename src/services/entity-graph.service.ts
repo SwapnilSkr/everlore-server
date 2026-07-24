@@ -119,6 +119,8 @@ const GENERIC_PLACE_NOUNS = new Set([
 ])
 /** Minimum Jaccard score for a conservative fuzzy location match. */
 const LOCATION_FUZZY_MIN_SCORE = 0.45
+/** A close runner-up means the short name is ambiguous; never merge on a guess. */
+const LOCATION_FUZZY_MIN_MARGIN = 0.2
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -181,23 +183,26 @@ export function pickBestLocationMatch(
   minScore = LOCATION_FUZZY_MIN_SCORE,
 ): EntityDoc | null {
   let best: { entity: EntityDoc; score: number } | null = null
+  let runnerUp: { entity: EntityDoc; score: number } | null = null
   for (const entity of candidates) {
     for (const candidateNorm of normalizedLocationNames(entity)) {
       const score = scoreLocationNameMatch(queryNorm, candidateNorm)
       if (score < minScore) continue
-      if (
-        !best ||
-        score > best.score ||
-        (score === best.score &&
-          ((entity.last_seen_sequence || 0) > (best.entity.last_seen_sequence || 0) ||
-            ((entity.last_seen_sequence || 0) === (best.entity.last_seen_sequence || 0) &&
-              (entity.mention_count || 0) > (best.entity.mention_count || 0))))
-      ) {
+      if (!best || score > best.score) {
+        if (best && idString(best.entity._id) !== idString(entity._id)) runnerUp = best
         best = { entity, score }
+      } else if (idString(best.entity._id) !== idString(entity._id) && (!runnerUp || score > runnerUp.score)) {
+        runnerUp = { entity, score }
       }
     }
   }
-  return best?.entity ?? null
+  if (!best) return null
+  // Recency is useful only as a deterministic ordering after identity is known;
+  // it must never decide between two semantically plausible places. Abstaining
+  // may mint a duplicate that can later be reviewed, whereas merging the wrong
+  // locations silently corrupts the map.
+  if (runnerUp && best.score - runnerUp.score < LOCATION_FUZZY_MIN_MARGIN) return null
+  return best.entity
 }
 
 /** Bounded indexed candidate fetch for fuzzy location resolution (not full-registry).

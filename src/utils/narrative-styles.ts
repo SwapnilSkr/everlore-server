@@ -7,9 +7,9 @@
  * rhythm + one in-voice example) that lives in the CACHEABLE static prefix, so
  * it costs ~0 extra TTFT after the first turn.
  *
- * Style is set on the world/character at forge time and may be overridden
- * per-conversation. Tone + message length are per-turn modifiers layered ON TOP
- * of the style (see {@link buildToneDirective} / {@link buildLengthDirective}).
+ * Style is set on the world/character at forge time, then may be deliberately
+ * overridden for one player instance. A player's narration tone and message
+ * length are layered on top; see narration-tones.ts and {@link buildLengthDirective}.
  */
 
 export type MessageLength = 'short' | 'medium' | 'long'
@@ -145,7 +145,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
   {
     key: 'dark_romance',
     label: 'Dark Romance',
-    blurb: 'Dangerous, magnetic, morally grey — the love you shouldn\'t want.',
+    blurb: "Dangerous, magnetic, morally grey — the love you shouldn't want.",
     block: `NARRATIVE VOICE — Dark Romance:
 - Register: dangerous, magnetic, morally grey. A love interest you shouldn't want and can't resist — power, control, and simmering threat.
 - Diction: commanding and possessive, velvet over steel; the pull between cruelty and devotion, want laced with warning. Enemies-to-lovers heat.
@@ -244,9 +244,7 @@ export const NARRATIVE_STYLE_PRESETS: StylePreset[] = [
   },
 ]
 
-const STYLE_MAP: Record<string, StylePreset> = Object.fromEntries(
-  NARRATIVE_STYLE_PRESETS.map((p) => [p.key, p]),
-)
+const STYLE_MAP: Record<string, StylePreset> = Object.fromEntries(NARRATIVE_STYLE_PRESETS.map((p) => [p.key, p]))
 
 /**
  * Genre families — mirror of the Flutter grouping in
@@ -280,9 +278,7 @@ export const STYLE_FAMILY: Record<string, string> = {
 
 /** All style keys sharing a family with any of the given interest keys. */
 export function familyExpandedKeys(interests: string[]): string[] {
-  const fams = new Set(
-    interests.map((k) => STYLE_FAMILY[k]).filter(Boolean),
-  )
+  const fams = new Set(interests.map((k) => STYLE_FAMILY[k]).filter(Boolean))
   if (fams.size === 0) return []
   return Object.entries(STYLE_FAMILY)
     .filter(([, fam]) => fams.has(fam))
@@ -362,10 +358,13 @@ export function buildStyleReminder(
   styleKey?: string,
   modeLabel?: string,
   len?: MessageLength,
+  toneLabel?: string,
 ): string {
   const preset = styleKey ? STYLE_MAP[styleKey] : undefined
   const bits: string[] = []
   if (preset && preset.key !== 'default') bits.push(`voice: ${preset.label}`)
+  const tone = (toneLabel || '').trim()
+  if (tone) bits.push(`tone: ${tone}`)
   const m = (modeLabel || '').trim()
   if (m) bits.push(`mode: ${m}`)
   if (len === 'short') bits.push('keep it short and punchy')

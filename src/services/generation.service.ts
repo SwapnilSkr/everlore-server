@@ -8,6 +8,9 @@ import { getGenerationQueue, QUEUE_RETENTION } from '../queues'
 import { instanceService } from './instance.service'
 import { parseObjectId } from '../utils/mongo-id'
 import { EVENT_WINDOWS, buildEventWindow } from '../utils/event-window'
+import type { PlayerWorldAction } from '../utils/world-action'
+import { getRedisClient } from '../config/redis'
+import { generationLockKey } from '../utils/generation-lock'
 
 const users = () => mongoColl.users()
 const worldInstances = () => mongoColl.worldInstances()
@@ -24,8 +27,11 @@ export const generationService = {
     isContinuation?: boolean
     /** 'hours' | 'day' | 'days' | 'season' — turns a continue into a calendar tick. */
     timeAdvance?: string
+    /** A structured, player-confirmed action such as travel or a relationship fact. */
+    worldAction?: PlayerWorldAction
   }) {
-    const { instanceId, playerId, userMessage, isContinuation = false, timeAdvance } = params
+    const { instanceId, playerId, userMessage, isContinuation = false, timeAdvance, worldAction } = params
+    const requestedAt = Date.now()
     const session = await instanceService.loadSession(instanceId, playerId)
 
     // Per-user NSFW consent is read fresh (not from the cached session) so a
@@ -49,6 +55,8 @@ export const generationService = {
         userMessage,
         isContinuation,
         timeAdvance,
+        worldAction,
+        requestedAt,
         session,
         userNsfwEnabled,
       },
@@ -128,6 +136,7 @@ export const generationService = {
     recentEvents: WorldEventDoc[]
     memories: MemoryDoc[]
     characters: CharacterProfileDoc[]
+    operation: { kind: 'generation' | 'rewind' } | null
     eventWindow: {
       limit: number
       total: number
@@ -172,12 +181,19 @@ export const generationService = {
         ? instance.meta.total_events
         : await events().countDocuments({ instance_id: iid })
 
+    const activeLock = await getRedisClient()
+      .get(generationLockKey(playerId, instanceId))
+      .catch(() => null)
+
     return {
       instance,
       template,
       recentEvents,
       memories: mems,
       characters: codex,
+      operation: activeLock
+        ? { kind: activeLock.startsWith('rewind:') ? 'rewind' : 'generation' }
+        : null,
       eventWindow: buildEventWindow(totalEvents, recentEvents.length),
     }
   },

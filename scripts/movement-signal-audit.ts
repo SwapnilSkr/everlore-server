@@ -2,7 +2,7 @@
  * Pure-function audit for the deterministic movement + possessive-room backstops
  * (worker/lib/movement-signal.ts). No DB. Run: bun run audit:movement
  */
-import { detectNarratedMovement, resolvePossessiveRoomName } from '../worker/lib/movement-signal'
+import { detectNarratedMovement, isExplicitPlayerLocationChange, resolvePossessiveRoomName } from '../worker/lib/movement-signal'
 
 let pass = 0
 let fail = 0
@@ -90,6 +90,16 @@ check('my city (settlement, NOT owned)', resolvePossessiveRoomName('I travel to 
 check('my kingdom (settlement, NOT owned)', resolvePossessiveRoomName('I ride to my kingdom', O), null)
 check('no possessive', resolvePossessiveRoomName('I walk into the hall', O), null)
 check('no owner', resolvePossessiveRoomName('I go to my room', null), null)
+
+console.log('isExplicitPlayerLocationChange — state-commit gate:')
+check('walk into named room', isExplicitPlayerLocationChange('I walk into the dining room.', 'dining room', 'Caelum'), true)
+check('return to known garden variant', isExplicitPlayerLocationChange('I return to the garden.', 'Night Garden', 'Caelum'), true)
+check('personal room', isExplicitPlayerLocationChange('I retreat to my room.', "Caelum's room", 'Caelum'), true)
+check('leave decision', isExplicitPlayerLocationChange('I leave the decision to Mother.', "Mother's room", 'Caelum'), false)
+check('return to question', isExplicitPlayerLocationChange('I return to the question of who betrayed us.', 'study', 'Caelum'), false)
+check('retreat into myself', isExplicitPlayerLocationChange('I retreat into myself.', 'inner sanctum', 'Caelum'), false)
+check('cross arms', isExplicitPlayerLocationChange('I cross my arms toward Mother.', "Mother's room", 'Caelum'), false)
+check('meeting is abstract', isExplicitPlayerLocationChange('I head to the meeting tomorrow.', 'meeting hall', 'Caelum'), false)
 
 console.log(`\n${fail === 0 ? 'ALL GREEN' : 'FAILURES'}: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

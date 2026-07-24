@@ -1,6 +1,10 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
-import type { CharacterProfileDoc, RelationshipMeters } from '../models/character-profile.model'
+import type {
+  CharacterInteractionHint,
+  CharacterProfileDoc,
+  RelationshipMeters,
+} from '../models/character-profile.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import type { WorldFactSource } from '../utils/world-authority'
@@ -8,6 +12,14 @@ import type { WorldFactSource } from '../utils/world-authority'
 const characters = () => mongoColl.characters()
 
 export type RelationshipDeltas = Partial<RelationshipMeters>
+
+/** Extractor-only shape. The server materializes the character name and action
+ * markers, so the client never needs to infer UI wording from mutable_state. */
+export type InteractionHintDraft = {
+  label_template: string
+  question: string
+  source_state: string
+}
 
 export type CharacterCodexDelta = {
   name: string
@@ -18,6 +30,7 @@ export type CharacterCodexDelta = {
   persona?: string
   immutable_facts?: string[]
   mutable_state?: string[]
+  interaction_hints?: InteractionHintDraft[]
   /** Existing current-state items this turn made false/obsolete; removed on merge. */
   retire_state?: string[]
   disposition_to_player?: string
@@ -63,6 +76,26 @@ function normalizeName(name: string): string {
     .trim()
     .replace(/[^a-z0-9\s'-]+/g, '')
     .replace(/\s+/g, ' ')
+}
+
+/** Entity types that may be described in prose but must never become character
+ * cards. This guard lives in the shared fold path so live extraction, rewind,
+ * replay, and any ledger rebuild enforce the exact same invariant. */
+const NON_PERSON_ROLE_LABELS = new Set([
+  'location', 'place', 'landmark', 'building', 'city', 'district', 'country',
+  'region', 'vehicle', 'object', 'item', 'artifact',
+])
+
+export function isNonPersonRole(role: string | null | undefined): boolean {
+  return NON_PERSON_ROLE_LABELS.has(normalizeName(role || ''))
+}
+
+/** A scene-local description is not a stable identity alias. It can identify a
+ * person within one paragraph, but must never resolve/rename a card across the
+ * story merely because that card has a similar role or appearance. */
+export function isEphemeralPersonDescriptor(value: string | null | undefined): boolean {
+  const n = normalizeName(value || '')
+  return /^(?:the|a|an)\s+(?:(?:old|young|masked|hooded|tall|short|lean|broad shouldered|dark haired)\s+)?(?:man|woman|figure|stranger|person|boy|girl)(?:\s+(?:in|with|wearing|from|at)\b.*)?$/.test(n)
 }
 
 function uniqStrings(values: string[], max: number): string[] {
@@ -161,6 +194,51 @@ function normalizeState(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').replace(/\s+/g, ' ').trim()
 }
 
+function materializeInteractionHints(
+  drafts: InteractionHintDraft[] | undefined,
+  characterName: string,
+  states: string[],
+): CharacterInteractionHint[] | undefined {
+  if (drafts == null) return undefined
+  const knownStates = new Set(states.map(normalizeState).filter(Boolean))
+  const seen = new Set<string>()
+  const hints: CharacterInteractionHint[] = []
+  for (const draft of drafts) {
+    const sourceState = String(draft.source_state || '').trim()
+    const sourceKey = normalizeState(sourceState)
+    const template = String(draft.label_template || '').trim()
+    // One bounded, explicit placeholder keeps the displayed label correct if
+    // a card is renamed, while rejecting free-form model markup/commands.
+    if (!sourceKey || !knownStates.has(sourceKey) || !template.includes('{name}')) continue
+    const label = template.replaceAll('{name}', characterName).replace(/\s+/g, ' ').trim()
+    const question = String(draft.question || '')
+      .trim()
+      .replace(/^["“]|["”]$/g, '')
+      .replace(/\s+/g, ' ')
+    if (!label || label.length > 140 || !question || question.length > 240) continue
+    if (/[*`{}\[\]]/.test(label) || /["“”]/.test(question)) continue
+    const key = label.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    hints.push({
+      label,
+      draft: `*I turn to ${characterName}.* "${question}" `,
+      source_state: sourceState,
+    })
+    if (hints.length >= 3) break
+  }
+  return hints
+}
+
+function retainCurrentInteractionHints(
+  hints: CharacterInteractionHint[] | undefined,
+  states: string[],
+): CharacterInteractionHint[] {
+  if (!hints?.length) return []
+  const knownStates = new Set(states.map(normalizeState).filter(Boolean))
+  return hints.filter((hint) => knownStates.has(normalizeState(hint.source_state)))
+}
+
 /**
  * Reconcile a character's CURRENT status snapshot: drop items the latest turn
  * marked obsolete (`retire`), then add the new ones. This is what stops stale
@@ -187,7 +265,7 @@ function buildAliasSet(delta: CharacterCodexDelta): string[] {
   return uniqStrings([
     delta.name,
     ...(delta.aliases || []),
-  ], 20)
+  ].filter((alias) => !isEphemeralPersonDescriptor(alias)), 20)
 }
 
 /**
@@ -231,6 +309,18 @@ function foldDelta(
   ctx: { iid: ObjectId; pid: ObjectId; now: Date },
 ): void {
   if (!shouldSetText(delta.name)) return
+  // A legacy bad ledger row must be no more dangerous than a live malformed
+  // extractor response. Without this, rewind/rebuild could resurrect a place
+  // that a newer live guard correctly refused to card.
+  if (isNonPersonRole(delta.role)) return
+  // Never let a generic scene label such as "the man in a dark suit" resolve
+  // to an existing character. Explicit identity reveals are handled as their
+  // own reviewable claim; descriptors are local prose references, not aliases.
+  if (
+    shouldSetText(delta.resolved_name) &&
+    normalizeName(delta.name) !== normalizeName(delta.resolved_name) &&
+    isEphemeralPersonDescriptor(delta.name)
+  ) return
 
   const candidateNames = uniqStrings([
     delta.resolved_name || '',
@@ -270,6 +360,11 @@ function foldDelta(
       persona: shouldSetText(delta.persona) ? delta.persona.trim() : undefined,
       immutable_facts: uniqKeepRecent(delta.immutable_facts || [], IMMUTABLE_STORE_MAX),
       mutable_state: uniqKeepRecent(delta.mutable_state || [], MUTABLE_STATE_MAX),
+      interaction_hints: materializeInteractionHints(
+        delta.interaction_hints,
+        name,
+        delta.mutable_state || [],
+      ),
       disposition_to_player: shouldSetText(delta.disposition_to_player) ? delta.disposition_to_player.trim() : '',
       hidden_thought: shouldSetText(delta.hidden_thought) ? delta.hidden_thought.trim() : '',
       relationship: hasRelationshipDeltas(delta.relationship_deltas)
@@ -327,6 +422,25 @@ function foldDelta(
     target.canonical_name = delta.name.trim().slice(0, 120)
     target.name_normalized = normalizeName(target.canonical_name)
     target.aliases = uniqStrings([oldName, ...(target.aliases || []), ...aliases], 20)
+  }
+  // Materialize after a possible rename so the complete draft and label always
+  // use the canonical name that the player sees.
+  const nextHints = materializeInteractionHints(
+    delta.interaction_hints,
+    target.canonical_name,
+    target.mutable_state,
+  )
+  if (nextHints != null) {
+    target.interaction_hints = nextHints
+  } else if ((delta.mutable_state?.length ?? 0) > 0 ||
+      (delta.retire_state?.length ?? 0) > 0) {
+    // The extractor may legitimately omit fresh display copy. Retain only
+    // hints whose source state still exists; a retired "irritated" state can
+    // never leave its old question behind.
+    target.interaction_hints = retainCurrentInteractionHints(
+      target.interaction_hints,
+      target.mutable_state,
+    )
   }
   // Sticky protagonist promote — only while NO canonical protagonist exists
   // (promoting a second card would split one person into two).
@@ -589,10 +703,25 @@ export const characterCodexService = {
 
     if (shouldSetText(updates.canonical_name) && updates.canonical_name.trim() !== target.canonical_name) {
       const newName = updates.canonical_name.trim().slice(0, 120)
+      const normalizedNewName = normalizeName(newName)
+      const nameCollision = await characters().findOne({
+        instance_id: target.instance_id,
+        name_normalized: normalizedNewName,
+        _id: { $ne: target._id },
+      }, { projection: { _id: 1 } })
+      if (nameCollision) {
+        throw new HttpError(
+          409,
+          'Another character already uses that name. Rename or merge that character separately.',
+        )
+      }
       setFields.canonical_name = newName
-      setFields.name_normalized = normalizeName(newName)
+      setFields.name_normalized = normalizedNewName
       // Preserve the old name as an alias so existing references still resolve.
       setFields.aliases = uniqStrings([target.canonical_name, ...(target.aliases || [])], 20)
+      // Existing drafts name this card explicitly; never leave a renamed card
+      // with a stale composer action.
+      setFields.interaction_hints = []
     }
     if (updates.role !== undefined) setFields.role = updates.role.trim() || undefined
     if (updates.appearance !== undefined) setFields.appearance = updates.appearance.trim() || undefined
@@ -625,6 +754,10 @@ export const characterCodexService = {
         if (!keep.has(old.toLowerCase())) retiredFacts.push(old)
       }
       setFields.mutable_state = next
+      // Manual state is canonical but has no matching server-authored copy yet.
+      // Clear old hints; the neutral client fallback remains available until a
+      // later codex extraction publishes fresh, grounded hints.
+      setFields.interaction_hints = []
     }
 
     await characters().updateOne({ _id: cid }, { $set: setFields })

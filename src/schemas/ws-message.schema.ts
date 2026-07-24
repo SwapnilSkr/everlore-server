@@ -25,6 +25,7 @@ export const WsMessage = t.Object({
   action: t.Union([
     t.Literal('chat'),
     t.Literal('continue'),
+    t.Literal('world_action'),
     t.Literal('side_chat'),
     t.Literal('replay'),
     t.Literal('ping'),

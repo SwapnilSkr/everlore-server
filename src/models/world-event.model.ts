@@ -74,6 +74,8 @@ export interface EventDataDoc {
   player_spoken_input?: string
   /** Canonical narration/action facts authored inside *...* or **...**. */
   player_narration_facts?: string[]
+  /** Structured, player-confirmed command that drove this turn, when any. */
+  world_action?: import('../utils/world-action').PlayerWorldAction
   ai_response: string
   /** Suggested next moves (tap-to-play chips) derived in the metadata pass.
    *  `send` is the formatted player input dispatched on tap (act = *narration*,
@@ -164,10 +166,13 @@ export interface WorldEventDoc {
   is_user_edited: boolean
   edit_history: EventEditHistoryEntry[]
   scene_tag: string
-  /** Set off the TTFT path by the post-turn intent judge when the player expressed
-   *  clean-language sexual intent the lexicon missed. Read by scoreScene momentum to
-   *  route the NEXT turn explicit. Absent (not false) when no intent was detected. */
+  /** Set only for a verified current-turn sexual-intent signal. Read by
+   *  scoreScene momentum to route the NEXT turn explicit. */
   nsfw_intent?: boolean
+  /** Provenance for nsfw_intent. Rows written before this field are deliberately
+   *  not trusted as routing momentum, because legacy routing could mark profanity
+   *  as sexual intent. */
+  nsfw_intent_source?: 'direct_explicit' | 'intent_judge'
   /** Story-time anchor: sequence time, real time, calendar date, and timeline branch. */
   time_anchor?: TimeAnchorDoc
   /** End-of-turn place anchor, when known. */

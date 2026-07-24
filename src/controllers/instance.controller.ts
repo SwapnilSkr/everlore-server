@@ -4,35 +4,17 @@ import { deletionService } from '../services/deletion.service'
 import { HttpError } from '../utils/http-error'
 
 export const instanceController = {
-  list: async ({
-    user,
-    query,
-  }: {
-    user: AuthUser | null
-    query: { include_archived?: boolean }
-  }) => {
+  list: async ({ user, query }: { user: AuthUser | null; query: { include_archived?: boolean } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return instanceService.list(user.id, query.include_archived === true)
   },
 
-  playStatus: async ({
-    user,
-    params,
-  }: {
-    user: AuthUser | null
-    params: { templateId: string }
-  }) => {
+  playStatus: async ({ user, params }: { user: AuthUser | null; params: { templateId: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return instanceService.getPlayStatus(user.id, params.templateId)
   },
 
-  listByTemplate: async ({
-    user,
-    params,
-  }: {
-    user: AuthUser | null
-    params: { templateId: string }
-  }) => {
+  listByTemplate: async ({ user, params }: { user: AuthUser | null; params: { templateId: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return instanceService.listByTemplate(user.id, params.templateId)
   },
@@ -44,13 +26,7 @@ export const instanceController = {
     return instance
   },
 
-  create: async ({
-    user,
-    body,
-  }: {
-    user: AuthUser | null
-    body: { template_id: string }
-  }) => {
+  create: async ({ user, body }: { user: AuthUser | null; body: { template_id: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return instanceService.create(user.id, body.template_id, user.tier)
   },
@@ -94,6 +70,8 @@ export const instanceController = {
       narration_pov?: 'first' | 'third'
       mode?: string
       message_length?: 'short' | 'medium' | 'long'
+      narrative_style_override?: string | null
+      narration_tone?: string
       focus_character_id?: string | null
       persona_id?: string | null
     }

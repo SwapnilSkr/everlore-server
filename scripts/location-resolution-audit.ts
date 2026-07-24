@@ -78,6 +78,12 @@ async function main() {
     'pickBest: the garden → Night Garden',
     pickBestLocationMatch('the garden', [fakeNightGarden])?.canonical_name === 'Night Garden',
   )
+  const eastGarden = mkLocation(new ObjectId(), new ObjectId(), 'East Garden Market', 1)
+  const oldTown = mkLocation(new ObjectId(), new ObjectId(), 'East Garden Quarter', 1)
+  ok(
+    'pickBest: ambiguous partial location abstains (never merges by recency)',
+    pickBestLocationMatch('east garden', [eastGarden, oldTown]) === null,
+  )
 
   // --- Vague-label classifier (P0): generic/relative labels are vague; a
   //     QUALIFIED place name is NOT (so "dining room" stays specific). ---

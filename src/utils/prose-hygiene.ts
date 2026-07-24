@@ -582,6 +582,18 @@ export function normalizeNarrationMarkers(narrative: string): string {
     .replace(/\*\*([\s\S]*?)\*\*/g, (_m, inner) => `*${String(inner).trim()}*`);
 }
 
+/**
+ * Short is a one-paragraph mode. Models often produce the right amount of
+ * prose but split a single compact beat across two visual paragraphs. Joining
+ * those paragraph breaks is deterministic, preserves every word/fact/marker,
+ * and avoids spending a second model call merely to fix layout.
+ */
+function normalizeLengthLayout(narrative: string, messageLength?: MessageLength): string {
+  const normalized = normalizeNarrationMarkers(narrative).trim();
+  if (messageLength !== "short") return normalized;
+  return normalized.replace(/\n\s*\n+/g, " ").replace(/[ \t]{2,}/g, " ").trim();
+}
+
 export async function repairProseHygiene(
   input: ProseHygieneInput & { model: string },
 ): Promise<{
@@ -589,7 +601,7 @@ export async function repairProseHygiene(
   issues: ProseHygieneIssue[];
   repaired: boolean;
 }> {
-  const normalized = normalizeNarrationMarkers(input.narrative).trim();
+  const normalized = normalizeLengthLayout(input.narrative, input.messageLength);
   const initialIssues = validateProseHygiene({
     narrative: normalized,
     characterNames: input.characterNames,
@@ -644,7 +656,7 @@ Story prose:
 ${normalized}`;
 
   try {
-    const repaired = normalizeNarrationMarkers(
+    const repaired = normalizeLengthLayout(
       (
         await callLLM({
           model: input.model,
@@ -653,6 +665,7 @@ ${normalized}`;
           maxTokens: Math.max(300, Math.ceil(normalized.length / 3)),
         })
       ).trim(),
+      input.messageLength,
     );
     const repairedIssues = validateProseHygiene({
       narrative: repaired,
@@ -662,7 +675,10 @@ ${normalized}`;
       previousOpeningNames: input.previousOpeningNames,
       avoidOpeningNames: input.avoidOpeningNames,
     });
-    if (repaired && issueScore(repairedIssues) <= issueScore(initialIssues)) {
+    // A cosmetic rewrite that leaves the validation score unchanged is not a
+    // repair. Keeping it used to let a second model rephrase a response while
+    // preserving the exact formatting/length defect it was asked to remove.
+    if (repaired && issueScore(repairedIssues) < issueScore(initialIssues)) {
       return {
         narrative: repaired,
         issues: repairedIssues,

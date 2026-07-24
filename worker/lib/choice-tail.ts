@@ -53,10 +53,27 @@ export interface ChoiceTailFilter {
   choiceBlock(): string
 }
 
+/**
+ * Models occasionally emit a near-miss of the canonical sentinel (for example
+ * `==CHOICES==`) even when narrator-owned choices are disabled. Treat all such
+ * protocol-looking markers as hidden metadata: the player must never see an
+ * action menu duplicated inside the narrator bubble.
+ */
+function findChoiceMarker(text: string): { index: number; length: number } | null {
+  const marker = /={2,}\s*choices\s*={2,}/i.exec(text)
+  if (marker?.index != null) return { index: marker.index, length: marker[0].length }
+  // Backstop for a model that skips the heading but starts emitting the wire
+  // format itself. Narrative dialogue never uses these protocol tags.
+  const row = /(?:^|\n)\s*\[(?:act|say)\]\s+/im.exec(text)
+  if (row?.index != null) return { index: row.index, length: 0 }
+  return null
+}
+
 export function makeChoiceTailFilter(): ChoiceTailFilter {
   let acc = ''
   let published = 0
   let cut = -1 // index where the sentinel starts; -1 until seen
+  let markerLength = CHOICE_SENTINEL.length
   // Never emit a tail short enough to be a partial sentinel.
   const hold = CHOICE_SENTINEL.length - 1
 
@@ -64,11 +81,12 @@ export function makeChoiceTailFilter(): ChoiceTailFilter {
     push(chunk: string): string {
       acc += chunk
       if (cut >= 0) return '' // already inside the choices block — swallow
-      const idx = acc.indexOf(CHOICE_SENTINEL)
-      if (idx >= 0) {
-        cut = idx
-        const out = acc.slice(published, idx)
-        published = idx
+      const marker = findChoiceMarker(acc)
+      if (marker) {
+        cut = marker.index
+        markerLength = marker.length
+        const out = acc.slice(published, cut)
+        published = cut
         return out
       }
       // No (complete) sentinel yet: publish everything except a possible partial.
@@ -93,7 +111,7 @@ export function makeChoiceTailFilter(): ChoiceTailFilter {
       return cut >= 0 ? acc.slice(0, cut) : acc
     },
     choiceBlock(): string {
-      return cut >= 0 ? acc.slice(cut + CHOICE_SENTINEL.length) : ''
+      return cut >= 0 ? acc.slice(cut + markerLength) : ''
     },
   }
 }
@@ -151,5 +169,6 @@ Choice rules:
 - Every choice is the PLAYER'S OWN next move, written in the player's first person ("I ..."). Honor the WORLD MODE / POV established above for who "I" is.
 - Use [say] when the send is words spoken aloud; use [act] when it is a silent physical action or narration.
 - Make the set distinct in spirit (mix bold / cautious / emotional / curious).
+- If a label sends the player to a specific destination ("Head for the cafe", "Go to the attic"), the <send> MUST explicitly name that exact same destination and describe going there. Never use vague wording such as "the one place that feels neutral"; it cannot be honored as a location commitment.
 - Ground every choice in what THIS scene and the established world actually contain. Never invent a person, place, or relationship that does not exist. A figurative epithet you used for an existing person — "the ghost in the doorway", "the monster at the table" for someone present — is NOT a real separate being; never write a choice that treats it as one. Address the actual person instead.
 - The ${CHOICE_SENTINEL} marker and everything after it is hidden metadata the player never reads as story — never mention it or let it leak into the prose above.`

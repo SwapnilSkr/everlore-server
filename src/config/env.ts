@@ -10,6 +10,9 @@ const optionalEnvVars = {
   PORT: '3000',
   CLIENT_ORIGINS: 'http://localhost:3000,http://localhost:8080',
   OPENROUTER_API_KEY: '',
+  /** Prefer providers whose recent p90 latency is within this target. This is
+   * a routing preference, not a hard failure cutoff; 0 disables it. */
+  OPENROUTER_PREFERRED_P90_LATENCY_SECONDS: '3',
   PINECONE_INDEX: 'nexus-memories',
   // Narration models — swap freely for A/B (narration is prose-only, no JSON/tools needed).
   NARRATION_SFW_MODEL: 'deepseek/deepseek-v3.2',
@@ -62,6 +65,7 @@ export interface Env {
   REDIS_URL: string
   OPENAI_API_KEY: string
   OPENROUTER_API_KEY: string
+  OPENROUTER_PREFERRED_P90_LATENCY_SECONDS: number
   PINECONE_API_KEY: string
   PINECONE_INDEX: string
   NARRATION_SFW_MODEL: string
@@ -105,6 +109,10 @@ function loadEnv(): Env {
     REDIS_URL: process.env.REDIS_URL || 'redis://localhost:6379',
     OPENAI_API_KEY: process.env.OPENAI_API_KEY || '',
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || optionalEnvVars.OPENROUTER_API_KEY,
+    OPENROUTER_PREFERRED_P90_LATENCY_SECONDS: Number(
+      process.env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS ||
+        optionalEnvVars.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS,
+    ),
     PINECONE_API_KEY: process.env.PINECONE_API_KEY || '',
     PINECONE_INDEX: process.env.PINECONE_INDEX || optionalEnvVars.PINECONE_INDEX,
     NARRATION_SFW_MODEL: process.env.NARRATION_SFW_MODEL || optionalEnvVars.NARRATION_SFW_MODEL,

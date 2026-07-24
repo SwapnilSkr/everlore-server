@@ -51,6 +51,81 @@ const LEAVE_MOVE = /\b(?:leave|leaves|leaving|left)\b(?!\s+(?:me|him|her|them|us
 // sealing a door behind you is an unambiguous exit of a space
 const DOOR_BEHIND = /\b(?:shut|shuts|shutting|close|closes|closing|closed|lock|locks|locking|locked|slam|slams|slamming|slammed)\b[^.!?]*\bdoor\b[^.!?]*\bbehind\b/
 
+// Presence has a slightly different threshold from a location cursor: an
+// explicit exit proves the people in the old room are no longer co-located even
+// when the player has not yet named the destination. Keep this first-person and
+// physical, so “leave the question” / “walk out of the conversation” do not
+// clear a scene cast.
+const EXPLICIT_SCENE_EXIT =
+  /\b(?:i|we)\b[^.!?]{0,72}\b(?:leave|exit|walk\s+out|step\s+out|head\s+out|go\s+out)\b(?:\s+(?:of|from|the|this|my|our)\s+(?:[a-z]+\s+){0,3}(?:room|hall|house|home|apartment|mansion|manor|building|office|cafe|restaurant|bar|shop|store|garden|yard|street|station)\b|\s+into\s+(?:the\s+)?(?:night|rain|street|outside|open\s+air)\b)/i
+
+// This is intentionally much narrower than `detectNarratedMovement`. The broad
+// detector is useful for telemetry and for spotting likely missed moves, but it is
+// not proof that the player changed location: "leave the decision", "return to the
+// question", and "retreat into myself" are all valid non-spatial sentences.
+// State-changing consumers must use this matcher instead.
+const EXPLICIT_DESTINATION = new RegExp(
+  '\\b(?:i|we)\\s+(?:(?:quietly|quickly|slowly|carefully|immediately)\\s+){0,2}' +
+    '(?:go|head|walk|run|move|step|enter|stride|storm|march|wander|slip|climb|descend|ascend|sneak|rush|creep|hurry|retire|travel|journey|ride|sail|fly|cross|venture|voyage|drive|trek|hike|proceed|advance|teleport|warp|clamber|make my way|made my way|set off|set out|return)' +
+    '(?:\\s+\\w+){0,3}?\\s+(?:to|into|inside|through|onto|in|back to)\\s+([^,.!?;]{2,60})',
+)
+const DESTINATION_STOP_WORDS = new Set([
+  'the', 'a', 'an', 'my', 'our', 'own', 'of', 'at', 'on', 'in', 'to', 'back',
+])
+const ABSTRACT_DESTINATIONS = new Set([
+  'decision', 'question', 'answer', 'subject', 'topic', 'matter', 'issue',
+  'argument', 'conversation', 'discussion', 'memory', 'past', 'future',
+  'myself', 'yourself', 'himself', 'herself', 'ourselves', 'themselves',
+  'meeting', 'appointment', 'plan', 'idea', 'dream', 'thought', 'mind',
+])
+
+const PHYSICAL_DESTINATION_WORD =
+  /\b(?:room|hall|kitchen|bedroom|study|library|attic|basement|apartment|house|home|mansion|manor|villa|cafe|coffee\s+shop|restaurant|bar|tavern|inn|shop|store|market|garden|courtyard|street|road|alley|station|airport|dock|harbo[u]?r|car|bus\s+stop|train\s+station)\b/i
+// Kept separate from EXPLICIT_DESTINATION: this captures the exact physical
+// destination a player writes in a normal action/choice, including "head for"
+// and "aiming for". The caller treats it as a commitment only after the
+// physical-place guard below passes.
+const EXPLICIT_PHYSICAL_DESTINATION =
+  /\b(?:go|head|walk|run|move|step|travel|journey|ride|drive|aim|aiming|turn|turning|set\s+off|make\s+my\s+way)\b(?:\s+\w+){0,6}?\s+(?:to|into|toward|towards|for)\s+([^,.!?;*]{2,80})/gi
+
+function comparableTokens(value: string): string[] {
+  return clean(value)
+    .split(/\s+/)
+    .map((token) => token.replace(/[^a-z0-9'-]/g, ''))
+    .filter((token) => token.length >= 3 && !DESTINATION_STOP_WORDS.has(token))
+}
+
+/**
+ * Exact physical destination deliberately written by the player. This is used
+ * to keep a choice such as “Head for the cafe” from being narrated as a trip
+ * somewhere else before metadata can observe the arrival. It rejects abstract
+ * targets and keeps the final destination in a compound action (“turn toward
+ * the bus stop, aiming for the cafe” → “the cafe”).
+ */
+export function extractExplicitPhysicalDestination(
+  playerInput: string | null | undefined,
+): string | null {
+  const text = String(playerInput || '').replace(/[\*_`]+/g, ' ')
+  let result: string | null = null
+  for (let match = EXPLICIT_PHYSICAL_DESTINATION.exec(text); match; match = EXPLICIT_PHYSICAL_DESTINATION.exec(text)) {
+    let candidate = match[1]
+      .split(/\b(?:and|then|but|before|after|while)\b/i)[0]
+      .trim()
+    // Let a final appositive supply a concrete destination after an initially
+    // vague target (“aiming for the one place that feels neutral, the cafe”).
+    const suffix = text
+      .slice(match.index + match[0].length)
+      .match(/^\s*,\s*([^,.!?;*]{2,60})/)
+    if (suffix?.[1]) candidate = `${candidate}, ${suffix[1].trim()}`
+    if (!candidate || !PHYSICAL_DESTINATION_WORD.test(candidate)) continue
+    // A final appositive often carries the actual destination after a vague
+    // phrase (“the one place that feels neutral, the cafe”).
+    const afterComma = candidate.split(',').map((part) => part.trim()).filter(Boolean).pop()
+    result = afterComma || candidate
+  }
+  return result
+}
+
 /**
  * True when the player's narrated action describes the protagonist physically
  * relocating. Deliberately broad — the caller only acts on it when the resolved
@@ -60,6 +135,11 @@ export function detectNarratedMovement(playerInput: string | null | undefined): 
   const t = clean(playerInput || '')
   if (!t) return false
   return DIRECTED_MOVE.test(t) || DEPARTURE.test(t) || LEAVE_MOVE.test(t) || DOOR_BEHIND.test(t)
+}
+
+/** A verified departure that resets scene presence without guessing a location. */
+export function isExplicitSceneExit(playerInput: string | null | undefined): boolean {
+  return EXPLICIT_SCENE_EXIT.test(clean(playerInput || ''))
 }
 
 // Personal/owned spaces only — a room or a dwelling the protagonist holds. NOT
@@ -109,4 +189,34 @@ export function resolvePossessiveRoomName(
   }
   const noun = ROOM_NOUN_CANON[m[2]] || 'room'
   return `${ownerName.trim()}'s ${noun}`
+}
+
+/**
+ * High-precision location-commit gate. It requires a first-person physical action
+ * with an explicit destination that materially overlaps the extracted place. The
+ * metadata witness may suggest the destination, but can never move the cursor on
+ * its own. Ambiguous or figurative wording fails closed and leaves the cursor put.
+ */
+export function isExplicitPlayerLocationChange(
+  playerInput: string | null | undefined,
+  extractedLocation: string | null | undefined,
+  ownerName: string | null | undefined,
+): boolean {
+  const input = clean(playerInput || '')
+  const location = clean(extractedLocation || '')
+  if (!input || !location) return false
+
+  const personalSpace = resolvePossessiveRoomName(input, ownerName)
+  if (personalSpace && clean(personalSpace) === location) return true
+
+  const match = input.match(EXPLICIT_DESTINATION)
+  if (!match) return false
+  const target = match[1]
+    .split(/\b(?:and|then|but|before|after|while)\b/)[0]
+    .trim()
+  const targetTokens = comparableTokens(target)
+  if (!targetTokens.length || ABSTRACT_DESTINATIONS.has(targetTokens[0])) return false
+
+  const locationTokens = new Set(comparableTokens(location))
+  return targetTokens.some((token) => locationTokens.has(token))
 }

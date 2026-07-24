@@ -31,6 +31,7 @@ async function main() {
     const stopHeartbeat = startGenerationLockHeartbeat(
       getRedisClient(),
       generationLockKey(playerId, instanceId),
+      String(job.id),
     )
     try {
       return await generationProcessor(job)

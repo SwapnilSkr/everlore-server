@@ -1,5 +1,6 @@
 import { callLLM, AI_MODELS } from '../../src/ai'
-import type { CharacterCodexDelta } from '../../src/services/character-codex.service'
+import { isEphemeralPersonDescriptor, isNonPersonRole, type CharacterCodexDelta } from '../../src/services/character-codex.service'
+import { classifyPresenceCodexGaps, isActionableMention } from './presence-gap-detector'
 
 type ExistingCharacter = {
   canonical_name: string
@@ -30,6 +31,23 @@ function nameAppearsInText(name: string, normText: string): boolean {
   const n = normForMatch(name)
   if (!n || n.length < 2) return false
   return normText.includes(` ${n} `) || normText.startsWith(`${n} `) || normText.endsWith(` ${n}`) || normText === n
+}
+
+/**
+ * A quoted self-introduction is unusually strong evidence that a named person
+ * has physically entered this beat. It is deliberately narrower than a simple
+ * name mention: off-screen relatives, remembered people, locations, and mood
+ * labels cannot satisfy it. This is the safe escape hatch when the metadata
+ * pass has not yet placed a just-introduced character in `presentCast`.
+ */
+function isDirectSelfIntroduction(name: string, prose: string): boolean {
+  const candidate = String(name || '').trim()
+  if (!candidate || candidate.length < 3) return false
+  const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+  return new RegExp(
+    `(?:^|["“][^"”]{0,220}|[.!?]\\s*)(?:I\\s+am|I['’]m|my\\s+name\\s+is|you\\s+may\\s+call\\s+me)\\s+${escaped}(?=\\b|[,.;!?”])`,
+    'i',
+  ).test(String(prose || ''))
 }
 
 const RELATIVE_WORDS = [
@@ -117,6 +135,30 @@ function toRelationshipDeltas(raw: any): CharacterCodexDelta['relationship_delta
   return Object.keys(out).length ? out : undefined
 }
 
+function toInteractionHints(raw: any): CharacterCodexDelta['interaction_hints'] {
+  if (!Array.isArray(raw)) return undefined
+  const out: NonNullable<CharacterCodexDelta['interaction_hints']> = []
+  for (const hint of raw) {
+    const labelTemplate = typeof hint?.label_template === 'string'
+      ? hint.label_template.trim().slice(0, 140)
+      : ''
+    const question = typeof hint?.question === 'string'
+      ? hint.question.trim().slice(0, 240)
+      : ''
+    const sourceState = typeof hint?.source_state === 'string'
+      ? hint.source_state.trim().slice(0, 160)
+      : ''
+    if (!labelTemplate || !question || !sourceState) continue
+    out.push({
+      label_template: labelTemplate,
+      question,
+      source_state: sourceState,
+    })
+    if (out.length >= 3) break
+  }
+  return out
+}
+
 const RELATION_KIND_SET = new Set([
   'parent_of', 'child_of', 'sibling_of', 'partner_of', 'progenitor_of',
   'descendant_of', 'superior_of', 'subordinate_of', 'kin_of', 'bonded_of',
@@ -163,6 +205,7 @@ function toDelta(raw: any): CharacterCodexDelta | null {
     mutable_state: Array.isArray(raw.mutable_state)
       ? raw.mutable_state.map(String).slice(0, 6)
       : [],
+    interaction_hints: toInteractionHints(raw.interaction_hints),
     retire_state: Array.isArray(raw.retire_state)
       ? raw.retire_state.map(String).slice(0, 6)
       : [],
@@ -250,8 +293,11 @@ export async function extractCharacterCodexDeltas(params: {
    *  Lets the extractor resolve a bare descriptor ("the man", "the woman") to the
    *  person it can only be — the anchor that stops invented duplicate cards. */
   presentCast?: string[]
+  /** Known locations are excluded from person corroboration even when prose
+   * personifies them ("Milan greeted him"). */
+  knownLocations?: { name: string; aliases?: string[] }[]
 }): Promise<CharacterCodexDelta[]> {
-  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName, presentCast } = params
+  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName, presentCast, knownLocations } = params
 
   const existingText = existing.length
     ? existing
@@ -303,6 +349,7 @@ Rules:
 - Keep hidden_thought private/internal (never spoken aloud), short and specific to the player.
 - immutable_facts: PERMANENT history/identity that never stops being true once it happens (e.g. "was engaged to Lord X", "gained pyromancy", "married Mira"). Append-only — only NEW permanent facts from this turn.
 - mutable_state: the character's CURRENT status that may change later (e.g. "unattached", "wields fire magic", "wounded"). Only NEW or newly-changed current-status items from this turn.
+- interaction_hints: 0-3 OPTIONAL conversation starters for the player, grounded ONLY in this character's post-turn current state. Each source_state must exactly equal one current-status item (new or already listed). Use this format: { "label_template": "Ask why {name} is irritated", "question": "You seem irritated. What's wrong?", "source_state": "irritated" }. The label_template MUST contain the exact {name} placeholder, no quotes or markup. question is the spoken question only: no quotes, no asterisks, no player actions. Use a natural, specific question; omit hints when no current state invites a conversation. Never invent a state just to create a hint.
 - retire_state: CRITICAL for continuity. Copy here, VERBATIM, any item from the character's existing "current state" (shown below) that THIS TURN made false or obsolete. Example: if existing state says "engaged to Lord X" and this turn the engagement is broken, put "engaged to Lord X" in retire_state. Leave [] if nothing became false. NEVER let an outdated status linger.
 - disposition_to_player: concise sentiment toward the player right now.
 - relationship_deltas: how THIS TURN shifted the character's stance toward the player, as integer changes to four meters: trust, affection, fear, rivalry. Include ONLY meters that genuinely moved, ONLY for characters present this turn. Scale: ±1-3 for small moments (kind words, minor friction), ±4-7 for significant ones (a gift, a confession, a public insult), ±8-10 ONLY for dramatic turning points (betrayal, a life saved, a vow broken). Omit the field entirely when nothing shifted. NEVER include it for the player's own protagonist card in a Game Master world (a character has no meters toward themself).
@@ -324,6 +371,7 @@ Respond ONLY JSON:
       "persona": "string",
       "immutable_facts": ["string"],
       "mutable_state": ["string"],
+      "interaction_hints": [{ "label_template": "Ask why {name} is irritated", "question": "You seem irritated. What's wrong?", "source_state": "irritated" }],
       "retire_state": ["existing current-state items that are now false/obsolete"],
       "disposition_to_player": "string",
       "hidden_thought": "string",
@@ -380,9 +428,30 @@ Respond ONLY JSON:
     }
   }
   for (const n of presentCast || []) knownNames.add(normForMatch(n))
+  const existingNames = new Set(knownByName.keys())
+  const knownPlaceNames = (knownLocations || []).flatMap((place) => [
+    place.name,
+    ...(place.aliases || []),
+  ]).map(normForMatch).filter(Boolean)
+  // A fresh card needs independent PERSON evidence, not just a metadata-model
+  // assertion that a capitalized word was present. This is the promotion seam:
+  // new people remain automatically discovered, but only after speech/action/
+  // person-possessive/title evidence corroborates the name in the prose.
+  const personEvidenceKeys = new Set(
+    classifyPresenceCodexGaps(aiResponse, {
+      codex: existing.flatMap((c) => [c.canonical_name, ...(c.aliases || [])]),
+      exclude: knownPlaceNames,
+    })
+      .filter(isActionableMention)
+      .map((candidate) => normForMatch(candidate.key)),
+  )
   const resolvesToKnown = (d: CharacterCodexDelta): boolean => {
     const cands = [d.resolved_name || '', d.name, ...(d.aliases || [])].map(normForMatch)
     return cands.some((c) => c && knownNames.has(c))
+  }
+  const resolvesToExisting = (d: CharacterCodexDelta): boolean => {
+    const cands = [d.resolved_name || '', d.name, ...(d.aliases || [])].map(normForMatch)
+    return cands.some((c) => c && existingNames.has(c))
   }
 
   const out: CharacterCodexDelta[] = []
@@ -401,6 +470,21 @@ Respond ONLY JSON:
       continue
     }
     delta = canonical
+    if (isNonPersonRole(delta.role)) {
+      console.warn(`[codex-extractor] blocked non-person card "${delta.name}" (role: ${delta.role})`)
+      continue
+    }
+    if (
+      delta.resolved_name != null &&
+      normForMatch(delta.name) !== normForMatch(delta.resolved_name) &&
+      isEphemeralPersonDescriptor(delta.name)
+    ) {
+      console.warn(
+        `[codex-extractor] held descriptor identity guess "${delta.name}" → "${delta.resolved_name}"; explicit reveal evidence is required`,
+      )
+      continue
+    }
+    const isNewCard = delta.is_protagonist !== true && !resolvesToExisting(delta)
     if (delta.is_protagonist !== true && !resolvesToKnown(delta)) {
       // A bare role/descriptor with no proper name ("the merchant", "a guard") is
       // a passer-by, not a tracked character — never mint a card for it (it would
@@ -421,6 +505,26 @@ Respond ONLY JSON:
       if (!appearsPresent && isPlayerMentionedRelative(delta, playerInput, aiResponse)) {
         console.warn(
           `[codex-extractor] blocked absent player-relative card "${delta.name}" (memory fact, not present cast)`,
+        )
+        continue
+      }
+    }
+    if (isNewCard) {
+      const candidateKeys = [delta.name, delta.resolved_name || '', ...(delta.aliases || [])]
+        .map(normForMatch)
+        .filter(Boolean)
+      const presentNames = new Set((presentCast || []).map(normForMatch))
+      const physicallyPresent = candidateKeys.some((name) => presentNames.has(name))
+      const corroboratedPerson = candidateKeys.some((name) => personEvidenceKeys.has(name))
+      const directSelfIntroduction = [delta.name, delta.resolved_name || '', ...(delta.aliases || [])]
+        .some((name) => isDirectSelfIntroduction(name, aiResponse))
+      // A literal in-scene self-introduction is both presence and person
+      // evidence. It is the only exception to the usual two-source gate, so a
+      // named walk-on is not lost just because the independent metadata pass
+      // missed them on their entrance.
+      if ((!physicallyPresent || !corroboratedPerson) && !directSelfIntroduction) {
+        console.warn(
+          `[codex-extractor] held uncorroborated new card "${delta.name}" (present=${physicallyPresent}, personEvidence=${corroboratedPerson}, directIntro=${directSelfIntroduction})`,
         )
         continue
       }

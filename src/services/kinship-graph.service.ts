@@ -69,6 +69,37 @@ const DEFAULT_KIN_LABEL: Record<RelationKind, string> = {
 }
 
 export const kinshipGraphService = {
+  /** Player-facing labels for confirmed ties, keyed by the other character's
+   * normalized name. This is a read path only; it never infers new kinship. */
+  async confirmedRelationsToSelf(instanceId: string, selfType: 'player' | 'protagonist'): Promise<Record<string, string>> {
+    const iid = parseObjectId(instanceId)
+    const self = await entities().findOne({
+      instance_id: iid,
+      type: selfType,
+      status: { $ne: 'archived' },
+    })
+    if (!self) return {}
+    const rows = await entityEdges().find({
+      instance_id: iid,
+      target_entity_id: self._id,
+      type: 'kinship',
+      status: 'active',
+    }).toArray()
+    if (!rows.length) return {}
+    const sources = await entities().find(
+      { _id: { $in: rows.map((row) => row.source_entity_id) } },
+      { projection: { canonical_name: 1 } },
+    ).toArray()
+    const names = new Map(sources.map((entity) => [idString(entity._id), entity.canonical_name]))
+    const out: Record<string, string> = {}
+    for (const row of rows) {
+      const name = names.get(idString(row.source_entity_id))
+      const label = String(row.label || '').toLowerCase().trim()
+      if (name && label) out[normalizeEntityName(name)] = label
+    }
+    return out
+  },
+
   /**
    * Apply a turn's relation assertions: resolve endpoints → (Stage 2 epithets) →
    * Stage 1 hygiene → persist edges. Best-effort; throws are caught by the caller.
@@ -505,11 +536,18 @@ export const kinshipGraphService = {
       selfAnchorId = idString(player._id)
     }
 
-    // 2b. Re-apply the authored premise seed FIRST (sequence 0), so a rebuild never
-    // loses the system_seed canon. Stored on the instance by seedPremiseKinship.
-    const seedAssertions = ((await worldInstances().findOne(
-      { _id: iid }, { projection: { seed_relation_assertions: 1 } },
-    )) as any)?.seed_relation_assertions as RelationAssertion[] | undefined
+    // 2b. Re-apply the authored premise seed FIRST, then the player's explicit
+    // canon-control overlay. Neither is a prose event: the former is world
+    // creation canon and the latter is an authorial correction, so both survive
+    // rewinds and must be restored before story-ledger assertions.
+    const persistentCanon = (await worldInstances().findOne(
+      { _id: iid },
+      { projection: { seed_relation_assertions: 1, manual_relation_assertions: 1 } },
+    )) as {
+      seed_relation_assertions?: RelationAssertion[]
+      manual_relation_assertions?: RelationAssertion[]
+    } | null
+    const seedAssertions = persistentCanon?.seed_relation_assertions
     if (seedAssertions?.length) {
       try {
         const res = await kinshipGraphService.applyRelationAssertions({
@@ -521,6 +559,20 @@ export const kinshipGraphService = {
         notes.push(`re-seeded ${res.written} premise edge(s)`)
       } catch (err) {
         notes.push(`seed re-apply failed — ${(err as Error).message}`)
+      }
+    }
+    const manualAssertions = persistentCanon?.manual_relation_assertions || []
+    if (manualAssertions.length) {
+      try {
+        const res = await kinshipGraphService.applyRelationAssertions({
+          instanceId, sequence: 0, eventId: new ObjectId(),
+          assertions: manualAssertions, cards: codex, entitiesByCardName: entityMap,
+          selfAnchorId, sceneText: '',
+          ensureStub: (name: string) => entityGraphService.ensureStubEntity({ instanceId, playerId, sequence: 0, name }),
+        })
+        notes.push(`re-applied ${res.written} manual canon relationship edit(s)`)
+      } catch (err) {
+        notes.push(`manual canon re-apply failed — ${(err as Error).message}`)
       }
     }
 
@@ -621,6 +673,28 @@ export const kinshipGraphService = {
         sequence: anchorSeq,
       })
       selfAnchorId = idString(player._id)
+    }
+
+    // A checkpoint may predate a later relationship-sheet edit. Reapply the
+    // persistent overlay before folding the event suffix; upserts make this
+    // harmless when the checkpoint already contains the same edge.
+    const manualAssertions = ((await worldInstances().findOne(
+      { _id: iid },
+      { projection: { manual_relation_assertions: 1 } },
+    )) as { manual_relation_assertions?: RelationAssertion[] } | null)
+      ?.manual_relation_assertions || []
+    if (manualAssertions.length) {
+      try {
+        const res = await kinshipGraphService.applyRelationAssertions({
+          instanceId, sequence: 0, eventId: new ObjectId(),
+          assertions: manualAssertions, cards: codex, entitiesByCardName: entityMap,
+          selfAnchorId, sceneText: '',
+          ensureStub: (name: string) => entityGraphService.ensureStubEntity({ instanceId, playerId, sequence: 0, name }),
+        })
+        notes.push(`re-applied ${res.written} manual canon relationship edit(s)`)
+      } catch (err) {
+        notes.push(`manual canon re-apply failed — ${(err as Error).message}`)
+      }
     }
 
     const typeFilter = includeSideChat ? {} : { type: { $ne: 'side_chat' } }

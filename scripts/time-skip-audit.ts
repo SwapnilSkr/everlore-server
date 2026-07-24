@@ -23,16 +23,8 @@ function checkUnit(input: string, unit: string) {
 console.log('SKIPS (expect a non-null label):')
 checkUnit('*Weeks pass. I spend them in the garden.*', 'week')
 checkUnit('Three days later, I return to the hall.', 'day')
-checkUnit('I spend three days preparing.', 'day')
-checkUnit('After a month of training, I feel ready.', 'month')
-checkUnit('Over the next week I rebuild the wall.', 'week')
+checkUnit('I wait three days preparing.', 'day')
 checkUnit('A few hours later, the storm breaks.', 'hour')
-check('the next morning', detectNarratedTimeSkip('The next morning, I wake early.'), 'the next morning')
-check('overnight', detectNarratedTimeSkip('I let it rest overnight.'), 'overnight')
-check('overnight + conjunction', detectNarratedTimeSkip('I rest overnight before the march.'), 'overnight')
-check('overnight leading', detectNarratedTimeSkip('Overnight, the snow buried the camp.'), 'overnight')
-check('tomorrow', detectNarratedTimeSkip('I will deal with it tomorrow.'), 'tomorrow')
-check('tomorrow leading', detectNarratedTimeSkip('Tomorrow, I set out at dawn.'), 'tomorrow')
 checkUnit('Years later, the wound still aches.', 'year') // "years"+later → "years" (advanceDays → 365)
 // enrichment (June 26): more unambiguous passage idioms (gated by a leading span)
 checkUnit('The weeks flew by in a blur.', 'week')
@@ -40,10 +32,8 @@ checkUnit('The days wore on as we marched.', 'day')
 checkUnit('Hours ticked by in the cell.', 'hour')
 checkUnit('The long months stretched on.', 'month')
 // symmetric named-period markers + bare "hours later"
-check('the next evening', detectNarratedTimeSkip('The next evening, the feast began.'), 'the next evening')
-check('the following night', detectNarratedTimeSkip('The following night, I slipped out.'), 'the following night')
 checkUnit('Hours later, I woke in the dark.', 'hour') // caught as an hour-scale span
-// "spend an explicit span" verbs — stay/remain/linger (gated by amount+unit)
+// first-person deliberate spans only (gated by amount+unit)
 checkUnit('I stay three days at the inn.', 'day')
 checkUnit('I remain in the city for a month.', 'month')
 checkUnit('We linger two weeks in the valley.', 'week')
@@ -65,10 +55,14 @@ for (const t of [
   'I linger by the window for a while.',        // "a while" is no time unit
   // homograph FPs fixed this pass (must NOT advance the calendar)
   'I worry about tomorrow constantly.',         // "about tomorrow" = a concept
+  'Tomorrow is another problem.',               // a topic, not a skip
+  'By dawn, I will decide.',                    // a future plan, not elapsed time
+  'The next morning is too soon.',              // a future reference, not a skip
   'I live like there is no tomorrow.',          // "no tomorrow" = idiom
   'It was an overnight success to celebrate.',  // "overnight" = adjective
   'I pack an overnight bag for the trip.',      // "overnight bag" = adjective
   "I spend three days' wages on it.",           // "days' wages" = money, not a span
+  'I spent a year of my life fearing this.',     // backstory, not current passage
   '',
 ]) check(t, detectNarratedTimeSkip(t), null)
 

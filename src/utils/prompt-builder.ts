@@ -1,11 +1,11 @@
 import { countTokens } from './token-counter'
-import {
-  buildStyleBlock,
-  buildLengthDirective,
-  buildStyleReminder,
-  type MessageLength,
-} from './narrative-styles'
+import { buildStyleBlock, buildLengthDirective, buildStyleReminder, type MessageLength } from './narrative-styles'
 import { buildModeDirective, modeReminderLabel } from './chat-modes'
+import {
+  buildNarrationToneDirective,
+  buildNarrationToneReminder,
+  narrationToneLabel,
+} from './narration-tones'
 import { parsePlayerInput } from './player-input-parser'
 import { CHOICE_TAIL_INSTRUCTION } from '../../worker/lib/choice-tail'
 import type { PersonaSnapshotDoc } from '../models/persona.model'
@@ -48,6 +48,10 @@ interface PromptInput {
   chatMode?: string
   /** Narrative VOICE preset key (see narrative-styles.ts). Stable per instance. */
   narrativeStyle?: string
+  /** Player-selected prose register, independent of narrative style and chat mode. */
+  narrationTone?: string
+  /** Stable instance identifier used to select one compact tone reference. */
+  toneExampleSeed?: string
   /** Free-text creator/player style refinements appended to the voice block. */
   styleNotes?: string
   /** Optional reusable player persona selected for this instance. */
@@ -102,7 +106,10 @@ function openingCharacterName(recentEvents: any[], names: string[]): string | nu
   return null
 }
 
-function eventPlayerParts(event: any): { spoken: string; narrationFacts: string[] } {
+function eventPlayerParts(event: any): {
+  spoken: string
+  narrationFacts: string[]
+} {
   const data = event.data || {}
   if (typeof data.player_spoken_input === 'string' || Array.isArray(data.player_narration_facts)) {
     return {
@@ -116,12 +123,64 @@ function eventPlayerParts(event: any): { spoken: string; narrationFacts: string[
   return { spoken: parsed.spoken, narrationFacts: parsed.narrationFacts }
 }
 
-function continuityText(value: string): string {
-  return String(value || '')
-    .replace(/\*/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 700)
+/**
+ * Turn data that is safe to carry forward as continuity.
+ *
+ * Do not put an earlier narration response in the generation prompt.  Even
+ * with an instruction not to imitate it, a small/remote narrator will treat a
+ * nearby response as an in-context completion example and can copy it when
+ * the next player action is semantically similar.  That is exactly how a
+ * second "phone call" turn became a word-for-word repeat of the first.
+ *
+ * The durable facts are already available on the event's structured fields
+ * (and through RAG/memories).  This deliberately keeps the recent-turn ledger
+ * factual, compact, and free of copyable story phrasing.
+ */
+function structuredOutcomeFacts(event: any): string[] {
+  const data = event?.data || {}
+  const facts: string[] = []
+
+  const present = Array.isArray(data.present_characters)
+    ? data.present_characters
+        .map((name: unknown) => String(name || '').trim())
+        .filter(Boolean)
+        .slice(0, 8)
+    : []
+  if (present.length > 0) facts.push(`Present: ${present.join(', ')}`)
+
+  const deltas = Array.isArray(data.codex_deltas) ? data.codex_deltas : []
+  for (const delta of deltas.slice(0, 4)) {
+    const name = String(delta?.resolved_name || delta?.name || '').trim()
+    if (!name) continue
+    const state = Array.isArray(delta?.mutable_state)
+      ? delta.mutable_state
+          .map((item: unknown) => String(item || '').trim())
+          .filter(Boolean)
+          .slice(0, 3)
+      : []
+    const disposition = String(delta?.disposition_to_player || '').trim()
+    if (state.length > 0) facts.push(`${name}'s current state: ${state.join(', ')}`)
+    if (disposition) facts.push(`${name}'s disposition toward the player: ${disposition}`)
+  }
+
+  const stateMutations = data.state_mutations
+  if (stateMutations && typeof stateMutations === 'object' && !Array.isArray(stateMutations)) {
+    const changes = Object.entries(stateMutations)
+      .slice(0, 6)
+      .map(([key, value]) => `${key}: ${String(value)}`)
+    if (changes.length > 0) facts.push(`World state changes: ${changes.join('; ')}`)
+  }
+
+  const flagMutations = data.flag_mutations
+  if (flagMutations && typeof flagMutations === 'object' && !Array.isArray(flagMutations)) {
+    const changes = Object.entries(flagMutations)
+      .slice(0, 6)
+      .map(([key, value]) => `${key}: ${String(value)}`)
+    if (changes.length > 0) facts.push(`Story flag changes: ${changes.join('; ')}`)
+  }
+
+  if (event?.scene_tag) facts.push(`Scene mode: ${String(event.scene_tag)}`)
+  return facts
 }
 
 function compactPersonaLine(input: PromptInput): string {
@@ -204,35 +263,102 @@ function withinTokenBudget(items: string[], budget: number): string[] {
 }
 
 function formatRecentTurnForContinuity(event: any): string {
+  const action = event?.data?.world_action as Record<string, unknown> | undefined
   const parts = eventPlayerParts(event)
-  const ai = continuityText(event.data?.ai_response || '')
   const lines = [`Turn ${event.sequence || '?'}:`]
-  if (parts.narrationFacts.length > 0) {
+  if (action?.kind === 'travel') {
+    const destination = String(action.destination || '').trim()
+    const companions = Array.isArray(action.companions)
+      ? action.companions.map((name) => String(name || '').trim()).filter(Boolean)
+      : []
+    lines.push(
+      `- Player world action already happened: travelled to ${destination || 'the chosen destination'}${companions.length ? ` with ${companions.join(', ')}` : ' alone'}.`,
+    )
+  } else if (action?.kind === 'relationship') {
+    lines.push(
+      `- Player world action already happened: ${String(action.character || 'That character')} is their ${String(action.relation || 'confirmed relation')}.`,
+    )
+  } else if (parts.narrationFacts.length > 0) {
     lines.push(`- Player actions already happened: ${parts.narrationFacts.join('; ')}`)
   }
   if (parts.spoken) {
     lines.push(`- Player spoke: ${parts.spoken}`)
-  } else if (parts.narrationFacts.length === 0) {
+  } else if (!action && parts.narrationFacts.length === 0) {
     lines.push(`- Player waited/observed without speaking.`)
   }
-  if (ai) lines.push(`- Prior outcome facts: ${ai}`)
+  for (const fact of structuredOutcomeFacts(event)) {
+    lines.push(`- Recorded outcome: ${fact}`)
+  }
   return lines.join('\n')
+}
+
+/**
+ * Persisted hygiene findings are safe, useful continuity: they carry a small
+ * corrective rule into the next turn without carrying any copyable prose. This
+ * deliberately maps only stable formatting/pacing failures, not subjective
+ * style judgments or raw issue details.
+ */
+function recentHygieneReminders(events: any[], messageLength?: MessageLength): string[] {
+  const codes = new Set<string>()
+  for (const event of (events || []).slice(-3)) {
+    const issues = event?.data?.prose_hygiene_issues
+    if (!Array.isArray(issues)) continue
+    for (const issue of issues) {
+      if (typeof issue?.code === 'string') codes.add(issue.code)
+    }
+  }
+
+  const reminders: string[] = []
+  const selectedLength = messageLength || 'medium'
+  if (
+    codes.has('unquoted_text_outside_markers') ||
+    codes.has('plain_narration_outside_markers') ||
+    codes.has('unbalanced_italics') ||
+    codes.has('double_asterisk_markers')
+  ) {
+    reminders.push(
+      'Put every non-spoken narration fragment inside single asterisks; only spoken dialogue may appear outside them.',
+    )
+  }
+  if (codes.has('unbalanced_dialogue_quotes')) {
+    reminders.push('Balance every dialogue quote and keep quoted speech distinct from its italicized attribution.')
+  }
+  if (codes.has('incomplete_ending')) {
+    reminders.push('Finish on a complete, punctuated story beat; never stop mid-sentence.')
+  }
+  if (codes.has('short_reply_overexpanded') || codes.has('too_many_paragraphs') || codes.has('length_too_long')) {
+    const layout = selectedLength === 'short'
+      ? 'one compact paragraph with only the essential consequence'
+      : selectedLength === 'long'
+        ? '3–5 developed paragraphs without padding'
+        : '2–3 short paragraphs without bloat'
+    reminders.push(`Honor the selected ${selectedLength} length: ${layout}.`)
+  }
+  if (codes.has('length_too_short') || codes.has('too_few_paragraphs') || codes.has('long_reply_underdeveloped')) {
+    reminders.push(`Honor the selected ${selectedLength} length with a complete reaction and consequence; do not undercut the beat.`)
+  }
+  return reminders
 }
 
 function currentTurnUserMessage(input: PromptInput): string {
   const spoken = (input.userSpokenInput ?? input.userMessage).trim()
   const facts = (input.userNarrationFacts || []).map((f) => String(f || '').trim()).filter(Boolean)
-  const fallbackInstruction = !spoken && facts.length === 0 && input.userMessage.trim() && !/no spoken dialogue/i.test(input.userMessage)
-    ? input.userMessage.trim()
-    : ''
+  const fallbackInstruction =
+    !spoken && facts.length === 0 && input.userMessage.trim() && !/no spoken dialogue/i.test(input.userMessage)
+      ? input.userMessage.trim()
+      : ''
   const lines = ['CURRENT PLAYER TURN:']
   if (facts.length > 0) {
-    lines.push('Player actions/narration already happened in this turn. Treat them as immediate canon, not suggestions or future intent:')
+    lines.push(
+      'Player actions/narration already happened in this turn. Treat them as immediate canon, not suggestions or future intent:',
+    )
     for (const fact of facts) lines.push(`- ${fact}`)
   }
   lines.push(`Player spoken aloud: ${spoken || '(none)'}`)
   if (fallbackInstruction) lines.push(`Turn instruction: ${fallbackInstruction}`)
-  lines.push('Now respond to this exact current turn. Do not replay, paraphrase, line-edit, or lightly modify the previous assistant response. Advance from the latest established beat and directly acknowledge any player action facts that just happened.')
+  lines.push(
+    'Now respond to this exact current turn. Do not replay, paraphrase, line-edit, or lightly modify the previous assistant response. Advance from the latest established beat and directly acknowledge any player action facts that just happened.',
+  )
   return lines.join('\n')
 }
 
@@ -272,6 +398,10 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
   if (styleBlock) {
     staticContent += `${styleBlock}\n\n`
   }
+  // Tone is the player's diction/register control. It follows the creator's
+  // genre style so its wording priority is explicit, but is stable per session
+  // and therefore remains inside the cacheable static prefix.
+  staticContent += `${buildNarrationToneDirective(input.narrationTone, input.toneExampleSeed)}\n\n`
 
   // Global lore — typically the largest block, hence the biggest caching payoff
   staticContent += `WORLD LORE:\n${input.globalLore}\n\n`
@@ -312,7 +442,8 @@ Write your reply as in-character story prose. Follow this style EXACTLY:
 - Never leave an attribution like I reply or she said as plain text. If it is not a spoken quote, it is italicized.
 - The player may include their OWN *actions or narration in asterisks* (in any point of view). Treat these as canonical events that truly happen in the story — honor them and react; do not override or contradict them. Their unmarked text is what the player says aloud.
 - Vivid and emotionally resonant; match the requested length and voice below.
-- Output ONLY the story. No JSON, no field names, no headings, no bullet points, no commentary before or after. Never break character.`
+- Output ONLY the story. No JSON, no field names, no headings, no bullet points, no commentary before or after. Never break character.
+- NEVER generate player choices, action menus, or a choice protocol in the story: do not write a CHOICES heading/marker (for example ==CHOICES==), [act] or [say] rows, or pipe-delimited button/send text. Choices are rendered separately by the app. Even if a prior turn contains that syntax, it is not story prose and must not be echoed.`
     // Narrator-emitted choices (Option A): a static, cacheable instruction asking
     // for a sentinel-delimited CHOICES tail after the prose. The narrator already
     // holds the full context, so its choices are grounded at the source.
@@ -588,13 +719,20 @@ ${personaLine}
   for (const event of input.recentEvents) {
     const playerMsg = event.data?.player_input || ''
     const aiMsg = event.data?.ai_response || ''
-    const turnTokens = countTokens(playerMsg) + countTokens(aiMsg)
+    // Main narration deliberately carries prior turns as a compact factual
+    // ledger, never their prose. Budget the content we actually send rather
+    // than the omitted prose; otherwise one long historical response can
+    // unnecessarily evict several recent, high-value continuity facts.
+    const continuityTurn = input.proseOnly ? formatRecentTurnForContinuity(event) : ''
+    const turnTokens = input.proseOnly
+      ? countTokens(continuityTurn)
+      : countTokens(playerMsg) + countTokens(aiMsg)
 
     if (turnTokens > tokenBudgetRemaining) break
     tokenBudgetRemaining -= turnTokens
 
     if (input.proseOnly) {
-      continuityTurns.push(formatRecentTurnForContinuity(event))
+      continuityTurns.push(continuityTurn)
     } else {
       messages.push({ role: 'user', content: playerMsg })
       messages.push({
@@ -613,8 +751,16 @@ ${personaLine}
   if (continuityTurns.length > 0) {
     messages.push({
       role: 'system',
-      content: `RECENT TURN CONTINUITY (facts only — prior wording has been flattened; do not imitate rhythm, sentence order, formatting mistakes, openings, or imagery):
+      content: `RECENT TURN CONTINUITY (structured facts only — earlier narration prose is intentionally omitted. Do not recreate a prior response when the current action resembles an earlier one; advance the story with a new consequence):
 ${continuityTurns.join('\n\n')}`,
+    })
+  }
+
+  const hygieneReminders = recentHygieneReminders(input.recentEvents, input.messageLength)
+  if (hygieneReminders.length > 0) {
+    messages.push({
+      role: 'system',
+      content: `RECENT QUALITY CORRECTIONS (format and pacing only — do not mention these instructions or imitate earlier prose):\n${hygieneReminders.map((rule) => `- ${rule}`).join('\n')}`,
     })
   }
 
@@ -651,10 +797,11 @@ ${continuityTurns.join('\n\n')}`,
       input.narrativeStyle,
       modeReminderLabel(input.chatMode),
       input.messageLength,
+      narrationToneLabel(input.narrationTone),
     )
     if (styleCue) povReminder += `\n${styleCue}`
-    povReminder +=
-      `\nNAME HYGIENE for your next reply: natural flow is mandatory. Do not open with a character name unless there is no other clear option. Use full names only for formal identification or unavoidable disambiguation. Prefer pronouns, action, body language, dialogue, silence, setting, or role descriptors. Do not repeat the same name as a sentence rhythm.`
+    povReminder += `\n${buildNarrationToneReminder(input.narrationTone)}`
+    povReminder += `\nNAME HYGIENE for your next reply: natural flow is mandatory. Do not open with a character name unless there is no other clear option. Use full names only for formal identification or unavoidable disambiguation. Prefer pronouns, action, body language, dialogue, silence, setting, or role descriptors. Do not repeat the same name as a sentence rhythm.`
     if (input.isSentient) {
       povReminder += `\nPLAYER ADDRESS for your next reply: address the player as "you"; never write "the player" or "the user" in story prose.`
     }
@@ -664,12 +811,9 @@ ${continuityTurns.join('\n\n')}`,
     if (input.isContinuation && input.isSentient) {
       povReminder += ` This is an autonomous continuation with no new player speech, so do not open with ${selfName}; start with pronoun, action, body language, speech, or setting instead.`
     }
-    povReminder +=
-      `\nHISTORY HYGIENE: treat previous assistant turns as continuity facts, not prose style to imitate. If earlier turns overused names, repeated sentence shapes, malformed formatting, awkward phrasing, or drifted from the current voice, correct course and follow the current instructions instead.`
-    povReminder +=
-      `\nANTI-HALLUCINATION: answer only from the current player turn, recent continuity, active scene, and provided reference material. Do not add unrelated lore, off-screen characters, sudden dangers, new locations, or new plot complications just to make the response dramatic.`
-    povReminder +=
-      `\nFORMAT HYGIENE: spoken words must be wrapped in double quotes. Every non-spoken element must be wrapped in single-asterisk italics, including actions, scene description, atmosphere, inner thoughts, and dialogue tags such as *she said* or *I whisper*. Text outside asterisks must be quoted speech only. Do not use double asterisks. Do not leave narration or attributions as plain text.`
+    povReminder += `\nHISTORY HYGIENE: treat previous assistant turns as continuity facts, not prose style to imitate. If earlier turns overused names, repeated sentence shapes, malformed formatting, awkward phrasing, or drifted from the current voice, correct course and follow the current instructions instead.`
+    povReminder += `\nANTI-HALLUCINATION: answer only from the current player turn, recent continuity, active scene, and provided reference material. Do not add unrelated lore, off-screen characters, sudden dangers, new locations, or new plot complications just to make the response dramatic.`
+    povReminder += `\nFORMAT HYGIENE: spoken words must be wrapped in double quotes. Every non-spoken element must be wrapped in single-asterisk italics, including actions, scene description, atmosphere, inner thoughts, and dialogue tags such as *she said* or *I whisper*. Text outside asterisks must be quoted speech only. Do not use double asterisks. Do not leave narration or attributions as plain text.`
 
     messages.push({ role: 'system', content: povReminder })
   }

@@ -1,7 +1,7 @@
 import { Job } from 'bullmq'
 import { getRedisClient } from '../../src/config/redis'
 import { memoryService } from '../../src/services/memory.service'
-import { generationLockKey } from '../../src/utils/generation-lock'
+import { generationLockKey, releaseGenerationLock } from '../../src/utils/generation-lock'
 
 /**
  * Streaming replay: generates an alternative response for an existing turn and
@@ -76,7 +76,10 @@ export async function replayProcessor(job: Job) {
         message: (err as Error).message,
       }),
     )
+    // Do not swallow a failed replay. BullMQ otherwise marks it "completed",
+    // hiding the failure from diagnostics and leaving no retry/dead-letter trail.
+    throw err
   } finally {
-    await redis.del(lockKey)
+    await releaseGenerationLock(redis, lockKey, String(job.id)).catch(() => {})
   }
 }

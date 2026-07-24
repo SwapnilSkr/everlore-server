@@ -3,6 +3,7 @@ import type { WorldFactSource } from '../utils/world-authority'
 import type { PersonaSnapshotDoc } from './persona.model'
 import type { TimeAnchorDoc } from './time.model'
 import type { LocationAnchorDoc } from './location.model'
+import type { RelationAssertion } from '../services/character-codex.service'
 
 export interface InstanceMilestoneDoc {
   label: string
@@ -57,6 +58,12 @@ export interface WorldInstanceDoc {
   mode?: string
   /** Desired reply length: 'short' | 'medium' | 'long'. Default 'medium'. */
   message_length?: 'short' | 'medium' | 'long'
+  /** Optional player override for the template's narrative voice. `null` means
+   * inherit the world default; an empty string deliberately selects neutral. */
+  narrative_style_override?: string | null
+  /** Player-selected prose register. It layers over template genre/style without
+   * changing story canon or mode pacing. See narration-tones.ts. */
+  narration_tone?: string
   /** Optional focused side-character for character-targeted conversation. */
   focus_character_id?: ObjectId | null
   /** Current story-time cursor for new events. */
@@ -79,6 +86,10 @@ export interface WorldInstanceDoc {
     /** [0,1] confidence derived from `source`; absent legacy rows are trusted as canon. */
     confidence?: number
   }>
+  /** Explicit relationship edits from the player-facing canon controls. Unlike
+   * narrated discoveries, these are authorial world settings: they do not create
+   * a chat turn, and must be reapplied after premise canon on every graph rebuild. */
+  manual_relation_assertions?: RelationAssertion[]
   /** Optional reusable account-level persona selected for this instance. */
   persona_id?: ObjectId | null
   /** Snapshot of the selected persona, so long-running chats do not drift when

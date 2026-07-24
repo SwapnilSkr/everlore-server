@@ -1,5 +1,6 @@
 import { getRedisClient, getRedisSubscriber } from '../config/redis'
 import { generationService } from './generation.service'
+import { parsePlayerWorldAction } from '../utils/world-action'
 import { verifyWsToken, type AuthUser } from '../middleware/auth'
 import { rateLimit } from '../middleware/rate-limit'
 import { log } from '../utils/logger'
@@ -232,6 +233,40 @@ export const playWsService = {
           await redis.del(lockKey)
           const message = err instanceof Error ? err.message : String(err)
           ws.send(JSON.stringify({ type: 'error', message }))
+        }
+        break
+      }
+
+      case 'world_action': {
+        const instanceId = (data as { instance_id?: string }).instance_id
+        const worldAction = parsePlayerWorldAction((data as { payload?: unknown }).payload)
+        if (!instanceId || !worldAction) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Invalid world action' }))
+          return
+        }
+        const rl = await rateLimit(user.id, 'chat')
+        if (!rl.allowed) {
+          ws.send(JSON.stringify({ type: 'error', code: 'RATE_LIMITED', retryAfter: rl.retryAfter }))
+          return
+        }
+        const lockKey = generationLockKey(user.id, instanceId)
+        const locked = await redis.set(lockKey, 'pending', 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')
+        if (!locked) {
+          ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
+          return
+        }
+        try {
+          const jobId = await generationService.dispatch({
+            instanceId,
+            playerId: user.id,
+            userMessage: '',
+            worldAction,
+          })
+          await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
+          ws.send(JSON.stringify({ type: 'ack', jobId }))
+        } catch (err: unknown) {
+          await redis.del(lockKey)
+          ws.send(JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : String(err) }))
         }
         break
       }

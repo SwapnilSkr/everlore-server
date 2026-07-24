@@ -241,21 +241,24 @@ export async function buildContextPacket(params: {
   recentEvents.reverse()
   const currentSequence = latestAnyEvent?.sequence || 0
 
-  const summaryDoc = await mongoColl.sceneSummaries().findOne(
-    {
-      instance_id: iid,
-      'event_range.end_sequence': { $lt: recentEvents[0]?.sequence || 0 },
-      // Stale = a source event inside the range was edited; the rebuild job
-      // will restore it. Until then the prompt skips the contradicted recap.
-      status: { $ne: 'stale' },
-    },
-    { sort: { 'event_range.end_sequence': -1 } },
-  )
+  // These reads are independent of entity resolution and RAG. Start them now
+  // and await each only at its first real consumer below; keeping them off the
+  // serial first-token path noticeably reduces cold-turn latency.
+  const summaryDocPromise = mongoColl.sceneSummaries().findOne(
+      {
+        instance_id: iid,
+        'event_range.end_sequence': { $lt: recentEvents[0]?.sequence || 0 },
+        // Stale = a source event inside the range was edited; the rebuild job
+        // will restore it. Until then the prompt skips the contradicted recap.
+        status: { $ne: 'stale' },
+      },
+      { sort: { 'event_range.end_sequence': -1 } },
+    )
   const currentTimeAnchor =
     session.current_time_anchor ||
     recentEvents[recentEvents.length - 1]?.time_anchor ||
     null
-  const timeContext = await timeService.timelineContext(instanceId, currentTimeAnchor)
+  const timeContextPromise = timeService.timelineContext(instanceId, currentTimeAnchor)
   const currentLocation =
     normalizeLocationAnchor(session.current_location) ||
     normalizeLocationAnchor(recentEvents[recentEvents.length - 1]?.location_anchor) ||
@@ -266,26 +269,35 @@ export async function buildContextPacket(params: {
   // penthouse, within Downtown" can't be confused with another penthouse) and the
   // place's canon facts + current condition (the MAIN packet previously omitted
   // these — only side chats had them).
-  let locationContext = currentLocation ? `Current place: ${currentLocation.name}.` : null
-  if (currentLocation) {
-    const [ancestry, placeEntity] = await Promise.all([
-      entityGraphService
-        .placeAncestry(instanceId, idString(currentLocation.entity_id))
-        .catch(() => [] as string[]),
-      mongoColl
-        .entities()
-        .findOne(
-          { _id: currentLocation.entity_id, instance_id: iid, type: 'location' },
-          { projection: { location_state: 1, location_facts: 1 } },
-        )
-        .catch(() => null) as Promise<{ location_state?: Array<{ text: string }>; location_facts?: Array<{ text: string }> } | null>,
-    ])
-    if (ancestry.length) locationContext += ` (within ${ancestry.join(', ')})`
-    const facts = (placeEntity?.location_facts || []).slice(-3).map((f) => f.text)
-    const state = (placeEntity?.location_state || []).slice(-3).map((f) => f.text)
-    if (facts.length) locationContext += `\nAbout this place: ${facts.join(' ')}`
-    if (state.length) locationContext += `\nCurrent condition: ${state.join(' ')}`
-  }
+  const locationContextPromise: Promise<string | null> = !currentLocation
+    ? Promise.resolve(null)
+    : Promise.all([
+        entityGraphService
+          .placeAncestry(instanceId, idString(currentLocation.entity_id))
+          .catch(() => [] as string[]),
+        mongoColl
+          .entities()
+          .findOne(
+            { _id: currentLocation.entity_id, instance_id: iid, type: 'location' },
+            { projection: { location_state: 1, location_facts: 1 } },
+          )
+          .catch(() => null) as Promise<{ location_state?: Array<{ text: string }>; location_facts?: Array<{ text: string }> } | null>,
+      ]).then(([ancestry, placeEntity]) => {
+        let context = `Current place: ${currentLocation.name}.`
+        if (ancestry.length) context += ` (within ${ancestry.join(', ')})`
+        const facts = (placeEntity?.location_facts || []).slice(-3).map((f) => f.text)
+        const state = (placeEntity?.location_state || []).slice(-3).map((f) => f.text)
+        if (facts.length) context += `\nAbout this place: ${facts.join(' ')}`
+        if (state.length) context += `\nCurrent condition: ${state.join(' ')}`
+        return context
+      })
+
+  const codexPoolPromise = mongoColl
+    .characters()
+    .find({ instance_id: iid })
+    .sort({ is_protagonist: -1, mention_count: -1, updated_at: -1 })
+    .limit(CODEX_POOL_LIMIT)
+    .toArray() as Promise<CharacterProfileDoc[]>
 
   // ── 1. Direct mentions: entities + dormant codex cards named in the input ──
   // (On a continue turn the player says nothing — nothing to resolve.)
@@ -369,6 +381,7 @@ export async function buildContextPacket(params: {
 
   // ── 2b. Long-horizon recall: exclude anything the recent raw window or the
   //    injected scene summary already covers so we don't double-narrate.
+  const summaryDoc = await summaryDocPromise
   const earliestRecent = recentEvents[0]?.sequence ?? currentSequence
   const injectedEnd = summaryDoc?.event_range?.end_sequence ?? -1
   const relevantSummaries = (await summariesPromise)
@@ -376,12 +389,7 @@ export async function buildContextPacket(params: {
     .map((h) => h.text)
 
   // ── 3. Codex selection (AFTER retrieval, so memories can shape it) ──
-  const codexPool = (await mongoColl
-    .characters()
-    .find({ instance_id: iid })
-    .sort({ is_protagonist: -1, mention_count: -1, updated_at: -1 })
-    .limit(CODEX_POOL_LIMIT)
-    .toArray()) as CharacterProfileDoc[]
+  const codexPool = await codexPoolPromise
   const ranked = rankCodexForInjection(codexPool, currentSequence, CODEX_INJECT_LIMIT)
 
   // Memory-driven pins: characters the RETRIEVED memories are about but whom
@@ -450,8 +458,9 @@ export async function buildContextPacket(params: {
   //    the companion brief (§5) via the membership confidence now carried on
   //    travelling_with (tagged in generation.processor by the authority of the join
   //    text — player narration outranks narrator prose).
-  let relationshipFacts: string[] = []
-  if (process.env.KINSHIP_GRAPH_READS !== 'off') {
+  const relationshipFactsPromise: Promise<string[]> = process.env.KINSHIP_GRAPH_READS === 'off'
+    ? Promise.resolve([])
+    : (() => {
     const selfEntityId =
       (characterCodex.find((c) => c.is_protagonist)?.entity_id &&
         idString(characterCodex.find((c) => c.is_protagonist)!.entity_id!)) ||
@@ -462,13 +471,13 @@ export async function buildContextPacket(params: {
       ...mentionedEntityIds,
       ...retrievedEntityIds,
     ]
-    relationshipFacts = await kinshipGraphService
+    return kinshipGraphService
       .kinshipBrief(instanceId, activeEntityIds, selfEntityId)
       .catch((err) => {
         console.warn('Context packet: kinship brief skipped:', (err as Error).message)
         return []
       })
-  }
+    })()
 
   // ── 5. Canon brief (companions): who is travelling WITH the player (from the prior
   //    turn's persisted party). Surfaced as present-by-default, and excluded from the
@@ -497,12 +506,12 @@ export async function buildContextPacket(params: {
 
   // ── 6. Canon brief (positions): where active-cast characters were last seen, for
   //    those who aren't in the current place — powers "go find X" / "where is X".
-  let positionFacts: string[] = []
   const codexEntityIds = characterCodex
     .map((c) => (c.entity_id ? idString(c.entity_id) : ''))
     .filter(Boolean)
-  if (codexEntityIds.length > 0) {
-    positionFacts = await entityGraphService
+  const positionFactsPromise: Promise<string[]> = codexEntityIds.length === 0
+    ? Promise.resolve([])
+    : entityGraphService
       .characterPositions({
         instanceId,
         entityIds: codexEntityIds,
@@ -525,7 +534,14 @@ export async function buildContextPacket(params: {
         console.warn('Context packet: character positions skipped:', (err as Error).message)
         return []
       })
-  }
+
+  const [relationshipFacts, positionFacts, timeContext, locationContext] =
+    await Promise.all([
+      relationshipFactsPromise,
+      positionFactsPromise,
+      timeContextPromise,
+      locationContextPromise,
+    ])
 
   return {
     recentEvents,

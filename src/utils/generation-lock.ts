@@ -32,9 +32,22 @@ export function generationLockKey(playerId: string, instanceId: string): string 
  * the lock expires within GENERATION_LOCK_HEARTBEAT_TTL_SECONDS rather than
  * hanging for the full dispatch TTL.
  */
-export function startGenerationLockHeartbeat(redis: Redis, lockKey: string): () => void {
+export function startGenerationLockHeartbeat(
+  redis: Redis,
+  lockKey: string,
+  expectedValue?: string,
+): () => void {
   const refresh = () => {
-    redis.expire(lockKey, GENERATION_LOCK_HEARTBEAT_TTL_SECONDS).catch(() => {
+    const refreshLock = expectedValue
+      ? redis.eval(
+          'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("expire", KEYS[1], ARGV[2]) end return 0',
+          1,
+          lockKey,
+          expectedValue,
+          String(GENERATION_LOCK_HEARTBEAT_TTL_SECONDS),
+        )
+      : redis.expire(lockKey, GENERATION_LOCK_HEARTBEAT_TTL_SECONDS)
+    refreshLock.catch(() => {
       // Transient Redis blip; the next tick (or the dispatch TTL) covers us.
     })
   }
@@ -43,4 +56,19 @@ export function startGenerationLockHeartbeat(redis: Redis, lockKey: string): () 
   // The heartbeat must never keep the process alive on its own.
   if (typeof timer.unref === 'function') timer.unref()
   return () => clearInterval(timer)
+}
+
+/** Release only the lock acquired by this operation; never delete a newer lock
+ * that may have been acquired after an expiry/race. */
+export async function releaseGenerationLock(
+  redis: Redis,
+  lockKey: string,
+  expectedValue: string,
+): Promise<void> {
+  await redis.eval(
+    'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) end return 0',
+    1,
+    lockKey,
+    expectedValue,
+  )
 }

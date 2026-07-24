@@ -212,6 +212,9 @@ const SPEECH_VERBS =
 const ACTION_VERBS =
   'turned|turns|smiled|smiles|nodded|nods|stepped|steps|reached|reaches|leaned|leans|stood|stands|sat|sits|moved|moves|looked|looks|glanced|glances|frowned|frowns|sighed|sighs|gripped|grips|grabbed|grabs|walked|walks|entered|enters|approached|approaches|crossed|crosses|raised|raises|shook|shakes|gestured|gestures|pointed|points|rose|rises|knelt|kneels|gazed|gazes|pulled|pulls|pressed|presses'
 
+const PERSON_POSSESSIONS =
+  'eyes|eye|jaw|hand|hands|mouth|lips|face|smile|frown|voice|shoulders|shoulder|fingers|nails|gaze|breath|head|cheek|cheeks|brow|expression'
+
 const TITLE_WORDS =
   'captain|king|queen|prince|princess|lord|lady|sir|dame|dr|doctor|father|mother|sister|brother|master|mistress|professor|sergeant|general|admiral|commander|duke|duchess|count|countess|baron|reverend|elder|chief'
 
@@ -231,6 +234,21 @@ function appearsMidSentence(display: string, prose: string): boolean {
   return new RegExp(`[a-z0-9,]\\s+${escapeRe(display)}\\b`).test(prose)
 }
 
+/**
+ * A capitalized landmark can look like a person to the generic name detector.
+ * In a definite locative phrase ("near the Duomo", "inside the Louvre") it is
+ * unambiguously functioning as a place.  Reject it before the person-grammar
+ * checks: `Duomo, the room ...` otherwise falsely matches the broad appositive
+ * rule below and mints a character stub.
+ */
+function appearsAsDefiniteLocation(display: string, prose: string): boolean {
+  const n = escapeRe(display)
+  return new RegExp(
+    `\\b(?:at|in|inside|within|near|by|beside|outside|around|toward|towards|from|to|into|through|across)\\s+the\\s+${n}\\b`,
+    'i',
+  ).test(prose)
+}
+
 /** Decide the tier for one candidate display name within `prose`. */
 function tierFor(display: string, prose: string): { tier: MentionTier; evidence: string; count: number } {
   const n = escapeRe(display)
@@ -243,6 +261,12 @@ function tierFor(display: string, prose: string): { tier: MentionTier; evidence:
   // action attribution: "Mara turned / reached / stepped" → acting in scene.
   if (new RegExp(`\\b${n}\\s+(?:${ACTION_VERBS})\\b`, 'i').test(prose)) {
     return { tier: 'confirmed', evidence: 'action in scene', count }
+  }
+  // "Nora's jaw tightened" / "Mara's smile faded" is direct evidence of a
+  // person physically in the scene, without confusing civic personification
+  // such as "Milan's predawn chill" for a participant.
+  if (new RegExp(`\\b${n}(?:'s|\\u2019s)\\s+(?:${PERSON_POSSESSIONS})\\b`, 'i').test(prose)) {
+    return { tier: 'confirmed', evidence: 'person possessive', count }
   }
   // appositive: "Mara, my sister" / "Mara, the captain" → introduced present.
   if (new RegExp(`\\b${n},\\s+(?:my|his|her|their|the|a|an)\\s+\\w+`, 'i').test(prose)) {
@@ -273,6 +297,7 @@ export function classifyPresenceCodexGaps(prose: string, tracked: TrackedNames):
   const text = String(prose || '')
   return detectPresenceCodexGapsDetailed(text, tracked)
     .filter((c) => {
+      if (appearsAsDefiniteLocation(c.display, text)) return false
       // Drop a bare title word ("Captain") when it directly precedes a name in the
       // prose ("Captain Voss") — the name candidate already captures that person.
       if (!TITLE_SET.has(c.display.toLowerCase())) return true
@@ -287,6 +312,7 @@ export function classifyPresenceCodexGaps(prose: string, tracked: TrackedNames):
       const robust =
         evidence === 'dialogue attribution' ||
         evidence === 'action in scene' ||
+        evidence === 'person possessive' ||
         evidence === 'title-name'
       if (tier !== 'mentioned_only' && !robust && !appearsMidSentence(c.display, text)) {
         tier = 'mentioned_only'

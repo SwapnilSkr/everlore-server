@@ -23,6 +23,20 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
 
   .get('/relationships/:instanceId', (ctx) => chronicleController.getRelationships(ctx))
 
+  .get('/kinship/:instanceId', (ctx) => chronicleController.getConfirmedKinship(ctx))
+  .post('/kinship/:instanceId', (ctx) => chronicleController.setKinship(ctx), {
+    body: t.Object({ character: t.String({ minLength: 2, maxLength: 80 }), relation: t.String({ minLength: 2, maxLength: 40 }), correction: t.Optional(t.Boolean()), replaces_relation: t.Optional(t.String({ maxLength: 40 })) }),
+  })
+
+  .get('/relation-candidates/:instanceId', (ctx) => chronicleController.getRelationCandidates(ctx))
+
+  .post('/relation-candidate/:candidateId/resolve', (ctx) => chronicleController.resolveRelationCandidate(ctx), {
+    body: t.Object({
+      action: t.Union([t.Literal('accept'), t.Literal('reject'), t.Literal('defer')]),
+      relation: t.Optional(t.String({ maxLength: 40 })),
+    }),
+  })
+
   .get(
     '/relationships/:instanceId/:characterId/memories',
     (ctx) => chronicleController.getCharacterMemories(ctx),

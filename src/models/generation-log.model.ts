@@ -32,5 +32,11 @@ export interface GenerationLogDoc {
   /** Time-to-first-token: ms from request start until the first streamed delta.
    *  The latency the player actually feels. 0 if no tokens streamed. */
   ttft_ms: number
+  /** Time spent waiting for a generation worker after the job was enqueued. */
+  queue_wait_ms?: number
+  /** Worker-side context/retrieval/prompt construction before the provider call. */
+  context_latency_ms?: number
+  /** Full request-to-first-visible-token measurement, including dispatch and queue. */
+  end_to_end_ttft_ms?: number
   created_at: Date
 }

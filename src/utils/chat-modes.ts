@@ -3,12 +3,13 @@
  * (pacing, intent, escalation, emotional distance). This is deliberately
  * ORTHOGONAL to narrative style (narrative-styles.ts):
  *
- *   - narrative_style = how it's WRITTEN (diction/register/rhythm). LOCKED by the
- *     creator at world/character creation. Objective truth; players never change it.
+ *   - narrative_style = the template's authored genre/voice, or a deliberate
+ *     per-instance player override.
+ *   - narration_tone = player-selected diction/register/rhythm. It never
+ *     changes story canon and is intentionally independent of modes.
  *   - chat mode = how the CHAT BEHAVES (pace/initiative/heat). Chosen by the
- *     player per conversation. Must NOT touch diction — so it can never fight the
- *     locked voice. Every directive is subordinate to the voice and the
- *     character's nature.
+ *     player per conversation. Must NOT touch diction — so it can never fight
+ *     the selected narration tone or the character's nature.
  *
  * Mode is an instance-level setting (default 'free_play'); it is not stored on
  * the template. `ardent` additionally acts as the structured NSFW on-ramp (see

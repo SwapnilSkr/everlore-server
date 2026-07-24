@@ -38,6 +38,17 @@ export type EverloreIndexDef = {
 }
 
 export const EVERLORE_INDEXES: EverloreIndexDef[] = [
+  // relation candidates — a review queue, never a source of canon by itself.
+  {
+    collection: COLLECTIONS.relation_candidates,
+    key: { instance_id: 1, status: 1, updated_at: -1 },
+    options: { name: 'idx_relation_candidates_instance_status' },
+  },
+  {
+    collection: COLLECTIONS.relation_candidates,
+    key: { source_event_id: 1, character_entity_id: 1, relation: 1 },
+    options: { unique: true, name: 'idx_relation_candidates_source_relation' },
+  },
   // world_instances
   {
     collection: COLLECTIONS.world_instances,

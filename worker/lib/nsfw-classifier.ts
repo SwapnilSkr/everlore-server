@@ -11,11 +11,23 @@ import { env } from '../../src/config/env'
 const FALLBACK_WORDS: Record<string, number> = {
   naked: 2, nude: 2, undress: 2, undressed: 2, undressing: 2,
   orgasm: 2, climax: 2, cum: 2, cumming: 2, horny: 2, aroused: 2, arousal: 2,
-  cock: 2, dick: 2, penis: 2, pussy: 2, clit: 2, cunt: 2, fuck: 2, fucking: 2,
+  cock: 2, dick: 2, penis: 2, pussy: 2, clit: 2, cunt: 2,
   sex: 2, sexual: 2, erection: 2, blowjob: 2, oral: 2, breasts: 2, breast: 2,
   moan: 1, moans: 1, moaning: 1, thrust: 1, thrusts: 1, thrusting: 1,
   thigh: 1, thighs: 1, nipple: 1, nipples: 1, wet: 1, grind: 1, stroke: 1,
 }
+
+/**
+ * These are often present in an adult lexicon but are not, by themselves,
+ * evidence that a player is initiating sexual content.  Routing an ordinary
+ * argument ("fucking spineless", "man whore") to an uncensored narrator is a
+ * false positive with real downstream effects, so require unambiguous anatomy
+ * or intent instead.  Explicit sexual grammar remains covered by the patterns
+ * below and the user can explicitly choose Ardent when that is their intent.
+ */
+const PROFANITY_OR_INSULT_TERMS = new Set([
+  'fuck', 'fucking', 'whore', 'slut', 'bitch', 'bastard',
+])
 
 /** Behavioral phrase patterns — kept in code (regex semantics, not flat terms). */
 const EXPLICIT_PATTERNS = [
@@ -23,8 +35,8 @@ const EXPLICIT_PATTERNS = [
   /don['']t\s+stop/i,
   /inside\s+(me|you)/i,
   /make\s+love/i,
-  /\bfuck/i,
   /\b(suck|lick|ride)\s+(my|your|his|her|their)?\s*(cock|dick|pussy|clit|cunt|penis)\b/i,
+  /\b(?:fuck|fucking)\s+(?:my|your|his|her|their)\s+(?:cock|dick|pussy|clit|cunt|penis)\b/i,
   /\b(cock|dick|pussy|clit|cunt|penis)\b/i,
   /want\s+you\s+(inside|now|so)/i,
 ]
@@ -118,7 +130,9 @@ export function scoreScene(
 
   const words = text.split(/\s+/)
   for (const word of words) {
-    const w = wordWeights[word]
+    const normalizedWord = word.replace(/^[^a-z]+|[^a-z]+$/g, '')
+    if (PROFANITY_OR_INSULT_TERMS.has(normalizedWord)) continue
+    const w = wordWeights[normalizedWord]
     if (w) signalCount += w
   }
 
@@ -142,10 +156,11 @@ export function scoreScene(
       (e) =>
         e.scene_tag === 'intimate' ||
         e.type === 'intimate' ||
-        // Set off the TTFT path by the post-turn intent judge: a prior turn where
-        // the PLAYER expressed clean-language sexual intent the lexicon missed.
-        // This is how that intent arms routing without a read-path LLM call.
-        e.nsfw_intent === true,
+        // Set off the TTFT path only by a verified, current-turn sexual-intent
+        // result. Legacy rows have no source and are intentionally ignored: an
+        // old false positive must never keep a Free Play scene on the NSFW model.
+        e.nsfw_intent === true &&
+          (e.nsfw_intent_source === 'direct_explicit' || e.nsfw_intent_source === 'intent_judge'),
     ).length
   signalCount += recentExplicit * 2
 

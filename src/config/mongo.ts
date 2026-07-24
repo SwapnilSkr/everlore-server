@@ -22,6 +22,7 @@ import type { ProjectionAnomalyDoc } from '../models/projection-anomaly.model'
 import type { SignalLedgerDoc } from '../models/signal-ledger.model'
 import type { ProjectionCheckpointChunkDoc, ProjectionCheckpointDoc } from '../models/projection-checkpoint.model'
 import type { LocationStatsDoc } from '../models/location-stats.model'
+import type { RelationCandidateDoc } from '../models/relation-candidate.model'
 
 let client: MongoClient | null = null
 let database: Db | null = null
@@ -59,6 +60,7 @@ export const mongoColl = {
   projectionCheckpoints: () => coll<WithoutId<ProjectionCheckpointDoc>>(COLLECTIONS.projection_checkpoints),
   projectionCheckpointChunks: () => coll<WithoutId<ProjectionCheckpointChunkDoc>>(COLLECTIONS.projection_checkpoint_chunks),
   locationStats: () => coll<WithoutId<LocationStatsDoc>>(COLLECTIONS.location_stats),
+  relationCandidates: () => coll<WithoutId<RelationCandidateDoc>>(COLLECTIONS.relation_candidates),
 } as const
 
 export async function connectMongo(): Promise<Db> {

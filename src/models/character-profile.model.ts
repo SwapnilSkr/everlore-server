@@ -12,6 +12,15 @@ export interface RelationshipMeters {
   rivalry: number
 }
 
+/** A validated, player-facing conversation affordance derived from a character's
+ * current state. This is display metadata only; mutable_state remains the
+ * canonical continuity record used by prompts and projections. */
+export interface CharacterInteractionHint {
+  label: string
+  draft: string
+  source_state: string
+}
+
 /**
  * characters — emergent NPC codex entries that become canonical constraints.
  */
@@ -27,6 +36,8 @@ export interface CharacterProfileDoc {
   persona?: string
   immutable_facts: string[]
   mutable_state: string[]
+  /** Optional for backwards-compatible existing cards. */
+  interaction_hints?: CharacterInteractionHint[]
   disposition_to_player: string
   hidden_thought: string
   /** Gamified relationship ledger; absent until the first meter-moving turn. */

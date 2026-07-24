@@ -1,4 +1,5 @@
 import { getOpenAI, getOpenRouter } from '../config/openai'
+import { env } from '../config/env'
 
 /**
  * Model ids served by the OpenAI API directly. Anything NOT in this set is
@@ -19,6 +20,8 @@ function clientFor(model: string) {
  * even when TTFT looks fine — old budget hosts (e.g. mythomax 13B) are the worst
  * offenders. `sort: 'throughput'` tells OpenRouter to prefer high-throughput
  * providers; `allow_fallbacks` keeps reliability if the fastest host is down.
+ * The p90 preference deprioritizes hosts with a recently poor tail-latency
+ * record, without turning a temporary telemetry gap into a hard outage.
  *
  * Returns `undefined` for OpenAI-direct models — they must NOT receive a
  * `provider` field (it's an OpenRouter-specific top-level body extension and is
@@ -26,7 +29,16 @@ function clientFor(model: string) {
  */
 function providerPrefsFor(model: string): Record<string, unknown> | undefined {
   if (OPENAI_MODELS.has(model)) return undefined
-  return { provider: { sort: 'throughput', allow_fallbacks: true } }
+  const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
+  return {
+    provider: {
+      sort: 'throughput',
+      allow_fallbacks: true,
+      ...(Number.isFinite(p90) && p90 > 0
+        ? { preferred_max_latency: { p90 } }
+        : {}),
+    },
+  }
 }
 
 interface LLMRequest {
@@ -36,10 +48,23 @@ interface LLMRequest {
   maxTokens?: number
   responseSchema?: object
   responseFormat?: { type: string }
+  /** Abort if the provider has not produced its first text delta in time. */
+  firstTokenTimeoutMs?: number
   /** Abort a streaming request if no token arrives for this long. */
   idleTimeoutMs?: number
   /** Absolute request timeout passed to the OpenAI SDK. */
   timeoutMs?: number
+  /** Stable OpenRouter conversation key. It keeps a story on the provider that
+   * has its prompt/KV cache warm; ignored for direct OpenAI models. */
+  sessionId?: string
+}
+
+function routingParamsFor(req: LLMRequest): Record<string, unknown> {
+  if (OPENAI_MODELS.has(req.model)) return {}
+  return {
+    ...(providerPrefsFor(req.model) ?? {}),
+    ...(req.sessionId ? { session_id: req.sessionId.slice(0, 256) } : {}),
+  }
 }
 
 export async function callLLM(req: LLMRequest): Promise<string> {
@@ -65,7 +90,7 @@ export async function callLLM(req: LLMRequest): Promise<string> {
     params.response_format = req.responseFormat
   }
 
-  Object.assign(params, providerPrefsFor(req.model) ?? {})
+  Object.assign(params, routingParamsFor(req))
 
   const response = await client.chat.completions.create(params, {
     timeout: req.timeoutMs ?? 90000,
@@ -87,8 +112,12 @@ export async function callLLMStream(
 ): Promise<string> {
   const client = clientFor(req.model)
   const controller = new AbortController()
+  const firstTokenTimeoutMs = req.firstTokenTimeoutMs ?? 30000
   const idleTimeoutMs = req.idleTimeoutMs ?? 45000
   let idleTimer: ReturnType<typeof setTimeout> | null = null
+  let firstTokenTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
+    controller.abort(new Error(`LLM stream did not produce a first token within ${firstTokenTimeoutMs}ms`))
+  }, firstTokenTimeoutMs)
 
   const armIdleTimer = () => {
     if (idleTimer) clearTimeout(idleTimer)
@@ -103,20 +132,23 @@ export async function callLLMStream(
     temperature: req.temperature ?? 0.8,
     max_tokens: req.maxTokens ?? 600,
     stream: true,
-    ...(providerPrefsFor(req.model) ?? {}),
+    ...routingParamsFor(req),
   }
-
-  const stream = await client.chat.completions.create(params, {
-    signal: controller.signal,
-    timeout: req.timeoutMs ?? 180000,
-  }) as unknown as AsyncIterable<{ choices: Array<{ delta?: { content?: string } }> }>
 
   let full = ''
   try {
+    const stream = await client.chat.completions.create(params, {
+      signal: controller.signal,
+      timeout: req.timeoutMs ?? 180000,
+    }) as unknown as AsyncIterable<{ choices: Array<{ delta?: { content?: string } }> }>
     armIdleTimer()
     for await (const part of stream) {
       const delta = part.choices[0]?.delta?.content ?? ''
       if (delta) {
+        if (firstTokenTimer) {
+          clearTimeout(firstTokenTimer)
+          firstTokenTimer = null
+        }
         full += delta
         onDelta(delta)
         armIdleTimer()
@@ -124,6 +156,7 @@ export async function callLLMStream(
     }
   } finally {
     if (idleTimer) clearTimeout(idleTimer)
+    if (firstTokenTimer) clearTimeout(firstTokenTimer)
   }
 
   if (!full) throw new Error('Empty LLM response')

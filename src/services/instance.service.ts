@@ -10,8 +10,9 @@ import { characterCodexService } from './character-codex.service'
 import { kinshipGraphService } from './kinship-graph.service'
 import { personaService } from './persona.service'
 import { timeService } from './time.service'
-import { isValidMessageLength } from '../utils/narrative-styles'
+import { isValidMessageLength, isValidStyleKey } from '../utils/narrative-styles'
 import { isValidModeKey, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
+import { DEFAULT_NARRATION_TONE, isValidNarrationTone } from '../utils/narration-tones'
 
 const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number }> = {
   free: { max_instances: 3, max_memories: 100 },
@@ -90,10 +91,12 @@ export const instanceService = {
       // Characters start in first person (intimate chat feel); Worlds start in
       // third person. Either way the player can toggle POV in chat.
       narration_pov: template.kind === 'character' ? 'first' : 'third',
-      // Chat mode + length are player-chosen; voice is creator-locked on the
-      // template and read from there at prompt time (never stored per-instance).
+      // Chat mode, prose tone, and length are player-chosen. The template voice
+      // still supplies genre/world texture; tone only controls how it is phrased.
       mode: DEFAULT_CHAT_MODE,
       message_length: 'medium',
+      narrative_style_override: null,
+      narration_tone: DEFAULT_NARRATION_TONE,
       focus_character_id: null,
       current_location: null,
       current_time_anchor: initialTimeAnchor,
@@ -126,9 +129,7 @@ export const instanceService = {
       })
       // Step 0 — seed the authored premise family as system_seed kinship (one-time,
       // off any turn). Best-effort: a failure must never block instance creation.
-      await kinshipGraphService
-        .seedPremiseKinship({ instanceId: idString(_id), playerId })
-        .catch(() => undefined)
+      await kinshipGraphService.seedPremiseKinship({ instanceId: idString(_id), playerId }).catch(() => undefined)
     }
 
     // Opening line: if the template greets the player, seed it as the first event
@@ -265,7 +266,14 @@ export const instanceService = {
     if (instances.length === 0) {
       const template = (await worldTemplates()
         .find({ _id: templateOid })
-        .project({ _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1, image_url: 1 })
+        .project({
+          _id: 1,
+          title: 1,
+          is_sentient: 1,
+          description: 1,
+          kind: 1,
+          image_url: 1,
+        })
         .limit(1)
         .toArray()) as WorldTemplateSummaryDoc[]
       return { template: template[0] || null, stories: [] }
@@ -277,7 +285,13 @@ export const instanceService = {
         _id: ObjectId
         preview: string
       }>([
-        { $match: { instance_id: { $in: instanceIds }, player_id: playerOid, type: { $ne: 'side_chat' } } },
+        {
+          $match: {
+            instance_id: { $in: instanceIds },
+            player_id: playerOid,
+            type: { $ne: 'side_chat' },
+          },
+        },
         { $sort: { sequence: -1 } },
         {
           $group: {
@@ -295,11 +309,7 @@ export const instanceService = {
                   ar: { $ifNull: ['$ai_response', ''] },
                 },
                 in: {
-                  $cond: [
-                    { $gt: [{ $strLenCP: '$$pi' }, 0] },
-                    '$$pi',
-                    '$$ar',
-                  ],
+                  $cond: [{ $gt: [{ $strLenCP: '$$pi' }, 0] }, '$$pi', '$$ar'],
                 },
               },
             },
@@ -308,13 +318,18 @@ export const instanceService = {
       ])
       .toArray()
 
-    const previewMap = new Map(
-      previewRows.map((r) => [idString(r._id), (r.preview || '').trim()]),
-    )
+    const previewMap = new Map(previewRows.map((r) => [idString(r._id), (r.preview || '').trim()]))
 
     const templateRows = (await worldTemplates()
       .find({ _id: templateOid })
-      .project({ _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1, image_url: 1 })
+      .project({
+        _id: 1,
+        title: 1,
+        is_sentient: 1,
+        description: 1,
+        kind: 1,
+        image_url: 1,
+      })
       .limit(1)
       .toArray()) as WorldTemplateSummaryDoc[]
     const template = templateRows[0] || null
@@ -344,15 +359,19 @@ export const instanceService = {
       filter['meta.is_archived'] = { $ne: true }
     }
 
-    const instances = await worldInstances()
-      .find(filter)
-      .sort({ 'meta.last_active_at': -1 })
-      .toArray()
+    const instances = await worldInstances().find(filter).sort({ 'meta.last_active_at': -1 }).toArray()
 
     const templateIds = [...new Set(instances.map((i) => i.template_id))]
     const templates = (await worldTemplates()
       .find({ _id: { $in: templateIds } })
-      .project({ _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1, image_url: 1 })
+      .project({
+        _id: 1,
+        title: 1,
+        is_sentient: 1,
+        description: 1,
+        kind: 1,
+        image_url: 1,
+      })
       .toArray()) as WorldTemplateSummaryDoc[]
 
     const templateMap = new Map(templates.map((t) => [idString(t._id), t]))
@@ -382,14 +401,13 @@ export const instanceService = {
    * GM onboarding: establish the player's own character as the locked protagonist
    * of this instance (first play). No-op if a protagonist already exists.
    */
-  async setPlayerProtagonist(
-    instanceId: string,
-    playerId: string,
-    data: { name: string; identity?: string },
-  ) {
+  async setPlayerProtagonist(instanceId: string, playerId: string, data: { name: string; identity?: string }) {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
-    const instance = await worldInstances().findOne({ _id: iid, player_id: pid })
+    const instance = await worldInstances().findOne({
+      _id: iid,
+      player_id: pid,
+    })
     if (!instance) throw new HttpError(404, 'Instance not found')
 
     const card = await characterCodexService.seedProtagonist({
@@ -402,13 +420,9 @@ export const instanceService = {
     // Step 0 — GM worlds seed kinship at onboarding (the protagonist now exists):
     // the world premise + the player's authored persona ("my late sister"), anchored
     // to the player. One-time, off any turn; best-effort.
-    await kinshipGraphService
-      .seedPremiseKinship({ instanceId, playerId })
-      .catch(() => undefined)
+    await kinshipGraphService.seedPremiseKinship({ instanceId, playerId }).catch(() => undefined)
     return {
-      protagonist: card
-        ? { id: idString(card._id), canonical_name: card.canonical_name }
-        : null,
+      protagonist: card ? { id: idString(card._id), canonical_name: card.canonical_name } : null,
     }
   },
 
@@ -438,12 +452,22 @@ export const instanceService = {
       active_flags: instance.active_flags,
       current_scene: instance.current_scene,
       narration_pov: instance.narration_pov || 'third',
-      // Mode + length are per-instance (player). Voice is creator-locked: read
-      // straight from the template so players can never alter the author's voice.
+      // Mode, voice, prose tone, and length are player-selected per instance.
+      // A null voice override inherits the template's authored default.
       mode: instance.mode || DEFAULT_CHAT_MODE,
       message_length: instance.message_length || 'medium',
-      narrative_style: template.narrative_style || '',
-      style_notes: template.style_notes || '',
+      narrative_style_override: instance.narrative_style_override ?? null,
+      narration_tone: instance.narration_tone || DEFAULT_NARRATION_TONE,
+      narrative_style:
+        instance.narrative_style_override === null || instance.narrative_style_override === undefined
+          ? template.narrative_style || ''
+          : instance.narrative_style_override,
+      // Creator notes tune the creator's voice. A deliberate player voice
+      // override must not inherit an incompatible "follow exactly" voice rule.
+      style_notes:
+        instance.narrative_style_override === null || instance.narrative_style_override === undefined
+          ? template.style_notes || ''
+          : '',
       focus_character_id: instance.focus_character_id ? idString(instance.focus_character_id) : null,
       persona_id: instance.persona_id ? idString(instance.persona_id) : null,
       persona_snapshot: instance.persona_snapshot || null,
@@ -478,10 +502,9 @@ export const instanceService = {
   },
 
   /**
-   * Update in-chat session settings (narration POV, chat mode, message length,
-   * focus) for an instance and bust the cached session so the next turn rebuilds
-   * with the new values. Narrative voice is creator-locked and intentionally NOT
-   * editable here.
+   * Update in-chat session settings (narration POV, mode, voice, prose tone, reply
+   * length, focus) for an instance and bust the cached session. The tone applies
+   * from the next generated turn; it does not rewrite existing narration.
    */
   async updateSettings(
     instanceId: string,
@@ -490,6 +513,8 @@ export const instanceService = {
       narration_pov?: 'first' | 'third'
       mode?: string
       message_length?: 'short' | 'medium' | 'long'
+      narrative_style_override?: string | null
+      narration_tone?: string
       focus_character_id?: string | null
       persona_id?: string | null
     },
@@ -497,6 +522,8 @@ export const instanceService = {
     narration_pov: 'first' | 'third'
     mode: string
     message_length: 'short' | 'medium' | 'long'
+    narrative_style_override: string | null
+    narration_tone: string
     focus_character_id: string | null
     persona_id: string | null
   }> {
@@ -519,12 +546,31 @@ export const instanceService = {
       }
       update.message_length = settings.message_length
     }
+    if (settings.narrative_style_override !== undefined) {
+      if (
+        settings.narrative_style_override !== null &&
+        !isValidStyleKey(settings.narrative_style_override)
+      ) {
+        throw new HttpError(400, 'Invalid narrative_style_override')
+      }
+      update.narrative_style_override = settings.narrative_style_override
+    }
+    if (typeof settings.narration_tone === 'string') {
+      if (!isValidNarrationTone(settings.narration_tone)) {
+        throw new HttpError(400, 'Invalid narration_tone')
+      }
+      update.narration_tone = settings.narration_tone
+    }
     if (settings.focus_character_id !== undefined) {
       if (settings.focus_character_id === null || settings.focus_character_id === '') {
         update.focus_character_id = null
       } else {
         const cid = parseObjectId(settings.focus_character_id)
-        const exists = await characters().findOne({ _id: cid, instance_id: iid, player_id: pid })
+        const exists = await characters().findOne({
+          _id: cid,
+          instance_id: iid,
+          player_id: pid,
+        })
         if (!exists) throw new HttpError(400, 'Invalid focus_character_id')
         update.focus_character_id = cid
       }
@@ -536,7 +582,10 @@ export const instanceService = {
         update.persona_snapshot = null
       } else {
         const personaOid = parseObjectId(settings.persona_id)
-        selectedPersona = await personas().findOne({ _id: personaOid, player_id: pid })
+        selectedPersona = await personas().findOne({
+          _id: personaOid,
+          player_id: pid,
+        })
         if (!selectedPersona) throw new HttpError(400, 'Invalid persona_id')
         update.persona_id = personaOid
         update.persona_snapshot = personaService.snapshotFromPersona(selectedPersona)
@@ -554,9 +603,15 @@ export const instanceService = {
     // before the player created one, seed the protagonist from the persona once.
     // If one already exists, it remains the higher-precedence canon.
     if (selectedPersona) {
-      const template = await worldTemplates().findOne({ _id: result.template_id })
+      const template = await worldTemplates().findOne({
+        _id: result.template_id,
+      })
       if (template && !template.is_sentient) {
-        const existingProtagonist = await characters().findOne({ instance_id: iid, player_id: pid, is_protagonist: true })
+        const existingProtagonist = await characters().findOne({
+          instance_id: iid,
+          player_id: pid,
+          is_protagonist: true,
+        })
         if (!existingProtagonist) {
           await characterCodexService.seedProtagonist({
             instanceId,
@@ -574,6 +629,8 @@ export const instanceService = {
       narration_pov: result.narration_pov || 'third',
       mode: result.mode || DEFAULT_CHAT_MODE,
       message_length: result.message_length || 'medium',
+      narrative_style_override: result.narrative_style_override ?? null,
+      narration_tone: result.narration_tone || DEFAULT_NARRATION_TONE,
       focus_character_id: result.focus_character_id ? idString(result.focus_character_id) : null,
       persona_id: result.persona_id ? idString(result.persona_id) : null,
     }

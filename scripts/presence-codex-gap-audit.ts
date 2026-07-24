@@ -111,5 +111,31 @@ console.log('gap detector - robust to prose-hygiene pronoun substitution:')
   check('single Mara anchor still covered', detectPresenceCodexGaps(prose, { codex: ['Mara'] }), [])
 }
 
+console.log('gap detector - landmarks and cities never become participants:')
+{
+  const landmark = `*He checked into a hotel near the Duomo, the room sterile and anonymous.*`
+  const city = `*Milan’s predawn chill seeped through the hotel window.*`
+  check(
+    'definite landmark phrase is not actionable',
+    classifyPresenceCodexGaps(landmark, {}).filter(isActionableMention).map((m) => m.key),
+    [],
+  )
+  check(
+    'city personification is not actionable without an explicit person signal',
+    classifyPresenceCodexGaps(city, {}).filter(isActionableMention).map((m) => m.key),
+    [],
+  )
+}
+
+console.log('gap detector - body-language confirms a real present person:')
+{
+  const prose = `*Nora’s jaw tightened as she looked away.*`
+  check(
+    'named person possessive is actionable',
+    classifyPresenceCodexGaps(prose, {}).filter(isActionableMention).map((m) => `${m.key}:${m.evidence}`),
+    ['nora:person possessive'],
+  )
+}
+
 console.log(`\npresence/codex/stub gap audit: ${pass} passed, ${fail} failed`)
 process.exit(fail ? 1 : 0)
