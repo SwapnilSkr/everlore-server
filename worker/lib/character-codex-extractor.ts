@@ -1,6 +1,8 @@
 import { callLLM, AI_MODELS } from '../../src/ai'
 import { isEphemeralPersonDescriptor, isNonPersonRole, type CharacterCodexDelta } from '../../src/services/character-codex.service'
 import { classifyPresenceCodexGaps, isActionableMention } from './presence-gap-detector'
+import { isAbstractNonPersonTerm } from '../../src/utils/person-identity'
+import { relationshipInitializationFromEvidence, relationshipStateFromEvidence } from '../../src/utils/relationship-baseline'
 
 type ExistingCharacter = {
   canonical_name: string
@@ -9,6 +11,20 @@ type ExistingCharacter = {
   appearance?: string
   persona?: string
   disposition_to_player?: string
+  /** Server-owned cumulative relationship state. It informs the extractor's
+   * proposed small delta; the extractor never sets an absolute meter value. */
+  relationship?: {
+    trust: number
+    affection: number
+    fear: number
+    rivalry: number
+  }
+  relationship_moments?: Array<{
+    meter: 'trust' | 'affection' | 'fear' | 'rivalry'
+    delta: number
+    sequence: number
+  }>
+  relationship_state?: { summary: string; evidence: string; tags?: string[] }
   /** Current status snapshot the extractor must reconcile (supersede stale items). */
   mutable_state?: string[]
   /** Permanent history; provided for context so new facts aren't duplicated. */
@@ -40,12 +56,28 @@ function nameAppearsInText(name: string, normText: string): boolean {
  * labels cannot satisfy it. This is the safe escape hatch when the metadata
  * pass has not yet placed a just-introduced character in `presentCast`.
  */
-function isDirectSelfIntroduction(name: string, prose: string): boolean {
+export function isDirectSelfIntroduction(
+  name: string,
+  prose: string,
+  playerInput = '',
+): boolean {
   const candidate = String(name || '').trim()
   if (!candidate || candidate.length < 3) return false
   const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
-  return new RegExp(
+  const explicit = new RegExp(
     `(?:^|["“][^"”]{0,220}|[.!?]\\s*)(?:I\\s+am|I['’]m|my\\s+name\\s+is|you\\s+may\\s+call\\s+me)\\s+${escaped}(?=\\b|[,.;!?”])`,
+    'i',
+  ).test(String(prose || ''))
+  if (explicit) return true
+  // A compact dialogue tag can be a genuine self-identification even when the
+  // narrator uses the conventional “\"Enzo,\" he says” rather than “I am Enzo.”
+  // Accept it only as the direct answer to the player's identity question; without
+  // that turn-level context it could merely be someone calling another person.
+  const asksIdentity = /\b(?:who\s+(?:are|might)\s+you|what(?:'s|\s+is)\s+your\s+name|what\s+should\s+i\s+call\s+you|may\s+i\s+ask\s+your\s+name)\b/i
+    .test(String(playerInput || ''))
+  if (!asksIdentity) return false
+  return new RegExp(
+    `["“]\\s*${escaped}\\s*[,!.]?["”]?\\s*,?\\s*(?:\\*[^*]{0,180}\\*\\s*)?(?:he|she|they)\\s+(?:said|says|replied|replies|answered|answers)\\b`,
     'i',
   ).test(String(prose || ''))
 }
@@ -55,6 +87,57 @@ const RELATIVE_WORDS = [
   'son', 'wife', 'husband', 'spouse', 'partner', 'twin', 'cousin', 'aunt',
   'uncle', 'grandmother', 'grandfather', 'grandma', 'grandpa',
 ]
+
+const RELATIONAL_EPITHET_KEYS = new Set(RELATIVE_WORDS.map(normForMatch))
+
+function isRelationalEpithet(name: string | null | undefined): boolean {
+  const normalized = normForMatch(String(name || '')).replace(/^(?:the|my|his|her|their)\s+/, '')
+  return RELATIONAL_EPITHET_KEYS.has(normalized)
+}
+
+/** A literal name used in direct address ("Mara, …") or an explicit naming
+ * phrase is strong enough to make the name canonical over a role label. This
+ * deliberately does not promote any capitalized word: the codex extractor must
+ * already have connected it as an alias of a relative/role in its structured
+ * output. */
+function isDirectlyNamedInProse(name: string, prose: string): boolean {
+  const candidate = String(name || '').trim()
+  if (!candidate || candidate.length < 2) return false
+  const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+  return new RegExp(
+    `(?:["“]|\\b(?:named|called)\\s+)${escaped}(?=\\s*[,!?."”]|\\b)`,
+    'i',
+  ).test(String(prose || ''))
+}
+
+/**
+ * The extraction model is allowed to say that `Sister` and `Mara` are the same
+ * person, but a player-facing card should use Mara as its canonical identity.
+ * Convert that high-confidence role→proper-name association into the stable
+ * correction shape understood by the event-sourced codex fold.
+ */
+export function promoteProperNameOverRole(
+  delta: CharacterCodexDelta,
+  knownByName: Map<string, string>,
+  prose: string,
+): CharacterCodexDelta {
+  const roleLabel = delta.name
+  if (!isRelationalEpithet(roleLabel)) return delta
+  const properAlias = (delta.aliases || []).find(
+    (alias) => !isRelationalEpithet(alias) && isDirectlyNamedInProse(alias, prose),
+  )
+  if (!properAlias) return delta
+
+  const existingRoleCard = knownByName.get(normForMatch(delta.resolved_name || roleLabel))
+  return {
+    ...delta,
+    name: properAlias.trim(),
+    aliases: [roleLabel, ...(delta.aliases || [])],
+    // When the role card already exists, this is a rename rather than a new
+    // person. If it does not exist yet, create the named person directly.
+    resolved_name: existingRoleCard || undefined,
+  }
+}
 
 export function isPlayerMentionedRelative(
   delta: CharacterCodexDelta,
@@ -108,6 +191,17 @@ export function isBareDescriptorName(name: string | null | undefined): boolean {
   return GENERIC_PERSON_DESCRIPTORS.has(n)
 }
 
+/** A named figure repeatedly established by the story can earn a codex card
+ * before appearing on-screen. This replaces the old all-or-nothing presence
+ * requirement without allowing a one-off mention to mint a character. */
+export function isEligibleOffscreenPromotion(
+  candidateNames: string[],
+  promotableNames: string[],
+): boolean {
+  const allowed = new Set(promotableNames.map(normForMatch).filter(Boolean))
+  return candidateNames.map(normForMatch).some((name) => name && allowed.has(name))
+}
+
 function parseJsonObject(raw: string): Record<string, unknown> {
   try {
     return JSON.parse(raw)
@@ -131,6 +225,25 @@ function toRelationshipDeltas(raw: any): CharacterCodexDelta['relationship_delta
     const v = Number((raw as Record<string, unknown>)[key])
     if (!Number.isFinite(v) || v === 0) continue
     out[key] = Math.max(-10, Math.min(10, Math.round(v)))
+  }
+  return Object.keys(out).length ? out : undefined
+}
+
+function toRelationshipEvidence(
+  raw: any,
+  deltas: CharacterCodexDelta['relationship_deltas'],
+  sourceText: string,
+): CharacterCodexDelta['relationship_evidence'] {
+  if (!raw || typeof raw !== 'object' || !deltas) return undefined
+  const source = normForMatch(sourceText)
+  const out: Record<string, string> = {}
+  for (const key of METER_KEYS) {
+    if (typeof deltas[key] !== 'number') continue
+    const evidence = typeof raw[key] === 'string' ? raw[key].trim().slice(0, 180) : ''
+    const normalized = normForMatch(evidence)
+    // Evidence must be a substantial literal excerpt from this turn. This
+    // rejects model-supplied rationales that were never actually narrated.
+    if (normalized.length >= 8 && source.includes(normalized)) out[key] = evidence
   }
   return Object.keys(out).length ? out : undefined
 }
@@ -189,9 +302,27 @@ function toRelationAssertions(raw: any): CharacterCodexDelta['relation_assertion
   return out.length ? out : undefined
 }
 
-function toDelta(raw: any): CharacterCodexDelta | null {
+function toDelta(raw: any, sourceText: string): CharacterCodexDelta | null {
   const name = typeof raw?.name === 'string' ? raw.name.trim() : ''
   if (!name) return null
+  const relationshipDeltas = toRelationshipDeltas(raw.relationship_deltas)
+  const relationshipEvidence = toRelationshipEvidence(
+    raw.relationship_evidence,
+    relationshipDeltas,
+    sourceText,
+  )
+  const evidenceBackedDeltas = relationshipDeltas
+    ? Object.fromEntries(
+        Object.entries(relationshipDeltas).filter(([key]) =>
+          !!relationshipEvidence?.[key as keyof NonNullable<typeof relationshipDeltas>],
+        ),
+      ) as CharacterCodexDelta['relationship_deltas']
+    : undefined
+  const relationshipInitialization = relationshipInitializationFromEvidence(
+    raw.relationship_initialization,
+    sourceText,
+  )
+  const relationshipState = relationshipStateFromEvidence(raw.relationship_state, sourceText)
   return {
     name,
     aliases: Array.isArray(raw.aliases) ? raw.aliases.map(String) : [],
@@ -212,7 +343,14 @@ function toDelta(raw: any): CharacterCodexDelta | null {
     disposition_to_player:
       typeof raw.disposition_to_player === 'string' ? raw.disposition_to_player.trim() : undefined,
     hidden_thought: typeof raw.hidden_thought === 'string' ? raw.hidden_thought.trim() : undefined,
-    relationship_deltas: toRelationshipDeltas(raw.relationship_deltas),
+    relationship_deltas: evidenceBackedDeltas && Object.keys(evidenceBackedDeltas).length
+      ? evidenceBackedDeltas
+      : undefined,
+    relationship_evidence: relationshipEvidence,
+    relationship_initialization: relationshipInitialization,
+    relationship_state: relationshipState && (relationshipInitialization || Object.keys(evidenceBackedDeltas || {}).length)
+      ? relationshipState
+      : undefined,
     is_protagonist: raw.is_protagonist === true,
   }
 }
@@ -262,10 +400,15 @@ function canonicalizeCorrectionShape(
     return { ...delta, name: resolved, resolved_name: nameCanon }
   }
 
-  // Ambiguous — neither side is a known card (a brand-new pair, handled by the
-  // new-card path, not a correction) or BOTH are (can't tell which is canonical).
-  // Only the both-match case is a malformed correction we must refuse.
-  if (resolvedCanon && nameCanon) return null
+  // Both surfaces can already map to the SAME card when a previous turn stored
+  // the proper name as an alias of a role-first card (Sister ↔ Mara). That is an
+  // unambiguous promotion, not a conflicting correction: preserve the existing
+  // canonical target in resolved_name so the fold can rename it safely.
+  if (resolvedCanon && nameCanon) {
+    return resolvedCanon === nameCanon
+      ? { ...delta, resolved_name: resolvedCanon }
+      : null
+  }
   // Neither matches: not a correction into an existing card — leave untouched.
   return delta
 }
@@ -296,8 +439,10 @@ export async function extractCharacterCodexDeltas(params: {
   /** Known locations are excluded from person corroboration even when prose
    * personifies them ("Milan greeted him"). */
   knownLocations?: { name: string; aliases?: string[] }[]
+  /** Named character entities with repeated provenance but no codex card. */
+  promotableOffscreenPeople?: string[]
 }): Promise<CharacterCodexDelta[]> {
-  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName, presentCast, knownLocations } = params
+  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName, presentCast, knownLocations, promotableOffscreenPeople } = params
 
   const existingText = existing.length
     ? existing
@@ -305,7 +450,20 @@ export async function extractCharacterCodexDeltas(params: {
         const aliases = (c.aliases || []).join(', ')
         const state = (c.mutable_state || []).filter(Boolean)
         const stateLine = state.length ? `\n    current state: ${state.join('; ')}` : ''
-        return `- ${c.canonical_name}${aliases ? ` (aliases: ${aliases})` : ''}${c.role ? ` role: ${c.role}` : ''}${stateLine}`
+        const bond = c.relationship
+        const bondLine = bond
+          ? `\n    bond state toward player: trust ${bond.trust}/100, affection ${bond.affection}/100, fear ${bond.fear}/100, rivalry ${bond.rivalry}/100`
+          : ''
+        const bondContextLine = c.relationship_state?.summary
+          ? `\n    bond context: ${c.relationship_state.summary}`
+          : ''
+        const recentShifts = (c.relationship_moments || [])
+          .slice(-4)
+          .map((moment) => `${moment.meter} ${moment.delta >= 0 ? '+' : ''}${moment.delta} at turn ${moment.sequence}`)
+        const bondHistoryLine = recentShifts.length
+          ? `\n    recent evidence-backed bond shifts: ${recentShifts.join('; ')}`
+          : ''
+        return `- ${c.canonical_name}${aliases ? ` (aliases: ${aliases})` : ''}${c.role ? ` role: ${c.role}` : ''}${stateLine}${bondLine}${bondContextLine}${bondHistoryLine}`
       })
       .join('\n')
     : '(none yet)'
@@ -313,6 +471,9 @@ export async function extractCharacterCodexDeltas(params: {
   const presentList = (presentCast || []).map((n) => (n || '').trim()).filter(Boolean)
   const presentBlock = presentList.length
     ? `\nPRESENT THIS TURN (these exact people are in the scene now): ${presentList.join(', ')}.\nA bare descriptor in the narration ("the man", "the woman", "the figure", "the stranger", "the boy") almost always refers to one of these present people — resolve it to them, never to a new card.\n`
+    : ''
+  const promotableOffscreenBlock = (promotableOffscreenPeople || []).length
+    ? `\nREPEATED OFF-SCREEN FIGURES (already established by several grounded story mentions; create/update their card when named this turn even if they are not physically present): ${(promotableOffscreenPeople || []).join(', ')}.\n`
     : ''
 
   const protagonistBlock =
@@ -341,6 +502,7 @@ Rules:
 - Include non-player characters and entities (and the protagonist described below).
 - ALWAYS create or update a card for any NAMED character who appears, speaks, or is referenced this turn — even with sparse detail. Do not skip newly introduced characters; capturing them promptly keeps the story consistent.
 - Prefer resolving to existing characters when aliases/titles/pronouns refer to the same person; never split one character into two cards. Before creating a NEW card, check whether the name is actually a title, epithet, or description of someone already listed (or of the player) — if so, use "resolved_name" instead of a new card.
+- CANONICAL NAME PRIORITY: a literal proper name always outranks a kinship/role label for the SAME person. If prose says Sister and later directly addresses her as "Mara, ...", output name: "Mara", aliases: ["Sister"], role: "sibling". If an existing card is named "Sister", use resolved_name: "Sister" with name: "Mara" so it is promoted instead of duplicated. Keep a role label canonical only while no literal proper name has appeared.
 - Generic RELATIONAL or ROLE epithets — "the sister", "his sister", "Sister", "the twin", "Mother", "the father", "the guard", "the innkeeper" — are NOT a new person when the existing roster already has a character in that role. A shorter or vaguer label ("Sister") and a more specific one ("Twin Sister") for the same family role are the SAME person. Resolve the epithet to that existing card with "resolved_name"; never create a second card alongside it. Worked example: the roster already lists "Twin Sister"; this turn the narration says "his sister scoffed" → return that character with "resolved_name": "Twin Sister" (do NOT mint a separate "Sister" card).
 - A named relative mentioned only by the player as off-screen background ("my sister is Mara", "my brother keeps the locket") is NOT a codex card yet. Store that as a memory, not a Bonds card. Create/update the relative only if they physically appear, speak, act, or are already in the existing roster.
 - NEVER INVENT A NAME — NON-NEGOTIABLE. A character's "name" must be a proper name or fixed epithet that LITERALLY appears in this turn's text (player input or narration). NEVER coin a label from the scene's mood, tone, or an action — do NOT produce names like "Mysterious Man", "The Stranger", "Hooded Figure", "The Visitor", "Shadowy Man" unless those exact words appear in the text. A character being secretive, unnamed, or vague is STILL one of the existing roster / present cast — describe their secrecy in their fields, do not give them a new identity.
@@ -352,11 +514,15 @@ Rules:
 - interaction_hints: 0-3 OPTIONAL conversation starters for the player, grounded ONLY in this character's post-turn current state. Each source_state must exactly equal one current-status item (new or already listed). Use this format: { "label_template": "Ask why {name} is irritated", "question": "You seem irritated. What's wrong?", "source_state": "irritated" }. The label_template MUST contain the exact {name} placeholder, no quotes or markup. question is the spoken question only: no quotes, no asterisks, no player actions. Use a natural, specific question; omit hints when no current state invites a conversation. Never invent a state just to create a hint.
 - retire_state: CRITICAL for continuity. Copy here, VERBATIM, any item from the character's existing "current state" (shown below) that THIS TURN made false or obsolete. Example: if existing state says "engaged to Lord X" and this turn the engagement is broken, put "engaged to Lord X" in retire_state. Leave [] if nothing became false. NEVER let an outdated status linger.
 - disposition_to_player: concise sentiment toward the player right now.
-- relationship_deltas: how THIS TURN shifted the character's stance toward the player, as integer changes to four meters: trust, affection, fear, rivalry. Include ONLY meters that genuinely moved, ONLY for characters present this turn. Scale: ±1-3 for small moments (kind words, minor friction), ±4-7 for significant ones (a gift, a confession, a public insult), ±8-10 ONLY for dramatic turning points (betrayal, a life saved, a vow broken). Omit the field entirely when nothing shifted. NEVER include it for the player's own protagonist card in a Game Master world (a character has no meters toward themself).
+- relationship_initialization: ONLY when this character has no established meter state and the world seed, current player turn, or narration explicitly establishes their starting bond. Allowed kinds: best_friend, close_friend, friend, acquaintance, trusted_ally, reluctant_ally, mentor_bond, protector, dependent, romantic_partner, unrequited_attraction, ex_partner, family_warm, family_protective, family_strained, estranged, sibling_close, sibling_resentful, enemy, sworn_enemy, fearful, rival, indebted, betrayed, authority_trust. Return { "kind": one allowed kind, "evidence": "an exact short excerpt from that supplied source" }. Omit it for a stranger, uncertain relationship, or an existing meter state. Never infer it from a role alone.
+- relationship_state: ONLY alongside relationship_initialization or an evidence-backed relationship_deltas update. Return { "summary": "one concise, nuanced plain-language statement of what this bond means now", "evidence": "exact short excerpt from this turn or seed", "tags": ["1-4 short descriptive tags"] }. This is open-ended context, not a profile name; never invent a motive or update it without direct relationship evidence.
+- relationship_deltas: how THIS TURN shifted the character's stance toward the player, as integer changes to four meters: trust, affection, fear, rivalry. Existing bond state and recent shifts in the roster are SERVER-OWNED continuity: use them to keep the new disposition and proposed delta proportionate. Include ONLY meters that genuinely moved after a DIRECT interaction with the player, ONLY for characters present this turn. Tension, atmosphere, a glance, or a generic smile alone NEVER changes a meter. Scale: ±1-3 for small moments (kind words, minor friction), ±4-7 for significant ones (a gift, a confession, a public insult), ±8-10 ONLY for dramatic turning points (betrayal, a life saved, a vow broken). Omit the field entirely when nothing shifted. NEVER include it for the player's own protagonist card in a Game Master world (a character has no meters toward themself).
+- relationship_evidence: for EVERY nonzero relationship_deltas meter, provide a short EXACT verbatim excerpt from this turn that proves the direct interaction and change. If no exact evidence exists, omit that meter. This field is mandatory for any relationship movement.
 - is_protagonist: true ONLY for the world's main character (see below); otherwise false.
 - relation_assertions (a TOP-LEVEL array, sibling to "characters" — NOT inside a character): typed family/relationship ties this turn ESTABLISHES or REVEALS between two specific people (or the player). Each: { from, to, kind, label, gender, source }. "from"/"to" are names from the cast; use "player" for the human player's own character. "kind" MUST be exactly one of: parent_of, child_of, sibling_of, partner_of, progenitor_of, descendant_of, superior_of, subordinate_of, kin_of, bonded_of — read as "from is to's <kind>". Worked example: "Mara is the player's sister" → { "from": "Mara", "to": "player", "kind": "sibling_of", "label": "sister", "gender": "f" }. Map ANY world-native term (clone-sister, sire, liege, bondmate, broodmother) to the CLOSEST kind and keep the native word in "label". gender: m|f|n implied by the label. source: "narrator" when the narration states the tie, "character_claim" when a character merely CLAIMS it (may be a lie). polarity: "sever" when a tie ENDS this turn (divorce, death, disownment), else omit. ONLY include a tie the text actually establishes or reveals THIS turn — do NOT re-list every relationship that already exists, and NEVER a figurative one ("like a brother to me"). Empty array [] when no tie is asserted.
 ${protagonistBlock}${presentBlock}
-Existing characters (with their current state — reconcile against this):
+${promotableOffscreenBlock}
+Existing characters (with their current state and server-owned bond state — reconcile against this):
 ${existingText}
 
 Respond ONLY JSON:
@@ -376,6 +542,9 @@ Respond ONLY JSON:
       "disposition_to_player": "string",
       "hidden_thought": "string",
       "relationship_deltas": { "trust": 0, "affection": 0, "fear": 0, "rivalry": 0 },
+      "relationship_evidence": { "trust": "exact words from the turn" },
+      "relationship_initialization": { "kind": "close_friend", "evidence": "my close friend" },
+      "relationship_state": { "summary": "A close friend who is protective but worried about the player.", "evidence": "my close friend", "tags": ["protective", "worried"] },
       "is_protagonist": false
     }
   ],
@@ -456,8 +625,9 @@ Respond ONLY JSON:
 
   const out: CharacterCodexDelta[] = []
   for (const item of list) {
-    let delta = toDelta(item)
+    let delta = toDelta(item, `${seedPrompt || ''}\n${playerInput || ''}\n${aiResponse || ''}`)
     if (!delta) continue
+    delta = promoteProperNameOverRole(delta, knownByName, aiResponse)
     // Enforce the ONE canonical correction shape (resolved_name = existing
     // canonical, name = new corrected name) before the atom reaches the ledger,
     // so rebuildCodexFromLedger always converges. A correction that can't be
@@ -485,6 +655,14 @@ Respond ONLY JSON:
       continue
     }
     const isNewCard = delta.is_protagonist !== true && !resolvesToExisting(delta)
+    if (
+      isNewCard &&
+      isAbstractNonPersonTerm(delta.name) &&
+      !isDirectSelfIntroduction(delta.name, aiResponse, playerInput)
+    ) {
+      console.warn(`[codex-extractor] blocked personified abstract noun "${delta.name}"`)
+      continue
+    }
     if (delta.is_protagonist !== true && !resolvesToKnown(delta)) {
       // A bare role/descriptor with no proper name ("the merchant", "a guard") is
       // a passer-by, not a tracked character — never mint a card for it (it would
@@ -517,12 +695,13 @@ Respond ONLY JSON:
       const physicallyPresent = candidateKeys.some((name) => presentNames.has(name))
       const corroboratedPerson = candidateKeys.some((name) => personEvidenceKeys.has(name))
       const directSelfIntroduction = [delta.name, delta.resolved_name || '', ...(delta.aliases || [])]
-        .some((name) => isDirectSelfIntroduction(name, aiResponse))
+        .some((name) => isDirectSelfIntroduction(name, aiResponse, playerInput))
+      const offscreenPromotion = isEligibleOffscreenPromotion(candidateKeys, promotableOffscreenPeople || [])
       // A literal in-scene self-introduction is both presence and person
       // evidence. It is the only exception to the usual two-source gate, so a
       // named walk-on is not lost just because the independent metadata pass
       // missed them on their entrance.
-      if ((!physicallyPresent || !corroboratedPerson) && !directSelfIntroduction) {
+      if ((!physicallyPresent || !corroboratedPerson) && !directSelfIntroduction && !offscreenPromotion) {
         console.warn(
           `[codex-extractor] held uncorroborated new card "${delta.name}" (present=${physicallyPresent}, personEvidence=${corroboratedPerson}, directIntro=${directSelfIntroduction})`,
         )

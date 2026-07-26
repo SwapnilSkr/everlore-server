@@ -137,10 +137,37 @@ async function main() {
     if (!job) return
     const attemptsAllowed = job.opts.attempts || 1
     const isFinalAttempt = job.attemptsMade >= attemptsAllowed
+    const streamWasVisible = job.data?.visibleStreamStarted === true
     const redis = getRedisClient()
 
     if (!isFinalAttempt) {
+      if (streamWasVisible) {
+        // The processor calls job.discard() at first visible prose, so this is
+        // defensive only. A second attempt after visible output would replace a
+        // player-facing scene with a different one, violating the stream
+        // contract. Release the turn lock and leave the completed draft intact.
+        log.error('generation.retry_suppressed_after_visible_stream', {
+          jobId: job.id,
+          instanceId: job.data.instanceId,
+          error: err.message,
+        })
+        await redis.del(generationLockKey(job.data.playerId, job.data.instanceId))
+        return
+      }
       try {
+        // A failure can happen after streaming has ended (for example during a
+        // canonical projection). The processor publishes this itself for known
+        // stream failures, but the worker is the final safety net: every retry
+        // must mark the visible attempt as provisional before a replacement can
+        // begin. The client preserves its displayed draft until a new token
+        // arrives, so this never creates an empty-bubble flash.
+        await redis.publish(
+          `user:${job.data.playerId}:events`,
+          JSON.stringify({
+            type: 'generation_reset',
+            instanceId: job.data.instanceId,
+          }),
+        )
         await redis.publish(
           `user:${job.data.playerId}:events`,
           JSON.stringify({
@@ -169,6 +196,32 @@ async function main() {
         stack: err.stack,
         failedAt: new Date(),
       })
+
+      if (streamWasVisible) {
+        // The player already has the completed stream. Do not send a reset or
+        // a failure bubble that overwrites it; the failure is in the durable
+        // post-stream tail and is retained in the DLQ for repair/diagnostics.
+        // This is deliberately different from a pre-token failure, where no
+        // playable prose exists and an error state is the correct UX.
+        log.error('generation.tail_failed_after_visible_stream', {
+          jobId: job.id,
+          instanceId: job.data.instanceId,
+          error: err.message,
+        })
+        await redis.del(generationLockKey(job.data.playerId, job.data.instanceId))
+        return
+      }
+
+      await redis.publish(
+        `user:${job.data.playerId}:events`,
+        JSON.stringify({
+          // Mirror the retry path for post-stream failures as well. Without
+          // this, a completed-looking but unpersisted bubble can be mistaken
+          // for canon when the final error arrives.
+          type: 'generation_reset',
+          instanceId: job.data.instanceId,
+        }),
+      )
 
       await redis.publish(
         `user:${job.data.playerId}:events`,

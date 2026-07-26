@@ -8,7 +8,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { parseObjectId, idString } from '../utils/mongo-id'
 import { normalizeEntityName, entityGraphService } from './entity-graph.service'
-import { characterCodexService } from './character-codex.service'
+import { characterCodexService, type CharacterCodexDelta } from './character-codex.service'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { confidenceTier } from '../utils/world-authority'
 import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
@@ -66,6 +66,41 @@ const DEFAULT_KIN_LABEL: Record<RelationKind, string> = {
   parent_of: 'parent', child_of: 'child', sibling_of: 'sibling', partner_of: 'partner',
   progenitor_of: 'progenitor', descendant_of: 'descendant', superior_of: 'superior',
   subordinate_of: 'subordinate', kin_of: 'relative', bonded_of: 'bonded companion',
+}
+
+/**
+ * The premise kinship extractor has already made the semantic decision that a
+ * tie is real. Materialize its non-player endpoints as *minimal* codex cards
+ * while a world is created, so an authored mother/father/sibling does not wait
+ * for a later narration turn to become selectable. This intentionally creates
+ * no generic cast: only people participating in an explicit premise tie are
+ * seeded, and the premise extractor itself is fail-closed.
+ */
+export function premiseKinshipCards(assertions: RelationAssertion[]): CharacterCodexDelta[] {
+  const byName = new Map<string, { name: string; aliases: Set<string>; roles: Set<string> }>()
+  const isPlayerEndpoint = (value: string) => PLAYER_ALIASES.has(normalizeEntityName(value))
+  const add = (value: string, label?: string) => {
+    const name = String(value || '').trim()
+    if (!name || isPlayerEndpoint(name)) return
+    const key = normalizeEntityName(name)
+    if (!key) return
+    const entry = byName.get(key) || { name, aliases: new Set<string>(), roles: new Set<string>() }
+    const role = String(label || '').trim()
+    if (role) {
+      entry.roles.add(role)
+      if (normalizeEntityName(role) !== key) entry.aliases.add(role)
+    }
+    byName.set(key, entry)
+  }
+  for (const assertion of assertions) {
+    add(assertion.from, assertion.label)
+    add(assertion.to, assertion.label)
+  }
+  return [...byName.values()].map((entry) => ({
+    name: entry.name,
+    aliases: [...entry.aliases].slice(0, 8),
+    role: [...entry.roles][0],
+  }))
 }
 
 export const kinshipGraphService = {
@@ -457,6 +492,18 @@ export const kinshipGraphService = {
     if (!normed.length) {
       await worldInstances().updateOne({ _id: iid }, { $set: { 'meta.kinship_seeded': true } })
       return { seeded: 0, notes: ['premise establishes no kinship'] }
+    }
+    // Seed the small, explicitly-authored kin cast before the first turn. This
+    // remains off the TTFT path and uses exactly the LLM-adjudicated premise
+    // assertions above; it does not promote arbitrary capitalized seed words.
+    const seedCards = premiseKinshipCards(normed)
+    if (seedCards.length) {
+      await characterCodexService.applyDeltas({
+        instanceId,
+        playerId,
+        sequence: 0,
+        deltas: seedCards,
+      }).catch(() => undefined)
     }
     const selfAnchorId = await entityGraphService
       .ensureStubEntity({ instanceId, playerId, sequence: 0, name: (protag as any).canonical_name })

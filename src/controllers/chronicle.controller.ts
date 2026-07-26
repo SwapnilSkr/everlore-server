@@ -38,13 +38,14 @@ export const chronicleController = {
     user,
   }: {
     params: { instanceId: string }
-    query: { page?: number; limit?: number; type?: string }
+    query: { page?: number; limit?: number; before_sequence?: number; type?: string }
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return memoryService.getEvents(params.instanceId, user.id, {
       page: Number(query.page) || 1,
       limit: Number(query.limit) || EVENT_WINDOWS.chroniclePageSize,
+      beforeSequence: query.before_sequence != null ? Number(query.before_sequence) : undefined,
       type: query.type,
     })
   },
@@ -785,6 +786,7 @@ export const chronicleController = {
             disposition_to_player: c.disposition_to_player,
             hidden_thought: c.hidden_thought,
             relationship: c.relationship || null,
+            relationship_state: c.relationship_state || null,
             mention_count: c.mention_count,
             is_protagonist: c.is_protagonist === true,
           })),

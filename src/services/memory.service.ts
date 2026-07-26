@@ -13,19 +13,32 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
 import { characterCodexService } from './character-codex.service'
+import { materializeTemplateCast } from './template-cast.service'
 import { entityGraphService } from './entity-graph.service'
 import { timeService } from './time.service'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
 import { repairProseHygiene, validateProseHygiene } from '../utils/prose-hygiene'
-import { callLLM, callLLMStream, embed, AI_MODELS } from '../ai'
+import { callLLM, callLLMStream, embed, AI_MODELS, narrationTemperature } from '../ai'
 import { classifyScene } from '../../worker/lib/nsfw-classifier'
 import { extractSceneMetadata } from '../../worker/lib/metadata-extractor'
 import { extractCharacterCodexDeltas } from '../../worker/lib/character-codex-extractor'
 import { classifyPresenceCodexGaps } from '../../worker/lib/presence-gap-detector'
+import {
+  adjudicateEntityCandidates,
+  entityAdjudicationCandidates,
+  filterAdjudicatedPresence,
+} from '../../worker/lib/entity-adjudicator'
 import { EVENT_WINDOWS } from '../utils/event-window'
 import { HttpError } from '../utils/http-error'
 import { kinshipGraphService } from './kinship-graph.service'
 import { projectionCheckpointService } from './projection-checkpoint.service'
+import {
+  extractExplicitPhysicalDestination,
+  isExplicitPlayerLocationChange,
+  isExplicitSceneExit,
+  refinePhysicalDestination,
+  validatedContainmentHint,
+} from '../../worker/lib/movement-signal'
 
 const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
@@ -36,6 +49,27 @@ const chapterSummaries = () => mongoColl.chapterSummaries()
 const arcSummaries = () => mongoColl.arcSummaries()
 const characters = () => mongoColl.characters()
 const users = () => mongoColl.users()
+
+/** Restore the cast that existed when this save began. A template may later be
+ * edited, so rewind/replay must not silently acquire its new characters or
+ * starting bonds. Legacy saves fall back to the template until migrated. */
+async function restoreInitialTemplateCast(params: {
+  instanceId: string
+  playerId: string
+  instance: any
+  template: any
+}) {
+  const { instanceId, playerId, instance, template } = params
+  await materializeTemplateCast({
+    template: {
+      seed_cast: instance.seed_cast_snapshot ?? template.seed_cast,
+      protagonist: template.protagonist,
+    },
+    instanceId,
+    playerId,
+    sequence: 0,
+  })
+}
 
 async function mainVisibleMemoryScope(instanceId: ReturnType<typeof parseObjectId>) {
   const protagonist = await mongoColl
@@ -136,8 +170,9 @@ function carryReplayPresence(
   meta: Awaited<ReturnType<typeof extractSceneMetadata>>,
   priorPresent: string[],
   locationChanged: boolean,
+  playerBrokeScene: boolean,
 ): string[] {
-  const sceneBroke = meta.viewpoint_moved === true || !!meta.time_elapsed || locationChanged
+  const sceneBroke = playerBrokeScene || meta.viewpoint_moved === true || !!meta.time_elapsed || locationChanged
   const candidates = sceneBroke ? meta.present_characters || [] : [...priorPresent, ...(meta.present_characters || [])]
   const departed = new Set(
     (meta.characters_departed || [])
@@ -240,31 +275,90 @@ async function projectLatestReplayTurn(params: {
     .listKnownLocations(instanceId, 30)
     .catch(() => [] as { name: string; aliases: string[] }[])
 
-  const meta = await extractSceneMetadata(
-    narrative,
-    Object.keys(instance.world_state || {}),
-    Object.keys(instance.active_flags || {}),
-    {
-      isSentient: !!template.is_sentient,
-      currentLocationName: priorLocation?.name || null,
-      priorPresent,
-      protagonist: choiceProtagonist,
-      roster,
-      knownPlaces,
+  const knownNames = (codex as any[]).flatMap((card) => [
+    card?.canonical_name,
+    ...((card?.aliases as string[]) || []),
+  ]).filter((name): name is string => typeof name === 'string' && !!name.trim())
+  const entityCandidates = entityAdjudicationCandidates({
+    prose: narrative,
+    knownNames,
+    exclude: [
+      ...knownPlaces.flatMap((place) => [place.name, ...(place.aliases || [])]),
+      choiceProtagonist?.name || '',
+      ...(choiceProtagonist?.aliases || []),
+    ],
+  })
+
+  const [meta, entityAdjudication] = await Promise.all([
+    extractSceneMetadata(
+      narrative,
+      Object.keys(instance.world_state || {}),
+      Object.keys(instance.active_flags || {}),
+      {
+        isSentient: !!template.is_sentient,
+        currentLocationName: priorLocation?.name || null,
+        priorPresent,
+        protagonist: choiceProtagonist,
+        roster,
+        knownPlaces,
+        worldContext: [template.seed_prompt, template.global_lore].filter(Boolean).join('\n'),
+      },
+    ),
+    adjudicateEntityCandidates({
+      prose: narrative,
+      candidates: entityCandidates,
+      knownCast: knownNames,
+      knownPlaces: knownPlaces.map((place) => place.name),
       worldContext: [template.seed_prompt, template.global_lore].filter(Boolean).join('\n'),
-    },
+    }),
+  ])
+  meta.present_characters = filterAdjudicatedPresence(
+    meta.present_characters || [],
+    entityCandidates,
+    entityAdjudication,
   )
 
-  const resolvedLocation = meta.current_location
+  // Replay is a projection of the same player-authored turn, so it must use the
+  // live transition authority rather than letting a fresh witness response move
+  // the map by itself. This keeps replay from resurrecting old companions or
+  // minting a different location graph than the original turn.
+  const replayInput = String(event.data?.player_input || event.userMessage || '')
+  const replayAction = event.data?.world_action
+  const replayPlayerDestination = replayAction?.kind === 'travel'
+    ? String(replayAction.destination || '').trim() || null
+    : extractExplicitPhysicalDestination(replayInput)
+  const replayPlaceName = replayPlayerDestination
+    ? refinePhysicalDestination(replayPlayerDestination, meta.current_location)
+    : meta.current_location
+  const replayViewpointMoved =
+    !!replayPlayerDestination ||
+    isExplicitPlayerLocationChange(replayInput, replayPlaceName, choiceProtagonist?.name || null)
+  const replayExitedScene = isExplicitSceneExit(replayInput)
+  const replayContainmentHint = replayViewpointMoved
+    ? validatedContainmentHint({
+        destination: replayPlaceName,
+        witnessLocation: meta.current_location,
+        witnessContainment: meta.containment_hint,
+        currentLocationName: priorLocation?.name || null,
+        knownLocationNames: knownPlaces.map((place) => place.name),
+      })
+    : null
+  const replayWitnessMovement = meta.movement || 'none'
+  const replayMovement = replayContainmentHint && ['deeper', 'out', 'lateral', 'world_shift'].includes(replayWitnessMovement)
+    ? replayWitnessMovement
+    : replayViewpointMoved
+      ? 'lateral'
+      : 'none'
+  const resolvedLocation = replayViewpointMoved && replayPlaceName
     ? await entityGraphService
         .placeLocation({
           instanceId,
           playerId,
           sequence: eventSequence,
-          name: meta.current_location,
-          containmentHint: meta.containment_hint,
-          movement: meta.movement,
-          viewpointMoved: meta.viewpoint_moved,
+          name: replayPlaceName,
+          containmentHint: replayContainmentHint,
+          movement: replayMovement,
+          viewpointMoved: replayViewpointMoved,
           cursorEntityId: priorLocation?.entity_id ?? null,
         })
         .catch((err) => {
@@ -275,7 +369,7 @@ async function projectLatestReplayTurn(params: {
   const locationAnchor = resolvedLocation || priorLocation || null
   const locationChanged =
     !!resolvedLocation && !!priorLocation && idString(resolvedLocation.entity_id) !== idString(priorLocation.entity_id)
-  meta.present_characters = carryReplayPresence(meta, priorPresent, locationChanged)
+  meta.present_characters = carryReplayPresence(meta, priorPresent, locationChanged, replayExitedScene || replayViewpointMoved)
 
   const statLimits: Record<string, { min: number; max: number }> = {}
   let worldState: Record<string, number> = {}
@@ -397,6 +491,9 @@ async function extractReplayCodexDeltas(params: {
       appearance: c.appearance,
       persona: c.persona,
       disposition_to_player: c.disposition_to_player,
+      relationship: c.relationship,
+      relationship_moments: c.relationship_moments || [],
+      relationship_state: c.relationship_state,
       mutable_state: c.mutable_state || [],
       immutable_facts: c.immutable_facts || [],
     })),
@@ -431,6 +528,7 @@ function codexSocketPayload(codex: any[]) {
     disposition_to_player: c.disposition_to_player,
     hidden_thought: c.hidden_thought,
     relationship: c.relationship || null,
+    relationship_state: c.relationship_state || null,
     mention_count: c.mention_count,
     is_protagonist: c.is_protagonist === true,
   }))
@@ -507,6 +605,7 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
         isPlayer: !template.is_sentient,
       })
     }
+    await restoreInitialTemplateCast({ instanceId, playerId, instance, template })
     if (batches.length > 0) {
       await characterCodexService.rebuildCodexFromLedger({
         instanceId,
@@ -631,6 +730,7 @@ async function rebuildCodexKinshipFromCheckpoint(params: {
   }
 
   await projectionCheckpointService.restoreCodexAndKinship(latest._id)
+  await restoreInitialTemplateCast({ instanceId, playerId, instance, template })
 
   const iid = parseObjectId(instanceId)
   const suffix = await events()
@@ -1052,10 +1152,23 @@ export const memoryService = {
     }
     if (opts.type && opts.type !== 'side_chat') filter.type = opts.type
 
-    const evs = await events().find(filter).sort({ sequence: -1 }).skip(skip).limit(limit).toArray()
+    // The play feed uses this cursor rather than offset pagination. New turns
+    // can arrive while the reader is paging upward; `sequence < before` keeps
+    // the older window stable, with neither duplicate nor skipped entries.
+    const beforeSequence = Number(opts.beforeSequence)
+    const cursorFilter = Number.isFinite(beforeSequence) && beforeSequence > 0
+      ? { ...filter, sequence: { $lt: beforeSequence } }
+      : filter
+    const query = events().find(cursorFilter).sort({ sequence: -1 }).limit(limit)
+    if (cursorFilter === filter) query.skip(skip)
+    const evs = await query.toArray()
 
     const total = await events().countDocuments(filter)
-    return { events: evs.reverse(), total, page: opts.page || 1 }
+    const oldestSequence = evs.length ? evs[evs.length - 1].sequence : null
+    const hasOlder = oldestSequence != null
+      ? await events().countDocuments({ ...filter, sequence: { $lt: oldestSequence } }) > 0
+      : false
+    return { events: evs.reverse(), total, page: opts.page || 1, hasOlder }
   },
 
   async getMemories(instanceId: string, playerId: string, opts: any) {
@@ -1518,6 +1631,7 @@ export const memoryService = {
       // 13,567 costs the same as one at turn 13 — no per-turn DB round-trips.
       await characters().deleteMany({ instance_id: iid })
       await reseedProtagonist()
+      await restoreInitialTemplateCast({ instanceId, playerId, instance, template })
       const batches = survivors
         .filter((ev) => Array.isArray(ev.data?.codex_deltas) && ev.data.codex_deltas.length > 0)
         .map((ev) => ({
@@ -1743,13 +1857,16 @@ export const memoryService = {
       ),
     ])
     const editTemplate = editInstance
-      ? await worldTemplates().findOne({ _id: editInstance.template_id }, { projection: { is_sentient: 1 } })
+      ? await worldTemplates().findOne(
+          { _id: editInstance.template_id },
+          { projection: { is_sentient: 1, seed_prompt: 1, global_lore: 1 } },
+        )
       : null
     const proseHygieneIssues = validateProseHygiene({
       narrative: nextAiResponse || '',
       characterNames: editCharacterNames,
       messageLength: editInstance?.message_length || 'medium',
-      playerAddressMode: editTemplate?.is_sentient ? 'you' : editInstance?.narration_pov === 'first' ? 'you' : 'role',
+      playerAddressMode: editTemplate?.is_sentient ? 'you' : editInstance?.narration_pov === 'first' ? 'self' : 'role',
       avoidOpeningNames: editCharacterNames,
     })
     let nextReplayVariants = replayVariants
@@ -1791,16 +1908,40 @@ export const memoryService = {
           name: c.canonical_name as string,
           aliases: (c.aliases || []) as string[],
         }))
-      const editMeta = await extractSceneMetadata(
-        nextAiResponse,
-        Object.keys(editInstance?.world_state || {}),
-        Object.keys(editInstance?.active_flags || {}),
-        {
-          isSentient: !!editTemplate?.is_sentient,
-          currentLocationName: (event as any).location_anchor?.name || editInstance?.current_location?.name || null,
-          protagonist: editProtagonist,
-          roster: editRoster,
-        },
+      const editKnownNames = (editCodex as any[]).flatMap((card) => [
+        card?.canonical_name,
+        ...((card?.aliases as string[]) || []),
+      ]).filter((name): name is string => typeof name === 'string' && !!name.trim())
+      const editCandidates = entityAdjudicationCandidates({
+        prose: nextAiResponse,
+        knownNames: editKnownNames,
+        exclude: [editProtagonist?.name || '', ...(editProtagonist?.aliases || [])],
+      })
+      const [editMeta, editEntityAdjudication] = await Promise.all([
+        extractSceneMetadata(
+          nextAiResponse,
+          Object.keys(editInstance?.world_state || {}),
+          Object.keys(editInstance?.active_flags || {}),
+          {
+            isSentient: !!editTemplate?.is_sentient,
+            currentLocationName: (event as any).location_anchor?.name || editInstance?.current_location?.name || null,
+            protagonist: editProtagonist,
+            roster: editRoster,
+            worldContext: [editTemplate?.seed_prompt, editTemplate?.global_lore].filter(Boolean).join('\n'),
+          },
+        ),
+        adjudicateEntityCandidates({
+          prose: nextAiResponse,
+          candidates: editCandidates,
+          knownCast: editKnownNames,
+          knownPlaces: [],
+          worldContext: [editTemplate?.seed_prompt, editTemplate?.global_lore].filter(Boolean).join('\n'),
+        }),
+      ])
+      editMeta.present_characters = filterAdjudicatedPresence(
+        editMeta.present_characters || [],
+        editCandidates,
+        editEntityAdjudication,
       )
       editChoices = editMeta.choices
       editPresent = editMeta.present_characters
@@ -2085,7 +2226,7 @@ ${replayDirective || '(none)'}`,
       },
       lastUserTurn,
     ]
-    const replayTemp = Math.max(0.4, 0.68 - replayDepth * 0.04)
+    const replayTemp = Math.max(0.4, narrationTemperature(modelId) - replayDepth * 0.04)
     // Match the alternative's length budget to the player's chosen reply length,
     // exactly like the primary turn — so a regenerate respects short/medium/long
     // instead of always running to a fixed 900-token ceiling.
@@ -2113,9 +2254,9 @@ ${replayDirective || '(none)'}`,
       characterNames: replayCodex.map((c) => c.canonical_name),
       messageLength: instance.message_length || 'medium',
       playerAddressMode: template.is_sentient
-        ? 'you'
-        : (instance.narration_pov || 'third') === 'first'
           ? 'you'
+          : (instance.narration_pov || 'third') === 'first'
+          ? 'self'
           : 'role',
       previousOpeningNames: (() => {
         const previousOpeningName = openingCharacterName(
@@ -2342,7 +2483,7 @@ ${replayDirective || '(none)'}`,
           playerAddressMode: selectedTemplate?.is_sentient
             ? 'you'
             : selectedInstance?.narration_pov === 'first'
-              ? 'you'
+              ? 'self'
               : 'role',
           avoidOpeningNames: selectedCharacterNames,
         })
