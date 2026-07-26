@@ -14,6 +14,8 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
 
   .get('/by-template/:templateId', (ctx) => instanceController.listByTemplate(ctx))
 
+  .get('/:id/reusable-protagonists', (ctx) => instanceController.reusableProtagonists(ctx))
+
   .get('/:id', (ctx) => instanceController.getById(ctx))
 
   .post('/', (ctx) => instanceController.create(ctx), {
@@ -24,8 +26,9 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
 
   .post('/:id/protagonist', (ctx) => instanceController.setProtagonist(ctx), {
     body: t.Object({
-      name: t.String({ minLength: 1, maxLength: 120 }),
+      name: t.Optional(t.String({ minLength: 1, maxLength: 120 })),
       identity: t.Optional(t.String({ maxLength: 400 })),
+      reuse_from_instance_id: t.Optional(t.String()),
     }),
   })
 

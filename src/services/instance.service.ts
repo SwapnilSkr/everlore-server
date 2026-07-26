@@ -13,6 +13,7 @@ import { timeService } from './time.service'
 import { isValidMessageLength, isValidStyleKey } from '../utils/narrative-styles'
 import { isValidModeKey, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { DEFAULT_NARRATION_TONE, isValidNarrationTone } from '../utils/narration-tones'
+import { materializeTemplateCast } from './template-cast.service'
 
 const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number }> = {
   free: { max_instances: 3, max_memories: 100 },
@@ -35,6 +36,7 @@ export const instanceService = {
     playerId: string,
     templateId: string,
     tier: string,
+    personaId?: string,
   ): Promise<{ instance: WorldInstanceDoc; template: WorldTemplateDoc }> {
     const playerOid = parseObjectId(playerId)
     const templateOid = parseObjectId(templateId)
@@ -76,10 +78,26 @@ export const instanceService = {
       templateId,
       sequence: 0,
     })
+    let personaIdForInstance: ObjectId | null = null
+    let personaSnapshot: ReturnType<typeof personaService.snapshotFromPersona> | null = null
+    if (personaId) {
+      if (!template.is_sentient) {
+        throw new HttpError(400, 'Global personas can only be used in sentient worlds')
+      }
+      const selectedPersona = await personas().findOne({
+        _id: parseObjectId(personaId),
+        player_id: playerOid,
+      })
+      if (!selectedPersona) throw new HttpError(400, 'Invalid persona_id')
+      personaIdForInstance = selectedPersona._id
+      personaSnapshot = personaService.snapshotFromPersona(selectedPersona)
+    }
+
     const instance: WorldInstanceDoc = {
       _id,
       template_id: templateOid,
       template_version: template.version,
+      seed_cast_snapshot: (template.seed_cast || []).map((character) => ({ ...character })),
       player_id: playerOid,
       world_state: worldState,
       active_flags: activeFlags,
@@ -98,6 +116,8 @@ export const instanceService = {
       narrative_style_override: null,
       narration_tone: DEFAULT_NARRATION_TONE,
       focus_character_id: null,
+      persona_id: personaIdForInstance,
+      persona_snapshot: personaSnapshot,
       current_location: null,
       current_time_anchor: initialTimeAnchor,
       active_timeline_id: initialTimeAnchor.timeline_id,
@@ -131,6 +151,16 @@ export const instanceService = {
       // off any turn). Best-effort: a failure must never block instance creation.
       await kinshipGraphService.seedPremiseKinship({ instanceId: idString(_id), playerId }).catch(() => undefined)
     }
+
+    // Every instance gets independent copies of the template's authored cast.
+    // GM worlds receive this before the player defines their protagonist;
+    // sentient worlds receive it alongside their locked main character.
+    await materializeTemplateCast({
+      template,
+      instanceId: idString(_id),
+      playerId,
+      sequence: 0,
+    }).catch(() => undefined)
 
     // Opening line: if the template greets the player, seed it as the first event
     // so the chat opens with the character speaking instead of a blank screen.
@@ -401,7 +431,11 @@ export const instanceService = {
    * GM onboarding: establish the player's own character as the locked protagonist
    * of this instance (first play). No-op if a protagonist already exists.
    */
-  async setPlayerProtagonist(instanceId: string, playerId: string, data: { name: string; identity?: string }) {
+  async setPlayerProtagonist(
+    instanceId: string,
+    playerId: string,
+    data: { name?: string; identity?: string; reuse_from_instance_id?: string },
+  ) {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
     const instance = await worldInstances().findOne({
@@ -410,11 +444,43 @@ export const instanceService = {
     })
     if (!instance) throw new HttpError(404, 'Instance not found')
 
+    const template = await worldTemplates().findOne(
+      { _id: instance.template_id },
+      { projection: { is_sentient: 1 } },
+    )
+    if (template?.is_sentient) {
+      throw new HttpError(400, 'The world character is already established for this realm')
+    }
+
+    let name = data.name?.trim() || ''
+    let identity = data.identity?.trim() || undefined
+    let appearance: string | undefined
+    if (data.reuse_from_instance_id) {
+      const sourceId = parseObjectId(data.reuse_from_instance_id)
+      const source = await worldInstances().findOne({
+        _id: sourceId,
+        player_id: pid,
+        template_id: instance.template_id,
+      })
+      if (!source) throw new HttpError(400, 'That protagonist belongs to another realm')
+      const sourceCard = await characters().findOne({
+        instance_id: sourceId,
+        player_id: pid,
+        is_protagonist: true,
+      })
+      if (!sourceCard) throw new HttpError(400, 'That story has no reusable protagonist')
+      name = sourceCard.canonical_name
+      identity = sourceCard.persona || undefined
+      appearance = sourceCard.appearance || undefined
+    }
+    if (!name) throw new HttpError(400, 'A protagonist name is required')
+
     const card = await characterCodexService.seedProtagonist({
       instanceId,
       playerId,
-      name: data.name,
-      persona: data.identity,
+      name,
+      persona: identity,
+      appearance,
       isPlayer: true,
     })
     // Step 0 — GM worlds seed kinship at onboarding (the protagonist now exists):
@@ -423,6 +489,39 @@ export const instanceService = {
     await kinshipGraphService.seedPremiseKinship({ instanceId, playerId }).catch(() => undefined)
     return {
       protagonist: card ? { id: idString(card._id), canonical_name: card.canonical_name } : null,
+    }
+  },
+
+  /** Reusable GM protagonists are intentionally scoped to this one template.
+   * They are copied, never shared, so two playthroughs can diverge safely. */
+  async listReusableProtagonists(instanceId: string, playerId: string) {
+    const iid = parseObjectId(instanceId)
+    const pid = parseObjectId(playerId)
+    const instance = await worldInstances().findOne({ _id: iid, player_id: pid })
+    if (!instance) throw new HttpError(404, 'Instance not found')
+    const template = await worldTemplates().findOne({ _id: instance.template_id }, { projection: { is_sentient: 1 } })
+    if (template?.is_sentient) return { protagonists: [] }
+    const siblingInstances = await worldInstances().find({
+      player_id: pid,
+      template_id: instance.template_id,
+      _id: { $ne: iid },
+    }).project({ _id: 1, 'meta.last_active_at': 1 }).sort({ 'meta.last_active_at': -1 }).toArray()
+    if (!siblingInstances.length) return { protagonists: [] }
+    const cards = await characters().find({
+      instance_id: { $in: siblingInstances.map((row) => row._id) },
+      player_id: pid,
+      is_protagonist: true,
+    }).toArray()
+    const order = new Map(siblingInstances.map((row, index) => [idString(row._id), index]))
+    return {
+      protagonists: cards
+        .sort((a, b) => (order.get(idString(a.instance_id)) ?? 999) - (order.get(idString(b.instance_id)) ?? 999))
+        .map((card) => ({
+          source_instance_id: idString(card.instance_id),
+          name: card.canonical_name,
+          identity: card.persona || '',
+          appearance: card.appearance || '',
+        })),
     }
   },
 
@@ -449,6 +548,9 @@ export const instanceService = {
 
     const session = {
       world_state: instance.world_state,
+      // Template semantics travel with the session so post-stream bookkeeping
+      // can judge each gauge on its own terms and apply its actual bounds.
+      stat_definitions: template.base_stats_template || {},
       active_flags: instance.active_flags,
       current_scene: instance.current_scene,
       narration_pov: instance.narration_pov || 'third',
@@ -529,6 +631,8 @@ export const instanceService = {
   }> {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
+    const target = await worldInstances().findOne({ _id: iid, player_id: pid })
+    if (!target) throw new HttpError(404, 'Instance not found')
 
     const update: Record<string, unknown> = { updated_at: new Date() }
     if (settings.narration_pov === 'first' || settings.narration_pov === 'third') {
@@ -575,14 +679,23 @@ export const instanceService = {
         update.focus_character_id = cid
       }
     }
-    let selectedPersona: any | null = null
     if (settings.persona_id !== undefined) {
       if (settings.persona_id === null || settings.persona_id === '') {
         update.persona_id = null
         update.persona_snapshot = null
       } else {
+        const template = await worldTemplates().findOne(
+          { _id: target.template_id },
+          { projection: { is_sentient: 1 } },
+        )
+        if (!template?.is_sentient) {
+          throw new HttpError(
+            400,
+            'Global personas are for sentient worlds. Choose or create a protagonist for this GM world instead.',
+          )
+        }
         const personaOid = parseObjectId(settings.persona_id)
-        selectedPersona = await personas().findOne({
+        const selectedPersona = await personas().findOne({
           _id: personaOid,
           player_id: pid,
         })
@@ -598,31 +711,6 @@ export const instanceService = {
       { returnDocument: 'after' },
     )
     if (!result) throw new HttpError(404, 'Instance not found')
-
-    // In GM worlds the player protagonist is canonical. If a persona is selected
-    // before the player created one, seed the protagonist from the persona once.
-    // If one already exists, it remains the higher-precedence canon.
-    if (selectedPersona) {
-      const template = await worldTemplates().findOne({
-        _id: result.template_id,
-      })
-      if (template && !template.is_sentient) {
-        const existingProtagonist = await characters().findOne({
-          instance_id: iid,
-          player_id: pid,
-          is_protagonist: true,
-        })
-        if (!existingProtagonist) {
-          await characterCodexService.seedProtagonist({
-            instanceId,
-            playerId,
-            name: selectedPersona.name,
-            persona: [selectedPersona.description, selectedPersona.other_info].filter(Boolean).join(' '),
-            isPlayer: true,
-          })
-        }
-      }
-    }
 
     await getRedisClient().del(`session:${idString(iid)}`)
     return {

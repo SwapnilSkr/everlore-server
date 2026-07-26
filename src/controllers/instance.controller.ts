@@ -26,9 +26,9 @@ export const instanceController = {
     return instance
   },
 
-  create: async ({ user, body }: { user: AuthUser | null; body: { template_id: string } }) => {
+  create: async ({ user, body }: { user: AuthUser | null; body: { template_id: string; persona_id?: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return instanceService.create(user.id, body.template_id, user.tier)
+    return instanceService.create(user.id, body.template_id, user.tier, body.persona_id)
   },
 
   archive: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
@@ -53,10 +53,15 @@ export const instanceController = {
   }: {
     user: AuthUser | null
     params: { id: string }
-    body: { name: string; identity?: string }
+    body: { name?: string; identity?: string; reuse_from_instance_id?: string }
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return instanceService.setPlayerProtagonist(params.id, user.id, body)
+  },
+
+  reusableProtagonists: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return instanceService.listReusableProtagonists(params.id, user.id)
   },
 
   updateSettings: async ({
