@@ -32,6 +32,10 @@ const WITNESS_SCHEMA = {
     current_location: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
+    player_destination: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    },
+    player_travel_confirmed: { type: 'boolean' },
     containment_hint: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
@@ -54,7 +58,7 @@ const WITNESS_SCHEMA = {
       items: { type: 'string' },
     },
   },
-  required: ['present_characters', 'characters_departed', 'current_location', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
+  required: ['present_characters', 'characters_departed', 'current_location', 'player_destination', 'player_travel_confirmed', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
 }
 
 /** CHOICE/STAT schema — the player-moves + bookkeeping half: choices, scene tag,
@@ -126,6 +130,8 @@ const WITNESS_FALLBACK: SceneMetadata = {
   present_characters: [],
   characters_departed: [],
   current_location: null,
+  player_destination: null,
+  player_travel_confirmed: false,
   containment_hint: null,
   movement: 'none',
   viewpoint_moved: false,
@@ -183,6 +189,7 @@ Rules:
 - present_characters: the PEOPLE who appear physically in the scene WITH the viewpoint during THIS passage — anyone who speaks, acts, or is shown to be in the room right now. (You do NOT need to re-list people from earlier who simply weren't mentioned this turn; the system carries them forward automatically — the people present at the end of last turn are listed in CONTEXT below for your reference.) For anyone matching the KNOWN CAST, use their CANONICAL name (not the alias/role/pronoun the prose used); for a genuinely new person not in the cast, use the clearest name the prose gives. NEVER put a location, landmark, building, city, district, country, vehicle, or object here — even if it is capitalized or personified by prose ("Milan greeted him", "near the Duomo"). Those are places/things, never scene participants. EXCLUDE the player/narrator themself, and anyone only mentioned, remembered, or written about while not actually in the room. Also EXCLUDE a figurative epithet that is really an existing person under a metaphor (per the FIGURATIVE vs LITERAL rule above) — "the ghost", "the monster" for the overlooked protagonist is NOT a separate present character in a grounded world. CRUCIAL: if a person LEAVES by the end of the passage, do NOT list them here — list them in characters_departed instead, even if they spoke or acted earlier in the same passage.
 - characters_departed: the people who physically LEFT the scene by the end of this passage — walked out, exited, stormed off, were dismissed, sent away, or died — EVEN IF they spoke or acted earlier in the same passage before leaving. Use their CANONICAL name. A person who rises and leaves the room this turn belongs HERE, not in present_characters. This is the only way someone stops being "present" (the system keeps everyone else from the prior turn in the scene), so a clearly narrated exit MUST be listed. Worked example: prose says "Bram set down his cup, bowed stiffly, and strode from the hall" → characters_departed includes "Bram" (and he is NOT in present_characters). Empty array [] when no one left.
 - current_location: the place the viewpoint/protagonist is PHYSICALLY STANDING IN at the end of the passage — where this turn's action and dialogue actually happen. Report ONLY a place the prose shows them physically occupying RIGHT NOW. NEVER report a place that is merely mentioned, named, planned, anticipated, remembered, or where some future event will be held while the characters are not yet there. Worked example: if they sit at the table in the dining room discussing a party that will be held in the great room, current_location is "dining room" — NOT "great room". If the scene simply continues where it already was, return the prior known location unchanged. If the viewpoint is at a place listed in KNOWN PLACES (in CONTEXT below) — including returning to one they left earlier — return that place's EXACT canonical name, never a new variant spelling ("the garden" when KNOWN PLACES has "Night Garden" → return "Night Garden"). Use a fresh name only for a place that is genuinely not yet known. NEVER report a vague or relative label as the location — "the room", "here", "inside", "outside", "this place" are NOT place names; use the SPECIFIC place's name (e.g. "dining room", "the night garden"), or return the prior known location if the viewpoint has not moved. If the viewpoint moves into a personal space the prose marks as someone's OWN ("my room", "her chambers", "his study"), name it for its owner so it is specific and distinct — e.g. the protagonist retreating to "my room" → the protagonist's name (from CONTEXT) + "'s room" (for a protagonist named Mara, "Mara's room"), NOT the bare "the room". Return null ONLY if no place has ever been established. The Prior known location is given in CONTEXT below — return THAT unless the viewpoint has physically moved.
+- player_destination and player_travel_confirmed: read the PLAYER TURN in CONTEXT together with the narrative. Set player_travel_confirmed true ONLY when the player is physically travelling/arriving NOW in that turn, not merely discussing, planning, remembering, or promising a future trip. player_destination is the clean place name the player actually goes to/arrives at; remove purpose clauses and direct addresses ("go to the living room to say goodbye to Lisa" → "living room"; "go to the airport, Dad" → "airport"). An unnamed but physically entered venue is still a destination: "I take a hotel to stay at", "I check into a hotel", or "I get a room at an inn" → player_travel_confirmed true and player_destination "hotel" or "inn" (not "hotel lobby" unless the player named the lobby). Return null/false when no travel happened.
 - viewpoint_moved: a boolean. true whenever THIS passage narrates the viewpoint/protagonist physically CHANGING place — walking out, entering another room, setting off on a journey, RETURNING TO or RE-ENTERING a place they had left (e.g. coming back indoors from the garden, stepping back into the mansion), or a scene-cut that puts them somewhere new. It is false when they stay put and nothing relocates them, and ESPECIALLY when another place is only mentioned, named, discussed, or planned while they remain where they are. Rule of thumb: if current_location differs from the prior known location because they actually went there, viewpoint_moved is true; if current_location is unchanged, it is false.
 - containment_hint: the name of the place that DIRECTLY CONTAINS current_location, but ONLY when THIS passage actually states or makes it plain (e.g. the prose says they are "in the library of the manor" → containment_hint "the manor"; "a tavern in the riverside district" → "riverside district"). This is the immediate parent, one level up — a room's building, a building's district, a city's realm. Return null when the passage does not make the container explicit. NEVER guess or invent a container to fill this in.
 - movement: how current_location relates to the PRIOR known location this turn — one of: "none" (did not move / stayed put), "deeper" (went INTO a place contained by where they were — entered a room of the current building), "out" (LEFT the current place to its surrounding area — stepped outside the house onto the street), "lateral" (moved to another place at the SAME level — one room to another in the same building), "world_shift" (crossed into a wholly different world/realm/plane — a portal to the shadow realm, abduction to another planet, waking in a dream-world). Use "none" whenever viewpoint_moved is false. Choose the single best fit; when unsure between out/lateral use "lateral".
@@ -200,6 +207,9 @@ Rules:
  * (scene stays `intimate` to preserve NSFW momentum) if extraction fails.
  */
 type MetadataOpts = {
+  /** Raw player-authored turn. The witness uses this to identify actual travel
+   * intent; it never treats narration alone as player authority. */
+  playerInput?: string | null
   isSentient?: boolean
   currentLocationName?: string | null
   /** Characters present at the END of the PRIOR turn, so a character still in
@@ -229,7 +239,18 @@ type MetadataOpts = {
 /** Build the STATIC rules + dynamic CONTEXT system prompt shared by both halves.
  *  Keeping all per-turn/per-world values after the rules lets OpenAI prompt
  *  caching reuse the ~2.5K-token rules prefix across turns and worlds. */
-function buildMetadataSystem(opts: MetadataOpts | undefined, statKeys: string[], flagKeys: string[]): string {
+type StatDescriptor = { name: string; min: number; max: number; description: string }
+type StatInput = StatDescriptor[] | string[]
+
+function normalizeStats(stats: StatInput): StatDescriptor[] {
+  return stats.map((stat) =>
+    typeof stat === 'string'
+      ? { name: stat, min: 0, max: 100, description: stat }
+      : stat,
+  )
+}
+
+function buildMetadataSystem(opts: MetadataOpts | undefined, stats: StatDescriptor[], flagKeys: string[]): string {
   // Resolve who "I" is for the choices. In third-person GM prose the protagonist
   // is referred to by role ("the son", "the boy"); without naming them the
   // extractor cannot tell which character is the player and drifts the choice POV
@@ -264,6 +285,7 @@ function buildMetadataSystem(opts: MetadataOpts | undefined, statKeys: string[],
   const priorPresent = (opts?.priorPresent || []).map((p) => p.trim()).filter(Boolean)
   const priorPresentLabel = priorPresent.length ? priorPresent.join(', ') : '(none / unknown)'
   const priorLocationLabel = opts?.currentLocationName || '(none established yet)'
+  const playerTurn = (opts?.playerInput || '').replace(/\s+/g, ' ').trim().slice(0, 900)
 
   const places = (opts?.knownPlaces || [])
     .map((p) => {
@@ -304,8 +326,9 @@ function buildMetadataSystem(opts: MetadataOpts | undefined, statKeys: string[],
 --- CONTEXT (specific to this world and this turn) ---
 WORLD MODE & VIEWPOINT: ${viewpointContext}${worldContextClause}
 Prior known location (return THIS unless the viewpoint has physically moved): ${priorLocationLabel}
+PLAYER TURN (authoritative for player movement; empty means no new player turn): ${playerTurn || '(none)'}
 People present at the end of last turn (carried forward automatically — for your reference): ${priorPresentLabel}
-Tracked stats (only these names may appear in state_mutations): ${statKeys.length ? statKeys.join(', ') : '(none)'}
+Tracked stats (only these names may appear in state_mutations): ${stats.length ? stats.map((s) => `${s.name} [${s.min}–${s.max}]: ${s.description}`).join('; ') : '(none)'}
 Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}${rosterClause}${knownPlacesClause}`
   return METADATA_RULES + context
 }
@@ -347,6 +370,8 @@ export async function extractSceneWitness(
       present_characters: v.present_characters,
       characters_departed: v.characters_departed ?? [],
       current_location: v.current_location ?? null,
+      player_destination: v.player_destination ?? null,
+      player_travel_confirmed: v.player_travel_confirmed === true,
       containment_hint: v.containment_hint ?? null,
       movement: v.movement ?? 'none',
       viewpoint_moved: v.viewpoint_moved === true,
@@ -367,11 +392,11 @@ export async function extractSceneWitness(
  */
 export async function extractChoiceMetadata(
   narrative: string,
-  statKeys: string[],
+  stats: StatInput,
   flagKeys: string[],
   opts?: MetadataOpts,
 ): Promise<SceneMetadata> {
-  const system = buildMetadataSystem(opts, statKeys, flagKeys)
+  const system = buildMetadataSystem(opts, normalizeStats(stats), flagKeys)
   try {
     const raw = await callLLM({
       model: AI_MODELS.metadata,
@@ -410,19 +435,21 @@ export async function extractChoiceMetadata(
  */
 export async function extractSceneMetadata(
   narrative: string,
-  statKeys: string[],
+  stats: StatInput,
   flagKeys: string[],
   opts?: MetadataOpts,
 ): Promise<SceneMetadata> {
   const [witness, choice] = await Promise.all([
     extractSceneWitness(narrative, opts),
-    extractChoiceMetadata(narrative, statKeys, flagKeys, opts),
+    extractChoiceMetadata(narrative, stats, flagKeys, opts),
   ])
   return {
     // WITNESS half
     present_characters: witness.present_characters,
     characters_departed: witness.characters_departed,
     current_location: witness.current_location,
+    player_destination: witness.player_destination,
+    player_travel_confirmed: witness.player_travel_confirmed,
     containment_hint: witness.containment_hint,
     movement: witness.movement,
     viewpoint_moved: witness.viewpoint_moved,

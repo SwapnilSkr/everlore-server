@@ -319,12 +319,12 @@ export function buildStyleBlock(styleKey?: string, styleNotes?: string): string 
 export function buildLengthDirective(len?: MessageLength): string {
   switch (len) {
     case 'short':
-      return `LENGTH — keep it tight: 1 short paragraph, ~2–4 sentences. Favor punch and momentum over description. Finish the thought cleanly and end on a beat that invites the player to act.`
+      return `LENGTH — STRICT SHORT: exactly 1 compact paragraph of 2–4 sentences (roughly 40–100 words). Favor punch and momentum over description. Do not add a second paragraph, recap the scene, or pad with atmosphere. Finish the thought cleanly on a playable beat.`
     case 'long':
-      return `LENGTH — write a rich, immersive turn: ~3–5 paragraphs with fuller description, sensory detail, and interiority. Do not pad; every paragraph should earn its place. Bring the turn to a clean, deliberate close — do not trail off.`
+      return `LENGTH — STRICT LONG: 3–5 developed paragraphs (roughly 240–650 words) with fuller description, sensory detail, and interiority. Do not pad; every paragraph must add a new reaction, action, consequence, or piece of information. Bring the turn to a clean, deliberate close — do not trail off.`
     case 'medium':
     default:
-      return `LENGTH — a balanced turn: ~2–3 short paragraphs. Vivid but not bloated. Wrap up the beat cleanly rather than stopping abruptly.`
+      return `LENGTH — STRICT MEDIUM: 2–3 short paragraphs (roughly 100–280 words). Vivid but not bloated: each paragraph must carry the scene forward. Wrap up the beat cleanly rather than stopping abruptly.`
   }
 }
 
@@ -338,12 +338,12 @@ export function buildLengthDirective(len?: MessageLength): string {
 export function lengthMaxTokens(len?: MessageLength): number {
   switch (len) {
     case 'short':
-      return 320
+      return 170
     case 'long':
-      return 1100
+      return 900
     case 'medium':
     default:
-      return 700
+      return 400
   }
 }
 
@@ -367,8 +367,9 @@ export function buildStyleReminder(
   if (tone) bits.push(`tone: ${tone}`)
   const m = (modeLabel || '').trim()
   if (m) bits.push(`mode: ${m}`)
-  if (len === 'short') bits.push('keep it short and punchy')
-  else if (len === 'long') bits.push('write a fuller, richer turn')
+  if (len === 'short') bits.push('LENGTH LOCK: exactly 1 compact paragraph, 2–4 sentences, roughly 40–100 words')
+  else if (len === 'medium') bits.push('LENGTH LOCK: 2–3 short paragraphs, roughly 100–280 words')
+  else if (len === 'long') bits.push('LENGTH LOCK: 3–5 developed paragraphs, roughly 240–650 words')
   if (bits.length === 0) return ''
   return `STYLE for your next reply (hold this regardless of how earlier turns read): ${bits.join('; ')}.`
 }

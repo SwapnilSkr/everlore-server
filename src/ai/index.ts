@@ -9,6 +9,7 @@
  */
 export { AI_MODELS, type AiModelKey } from './models'
 export { callLLM, callLLMStream } from './client'
+export { narrationTemperature } from './narration-profile'
 export { embed, embedBatch } from './embedding'
 export { generateImage } from './image'
 export { synthesizeSpeech, type TtsRequest, type TtsResult, type TtsResponseFormat } from './tts'

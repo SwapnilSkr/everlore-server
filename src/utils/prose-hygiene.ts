@@ -15,7 +15,7 @@ interface ProseHygieneInput {
   characterNames?: string[];
   messageLength?: MessageLength;
   /** How the visible player should be referenced in story prose. */
-  playerAddressMode?: "you" | "role";
+  playerAddressMode?: "you" | "role" | "self";
   /** Character names that opened the immediately prior assistant turn/variant. */
   previousOpeningNames?: string[];
   /** Character names that should not open this response even if the prior turn varied. */
@@ -136,14 +136,30 @@ function looksIncompleteEnding(text: string): boolean {
   return true;
 }
 
-function playerLabelLeak(text: string, mode?: "you" | "role"): string | null {
+function playerLabelLeak(text: string, mode?: "you" | "role" | "self"): string | null {
   const compact = String(text || "");
   const userMatch = compact.match(/\b(?:the\s+)?user(?:'s)?\b/i);
   if (userMatch) return userMatch[0];
-  if (mode === "you") {
-    const playerMatch = compact.match(/\b(?:the\s+)?player(?:'s)?\b/i);
-    if (playerMatch) return playerMatch[0];
-  }
+  // "player" is an application label, never immersive story prose—regardless
+  // of first-, second-, or third-person narration.
+  const playerMatch = compact.match(/\b(?:the\s+)?player(?:'s)?\b/i);
+  if (playerMatch) return playerMatch[0];
+  return null;
+}
+
+/**
+ * A streamed reply cannot be regenerated after the player has seen it. This
+ * narrow post-stream signal catches asserted daily/workplace contact and feeds
+ * a strict next-turn reminder. It does not alter prose or claim the history is
+ * false: supplied canon may still establish it.
+ */
+function possibleUnsupportedSharedHistoryCue(text: string): string | null {
+  const compact = String(text || "").replace(/\s+/g, " ");
+  const dailyWorkplace =
+    /\b(?:i|we)\s+(?:see|saw)\s+you\s+(?:almost\s+)?every\s+(?:day|morning|night)\b[^.!?]{0,100}\b(?:office|work)\b/i.test(compact) ||
+    /\b(?:office|work)\b[^.!?]{0,100}\b(?:i|we)\s+(?:see|saw)\s+you\s+(?:almost\s+)?every\s+(?:day|morning|night)\b/i.test(compact);
+  if (dailyWorkplace) return "daily workplace contact";
+  if (/\bwe\s+work\s+together\b/i.test(compact)) return "shared workplace";
   return null;
 }
 
@@ -349,10 +365,23 @@ export function validateProseHygiene(
       code: "player_label_leak",
       severity: "warning",
       message:
-        input.playerAddressMode === "you"
-          ? "Response refers to the player as user/player instead of you."
-          : "Response refers to the player as user, which breaks story immersion.",
+        input.playerAddressMode === "self"
+          ? "Response refers to the protagonist as user/player instead of I/me."
+          : input.playerAddressMode === "you"
+            ? "Response refers to the player as user/player instead of you."
+            : "Response refers to the protagonist as user/player, which breaks story immersion.",
       detail: leakedPlayerLabel,
+    });
+  }
+
+  const sharedHistoryCue = possibleUnsupportedSharedHistoryCue(trimmed);
+  if (sharedHistoryCue) {
+    issues.push({
+      code: "possible_unsupported_shared_history",
+      severity: "warning",
+      message:
+        "Response asserts shared routine or workplace history; it must be supported by supplied continuity or character canon.",
+      detail: sharedHistoryCue,
     });
   }
 
@@ -638,7 +667,7 @@ Rules:
 - In one-on-one beats, names should be almost absent after the character is established.
 - In multi-character beats, use names only to restore clarity, then return to pronouns and distinct actions.
 - Finish cleanly. Do not end mid-sentence, on a dangling connector, or with unbalanced quotes/asterisks.
-- Preserve immersive player address. Never call the visible player "user". ${input.playerAddressMode === "you" ? 'Never call them "player" either; refer to them as "you" in both dialogue and narration.' : 'If a role label is needed, use an in-world role descriptor, not "user".'}
+- Preserve immersive protagonist address. Never call the visible protagonist "player" or "user". ${input.playerAddressMode === "self" ? 'Refer to myself as I/me/my in narration.' : input.playerAddressMode === "you" ? 'Refer to them as "you" in both dialogue and narration.' : 'Refer to them by canonical name or natural third-person pronouns.'}
 - Obey the selected reply length as a quality requirement:
   - short = 1 short paragraph, about 2-4 sentences; concise but complete.
   - medium = about 2-3 short paragraphs; vivid but not bloated.

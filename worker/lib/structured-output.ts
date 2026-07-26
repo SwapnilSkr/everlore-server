@@ -45,6 +45,10 @@ export interface GenerationOutput {
    * passage did not establish a place change or concrete current location.
    */
   current_location?: string | null
+  /** AI-witnessed destination explicitly carried out in the player's current
+   * turn. It is only a candidate; the server verifies it against player text. */
+  player_destination?: string | null
+  player_travel_confirmed?: boolean
   /**
    * Witness fields for the location-graph cartographer (P1). `containment_hint`
    * is the immediate container of current_location, but ONLY when the passage
@@ -276,6 +280,8 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
     parsed.present_characters = sanitizePresentCharacters(parsed.present_characters)
     parsed.characters_departed = sanitizePresentCharacters(parsed.characters_departed)
     parsed.current_location = sanitizeLocationName(parsed.current_location)
+    parsed.player_destination = sanitizeLocationName(parsed.player_destination)
+    parsed.player_travel_confirmed = parsed.player_travel_confirmed === true
     parsed.containment_hint = sanitizeLocationName(parsed.containment_hint)
     parsed.movement = sanitizeMovement(parsed.movement)
     parsed.viewpoint_moved = parsed.viewpoint_moved === true

@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { getRedisClient } from '../../src/config/redis'
-import { callLLMStream, AI_MODELS } from '../../src/ai'
+import { callLLMStream, AI_MODELS, narrationTemperature } from '../../src/ai'
 import { NSFW_MODE, buildModeDirective, modeReminderLabel } from '../../src/utils/chat-modes'
 import {
   buildStyleBlock,
@@ -48,6 +48,9 @@ function characterSheet(card: CharacterProfileDoc): string {
     lines.push(
       `Relationship meters toward the player (0-100): trust ${r.trust}, affection ${r.affection}, fear ${r.fear}, rivalry ${r.rivalry}`,
     )
+  }
+  if (card.relationship_state?.summary) {
+    lines.push(`Bond context toward the player: ${card.relationship_state.summary}`)
   }
   return lines.join('\n')
 }
@@ -207,7 +210,7 @@ The earlier private-chat messages are continuity only. Preserve their facts and 
       {
         model: modelId,
         messages,
-        temperature: 0.75,
+        temperature: narrationTemperature(modelId),
         maxTokens: lengthMaxTokens(session.message_length),
         sessionId: instanceId,
       },
@@ -319,6 +322,9 @@ The earlier private-chat messages are continuity only. Preserve their facts and 
               appearance: card.appearance,
               persona: card.persona,
               disposition_to_player: card.disposition_to_player,
+              relationship: card.relationship,
+              relationship_moments: card.relationship_moments || [],
+              relationship_state: card.relationship_state,
               mutable_state: card.mutable_state || [],
               immutable_facts: card.immutable_facts || [],
             },
@@ -391,6 +397,7 @@ The earlier private-chat messages are continuity only. Preserve their facts and 
               disposition_to_player: c.disposition_to_player,
               hidden_thought: c.hidden_thought,
               relationship: c.relationship || null,
+              relationship_state: c.relationship_state || null,
               mention_count: c.mention_count,
               is_protagonist: c.is_protagonist === true,
             })),

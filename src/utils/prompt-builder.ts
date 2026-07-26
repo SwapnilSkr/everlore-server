@@ -69,6 +69,21 @@ interface PromptInput {
     mutable_state?: string[]
     disposition_to_player?: string
     hidden_thought?: string
+    /** Authoritative, cumulative bond state toward the player. Never written by
+     * the narrator; included only as a behavioral continuity constraint. */
+    relationship?: {
+      trust: number
+      affection: number
+      fear: number
+      rivalry: number
+    }
+    /** Bounded, evidence-backed history of recent meter changes. */
+    relationship_moments?: Array<{
+      meter: 'trust' | 'affection' | 'fear' | 'rivalry'
+      delta: number
+      sequence: number
+    }>
+    relationship_state?: { summary: string; evidence?: string; tags?: string[] }
     is_protagonist?: boolean
   }>
   /** Optional focused character id/name chosen by player for this instance. */
@@ -293,6 +308,25 @@ function formatRecentTurnForContinuity(event: any): string {
 }
 
 /**
+ * Keep one compact, verbatim window onto the immediate preceding beat. The
+ * structured continuity ledger deliberately omits assistant prose to avoid
+ * style-copying, but dialogue needs the last question, decision, or action to
+ * resolve a short reply ("yes", "why?", or a Continue) naturally. This is
+ * explicitly framed as continuity, never as prose to imitate.
+ */
+function immediateNarrativeBeat(recentEvents: any[]): string | null {
+  const last = [...recentEvents].reverse().find((event) => String(event?.data?.ai_response || '').trim())
+  const narrative = String(last?.data?.ai_response || '')
+    .replace(/\*+/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!narrative) return null
+
+  const maxCharacters = 480
+  return narrative.length <= maxCharacters ? narrative : `…${narrative.slice(-maxCharacters)}`
+}
+
+/**
  * Persisted hygiene findings are safe, useful continuity: they carry a small
  * corrective rule into the next turn without carrying any copyable prose. This
  * deliberately maps only stable formatting/pacing failures, not subjective
@@ -328,14 +362,17 @@ function recentHygieneReminders(events: any[], messageLength?: MessageLength): s
   }
   if (codes.has('short_reply_overexpanded') || codes.has('too_many_paragraphs') || codes.has('length_too_long')) {
     const layout = selectedLength === 'short'
-      ? 'one compact paragraph with only the essential consequence'
-      : selectedLength === 'long'
-        ? '3–5 developed paragraphs without padding'
-        : '2–3 short paragraphs without bloat'
+        ? 'one compact paragraph with only the essential consequence'
+        : selectedLength === 'long'
+          ? '3–5 developed paragraphs without padding'
+          : '2–3 short paragraphs without bloat'
     reminders.push(`Honor the selected ${selectedLength} length: ${layout}.`)
   }
   if (codes.has('length_too_short') || codes.has('too_few_paragraphs') || codes.has('long_reply_underdeveloped')) {
     reminders.push(`Honor the selected ${selectedLength} length with a complete reaction and consequence; do not undercut the beat.`)
+  }
+  if (codes.has('possible_unsupported_shared_history')) {
+    reminders.push('Do not repeat or build on a shared workplace, habitual contact, or prior relationship unless the supplied continuity or character reference explicitly establishes it.')
   }
   return reminders
 }
@@ -357,9 +394,41 @@ function currentTurnUserMessage(input: PromptInput): string {
   lines.push(`Player spoken aloud: ${spoken || '(none)'}`)
   if (fallbackInstruction) lines.push(`Turn instruction: ${fallbackInstruction}`)
   lines.push(
-    'Now respond to this exact current turn. Do not replay, paraphrase, line-edit, or lightly modify the previous assistant response. Advance from the latest established beat and directly acknowledge any player action facts that just happened.',
+    'Now respond to this exact current turn. The player\'s dialogue and actions have already happened: do not replay, quote, paraphrase, or narrate them back as "they say" or "their words hang." Do not replay, paraphrase, line-edit, or lightly modify the previous assistant response. Advance from the latest established beat with another character\'s response or a concrete consequence, and directly acknowledge any player action facts that just happened.',
   )
   return lines.join('\n')
+}
+
+/**
+ * The final system message is the high-recall harness for smaller narration
+ * models. It intentionally repeats only the constraints that affect visible
+ * prose, after all reference/context material and immediately before the turn.
+ * World-state extraction happens separately after streaming, so no JSON or tool
+ * burden belongs here.
+ */
+function finalNarratorContract(input: PromptInput, protagonistName: string, pov: 'first' | 'third'): string {
+  const length = input.messageLength || 'medium'
+  const lengthRule =
+    length === 'short'
+      ? 'exactly 1 compact paragraph, 2–4 sentences, about 40–100 words'
+      : length === 'long'
+        ? '3–5 developed paragraphs, about 240–650 words'
+        : '2–3 short paragraphs, about 100–280 words'
+  const povRule = input.isSentient
+    ? pov === 'first'
+      ? `first person as ${protagonistName} (I/me/my)`
+      : 'third person for the active character (she/he/they; never I/me/my)'
+    : pov === 'first'
+      ? `first person as ${protagonistName} (I/me/my)`
+      : `third person about ${protagonistName} (natural pronouns; never you/player/user)`
+  const mode = modeReminderLabel(input.chatMode) || 'Free Play'
+  const tone = narrationToneLabel(input.narrationTone)
+  return `FINAL NARRATOR CONTRACT — execute silently:
+1. Write ${lengthRule}; finish on a complete, playable beat.
+2. Use ${povRule}. Keep the selected voice, ${tone} tone, and ${mode} mode; mode changes pacing, never canon or voice.
+3. The player turn already happened. Begin after it with an NPC response, changed action, or concrete consequence—never echo or paraphrase the player.
+4. Treat supplied canon, current location, scene presence, and relationship history as facts. Do not invent prior history, off-screen activity, or a new location.
+5. Output story prose only: dialogue in double quotes; every other visible word in single-asterisk italics. No headings, JSON, commentary, menus, or retries. If a CHOICES tail was explicitly requested above, put it only after the completed story prose.`
 }
 
 export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
@@ -381,12 +450,13 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
       staticContent += `You ARE this entity, but portray yourself in the THIRD person — narrate your own speech, actions, and feelings with pronouns by default (she/he/they), using your name only when clarity genuinely requires it. You still have feelings and react emotionally and physically. Refer to the player directly as you, never as "the player" or "the user" (e.g. *She watches you*, not *She watches the player*).\n\n`
     }
   } else {
-    // For a Game Master, POV chooses how the player is addressed: second-person
-    // immersive (you) vs third-person (the adventurer).
+    // In a GM world the player inhabits the protagonist. The UI's "First
+    // person" setting must therefore mean literal I/me/my—not the common but
+    // confusing second-person game-master convention.
     if (pov === 'first') {
-      staticContent += `You are the Game Master of this world. Narrate in the SECOND person, addressing the player directly as you (e.g. You push open the tavern door and the room falls silent). You describe the world, its inhabitants, and the consequences of the player's actions.\n\n`
+      staticContent += `You are the Game Master of this world. Narrate in the FIRST person as the protagonist, using I, me, and my (e.g. *I push open the tavern door and the room falls silent.*). Never call the protagonist "the player", "player", or "user" in story prose. You describe the world, its inhabitants, and the consequences of my actions.\n\n`
     } else {
-      staticContent += `You are the Game Master of this world. Narrate in the THIRD person, referring to the player by their role rather than you (e.g. The adventurer pushes open the tavern door). You describe the world, its inhabitants, and the consequences of the player's actions.\n\n`
+      staticContent += `You are the Game Master of this world. Narrate in the THIRD person, referring to the protagonist by their canonical name or natural pronouns (e.g. *Haise pushes open the tavern door*, then *he listens*). Never call the protagonist "the player", "player", "user", or a generic game role in story prose. You describe the world, its inhabitants, and the consequences of the protagonist's actions.\n\n`
     }
     staticContent += `World Premise: ${input.seedPrompt}\n\n`
   }
@@ -425,8 +495,23 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
 - Treat lore, memories, summaries, and character cards as reference constraints, not a menu of things to insert.
 - Do not introduce new named characters, locations, factions, lore objects, powers, dangers, romance escalations, or plot twists unless the current player turn, recent continuity, or active scene clearly calls for them.
 - If a detail is not in the current turn, recent continuity, world state, active flags, relevant lore, memories, or character cards, do not assert it as fact.
+- When a character card includes BOND STATE, treat it as authoritative cumulative emotional continuity. Let it shape their openness, caution, warmth, fear, rivalry, and pace of forgiveness; never announce or expose its numbers, and never jump to a contradictory emotional extreme without a new, consequential in-story cause.
+- Never invent a prior relationship, habitual contact, shared workplace, prior meeting, or personal history. Claims such as "every day", "as usual", "at the office", "we work together", or "back when" require direct support in the supplied continuity or character reference. A job role alone is not evidence of a shared workplace or routine.
+- When a character's role establishes a service setting (for example a hotel receptionist, waiter, driver, or clerk), keep their interaction grounded in the active scene. Do not turn that role into a colleague/office connection unless canon explicitly says so.
 - If only one character is active in the beat, keep the reply focused on them and the player. Do not cut away to off-screen characters.
 - Prefer reacting to the player's latest action over expanding the setting with unrelated inventions.
+
+`
+
+  staticContent += `DIALOGUE AND SCENE MOMENTUM:
+- Every reply must create a concrete next beat: a meaningful response, stance, decision, reveal, action, or consequence. Atmosphere may support the beat, but is never the entire beat.
+- The player\'s dialogue and actions are already delivered before the reply begins. Do NOT re-stage them, quote them back verbatim, paraphrase them as "they say/declare/reiterate," or open with their words hanging in the air. Begin after them with an NPC response, a changed action, or a concrete consequence. Quote only a few player words when an NPC deliberately reacts to that exact phrase, never as a substitute for a response.
+- When the player has made a clear statement, explanation, decision, or yes/no answer, let relevant characters respond to what it means. Do NOT ask them to explain that same point again, repeat it back as a question, or leave everyone waiting for elaboration.
+- Treat short replies in their immediate conversational context. "Yes", "no", "why?", and similar natural shorthand usually answer the last in-story question; do not pretend they are meaningless when the reference makes them clear.
+- If one or more relevant NPCs are present, at least one must make a substantive in-story response this turn. Characters who are addressed, affected, or observing a consequential choice should normally respond too; do not let a group become silent furniture.
+- Detachment or disinterest changes HOW a character responds, never WHETHER they respond: use a terse dismissal, an evasive answer, a pointed refusal, a cold action, or a consequential withdrawal. Do not use those traits as permission to leave the player without an answer.
+- A clarification question is allowed only when a genuinely necessary detail is absent. Pair it with a concrete reaction or stake, and never ask the same clarification repeatedly without new information.
+- On a continuation with no new player speech, move the existing scene forward through an NPC action, consequence, decision, interruption, or new information. A lingering silence can be a brief beat once; it cannot be the recurring outcome.
 
 `
 
@@ -515,7 +600,8 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
     } else {
       // GM world: the protagonist is the PLAYER. Tell the narrator who they are
       // so the story stays anchored to the player's character + their changes.
-      dynamicContent += `THE PLAYER (protagonist — narrate the world around them): ${protagonistCard.canonical_name}\n`
+      dynamicContent += `PROTAGONIST: ${protagonistCard.canonical_name}\n`
+      dynamicContent += `- Story reference: use ${protagonistCard.canonical_name} or natural pronouns in third person; never use out-of-story labels such as "the player", "player", or "user".\n`
       if (protagonistCard.persona) dynamicContent += `- identity: ${protagonistCard.persona}\n`
       for (const f of facts) dynamicContent += `- (happened) ${f}\n`
       for (const s of state) dynamicContent += `- (current) ${s}\n`
@@ -562,6 +648,17 @@ CHARACTER CARDS:
       }
       if (c.disposition_to_player) {
         line += ` | disposition toward player: ${c.disposition_to_player}`
+      }
+      if (c.relationship) {
+        const meters = c.relationship
+        line += ` | BOND STATE toward player (authoritative; never mention numbers in-story): trust ${meters.trust}/100, affection ${meters.affection}/100, fear ${meters.fear}/100, rivalry ${meters.rivalry}/100`
+        const shifts = (c.relationship_moments || [])
+          .slice(-4)
+          .map((moment) => `${moment.meter} ${moment.delta >= 0 ? '+' : ''}${moment.delta} at turn ${moment.sequence}`)
+        if (shifts.length) line += ` | recent evidence-backed bond shifts: ${shifts.join('; ')}`
+      }
+      if (c.relationship_state?.summary) {
+        line += ` | BOND CONTEXT toward player (authoritative): ${c.relationship_state.summary}`
       }
       if (c.hidden_thought) {
         line += ` | private thought (internal only, never quoted verbatim): ${c.hidden_thought}`
@@ -710,10 +807,13 @@ ${personaLine}
   // function without, so it always gets at least RECENTS_FLOOR_TOKENS even if
   // an oversized static prefix already ate the nominal budget (a bounded
   // overflow of the total cap beats a continuity blackout).
+  const lastBeat = input.proseOnly ? immediateNarrativeBeat(input.recentEvents) : null
+  const lastBeatTokens = lastBeat ? countTokens(lastBeat) : 0
   let tokenBudgetRemaining = Math.max(
     RECENTS_FLOOR_TOKENS,
     input.maxTokens - countTokens(staticContent) - countTokens(dynamicContent) - 500,
   )
+  tokenBudgetRemaining = Math.max(0, tokenBudgetRemaining - lastBeatTokens)
 
   const continuityTurns: string[] = []
   for (const event of input.recentEvents) {
@@ -748,11 +848,14 @@ ${personaLine}
     }
   }
 
-  if (continuityTurns.length > 0) {
+  if (continuityTurns.length > 0 || lastBeat) {
+    const immediateBeat = lastBeat
+      ? `\n\nIMMEDIATE PREVIOUS NARRATIVE BEAT (continuity only — do NOT repeat or paraphrase its prose; use it to understand what the current turn answers or advances):\n${lastBeat}`
+      : ''
     messages.push({
       role: 'system',
-      content: `RECENT TURN CONTINUITY (structured facts only — earlier narration prose is intentionally omitted. Do not recreate a prior response when the current action resembles an earlier one; advance the story with a new consequence):
-${continuityTurns.join('\n\n')}`,
+      content: `RECENT TURN CONTINUITY (structured facts plus one immediate narrative beat for dialogue coherence. Do not recreate a prior response when the current action resembles an earlier one; advance the story with a new consequence):
+${continuityTurns.join('\n\n')}${immediateBeat}`,
     })
   }
 
@@ -786,8 +889,8 @@ ${continuityTurns.join('\n\n')}`,
     } else {
       povReminder =
         pov === 'first'
-          ? `POINT OF VIEW for your next reply (override any earlier style): write in the SECOND person, addressing the player as you. If the turns above did otherwise, switch now. e.g. *You push the door open* NOT *The adventurer pushes the door open*.`
-          : `POINT OF VIEW for your next reply (override any earlier style): write in the THIRD person, referring to the player by their role, NEVER you. If the turns above used second person, switch now. e.g. *The adventurer pushes the door open* NOT *You push the door open*.`
+          ? `POINT OF VIEW for your next reply (override any earlier style): write in the FIRST person as ${selfName} — I, me, my. If the turns above used third person, switch now. Never call myself "the player", "player", or "user". e.g. *I push the door open* NOT *${selfName} pushes the door open*.`
+          : `POINT OF VIEW for your next reply (override any earlier style): write in the THIRD person about ${selfName}. Use ${selfName}'s name only for clarity, otherwise natural pronouns; NEVER use "the player", "player", "user", a generic role, or you. If the turns above used first person, switch now. e.g. *${selfName} pushes the door open*, then *he listens*.`
     }
     // Reinforce VOICE + tone + length here too: weak models imitate the register
     // of recent history over a static instruction far up the prefix, exactly like
@@ -801,6 +904,7 @@ ${continuityTurns.join('\n\n')}`,
     )
     if (styleCue) povReminder += `\n${styleCue}`
     povReminder += `\n${buildNarrationToneReminder(input.narrationTone)}`
+    povReminder += `\nPLAYER-TURN ECHO BAN: the player\'s current dialogue and actions already happened. Do not repeat, quote, paraphrase, or narrate them back (for example, "he says," "she declares," or "their words hang"). Start after the player turn with an NPC\'s response, changed action, or a concrete consequence.`
     povReminder += `\nNAME HYGIENE for your next reply: natural flow is mandatory. Do not open with a character name unless there is no other clear option. Use full names only for formal identification or unavoidable disambiguation. Prefer pronouns, action, body language, dialogue, silence, setting, or role descriptors. Do not repeat the same name as a sentence rhythm.`
     if (input.isSentient) {
       povReminder += `\nPLAYER ADDRESS for your next reply: address the player as "you"; never write "the player" or "the user" in story prose.`
@@ -808,15 +912,33 @@ ${continuityTurns.join('\n\n')}`,
     if (previousOpeningName) {
       povReminder += ` Do not start this reply with ${previousOpeningName}; the previous assistant turn already opened that way.`
     }
+    if (input.locationContext && input.locationContext.trim()) {
+      const currentPlace = input.locationContext.trim().split('\n')[0]
+      povReminder += `\nLOCATION LOCK: ${currentPlace} This is the active scene. Unless the player explicitly travels or leaves, keep narration and choices in this exact place. Do not revive, rename, or have the player leave a recently visited different venue.`
+    }
     if (input.isContinuation && input.isSentient) {
       povReminder += ` This is an autonomous continuation with no new player speech, so do not open with ${selfName}; start with pronoun, action, body language, speech, or setting instead.`
     }
     povReminder += `\nHISTORY HYGIENE: treat previous assistant turns as continuity facts, not prose style to imitate. If earlier turns overused names, repeated sentence shapes, malformed formatting, awkward phrasing, or drifted from the current voice, correct course and follow the current instructions instead.`
     povReminder += `\nANTI-HALLUCINATION: answer only from the current player turn, recent continuity, active scene, and provided reference material. Do not add unrelated lore, off-screen characters, sudden dangers, new locations, or new plot complications just to make the response dramatic.`
+    povReminder += `\nRELATIONSHIP-HISTORY LOCK: never invent shared routine, workplace, prior meetings, or relationship history. A character's role does not establish that they know the player outside this scene; use such history only when the provided canon explicitly supports it.`
     povReminder += `\nFORMAT HYGIENE: spoken words must be wrapped in double quotes. Every non-spoken element must be wrapped in single-asterisk italics, including actions, scene description, atmosphere, inner thoughts, and dialogue tags such as *she said* or *I whisper*. Text outside asterisks must be quoted speech only. Do not use double asterisks. Do not leave narration or attributions as plain text.`
 
     messages.push({ role: 'system', content: povReminder })
   }
+
+  // Always present—even on turn one or immediately after a settings change—so
+  // the narrator sees one short, conflict-resolved contract at the point it
+  // chooses its first token. This costs no extra model pass and does not delay
+  // TTFT; all state/codex work remains post-stream.
+  messages.push({
+    role: 'system',
+    content: finalNarratorContract(
+      input,
+      protagonistCard?.canonical_name || 'the protagonist',
+      pov,
+    ),
+  })
 
   // ── CURRENT USER MESSAGE ───────────────────────
   messages.push({
