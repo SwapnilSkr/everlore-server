@@ -2,7 +2,17 @@
  * Pure-function audit for the deterministic movement + possessive-room backstops
  * (worker/lib/movement-signal.ts). No DB. Run: bun run audit:movement
  */
-import { detectNarratedMovement, isExplicitPlayerLocationChange, resolvePossessiveRoomName } from '../worker/lib/movement-signal'
+import {
+  detectNarratedMovement,
+  extractExplicitPhysicalDestination,
+  isGroundedPlayerDestination,
+  isExplicitPlayerLocationChange,
+  isExplicitSceneExit,
+  locationNamesCompatible,
+  refinePhysicalDestination,
+  resolvePossessiveRoomName,
+  validatedContainmentHint,
+} from '../worker/lib/movement-signal'
 
 let pass = 0
 let fail = 0
@@ -100,6 +110,54 @@ check('return to question', isExplicitPlayerLocationChange('I return to the ques
 check('retreat into myself', isExplicitPlayerLocationChange('I retreat into myself.', 'inner sanctum', 'Caelum'), false)
 check('cross arms', isExplicitPlayerLocationChange('I cross my arms toward Mother.', "Mother's room", 'Caelum'), false)
 check('meeting is abstract', isExplicitPlayerLocationChange('I head to the meeting tomorrow.', 'meeting hall', 'Caelum'), false)
+
+console.log('physical destination + scene exit gates:')
+check('district destination', extractExplicitPhysicalDestination('I begin the walk toward the Brera district.'), 'the Brera district')
+check('action clause is not part of bedroom name', extractExplicitPhysicalDestination('I go to my bedroom as I begin packing.'), 'my bedroom')
+check('purpose clause is not part of living room name', extractExplicitPhysicalDestination('I head for the living room to say goodbye to Lisa.'), 'the living room')
+check('direct address is not part of airport name', extractExplicitPhysicalDestination('I need to go to the airport Dad.'), 'the airport')
+check('arrival verb registers Milan', extractExplicitPhysicalDestination('After two days, I finally reach Milan.'), 'Milan')
+check('reach for a coat is not travel', extractExplicitPhysicalDestination('I reach for my coat.'), null)
+check('taking a hotel registers the venue', extractExplicitPhysicalDestination('*I take a hotel to stay at.*'), 'hotel')
+check('AI witness destination is grounded in player turn', isGroundedPlayerDestination('After two days, I finally reach Milan.', 'Milan'), true)
+check('AI witness cannot invent destination', isGroundedPlayerDestination('After two days, I finally reach Milan.', 'Rome'), false)
+check('AI witness accepts an explicitly chosen unnamed hotel', isGroundedPlayerDestination('*I take a hotel to stay at.*', 'hotel'), true)
+check('AI witness cannot turn a hotel into an invented lobby', isGroundedPlayerDestination('*I take a hotel to stay at.*', 'hotel lobby'), false)
+check('street address beats approached door', extractExplicitPhysicalDestination('I walk directly up to the heavy oak door at Via Brera, 14, and knock.'), 'Via Brera, 14')
+check('square my shoulders remains a cafe journey', extractExplicitPhysicalDestination('*I square my shoulders and walk with purpose toward the cafe.*'), 'the cafe')
+check('abstract answer is not a destination', extractExplicitPhysicalDestination('I head for an answer.'), null)
+check('townhouse exit breaks scene', isExplicitSceneExit('I stand, nod, and exit the townhouse without another word.'), true)
+check('possessive townhouse exit breaks scene', isExplicitSceneExit("I leave Vico's townhouse without looking back."), true)
+check('gallery exit breaks scene', isExplicitSceneExit('I leave the gallery and step into the street.'), true)
+check('leave the question does not break scene', isExplicitSceneExit('I leave the question to Mother.'), false)
+
+console.log('witness location validation:')
+check('Brera district corroborates Via Brera address', locationNamesCompatible('the Brera district', 'Via Brera, 14'), true)
+check('different rooms do not corroborate', locationNamesCompatible('dining room', 'kitchen'), false)
+check('witness may refine to precise address', refinePhysicalDestination('the Brera district', 'Via Brera, 14'), 'Via Brera, 14')
+check('witness cannot redirect destination', refinePhysicalDestination('the cafe', 'warehouse'), 'the cafe')
+check(
+  'known current city accepted as container',
+  validatedContainmentHint({
+    destination: 'Via Brera, 14',
+    witnessLocation: 'Via Brera, 14',
+    witnessContainment: 'Milan',
+    currentLocationName: 'Milan',
+    knownLocationNames: ['Milan', 'cafe'],
+  }),
+  'Milan',
+)
+check(
+  'unknown parent is held',
+  validatedContainmentHint({
+    destination: 'Via Brera, 14',
+    witnessLocation: 'Via Brera, 14',
+    witnessContainment: 'an invented empire',
+    currentLocationName: 'Milan',
+    knownLocationNames: ['Milan'],
+  }),
+  null,
+)
 
 console.log(`\n${fail === 0 ? 'ALL GREEN' : 'FAILURES'}: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

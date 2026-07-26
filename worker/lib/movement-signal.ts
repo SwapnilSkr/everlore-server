@@ -57,7 +57,7 @@ const DOOR_BEHIND = /\b(?:shut|shuts|shutting|close|closes|closing|closed|lock|l
 // physical, so “leave the question” / “walk out of the conversation” do not
 // clear a scene cast.
 const EXPLICIT_SCENE_EXIT =
-  /\b(?:i|we)\b[^.!?]{0,72}\b(?:leave|exit|walk\s+out|step\s+out|head\s+out|go\s+out)\b(?:\s+(?:of|from|the|this|my|our)\s+(?:[a-z]+\s+){0,3}(?:room|hall|house|home|apartment|mansion|manor|building|office|cafe|restaurant|bar|shop|store|garden|yard|street|station)\b|\s+into\s+(?:the\s+)?(?:night|rain|street|outside|open\s+air)\b)/i
+  /\b(?:i|we)\b[^.!?]{0,72}\b(?:leave|exit|walk\s+out|step\s+out|head\s+out|go\s+out)\b(?:\s+(?:(?:of|from)\s+)?(?:[a-z]+(?:['’]s)?\s+){0,4}(?:room|hall|house|home|apartment|mansion|manor|townhouse|villa|estate|compound|building|office|cafe|restaurant|bar|club|shop|store|gallery|museum|warehouse|hotel|inn|theat(?:er|re)|library|market|courtyard|garden|yard|street|station|airport|hospital|school|campus|church|temple|car|train|ship)\b|\s+into\s+(?:the\s+)?(?:night|rain|street|outside|open\s+air)\b)/i
 
 // This is intentionally much narrower than `detectNarratedMovement`. The broad
 // detector is useful for telemetry and for spotting likely missed moves, but it is
@@ -80,13 +80,78 @@ const ABSTRACT_DESTINATIONS = new Set([
 ])
 
 const PHYSICAL_DESTINATION_WORD =
-  /\b(?:room|hall|kitchen|bedroom|study|library|attic|basement|apartment|house|home|mansion|manor|villa|cafe|coffee\s+shop|restaurant|bar|tavern|inn|shop|store|market|garden|courtyard|street|road|alley|station|airport|dock|harbo[u]?r|car|bus\s+stop|train\s+station)\b/i
+  /\b(?:room|hall|kitchen|bedroom|study|library|attic|basement|apartment|house|home|mansion|manor|townhouse|villa|estate|compound|cafe|coffee\s+shop|restaurant|bar|tavern|inn|hotel|club|shop|store|market|gallery|museum|warehouse|theat(?:er|re)|garden|courtyard|street|road|avenue|boulevard|lane|alley|via|district|neighbou?rhood|quarter|borough|city|town|village|capital|country|kingdom|realm|forest|mountain|mountains|coast|island|station|airport|dock|harbo[u]?r|car|bus\s+stop|train\s+station)\b/i
+// A player may explicitly travel to a city whose name is not in our generic
+// place vocabulary ("I finally reach Milan"). A capitalized proper noun is a
+// valid place candidate only after an explicit locomotion/arrival pattern has
+// already matched; it never scans arbitrary prose for place-like words.
+const NAMED_DESTINATION = /\b[A-Z][\p{L}'’-]{2,}\b/u
 // Kept separate from EXPLICIT_DESTINATION: this captures the exact physical
 // destination a player writes in a normal action/choice, including "head for"
 // and "aiming for". The caller treats it as a commitment only after the
 // physical-place guard below passes.
 const EXPLICIT_PHYSICAL_DESTINATION =
   /\b(?:go|head|walk|run|move|step|travel|journey|ride|drive|aim|aiming|turn|turning|set\s+off|make\s+my\s+way)\b(?:\s+\w+){0,6}?\s+(?:to|into|toward|towards|for)\s+([^,.!?;*]{2,80})/gi
+// Arrival verbs need no direction preposition: "After two days, I finally
+// reach Milan" is just as explicit a move as "I travel to Milan". Keeping
+// this separate avoids turning "reach for my coat" into a destination.
+const EXPLICIT_ARRIVAL_DESTINATION =
+  /\b(?:reach|reaches|reaching|reached|arrive|arrives|arriving|arrived)\b\s+(?:at|in)?\s*([^,.!?;*]{2,80})/gi
+// Exact lodging verbs are a common natural way to establish a new scene without
+// saying “go to”: “I take a hotel to stay at” and “I check into an inn.” Keep
+// this intentionally venue-only; it is a high-confidence fallback when the AI
+// witness is unavailable, not a broad semantic parser.
+const EXPLICIT_LODGING_DESTINATION =
+  /\b(?:i|we)\s+(?:take|book|check\s+into|check\s+in\s+at|get\s+(?:a\s+)?room\s+at)\s+(?:a\s+|an\s+|the\s+)?(hotel|inn|hostel|motel)\b/i
+
+/** Remove the player action or direct address that follows an otherwise valid
+ * destination. The graph stores places, never the reason for going there. */
+function trimDestinationTail(raw: string): string {
+  let candidate = raw
+    .split(/\b(?:and|then|but|before|after|while)\b/i)[0]
+    .trim()
+  // "I go to my bedroom as I begin packing" → "my bedroom". Scope this to
+  // a first-person clause so a legitimate place name containing "as" survives.
+  candidate = candidate.replace(/\s+as\s+(?:i|we)\b.*$/i, '').trim()
+  // "I head for the living room to say goodbye to Lisa" → "the living room".
+  // These are purpose clauses, not part of the destination's identity.
+  candidate = candidate
+    .replace(/\s+to\s+(?=(?:say|tell|ask|speak|talk|meet|see|greet|comfort|hug|kiss|say\s+goodbye)\b).*$/i, '')
+    .trim()
+  // A relationship address after a place is conversational punctuation:
+  // "I need to go to the airport, Dad" must not mint "airport dad".
+  candidate = candidate.replace(/\s+(?:dad|mom|mother|father|mama|papa)\s*$/i, '').trim()
+  return candidate
+}
+
+// A street address remains a physical destination even when the surrounding
+// action is directed at a door rather than the street itself: “I walk up to the
+// oak door at Via Brera, 14.”  This intentionally requires a street-style
+// introducer, never a bare capitalized word, so it cannot turn a named person or
+// abstract goal into a place.
+// Keep this intentionally narrow. Generic verbs can use “square” ("square my
+// shoulders") and common nouns such as road/lane can occur in ordinary prose;
+// treating either as a street introducer made the whole action look like an
+// address. The multilingual street forms below are distinctive enough to be a
+// safe address signal on their own.
+const ADDRESS_DESTINATION =
+  /\b(?:via|viale|rue|calle)\s+[\p{L}][\p{L}' -]{1,50}(?:,\s*(?:number|no\.?|#)?\s*\d{1,5})?/iu
+
+const GENERIC_LOCATION_TOKENS = new Set([
+  'the', 'a', 'an', 'my', 'our', 'this', 'that', 'place', 'room', 'hall',
+  'house', 'home', 'building', 'street', 'road', 'district', 'city', 'town',
+  'village', 'garden', 'gallery', 'hotel', 'warehouse', 'office', 'shop', 'store',
+])
+
+// A player can deliberately choose an unnamed but still real venue: “I take a
+// hotel to stay at”, “I check into an inn”, “I go to the airport”. These labels
+// are too broad to compare arbitrary graph nodes, but they are concrete enough
+// for an AI witness candidate when the player wrote the same word this turn.
+const PLAYER_GROUNDED_GENERIC_DESTINATIONS = new Set([
+  'hotel', 'inn', 'hostel', 'motel', 'airport', 'station', 'terminal',
+  'restaurant', 'cafe', 'bar', 'tavern', 'hospital', 'clinic', 'store', 'shop',
+  'market', 'gallery', 'museum', 'library', 'theater', 'theatre',
+])
 
 function comparableTokens(value: string): string[] {
   return clean(value)
@@ -106,24 +171,108 @@ export function extractExplicitPhysicalDestination(
   playerInput: string | null | undefined,
 ): string | null {
   const text = String(playerInput || '').replace(/[\*_`]+/g, ' ')
+  const lodging = text.match(EXPLICIT_LODGING_DESTINATION)?.[1]
+  if (lodging) return lodging
+  // Prefer an explicit address over a more generic object of approach (“the
+  // door at Via Brera, 14” → “Via Brera, 14”).  It is only accepted alongside
+  // a genuine locomotion signal, so a remembered address does not move the map.
+  const address = text.match(ADDRESS_DESTINATION)?.[0]?.trim() || null
+  if (address && detectNarratedMovement(text)) return address
   let result: string | null = null
-  for (let match = EXPLICIT_PHYSICAL_DESTINATION.exec(text); match; match = EXPLICIT_PHYSICAL_DESTINATION.exec(text)) {
-    let candidate = match[1]
-      .split(/\b(?:and|then|but|before|after|while)\b/i)[0]
-      .trim()
-    // Let a final appositive supply a concrete destination after an initially
-    // vague target (“aiming for the one place that feels neutral, the cafe”).
-    const suffix = text
-      .slice(match.index + match[0].length)
-      .match(/^\s*,\s*([^,.!?;*]{2,60})/)
-    if (suffix?.[1]) candidate = `${candidate}, ${suffix[1].trim()}`
-    if (!candidate || !PHYSICAL_DESTINATION_WORD.test(candidate)) continue
-    // A final appositive often carries the actual destination after a vague
-    // phrase (“the one place that feels neutral, the cafe”).
-    const afterComma = candidate.split(',').map((part) => part.trim()).filter(Boolean).pop()
-    result = afterComma || candidate
+  for (const pattern of [EXPLICIT_PHYSICAL_DESTINATION, EXPLICIT_ARRIVAL_DESTINATION]) {
+    pattern.lastIndex = 0
+    for (let match = pattern.exec(text); match; match = pattern.exec(text)) {
+      let candidate = trimDestinationTail(match[1])
+      // Let a final appositive supply a concrete destination after an initially
+      // vague target (“aiming for the one place that feels neutral, the cafe”).
+      const suffix = text
+        .slice(match.index + match[0].length)
+        .match(/^\s*,\s*([^,.!?;*]{2,60})/)
+      if (suffix?.[1]) candidate = `${candidate}, ${suffix[1].trim()}`
+      if (!candidate || (!PHYSICAL_DESTINATION_WORD.test(candidate) && !NAMED_DESTINATION.test(candidate))) continue
+      // A final appositive often carries the actual destination after a vague
+      // phrase (“the one place that feels neutral, the cafe”).
+      const afterComma = candidate.split(',').map((part) => part.trim()).filter(Boolean).pop()
+      result = afterComma || candidate
+    }
   }
   return result
+}
+
+/**
+ * Conservative semantic overlap for a player-written destination and the
+ * witness's observed end location. It deliberately ignores generic place words:
+ * “the room” must not validate “dining room”, while “Brera district” can validate
+ * “Via Brera, 14”.
+ */
+export function locationNamesCompatible(a: string | null | undefined, b: string | null | undefined): boolean {
+  const left = comparableTokens(String(a || '')).filter((token) => !GENERIC_LOCATION_TOKENS.has(token))
+  const right = new Set(comparableTokens(String(b || '')).filter((token) => !GENERIC_LOCATION_TOKENS.has(token)))
+  return left.length > 0 && left.some((token) => right.has(token))
+}
+
+/**
+ * Minimal server-side validation for the AI movement witness. Meaning comes from
+ * the witness; this only proves its proposed place was actually named by the
+ * player, so an LLM cannot relocate the map to an invented destination.
+ */
+export function isGroundedPlayerDestination(
+  playerInput: string | null | undefined,
+  destination: string | null | undefined,
+): boolean {
+  const dest = String(destination || '').replace(/\s+/g, ' ').trim()
+  if (!dest || /^(?:here|there|this place|that place|the room|outside|inside)$/i.test(dest)) return false
+  const input = clean(playerInput || '')
+  const allTokens = comparableTokens(dest)
+  const distinctiveTokens = allTokens.filter((token) => !GENERIC_LOCATION_TOKENS.has(token))
+  const tokens = distinctiveTokens.length > 0
+    ? distinctiveTokens
+    : allTokens.filter((token) => PLAYER_GROUNDED_GENERIC_DESTINATIONS.has(token))
+  if (!tokens.length) return false
+  return tokens.every((token) => new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(input))
+}
+
+/**
+ * A witness may refine an explicitly chosen destination to the more precise
+ * place the narration actually reaches, but it can never redirect the player.
+ * The witness value is used only when it shares a distinctive location token.
+ */
+export function refinePhysicalDestination(
+  explicitDestination: string | null | undefined,
+  witnessLocation: string | null | undefined,
+): string | null {
+  const explicit = String(explicitDestination || '').replace(/\s+/g, ' ').trim()
+  const witness = String(witnessLocation || '').replace(/\s+/g, ' ').trim()
+  if (!explicit) return null
+  if (!witness || !locationNamesCompatible(explicit, witness)) return explicit
+  const explicitTokens = comparableTokens(explicit).filter((token) => !GENERIC_LOCATION_TOKENS.has(token))
+  const witnessTokens = comparableTokens(witness).filter((token) => !GENERIC_LOCATION_TOKENS.has(token))
+  // Only replace the player target when the observation is strictly more
+  // specific (e.g. Brera district → Via Brera, 14), never merely different.
+  return witnessTokens.length > explicitTokens.length || /\d/.test(witness) ? witness : explicit
+}
+
+/**
+ * A containment claim is safe only when the witness also corroborates the
+ * player-selected destination and the claimed parent is already a known place
+ * (usually the current anchor). This lets AI supply semantics without granting
+ * it authority to mint a speculative hierarchy.
+ */
+export function validatedContainmentHint(params: {
+  destination: string | null | undefined
+  witnessLocation: string | null | undefined
+  witnessContainment: string | null | undefined
+  currentLocationName?: string | null
+  knownLocationNames?: string[]
+}): string | null {
+  const destination = String(params.destination || '').trim()
+  const witnessLocation = String(params.witnessLocation || '').trim()
+  const hint = String(params.witnessContainment || '').trim()
+  if (!destination || !witnessLocation || !hint) return null
+  if (!locationNamesCompatible(destination, witnessLocation)) return null
+  if (locationNamesCompatible(destination, hint)) return null
+  const known = [params.currentLocationName || '', ...(params.knownLocationNames || [])]
+  return known.some((name) => locationNamesCompatible(hint, name) || clean(hint) === clean(name)) ? hint : null
 }
 
 /**
