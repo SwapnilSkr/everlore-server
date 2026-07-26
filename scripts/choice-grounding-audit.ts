@@ -85,5 +85,34 @@ console.log('choice-grounding repair audit:\n')
   ok('GM premise licenses my sister choice', r.choices.length === 1 && r.repairedCount === 0 && r.results[0]?.grounded === true)
 }
 
+// 7. A narrator may regress to a recently visited place. A departure choice
+// must name the canonical current venue, not the stale one from an older beat.
+{
+  const r = auditChoices(
+    [C('Leave the gallery', '*I stand and leave the gallery.*')],
+    [],
+    'Vico waits across the café table.',
+    [],
+    undefined,
+    { currentLocationName: 'Caffè Fernanda' },
+  )
+  ok('stale departure is repaired to current place', r.choices.length === 1 && r.repairedCount === 1, JSON.stringify(r.choices))
+  ok('stale gallery name removed', !/gallery/i.test(`${r.choices[0]?.label} ${r.choices[0]?.send}`))
+  ok('location mismatch typed', r.results[0]?.issues[0]?.type === 'location_mismatch')
+}
+
+// 8. The same departure remains valid when the gallery really is the anchor.
+{
+  const r = auditChoices(
+    [C('Leave the gallery', '*I stand and leave the gallery.*')],
+    [],
+    'Enzo watches from behind the counter.',
+    [],
+    undefined,
+    { currentLocationName: 'Enzo’s gallery' },
+  )
+  ok('current-place departure survives', r.choices.length === 1 && r.repairedCount === 0)
+}
+
 console.log(`\nchoice-grounding repair audit: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

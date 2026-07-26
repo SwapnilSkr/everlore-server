@@ -234,6 +234,9 @@ export interface ChoiceGroundingResult<T extends GroundableChoice> {
 export interface GroundingOpts {
   protagonist?: { name?: string | null; aliases?: string[] } | null
   isSentient?: boolean
+  /** The canonical place at the start of this turn. Used only to reject a
+   * departure choice that claims the player is leaving some other venue. */
+  currentLocationName?: string | null
 }
 
 /** The resolved grounding facts for a turn — what kin/being references the world
@@ -244,6 +247,51 @@ export interface GroundingContext {
   playerOwnedGroups: Set<string>
   knownSupernatural: Set<string>
   worldCapable: boolean
+  currentPlaceTypes: Set<string>
+}
+
+// Deliberately small, physical venue vocabulary. These are only used after a
+// departure verb ("leave the gallery"), never as broad keyword matching, so a
+// business "office" or a passing mention cannot suppress a legitimate choice.
+const PLACE_TYPE_ALIASES: Record<string, string> = {
+  cafe: 'cafe', caffe: 'cafe', 'café': 'cafe', 'caffè': 'cafe', coffeehouse: 'cafe', coffeeshop: 'cafe',
+  gallery: 'gallery', museum: 'museum', restaurant: 'restaurant', bar: 'bar', pub: 'bar',
+  office: 'office', studio: 'studio', warehouse: 'warehouse', shop: 'shop', store: 'shop', boutique: 'shop',
+  house: 'house', townhouse: 'house', apartment: 'apartment', flat: 'apartment',
+  hotel: 'hotel', lobby: 'lobby', library: 'library', hospital: 'hospital',
+  station: 'station', airport: 'airport', park: 'park', garden: 'garden',
+  room: 'room', bedroom: 'room', kitchen: 'room', dining: 'room', attic: 'room',
+}
+
+function placeTypes(text: string | null | undefined): Set<string> {
+  const types = new Set<string>()
+  const source = String(text || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+  for (const [surface, type] of Object.entries(PLACE_TYPE_ALIASES)) {
+    const normalizedSurface = surface
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+    if (new RegExp(`\\b${escapeRegExp(normalizedSurface)}\\b`, 'i').test(source)) types.add(type)
+  }
+  return types
+}
+
+/** A departure from a named venue is only grounded when that venue is the
+ * current one. "Go to the gallery" remains a valid destination choice; this
+ * intentionally targets only the impossible "leave the gallery" class. */
+function conflictingDepartureType(text: string, currentPlaceTypes: Set<string>): string | null {
+  if (currentPlaceTypes.size === 0) return null
+  const departure = /\b(?:leave|exit|depart|walk|step)\s+(?:away\s+)?(?:out\s+of\s+|from\s+)?(?:the\s+|this\s+|that\s+)?/i
+  const match = departure.exec(text)
+  if (!match) return null
+  const afterDeparture = text.slice(match.index + match[0].length)
+  for (const [surface, type] of Object.entries(PLACE_TYPE_ALIASES)) {
+    if (!new RegExp(`\\b${escapeRegExp(surface)}\\b`, 'i').test(afterDeparture)) continue
+    if (!currentPlaceTypes.has(type)) return surface
+  }
+  return null
 }
 
 /** Build the grounding context from the cast vocab, kinship graph labels, this
@@ -298,12 +346,18 @@ export function computeGroundingContext(
       if (mentionsTerm(groundingText, term)) knownGroups.add(KIN_GROUPS[term])
     }
   }
-  return { knownGroups, playerOwnedGroups, knownSupernatural, worldCapable }
+  return {
+    knownGroups,
+    playerOwnedGroups,
+    knownSupernatural,
+    worldCapable,
+    currentPlaceTypes: placeTypes(opts?.currentLocationName),
+  }
 }
 
 /** A single grounding problem with a choice. */
 export interface ChoiceGroundingIssue {
-  type: 'fabricated_kin' | 'perspective_kin' | 'ungrounded_being'
+  type: 'fabricated_kin' | 'perspective_kin' | 'ungrounded_being' | 'location_mismatch'
   /** The offending surface term ("brother", "ghost"). */
   term: string
   /** The relation/being GROUP the term belongs to. */
@@ -330,6 +384,10 @@ export function classifyChoiceGrounding(text: string, ctx: GroundingContext): Ch
       (term) => !ctx.knownSupernatural.has(SUPERNATURAL_GROUPS[term]) && mentionsTerm(text, term),
     )
     if (being) issues.push({ type: 'ungrounded_being', term: being, group: SUPERNATURAL_GROUPS[being] })
+  }
+  const conflictingPlace = conflictingDepartureType(text, ctx.currentPlaceTypes)
+  if (conflictingPlace) {
+    issues.push({ type: 'location_mismatch', term: conflictingPlace, group: 'current_location' })
   }
   return issues
 }

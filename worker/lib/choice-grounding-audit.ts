@@ -40,6 +40,44 @@ export interface ChoiceAuditResult<T extends GroundableChoice> {
   repairedCount: number
 }
 
+/**
+ * Fast, location-only preflight for narrator-owned choices. It intentionally
+ * does not apply kinship or supernatural checks: those require the fuller
+ * post-prose context and run in [auditChoices] later. This narrowly prevents a
+ * stale setting from becoming a tappable "leave the gallery" chip while the
+ * rest of the post-stream tail is still running.
+ */
+export function repairStaleDepartureChoices<T extends GroundableChoice>(
+  choices: T[],
+  currentLocationName?: string | null,
+): ChoiceAuditResult<T> {
+  const ctx = computeGroundingContext([], undefined, [], undefined, { currentLocationName })
+  const results: ChoiceAudit<T>[] = []
+  const out: T[] = []
+  const dropped: { choice: T; issues: ChoiceGroundingIssue[] }[] = []
+  let repairedCount = 0
+
+  for (const choice of choices || []) {
+    const allIssues = classifyChoiceGrounding(`${choice?.label || ''} ${choice?.send || ''}`, ctx)
+    const locationIssue = allIssues.filter((issue) => issue.type === 'location_mismatch')
+    if (!locationIssue.length) {
+      results.push({ choice, grounded: true, issues: [] })
+      out.push(choice)
+      continue
+    }
+    const repaired = repairChoice(choice, locationIssue)
+    if (repaired) {
+      results.push({ choice, grounded: false, issues: locationIssue, repaired })
+      out.push(repaired)
+      repairedCount++
+    } else {
+      results.push({ choice, grounded: false, issues: locationIssue })
+      dropped.push({ choice, issues: locationIssue })
+    }
+  }
+  return { results, choices: out, dropped, repairedCount }
+}
+
 /** Build the grounded rewrite of a choice from its FIRST (primary) issue, or null
  *  when no clean repair exists. Repairs are intentionally generic + safe — they
  *  reframe the misunderstanding rather than invent new specifics. */
@@ -48,6 +86,14 @@ function repairChoice<T extends GroundableChoice>(choice: T, issues: ChoiceGroun
   if (!primary) return null
   if (primary.type === 'ungrounded_being') {
     return null
+  }
+  if (primary.type === 'location_mismatch') {
+    return {
+      ...choice,
+      label: 'Leave the current place',
+      kind: 'act',
+      send: '*I stand and leave the current place, carrying the conversation with me.*',
+    }
   }
   // fabricated_kin / perspective_kin → remove the assumed relation entirely.
   return {
