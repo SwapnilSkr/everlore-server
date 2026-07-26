@@ -8,6 +8,7 @@ import { isNonPersonRole } from '../../src/services/character-codex.service'
 import { isAbstractNonPersonTerm } from '../../src/utils/person-identity'
 import {
   relationshipInitializationFromEvidence,
+  relationshipEvidenceBindsToCharacter,
   relationshipStateFromEvidence,
   type RelationshipInitialization,
   type RelationshipState,
@@ -102,8 +103,21 @@ async function extractStartingRelationships(
     const item = entry as Record<string, unknown>
     const name = typeof item.name === 'string' ? norm(item.name) : ''
     const initialization = relationshipInitializationFromEvidence(item.relationship_initialization, source)
-    const state = relationshipStateFromEvidence(item.relationship_state, source)
-    if (!name || !known.has(name) || !initialization || out.has(name)) continue
+    const rawState = relationshipStateFromEvidence(item.relationship_state, source)
+    const character = cast.find((candidate) => norm(candidate.name) === name)
+    if (!name || !known.has(name) || !initialization || !character || out.has(name)) continue
+    if (!relationshipEvidenceBindsToCharacter({
+      name: character.name,
+      aliases: character.aliases,
+      evidence: initialization.evidence,
+      sourceText: source,
+    })) continue
+    const state = rawState && relationshipEvidenceBindsToCharacter({
+      name: character.name,
+      aliases: character.aliases,
+      evidence: rawState.evidence,
+      sourceText: source,
+    }) ? rawState : undefined
     out.set(name, { initialization, ...(state ? { state } : {}) })
   }
   return out
@@ -161,7 +175,13 @@ export async function extractTemplateCast(input: TemplateCastInput): Promise<Tem
     const appearance = typeof item.appearance === 'string' ? item.appearance.replace(/\s+/g, ' ').trim().slice(0, 600) : ''
     const persona = typeof item.persona === 'string' ? item.persona.replace(/\s+/g, ' ').trim().slice(0, 1000) : ''
     const immutableFacts = stringList(item.immutable_facts, 8, 400)
-    const relationshipInitialization = relationshipInitializationFromEvidence(item.relationship_initialization, source)
+    const rawRelationshipInitialization = relationshipInitializationFromEvidence(item.relationship_initialization, source)
+    const relationshipInitialization = rawRelationshipInitialization && relationshipEvidenceBindsToCharacter({
+      name,
+      aliases,
+      evidence: rawRelationshipInitialization.evidence,
+      sourceText: source,
+    }) ? rawRelationshipInitialization : undefined
     seen.add(key)
     out.push({
       name,

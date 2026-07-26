@@ -3,10 +3,12 @@ import { buildPrompt } from '../src/utils/prompt-builder'
 import {
   detectRelationshipInitialization,
   relationshipBaseline,
+  relationshipEvidenceBindsToCharacter,
   relationshipInitializationFromEvidence,
   relationshipStateFromEvidence,
 } from '../src/utils/relationship-baseline'
 import { templateCastDeltas } from '../src/services/template-cast.service'
+import { mergeRelationshipFacts, relationshipStateFromFacts } from '../src/services/character-codex.service'
 
 let pass = 0
 let fail = 0
@@ -91,6 +93,16 @@ check('accepts grounded open-ended bond context', relationshipStateFromEvidence(
   { summary: 'A resentful sibling who feels overshadowed by the player.', evidence: 'resentful sibling', tags: ['resentful', 'family'] },
   'The resentful sibling refuses to meet your eyes.',
 )?.tags?.includes('resentful') === true)
+check('requires relationship evidence to be locally bound to its character', relationshipEvidenceBindsToCharacter({
+  name: 'Father',
+  evidence: 'Father treats you like a stranger',
+  sourceText: 'Father treats you like a stranger. Sister laughs from the hall.',
+}) === true)
+check('rejects a true quote belonging only to another character', relationshipEvidenceBindsToCharacter({
+  name: 'Father',
+  evidence: 'Sister laughs from the hall',
+  sourceText: 'Father treats you like a stranger. Sister laughs from the hall.',
+}) === false)
 check('backfill detector ignores ambiguous strangers', detectRelationshipInitialization('A man waits by the window.') === undefined)
 const templateDeltas = templateCastDeltas({
   protagonist: { name: 'Haise' },
@@ -104,6 +116,21 @@ check('template cast carries its starting bond into sequence-zero codex delta',
   templateDeltas[0]?.relationship_initialization?.kind === 'close_friend')
 check('template cast carries open-ended bond context into sequence-zero codex delta',
   templateDeltas[0]?.relationship_state?.summary.startsWith('A loyal friend') === true)
+const bondFacts = mergeRelationshipFacts([], {
+  name: 'Father',
+  relationship_fact_additions: [
+    { statement: 'He is emotionally distant from the player.', evidence: 'Father turns away.', tags: ['distant'] },
+    { statement: 'He is privately guilty about past neglect.', evidence: 'Father admits he failed you.', tags: ['guilty'] },
+  ],
+}, 4)
+const evolvedBondFacts = mergeRelationshipFacts(bondFacts, {
+  name: 'Father',
+  relationship_fact_retire: ['He is emotionally distant from the player.'],
+}, 5)
+check('bond journal preserves separate emotional truths', bondFacts.length === 2)
+check('bond journal retires only the exact superseded truth',
+  evolvedBondFacts.filter((fact) => fact.status === 'active').length === 1 &&
+  relationshipStateFromFacts(evolvedBondFacts)?.summary.includes('privately guilty') === true)
 
 console.log(`${fail === 0 ? 'ALL GREEN' : 'FAILURES'}: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

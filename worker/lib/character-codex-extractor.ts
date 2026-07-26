@@ -2,7 +2,11 @@ import { callLLM, AI_MODELS } from '../../src/ai'
 import { isEphemeralPersonDescriptor, isNonPersonRole, type CharacterCodexDelta } from '../../src/services/character-codex.service'
 import { classifyPresenceCodexGaps, isActionableMention } from './presence-gap-detector'
 import { isAbstractNonPersonTerm } from '../../src/utils/person-identity'
-import { relationshipInitializationFromEvidence, relationshipStateFromEvidence } from '../../src/utils/relationship-baseline'
+import {
+  relationshipEvidenceBindsToCharacter,
+  relationshipInitializationFromEvidence,
+  relationshipStateFromEvidence,
+} from '../../src/utils/relationship-baseline'
 
 type ExistingCharacter = {
   canonical_name: string
@@ -25,6 +29,7 @@ type ExistingCharacter = {
     sequence: number
   }>
   relationship_state?: { summary: string; evidence: string; tags?: string[] }
+  relationship_facts?: Array<{ statement: string; evidence: string; tags?: string[]; sequence: number; status: 'active' | 'retired' }>
   /** Current status snapshot the extractor must reconcile (supersede stale items). */
   mutable_state?: string[]
   /** Permanent history; provided for context so new facts aren't duplicated. */
@@ -302,9 +307,77 @@ function toRelationAssertions(raw: any): CharacterCodexDelta['relation_assertion
   return out.length ? out : undefined
 }
 
+function toRelationshipFactAdditions(
+  raw: unknown,
+  sourceText: string,
+  name: string,
+  aliases: string[],
+): NonNullable<CharacterCodexDelta['relationship_fact_additions']> | undefined {
+  const list = Array.isArray((raw as any)?.add) ? (raw as any).add : []
+  const out: NonNullable<CharacterCodexDelta['relationship_fact_additions']> = []
+  for (const entry of list) {
+    const state = relationshipStateFromEvidence({
+      summary: (entry as any)?.statement,
+      evidence: (entry as any)?.evidence,
+      tags: (entry as any)?.tags,
+    }, sourceText)
+    if (!state || !relationshipEvidenceBindsToCharacter({ name, aliases, evidence: state.evidence, sourceText })) continue
+    out.push({ statement: state.summary, evidence: state.evidence, tags: state.tags })
+    if (out.length >= 3) break
+  }
+  return out.length ? out : undefined
+}
+
+/** A narrow second opinion for relationship mutations only. It never rewrites
+ * prose and runs after it has streamed. Existing proposed changes are rejected
+ * only on an explicit verdict; a supported omitted direct interaction may be
+ * returned as a small supplement and then passes the same server validators. */
+async function adjudicateRelationshipProposals(params: {
+  sourceText: string
+  existing: ExistingCharacter[]
+  proposed: unknown[]
+}): Promise<{ rejected: Set<number>; supplements: unknown[] }> {
+  const candidates = params.proposed
+    .map((item, index) => ({
+      index,
+      name: (item as any)?.name,
+      relationship_initialization: (item as any)?.relationship_initialization,
+      relationship_deltas: (item as any)?.relationship_deltas,
+      relationship_evidence: (item as any)?.relationship_evidence,
+      relationship_facts: (item as any)?.relationship_facts,
+    }))
+    .filter((item) => item.relationship_initialization || item.relationship_deltas || item.relationship_facts)
+  let raw = ''
+  try {
+    raw = await callLLM({
+      model: AI_MODELS.metadata,
+      temperature: 0,
+      maxTokens: 700,
+      responseFormat: { type: 'json_object' },
+      messages: [
+        {
+          role: 'system',
+          content: 'You are a conservative relationship-event adjudicator. Review only direct player↔character bond changes. Reject a proposal only if its quoted evidence does not support that named character or the claimed change. You may add a supplement only for a clearly missed direct interaction, with exact evidence. Never infer motives, indirect atmosphere, or changes without proof. Return ONLY JSON: {"reject":[candidate index],"supplements":[{"name":"existing or present character name","relationship_deltas":{"trust":integer},"relationship_evidence":{"trust":"exact quote"},"relationship_facts":{"add":[{"statement":"concise bond fact","evidence":"exact quote","tags":["tag"]}],"retire":[]} }]}.' ,
+        },
+        {
+          role: 'user',
+          content: `EXISTING CHARACTERS:\n${JSON.stringify(params.existing.slice(0, 16).map((c) => ({ name: c.canonical_name, aliases: c.aliases || [], bond: c.relationship_state?.summary || null })))}\n\nPROPOSED:\n${JSON.stringify(candidates)}\n\nSOURCE:\n${params.sourceText.slice(0, 7000)}`,
+        },
+      ],
+    })
+  } catch {
+    return { rejected: new Set(), supplements: [] }
+  }
+  const parsed = parseJsonObject(raw) as any
+  const indexes = new Set<number>((Array.isArray(parsed.reject) ? parsed.reject : [])
+    .filter((index: unknown) => Number.isInteger(index) && candidates.some((candidate) => candidate.index === index)))
+  return { rejected: indexes, supplements: Array.isArray(parsed.supplements) ? parsed.supplements.slice(0, 2) : [] }
+}
+
 function toDelta(raw: any, sourceText: string): CharacterCodexDelta | null {
   const name = typeof raw?.name === 'string' ? raw.name.trim() : ''
   if (!name) return null
+  const aliases = Array.isArray(raw.aliases) ? raw.aliases.map(String) : []
   const relationshipDeltas = toRelationshipDeltas(raw.relationship_deltas)
   const relationshipEvidence = toRelationshipEvidence(
     raw.relationship_evidence,
@@ -318,14 +391,31 @@ function toDelta(raw: any, sourceText: string): CharacterCodexDelta | null {
         ),
       ) as CharacterCodexDelta['relationship_deltas']
     : undefined
-  const relationshipInitialization = relationshipInitializationFromEvidence(
+  const proposedInitialization = relationshipInitializationFromEvidence(
     raw.relationship_initialization,
     sourceText,
   )
-  const relationshipState = relationshipStateFromEvidence(raw.relationship_state, sourceText)
+  const relationshipInitialization = proposedInitialization && relationshipEvidenceBindsToCharacter({
+    name,
+    aliases,
+    evidence: proposedInitialization.evidence,
+    sourceText,
+  }) ? proposedInitialization : undefined
+  const proposedState = relationshipStateFromEvidence(raw.relationship_state, sourceText)
+  const relationshipState = proposedState && relationshipEvidenceBindsToCharacter({
+    name,
+    aliases,
+    evidence: proposedState.evidence,
+    sourceText,
+  }) ? proposedState : undefined
+  const relationshipFactAdditions = toRelationshipFactAdditions(raw.relationship_facts, sourceText, name, aliases)
+  const relationshipFactRetire = Array.isArray(raw.relationship_facts?.retire)
+    ? raw.relationship_facts.retire.map(String).map((value: string) => value.trim().slice(0, 320)).filter((value: string) => value.length >= 12).slice(0, 3)
+    : undefined
+  const relationshipUpdateAllowed = !!relationshipInitialization || Object.keys(evidenceBackedDeltas || {}).length > 0
   return {
     name,
-    aliases: Array.isArray(raw.aliases) ? raw.aliases.map(String) : [],
+    aliases,
     resolved_name: typeof raw.resolved_name === 'string' ? raw.resolved_name.trim() : undefined,
     role: typeof raw.role === 'string' ? raw.role.trim() : undefined,
     appearance: typeof raw.appearance === 'string' ? raw.appearance.trim() : undefined,
@@ -348,8 +438,14 @@ function toDelta(raw: any, sourceText: string): CharacterCodexDelta | null {
       : undefined,
     relationship_evidence: relationshipEvidence,
     relationship_initialization: relationshipInitialization,
-    relationship_state: relationshipState && (relationshipInitialization || Object.keys(evidenceBackedDeltas || {}).length)
+    relationship_state: relationshipState && relationshipUpdateAllowed
       ? relationshipState
+      : undefined,
+    relationship_fact_additions: relationshipFactAdditions && relationshipUpdateAllowed
+      ? relationshipFactAdditions
+      : undefined,
+    relationship_fact_retire: relationshipFactRetire && relationshipUpdateAllowed
+      ? relationshipFactRetire
       : undefined,
     is_protagonist: raw.is_protagonist === true,
   }
@@ -457,13 +553,20 @@ export async function extractCharacterCodexDeltas(params: {
         const bondContextLine = c.relationship_state?.summary
           ? `\n    bond context: ${c.relationship_state.summary}`
           : ''
+        const bondFactsLine = (c.relationship_facts || [])
+          .filter((fact) => fact.status === 'active')
+          .slice(-6)
+          .map((fact) => fact.statement)
+        const bondJournalLine = bondFactsLine.length
+          ? `\n    active bond facts (retire only by exact statement): ${bondFactsLine.join(' | ')}`
+          : ''
         const recentShifts = (c.relationship_moments || [])
           .slice(-4)
           .map((moment) => `${moment.meter} ${moment.delta >= 0 ? '+' : ''}${moment.delta} at turn ${moment.sequence}`)
         const bondHistoryLine = recentShifts.length
           ? `\n    recent evidence-backed bond shifts: ${recentShifts.join('; ')}`
           : ''
-        return `- ${c.canonical_name}${aliases ? ` (aliases: ${aliases})` : ''}${c.role ? ` role: ${c.role}` : ''}${stateLine}${bondLine}${bondContextLine}${bondHistoryLine}`
+        return `- ${c.canonical_name}${aliases ? ` (aliases: ${aliases})` : ''}${c.role ? ` role: ${c.role}` : ''}${stateLine}${bondLine}${bondContextLine}${bondJournalLine}${bondHistoryLine}`
       })
       .join('\n')
     : '(none yet)'
@@ -515,7 +618,7 @@ Rules:
 - retire_state: CRITICAL for continuity. Copy here, VERBATIM, any item from the character's existing "current state" (shown below) that THIS TURN made false or obsolete. Example: if existing state says "engaged to Lord X" and this turn the engagement is broken, put "engaged to Lord X" in retire_state. Leave [] if nothing became false. NEVER let an outdated status linger.
 - disposition_to_player: concise sentiment toward the player right now.
 - relationship_initialization: ONLY when this character has no established meter state and the world seed, current player turn, or narration explicitly establishes their starting bond. Allowed kinds: best_friend, close_friend, friend, acquaintance, trusted_ally, reluctant_ally, mentor_bond, protector, dependent, romantic_partner, unrequited_attraction, ex_partner, family_warm, family_protective, family_strained, estranged, sibling_close, sibling_resentful, enemy, sworn_enemy, fearful, rival, indebted, betrayed, authority_trust. Return { "kind": one allowed kind, "evidence": "an exact short excerpt from that supplied source" }. Omit it for a stranger, uncertain relationship, or an existing meter state. Never infer it from a role alone.
-- relationship_state: ONLY alongside relationship_initialization or an evidence-backed relationship_deltas update. Return { "summary": "one concise, nuanced plain-language statement of what this bond means now", "evidence": "exact short excerpt from this turn or seed", "tags": ["1-4 short descriptive tags"] }. This is open-ended context, not a profile name; never invent a motive or update it without direct relationship evidence.
+- relationship_facts: ONLY alongside relationship_initialization or an evidence-backed relationship_deltas update. Return { "add": [{ "statement": "one concise, nuanced emotional truth about this bond", "evidence": "exact short excerpt from this turn or seed", "tags": ["1-4 short descriptive tags"] }], "retire": ["an EXACT existing bond-context statement this direct interaction made false"] }. These are an append/retire journal, not a replacement summary: preserve unresolved hurt, guilt, promises, or mixed feelings unless this turn directly changes them. Add 0-3 facts; omit the field when none apply. Never invent a motive or retire a fact without direct relationship evidence.
 - relationship_deltas: how THIS TURN shifted the character's stance toward the player, as integer changes to four meters: trust, affection, fear, rivalry. Existing bond state and recent shifts in the roster are SERVER-OWNED continuity: use them to keep the new disposition and proposed delta proportionate. Include ONLY meters that genuinely moved after a DIRECT interaction with the player, ONLY for characters present this turn. Tension, atmosphere, a glance, or a generic smile alone NEVER changes a meter. Scale: ±1-3 for small moments (kind words, minor friction), ±4-7 for significant ones (a gift, a confession, a public insult), ±8-10 ONLY for dramatic turning points (betrayal, a life saved, a vow broken). Omit the field entirely when nothing shifted. NEVER include it for the player's own protagonist card in a Game Master world (a character has no meters toward themself).
 - relationship_evidence: for EVERY nonzero relationship_deltas meter, provide a short EXACT verbatim excerpt from this turn that proves the direct interaction and change. If no exact evidence exists, omit that meter. This field is mandatory for any relationship movement.
 - is_protagonist: true ONLY for the world's main character (see below); otherwise false.
@@ -544,7 +647,7 @@ Respond ONLY JSON:
       "relationship_deltas": { "trust": 0, "affection": 0, "fear": 0, "rivalry": 0 },
       "relationship_evidence": { "trust": "exact words from the turn" },
       "relationship_initialization": { "kind": "close_friend", "evidence": "my close friend" },
-      "relationship_state": { "summary": "A close friend who is protective but worried about the player.", "evidence": "my close friend", "tags": ["protective", "worried"] },
+      "relationship_facts": { "add": [{ "statement": "A close friend who is protective but worried about the player.", "evidence": "my close friend", "tags": ["protective", "worried"] }], "retire": [] },
       "is_protagonist": false
     }
   ],
@@ -573,7 +676,17 @@ Respond ONLY JSON:
   }
 
   const parsed = parseJsonObject(raw)
-  const list = Array.isArray((parsed as any).characters) ? (parsed as any).characters : []
+  const rawList: unknown[] = Array.isArray((parsed as any).characters) ? (parsed as any).characters : []
+  const sourceText = `${seedPrompt || ''}\n${playerInput || ''}\n${aiResponse || ''}`
+  const adjudication = await adjudicateRelationshipProposals({
+    sourceText,
+    existing,
+    proposed: rawList,
+  })
+  const list = [
+    ...rawList.filter((_, index) => !adjudication.rejected.has(index)),
+    ...adjudication.supplements,
+  ]
 
   // Deterministic anti-duplication backstop (defends the prompt rules above):
   // a brand-new card is only allowed when its name (or an alias) actually appears
@@ -625,7 +738,7 @@ Respond ONLY JSON:
 
   const out: CharacterCodexDelta[] = []
   for (const item of list) {
-    let delta = toDelta(item, `${seedPrompt || ''}\n${playerInput || ''}\n${aiResponse || ''}`)
+    let delta = toDelta(item, sourceText)
     if (!delta) continue
     delta = promoteProperNameOverRole(delta, knownByName, aiResponse)
     // Enforce the ONE canonical correction shape (resolved_name = existing

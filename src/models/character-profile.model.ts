@@ -24,6 +24,17 @@ export interface RelationshipMoment {
   sequence: number
 }
 
+/** An atomic, evidence-backed emotional truth about a character's bond toward
+ * the player. These facts are the durable record; the short bond summary is a
+ * deterministic projection so later model output cannot flatten history. */
+export interface RelationshipFact {
+  statement: string
+  evidence: string
+  tags?: string[]
+  sequence: number
+  status: 'active' | 'retired'
+}
+
 /** A validated, player-facing conversation affordance derived from a character's
  * current state. This is display metadata only; mutable_state remains the
  * canonical continuity record used by prompts and projections. */
@@ -56,6 +67,8 @@ export interface CharacterProfileDoc {
   relationship?: RelationshipMeters
   /** Human-readable, evidence-backed meaning of the bond; deliberately open-ended. */
   relationship_state?: RelationshipState
+  /** Append/retire journal behind relationship_state. */
+  relationship_facts?: RelationshipFact[]
   /** Recent evidence-backed shifts; makes the displayed bond inspectable. */
   relationship_moments?: RelationshipMoment[]
   /** 1:1 link to this card's entity-graph node (lazily backfilled). */

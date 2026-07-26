@@ -105,6 +105,54 @@ function compact(value: string): string {
   return String(value || '').replace(/\s+/g, ' ').trim()
 }
 
+/** A real quote alone is insufficient: it must also be locally attributable to
+ * the named card. This blocks a small model from moving Father's bond using a
+ * true line spoken by Sister in the same scene. */
+export function relationshipEvidenceBindsToCharacter(params: {
+  name: string
+  aliases?: string[]
+  evidence: string
+  sourceText: string
+}): boolean {
+  const source = compact(params.sourceText).toLowerCase()
+  const evidence = compact(params.evidence).toLowerCase()
+  if (!source || !evidence) return false
+  const identities = [params.name, ...(params.aliases || [])]
+    .map(compact)
+    .filter((value) => value.length >= 2)
+    .map((value) => value.toLowerCase())
+  let evidenceAt = source.indexOf(evidence)
+  while (evidenceAt >= 0) {
+    const sentenceStart = Math.max(
+      source.lastIndexOf('.', evidenceAt - 1),
+      source.lastIndexOf('!', evidenceAt - 1),
+      source.lastIndexOf('?', evidenceAt - 1),
+      source.lastIndexOf('\n', evidenceAt - 1),
+    ) + 1
+    const sentenceEnds = [source.indexOf('.', evidenceAt), source.indexOf('!', evidenceAt), source.indexOf('?', evidenceAt), source.indexOf('\n', evidenceAt)]
+      .filter((index) => index >= 0)
+    const sentenceEnd = sentenceEnds.length ? Math.min(...sentenceEnds) : source.length
+    const sentence = source.slice(sentenceStart, sentenceEnd)
+    if (identities.some((identity) => sentence.includes(identity))) return true
+    // Dialogue often keeps the speaker in the immediately preceding sentence:
+    // `Father said softly. "I am sorry."` is safe; a nearby unrelated mention
+    // is not. The attribution verb is the required bridge.
+    const previousEnd = sentenceStart - 1
+    const previousStart = Math.max(
+      source.lastIndexOf('.', previousEnd - 1),
+      source.lastIndexOf('!', previousEnd - 1),
+      source.lastIndexOf('?', previousEnd - 1),
+      source.lastIndexOf('\n', previousEnd - 1),
+    ) + 1
+    const previousSentence = source.slice(previousStart, previousEnd)
+    if (identities.some((identity) =>
+      previousSentence.includes(identity) && /\b(?:said|says|asked|asks|replied|replies|whispered|whispers|told|tells)\b/.test(previousSentence),
+    )) return true
+    evidenceAt = source.indexOf(evidence, evidenceAt + evidence.length)
+  }
+  return false
+}
+
 export function relationshipInitializationFromEvidence(
   raw: unknown,
   sourceText: string,

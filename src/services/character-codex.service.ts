@@ -3,6 +3,7 @@ import { mongoColl } from '../config/mongo'
 import type {
   CharacterInteractionHint,
   CharacterProfileDoc,
+  RelationshipFact,
   RelationshipMoment,
   RelationshipMeters,
 } from '../models/character-profile.model'
@@ -20,6 +21,7 @@ const characters = () => mongoColl.characters()
 
 export type RelationshipDeltas = Partial<RelationshipMeters>
 export type RelationshipEvidence = Partial<Record<keyof RelationshipMeters, string>>
+export type RelationshipFactDraft = Pick<RelationshipFact, 'statement' | 'evidence' | 'tags'>
 
 /** Extractor-only shape. The server materializes the character name and action
  * markers, so the client never needs to infer UI wording from mutable_state. */
@@ -51,6 +53,9 @@ export type CharacterCodexDelta = {
   relationship_initialization?: RelationshipInitialization
   /** Evidence-backed, open-ended meaning of the player bond. */
   relationship_state?: RelationshipState
+  /** Atomic additions and exact retirements for the bond-fact journal. */
+  relationship_fact_additions?: RelationshipFactDraft[]
+  relationship_fact_retire?: string[]
   is_protagonist?: boolean
   /** Typed kinship/relation ties asserted THIS turn between two people (or the
    *  player). Consumed by the kinship graph (KINSHIP_GRAPH.md), not the codex
@@ -152,6 +157,64 @@ const RELATIONSHIP_DELTA_CAP = 10
 const METER_MIN = 0
 const METER_MAX = 100
 const RELATIONSHIP_MOMENT_MAX = 12
+const RELATIONSHIP_FACT_MAX = 24
+
+function normalizedRelationshipFact(value: string): string {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function relationshipFactsFromDelta(delta: CharacterCodexDelta, sequence: number): RelationshipFact[] {
+  const drafts = [...(delta.relationship_fact_additions || [])]
+  // Compatibility bridge: old template/turn deltas carrying only a summary
+  // become the journal's first fact on their next fold.
+  if (delta.relationship_state?.summary && delta.relationship_state.evidence) {
+    drafts.push({
+      statement: delta.relationship_state.summary,
+      evidence: delta.relationship_state.evidence,
+      tags: delta.relationship_state.tags,
+    })
+  }
+  const out: RelationshipFact[] = []
+  const seen = new Set<string>()
+  for (const draft of drafts) {
+    const statement = String(draft.statement || '').replace(/\s+/g, ' ').trim().slice(0, 320)
+    const evidence = String(draft.evidence || '').replace(/\s+/g, ' ').trim().slice(0, 180)
+    const key = normalizedRelationshipFact(statement)
+    if (statement.length < 12 || !evidence || !key || seen.has(key)) continue
+    seen.add(key)
+    out.push({ statement, evidence, ...(draft.tags?.length ? { tags: draft.tags.slice(0, 5) } : {}), sequence, status: 'active' })
+  }
+  return out
+}
+
+export function mergeRelationshipFacts(
+  current: RelationshipFact[] | undefined,
+  delta: CharacterCodexDelta,
+  sequence: number,
+): RelationshipFact[] {
+  const facts = [...(current || [])]
+  const retire = new Set((delta.relationship_fact_retire || []).map(normalizedRelationshipFact).filter(Boolean))
+  for (const fact of facts) {
+    if (fact.status === 'active' && retire.has(normalizedRelationshipFact(fact.statement))) fact.status = 'retired'
+  }
+  const existing = new Set(facts.map((fact) => normalizedRelationshipFact(fact.statement)))
+  for (const addition of relationshipFactsFromDelta(delta, sequence)) {
+    const key = normalizedRelationshipFact(addition.statement)
+    if (existing.has(key)) continue
+    existing.add(key)
+    facts.push(addition)
+  }
+  return facts.length <= RELATIONSHIP_FACT_MAX ? facts : facts.slice(facts.length - RELATIONSHIP_FACT_MAX)
+}
+
+export function relationshipStateFromFacts(facts: RelationshipFact[] | undefined): RelationshipState | undefined {
+  const active = (facts || []).filter((fact) => fact.status === 'active')
+  if (!active.length) return undefined
+  const latest = active.slice(-3)
+  const summary = latest.map((fact) => fact.statement).join(' ').slice(0, 320)
+  const tags = [...new Set(latest.flatMap((fact) => fact.tags || []))].slice(0, 5)
+  return { summary, evidence: latest[latest.length - 1].evidence, ...(tags.length ? { tags } : {}) }
+}
 
 function relationshipMomentsFromDelta(delta: CharacterCodexDelta, sequence: number): RelationshipMoment[] {
   const out: RelationshipMoment[] = []
@@ -387,6 +450,7 @@ function foldDelta(
 
   if (!target) {
     // Fresh card captures everything THIS delta carries (mention_count = 1).
+    const relationshipFacts = mergeRelationshipFacts(undefined, delta, sequence)
     const doc: CharacterProfileDoc = {
       _id: new ObjectId(),
       instance_id: ctx.iid,
@@ -410,7 +474,8 @@ function foldDelta(
         ? applyRelationshipDeltas(initializedRelationship(delta), delta.relationship_deltas)
         : initializedRelationship(delta),
       relationship_moments: relationshipMomentsFromDelta(delta, sequence),
-      relationship_state: delta.relationship_state,
+      relationship_state: relationshipStateFromFacts(relationshipFacts),
+      relationship_facts: relationshipFacts,
       // Only ever the FIRST protagonist claim can mint the canonical card.
       is_protagonist: delta.is_protagonist === true && !state.protagonist,
       first_seen_sequence: sequence,
@@ -448,7 +513,19 @@ function foldDelta(
   if (!target.relationship && delta.relationship_initialization) {
     target.relationship = initializedRelationship(delta)
   }
-  if (delta.relationship_state) target.relationship_state = delta.relationship_state
+  if (delta.relationship_state || delta.relationship_fact_additions?.length || delta.relationship_fact_retire?.length) {
+    const legacyFact = !target.relationship_facts?.length && target.relationship_state?.summary && target.relationship_state.evidence
+      ? [{
+          statement: target.relationship_state.summary,
+          evidence: target.relationship_state.evidence,
+          tags: target.relationship_state.tags,
+          sequence: target.first_seen_sequence,
+          status: 'active' as const,
+        }]
+      : target.relationship_facts
+    target.relationship_facts = mergeRelationshipFacts(legacyFact, delta, sequence)
+    target.relationship_state = relationshipStateFromFacts(target.relationship_facts)
+  }
   if (hasRelationshipDeltas(delta.relationship_deltas)) {
     target.relationship = applyRelationshipDeltas(target.relationship, delta.relationship_deltas)
     target.relationship_moments = [
