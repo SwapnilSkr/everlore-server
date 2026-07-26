@@ -10,6 +10,10 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
     query: InstanceQueryParams,
   })
 
+  .get('/realms', (ctx) => instanceController.listRealms(ctx), {
+    query: InstanceQueryParams,
+  })
+
   .get('/play-status/:templateId', (ctx) => instanceController.playStatus(ctx))
 
   .get('/by-template/:templateId', (ctx) => instanceController.listByTemplate(ctx))

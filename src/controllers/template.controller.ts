@@ -159,9 +159,9 @@ export const templateController = {
     return templateService.publish(params.id, user.id)
   },
 
-  listMine: async ({ user }: { user: AuthUser | null }) => {
+  listMine: async ({ user, query }: { user: AuthUser | null; query: { page?: number; limit?: number; search?: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return templateService.listByCreator(user.id)
+    return templateService.listByCreator(user.id, Number(query.page) || 1, Number(query.limit) || 20, query.search)
   },
 
   delete: async ({

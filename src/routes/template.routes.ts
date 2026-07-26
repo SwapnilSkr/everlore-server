@@ -4,6 +4,7 @@ import {
   CreateTemplateBody,
   UpdateTemplateBody,
   TemplateQueryParams,
+  MyTemplateQueryParams,
   GenerateImageBody,
   AutofillBody,
 } from '../schemas/template.schema'
@@ -14,7 +15,7 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
 
   .get('/', (ctx) => templateController.listPublished(ctx), { query: TemplateQueryParams })
 
-  .get('/mine/list', (ctx) => templateController.listMine(ctx))
+  .get('/mine/list', (ctx) => templateController.listMine(ctx), { query: MyTemplateQueryParams })
 
   .get('/mine/quota', (ctx) => templateController.quota(ctx))
 

@@ -9,6 +9,23 @@ export const instanceController = {
     return instanceService.list(user.id, query.include_archived === true)
   },
 
+  listRealms: async ({
+    user,
+    query,
+  }: {
+    user: AuthUser | null
+    query: { page?: number; limit?: number; include_archived?: boolean; search?: string }
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    return instanceService.listRealms(
+      user.id,
+      query.include_archived === true,
+      Number(query.page) || 1,
+      Number(query.limit) || 12,
+      query.search,
+    )
+  },
+
   playStatus: async ({ user, params }: { user: AuthUser | null; params: { templateId: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return instanceService.getPlayStatus(user.id, params.templateId)

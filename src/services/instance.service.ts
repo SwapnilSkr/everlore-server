@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
+import { COLLECTIONS } from '../models/collections'
 import type { WorldInstanceDoc } from '../models/world-instance.model'
 import type { WorldTemplateDoc, WorldTemplateSummaryDoc } from '../models/world-template.model'
 import type { WorldEventDoc } from '../models/world-event.model'
@@ -410,6 +411,73 @@ export const instanceService = {
       ...inst,
       template: templateMap.get(idString(inst.template_id)) || null,
     }))
+  },
+
+  /** One row per world, not per story. This keeps the home feed compact and
+   * lets it page cleanly without splitting a realm's stories across pages. */
+  async listRealms(
+    playerId: string,
+    includeArchived: boolean = false,
+    page: number = 1,
+    limit: number = 12,
+    search?: string,
+  ) {
+    const playerOid = parseObjectId(playerId)
+    const filter: Record<string, unknown> = { player_id: playerOid }
+    if (!includeArchived) filter['meta.is_archived'] = { $ne: true }
+    const safePage = Math.max(1, page)
+    const safeLimit = Math.min(30, Math.max(1, limit))
+    const term = search?.trim()
+    const pipeline: any[] = [
+      { $match: filter },
+      { $sort: { 'meta.last_active_at': -1, _id: -1 } },
+      {
+        $group: {
+          _id: '$template_id',
+          latest: { $first: '$$ROOT' },
+          story_count: { $sum: 1 },
+        },
+      },
+      {
+        $lookup: {
+          from: COLLECTIONS.world_templates,
+          localField: '_id',
+          foreignField: '_id',
+          pipeline: [{ $project: { _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1, image_url: 1 } }],
+          as: 'template',
+        },
+      },
+      { $unwind: { path: '$template', preserveNullAndEmptyArrays: true } },
+    ]
+    if (term) {
+      pipeline.push({
+        $match: {
+          $or: [
+            { 'template.title': { $regex: term, $options: 'i' } },
+            { 'template.description': { $regex: term, $options: 'i' } },
+          ],
+        },
+      })
+    }
+    pipeline.push(
+      { $sort: { 'latest.meta.last_active_at': -1, 'latest._id': -1 } },
+      {
+        $facet: {
+          rows: [
+            { $skip: (safePage - 1) * safeLimit },
+            { $limit: safeLimit },
+            { $project: { _id: 0, template_id: '$_id', latest: 1, template: 1, story_count: 1 } },
+          ],
+          count: [{ $count: 'total' }],
+        },
+      },
+    )
+    const [result] = await worldInstances().aggregate<any>(pipeline).toArray()
+    return {
+      realms: result?.rows ?? [],
+      total: result?.count?.[0]?.total ?? 0,
+      page: safePage,
+    }
   },
 
   async archive(instanceId: string, playerId: string) {

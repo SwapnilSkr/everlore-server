@@ -71,12 +71,29 @@ function toApi(persona: PersonaDoc) {
 export const personaService = {
   snapshotFromPersona,
 
-  async list(playerId: string) {
-    const rows = await personas()
-      .find({ player_id: parseObjectId(playerId) })
+  async list(playerId: string, page: number = 1, limit: number = 20, search?: string) {
+    const filter: Record<string, unknown> = { player_id: parseObjectId(playerId) }
+    const term = search?.trim()
+    if (term) {
+      filter.$or = [
+        { name: { $regex: term, $options: 'i' } },
+        { description: { $regex: term, $options: 'i' } },
+        { other_info: { $regex: term, $options: 'i' } },
+      ]
+    }
+    const safePage = Math.max(1, page)
+    const safeLimit = Math.min(50, Math.max(1, limit))
+    const [rows, total] = await Promise.all([
+      personas()
+      .find(filter)
       .sort({ updated_at: -1 })
+      .skip((safePage - 1) * safeLimit)
+      .limit(safeLimit)
       .toArray()
-    return { personas: rows.map((p: any) => toApi(p)) }
+      ,
+      personas().countDocuments(filter),
+    ])
+    return { personas: rows.map((p: any) => toApi(p)), total, page: safePage }
   },
 
   async create(playerId: string, input: Required<Pick<PersonaInput, 'name' | 'gender'>> & PersonaInput) {

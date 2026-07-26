@@ -72,6 +72,11 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   },
   {
     collection: COLLECTIONS.world_instances,
+    key: { player_id: 1, "meta.is_archived": 1, "meta.last_active_at": -1 },
+    options: { name: "idx_world_instances_player_archived_active" },
+  },
+  {
+    collection: COLLECTIONS.world_instances,
     key: { "current_location.entity_id": 1 },
     options: { name: "idx_world_instances_current_location_entity" },
   },
@@ -319,6 +324,11 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     collection: COLLECTIONS.world_templates,
     key: { creator_id: 1 },
     options: { name: "idx_world_templates_creator" },
+  },
+  {
+    collection: COLLECTIONS.world_templates,
+    key: { creator_id: 1, updated_at: -1 },
+    options: { name: "idx_world_templates_creator_updated" },
   },
   {
     collection: COLLECTIONS.world_templates,

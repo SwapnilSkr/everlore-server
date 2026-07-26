@@ -19,9 +19,15 @@ const PersonaPatchBody = t.Object({
   other_info: t.Optional(t.String({ maxLength: PERSONA_LIMITS.otherInfo })),
 })
 
+const PersonaQuery = t.Object({
+  page: t.Optional(t.Numeric({ minimum: 1 })),
+  limit: t.Optional(t.Numeric({ minimum: 1, maximum: 50 })),
+  search: t.Optional(t.String({ maxLength: 100 })),
+})
+
 export const personaRoutes = new Elysia({ prefix: '/personas' })
   .use(authPlugin)
-  .get('/', (ctx) => personaController.list(ctx))
+  .get('/', (ctx) => personaController.list(ctx), { query: PersonaQuery })
   .post('/', (ctx) => personaController.create(ctx), { body: PersonaBody })
   .patch('/:id', (ctx) => personaController.update(ctx), { body: PersonaPatchBody })
   .delete('/:id', (ctx) => personaController.delete(ctx))
