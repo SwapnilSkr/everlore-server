@@ -494,6 +494,7 @@ async function extractReplayCodexDeltas(params: {
       relationship: c.relationship,
       relationship_moments: c.relationship_moments || [],
       relationship_state: c.relationship_state,
+      relationship_facts: c.relationship_facts || [],
       mutable_state: c.mutable_state || [],
       immutable_facts: c.immutable_facts || [],
     })),

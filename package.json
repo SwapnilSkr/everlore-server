@@ -29,6 +29,8 @@
     "audit:presence-codex-gap": "bun run scripts/presence-codex-gap-audit.ts",
     "backfill:template-cast": "bun run scripts/backfill-template-cast.ts",
     "backfill:relationship-baselines": "bun run scripts/backfill-relationship-baselines.ts",
+    "backfill:relationship-facts": "bun run scripts/backfill-relationship-facts.ts",
+    "repair:template-cast-projections": "bun run scripts/repair-template-cast-projections.ts",
     "audit:replay-edit": "bun run scripts/replay-edit-audit.ts",
     "audit:memory-links": "bun run scripts/memory-links-audit.ts",
     "audit:side-chat-privacy": "bun run scripts/side-chat-privacy-audit.ts",

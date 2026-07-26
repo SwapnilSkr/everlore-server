@@ -325,6 +325,7 @@ The earlier private-chat messages are continuity only. Preserve their facts and 
               relationship: card.relationship,
               relationship_moments: card.relationship_moments || [],
               relationship_state: card.relationship_state,
+              relationship_facts: card.relationship_facts || [],
               mutable_state: card.mutable_state || [],
               immutable_facts: card.immutable_facts || [],
             },
