@@ -31,6 +31,20 @@ export async function materializeTemplateCast(params: {
   const { template, instanceId, playerId, sequence = 0 } = params
   const deltas = templateCastDeltas(template)
   if (!deltas.length) return 0
-  await characterCodexService.applyDeltas({ instanceId, playerId, sequence, deltas })
-  return deltas.length
+  // Materialization is a sequence-zero seed operation, never an ordinary
+  // character encounter. Replaying it onto an existing card would reset that
+  // card's last_seen sequence and inflate its mention count, which in turn
+  // corrupts codex ranking/presence surfaces after a migration or checkpoint.
+  const existing = await characterCodexService.listForInstance(instanceId, 200)
+  const known = new Set(
+    existing.flatMap((card) => [card.canonical_name, ...(card.aliases || [])])
+      .map((name) => name.trim().toLowerCase())
+      .filter(Boolean),
+  )
+  const missing = deltas.filter((delta) =>
+    ![delta.name, ...(delta.aliases || [])].some((name) => known.has(name.trim().toLowerCase())),
+  )
+  if (!missing.length) return 0
+  await characterCodexService.applyDeltas({ instanceId, playerId, sequence, deltas: missing })
+  return missing.length
 }
