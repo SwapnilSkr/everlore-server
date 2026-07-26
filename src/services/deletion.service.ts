@@ -237,7 +237,7 @@ export const deletionService = {
           'meta.kinship_seeded': false,
           updated_at: new Date(),
         },
-        $unset: { seed_relation_assertions: '', manual_relation_assertions: '' },
+        $unset: { seed_relation_assertions: '', manual_relation_assertions: '', manual_lifecycle_transitions: '', manual_identity_revisions: '' },
       },
     )
 

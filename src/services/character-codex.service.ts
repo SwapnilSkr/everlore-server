@@ -780,6 +780,161 @@ export const characterCodexService = {
     )
   },
 
+  /** Confirm a narrator-suggested proper-name reveal without risking a card collision. */
+  async confirmIdentityRename(params: {
+    playerId: string
+    characterEntityId: string
+    proposedName: string
+  }): Promise<CharacterProfileDoc> {
+    const target = await characters().findOne({
+      player_id: parseObjectId(params.playerId),
+      entity_id: parseObjectId(params.characterEntityId),
+    })
+    if (!target) throw new HttpError(404, 'Character for this identity reveal was not found')
+    if (target.is_protagonist) throw new HttpError(409, 'The protagonist cannot be renamed by a story reveal')
+    const newName = String(params.proposedName || '').trim().slice(0, 120)
+    const newNormalized = normalizeName(newName)
+    if (!shouldSetText(newName) || newNormalized.length < 2) throw new HttpError(400, 'Invalid revealed name')
+    const collision = await characters().findOne({
+      instance_id: target.instance_id,
+      name_normalized: newNormalized,
+      _id: { $ne: target._id },
+    }, { projection: { _id: 1 } })
+    if (collision) throw new HttpError(409, 'That name already belongs to another character; confirm a merge instead.')
+    if (newNormalized === target.name_normalized) return target
+    await characters().updateOne(
+      { _id: target._id },
+      {
+        $set: {
+          canonical_name: newName,
+          name_normalized: newNormalized,
+          aliases: uniqStrings([target.canonical_name, ...(target.aliases || [])], 20)
+            .filter((alias) => normalizeName(alias) !== newNormalized),
+          interaction_hints: [],
+          updated_at: new Date(),
+        },
+      },
+    )
+    return (await characters().findOne({ _id: target._id }))!
+  },
+
+  /**
+   * Fold a confirmed duplicate into the card with the revealed proper name.
+   * Meter values are not added (that would double-count one person); the
+   * newest ledger wins while factual journals and aliases are preserved.
+   * Entity/memory/edge rewiring is deliberately handled by entityGraphService
+   * immediately after this card-level fold.
+   */
+  async confirmIdentityMerge(params: {
+    playerId: string
+    sourceEntityId: string
+    targetEntityId: string
+  }): Promise<{ source: CharacterProfileDoc; target: CharacterProfileDoc }> {
+    const pid = parseObjectId(params.playerId)
+    const source = await characters().findOne({ player_id: pid, entity_id: parseObjectId(params.sourceEntityId) })
+    const target = await characters().findOne({ player_id: pid, entity_id: parseObjectId(params.targetEntityId) })
+    if (!source || !target) throw new HttpError(404, 'One of the identities no longer exists')
+    if (source._id.equals(target._id)) throw new HttpError(409, 'These labels already resolve to one character')
+    if (idString(source.instance_id) !== idString(target.instance_id)) throw new HttpError(409, 'Cannot merge characters from different worlds')
+    if (source.is_protagonist || target.is_protagonist) throw new HttpError(409, 'The protagonist cannot be merged by a story reveal')
+
+    const targetIsNewer = (target.last_seen_sequence || 0) >= (source.last_seen_sequence || 0)
+    const facts = [...(target.relationship_facts || []), ...(source.relationship_facts || [])]
+      .filter((fact, index, all) => all.findIndex((other) =>
+        normalizedRelationshipFact(other.statement) === normalizedRelationshipFact(fact.statement) &&
+        normalizedRelationshipFact(other.evidence) === normalizedRelationshipFact(fact.evidence),
+      ) === index)
+      .slice(-RELATIONSHIP_FACT_MAX)
+    const moments = [...(target.relationship_moments || []), ...(source.relationship_moments || [])]
+      .sort((a, b) => a.sequence - b.sequence)
+      .slice(-RELATIONSHIP_MOMENT_MAX)
+    await characters().updateOne(
+      { _id: target._id },
+      {
+        $set: {
+          aliases: uniqStrings([
+            ...(target.aliases || []), target.canonical_name,
+            ...(source.aliases || []), source.canonical_name,
+          ], 20).filter((alias) => normalizeName(alias) !== target.name_normalized),
+          immutable_facts: uniqKeepRecent([...(target.immutable_facts || []), ...(source.immutable_facts || [])], IMMUTABLE_STORE_MAX),
+          mutable_state: uniqKeepRecent([...(target.mutable_state || []), ...(source.mutable_state || [])], MUTABLE_STATE_MAX),
+          relationship: targetIsNewer ? target.relationship : source.relationship,
+          relationship_moments: moments,
+          relationship_facts: facts,
+          relationship_state: relationshipStateFromFacts(facts),
+          mention_count: (target.mention_count || 0) + (source.mention_count || 0),
+          first_seen_sequence: Math.min(target.first_seen_sequence || 0, source.first_seen_sequence || 0),
+          last_seen_sequence: Math.max(target.last_seen_sequence || 0, source.last_seen_sequence || 0),
+          updated_at: new Date(),
+        },
+      },
+    )
+    const merged = (await characters().findOne({ _id: target._id }))!
+    return { source, target: merged }
+  },
+
+  /** Final delete happens only after graph references have been moved safely. */
+  async finalizeIdentityMerge(params: { playerId: string; sourceCharacterId: string }): Promise<void> {
+    const source = await characters().findOne({
+      _id: parseObjectId(params.sourceCharacterId),
+      player_id: parseObjectId(params.playerId),
+    })
+    if (!source) return
+    if (source.is_protagonist) throw new HttpError(409, 'The protagonist cannot be merged by a story reveal')
+    await characters().deleteOne({ _id: source._id })
+  },
+
+  /** Replay player-confirmed identity canon after an event-ledger rebuild. */
+  async applyManualIdentityRevisions(params: { instanceId: string; playerId: string }): Promise<void> {
+    const instance = await mongoColl.worldInstances().findOne(
+      { _id: parseObjectId(params.instanceId), player_id: parseObjectId(params.playerId) },
+      { projection: { manual_identity_revisions: 1 } },
+    ) as { manual_identity_revisions?: Array<{ kind: 'identity_rename' | 'identity_merge'; source_name: string; target_name: string }> } | null
+    for (const revision of instance?.manual_identity_revisions || []) {
+      const cards = await characters().find({ instance_id: parseObjectId(params.instanceId) }).toArray()
+      const source = cards.find((card) => [card.canonical_name, ...(card.aliases || [])]
+        .some((name) => normalizeName(name) === normalizeName(revision.source_name)))
+      if (!source || source.is_protagonist) continue
+      const target = cards.find((card) => card._id.toString() !== source._id.toString() &&
+        [card.canonical_name, ...(card.aliases || [])]
+          .some((name) => normalizeName(name) === normalizeName(revision.target_name)))
+      if (revision.kind === 'identity_rename' && !target) {
+        const name = revision.target_name.trim().slice(0, 120)
+        await characters().updateOne({ _id: source._id }, {
+          $set: {
+            canonical_name: name,
+            name_normalized: normalizeName(name),
+            aliases: uniqStrings([source.canonical_name, ...(source.aliases || [])], 20)
+              .filter((alias) => normalizeName(alias) !== normalizeName(name)),
+            updated_at: new Date(),
+          },
+        })
+      } else if (revision.kind === 'identity_merge' && target && !target.is_protagonist) {
+        const facts = [...(target.relationship_facts || []), ...(source.relationship_facts || [])]
+          .filter((fact, index, all) => all.findIndex((other) =>
+            normalizedRelationshipFact(other.statement) === normalizedRelationshipFact(fact.statement) &&
+            normalizedRelationshipFact(other.evidence) === normalizedRelationshipFact(fact.evidence),
+          ) === index)
+          .slice(-RELATIONSHIP_FACT_MAX)
+        await characters().updateOne({ _id: target._id }, {
+          $set: {
+            aliases: uniqStrings([target.canonical_name, ...(target.aliases || []), source.canonical_name, ...(source.aliases || [])], 20)
+              .filter((alias) => normalizeName(alias) !== target.name_normalized),
+            immutable_facts: uniqKeepRecent([...(target.immutable_facts || []), ...(source.immutable_facts || [])], IMMUTABLE_STORE_MAX),
+            mutable_state: uniqKeepRecent([...(target.mutable_state || []), ...(source.mutable_state || [])], MUTABLE_STATE_MAX),
+            relationship_facts: facts,
+            relationship_state: relationshipStateFromFacts(facts),
+            mention_count: (target.mention_count || 0) + (source.mention_count || 0),
+            first_seen_sequence: Math.min(target.first_seen_sequence || 0, source.first_seen_sequence || 0),
+            last_seen_sequence: Math.max(target.last_seen_sequence || 0, source.last_seen_sequence || 0),
+            updated_at: new Date(),
+          },
+        })
+        await characters().deleteOne({ _id: source._id })
+      }
+    }
+  },
+
   /**
    * Player-driven edit of a character/protagonist card. Returns the updated doc
    * plus the facts the edit REMOVED — those are handed to memory supersession so

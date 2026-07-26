@@ -10,6 +10,7 @@ import { entityGraphService, normalizeEntityName } from '../services/entity-grap
 import { kinshipGraphService } from '../services/kinship-graph.service'
 import { isRelationKind, surfaceToKind } from '../utils/kinship-ontology'
 import { relationCandidateService } from '../services/relation-candidate.service'
+import { TRANSITION_PLAYER } from '../../worker/lib/kinship-transition-extractor'
 import { mongoColl } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
 import type { EntityDoc } from '../models/entity.model'
@@ -227,6 +228,106 @@ export const chronicleController = {
         status: body.action === 'reject' ? 'rejected' : 'deferred',
       })
       return { resolved: ok }
+    }
+
+    const kind = candidate.kind || 'kinship'
+    if (kind === 'identity_rename') {
+      if (!candidate.proposed_name) throw new HttpError(409, 'This identity reveal is incomplete')
+      const character = await characterCodexService.confirmIdentityRename({
+        playerId: user.id,
+        characterEntityId: idString(candidate.character_entity_id),
+        proposedName: candidate.proposed_name,
+      })
+      // Keep the graph's canonical label/token registry in lockstep with the
+      // card; aliases preserve old narration and existing relationship edges.
+      await entityGraphService.syncCodexEntities({
+        instanceId: idString(candidate.instance_id),
+        playerId: user.id,
+        sequence: candidate.sequence,
+        cards: [character],
+      })
+      await mongoColl.worldInstances().updateOne(
+        { _id: candidate.instance_id, player_id: parseObjectId(user.id) },
+        {
+          $push: {
+            manual_identity_revisions: {
+              $each: [{ kind, source_name: candidate.character_name, target_name: character.canonical_name }],
+              $slice: -80,
+            },
+          },
+          $set: { updated_at: new Date() },
+        } as never,
+      )
+      await relationCandidateService.resolve({
+        candidateId: params.candidateId,
+        playerId: user.id,
+        status: 'accepted',
+        relation: candidate.proposed_name,
+      })
+      return { resolved: true, kind, name: character.canonical_name }
+    }
+    if (kind === 'identity_merge') {
+      if (!candidate.counterpart_entity_id) throw new HttpError(409, 'This identity merge is incomplete')
+      const merged = await characterCodexService.confirmIdentityMerge({
+        playerId: user.id,
+        sourceEntityId: idString(candidate.character_entity_id),
+        targetEntityId: idString(candidate.counterpart_entity_id),
+      })
+      await entityGraphService.mergeCharacterEntities({
+        instanceId: idString(candidate.instance_id),
+        playerId: user.id,
+        sourceEntityId: idString(candidate.character_entity_id),
+        targetEntityId: idString(candidate.counterpart_entity_id),
+        targetCard: merged.target,
+      })
+      await characterCodexService.finalizeIdentityMerge({
+        playerId: user.id,
+        sourceCharacterId: idString(merged.source._id),
+      })
+      await mongoColl.worldInstances().updateOne(
+        { _id: candidate.instance_id, player_id: parseObjectId(user.id) },
+        {
+          $push: {
+            manual_identity_revisions: {
+              $each: [{ kind, source_name: merged.source.canonical_name, target_name: merged.target.canonical_name }],
+              $slice: -80,
+            },
+          },
+          $set: { updated_at: new Date() },
+        } as never,
+      )
+      await relationCandidateService.resolve({
+        candidateId: params.candidateId,
+        playerId: user.id,
+        status: 'accepted',
+        relation: merged.target.canonical_name,
+      })
+      return { resolved: true, kind, name: merged.target.canonical_name }
+    }
+    if (kind === 'kinship_revision') {
+      const relation = String(candidate.replaces_relation || candidate.relation || '').toLowerCase()
+      const result = await kinshipGraphService.applyLifecycleTransitions({
+        instanceId: idString(candidate.instance_id),
+        sequence: candidate.sequence,
+        transitions: [{ owner: TRANSITION_PLAYER, rel: relation, state: 'revealed_false', source: 'player_correction' }],
+        resolveName: () => null,
+        selfAnchorId: idString(candidate.player_entity_id),
+      })
+      if (!result.changed) throw new HttpError(409, 'No active relationship could be revised safely')
+      await mongoColl.worldInstances().updateOne(
+        { _id: candidate.instance_id, player_id: parseObjectId(user.id) },
+        {
+          $push: { manual_lifecycle_transitions: { $each: [{ rel: relation, state: 'revealed_false' }], $slice: -120 } },
+          $set: { updated_at: new Date() },
+        } as never,
+      )
+      await relationCandidateService.resolve({
+        candidateId: params.candidateId,
+        playerId: user.id,
+        status: 'accepted',
+        relation,
+      })
+      return { resolved: true, kind, relation }
     }
 
     const relation = String(body.relation || candidate.relation).toLowerCase()

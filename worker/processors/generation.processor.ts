@@ -60,6 +60,7 @@ import { log } from '../../src/utils/logger'
 import type { PlayerWorldAction } from '../../src/utils/world-action'
 import { surfaceToKind } from '../../src/utils/kinship-ontology'
 import { detectNarratedRelationCandidates } from '../lib/relation-candidate-detector'
+import { detectCanonRevisionCandidates } from '../lib/canon-revision-detector'
 import { establishesSceneLocation } from '../lib/scene-location-signal'
 
 function escapeRegExp(value: string): string {
@@ -2160,8 +2161,6 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         knownLocations: knownPlaces,
         promotableOffscreenPeople,
       })
-      if (!deltas.length) return
-
       // Sentient worlds: the player is the persona TALKING TO the world's main
       // character — they are not part of the cast. Drop any delta that would
       // card them, no matter what the extractor produced. The player's identity
@@ -2234,7 +2233,6 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           }
         }
 
-        if (!deltas.length) return
       }
 
       // GM-world protagonist is the player's OWN character; relationship meters
@@ -2247,16 +2245,23 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         }
       }
 
-      const codex = await characterCodexService.applyDeltas({
-        instanceId,
-        playerId,
-        sequence: nextSequence,
-        deltas,
-      })
+      // A reveal candidate must still surface if the smaller extraction model
+      // returned no codex delta. In that case the existing roster is enough to
+      // validate a proposal; no candidate can mint an identity by itself.
+      const codex = deltas.length > 0
+        ? await characterCodexService.applyDeltas({
+            instanceId,
+            playerId,
+            sequence: nextSequence,
+            deltas,
+          })
+        : characterCodex
 
       // Ledger the applied deltas on the event so the codex is an exact
       // rebuildable projection (rewind replays these — no stale facts).
-      await mongoColl.events().updateOne({ _id: event._id }, { $set: { 'data.codex_deltas': deltas } })
+      if (deltas.length > 0) {
+        await mongoColl.events().updateOne({ _id: event._id }, { $set: { 'data.codex_deltas': deltas } })
+      }
 
       // Entity graph: keep card↔entity links 1:1 and project this turn's
       // relationship meters onto typed edges. Best-effort — graph failures
@@ -2343,6 +2348,65 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           }
         } catch (err) {
           console.warn('relation candidate proposal skipped:', (err as Error).message)
+        }
+
+        // Identity/twist review lane. The detector is intentionally only a
+        // candidate producer: it must resolve every endpoint to the existing
+        // card/entity roster, quote narration evidence, and never changes canon
+        // without an explicit player confirmation in the Chronicle controls.
+        try {
+          const revisions = detectCanonRevisionCandidates(rawNarrative, codex)
+          if (revisions.length > 0) {
+            const protagCard = codex.find((card) => card.is_protagonist)
+            let playerEntityId: string | null = null
+            if (!session.is_sentient && protagCard) {
+              const protagEntity = entityMap.get(protagCard.name_normalized)
+              playerEntityId = protagEntity?._id ? idString(protagEntity._id) : null
+            } else {
+              const player = await entityGraphService.ensurePlayerEntity({
+                instanceId,
+                playerId,
+                name: session.persona_snapshot?.name,
+                sequence: nextSequence,
+              })
+              playerEntityId = idString(player._id)
+            }
+            if (playerEntityId) {
+              for (const revision of revisions) {
+                const primary = codex.find((card) => card.canonical_name === revision.characterName)
+                const primaryEntity = primary ? entityMap.get(primary.name_normalized) : null
+                if (!primary || !primaryEntity?._id) continue
+                const counterpart = revision.kind === 'identity_merge'
+                  ? codex.find((card) => card.canonical_name === revision.counterpartCharacterName)
+                  : undefined
+                const counterpartEntity = counterpart ? entityMap.get(counterpart.name_normalized) : undefined
+                if (revision.kind === 'identity_merge' && !counterpartEntity?._id) continue
+                await relationCandidateService.propose({
+                  instanceId,
+                  playerId,
+                  characterName: primary.canonical_name,
+                  characterEntityId: idString(primaryEntity._id),
+                  playerEntityId,
+                  kind: revision.kind,
+                  relation: revision.kind === 'kinship_revision' ? revision.relation : 'identity',
+                  evidence: revision.evidence,
+                  sourceEventId: event._id,
+                  sequence: nextSequence,
+                  ...(revision.kind === 'kinship_revision'
+                    ? { replacesRelation: revision.relation }
+                    : { proposedName: revision.proposedName }),
+                  ...(counterpartEntity?._id
+                    ? {
+                        counterpartEntityId: idString(counterpartEntity._id),
+                        counterpartCharacterName: counterpart?.canonical_name,
+                      }
+                    : {}),
+                })
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('canon revision candidate proposal skipped:', (err as Error).message)
         }
         const explicitRelationship =
           confirmedWorldAction?.kind === 'relationship'

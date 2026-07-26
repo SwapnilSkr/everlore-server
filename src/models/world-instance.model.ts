@@ -93,6 +93,19 @@ export interface WorldInstanceDoc {
    * narrated discoveries, these are authorial world settings: they do not create
    * a chat turn, and must be reapplied after premise canon on every graph rebuild. */
   manual_relation_assertions?: RelationAssertion[]
+  /** Player-confirmed lifecycle/retcon revisions. Kept outside chat events so
+   * a prose rewind cannot resurrect a tie the player explicitly rejected. */
+  manual_lifecycle_transitions?: Array<{
+    rel: string
+    state: 'deceased' | 'estranged' | 'dissolved' | 'revealed_false'
+  }>
+  /** Player-confirmed identity reveals/merges, replayed after the event codex
+   * so rewind never splits a person back into stale labels. */
+  manual_identity_revisions?: Array<{
+    kind: 'identity_rename' | 'identity_merge'
+    source_name: string
+    target_name: string
+  }>
   /** Optional reusable account-level persona selected for this instance. */
   persona_id?: ObjectId | null
   /** Snapshot of the selected persona, so long-running chats do not drift when

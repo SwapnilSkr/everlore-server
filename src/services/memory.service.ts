@@ -606,6 +606,7 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
         isPlayer: !template.is_sentient,
       })
     }
+    await characterCodexService.applyManualIdentityRevisions({ instanceId, playerId })
     await restoreInitialTemplateCast({ instanceId, playerId, instance, template })
     if (batches.length > 0) {
       await characterCodexService.rebuildCodexFromLedger({
@@ -755,6 +756,7 @@ async function rebuildCodexKinshipFromCheckpoint(params: {
       batches,
     })
   }
+  await characterCodexService.applyManualIdentityRevisions({ instanceId, playerId })
 
   const codex = await characterCodexService.listForInstance(instanceId, 200)
   const entityMap = await entityGraphService.syncCodexEntities({
@@ -1664,6 +1666,8 @@ export const memoryService = {
       })
       if (!survivingProtagonist) await reseedProtagonist()
     }
+
+    await characterCodexService.applyManualIdentityRevisions({ instanceId, playerId })
 
     // 3c. Entity-graph repair: entities born in removed turns are deleted,
     // edge provenance from removed events is pruned (empty edges dropped),

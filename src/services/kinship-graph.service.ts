@@ -589,10 +589,11 @@ export const kinshipGraphService = {
     // rewinds and must be restored before story-ledger assertions.
     const persistentCanon = (await worldInstances().findOne(
       { _id: iid },
-      { projection: { seed_relation_assertions: 1, manual_relation_assertions: 1 } },
+      { projection: { seed_relation_assertions: 1, manual_relation_assertions: 1, manual_lifecycle_transitions: 1 } },
     )) as {
       seed_relation_assertions?: RelationAssertion[]
       manual_relation_assertions?: RelationAssertion[]
+      manual_lifecycle_transitions?: Array<{ rel: string; state: LifecycleState }>
     } | null
     const seedAssertions = persistentCanon?.seed_relation_assertions
     if (seedAssertions?.length) {
@@ -622,6 +623,22 @@ export const kinshipGraphService = {
         notes.push(`manual canon re-apply failed — ${(err as Error).message}`)
       }
     }
+    const manualTransitions = persistentCanon?.manual_lifecycle_transitions || []
+    if (manualTransitions.length && selfAnchorId) {
+      const res = await kinshipGraphService.applyLifecycleTransitions({
+        instanceId,
+        sequence: 0,
+        transitions: manualTransitions.map((t) => ({
+          owner: TRANSITION_PLAYER,
+          rel: t.rel,
+          state: t.state,
+          source: 'player_correction',
+        })),
+        resolveName: () => null,
+        selfAnchorId,
+      }).catch((err) => ({ changed: 0, notes: [`manual lifecycle replay failed — ${(err as Error).message}`] }))
+      notes.push(...res.notes)
+    }
 
     // 3. Replay each event's assertions (LLM ledger ∪ deterministic) in order.
     const typeFilter = includeSideChat ? {} : { type: { $ne: 'side_chat' } }
@@ -649,7 +666,9 @@ export const kinshipGraphService = {
         corrections: parsed.corrections,
         narrationFacts: parsed.narrationFacts,
         claims: parsed.claims,
-        prose: ev.data?.ai_response || '',
+        // Narrator-discovered twists are review candidates, not automatic family
+        // canon. Rebuild must use the same authority boundary as live turns.
+        prose: undefined,
       })
       if (!merged.length && !transitions.length) continue
       touched++
@@ -725,11 +744,11 @@ export const kinshipGraphService = {
     // A checkpoint may predate a later relationship-sheet edit. Reapply the
     // persistent overlay before folding the event suffix; upserts make this
     // harmless when the checkpoint already contains the same edge.
-    const manualAssertions = ((await worldInstances().findOne(
+    const persistentCanon = ((await worldInstances().findOne(
       { _id: iid },
-      { projection: { manual_relation_assertions: 1 } },
-    )) as { manual_relation_assertions?: RelationAssertion[] } | null)
-      ?.manual_relation_assertions || []
+      { projection: { manual_relation_assertions: 1, manual_lifecycle_transitions: 1 } },
+    )) as { manual_relation_assertions?: RelationAssertion[]; manual_lifecycle_transitions?: Array<{ rel: string; state: LifecycleState }> } | null)
+    const manualAssertions = persistentCanon?.manual_relation_assertions || []
     if (manualAssertions.length) {
       try {
         const res = await kinshipGraphService.applyRelationAssertions({
@@ -742,6 +761,22 @@ export const kinshipGraphService = {
       } catch (err) {
         notes.push(`manual canon re-apply failed — ${(err as Error).message}`)
       }
+    }
+    const manualTransitions = persistentCanon?.manual_lifecycle_transitions || []
+    if (manualTransitions.length && selfAnchorId) {
+      const res = await kinshipGraphService.applyLifecycleTransitions({
+        instanceId,
+        sequence: 0,
+        transitions: manualTransitions.map((t) => ({
+          owner: TRANSITION_PLAYER,
+          rel: t.rel,
+          state: t.state,
+          source: 'player_correction',
+        })),
+        resolveName: () => null,
+        selfAnchorId,
+      }).catch((err) => ({ changed: 0, notes: [`manual lifecycle replay failed — ${(err as Error).message}`] }))
+      notes.push(...res.notes)
     }
 
     const typeFilter = includeSideChat ? {} : { type: { $ne: 'side_chat' } }
@@ -769,7 +804,7 @@ export const kinshipGraphService = {
         corrections: parsed.corrections,
         narrationFacts: parsed.narrationFacts,
         claims: parsed.claims,
-        prose: ev.data?.ai_response || '',
+        prose: undefined,
       })
       if (!merged.length && !transitions.length) continue
       touched++

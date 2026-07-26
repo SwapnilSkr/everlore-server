@@ -598,6 +598,126 @@ export const entityGraphService = {
     return result
   },
 
+  /**
+   * Rewire graph and memory references after a player-confirmed duplicate
+   * character merge. The caller has already chosen the surviving card/entity;
+   * this method never guesses identity. Conflicting edges are folded by their
+   * natural unique key before the obsolete entity is removed.
+   */
+  async mergeCharacterEntities(params: {
+    instanceId: string
+    playerId: string
+    sourceEntityId: string
+    targetEntityId: string
+    targetCard: CharacterProfileDoc
+  }): Promise<void> {
+    const iid = parseObjectId(params.instanceId)
+    const sourceId = parseObjectId(params.sourceEntityId)
+    const targetId = parseObjectId(params.targetEntityId)
+    if (sourceId.equals(targetId)) return
+    const [source, target] = await Promise.all([
+      entities().findOne({ _id: sourceId, instance_id: iid, player_id: parseObjectId(params.playerId) }),
+      entities().findOne({ _id: targetId, instance_id: iid, player_id: parseObjectId(params.playerId) }),
+    ])
+    if (!source || !target) throw new Error('Identity merge entity no longer exists')
+    const now = new Date()
+
+    const impacted = await entityEdges().find({
+      instance_id: iid,
+      $or: [{ source_entity_id: sourceId }, { target_entity_id: sourceId }],
+    }).toArray()
+    for (const edge of impacted) {
+      const nextSource = edge.source_entity_id.equals(sourceId) ? targetId : edge.source_entity_id
+      const nextTarget = edge.target_entity_id.equals(sourceId) ? targetId : edge.target_entity_id
+      // A duplicate's internal edge becomes a self-edge after coalescing and
+      // carries no relationship between two distinct entities any more.
+      if (nextSource.equals(nextTarget)) {
+        await entityEdges().deleteOne({ _id: edge._id })
+        continue
+      }
+      const duplicate = await entityEdges().findOne({
+        instance_id: iid,
+        source_entity_id: nextSource,
+        target_entity_id: nextTarget,
+        type: edge.type,
+        label: edge.label ?? null,
+        _id: { $ne: edge._id },
+      })
+      if (duplicate) {
+        await entityEdges().updateOne(
+          { _id: duplicate._id },
+          {
+            $set: {
+              importance: Math.max(duplicate.importance || 1, edge.importance || 1),
+              last_event_sequence: Math.max(duplicate.last_event_sequence || 0, edge.last_event_sequence || 0),
+              updated_at: now,
+            },
+            $addToSet: { source_event_ids: { $each: edge.source_event_ids || [] } },
+          } as never,
+        )
+        await entityEdges().deleteOne({ _id: edge._id })
+      } else {
+        await entityEdges().updateOne(
+          { _id: edge._id },
+          { $set: { source_entity_id: nextSource, target_entity_id: nextTarget, updated_at: now } },
+        )
+      }
+    }
+
+    // Preserve retrieval and knowledge scope. $setUnion removes a source/target
+    // double-reference if a memory happened to mention both duplicate labels.
+    const replaceArray = (field: string) => ({
+      $setUnion: [{
+        $map: {
+          input: { $ifNull: [`$${field}`, []] },
+          as: 'entityId',
+          in: { $cond: [{ $eq: ['$$entityId', sourceId] }, targetId, '$$entityId'] },
+        },
+      }, []],
+    })
+    await memories().updateMany(
+      { instance_id: iid, $or: [
+        { subject_entity_ids: sourceId }, { object_entity_ids: sourceId }, { known_by_entity_ids: sourceId },
+      ] },
+      [{ $set: {
+        subject_entity_ids: replaceArray('subject_entity_ids'),
+        object_entity_ids: replaceArray('object_entity_ids'),
+        known_by_entity_ids: replaceArray('known_by_entity_ids'),
+        updated_at: now,
+      } }] as never,
+    )
+    await mongoColl.events().updateMany(
+      { instance_id: iid, 'side_chat.character_entity_id': sourceId },
+      { $set: { 'side_chat.character_entity_id': targetId } },
+    )
+    await mongoColl.events().updateMany(
+      { instance_id: iid, 'side_chat.participants': sourceId },
+      [{ $set: { 'side_chat.participants': replaceArray('side_chat.participants') } }] as never,
+    )
+    await mongoColl.relationCandidates().updateMany(
+      { instance_id: iid, character_entity_id: sourceId, status: 'open' },
+      { $set: { character_entity_id: targetId, character_name: params.targetCard.canonical_name, updated_at: now } },
+    )
+    await entities().updateOne(
+      { _id: targetId },
+      {
+        $set: {
+          canonical_name: params.targetCard.canonical_name,
+          name_normalized: params.targetCard.name_normalized,
+          aliases: uniqNames([
+            ...(target.aliases || []), target.canonical_name,
+            ...(source.aliases || []), source.canonical_name,
+            ...(params.targetCard.aliases || []),
+          ]).filter((name) => normalizeEntityName(name) !== params.targetCard.name_normalized),
+          name_tokens: entityNameTokens(params.targetCard.canonical_name, params.targetCard.aliases || []),
+          character_id: params.targetCard._id,
+          updated_at: now,
+        },
+      },
+    )
+    await entities().deleteOne({ _id: sourceId })
+  },
+
   /** The singleton player entity for an instance (created lazily). */
   async ensurePlayerEntity(params: {
     instanceId: string
