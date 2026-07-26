@@ -26,7 +26,7 @@ import { env } from '../config/env'
  *  protagonistDerive    gpt-4o-mini                  no         OpenAI     MODEL_PROTAGONIST_DERIVE
  *  embedding            text-embedding-3-small       —          OpenAI     MODEL_EMBEDDING
  *  image                bytedance-seed/seedream-4.5  —          OpenRouter IMAGE_MODEL
- *  authoring            deepseek/deepseek-v4-flash   —          OpenRouter AUTHORING_MODEL
+ *  authoring            google/gemini-2.5-flash-lite —          OpenRouter AUTHORING_MODEL
  *  tts                  hexgrad/kokoro-82m           —          OpenRouter TTS_MODEL
  */
 export const AI_MODELS = {
@@ -69,7 +69,7 @@ export const AI_MODELS = {
   image: env.IMAGE_MODEL,
 
   /** One-shot creation autofill — drafts an entire world/character from a brief.
-   *  Default deepseek/deepseek-v4-flash (very cheap, fast, 1M ctx, solid JSON).
+   *  Default gemini-2.5-flash-lite (cheap, fast, 1M ctx, strong JSON + creative).
    *  Override via AUTHORING_MODEL. */
   authoring: env.AUTHORING_MODEL,
 

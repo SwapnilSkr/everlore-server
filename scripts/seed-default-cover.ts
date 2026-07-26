@@ -24,7 +24,8 @@ const PROMPT =
   'Atmospheric anime wallpaper on pure black void background, subtle drifting golden ember particles ' +
   'and faint teal aether wisps, soft cinematic rim light from above, moody versatile story backdrop, ' +
   'abstract depth with gentle nebula haze, premium 3D-shaded anime aesthetic, no characters, no faces, ' +
-  'no text, no watermark, no logo, vertical portrait composition suited to a phone screen.'
+  'no text, no watermark, no logo, tall vertical 9:16 full-bleed illustration, ' +
+  'no phone, no smartphone, no device, no mockup, no UI.'
 
 async function objectExists(key: string): Promise<boolean> {
   const { S3Client } = await import('@aws-sdk/client-s3')

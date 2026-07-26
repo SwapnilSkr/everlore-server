@@ -1,15 +1,26 @@
 import { callLLM, AI_MODELS } from '../ai'
-import { decorateImagePrompt } from './image.service'
+import { decorateImagePrompt, VISUAL_CORE_MAX } from './image.service'
 import { isValidStyleKey } from '../utils/narrative-styles'
 import { HttpError } from '../utils/http-error'
 
 /**
  * One-shot creation autofill. Drafts an ENTIRE world or character from a short
  * (optional) brief so the creator starts from a complete, editable draft instead
- * of a blank multi-step form. Uses the cheap/fast authoring model (deepseek-v4-
- * flash by default) with JSON output. Everything it returns is a suggestion the
- * creator can freely edit before forging.
+ * of a blank multi-step form. Uses the cheap/creative authoring model
+ * (gemini-2.5-flash-lite by default) with JSON output. Everything it returns is
+ * a suggestion the creator can freely edit before forging.
  */
+
+/** Shared rules for the bare `visual` core (server wraps with decorateImagePrompt). */
+const VISUAL_CORE_RULES = [
+  'visual is a bare SUBJECT description ONLY — the server appends art style + safe 9:16 composition.',
+  `Write ONE rich, detailed line (aim 250–${VISUAL_CORE_MAX} chars): concrete colors, materials, textures,`,
+  'lighting direction, mood, and spatial depth. Single clear focal subject that fills most of the frame.',
+  'FORBIDDEN in visual (these make the image model render a phone mockup or garbage UI):',
+  'art-style words; quality adjectives (masterpiece, 8k, highly detailed, cinematic key art);',
+  'composition jargon; phone, smartphone, device, screen, bezel, notch, status bar, mockup, frame,',
+  'border, UI, watermark, logo, text, "phone background", "phone wallpaper", "phone screen".',
+].join(' ')
 
 const VALID_STYLE_KEYS = [
   'default', 'modern_casual', 'anime', 'tsundere', 'romcom', 'flirty', 'noir',
@@ -31,7 +42,7 @@ const DRAFT = {
   seedPrompt: 1500,
   globalLore: 2500,
   openingLine: 400,
-  visualCore: 400,
+  visualCore: VISUAL_CORE_MAX,
   statName: 32,
   statDesc: 120,
   flagName: 32,
@@ -196,8 +207,11 @@ export const autofillService = {
       `"scene_tags": 3-6 short lowercase_snake tags describing settings/moods (each max ${DRAFT.sceneTag} chars),`,
       `"stats": 3-5 player attributes, each {name (max ${DRAFT.statName} chars), default(0-100), min, max, description (max ${DRAFT.statDesc} chars)},`,
       `"flags": 0-3 world state flags, each {name (max ${DRAFT.flagName} chars), type("boolean"|"integer"|"string"), default, description (max ${DRAFT.flagDesc} chars)},`,
-      `"visual": ONE concrete line describing what an establishing image of this world looks like — place, atmosphere, lighting, no art-style or quality words (max ${DRAFT.visualCore} chars)`,
+      `"visual": ONE rich establishing-scene line — focal place/object, materials, colors, lighting, atmosphere, depth (max ${DRAFT.visualCore} chars)`,
       '}',
+      VISUAL_CORE_RULES,
+      'World visual example (match this density — invent a NEW scene for THIS world, do not copy):',
+      '"A long polished mahogany dining table in a dimly lit high-ceilinged room, warm chandelier light glinting off untouched silverware and crystal glasses, one empty high-backed chair pushed slightly back as if someone just left, deep shadows pooling in the corners and under the folded tablecloth"',
       lockedStyle
         ? `The narrative_style MUST be "${lockedStyle}" (the creator locked it).`
         : styleGuidance(input.isNsfwCapable),
@@ -250,8 +264,11 @@ export const autofillService = {
       `"backstory": their past, world, and relationships the AI should always know, one paragraph (max ${DRAFT.backstory} chars),`,
       '"narrative_style": one key from the allowed set,',
       `"style_notes": one short sentence of extra voice guidance, may be empty string (max ${DRAFT.styleNotes} chars),`,
-      `"visual": ONE concrete line describing the character's appearance — face, hair, build, clothing, expression, setting, no art-style or quality words (max ${DRAFT.visualCore} chars)`,
+      `"visual": ONE rich portrait line — face, eyes, hair, build, clothing colors/materials, expression, pose, setting, lighting (max ${DRAFT.visualCore} chars)`,
       '}',
+      VISUAL_CORE_RULES,
+      'Character visual example (match this density — invent a NEW look for THIS character, do not copy):',
+      '"Young woman with sharp cat-like amber eyes and a perpetual half-lidded glare, glossy black hair in a messy short ponytail with loose strands across her cheek, slim build in an oversized charcoal hoodie and ripped dark jeans, white high-top sneakers scuffed at the toe, standing in a rain-wet neon-lit campus courtyard at night with pink and teal reflections on the pavement, hands shoved in her pockets, slight pout"',
       lockedStyle
         ? `The narrative_style MUST be "${lockedStyle}" (the creator locked it).`
         : styleGuidance(input.isNsfwCapable),

@@ -19,8 +19,8 @@ const optionalEnvVars = {
   NARRATION_NSFW_MODEL: 'gryphe/mythomax-l2-13b',
   // OpenRouter image-generation model (avatars + chat backgrounds).
   IMAGE_MODEL: 'bytedance-seed/seedream-4.5',
-  // One-shot creation autofill (drafts a whole world/character). Cheap, fast, 1M ctx.
-  AUTHORING_MODEL: 'deepseek/deepseek-v4-flash',
+  // One-shot creation autofill (drafts a whole world/character). Cheap, strong JSON + creative.
+  AUTHORING_MODEL: 'google/gemini-2.5-flash-lite',
   // OpenRouter TTS (/api/v1/audio/speech). See everlore-docs/server/TTS_MODELS.md.
   TTS_MODEL: 'hexgrad/kokoro-82m',
   // AWS S3 + CloudFront for generated media. Bucket is private; served via CDN.

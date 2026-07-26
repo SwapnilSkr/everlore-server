@@ -38,21 +38,42 @@ const STYLE_HINT: Record<string, string> = {
 }
 const DEFAULT_HINT = 'high-quality character illustration, cinematic lighting'
 
-// NOTE: never say "phone background" here — the image model takes it literally and
-// renders the art INSIDE a smartphone mockup (notch, status bar). Ask for a
-// full-bleed vertical illustration and explicitly negate any device/frame.
+// Max length of the bare visual core before style/composition are appended.
+export const VISUAL_CORE_MAX = 500
+
+// NOTE: never say "phone background" / "phone wallpaper" / "phone screen" —
+// image models take that literally and render art INSIDE a smartphone mockup
+// (notch, status bar, bezel). Ask for full-bleed artwork and scrub device leaks.
 const COMPOSITION =
-  'tall vertical 9:16 full-bleed illustration filling the entire frame edge to edge, ' +
-  'single clear focal subject, atmospheric depth, no phone, no smartphone, no device, ' +
-  'no screen, no frame, no border, no mockup, no text, no watermark, no logo, no UI'
+  'tall vertical 9:16 full-bleed illustration filling the entire frame edge to edge with no letterboxing, ' +
+  'single clear focal subject, atmospheric depth, pure artwork only — ' +
+  'absolutely no phone, no smartphone, no device, no screen, no bezel, no notch, no status bar, ' +
+  'no frame, no border, no mockup, no UI chrome, no text, no watermark, no logo'
+
+/**
+ * Strip wording that causes Seedream/Flux to put the art inside a phone mockup.
+ * Applied to autofill cores and to any prompt sent to image generation.
+ */
+export function scrubDeviceLeakage(text: string): string {
+  return (text || '')
+    .replace(/\bsuited to a phone (?:background|screen|wallpaper)\b/gi, 'full-bleed vertical illustration')
+    .replace(/\b(?:as a |for a |like a )?phone (?:background|wallpaper|screen|mockup)\b/gi, 'full-bleed illustration')
+    .replace(/\bsmartphone\s*(?:mockup|frame|bezel|screen)?\b/gi, '')
+    .replace(/\b(?:iphone|android)\s*(?:mockup|frame|bezel)?\b/gi, '')
+    .replace(/\b(?:device|phone)\s+mockup\b/gi, '')
+    .replace(/\b(?:status\s*bar|notch|letterboxing)\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/\s+([,.])/g, '$1')
+    .trim()
+}
 
 /**
  * Wrap a concrete visual-description CORE line with the art-style hint (mapped
- * from the locked narrative voice) + composition suffix. Shared by suggestPrompt
- * and the creation autofill so both produce identically-shaped image prompts.
+ * from the locked narrative voice) + composition suffix. Shared by creation
+ * autofill so every drafted image_prompt has the same safe shape.
  */
 export function decorateImagePrompt(core: string, narrativeStyle?: string): string {
-  const clean = (core || '').replace(/^["']|["']$/g, '').trim().slice(0, 400)
+  const clean = scrubDeviceLeakage((core || '').replace(/^["']|["']$/g, '')).slice(0, VISUAL_CORE_MAX)
   const hint = STYLE_HINT[narrativeStyle || ''] || DEFAULT_HINT
   return `${clean}. ${hint}. ${COMPOSITION}.`
 }
@@ -60,7 +81,7 @@ export function decorateImagePrompt(core: string, narrativeStyle?: string): stri
 export const imageService = {
   /** Generate from a (possibly creator-edited) prompt and upload a preview. */
   async generatePreview(prompt: string): Promise<{ url: string; key: string }> {
-    const clean = (prompt || '').trim()
+    const clean = scrubDeviceLeakage(prompt || '')
     if (clean.length < 4) throw new HttpError(400, 'Image prompt is too short')
     let img: { data: Buffer; contentType: string }
     try {

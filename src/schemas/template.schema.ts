@@ -28,7 +28,7 @@ export const FIELD_LIMITS = {
   globalLore: 3000, // UI cap 2500 (lore / backstory) + headroom
   openingLine: 600, // UI cap 400 (opening / greeting) + headroom
   styleNotes: 500,
-  imagePrompt: 1200, // decorated prompt (visual core 400 + style/composition suffix)
+  imagePrompt: 1400, // decorated prompt (visual core ≤500 + style/composition suffix)
   protagonistName: 80,
   protagonistText: 400,
 } as const
@@ -71,7 +71,7 @@ export const CreateTemplateBody = t.Object({
 export const UpdateTemplateBody = t.Partial(CreateTemplateBody)
 
 export const GenerateImageBody = t.Object({
-  prompt: t.String({ minLength: 4, maxLength: 1200 }),
+  prompt: t.String({ minLength: 4, maxLength: FIELD_LIMITS.imagePrompt }),
 })
 
 export const AutofillBody = t.Object({
@@ -86,4 +86,10 @@ export const TemplateQueryParams = t.Object({
   page: t.Optional(t.Numeric()),
   limit: t.Optional(t.Numeric()),
   search: t.Optional(t.String()),
+})
+
+export const MyTemplateQueryParams = t.Object({
+  page: t.Optional(t.Numeric({ minimum: 1 })),
+  limit: t.Optional(t.Numeric({ minimum: 1, maximum: 50 })),
+  search: t.Optional(t.String({ maxLength: 100 })),
 })

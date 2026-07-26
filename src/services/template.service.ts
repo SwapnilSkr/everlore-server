@@ -14,6 +14,7 @@ import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default
 import { storageService } from './storage.service'
 import { familyExpandedKeys } from '../utils/narrative-styles'
 import { extractTemplateCast } from '../../worker/lib/template-cast-extractor'
+import { FIELD_LIMITS } from '../schemas/template.schema'
 
 const worldTemplates = () => mongoColl.worldTemplates()
 const users = () => mongoColl.users()
@@ -105,7 +106,7 @@ export const templateService = {
       narrative_style: typeof data.narrative_style === 'string' ? data.narrative_style : '',
       style_notes: typeof data.style_notes === 'string' ? data.style_notes.slice(0, 500) : '',
       image_url: imageUrl,
-      image_prompt: typeof data.image_prompt === 'string' ? data.image_prompt.slice(0, 1200) : '',
+      image_prompt: typeof data.image_prompt === 'string' ? data.image_prompt.slice(0, FIELD_LIMITS.imagePrompt) : '',
       opening_line: typeof data.opening_line === 'string' ? data.opening_line.trim() : undefined,
       protagonist,
       seed_cast: seedCast,
@@ -273,11 +274,28 @@ export const templateService = {
     return Array.isArray(interests) ? interests : []
   },
 
-  async listByCreator(creatorId: string): Promise<WorldTemplateDoc[]> {
-    return worldTemplates()
-      .find({ creator_id: parseObjectId(creatorId) })
+  async listByCreator(creatorId: string, page: number = 1, limit: number = 20, search?: string) {
+    const filter: Record<string, unknown> = { creator_id: parseObjectId(creatorId) }
+    const term = search?.trim()
+    if (term) {
+      filter.$or = [
+        { title: { $regex: term, $options: 'i' } },
+        { description: { $regex: term, $options: 'i' } },
+      ]
+    }
+    const safePage = Math.max(1, page)
+    const safeLimit = Math.min(50, Math.max(1, limit))
+    const [templates, total] = await Promise.all([
+      worldTemplates()
+      .find(filter)
       .sort({ updated_at: -1 })
+      .skip((safePage - 1) * safeLimit)
+      .limit(safeLimit)
       .toArray()
+      ,
+      worldTemplates().countDocuments(filter),
+    ])
+    return { templates, total, page: safePage }
   },
 }
 
