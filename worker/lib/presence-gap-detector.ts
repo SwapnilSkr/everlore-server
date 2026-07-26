@@ -120,6 +120,7 @@ export function visibleNameCandidatesDetailed(prose: string): VisibleNameCandida
     if (STOP.has(lower)) continue
     const key = normalizeName(t)
     if (!key || seen.has(key)) continue
+    if (isAbstractNonPersonTerm(key)) continue
     if (GENERIC_PERSON_DESCRIPTORS.has(key) && !FAMILY_ROLE_WORDS.has(key)) continue
     seen.add(key)
     out.push({ key, display: t })
@@ -249,6 +250,23 @@ function appearsAsDefiniteLocation(display: string, prose: string): boolean {
   ).test(prose)
 }
 
+/**
+ * A sentence-initial capitalized abstract can be given a human verb in normal
+ * prose ("Valour answers", "Silence waits"). A second human-only signal is
+ * required before that weak position can promote an unknown name to a person.
+ * This intentionally prefers a missed one-line walk-on over minting a durable
+ * card for a literary device.
+ */
+function hasIndependentPersonSignal(display: string, prose: string): boolean {
+  const n = escapeRe(display)
+  return (
+    new RegExp(`\\b${n}(?:'s|\\u2019s)\\s+(?:${PERSON_POSSESSIONS})\\b`, 'i').test(prose) ||
+    new RegExp(`\\b${n},\\s+(?:my|his|her|their|the|a|an)\\s+\\w+`, 'i').test(prose) ||
+    new RegExp(`\\b(?:${TITLE_WORDS})\\s+${n}\\b`, 'i').test(prose) ||
+    new RegExp(`\\b(?:my|his|her|their)\\s+\\w+\\s+${n}\\b`, 'i').test(prose)
+  )
+}
+
 /** Decide the tier for one candidate display name within `prose`. */
 function tierFor(display: string, prose: string): { tier: MentionTier; evidence: string; count: number } {
   const n = escapeRe(display)
@@ -310,10 +328,11 @@ export function classifyPresenceCodexGaps(prose: string, tracked: TrackedNames):
       // faked by a capitalized sentence-adverb ("Downstairs, a door slammed"), so when
       // they're the only evidence and the token never appears mid-sentence, demote it.
       const robust =
-        evidence === 'dialogue attribution' ||
-        evidence === 'action in scene' ||
         evidence === 'person possessive' ||
-        evidence === 'title-name'
+        evidence === 'title-name' ||
+        evidence === 'action in scene' ||
+        (evidence === 'dialogue attribution' &&
+          (appearsMidSentence(c.display, text) || hasIndependentPersonSignal(c.display, text)))
       if (tier !== 'mentioned_only' && !robust && !appearsMidSentence(c.display, text)) {
         tier = 'mentioned_only'
         evidence = 'sentence-initial only, no person signal'
@@ -321,3 +340,4 @@ export function classifyPresenceCodexGaps(prose: string, tracked: TrackedNames):
       return { ...c, tier, evidence, count }
     })
 }
+import { isAbstractNonPersonTerm } from '../../src/utils/person-identity'

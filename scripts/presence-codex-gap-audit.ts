@@ -3,6 +3,8 @@
  * detector. No DB / no LLM. Run: bun run audit:presence-codex-gap
  */
 import { classifyPresenceCodexGaps, detectPresenceCodexGaps, isActionableMention } from '../worker/lib/presence-gap-detector'
+import { isDirectSelfIntroduction, promoteProperNameOverRole } from '../worker/lib/character-codex-extractor'
+import { premiseKinshipCards } from '../src/services/kinship-graph.service'
 
 let pass = 0
 let fail = 0
@@ -22,6 +24,60 @@ console.log('gap detector - visible & tracked -> no gap:')
     'Mara+Bram+Sister all tracked (present+codex+stub)',
     detectPresenceCodexGaps(prose, { present: ['Mara', 'Bram', 'Sister'], codex: ['Mara'], stubs: ['Sister'] }).sort(),
     [],
+  )
+}
+
+console.log('codex identity-answer gate:')
+check(
+  'identity question + quoted name is a self-introduction',
+  isDirectSelfIntroduction('Enzo', '"Enzo," he says, his voice flat.', 'So who might you be?'),
+  true,
+)
+check(
+  'quoted name without identity question is not a self-introduction',
+  isDirectSelfIntroduction('Enzo', '"Enzo," he says, his voice flat.', 'I ask about the statuette.'),
+  false,
+)
+
+console.log('codex kinship name-resolution:')
+{
+  const prose = `*Their mother intervenes, her smile tight.* "Mara, let's not talk about that right now," she says.`
+  const promoted = promoteProperNameOverRole(
+    { name: 'Sister', aliases: ['Mara'], role: 'sibling' },
+    new Map(),
+    prose,
+  )
+  check(
+    'directly addressed Mara outranks the Sister epithet for a new card',
+    { name: promoted.name, aliases: promoted.aliases, resolved_name: promoted.resolved_name },
+    { name: 'Mara', aliases: ['Sister', 'Mara'], resolved_name: undefined },
+  )
+
+  const renamed = promoteProperNameOverRole(
+    { name: 'Sister', aliases: ['Mara'], role: 'sibling' },
+    new Map([['sister', 'Sister']]),
+    prose,
+  )
+  check(
+    'existing Sister role card is promoted in place rather than duplicated',
+    { name: renamed.name, resolved_name: renamed.resolved_name },
+    { name: 'Mara', resolved_name: 'Sister' },
+  )
+}
+
+console.log('premise kinship cast seeding:')
+{
+  const cards = premiseKinshipCards([
+    { from: 'Mara', to: 'player', kind: 'sibling_of', label: 'sister', source: 'system_seed' },
+    { from: 'Father', to: 'player', kind: 'parent_of', label: 'father', source: 'system_seed' },
+  ])
+  check(
+    'only explicit non-player kin endpoints become minimal seed cards',
+    cards,
+    [
+      { name: 'Mara', aliases: ['sister'], role: 'sister' },
+      { name: 'Father', aliases: [], role: 'father' },
+    ],
   )
 }
 
@@ -75,13 +131,33 @@ console.log('gap detector - child/self-facing labels are NOT candidates:')
   check('son excluded, father covered', detectPresenceCodexGaps(prose, { present: ['Father'], stubs: ['Father'] }), [])
 }
 
-console.log('gap detector - bare abstract mentions are not actionable:')
+console.log('gap detector - bare abstract mentions are never character candidates:')
 {
   const prose = `Silence is the only thing the neglected son owns in this house.`
   check(
-    'Silence is only mentioned_only, not an actionable gap',
+    'Silence is excluded before any presence/card promotion',
     classifyPresenceCodexGaps(prose, {}).map((m) => `${m.key}:${m.tier}`),
-    ['silence:mentioned_only'],
+    [],
+  )
+}
+
+console.log('gap detector - personified abstractions are never characters:')
+{
+  const prose = `*The door refuses to move. Silence answers from the other side.*`
+  check(
+    'Silence answering is excluded before person-grammar promotion',
+    classifyPresenceCodexGaps(prose, {}).map((m) => `${m.key}:${m.tier}`),
+    [],
+  )
+}
+
+console.log('gap detector - unknown literary personification needs a second human signal:')
+{
+  const prose = `*The question hangs in the air. Valour answers from the dark.*`
+  check(
+    'sentence-initial Valour + speech verb is not enough to create a person',
+    classifyPresenceCodexGaps(prose, {}).filter(isActionableMention).map((m) => `${m.key}:${m.tier}`),
+    [],
   )
 }
 
