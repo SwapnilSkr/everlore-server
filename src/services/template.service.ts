@@ -13,6 +13,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
 import { familyExpandedKeys } from '../utils/narrative-styles'
+import { extractTemplateCast } from '../../worker/lib/template-cast-extractor'
 
 const worldTemplates = () => mongoColl.worldTemplates()
 const users = () => mongoColl.users()
@@ -24,9 +25,27 @@ function slugify(text: string): string {
     .replace(/^-|-$/g, '')
 }
 
-function assertNonEmptyStats(baseStats: Record<string, unknown> | undefined, field: string) {
+function assertValidStats(baseStats: Record<string, unknown> | undefined, field: string) {
   if (!baseStats || Object.keys(baseStats).length === 0) {
     throw new HttpError(400, `At least one stat is required (${field})`)
+  }
+  const seen = new Set<string>()
+  for (const [rawKey, rawDef] of Object.entries(baseStats)) {
+    const key = rawKey.trim().toLowerCase().replace(/\s+/g, '_')
+    const def = rawDef as Partial<StatDefinitionDoc>
+    if (!key || seen.has(key)) throw new HttpError(400, `Stat names must be unique (${field})`)
+    seen.add(key)
+    if (
+      !Number.isFinite(def.min) || !Number.isFinite(def.max) || !Number.isFinite(def.default) ||
+      (def.min as number) >= (def.max as number) ||
+      (def.default as number) < (def.min as number) ||
+      (def.default as number) > (def.max as number)
+    ) {
+      throw new HttpError(400, `Each stat needs min < max and a default inside that range (${rawKey})`)
+    }
+    if (typeof def.description !== 'string' || !def.description.trim()) {
+      throw new HttpError(400, `Each stat needs a description (${rawKey})`)
+    }
   }
 }
 
@@ -35,7 +54,7 @@ export const templateService = {
     const kind: 'world' | 'character' = data.kind === 'character' ? 'character' : 'world'
     // Characters may be stat-less; Worlds still require at least one stat.
     if (kind === 'world') {
-      assertNonEmptyStats(data.base_stats_template, 'base_stats_template')
+      assertValidStats(data.base_stats_template, 'base_stats_template')
     }
 
     const _id = new ObjectId()
@@ -55,6 +74,17 @@ export const templateService = {
     if (!protagonist?.name && data.is_sentient) {
       protagonist = (await deriveProtagonist(data.seed_prompt)) || undefined
     }
+
+    // This runs during authoring, never on a play turn. A failure simply leaves
+    // the cast empty; it must not block a creator from saving their template.
+    const seedCast = await extractTemplateCast({
+      title: data.title,
+      description: data.description,
+      seedPrompt: data.seed_prompt,
+      globalLore: data.global_lore,
+      openingLine: data.opening_line,
+      protagonistName: protagonist?.name,
+    })
 
     // Promote a chosen preview, or assign the universal default when skipped.
     const imageUrl = await resolveTemplateImageUrl(data.image_url)
@@ -78,6 +108,7 @@ export const templateService = {
       image_prompt: typeof data.image_prompt === 'string' ? data.image_prompt.slice(0, 1200) : '',
       opening_line: typeof data.opening_line === 'string' ? data.opening_line.trim() : undefined,
       protagonist,
+      seed_cast: seedCast,
       base_stats_template: (data.base_stats_template || {}) as Record<string, StatDefinitionDoc>,
       flag_definitions: (data.flag_definitions || {}) as Record<string, FlagDefinitionDoc>,
       scene_tags: data.scene_tags || [],
@@ -107,12 +138,29 @@ export const templateService = {
 
     const effectiveKind = data.kind || existing.kind || 'world'
     if (effectiveKind === 'world' && data.base_stats_template !== undefined) {
-      assertNonEmptyStats(data.base_stats_template, 'base_stats_template')
+      assertValidStats(data.base_stats_template, 'base_stats_template')
     }
 
     const updateFields: Record<string, unknown> = { ...data, updated_at: new Date() }
     delete updateFields.creator_id
     delete updateFields._id
+    delete updateFields.seed_cast
+
+    const castSourceChanged = [
+      'title', 'description', 'seed_prompt', 'global_lore', 'opening_line', 'protagonist',
+    ].some((key) => Object.prototype.hasOwnProperty.call(data, key))
+    if (castSourceChanged) {
+      const merged = { ...existing, ...data }
+      const protagonist = merged.protagonist as WorldTemplateDoc['protagonist'] | undefined
+      updateFields.seed_cast = await extractTemplateCast({
+        title: String(merged.title || ''),
+        description: String(merged.description || ''),
+        seedPrompt: String(merged.seed_prompt || ''),
+        globalLore: String(merged.global_lore || ''),
+        openingLine: typeof merged.opening_line === 'string' ? merged.opening_line : undefined,
+        protagonistName: protagonist?.name,
+      })
+    }
 
     // If a new image was chosen (or cleared), promote or fall back to default.
     if (typeof data.image_url === 'string' && data.image_url !== existing.image_url) {

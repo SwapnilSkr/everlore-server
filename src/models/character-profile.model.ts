@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { RelationshipState } from '../utils/relationship-baseline'
 
 /**
  * Structured relationship meters toward the player (0-100). Trust/affection
@@ -10,6 +11,17 @@ export interface RelationshipMeters {
   affection: number
   fear: number
   rivalry: number
+}
+
+export type RelationshipMeterKey = keyof RelationshipMeters
+
+/** An evidence-backed, replayable reason why one bond meter moved. */
+export interface RelationshipMoment {
+  meter: RelationshipMeterKey
+  delta: number
+  /** Exact short wording from the turn; never an invented interpretation. */
+  evidence: string
+  sequence: number
 }
 
 /** A validated, player-facing conversation affordance derived from a character's
@@ -42,6 +54,10 @@ export interface CharacterProfileDoc {
   hidden_thought: string
   /** Gamified relationship ledger; absent until the first meter-moving turn. */
   relationship?: RelationshipMeters
+  /** Human-readable, evidence-backed meaning of the bond; deliberately open-ended. */
+  relationship_state?: RelationshipState
+  /** Recent evidence-backed shifts; makes the displayed bond inspectable. */
+  relationship_moments?: RelationshipMoment[]
   /** 1:1 link to this card's entity-graph node (lazily backfilled). */
   entity_id?: ObjectId
   /** True for the world's main sentient persona (the character the player talks

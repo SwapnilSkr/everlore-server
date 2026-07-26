@@ -1,4 +1,5 @@
 import type { ObjectId } from 'mongodb'
+import type { RelationshipInitialization, RelationshipState } from '../utils/relationship-baseline'
 
 export interface StatDefinitionDoc {
   default: number
@@ -28,6 +29,23 @@ export interface ProtagonistDoc {
   name: string
   persona?: string
   appearance?: string
+}
+
+/**
+ * An authored, immutable-at-start cast definition. It belongs to the template,
+ * never to a shared runtime codex: every instance receives its own independent
+ * character cards so later memories, relationships, and state can diverge.
+ */
+export interface TemplateCastCharacterDoc {
+  name: string
+  aliases?: string[]
+  role?: string
+  appearance?: string
+  persona?: string
+  immutable_facts?: string[]
+  /** Grounded starting bond toward the player, copied into each instance at sequence 0. */
+  relationship_initialization?: RelationshipInitialization
+  relationship_state?: RelationshipState
 }
 
 /**
@@ -61,6 +79,8 @@ export interface WorldTemplateDoc {
   opening_line?: string
   /** Locked main persona for sentient templates (deterministic protagonist). */
   protagonist?: ProtagonistDoc
+  /** AI-extracted, creator-authored starting cast, excluding the protagonist. */
+  seed_cast?: TemplateCastCharacterDoc[]
   base_stats_template: Record<string, StatDefinitionDoc>
   flag_definitions: Record<string, FlagDefinitionDoc>
   scene_tags: string[]

@@ -3,15 +3,23 @@ import { mongoColl } from '../config/mongo'
 import type {
   CharacterInteractionHint,
   CharacterProfileDoc,
+  RelationshipMoment,
   RelationshipMeters,
 } from '../models/character-profile.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import type { WorldFactSource } from '../utils/world-authority'
+import { isAbstractNonPersonTerm } from '../utils/person-identity'
+import {
+  relationshipBaseline,
+  type RelationshipInitialization,
+  type RelationshipState,
+} from '../utils/relationship-baseline'
 
 const characters = () => mongoColl.characters()
 
 export type RelationshipDeltas = Partial<RelationshipMeters>
+export type RelationshipEvidence = Partial<Record<keyof RelationshipMeters, string>>
 
 /** Extractor-only shape. The server materializes the character name and action
  * markers, so the client never needs to infer UI wording from mutable_state. */
@@ -37,6 +45,12 @@ export type CharacterCodexDelta = {
   hidden_thought?: string
   /** Per-turn meter shifts toward the player (already clamped to ±10 on parse). */
   relationship_deltas?: RelationshipDeltas
+  /** Exact evidence from this turn for each proposed meter movement. */
+  relationship_evidence?: RelationshipEvidence
+  /** Evidence-backed starting profile; accepted only while no meter state exists. */
+  relationship_initialization?: RelationshipInitialization
+  /** Evidence-backed, open-ended meaning of the player bond. */
+  relationship_state?: RelationshipState
   is_protagonist?: boolean
   /** Typed kinship/relation ties asserted THIS turn between two people (or the
    *  player). Consumed by the kinship graph (KINSHIP_GRAPH.md), not the codex
@@ -130,10 +144,25 @@ const IMMUTABLE_STORE_MAX = 40
 const MUTABLE_STATE_MAX = 12
 
 /** Relationship meter guardrails: LLM noise must not whipsaw the numbers. */
-const RELATIONSHIP_BASELINES: RelationshipMeters = { trust: 50, affection: 50, fear: 0, rivalry: 0 }
+// Unknown is not affection. This is only a fallback when a direct interaction
+// shifts an otherwise unprofiled relationship; explicit canon uses a named
+// relationship_initialization instead.
+const RELATIONSHIP_BASELINES: RelationshipMeters = { trust: 50, affection: 0, fear: 0, rivalry: 0 }
 const RELATIONSHIP_DELTA_CAP = 10
 const METER_MIN = 0
 const METER_MAX = 100
+const RELATIONSHIP_MOMENT_MAX = 12
+
+function relationshipMomentsFromDelta(delta: CharacterCodexDelta, sequence: number): RelationshipMoment[] {
+  const out: RelationshipMoment[] = []
+  for (const meter of ['trust', 'affection', 'fear', 'rivalry'] as const) {
+    const amount = delta.relationship_deltas?.[meter]
+    const evidence = delta.relationship_evidence?.[meter]?.trim()
+    if (typeof amount !== 'number' || !evidence) continue
+    out.push({ meter, delta: amount, evidence: evidence.slice(0, 180), sequence })
+  }
+  return out
+}
 
 /**
  * Apply clamped per-turn deltas to a character's relationship meters. Meters
@@ -160,6 +189,12 @@ function hasRelationshipDeltas(deltas?: RelationshipDeltas): deltas is Relations
   return (['trust', 'affection', 'fear', 'rivalry'] as const).some(
     (k) => typeof deltas[k] === 'number' && Number.isFinite(deltas[k]) && deltas[k] !== 0,
   )
+}
+
+function initializedRelationship(delta: CharacterCodexDelta): RelationshipMeters | undefined {
+  return delta.relationship_initialization
+    ? relationshipBaseline(delta.relationship_initialization.kind)
+    : undefined
 }
 
 /** Recency half-life (turns) for codex injection ranking. */
@@ -309,6 +344,10 @@ function foldDelta(
   ctx: { iid: ObjectId; pid: ObjectId; now: Date },
 ): void {
   if (!shouldSetText(delta.name)) return
+  // Replay/rewind rebuilds must enforce the same identity boundary as live
+  // extraction, so an old bad ledger row can never resurrect "Silence" (or
+  // another personified atmosphere noun) as a character card.
+  if (isAbstractNonPersonTerm(delta.name)) return
   // A legacy bad ledger row must be no more dangerous than a live malformed
   // extractor response. Without this, rewind/rebuild could resurrect a place
   // that a newer live guard correctly refused to card.
@@ -368,8 +407,10 @@ function foldDelta(
       disposition_to_player: shouldSetText(delta.disposition_to_player) ? delta.disposition_to_player.trim() : '',
       hidden_thought: shouldSetText(delta.hidden_thought) ? delta.hidden_thought.trim() : '',
       relationship: hasRelationshipDeltas(delta.relationship_deltas)
-        ? applyRelationshipDeltas(undefined, delta.relationship_deltas)
-        : undefined,
+        ? applyRelationshipDeltas(initializedRelationship(delta), delta.relationship_deltas)
+        : initializedRelationship(delta),
+      relationship_moments: relationshipMomentsFromDelta(delta, sequence),
+      relationship_state: delta.relationship_state,
       // Only ever the FIRST protagonist claim can mint the canonical card.
       is_protagonist: delta.is_protagonist === true && !state.protagonist,
       first_seen_sequence: sequence,
@@ -404,8 +445,16 @@ function foldDelta(
   if (!target.persona && shouldSetText(delta.persona)) target.persona = delta.persona.trim()
   if (shouldSetText(delta.disposition_to_player)) target.disposition_to_player = delta.disposition_to_player.trim()
   if (shouldSetText(delta.hidden_thought)) target.hidden_thought = delta.hidden_thought.trim()
+  if (!target.relationship && delta.relationship_initialization) {
+    target.relationship = initializedRelationship(delta)
+  }
+  if (delta.relationship_state) target.relationship_state = delta.relationship_state
   if (hasRelationshipDeltas(delta.relationship_deltas)) {
     target.relationship = applyRelationshipDeltas(target.relationship, delta.relationship_deltas)
+    target.relationship_moments = [
+      ...(target.relationship_moments || []),
+      ...relationshipMomentsFromDelta(delta, sequence),
+    ].slice(-RELATIONSHIP_MOMENT_MAX)
   }
   // Explicit rename/correction: the extractor may resolve a newly supplied name
   // to an existing card ("Mira" resolved to old "Mara"). Promote the new proper
@@ -856,6 +905,8 @@ export const characterCodexService = {
           meters: m
             ? { trust: m.trust, affection: m.affection, fear: m.fear, rivalry: m.rivalry }
             : null,
+          state: c.relationship_state || null,
+          observations: (c.relationship_moments || []).slice(-5),
           mention_count: c.mention_count,
           moments: c.entity_id ? momentsByChar.get(idString(c.entity_id)) || [] : [],
         }

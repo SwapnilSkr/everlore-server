@@ -4,6 +4,7 @@ import type { PersonaSnapshotDoc } from './persona.model'
 import type { TimeAnchorDoc } from './time.model'
 import type { LocationAnchorDoc } from './location.model'
 import type { RelationAssertion } from '../services/character-codex.service'
+import type { TemplateCastCharacterDoc } from './world-template.model'
 
 export interface InstanceMilestoneDoc {
   label: string
@@ -46,6 +47,8 @@ export interface WorldInstanceDoc {
   _id: ObjectId
   template_id: ObjectId
   template_version: number
+  /** Immutable-at-start cast copy; rewind never reads a later-edited template. */
+  seed_cast_snapshot?: TemplateCastCharacterDoc[]
   player_id: ObjectId
   world_state: Record<string, number>
   active_flags: Record<string, unknown>

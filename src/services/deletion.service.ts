@@ -195,6 +195,9 @@ export const deletionService = {
     // (repairAfterRewind); a reset clears ALL of it. See KINSHIP_GRAPH.md.
     await entities().deleteMany({ instance_id: iid })
     await entityEdges().deleteMany({ instance_id: iid })
+    // The Places atlas is a materialized location-graph projection. It must be
+    // removed with its source entities so a reset cannot show stale places.
+    await mongoColl.locationStats().deleteMany({ instance_id: iid })
     await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
     await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
     await mongoColl.generationLogs().deleteMany({ instance_id: iid })
