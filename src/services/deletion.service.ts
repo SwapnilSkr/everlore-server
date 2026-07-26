@@ -68,58 +68,40 @@ export const deletionService = {
 
     const instanceIds = instances.map(i => i._id)
 
-    // Delete all associated Pinecone namespaces and volatile Redis state.
+    // Delete each instance's external vectors and volatile state. Instance
+    // namespaces stay sequential to be gentle on Pinecone; the independent
+    // Redis and dead-letter work for that instance can happen in parallel.
     for (const instance of instances) {
       const iidStr = idString(instance._id)
-      await this.deleteInstanceData(instance._id, iidStr)
-      await redis.del(`session:${iidStr}`)
-      await redis.del(`lock:gen:${idString(instance.player_id)}:${iidStr}`)
-      await deadLetterJobs().deleteMany({
-        $or: [
-          { 'data.instanceId': iidStr },
-          { 'data.instance_id': iidStr },
-          { 'data.templateId': tidStr },
-          { 'data.template_id': tidStr },
-        ],
-      })
+      await Promise.all([
+        this.deleteInstanceData(instance._id, iidStr),
+        redis.del(`session:${iidStr}`),
+        redis.del(`lock:gen:${idString(instance.player_id)}:${iidStr}`),
+        deadLetterJobs().deleteMany({
+          $or: [
+            { 'data.instanceId': iidStr },
+            { 'data.instance_id': iidStr },
+          ],
+        }),
+      ])
     }
 
-    // Delete all events for these instances
+    // The Mongo collections are independent projections of the same instances,
+    // so deleting them in parallel reduces the time the client has to wait.
     if (instanceIds.length > 0) {
-      await events().deleteMany({ instance_id: { $in: instanceIds } })
-    }
-    
-    // Delete all memories for these instances
-    if (instanceIds.length > 0) {
-      await memories().deleteMany({ instance_id: { $in: instanceIds } })
-    }
-    
-    // Delete all scene + chapter + arc summaries for these instances
-    if (instanceIds.length > 0) {
-      await sceneSummaries().deleteMany({ instance_id: { $in: instanceIds } })
-      await mongoColl.chapterSummaries().deleteMany({ instance_id: { $in: instanceIds } })
-      await mongoColl.arcSummaries().deleteMany({ instance_id: { $in: instanceIds } })
-    }
-
-    // Delete all character codex entries for these instances
-    if (instanceIds.length > 0) {
-      await characters().deleteMany({ instance_id: { $in: instanceIds } })
-    }
-
-    // Delete the entity graph (registry + edges) for these instances.
-    if (instanceIds.length > 0) {
-      await entities().deleteMany({ instance_id: { $in: instanceIds } })
-      await entityEdges().deleteMany({ instance_id: { $in: instanceIds } })
-    }
-
-    if (instanceIds.length > 0) {
-      await mongoColl.storyCalendars().deleteMany({ instance_id: { $in: instanceIds } })
-      await mongoColl.timelineBranches().deleteMany({ instance_id: { $in: instanceIds } })
-    }
-
-    // Delete observability logs for these instances
-    if (instanceIds.length > 0) {
-      await mongoColl.generationLogs().deleteMany({ instance_id: { $in: instanceIds } })
+      await Promise.all([
+        events().deleteMany({ instance_id: { $in: instanceIds } }),
+        memories().deleteMany({ instance_id: { $in: instanceIds } }),
+        sceneSummaries().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.chapterSummaries().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.arcSummaries().deleteMany({ instance_id: { $in: instanceIds } }),
+        characters().deleteMany({ instance_id: { $in: instanceIds } }),
+        entities().deleteMany({ instance_id: { $in: instanceIds } }),
+        entityEdges().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.storyCalendars().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.timelineBranches().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.generationLogs().deleteMany({ instance_id: { $in: instanceIds } }),
+      ])
     }
 
     await deadLetterJobs().deleteMany({
@@ -408,18 +390,16 @@ export const deletionService = {
    * This is called internally by both deleteTemplate and deleteInstance.
    */
   async deleteInstanceData(instanceId: ObjectId, instanceIdStr: string): Promise<void> {
-    // Delete the memory + summary namespaces from Pinecone
-    try {
-      await deletePineconeNamespace(`mem_${instanceIdStr}`)
-    } catch (err) {
-      console.warn(`Failed to delete memory vectors for instance ${instanceIdStr}:`, (err as Error).message)
-      // Continue with deletion even if Pinecone cleanup fails
-    }
-    try {
-      await deletePineconeNamespace(`sum_${instanceIdStr}`)
-    } catch (err) {
-      console.warn(`Failed to delete summary vectors for instance ${instanceIdStr}:`, (err as Error).message)
-    }
+    // These namespaces are independent. Failure is logged but does not block
+    // the authoritative Mongo deletion, matching the existing cleanup policy.
+    await Promise.all([
+      deletePineconeNamespace(`mem_${instanceIdStr}`).catch((err) => {
+        console.warn(`Failed to delete memory vectors for instance ${instanceIdStr}:`, (err as Error).message)
+      }),
+      deletePineconeNamespace(`sum_${instanceIdStr}`).catch((err) => {
+        console.warn(`Failed to delete summary vectors for instance ${instanceIdStr}:`, (err as Error).message)
+      }),
+    ])
   },
 
   /**
