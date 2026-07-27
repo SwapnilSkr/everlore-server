@@ -8,6 +8,7 @@ import type { Static } from '@sinclair/typebox'
 import type { CreateTemplateBody, UpdateTemplateBody } from '../schemas/template.schema'
 import { HttpError } from '../utils/http-error'
 import { idString } from '../utils/mongo-id'
+import { billingService } from '../services/billing.service'
 
 type CreateBody = Static<typeof CreateTemplateBody>
 type UpdateBody = Static<typeof UpdateTemplateBody>
@@ -53,9 +54,11 @@ export const templateController = {
   generateImage: async ({
     user,
     body,
+    headers,
   }: {
     user: AuthUser | null
     body: { prompt: string }
+    headers: Record<string, string | undefined>
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     if (user.tier !== 'creator' && user.tier !== 'premium') {
@@ -65,13 +68,24 @@ export const templateController = {
     if (!rl.allowed) {
       throw new HttpError(429, 'Image generation rate limit exceeded. Try again shortly.')
     }
-    return imageService.generatePreview(body.prompt)
+    const reservation = await billingService.reserve(
+      user.id,
+      'image_preview',
+      headers['x-idempotency-key'] || crypto.randomUUID(),
+    )
+    try {
+      return await imageService.generatePreview(body.prompt)
+    } catch (error) {
+      await billingService.release(user.id, reservation.reservation_id)
+      throw error
+    }
   },
 
   // One-shot creation autofill — drafts an entire world/character from a brief.
   autofill: async ({
     user,
     body,
+    headers,
   }: {
     user: AuthUser | null
     body: {
@@ -81,6 +95,7 @@ export const templateController = {
       is_nsfw_capable?: boolean
       narrative_style?: string
     }
+    headers: Record<string, string | undefined>
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     if (user.tier !== 'creator' && user.tier !== 'premium') {
@@ -96,10 +111,20 @@ export const templateController = {
       isNsfwCapable: body.is_nsfw_capable ?? false,
       narrativeStyle: body.narrative_style,
     }
-    if (body.target === 'character') {
-      return { target: 'character', draft: await autofillService.autofillCharacter(opts) }
+    const reservation = await billingService.reserve(
+      user.id,
+      body.target === 'character' ? 'character_autofill' : 'world_autofill',
+      headers['x-idempotency-key'] || crypto.randomUUID(),
+    )
+    try {
+      if (body.target === 'character') {
+        return { target: 'character', draft: await autofillService.autofillCharacter(opts) }
+      }
+      return { target: 'world', draft: await autofillService.autofillWorld(opts) }
+    } catch (error) {
+      await billingService.release(user.id, reservation.reservation_id)
+      throw error
     }
-    return { target: 'world', draft: await autofillService.autofillWorld(opts) }
   },
 
   // Daily creation budget for a creator. The client can read this BEFORE the

@@ -14,9 +14,21 @@ export async function replayProcessor(job: Job) {
   const redis = getRedisClient()
   const channel = `user:${playerId}:events`
   const lockKey = generationLockKey(playerId, instanceId)
+  let visibleAttemptMarked = false
+  const markVisibleAttempt = () => {
+    if (visibleAttemptMarked) return
+    visibleAttemptMarked = true
+    // Replays are also streamed player-facing prose. Preserve the no-retry
+    // contract and let the worker settle, rather than refund, once a delta is
+    // visible to the player.
+    job.discard()
+    job.data.visibleStreamStarted = true
+    void job.updateData(job.data).catch(() => {})
+  }
 
   try {
     const result = await memoryService.replayEvent(eventId, playerId, (chunk) => {
+      if (chunk) markVisibleAttempt()
       redis.publish(
         channel,
         JSON.stringify({ type: 'replay_delta', instanceId, eventId, delta: chunk }),

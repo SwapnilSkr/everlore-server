@@ -29,8 +29,9 @@ export const generationService = {
     timeAdvance?: string
     /** A structured, player-confirmed action such as travel or a relationship fact. */
     worldAction?: PlayerWorldAction
+    billingReservationId?: string | null
   }) {
-    const { instanceId, playerId, userMessage, isContinuation = false, timeAdvance, worldAction } = params
+    const { instanceId, playerId, userMessage, isContinuation = false, timeAdvance, worldAction, billingReservationId } = params
     const requestedAt = Date.now()
     const session = await instanceService.loadSession(instanceId, playerId)
 
@@ -59,6 +60,7 @@ export const generationService = {
         requestedAt,
         session,
         userNsfwEnabled,
+        billingReservationId,
       },
       {
         priority: 1,
@@ -79,8 +81,9 @@ export const generationService = {
     playerId: string
     characterId: string
     userMessage: string
+    billingReservationId?: string | null
   }) {
-    const { instanceId, playerId, characterId, userMessage } = params
+    const { instanceId, playerId, characterId, userMessage, billingReservationId } = params
     const session = await instanceService.loadSession(instanceId, playerId)
     const player = await users().findOne(
       { _id: parseObjectId(playerId) },
@@ -99,6 +102,7 @@ export const generationService = {
         userMessage,
         session,
         userNsfwEnabled,
+        billingReservationId,
       },
       {
         priority: 1,
@@ -111,12 +115,12 @@ export const generationService = {
   },
 
   /** Enqueue a streaming replay (alternative response) for an existing event. */
-  async dispatchReplay(params: { instanceId: string; playerId: string; eventId: string }) {
-    const { instanceId, playerId, eventId } = params
+  async dispatchReplay(params: { instanceId: string; playerId: string; eventId: string; billingReservationId?: string | null }) {
+    const { instanceId, playerId, eventId, billingReservationId } = params
     const queue = getGenerationQueue()
     const job = await queue.add(
       'replay',
-      { mode: 'replay', instanceId, playerId, eventId },
+      { mode: 'replay', instanceId, playerId, eventId, billingReservationId },
       {
         priority: 1,
         attempts: 1,

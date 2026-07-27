@@ -10,6 +10,40 @@ import { maintenanceProcessor } from './processors/maintenance.processor'
 import { getMaintenanceQueue, QUEUE_RETENTION } from '../src/queues'
 import { loadNsfwLexicon } from './lib/nsfw-classifier'
 import { log } from '../src/utils/logger'
+import { billingService } from '../src/services/billing.service'
+
+/** Billing must never turn an already-visible story result into a worker error.
+ * These mutations are idempotent ledger writes, so a later repair can safely
+ * retry them if Mongo is temporarily unavailable. */
+async function settleGenerationReservation(job: Job) {
+  const playerId = job.data?.playerId
+  const reservationId = job.data?.billingReservationId ?? null
+  if (typeof playerId !== 'string' || !reservationId) return
+  try {
+    await billingService.settle(playerId, reservationId)
+  } catch (error) {
+    log.error('billing.generation_settlement_failed', {
+      jobId: job.id,
+      playerId,
+      error: (error as Error).message,
+    })
+  }
+}
+
+async function releaseGenerationReservation(job: Job) {
+  const playerId = job.data?.playerId
+  const reservationId = job.data?.billingReservationId ?? null
+  if (typeof playerId !== 'string' || !reservationId) return
+  try {
+    await billingService.release(playerId, reservationId)
+  } catch (error) {
+    log.error('billing.generation_release_failed', {
+      jobId: job.id,
+      playerId,
+      error: (error as Error).message,
+    })
+  }
+}
 
 async function main() {
   // Initialize connections
@@ -123,8 +157,11 @@ async function main() {
         })
       }
     })
-    w.on('completed', (job) => {
+    w.on('completed', async (job) => {
       console.log(`[${w.name}] Job ${job.id} completed`)
+      if (w.name === 'generation') {
+        await settleGenerationReservation(job)
+      }
     })
   }
 
@@ -152,6 +189,7 @@ async function main() {
           error: err.message,
         })
         await redis.del(generationLockKey(job.data.playerId, job.data.instanceId))
+        await settleGenerationReservation(job)
         return
       }
       try {
@@ -208,9 +246,15 @@ async function main() {
           instanceId: job.data.instanceId,
           error: err.message,
         })
+        await settleGenerationReservation(job)
         await redis.del(generationLockKey(job.data.playerId, job.data.instanceId))
         return
       }
+
+      // No usable prose reached the player. Return the pre-dispatched Ink only
+      // after the final retry has failed; intermediate failures may still finish
+      // successfully on their next attempt.
+      await releaseGenerationReservation(job)
 
       await redis.publish(
         `user:${job.data.playerId}:events`,

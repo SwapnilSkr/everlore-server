@@ -5,6 +5,7 @@ import { verifyWsToken, type AuthUser } from '../middleware/auth'
 import { rateLimit } from '../middleware/rate-limit'
 import { log } from '../utils/logger'
 import { GENERATION_LOCK_TTL_SECONDS, generationLockKey } from '../utils/generation-lock'
+import { billingService } from './billing.service'
 
 /** Underlying Bun socket — stable identity; Elysia passes a new `ElysiaWS` wrapper per event. */
 type RawWs = { send: (data: string) => void }
@@ -164,6 +165,7 @@ export const playWsService = {
           return
         }
 
+        let reservationId: string | null = null
         try {
           const payload = (data as { payload?: { message?: string } }).payload
           const message = payload?.message
@@ -173,16 +175,21 @@ export const playWsService = {
             return
           }
 
+          const reservation = await billingService.reserve(user.id, 'story_turn', crypto.randomUUID())
+          reservationId = reservation.reservation_id
+
           const jobId = await generationService.dispatch({
             instanceId,
             playerId: user.id,
             userMessage: message,
+            billingReservationId: reservation.reservation_id,
           })
 
           await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
 
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
+          await billingService.release(user.id, reservationId)
           await redis.del(lockKey)
           const message = err instanceof Error ? err.message : String(err)
           ws.send(JSON.stringify({ type: 'error', message }))
@@ -212,6 +219,7 @@ export const playWsService = {
           return
         }
 
+        let reservationId: string | null = null
         try {
           // No player message — the world advances on its own. Optional payload
           // `advance` turns the quiet continue into a time-skip (calendar tick).
@@ -220,16 +228,20 @@ export const playWsService = {
             advanceRaw && ['hours', 'day', 'days', 'season'].includes(advanceRaw)
               ? advanceRaw
               : undefined
+          const reservation = await billingService.reserve(user.id, 'story_turn', crypto.randomUUID())
+          reservationId = reservation.reservation_id
           const jobId = await generationService.dispatch({
             instanceId,
             playerId: user.id,
             userMessage: '',
             isContinuation: true,
             timeAdvance,
+            billingReservationId: reservation.reservation_id,
           })
           await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
+          await billingService.release(user.id, reservationId)
           await redis.del(lockKey)
           const message = err instanceof Error ? err.message : String(err)
           ws.send(JSON.stringify({ type: 'error', message }))
@@ -255,16 +267,21 @@ export const playWsService = {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
         }
+        let reservationId: string | null = null
         try {
+          const reservation = await billingService.reserve(user.id, 'story_turn', crypto.randomUUID())
+          reservationId = reservation.reservation_id
           const jobId = await generationService.dispatch({
             instanceId,
             playerId: user.id,
             userMessage: '',
             worldAction,
+            billingReservationId: reservation.reservation_id,
           })
           await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
+          await billingService.release(user.id, reservationId)
           await redis.del(lockKey)
           ws.send(JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : String(err) }))
         }
@@ -295,6 +312,7 @@ export const playWsService = {
           return
         }
 
+        let reservationId: string | null = null
         try {
           const payload = (data as { payload?: { character_id?: string; message?: string } })
             .payload
@@ -311,15 +329,20 @@ export const playWsService = {
             return
           }
 
+          const reservation = await billingService.reserve(user.id, 'story_turn', crypto.randomUUID())
+          reservationId = reservation.reservation_id
+
           const jobId = await generationService.dispatchSideChat({
             instanceId,
             playerId: user.id,
             characterId,
             userMessage: message,
+            billingReservationId: reservation.reservation_id,
           })
           await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
+          await billingService.release(user.id, reservationId)
           await redis.del(lockKey)
           const message = err instanceof Error ? err.message : String(err)
           ws.send(JSON.stringify({ type: 'error', message }))
@@ -350,17 +373,22 @@ export const playWsService = {
           return
         }
 
+        let reservationId: string | null = null
         try {
+          const reservation = await billingService.reserve(user.id, 'story_turn', crypto.randomUUID())
+          reservationId = reservation.reservation_id
           const jobId = await generationService.dispatchReplay({
             instanceId,
             playerId: user.id,
             eventId,
+            billingReservationId: reservation.reservation_id,
           })
           // Replays widen retrieval and can run a touch longer than a normal turn.
           await redis.set(lockKey, jobId!, 'EX', REPLAY_LOCK_TTL_SECONDS)
           log.info('ws.replay.dispatched', { userId: user.id, instanceId, eventId, jobId })
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
+          await billingService.release(user.id, reservationId)
           await redis.del(lockKey)
           const message = err instanceof Error ? err.message : String(err)
           log.error('ws.replay.failed', { userId: user.id, instanceId, eventId, error: message })

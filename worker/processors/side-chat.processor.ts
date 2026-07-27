@@ -206,6 +206,16 @@ The earlier private-chat messages are continuity only. Preserve their facts and 
     messages.push({ role: 'user', content: userMessage })
 
     const genStart = Date.now()
+    let visibleAttemptMarked = false
+    const markVisibleAttempt = () => {
+      if (visibleAttemptMarked) return
+      visibleAttemptMarked = true
+      // Side-chat prose is player-visible as soon as it streams. Marking it
+      // keeps billing and retry semantics identical to main narration.
+      job.discard()
+      job.data.visibleStreamStarted = true
+      void job.updateData(job.data).catch(() => {})
+    }
     const reply = await callLLMStream(
       {
         model: modelId,
@@ -215,6 +225,7 @@ The earlier private-chat messages are continuity only. Preserve their facts and 
         sessionId: instanceId,
       },
       (chunk) => {
+        if (chunk) markVisibleAttempt()
         redis.publish(
           channel,
           JSON.stringify({
