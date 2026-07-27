@@ -10,6 +10,7 @@ import { personaRoutes } from './routes/persona.routes'
 import { chronicleRoutes } from './routes/chronicle.routes'
 import { adminRoutes } from './routes/admin.routes'
 import { wsRoutes } from './routes/ws.routes'
+import { billingRoutes } from './routes/billing.routes'
 import { setupRedisPubSub } from './services/play-ws.service'
 import { HttpError } from './utils/http-error'
 import { httpLoggerPlugin } from './plugins/http-logger.plugin'
@@ -114,6 +115,7 @@ async function main() {
     .use(instanceRoutes)
     .use(personaRoutes)
     .use(chronicleRoutes)
+    .use(billingRoutes)
     .use(wsRoutes)
     .listen(env.PORT)
 

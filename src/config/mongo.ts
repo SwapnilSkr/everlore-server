@@ -23,6 +23,7 @@ import type { SignalLedgerDoc } from '../models/signal-ledger.model'
 import type { ProjectionCheckpointChunkDoc, ProjectionCheckpointDoc } from '../models/projection-checkpoint.model'
 import type { LocationStatsDoc } from '../models/location-stats.model'
 import type { RelationCandidateDoc } from '../models/relation-candidate.model'
+import type { InkLedgerDoc, BillingEntitlementDoc, StorePurchaseDoc } from '../models/billing.model'
 
 let client: MongoClient | null = null
 let database: Db | null = null
@@ -61,6 +62,9 @@ export const mongoColl = {
   projectionCheckpointChunks: () => coll<WithoutId<ProjectionCheckpointChunkDoc>>(COLLECTIONS.projection_checkpoint_chunks),
   locationStats: () => coll<WithoutId<LocationStatsDoc>>(COLLECTIONS.location_stats),
   relationCandidates: () => coll<WithoutId<RelationCandidateDoc>>(COLLECTIONS.relation_candidates),
+  inkLedger: () => coll<WithoutId<InkLedgerDoc>>(COLLECTIONS.ink_ledger),
+  billingEntitlements: () => coll<WithoutId<BillingEntitlementDoc>>(COLLECTIONS.billing_entitlements),
+  storePurchases: () => coll<WithoutId<StorePurchaseDoc>>(COLLECTIONS.store_purchases),
 } as const
 
 export async function connectMongo(): Promise<Db> {

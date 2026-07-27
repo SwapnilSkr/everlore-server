@@ -38,6 +38,28 @@ export type EverloreIndexDef = {
 }
 
 export const EVERLORE_INDEXES: EverloreIndexDef[] = [
+  // Billing is append-only. The unique idempotency key is the safety rail that
+  // keeps reconnects, webhook retries, and stream retries from double charging.
+  {
+    collection: COLLECTIONS.ink_ledger,
+    key: { player_id: 1, idempotency_key: 1 },
+    options: { unique: true, name: 'idx_ink_ledger_player_idempotency' },
+  },
+  {
+    collection: COLLECTIONS.ink_ledger,
+    key: { player_id: 1, created_at: -1 },
+    options: { name: 'idx_ink_ledger_player_created' },
+  },
+  {
+    collection: COLLECTIONS.billing_entitlements,
+    key: { player_id: 1, active: 1, expires_at: 1 },
+    options: { name: 'idx_billing_entitlement_player_active' },
+  },
+  {
+    collection: COLLECTIONS.store_purchases,
+    key: { provider: 1, purchase_token: 1 },
+    options: { unique: true, name: 'idx_store_purchase_token' },
+  },
   // relation candidates — a review queue, never a source of canon by itself.
   {
     collection: COLLECTIONS.relation_candidates,

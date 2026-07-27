@@ -26,6 +26,9 @@ export const COLLECTIONS = {
   projection_checkpoint_chunks: 'projection_checkpoint_chunks',
   location_stats: 'location_stats',
   relation_candidates: 'relation_candidates',
+  ink_ledger: 'ink_ledger',
+  billing_entitlements: 'billing_entitlements',
+  store_purchases: 'store_purchases',
 } as const
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS]

@@ -56,6 +56,14 @@ const optionalEnvVars = {
   GENERATION_RATE_MAX: '10',
   CHAT_RATE_MAX: '10',
   TEMPLATE_CREATE_RATE_MAX: '5',
+  /** Keeps the full billing path deployable before Play products are live. */
+  BILLING_ENFORCEMENT_ENABLED: 'false',
+  GOOGLE_PLAY_PACKAGE_NAME: '',
+  /** JSON service-account credential with Android Publisher API access. */
+  GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: '',
+  /** OIDC audience and sender configured on the Google Cloud Pub/Sub push subscription. */
+  GOOGLE_PLAY_RTDN_AUDIENCE: '',
+  GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL: '',
 } as const
 
 export interface Env {
@@ -91,6 +99,11 @@ export interface Env {
   GENERATION_RATE_MAX: number
   CHAT_RATE_MAX: number
   TEMPLATE_CREATE_RATE_MAX: number
+  BILLING_ENFORCEMENT_ENABLED: boolean
+  GOOGLE_PLAY_PACKAGE_NAME: string
+  GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: string
+  GOOGLE_PLAY_RTDN_AUDIENCE: string
+  GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL: string
 }
 
 function loadEnv(): Env {
@@ -138,6 +151,11 @@ function loadEnv(): Env {
     GENERATION_RATE_MAX: Number(process.env.GENERATION_RATE_MAX || optionalEnvVars.GENERATION_RATE_MAX),
     CHAT_RATE_MAX: Number(process.env.CHAT_RATE_MAX || optionalEnvVars.CHAT_RATE_MAX),
     TEMPLATE_CREATE_RATE_MAX: Number(process.env.TEMPLATE_CREATE_RATE_MAX || optionalEnvVars.TEMPLATE_CREATE_RATE_MAX),
+    BILLING_ENFORCEMENT_ENABLED: process.env.BILLING_ENFORCEMENT_ENABLED === 'true',
+    GOOGLE_PLAY_PACKAGE_NAME: process.env.GOOGLE_PLAY_PACKAGE_NAME || optionalEnvVars.GOOGLE_PLAY_PACKAGE_NAME,
+    GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || optionalEnvVars.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON,
+    GOOGLE_PLAY_RTDN_AUDIENCE: process.env.GOOGLE_PLAY_RTDN_AUDIENCE || optionalEnvVars.GOOGLE_PLAY_RTDN_AUDIENCE,
+    GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL: process.env.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL || optionalEnvVars.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL,
   }
 }
 
