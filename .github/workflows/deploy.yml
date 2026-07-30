@@ -1,0 +1,45 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: true
+
+jobs:
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - run: bun install --frozen-lockfile
+      - run: bun run typecheck
+
+  deploy:
+    needs: typecheck
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ec2-user
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script_stop: true
+          script: |
+            set -euo pipefail
+            cd /opt/everlore/app
+            sudo -u everlore git fetch origin main
+            sudo -u everlore git reset --hard origin/main
+            sudo -u everlore /usr/local/bin/bun install --frozen-lockfile
+            sudo systemctl restart everlore-api everlore-worker
+            sleep 4
+            sudo systemctl is-active --quiet everlore-api
+            sudo systemctl is-active --quiet everlore-worker
+            curl -fsS --max-time 15 http://127.0.0.1:8081/health
+            echo DEPLOY_OK
