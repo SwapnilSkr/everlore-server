@@ -4,8 +4,11 @@ import { mongoColl } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { embedBatch } from '../../src/ai'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
-import { QUEUE_RETENTION } from '../../src/queues'
+import { getMaintenanceQueue, QUEUE_RETENTION } from '../../src/queues'
+import { MANAGED_QUEUES, pruneExpiredCompletedQueueJobs } from '../../src/services/queue-hygiene.service'
 import { log } from '../../src/utils/logger'
+import { dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
+import { characterProjectionProcessor } from './character-projection.processor'
 
 const SCENE_SUMMARY_BLOCK = 12
 const STUCK_SUMMARY_MS = 10 * 60 * 1000
@@ -49,6 +52,41 @@ export async function maintenanceProcessor(job: Job) {
       }
 
       return { archived: staleMemories.length }
+    }
+
+    case 'prune_queue_telemetry': {
+      const completedRemoved: Record<string, number> = {}
+      for (const queue of MANAGED_QUEUES) {
+        completedRemoved[queue] = await pruneExpiredCompletedQueueJobs(queue)
+      }
+      log.info('maintenance.queue_telemetry_pruned', { completedRemoved })
+      return { completedRemoved }
+    }
+
+    case 'dispatch_post_process_outbox':
+      return dispatchPostProcessOutbox()
+
+    case 'character_projection':
+      return characterProjectionProcessor(job)
+
+    case 'repair_character_projections': {
+      const pending = await mongoColl.events()
+        .find({ 'data.codex_projection_status': { $in: ['pending', 'processing'] }, 'data.codex_deltas': { $exists: false } }, { projection: { _id: 1, instance_id: 1, player_id: 1 } })
+        .sort({ sequence: 1 })
+        .limit(100)
+        .toArray()
+      const queue = getMaintenanceQueue()
+      for (const event of pending) {
+        await queue.add('character-projection-repair', {
+          task: 'character_projection', instanceId: idString(event.instance_id), playerId: idString(event.player_id), eventId: idString(event._id),
+        }, {
+          jobId: `character_projection_repair:${idString(event._id)}:${Math.floor(Date.now() / 900000)}`,
+          priority: 25, attempts: 5, backoff: { type: 'exponential', delay: 5000 },
+          removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+        })
+      }
+      return { queued: pending.length }
     }
 
     case 'dedup_memories': {

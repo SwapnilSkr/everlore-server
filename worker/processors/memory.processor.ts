@@ -120,12 +120,11 @@ function hasFirstPersonPlayerFact(input: string): boolean {
 function normalizePlayerFactAttribution(params: {
   extracted: any
   isSentient?: boolean
-  sideChat?: unknown
   playerInput: string
   protagonistName?: string | null
 }) {
-  const { extracted, isSentient, sideChat, playerInput, protagonistName } = params
-  if (!isSentient || sideChat || !protagonistName || !hasFirstPersonPlayerFact(playerInput)) return
+  const { extracted, isSentient, playerInput, protagonistName } = params
+  if (!isSentient || !protagonistName || !hasFirstPersonPlayerFact(playerInput)) return
   const protagNorm = normalizeEntityName(protagonistName)
   if (!protagNorm || !Array.isArray(extracted.memories)) return
   const protagRe = new RegExp(`\\b${escapeRegExp(protagonistName)}\\b`, 'gi')
@@ -164,7 +163,6 @@ async function supersedeExplicitCorrections(params: {
     .find({
       instance_id: instanceOid,
       is_archived: false,
-      origin: { $ne: 'side_chat' },
       source_event_ids: { $ne: eventOid },
       $or: clauses,
     })
@@ -251,9 +249,6 @@ export async function memoryProcessor(job: Job) {
     isSentient = false,
     playerPersonaName = null,
     protagonistName = null,
-    /** Present when the exchange is a PRIVATE side-character chat: atoms get
-     *  origin 'side_chat' + known_by participant scoping. */
-    sideChat = null,
   } = job.data as {
     instanceId: string
     playerId: string
@@ -269,12 +264,6 @@ export async function memoryProcessor(job: Job) {
     isSentient?: boolean
     playerPersonaName?: string | null
     protagonistName?: string | null
-    sideChat?: {
-      characterId: string
-      characterName: string
-      characterEntityId: string | null
-      isSentient: boolean
-    } | null
   }
   const redis = getRedisClient()
   const instanceOid = parseObjectId(instanceId)
@@ -310,11 +299,7 @@ export async function memoryProcessor(job: Job) {
       { role: 'system', content: EXTRACTION_PROMPT },
       {
         role: 'user',
-        content: `Scene type: ${sceneTag}${
-          sideChat
-            ? `\nNOTE: This is a PRIVATE one-on-one conversation between the player and ${sideChat.characterName}, outside the main story narration. "World" below is ${sideChat.characterName} speaking. Only the two of them witnessed it.`
-            : ''
-        }
+        content: `Scene type: ${sceneTag}
 
 Character roster (canonical names for resolution):
 ${rosterLines}
@@ -343,7 +328,7 @@ World: ${aiResponse}`,
     console.warn('Memory extraction returned invalid JSON:', result)
     return { memoriesCreated: 0 }
   }
-  normalizePlayerFactAttribution({ extracted, isSentient, sideChat, playerInput, protagonistName })
+  normalizePlayerFactAttribution({ extracted, isSentient, playerInput, protagonistName })
 
   // Close earlier open threads this turn paid off — even when no new atom was
   // worth storing (a quiet fulfillment is still a resolution).
@@ -428,33 +413,6 @@ World: ${aiResponse}`,
     console.warn('Memory entity resolution skipped:', (err as Error).message)
   }
 
-  // Who-knows-this scope for private side-chat atoms: the player, the side
-  // character, and — in GM worlds, where the player speaks AS the protagonist —
-  // the protagonist too (their own conversations are protagonist knowledge,
-  // which is exactly what the main-narration gate checks). Fails CLOSED: if
-  // resolution comes up empty the atom is invisible everywhere rather than leaked.
-  let knownByEntityIds: ObjectId[] = []
-  if (sideChat) {
-    try {
-      if (playerEntity) knownByEntityIds.push(playerEntity._id)
-      const charEntityId = sideChat.characterEntityId
-        ? parseObjectId(sideChat.characterEntityId)
-        : entityMap?.get(normalizeEntityName(sideChat.characterName))?._id || null
-      if (charEntityId && !knownByEntityIds.some((id) => id.equals(charEntityId))) {
-        knownByEntityIds.push(charEntityId)
-      }
-      if (!sideChat.isSentient) {
-        const protagonist = await mongoColl
-          .entities()
-          .findOne({ instance_id: instanceOid, type: 'protagonist' }, { projection: { _id: 1 } })
-        if (protagonist && !knownByEntityIds.some((id) => id.equals(protagonist._id))) {
-          knownByEntityIds.push(protagonist._id)
-        }
-      }
-    } catch (err) {
-      console.warn('Side-chat known_by resolution incomplete:', (err as Error).message)
-    }
-  }
   const entityIdsFor = (names: string[]): ObjectId[] => {
     if (!entityMap) return []
     const out: ObjectId[] = []
@@ -500,10 +458,6 @@ World: ${aiResponse}`,
       created_at: new Date().toISOString(),
     }
     if (subjects.length > 0) vectorMetadata.subjects = subjects
-    if (sideChat) {
-      vectorMetadata.origin = 'side_chat'
-      vectorMetadata.known_by = knownByEntityIds.map((id) => idString(id))
-    }
     if (eventTimeAnchor?.timeline_id) vectorMetadata.timeline_id = eventTimeAnchor.timeline_id
     if (eventTimeAnchor?.sequence) vectorMetadata.sequence = eventTimeAnchor.sequence
     if (eventLocationAnchor?.entity_id) vectorMetadata.location_entity_id = idString(eventLocationAnchor.entity_id)
@@ -541,7 +495,6 @@ World: ${aiResponse}`,
       last_accessed_at: new Date(),
       is_archived: false,
       status: 'active' as const,
-      ...(sideChat ? { origin: 'side_chat' as const, known_by_entity_ids: knownByEntityIds } : {}),
       subjects,
       objects,
       ...(retrievalTerms.length ? { search_terms: retrievalTerms.join(', ') } : {}),
@@ -590,7 +543,7 @@ World: ${aiResponse}`,
     }
   }
 
-  if (!sideChat && newMemories.length > 0) {
+  if (newMemories.length > 0) {
     const explicitOldTerms = extractExplicitCorrections(playerInput)
     if (explicitOldTerms.length > 0) {
       try {
@@ -616,9 +569,8 @@ World: ${aiResponse}`,
   // stamped the OLD atoms it archived with `superseded_by_event_ids: thisEvent`
   // (race-free single writer); here the curator — the natural owner of the new
   // correcting atoms — points them back. Whichever of {supersession, curation}
-  // sees both materializes the link; the repair job reconciles the race. Only on
-  // MAIN turns (a side-chat atom never supersedes a main codex fact).
-  if (!sideChat && newMemories.length > 0) {
+  // sees both materializes the link; the repair job reconciles the race.
+  if (newMemories.length > 0) {
     try {
       const supersededByThisEvent = await mongoColl
         .memories()

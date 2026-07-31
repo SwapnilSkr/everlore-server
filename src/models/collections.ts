@@ -29,6 +29,7 @@ export const COLLECTIONS = {
   ink_ledger: 'ink_ledger',
   billing_entitlements: 'billing_entitlements',
   store_purchases: 'store_purchases',
+  post_process_outbox: 'post_process_outbox',
 } as const
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS]

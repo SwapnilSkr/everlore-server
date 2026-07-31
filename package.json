@@ -13,7 +13,6 @@
     "test:tts": "bun run scripts/test-tts-model.ts",
     "audit:choices": "bun run scripts/choice-audit.ts",
     "audit:choice-grounding": "bun run scripts/choice-grounding-audit.ts",
-    "audit:side-chat-reachability": "bun run scripts/side-chat-reachability-audit.ts",
     "audit:projection-checkpoint": "bun run scripts/projection-checkpoint-audit.ts",
     "audit:location": "bun run scripts/location-audit.ts",
     "audit:location-resolution": "bun run scripts/location-resolution-audit.ts",
@@ -33,7 +32,6 @@
     "repair:template-cast-projections": "bun run scripts/repair-template-cast-projections.ts",
     "audit:replay-edit": "bun run scripts/replay-edit-audit.ts",
     "audit:memory-links": "bun run scripts/memory-links-audit.ts",
-    "audit:side-chat-privacy": "bun run scripts/side-chat-privacy-audit.ts",
     "audit:carding-routing": "bun run scripts/carding-routing-audit.ts",
     "audit:entity-adjudication": "bun run scripts/entity-adjudication-audit.ts",
     "merge:character": "bun run scripts/merge-character-cards.ts",
@@ -42,7 +40,9 @@
     "gen:splash-avatars": "bun run scripts/gen-splash-avatars.ts",
     "gen:player-avatars": "bun run scripts/gen-player-avatars.ts",
     "seed:default-cover": "bun run scripts/seed-default-cover.ts",
-    "clean:queue-jobs": "bun run scripts/clean-redis-jobs.ts"
+    "clean:queue-jobs": "bun run scripts/clean-redis-jobs.ts",
+    "report:redis-hygiene": "bun run scripts/clean-redis-jobs.ts",
+    "prune:redis-completed-jobs": "bun run scripts/clean-redis-jobs.ts --execute"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",

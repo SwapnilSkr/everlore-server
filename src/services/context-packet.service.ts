@@ -94,121 +94,6 @@ function normalizeLocationAnchor(raw: any): LocationAnchorDoc | null {
   }
 }
 
-/** Memories injected into a side chat (the character's view of shared history). */
-const SIDE_CHAT_MEMORY_LIMIT = 12
-/** Open threads involving the character surfaced in a side chat. */
-const SIDE_CHAT_THREAD_LIMIT = 3
-
-/** Context for one PRIVATE side-character chat turn: the active character is
- *  the pin, and retrieval is scoped to what THEY can know — memories they are
- *  part of, plus (once side-chat curation exists) their own conversations. */
-export interface SideChatPacket {
-  /** What the character remembers of their shared history, importance-ranked. */
-  memoryTexts: string[]
-  /** Unresolved promises/conflicts involving this character. */
-  openThreads: string[]
-  currentSequence: number
-  latestEventId: import('mongodb').ObjectId | null
-  currentTimeAnchor: TimeAnchorDoc | null
-  timeContext: string | null
-  currentLocation: LocationAnchorDoc | null
-  locationContext: string | null
-}
-
-export async function buildSideChatPacket(params: {
-  instanceId: string
-  session: PacketSession
-  card: CharacterProfileDoc
-}): Promise<SideChatPacket> {
-  const { instanceId, session, card } = params
-  const iid = parseObjectId(instanceId)
-
-  // Involvement filter (same shape as the Phase 10 "what this character
-  // remembers about you" view): entity-graph links first, canonical-name
-  // strings for pre-graph rows.
-  const involvement: Record<string, unknown>[] = []
-  if (card.entity_id) {
-    involvement.push({ subject_entity_ids: card.entity_id })
-    involvement.push({ object_entity_ids: card.entity_id })
-  }
-  involvement.push({ subjects: card.canonical_name })
-  involvement.push({ objects: card.canonical_name })
-
-  // Knowledge scope: main-story memories they are part of, and — once
-  // side-chat curation lands rows with origin/known_by — only THEIR private
-  // conversations, never another character's. No-op on today's rows.
-  const knowledgeScope: Record<string, unknown> = {
-    $or: [
-      { origin: { $ne: 'side_chat' } },
-      ...(card.entity_id ? [{ known_by_entity_ids: card.entity_id }] : []),
-    ],
-  }
-
-  const [latestEvent, memories, threads] = await Promise.all([
-    mongoColl
-      .events()
-      .findOne(
-        { instance_id: iid },
-        { sort: { sequence: -1 }, projection: { _id: 1, sequence: 1, time_anchor: 1 } },
-      ),
-    mongoColl
-      .memories()
-      .find({ instance_id: iid, is_archived: false, $or: involvement, $and: [knowledgeScope] })
-      .sort({ importance: -1, updated_at: -1 })
-      .limit(SIDE_CHAT_MEMORY_LIMIT)
-      .toArray(),
-    mongoColl
-      .memories()
-      .find({
-        instance_id: iid,
-        is_archived: false,
-        unresolved_thread: true,
-        $or: involvement,
-        $and: [knowledgeScope],
-      })
-      .sort({ importance: -1, updated_at: -1 })
-      .limit(SIDE_CHAT_THREAD_LIMIT)
-      .toArray(),
-  ])
-
-  const currentTimeAnchor =
-    session.current_time_anchor || (latestEvent as any)?.time_anchor || null
-  const timeContext = await timeService
-    .timelineContext(instanceId, currentTimeAnchor)
-    .catch(() => null)
-  const currentLocation = normalizeLocationAnchor(session.current_location)
-  let locationContext = currentLocation ? `Current place: ${currentLocation.name}.` : null
-  if (currentLocation) {
-    // Fold in the place's established canon + current condition so narration
-    // stays consistent with what's known about where the protagonist stands.
-    const placeEntity = (await mongoColl
-      .entities()
-      .findOne(
-        { _id: currentLocation.entity_id, instance_id: parseObjectId(instanceId), type: 'location' },
-        { projection: { location_state: 1, location_facts: 1 } },
-      )
-      .catch(() => null)) as { location_state?: Array<{ text: string }>; location_facts?: Array<{ text: string }> } | null
-    const facts = (placeEntity?.location_facts || []).slice(-3).map((f) => f.text)
-    const state = (placeEntity?.location_state || []).slice(-3).map((f) => f.text)
-    if (facts.length) locationContext += `\nAbout this place: ${facts.join(' ')}`
-    if (state.length) locationContext += `\nCurrent condition: ${state.join(' ')}`
-  }
-
-  const threadIds = new Set(threads.map((t) => idString(t._id)))
-  return {
-    memoryTexts: memories
-      .filter((m) => !threadIds.has(idString(m._id)))
-      .map((m) => m.text),
-    openThreads: threads.map((t) => t.text),
-    currentSequence: latestEvent?.sequence || 0,
-    latestEventId: latestEvent?._id || null,
-    currentTimeAnchor,
-    timeContext,
-    currentLocation,
-    locationContext,
-  }
-}
-
 /**
  * Build the context packet for one generated turn. Runs in the WORKER (not at
  * dispatch) so retrieval results can shape codex selection — the
@@ -224,22 +109,14 @@ export async function buildContextPacket(params: {
   const { instanceId, playerId, session, userMessage, isContinuation } = params
   const iid = parseObjectId(instanceId)
 
-  // Side chats are excluded from the narration window (private conversations,
-  // not story beats) but they DO share the sequence counter — so the cursor
-  // must come from the true latest event or a later turn could collide.
-  const [recentEvents, latestAnyEvent] = await Promise.all([
-    mongoColl
-      .events()
-      .find({ instance_id: iid, type: { $ne: 'side_chat' } })
-      .sort({ sequence: -1 })
-      .limit(EVENT_WINDOWS.promptRecentEvents)
-      .toArray() as Promise<WorldEventDoc[]>,
-    mongoColl
-      .events()
-      .findOne({ instance_id: iid }, { sort: { sequence: -1 }, projection: { sequence: 1 } }),
-  ])
+  const recentEvents = await mongoColl
+    .events()
+    .find({ instance_id: iid })
+    .sort({ sequence: -1 })
+    .limit(EVENT_WINDOWS.promptRecentEvents)
+    .toArray() as WorldEventDoc[]
   recentEvents.reverse()
-  const currentSequence = latestAnyEvent?.sequence || 0
+  const currentSequence = recentEvents[recentEvents.length - 1]?.sequence || 0
 
   // These reads are independent of entity resolution and RAG. Start them now
   // and await each only at its first real consumer below; keeping them off the
@@ -267,8 +144,7 @@ export async function buildContextPacket(params: {
   // echo into the story. Code consumers read packet.currentLocation instead.
   // Enriched with the containment ANCESTRY (owner-scoped identity, so "Marcus's
   // penthouse, within Downtown" can't be confused with another penthouse) and the
-  // place's canon facts + current condition (the MAIN packet previously omitted
-  // these — only side chats had them).
+  // place's canon facts + current condition.
   const locationContextPromise: Promise<string | null> = !currentLocation
     ? Promise.resolve(null)
     : Promise.all([

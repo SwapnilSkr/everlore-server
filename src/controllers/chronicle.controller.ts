@@ -5,7 +5,6 @@ import type { CharacterCodexDelta, RelationAssertion } from '../services/charact
 import { memorySupersessionService } from '../services/memory-supersession.service'
 import { timeService } from '../services/time.service'
 import { locationService } from '../services/location.service'
-import { sideChatService } from '../services/side-chat.service'
 import { entityGraphService, normalizeEntityName } from '../services/entity-graph.service'
 import { kinshipGraphService } from '../services/kinship-graph.service'
 import { isRelationKind, surfaceToKind } from '../utils/kinship-ontology'
@@ -443,44 +442,6 @@ export const chronicleController = {
       user.id,
       params.locationEntityId,
     )
-  },
-
-  getSideChatThreads: async ({
-    params,
-    user,
-  }: {
-    params: { instanceId: string }
-    user: AuthUser | null
-  }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
-    return sideChatService.listThreads(params.instanceId, user.id)
-  },
-
-  getSideChatThread: async ({
-    params,
-    query,
-    user,
-  }: {
-    params: { instanceId: string; characterId: string }
-    query: { page?: number; limit?: number }
-    user: AuthUser | null
-  }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
-    return sideChatService.getThread(params.instanceId, user.id, params.characterId, {
-      page: Number(query.page) || 1,
-      limit: Number(query.limit) || undefined,
-    })
-  },
-
-  getSideChatReachability: async ({
-    params,
-    user,
-  }: {
-    params: { instanceId: string; characterId: string }
-    user: AuthUser | null
-  }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
-    return sideChatService.checkReachability(params.instanceId, user.id, params.characterId)
   },
 
   forkTimeline: async ({

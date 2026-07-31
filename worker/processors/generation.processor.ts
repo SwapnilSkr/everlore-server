@@ -53,15 +53,14 @@ import { type WorldFactSource, SOURCE_RANK, confidenceFor, isWorldFactSource } f
 import { memorySupersessionService } from '../../src/services/memory-supersession.service'
 import { relationCandidateService } from '../../src/services/relation-candidate.service'
 import { timeService } from '../../src/services/time.service'
-import { getMaintenanceQueue, getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../../src/queues'
 import { replayProcessor } from './replay.processor'
-import { sideChatProcessor } from './side-chat.processor'
 import { log } from '../../src/utils/logger'
 import type { PlayerWorldAction } from '../../src/utils/world-action'
 import { surfaceToKind } from '../../src/utils/kinship-ontology'
 import { detectNarratedRelationCandidates } from '../lib/relation-candidate-detector'
 import { detectCanonRevisionCandidates } from '../lib/canon-revision-detector'
 import { establishesSceneLocation } from '../lib/scene-location-signal'
+import { dispatchPostProcessOutbox, stagePostProcess } from '../../src/services/post-process-outbox.service'
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -273,11 +272,6 @@ export async function generationProcessor(job: Job) {
   // they stream an alternative for an existing event instead of appending one.
   if (job.data?.mode === 'replay') {
     return replayProcessor(job)
-  }
-  // Side chats also share the generation queue/worker: a private conversation
-  // with one side character, appended to the same ledger as its own event type.
-  if (job.data?.mode === 'side_chat') {
-    return sideChatProcessor(job)
   }
 
   const {
@@ -1829,6 +1823,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       tokens_in: countTokens(JSON.stringify(prompt.messages)),
       tokens_out: countTokens(parsed.narrative),
       prose_hygiene_issues: proseHygieneIssues,
+      codex_projection_status: 'pending' as const,
     },
     is_user_edited: false,
     edit_history: [],
@@ -1840,6 +1835,38 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   }
 
   await mongoColl.events().insertOne(event)
+  const eventIdStr = idString(event._id)
+  try {
+  await stagePostProcess({
+    instanceId,
+    playerId,
+    eventId: eventIdStr,
+    kind: 'memory_curation',
+    payload: {
+      instanceId, playerId, eventId: eventIdStr,
+      playerInput: parsedPlayerInput.raw,
+      playerSpokenInput: parsedPlayerInput.spoken,
+      playerNarrationFacts: parsedPlayerInput.narrationFacts,
+      aiResponse: rawNarrative,
+      precedingAiResponse: recentEvents[recentEvents.length - 1]?.data?.ai_response || null,
+      sceneTag: parsed.scene_tag,
+      isSentient: !!session.is_sentient,
+      playerPersonaName: session.persona_snapshot?.name || null,
+      protagonistName: (characterCodex as any[]).find((c) => c.is_protagonist)?.canonical_name || session.protagonist?.name || null,
+    },
+  })
+  await stagePostProcess({
+    instanceId,
+    playerId,
+    eventId: eventIdStr,
+    kind: 'character_projection',
+    payload: { instanceId, playerId, eventId: eventIdStr },
+  })
+  } catch (err) {
+    // The canonical event is already durable. Never turn an outbox outage into
+    // a player-visible tail failure; the periodic repair worker will reconcile it.
+    console.error('post-process outbox staging failed:', (err as Error).message)
+  }
 
   // Refresh the materialized location_stats projection for the place this turn was
   // anchored to — AFTER the event is inserted, so its event_count / last_seen_sequence
@@ -2066,8 +2093,6 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
 
   await releaseGenerationLock(redis, lockKey, String(job.id))
 
-  const eventIdStr = idString(event._id)
-
   await redis.publish(
     `user:${playerId}:events`,
     JSON.stringify({
@@ -2113,11 +2138,23 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       }),
     )
   }
+  // Best-effort immediate dispatch; the recurring dispatcher repairs a crash or
+  // Redis outage without holding the completed player turn open.
+  void dispatchPostProcessOutbox().catch(() => {})
 
   // Self-building character codex: extract NPC deltas from this turn, persist
   // canonical cards, then push an update to the live client.
   ;(async () => {
     try {
+      const claimed = await mongoColl.events().updateOne(
+        {
+          _id: event._id,
+          'data.codex_deltas': { $exists: false },
+          'data.codex_projection_claimed_at': { $exists: false },
+        },
+        { $set: { 'data.codex_projection_claimed_at': new Date() } },
+      )
+      if (claimed.modifiedCount !== 1) return
       // Repeated named figures that the entity/memory graph already corroborates
       // may earn a codex card off-screen. This is intentionally a small, proven
       // set—not a free pass for every capitalized mention.
@@ -2669,42 +2706,23 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           })),
         }),
       )
+      await mongoColl.events().updateOne(
+        { _id: event._id },
+        {
+          $set: { 'data.codex_projection_status': 'completed', 'data.codex_projection_completed_at': new Date() },
+          $unset: { 'data.codex_projection_claimed_at': '' },
+        },
+      )
     } catch (err) {
+      await mongoColl.events().updateOne(
+        { _id: event._id },
+        { $unset: { 'data.codex_projection_claimed_at': '' }, $set: { 'data.codex_projection_status': 'pending', 'data.codex_projection_error': (err as Error).message } },
+      ).catch(() => {})
       console.warn('character codex update failed:', (err as Error).message)
     }
   })()
 
-  const memoryCurationQueue = getMemoryCurationQueue()
-  await memoryCurationQueue.add(
-    'curate',
-    {
-      instanceId,
-      playerId,
-      eventId: eventIdStr,
-      playerInput: parsedPlayerInput.raw,
-      playerSpokenInput: parsedPlayerInput.spoken,
-      playerNarrationFacts: parsedPlayerInput.narrationFacts,
-      aiResponse: rawNarrative,
-      // The prior turn's narration, so the curator can resolve anaphora that points
-      // BACK ("my father used to say stuff like that" → the line that was just said)
-      // and attribute the referenced content to the right person.
-      precedingAiResponse: recentEvents[recentEvents.length - 1]?.data?.ai_response || null,
-      sceneTag: parsed.scene_tag,
-      isSentient: !!session.is_sentient,
-      playerPersonaName: session.persona_snapshot?.name || null,
-      protagonistName:
-        (characterCodex as any[]).find((c) => c.is_protagonist)?.canonical_name || session.protagonist?.name || null,
-    },
-    {
-      priority: 5,
-      delay: 1000,
-      removeOnComplete: QUEUE_RETENTION.memoryCuration.removeOnComplete,
-      removeOnFail: QUEUE_RETENTION.memoryCuration.removeOnFail,
-    },
-  )
-
   if (shouldSummarize) {
-    const sceneSummaryQueue = getSceneSummaryQueue()
     const startSequence = nextSequence - (SCENE_SUMMARY_BLOCK - 1)
     const endSequence = nextSequence
     log.info('scene_summary.queued', {
@@ -2713,39 +2731,26 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       startSequence,
       endSequence,
     })
-    await sceneSummaryQueue.add(
-      'summarize',
-      {
-        instanceId,
-        sceneTag,
-        startSequence,
-        endSequence,
-      },
-      {
-        priority: 10,
-        delay: 5000,
-        removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
-        removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
-      },
-    )
+    await stagePostProcess({
+      instanceId,
+      playerId,
+      eventId: eventIdStr,
+      kind: 'scene_summary',
+      payload: { instanceId, sceneTag, startSequence, endSequence },
+    })
   }
 
-  if (nextSequence > 0 && nextSequence % 500 === 0 && event.type !== 'side_chat') {
-    getMaintenanceQueue()
-      .add(
-        'projection-checkpoint',
-        { task: 'create_projection_checkpoint', instanceId },
-        {
-          priority: 30,
-          delay: 2000,
-          removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
-          removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
-        },
-      )
-      .catch((err) => {
-        console.warn('projection checkpoint enqueue failed:', (err as Error).message)
-      })
+  if (nextSequence > 0 && nextSequence % 500 === 0) {
+    await stagePostProcess({
+      instanceId,
+      playerId,
+      eventId: eventIdStr,
+      kind: 'projection_checkpoint',
+      payload: { instanceId },
+    })
   }
+
+  void dispatchPostProcessOutbox().catch(() => {})
 
   return { eventId: eventIdStr, sequence: nextSequence }
 }

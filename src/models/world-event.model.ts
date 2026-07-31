@@ -106,6 +106,11 @@ export interface EventDataDoc {
    *  the surviving deltas are replayed deterministically, so no fact or meter
    *  from a removed turn can ever linger. Absent on pre-ledger (legacy) turns. */
   codex_deltas?: CharacterCodexDelta[]
+  /** Durable projection lifecycle for post-stream codex/relationship work. */
+  codex_projection_status?: 'pending' | 'processing' | 'completed' | 'failed'
+  codex_projection_claimed_at?: Date
+  codex_projection_completed_at?: Date
+  codex_projection_error?: string
   /** This turn's location changes, ledgered with authority for an exact rebuild of
    *  the place graph (anchor + containment + state + enduring facts). */
   location_deltas?: LocationDeltaDoc[]
@@ -128,31 +133,6 @@ export interface EventEditHistoryEntry {
 }
 
 /**
- * Present only on `type: 'side_chat'` events — the side character the player is
- * privately talking to. Side chats share the main sequence counter (so rewind,
- * time anchors, and the continuity audit stay exact) but are excluded from the
- * main-narration window, scene summaries, and the Play feed.
- */
-export interface SideChatRefDoc {
-  character_id: ObjectId
-  character_entity_id: ObjectId | null
-  character_name: string
-  /** How the character was reachable for this chat (present/nearby/remote/seek) —
-   *  drives prompt framing + lets the UI explain the conversation's footing.
-   *  See worker/lib/side-chat-reachability.ts. */
-  mode?: import('../../worker/lib/side-chat-reachability').SideChatMode
-  /** Who could KNOW what was said. A 1:1 side chat is 'private' by default (the
-   *  main narrator didn't witness it); reserved for future public/local group
-   *  side chats. See world-authority.VisibilityScope. */
-  visibility_scope?: import('../utils/world-authority').VisibilityScope
-  /** Entity ids of the conversation participants (player + character). */
-  participants?: ObjectId[]
-  /** Whether this chat may influence the MAIN story (false for an ordinary private
-   *  beat; a hook for future consequence propagation). */
-  mainline_effect?: boolean
-}
-
-/**
  * events — chronological narration turns (events collection).
  */
 export interface WorldEventDoc {
@@ -160,8 +140,7 @@ export interface WorldEventDoc {
   instance_id: ObjectId
   player_id: ObjectId
   sequence: number
-  type: 'intimate' | 'narration' | 'calendar_tick' | 'travel' | 'side_chat' | string
-  side_chat?: SideChatRefDoc
+  type: 'intimate' | 'narration' | 'calendar_tick' | 'travel' | string
   data: EventDataDoc
   is_user_edited: boolean
   edit_history: EventEditHistoryEntry[]

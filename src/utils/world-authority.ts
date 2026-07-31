@@ -3,7 +3,7 @@
  * how much do we trust it" across every world-state mutation the engine extracts.
  *
  * Every delta the system derives from a turn — codex facts, kinship assertions,
- * location facts, entity edges, memory atoms, side-chat facts — originates from a
+ * location facts, entity edges, and memory atoms — originates from a
  * SOURCE with a known authority. A player explicitly RETCONNING canon outranks the
  * narrator; the narrator outranks an inference; an NPC merely CLAIMING something
  * (maybe a lie) is the weakest signal that still writes a fact. Encoding this once
@@ -26,7 +26,6 @@ export type WorldFactSource =
   | 'player_correction' // player explicitly corrects/retcons canon — highest
   | 'player_narration' // player-authored narration stating a fact as true
   | 'narrator' // AI narration stated it directly
-  | 'side_chat' // established in a side conversation (scoped, see visibility)
   | 'player_claim' // player CHARACTER said/claimed it in-world dialogue
   | 'character_claim' // an NPC/AI character claimed it (may be a lie)
   | 'inference' // the system inferred it (deterministic or LLM guess)
@@ -37,7 +36,6 @@ export const WORLD_FACT_SOURCES: WorldFactSource[] = [
   'system_seed',
   'player_narration',
   'narrator',
-  'side_chat',
   'player_claim',
   'character_claim',
   'inference',
@@ -58,7 +56,6 @@ export const SOURCE_CONFIDENCE: Record<WorldFactSource, number> = {
   system_seed: 0.95,
   player_narration: 0.9,
   narrator: 0.9,
-  side_chat: 0.75,
   player_claim: 0.65,
   character_claim: 0.5,
   inference: 0.35,
@@ -75,7 +72,6 @@ export const SOURCE_RANK: Record<WorldFactSource, number> = {
   system_seed: 1,
   player_narration: 2,
   narrator: 3,
-  side_chat: 4,
   player_claim: 5,
   character_claim: 6,
   inference: 7,
@@ -130,7 +126,7 @@ export function isHardCanon(source: WorldFactSource): boolean {
 export type ConfidenceTier = 'canon' | 'hint' | 'hidden'
 
 /** At/above this confidence a fact is asserted as canon. Mirrors `isHardCanon`'s
- *  intent (narrator-and-above ≈ 0.9, side_chat 0.75 still canon). */
+ *  intent (narrator-and-above ≈ 0.9). */
 export const CANON_MIN_CONFIDENCE = 0.7
 /** At/above this (but below canon) a fact is surfaced as a soft hint. Below it the
  *  fact is hidden. character_claim (0.5) and inferred co-parents (0.4) → hint;
@@ -155,8 +151,7 @@ export function confidenceTier(
   return 'hidden'
 }
 
-/** Visibility of a fact — who in the world is allowed to KNOW it. Drives whether a
- *  side-chat / private fact may enter the player-visible main context. */
+/** Visibility of a fact — who in the world is allowed to KNOW it. */
 export type VisibilityScope =
   | 'public' // anyone may know — safe for main narration
   | 'local' // known to those present where it happened
@@ -171,9 +166,9 @@ export function isVisibilityScope(s: unknown): s is VisibilityScope {
 }
 
 /** Where a fact's originating EVENT lives — which chronicle channel produced it. */
-export type FactOrigin = 'main' | 'side_chat' | 'replay' | 'manual_track'
+export type FactOrigin = 'main' | 'replay' | 'manual_track'
 
-export const FACT_ORIGINS: FactOrigin[] = ['main', 'side_chat', 'replay', 'manual_track']
+export const FACT_ORIGINS: FactOrigin[] = ['main', 'replay', 'manual_track']
 
 /**
  * The provenance envelope every extracted delta should carry. Optional fields stay

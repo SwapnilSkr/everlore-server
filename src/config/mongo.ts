@@ -24,6 +24,7 @@ import type { ProjectionCheckpointChunkDoc, ProjectionCheckpointDoc } from '../m
 import type { LocationStatsDoc } from '../models/location-stats.model'
 import type { RelationCandidateDoc } from '../models/relation-candidate.model'
 import type { InkLedgerDoc, BillingEntitlementDoc, StorePurchaseDoc } from '../models/billing.model'
+import type { PostProcessOutboxDoc } from '../models/post-process-outbox.model'
 
 let client: MongoClient | null = null
 let database: Db | null = null
@@ -65,6 +66,7 @@ export const mongoColl = {
   inkLedger: () => coll<WithoutId<InkLedgerDoc>>(COLLECTIONS.ink_ledger),
   billingEntitlements: () => coll<WithoutId<BillingEntitlementDoc>>(COLLECTIONS.billing_entitlements),
   storePurchases: () => coll<WithoutId<StorePurchaseDoc>>(COLLECTIONS.store_purchases),
+  postProcessOutbox: () => coll<WithoutId<PostProcessOutboxDoc>>(COLLECTIONS.post_process_outbox),
 } as const
 
 export async function connectMongo(): Promise<Db> {

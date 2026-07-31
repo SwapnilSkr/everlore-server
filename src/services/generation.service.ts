@@ -74,45 +74,6 @@ export const generationService = {
     return job.id
   },
 
-  /** Enqueue a private side-character chat turn (Phase 7). Same queue/worker
-   *  as main turns; the processor appends a `type: 'side_chat'` event. */
-  async dispatchSideChat(params: {
-    instanceId: string
-    playerId: string
-    characterId: string
-    userMessage: string
-    billingReservationId?: string | null
-  }) {
-    const { instanceId, playerId, characterId, userMessage, billingReservationId } = params
-    const session = await instanceService.loadSession(instanceId, playerId)
-    const player = await users().findOne(
-      { _id: parseObjectId(playerId) },
-      { projection: { 'preferences.nsfw_enabled': 1 } },
-    )
-    const userNsfwEnabled = player?.preferences?.nsfw_enabled === true
-
-    const queue = getGenerationQueue()
-    const job = await queue.add(
-      'side-chat',
-      {
-        mode: 'side_chat',
-        instanceId,
-        playerId,
-        characterId,
-        userMessage,
-        session,
-        userNsfwEnabled,
-        billingReservationId,
-      },
-      {
-        priority: 1,
-        attempts: 1,
-        removeOnComplete: QUEUE_RETENTION.generation.removeOnComplete,
-        removeOnFail: QUEUE_RETENTION.generation.removeOnFail,
-      },
-    )
-    return job.id
-  },
 
   /** Enqueue a streaming replay (alternative response) for an existing event. */
   async dispatchReplay(params: { instanceId: string; playerId: string; eventId: string; billingReservationId?: string | null }) {
@@ -160,9 +121,8 @@ export const generationService = {
       _id: instance.template_id,
     })
 
-    // The Play feed is the main story only; side chats have their own surface.
     const recentEvents = await events()
-      .find({ instance_id: iid, type: { $ne: 'side_chat' } })
+      .find({ instance_id: iid })
       .sort({ sequence: -1 })
       .limit(EVENT_WINDOWS.loadInstanceRecentEvents)
       .toArray()
