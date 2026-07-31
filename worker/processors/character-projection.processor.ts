@@ -6,6 +6,7 @@ import { characterCodexService } from '../../src/services/character-codex.servic
 import { entityGraphService } from '../../src/services/entity-graph.service'
 import { extractCharacterCodexDeltas } from '../lib/character-codex-extractor'
 import { getRedisClient } from '../../src/config/redis'
+import { CHARACTER_PROJECTION_CLAIM_LEASE_MS } from '../lib/character-projection-lease'
 
 /** Recovery path for a post-stream inline codex projection that did not finish.
  * It claims one event atomically, so retries cannot apply the same deltas twice. */
@@ -17,7 +18,7 @@ export async function characterProjectionProcessor(job: Job) {
   if (!event) return { skipped: 'event_missing' }
   if (event.data.codex_deltas) return { skipped: 'already_projected' }
 
-  const staleBefore = new Date(Date.now() - 60_000)
+  const staleBefore = new Date(Date.now() - CHARACTER_PROJECTION_CLAIM_LEASE_MS)
   const claim = await mongoColl.events().updateOne(
     {
       _id: eid,
@@ -29,7 +30,24 @@ export async function characterProjectionProcessor(job: Job) {
     },
     { $set: { 'data.codex_projection_claimed_at': new Date(), 'data.codex_projection_status': 'processing' } },
   )
-  if (claim.modifiedCount !== 1) throw new Error('Character projection is still owned by another worker')
+  if (claim.modifiedCount !== 1) {
+    // A normal projection may still be applying this event. Lock contention is
+    // expected here, not a failed post-processing attempt. A stale claim stays
+    // eligible for the next repair sweep; an already-completed event is simply
+    // idempotent work.
+    const latest = await mongoColl.events().findOne(
+      { _id: eid },
+      { projection: { 'data.codex_deltas': 1, 'data.codex_projection_status': 1, 'data.codex_projection_claimed_at': 1 } },
+    )
+    if (latest?.data.codex_deltas || latest?.data.codex_projection_status === 'completed') {
+      return { skipped: 'already_projected' }
+    }
+    const claimedAt = latest?.data.codex_projection_claimed_at
+    if (claimedAt && new Date(claimedAt).getTime() >= staleBefore.getTime()) {
+      return { skipped: 'claimed_by_active_worker' }
+    }
+    throw new Error('Unable to claim character projection for recovery')
+  }
 
   try {
     const session = await instanceService.loadSession(instanceId, playerId)
