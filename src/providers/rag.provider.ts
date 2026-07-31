@@ -200,7 +200,10 @@ export async function queryRag(
   const memoryScope = (extra: Record<string, unknown> = {}) => ({
     instance_id: instanceOid,
     is_archived: false,
-    $and: [...(eligibility ? [{ $or: eligibility.clauses }] : [])],
+    // Mongo rejects an empty $and. Replays without a timeline ancestry filter
+    // must query the instance normally rather than turning a best-effort memory
+    // lookup into a failed generation.
+    ...(eligibility?.clauses.length ? { $or: eligibility.clauses } : {}),
     ...extra,
   })
 
