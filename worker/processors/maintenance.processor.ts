@@ -89,7 +89,7 @@ export async function maintenanceProcessor(job: Job) {
         await queue.add('character-projection-repair', {
           task: 'character_projection', instanceId: idString(event.instance_id), playerId: idString(event.player_id), eventId: idString(event._id),
         }, {
-          jobId: `character_projection_repair:${idString(event._id)}:${Math.floor(Date.now() / 900000)}`,
+          jobId: `character_projection_repair-${idString(event._id)}-${Math.floor(Date.now() / 900000)}`,
           priority: 25, attempts: 5, backoff: { type: 'exponential', delay: 5000 },
           removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
           removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,

@@ -53,14 +53,14 @@ export async function dispatchPostProcessOutbox(limit = 50) {
       const eventId = idString(row.event_id)
       if (row.kind === 'memory_curation') {
         await getMemoryCurationQueue().add('curate', row.payload, {
-          jobId: `memory-curation:${eventId}`, priority: 5, attempts: 5,
+          jobId: `memory-curation-${eventId}`, priority: 5, attempts: 5,
           backoff: { type: 'exponential', delay: 2000 },
           removeOnComplete: QUEUE_RETENTION.memoryCuration.removeOnComplete,
           removeOnFail: QUEUE_RETENTION.memoryCuration.removeOnFail,
         })
       } else if (row.kind === 'scene_summary') {
         await getSceneSummaryQueue().add('summarize', row.payload, {
-          jobId: `scene-summary:${eventId}`, priority: 10, attempts: 5,
+          jobId: `scene-summary-${eventId}`, priority: 10, attempts: 5,
           backoff: { type: 'exponential', delay: 5000 },
           removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
           removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
@@ -68,7 +68,7 @@ export async function dispatchPostProcessOutbox(limit = 50) {
       } else {
         const task = row.kind === 'projection_checkpoint' ? 'create_projection_checkpoint' : row.kind
         await getMaintenanceQueue().add('post-process', { task, ...row.payload }, {
-          jobId: `${row.kind}:${eventId}`, priority: 20,
+          jobId: `${row.kind}-${eventId}`, priority: 20,
           ...(row.kind === 'character_projection' ? { delay: 90_000 } : {}),
           attempts: 5,
           backoff: { type: 'exponential', delay: 5000 },

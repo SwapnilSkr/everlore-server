@@ -195,7 +195,7 @@ async function maybeQueueChapter(instanceOid: ObjectId): Promise<void> {
       sceneSummaryIds: block.map((s) => idString(s._id)),
     },
     {
-      jobId: `chapter-summary:${idString(instanceOid)}:${block[0].event_range.start_sequence}:${block[block.length - 1].event_range.end_sequence}`,
+      jobId: `chapter-summary-${idString(instanceOid)}-${block[0].event_range.start_sequence}-${block[block.length - 1].event_range.end_sequence}`,
       priority: 16,
       attempts: 5,
       backoff: { type: 'exponential', delay: 5000 },
@@ -322,7 +322,7 @@ async function maybeQueueArc(instanceOid: ObjectId): Promise<void> {
       endSequence: block[block.length - 1].event_range.end_sequence,
     },
     {
-      jobId: `arc-summary:${idString(instanceOid)}:${block[0].event_range.start_sequence}:${block[block.length - 1].event_range.end_sequence}`,
+      jobId: `arc-summary-${idString(instanceOid)}-${block[0].event_range.start_sequence}-${block[block.length - 1].event_range.end_sequence}`,
       priority: 17,
       attempts: 5,
       backoff: { type: 'exponential', delay: 5000 },
