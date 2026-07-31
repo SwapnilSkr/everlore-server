@@ -1130,7 +1130,7 @@ async function recurateMemoriesForEvent(
       sceneTag: event.scene_tag || 'dialogue',
     },
     {
-      jobId: `memory-curation:${idString(event._id)}`,
+      jobId: `memory-curation-${idString(event._id)}`,
       priority: 5,
       delay: 500,
       attempts: 5,
