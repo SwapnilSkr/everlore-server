@@ -2152,7 +2152,12 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           'data.codex_deltas': { $exists: false },
           'data.codex_projection_claimed_at': { $exists: false },
         },
-        { $set: { 'data.codex_projection_claimed_at': new Date() } },
+        {
+          $set: {
+            'data.codex_projection_claimed_at': new Date(),
+            'data.codex_projection_status': 'processing',
+          },
+        },
       )
       if (claimed.modifiedCount !== 1) return
       // Repeated named figures that the entity/memory graph already corroborates

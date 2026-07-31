@@ -9,6 +9,7 @@ import { MANAGED_QUEUES, pruneExpiredCompletedQueueJobs } from '../../src/servic
 import { log } from '../../src/utils/logger'
 import { dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
 import { characterProjectionProcessor } from './character-projection.processor'
+import { CHARACTER_PROJECTION_CLAIM_LEASE_MS } from '../lib/character-projection-lease'
 
 const SCENE_SUMMARY_BLOCK = 12
 const STUCK_SUMMARY_MS = 10 * 60 * 1000
@@ -70,8 +71,16 @@ export async function maintenanceProcessor(job: Job) {
       return characterProjectionProcessor(job)
 
     case 'repair_character_projections': {
+      const staleBefore = new Date(Date.now() - CHARACTER_PROJECTION_CLAIM_LEASE_MS)
       const pending = await mongoColl.events()
-        .find({ 'data.codex_projection_status': { $in: ['pending', 'processing'] }, 'data.codex_deltas': { $exists: false } }, { projection: { _id: 1, instance_id: 1, player_id: 1 } })
+        .find({
+          'data.codex_projection_status': { $in: ['pending', 'processing'] },
+          'data.codex_deltas': { $exists: false },
+          $or: [
+            { 'data.codex_projection_claimed_at': { $exists: false } },
+            { 'data.codex_projection_claimed_at': { $lt: staleBefore } },
+          ],
+        }, { projection: { _id: 1, instance_id: 1, player_id: 1 } })
         .sort({ sequence: 1 })
         .limit(100)
         .toArray()
