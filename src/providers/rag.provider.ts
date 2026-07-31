@@ -197,36 +197,10 @@ export async function queryRag(
   const instanceOid = parseObjectId(instanceId)
   const eligibility = await timelineEligibility(instanceId, timelineId)
 
-  // Secret gate (Phase 7): main narration may retrieve a private side-chat
-  // memory ONLY when the protagonist is among its knowers. GM worlds qualify
-  // (the player speaks AS the protagonist in side chats); sentient worlds
-  // don't until the player shares it in the main story — which mints a new,
-  // main-scoped memory. Hard gate, fail closed.
-  let protagonistEntityId: import('mongodb').ObjectId | null = null
-  try {
-    const protagonist = await mongoColl
-      .entities()
-      .findOne({ instance_id: instanceOid, type: 'protagonist' }, { projection: { _id: 1 } })
-    protagonistEntityId = protagonist?._id || null
-  } catch {
-    // No graph yet — only origin-less (main) memories pass the gate anyway.
-  }
-  const knowledgeClause: Record<string, unknown> = {
-    $or: [
-      { origin: { $ne: 'side_chat' } },
-      ...(protagonistEntityId ? [{ known_by_entity_ids: protagonistEntityId }] : []),
-    ],
-  }
-  const allowsKnowledge = (m: Pick<MemoryDoc, 'origin' | 'known_by_entity_ids'>): boolean => {
-    if (m.origin !== 'side_chat') return true
-    if (!protagonistEntityId) return false
-    return (m.known_by_entity_ids || []).some((id) => id.equals(protagonistEntityId!))
-  }
-
   const memoryScope = (extra: Record<string, unknown> = {}) => ({
     instance_id: instanceOid,
     is_archived: false,
-    $and: [...(eligibility ? [{ $or: eligibility.clauses }] : []), knowledgeClause],
+    $and: [...(eligibility ? [{ $or: eligibility.clauses }] : [])],
     ...extra,
   })
 
@@ -388,13 +362,7 @@ export async function queryRag(
         }
         const mongoId = meta.mongo_id ? String(meta.mongo_id) : ''
         const doc = mongoId ? vectorDocs.get(mongoId) : null
-        if (doc) return allowsKnowledge(doc) && (!eligibility || eligibility.allowsMemory(doc))
-        // Metadata-only fallback (doc not found): private memories fail CLOSED
-        // unless the vector metadata itself proves protagonist knowledge.
-        if (String(meta.origin || '') === 'side_chat') {
-          const knownBy = Array.isArray(meta.known_by) ? meta.known_by.map(String) : []
-          if (!protagonistEntityId || !knownBy.includes(idString(protagonistEntityId))) return false
-        }
+        if (doc) return !eligibility || eligibility.allowsMemory(doc)
         if (!eligibility) return true
         const metaTimeline = String(meta.timeline_id || '')
         if (!metaTimeline) return eligibility.includesLegacyMain

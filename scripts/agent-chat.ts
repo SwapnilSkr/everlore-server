@@ -8,7 +8,6 @@
 // Each <step> is one of:
 //   "plain text"            -> chat turn
 //   "/continue [span]"      -> continue (span = hours|day|days|season for a time skip)
-//   "/side <charId> <msg>"  -> private side-chat with one character
 //   "/replay <eventId>"     -> regenerate an existing turn
 //
 // CRITICAL for PARALLEL agents: all agents share ONE account, and the server fans
@@ -45,11 +44,6 @@ function dispatch(step: string) {
     const payload = span ? { advance: span } : {}
     console.log(`\n>>> CONTINUE${span ? ' ' + span : ''}`)
     ws.send(JSON.stringify({ action: 'continue', instance_id: instanceId, payload }))
-  } else if (step.startsWith('/side')) {
-    const [, charId, ...rest] = step.split(/\s+/)
-    const message = rest.join(' ')
-    console.log(`\n>>> SIDE-CHAT [${charId}]: ${message}`)
-    ws.send(JSON.stringify({ action: 'side_chat', instance_id: instanceId, payload: { character_id: charId, message } }))
   } else if (step.startsWith('/replay')) {
     const eventId = step.split(/\s+/)[1]
     console.log(`\n>>> REPLAY ${eventId}`)
@@ -72,7 +66,6 @@ ws.onmessage = (ev) => {
     case 'connected': nextOrClose(); break
     case 'ack': break
     case 'generation_delta': buf += f.delta ?? ''; break
-    case 'side_chat_delta': buf += f.delta ?? ''; break
     case 'generation_stream_end': console.log(`\nNARRATIVE:\n${buf}`); buf = ''; break
     case 'generation_retrying': console.error(`  [retrying ${f.attempt}/${f.maxAttempts}]`); break
     case 'generation_complete': {
@@ -83,17 +76,11 @@ ws.onmessage = (ev) => {
       console.log(`  choices : ${(e.choices ?? []).map((c: any) => c.label ?? c).join(' | ') || '-'}`)
       nextOrClose(); break
     }
-    case 'side_chat_complete': {
-      const e = f.event ?? {}
-      console.log(`\n[side seq ${e.sequence}] with ${f.character?.name ?? ''}\nNARRATIVE:\n${e.narrative ?? buf}`); buf = ''
-      nextOrClose(); break
-    }
     case 'replay_complete': console.log(`\n[replay] event=${f.eventId} selected=${f.selected_index}\nNARRATIVE:\n${f.narrative ?? ''}`); nextOrClose(); break
     case 'character_codex_updated': console.log(`  [codex] ${f.characterId ?? ''} updated`); break
     case 'memories_curated': console.log(`  [memory] ${f.count ?? ''} atoms curated`); break
     case 'milestone_unlocked': console.log(`  [milestone] ${f.label ?? ''}`); break
     case 'generation_failed': console.log(`  !! GENERATION FAILED: ${f.message ?? ''}`); nextOrClose(); break
-    case 'side_chat_error': console.log(`  !! SIDE-CHAT ERROR: ${f.message ?? ''}`); nextOrClose(); break
     case 'error': console.log(`  !! ERROR ${f.code ?? ''} ${f.message ?? ''}`); break
   }
 }

@@ -27,14 +27,6 @@ export interface MemoryDoc {
    *  retrieval gate for back-compat; status records WHY a row left retrieval
    *  ('superseded' vs 'archived'). Absent on pre-unification rows. */
   status?: ProjectionStatus
-  /** Where this memory was curated from. Absent = main narration. */
-  origin?: 'main' | 'side_chat'
-  /** Who-knows-this scope for private (side-chat) memories: entity ids of the
-   *  conversation's participants. Main narration may retrieve a side-chat
-   *  memory ONLY when the protagonist is among them (hard gate — a secret
-   *  enters the main story by being shared there, which mints a new
-   *  main-scoped memory). Side chats retrieve only their own character's. */
-  known_by_entity_ids?: ObjectId[]
   /** Canonical entity names this memory is primarily about (who acted/felt). */
   subjects?: string[]
   /** Canonical entity names acted upon or affected. */

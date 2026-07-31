@@ -527,9 +527,6 @@ export const adminService = {
     // Memory version graph (Phase 2): resolve the atoms these memories link to
     // (updates/extends/derives) into id+snippet+status so the lineage is
     // inspectable. PRIVACY: a linked atom that is a private side-chat secret is
-    // shown ONLY when the protagonist knows it (same `allowsKnowledge` gate as
-    // queryRag) — fail closed, so a stray cross-boundary link can't leak a
-    // secret's text through the admin surface.
     const linkedMemoryIds = [
       ...new Map(
         mems
@@ -541,15 +538,6 @@ export const adminService = {
           .map((id) => [idString(id), id] as const),
       ).values(),
     ]
-    const protagonist = await mongoColl
-      .entities()
-      .findOne({ instance_id: iid, type: 'protagonist' }, { projection: { _id: 1 } })
-    const protagonistEntityId = protagonist?._id || null
-    const allowsKnowledge = (m: { origin?: string; known_by_entity_ids?: ObjectId[] }): boolean => {
-      if (m.origin !== 'side_chat') return true
-      if (!protagonistEntityId) return false
-      return (m.known_by_entity_ids || []).some((id) => id.equals(protagonistEntityId))
-    }
     const linkedDocs = linkedMemoryIds.length
       ? await memories().find({ _id: { $in: linkedMemoryIds } }).toArray()
       : []
@@ -557,10 +545,9 @@ export const adminService = {
     const resolveLinks = (ids: ObjectId[] | undefined) =>
       (ids || []).map((id) => {
         const doc = linkedById.get(idString(id))
-        const visible = doc ? allowsKnowledge(doc) : true
         return serialize({
           _id: id,
-          text: doc ? (visible ? doc.text : '[private — protagonist does not know]') : '[removed]',
+          text: doc ? doc.text : '[removed]',
           status: doc ? memoryProjectionStatus(doc) : 'archived',
         })
       })

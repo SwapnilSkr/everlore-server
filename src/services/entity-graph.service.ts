@@ -1096,15 +1096,14 @@ export const entityGraphService = {
           $or: [
             { subject_entity_ids: memEntityFilter },
             { object_entity_ids: memEntityFilter },
-            { known_by_entity_ids: memEntityFilter },
           ],
         },
-        { projection: { subject_entity_ids: 1, object_entity_ids: 1, known_by_entity_ids: 1 } },
+        { projection: { subject_entity_ids: 1, object_entity_ids: 1 } },
       )
       .toArray()
     const memoried = new Set<string>()
     for (const m of memRefs) {
-      for (const id of [...(m.subject_entity_ids || []), ...(m.object_entity_ids || []), ...(m.known_by_entity_ids || [])]) {
+      for (const id of [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])]) {
         memoried.add(idString(id))
       }
     }

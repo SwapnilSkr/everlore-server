@@ -1,7 +1,7 @@
 import type Redis from 'ioredis'
 
 /**
- * Per-instance turn lock. One generation (chat / continue / side_chat / replay)
+ * Per-instance turn lock. One generation (chat / continue / replay)
  * runs at a time per player+instance. Shared by the WS dispatch seam (which
  * acquires it) and the worker (which keeps it alive while a turn runs).
  */

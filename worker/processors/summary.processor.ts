@@ -70,9 +70,6 @@ export async function summaryProcessor(job: Job) {
     .find({
       instance_id: instanceOid,
       sequence: { $gte: startSequence, $lte: endSequence },
-      // Side chats share the sequence counter but are private conversations —
-      // they must never fold into the main story's recap.
-      type: { $ne: 'side_chat' },
     })
     .sort({ sequence: 1 })
     .toArray()
@@ -198,7 +195,10 @@ async function maybeQueueChapter(instanceOid: ObjectId): Promise<void> {
       sceneSummaryIds: block.map((s) => idString(s._id)),
     },
     {
+      jobId: `chapter-summary:${idString(instanceOid)}:${block[0].event_range.start_sequence}:${block[block.length - 1].event_range.end_sequence}`,
       priority: 16,
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 5000 },
       removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
       removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
     },
@@ -322,7 +322,10 @@ async function maybeQueueArc(instanceOid: ObjectId): Promise<void> {
       endSequence: block[block.length - 1].event_range.end_sequence,
     },
     {
+      jobId: `arc-summary:${idString(instanceOid)}:${block[0].event_range.start_sequence}:${block[block.length - 1].event_range.end_sequence}`,
       priority: 17,
+      attempts: 5,
+      backoff: { type: 'exponential', delay: 5000 },
       removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
       removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
     },

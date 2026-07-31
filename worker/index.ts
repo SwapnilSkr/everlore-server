@@ -58,7 +58,7 @@ async function main() {
   // Keep the per-instance turn lock alive while a turn actually runs, with a
   // short TTL — so if THIS process dies mid-turn the player is freed within the
   // heartbeat window instead of waiting out the (much longer) dispatch TTL.
-  // Covers chat, continue, side_chat, and replay (all routed through here).
+  // Covers chat, continue, and replay (all routed through here).
   const runGeneration = async (job: Job) => {
     const { playerId, instanceId } = job.data || {}
     if (!playerId || !instanceId) return generationProcessor(job)
@@ -101,6 +101,27 @@ async function main() {
   await maintenanceQueue.add('decay', { task: 'importance_decay' }, {
     repeat: { pattern: '0 3 * * *' },
     priority: 20,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+  })
+  // Conservative Redis hygiene: terminal completed telemetry only. The worker
+  // never touches failed diagnostics, live/scheduled jobs, locks, sessions,
+  // rate limits, or BullMQ repeat/scheduler state.
+  await maintenanceQueue.add('queue-telemetry-prune', { task: 'prune_queue_telemetry' }, {
+    repeat: { pattern: '30 4 * * *' },
+    priority: 40,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+  })
+  await maintenanceQueue.add('post-process-outbox-dispatch', { task: 'dispatch_post_process_outbox' }, {
+    repeat: { pattern: '* * * * *' },
+    priority: 1,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+  })
+  await maintenanceQueue.add('character-projection-repair', { task: 'repair_character_projections' }, {
+    repeat: { pattern: '*/15 * * * *' },
+    priority: 25,
     removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
     removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
   })
