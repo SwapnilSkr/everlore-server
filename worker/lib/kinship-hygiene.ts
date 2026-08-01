@@ -123,7 +123,24 @@ export function hygieneStage1(
   // child of the same parent. Tagged inferred / low confidence; capped at 1 hop
   // because half/step/adoptive families make deeper inference unsafe.
   const inferred: ResolvedAssertion[] = []
-  const childOf = cleaned.filter((a) => a.kind === 'child_of' && a.polarity === 'assert')
+  // Assertions can state the same fact in either direction: `Mother is the
+  // player's parent` (parent_of) or `the player is Mother's child` (child_of).
+  // Normalize both forms for this local sibling closure, otherwise a premise
+  // with Mother → player and Sister ↔ player never gives Mother → Sister a
+  // graph edge even though it is the exact relationship dialogue needs.
+  const childOf = [
+    ...cleaned.filter((a) => a.kind === 'child_of' && a.polarity === 'assert'),
+    ...cleaned
+      .filter((a) => a.kind === 'parent_of' && a.polarity === 'assert')
+      .map((a) => ({
+        ...a,
+        fromId: a.toId,
+        toId: a.fromId,
+        kind: 'child_of' as const,
+        label: undefined,
+        gender: undefined,
+      })),
+  ]
   const siblingOf = cleaned.filter((a) => a.kind === 'sibling_of' && a.polarity === 'assert')
   for (const sib of siblingOf) {
     for (const co of childOf) {

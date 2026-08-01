@@ -47,6 +47,7 @@ export async function extractPremiseKinship(
 RULES:
 - "you" / "your" in the premise refers to the protagonist — emit it as the endpoint "player".
 - Only ties the premise STATES or clearly implies as already-true at the start. Never invent, never guess, never include a tie that merely COULD form during play.
+- Extract established ties BETWEEN named cast members too, not only ties to the protagonist. For example, if the premise establishes both a mother and the protagonist's twin sister, also emit the mother's parent_of tie to that sister when the shared parentage is clear from the premise.
 - NEVER a figurative tie ("like a father to the village", "a brother in arms").
 - "kind" MUST be one of: ${RELATION_KINDS.join(', ')} — read as "from is to's <kind>".
 - "modifier" (optional) is one of: ${RELATION_MODIFIERS.join(', ')} — use step/half/adoptive/foster/in_law when the premise says so; omit for an ordinary blood/married tie.
