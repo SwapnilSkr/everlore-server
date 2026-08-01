@@ -9,6 +9,7 @@ import {
 } from '../src/utils/relationship-baseline'
 import { templateCastDeltas } from '../src/services/template-cast.service'
 import { mergeRelationshipFacts, relationshipStateFromFacts } from '../src/services/character-codex.service'
+import { buildPlayerInteractionSignalRequest, candidateTargetsForPlayerInput } from '../worker/lib/player-interaction-signal'
 
 let pass = 0
 let fail = 0
@@ -72,6 +73,51 @@ check('injects cumulative bond state', systemContext.includes('trust 63/100, aff
 check('injects only bounded bond trajectory', systemContext.includes('trust +3 at turn 12; affection +2 at turn 12'))
 check('keeps bond numbers out of story prose', systemContext.includes('never mention numbers in-story'))
 check('injects nuanced bond context', systemContext.includes('Professional but increasingly curious after the player treated her with care.'))
+const placeholderPrompt = buildPrompt({
+  seedPrompt: 'A family drama.',
+  isSentient: false,
+  worldState: {}, activeFlags: {}, globalLore: '', retrievedLore: [], retrievedMemories: [],
+  sceneSummary: null, recentEvents: [], userMessage: '[The player waits.]', maxTokens: 7000,
+  proseOnly: true, narrationPov: 'third', characterCodex: [
+    { canonical_name: 'Haise', is_protagonist: true, identity_kind: 'proper_name' },
+    { canonical_name: 'Sister', identity_kind: 'kinship_label', role: 'twin sibling' },
+    { canonical_name: 'The Mysterious Man', identity_kind: 'epithet' },
+  ],
+})
+const placeholderContext = placeholderPrompt.messages
+  .filter((message) => message.role === 'system').map((message) => message.content).join('\n')
+check('uses persisted identity metadata for placeholder addressing', placeholderContext.includes('Sister is explicitly classified placeholder codex label'))
+check('does not treat a fixed epithet as a placeholder', !placeholderContext.includes('The Mysterious Man is explicitly classified placeholder codex label'))
+const signalPrompt = buildPrompt({
+  seedPrompt: 'A family drama.', isSentient: false, worldState: {}, activeFlags: {}, globalLore: '',
+  retrievedLore: [], retrievedMemories: [], sceneSummary: null, recentEvents: [],
+  userMessage: 'Of course, Mother. You have always been so supportive.', maxTokens: 7000,
+  proseOnly: true, currentInteractionSignals: [{
+    source: 'player', target_character_id: 'mother-id', target_name: 'Mother', kind: 'pointed_deflection',
+    evidence: 'You have always been so supportive', confidence: 0.72, expires_after_sequence: 2,
+  }],
+})
+const signalContext = signalPrompt.messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n')
+check('interaction signal is private behavioral continuity', signalContext.includes('PRIVATE INTERACTION CONTINUITY') && signalContext.includes('Mother: the player may have deflected pointedly'))
+check('interaction signal tells narrator not to diagnose tone', signalContext.includes('Do not name the category, quote its evidence, diagnose the player'))
+check('interaction gate accepts one explicit active target', candidateTargetsForPlayerInput('Mother, please listen.', [{ id: 'mother', name: 'Mother' }]).length === 1)
+check('interaction gate abstains on ambiguous direct address', candidateTargetsForPlayerInput('Mother and Father, please listen.', [{ id: 'mother', name: 'Mother' }, { id: 'father', name: 'Father' }]).length === 2)
+const interactionRequest = buildPlayerInteractionSignalRequest({
+  playerInput: 'Mother, of course you have always been so supportive.', sequence: 9,
+  candidates: [{ id: 'mother', name: 'Mother', behavioralContext: ['Disposition toward player: guarded after a tense exchange'] }],
+  recentTurns: [{ sequence: 8, playerInput: 'I needed you to stand up for me.', narration: 'Mother refuses to take the player’s side.' }],
+})
+const interactionProbeText = interactionRequest?.messages.map((message) => message.content).join('\n') || ''
+check('interaction sidecar receives target canon and immediate prior exchange', interactionProbeText.includes('guarded after a tense exchange') && interactionProbeText.includes('Mother refuses to take the player’s side'))
+check('interaction sidecar explicitly requires pragmatic mismatch for sarcasm', interactionProbeText.includes('Irony/sarcasm requires a pragmatic mismatch'))
+const deathPrompt = buildPrompt({
+  seedPrompt: 'A gothic mystery.', isSentient: false, worldState: {}, activeFlags: {}, globalLore: '',
+  retrievedLore: [], retrievedMemories: [], sceneSummary: null, recentEvents: [],
+  userMessage: 'I visit the graveyard.', maxTokens: 7000, proseOnly: true,
+  deceasedCharacterNames: ['Mara'],
+})
+const deathContext = deathPrompt.messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n')
+check('deceased character receives a hard lifecycle prompt lock', deathContext.includes('Mara is deceased') && deathContext.includes('Do not portray this character alive, physically present, speaking, acting, selectable'))
 check('llama profile is conservative', narrationTemperature('meta-llama/llama-3.1-8b-instruct') === 0.55)
 check('cydonia profile preserves controlled variety', narrationTemperature('thedrummer/cydonia-24b-v4.1') === 0.62)
 const closeFriend = relationshipInitializationFromEvidence(
@@ -108,6 +154,7 @@ const templateDeltas = templateCastDeltas({
   protagonist: { name: 'Haise' },
   seed_cast: [{
     name: 'Otto',
+    identity_kind: 'proper_name',
     relationship_initialization: { kind: 'close_friend', evidence: 'my close friend' },
     relationship_state: { summary: 'A loyal friend who worries about the player.', evidence: 'my close friend', tags: ['loyal'] },
   }],
@@ -116,6 +163,8 @@ check('template cast carries its starting bond into sequence-zero codex delta',
   templateDeltas[0]?.relationship_initialization?.kind === 'close_friend')
 check('template cast carries open-ended bond context into sequence-zero codex delta',
   templateDeltas[0]?.relationship_state?.summary.startsWith('A loyal friend') === true)
+check('template cast carries durable identity metadata into sequence-zero codex delta',
+  templateDeltas[0]?.identity_kind === 'proper_name')
 const bondFacts = mergeRelationshipFacts([], {
   name: 'Father',
   relationship_fact_additions: [
