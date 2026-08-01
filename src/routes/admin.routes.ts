@@ -16,6 +16,11 @@ const SearchPageQuery = t.Composite([
 ])
 
 const AdminPatchBody = t.Record(t.String(), t.Any())
+const AdminGrantInkBody = t.Object({
+  amount: t.Numeric({ minimum: 1, maximum: 1_000_000 }),
+  idempotency_key: t.String({ minLength: 1, maxLength: 120 }),
+  note: t.Optional(t.String({ maxLength: 240 })),
+})
 
 export const adminRoutes = new Elysia({ prefix: '/admin' })
   .use(requireAdmin)
@@ -28,6 +33,10 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
   .patch('/users/:userId/tier', (ctx) => adminController.patchUserTier(ctx), {
     body: AdminSetTierBody,
   })
+  .post('/users/:userId/ink-grants', (ctx) => adminController.grantUserInk(ctx), {
+    body: AdminGrantInkBody,
+  })
+  .get('/users/:userId/billing', (ctx) => adminController.getUserBilling(ctx))
   .delete('/users/:userId', (ctx) => adminController.deleteUser(ctx))
 
   .get('/worlds', (ctx) => adminController.listWorlds(ctx), {

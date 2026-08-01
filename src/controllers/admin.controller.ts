@@ -1,5 +1,6 @@
 import { adminService } from '../services/admin.service'
 import { continuityAuditService } from '../services/continuity-audit.service'
+import { billingService } from '../services/billing.service'
 
 function boolQuery(value: unknown): boolean | undefined {
   if (value === undefined || value === null || value === '') return undefined
@@ -36,6 +37,22 @@ export const adminController = {
     ...(await adminService.setUserTier(params.userId, body.tier)),
     note: 'Existing JWTs still carry the old tier until the user signs in again.',
   }),
+
+  grantUserInk: async ({
+    params,
+    body,
+  }: {
+    params: { userId: string }
+    body: { amount: number; idempotency_key: string; note?: string }
+  }) =>
+    billingService.grantAdminInk(params.userId, {
+      amount: body.amount,
+      idempotencyKey: body.idempotency_key,
+      note: body.note,
+    }),
+
+  getUserBilling: async ({ params }: { params: { userId: string } }) =>
+    billingService.adminAccountSnapshot(params.userId),
 
   deleteUser: async ({ params }: { params: { userId: string } }) => adminService.deleteUser(params.userId),
 
