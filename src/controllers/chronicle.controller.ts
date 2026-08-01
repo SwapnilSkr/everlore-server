@@ -581,6 +581,7 @@ export const chronicleController = {
       character: {
         id: idString(c._id),
         canonical_name: c.canonical_name,
+        identity_kind: c.identity_kind,
         aliases: c.aliases,
         role: c.role,
         appearance: c.appearance,

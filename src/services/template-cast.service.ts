@@ -11,6 +11,7 @@ export function templateCastDeltas(
     .slice(0, 12)
     .map((character) => ({
       name: character.name,
+      identity_kind: character.identity_kind,
       aliases: character.aliases || [],
       role: character.role,
       appearance: character.appearance,

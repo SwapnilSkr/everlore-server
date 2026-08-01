@@ -1,6 +1,13 @@
 import type { ObjectId } from 'mongodb'
 import type { RelationshipState } from '../utils/relationship-baseline'
 
+/** How the canonical label identifies this person in-world. This is authored
+ * identity metadata, never guessed from a hard-coded vocabulary at narration
+ * time. */
+export type CharacterIdentityKind = 'proper_name' | 'epithet' | 'role_label' | 'kinship_label'
+/** Explicit character existence state. Omitted legacy cards are alive. */
+export type CharacterLifeState = 'alive' | 'deceased'
+
 /**
  * Structured relationship meters toward the player (0-100). Trust/affection
  * start neutral (50); fear/rivalry start absent (0). Mutated only through
@@ -54,6 +61,11 @@ export interface CharacterProfileDoc {
   canonical_name: string
   name_normalized: string
   aliases: string[]
+  /** Optional for cards created before identity metadata was introduced. */
+  identity_kind?: CharacterIdentityKind
+  /** Ledger-projected; deceased cards cannot re-enter normal scene presence. */
+  life_state?: CharacterLifeState
+  life_state_sequence?: number
   role?: string
   appearance?: string
   persona?: string

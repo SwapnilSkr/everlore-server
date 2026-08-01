@@ -2,11 +2,13 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import type {
   CharacterInteractionHint,
+  CharacterIdentityKind,
   CharacterProfileDoc,
   RelationshipFact,
   RelationshipMoment,
   RelationshipMeters,
 } from '../models/character-profile.model'
+import type { CharacterLifecycleDeltaDoc } from '../models/world-event.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import type { WorldFactSource } from '../utils/world-authority'
@@ -33,6 +35,7 @@ export type InteractionHintDraft = {
 
 export type CharacterCodexDelta = {
   name: string
+  identity_kind?: CharacterIdentityKind
   aliases?: string[]
   resolved_name?: string
   role?: string
@@ -458,6 +461,7 @@ function foldDelta(
       canonical_name: name,
       name_normalized: normalized,
       aliases,
+      identity_kind: delta.identity_kind,
       role: shouldSetText(delta.role) ? delta.role.trim() : undefined,
       appearance: shouldSetText(delta.appearance) ? delta.appearance.trim() : undefined,
       persona: shouldSetText(delta.persona) ? delta.persona.trim() : undefined,
@@ -506,6 +510,17 @@ function foldDelta(
   target.last_seen_sequence = sequence
   target.updated_at = ctx.now
   if (!target.role && shouldSetText(delta.role)) target.role = delta.role.trim()
+  // Identity labels can only become more specific. A proper name or fixed
+  // epithet learned later promotes a seed role/kinship placeholder, while an
+  // ordinary later mention can never demote a known name back to a label.
+  if (
+    delta.identity_kind &&
+    (!target.identity_kind ||
+      ((target.identity_kind === 'role_label' || target.identity_kind === 'kinship_label') &&
+        (delta.identity_kind === 'proper_name' || delta.identity_kind === 'epithet')))
+  ) {
+    target.identity_kind = delta.identity_kind
+  }
   if (!target.appearance && shouldSetText(delta.appearance)) target.appearance = delta.appearance.trim()
   if (!target.persona && shouldSetText(delta.persona)) target.persona = delta.persona.trim()
   if (shouldSetText(delta.disposition_to_player)) target.disposition_to_player = delta.disposition_to_player.trim()
@@ -548,6 +563,7 @@ function foldDelta(
     target.canonical_name = delta.name.trim().slice(0, 120)
     target.name_normalized = normalizeName(target.canonical_name)
     target.aliases = uniqStrings([oldName, ...(target.aliases || []), ...aliases], 20)
+    target.identity_kind = delta.identity_kind === 'epithet' ? 'epithet' : 'proper_name'
   }
   // Materialize after a possible rename so the complete draft and label always
   // use the canonical name that the player sees.
@@ -759,7 +775,7 @@ export const characterCodexService = {
   async rebuildCodexFromLedger(params: {
     instanceId: string
     playerId: string
-    batches: Array<{ sequence: number; deltas: CharacterCodexDelta[] }>
+    batches: Array<{ sequence: number; deltas: CharacterCodexDelta[]; lifecycleDeltas?: CharacterLifecycleDeltaDoc[] }>
   }): Promise<void> {
     const { instanceId, playerId, batches } = params
     if (!batches.length) return
@@ -769,6 +785,25 @@ export const characterCodexService = {
     // it (and rebuild its facts/state) rather than minting a duplicate.
     const existing = await characters().find({ instance_id: iid }).toArray()
     await foldAndPersist(iid, pid, existing, batches)
+    await this.applyLifecycleDeltas({
+      instanceId,
+      deltas: batches.flatMap((batch) => batch.lifecycleDeltas || []),
+    })
+  },
+
+  /** Materialize explicit event-ledgered NPC deaths. This is deliberately a
+   * narrow projection: only a later explicit resurrection/undead transition may
+   * change it, never an ordinary codex extraction or narration mention. */
+  async applyLifecycleDeltas(params: { instanceId: string; deltas: CharacterLifecycleDeltaDoc[] }): Promise<void> {
+    if (!params.deltas.length) return
+    const iid = parseObjectId(params.instanceId)
+    for (const delta of params.deltas) {
+      if (delta.state !== 'deceased' || !delta.name_normalized) continue
+      await characters().updateMany(
+        { instance_id: iid, name_normalized: delta.name_normalized, is_protagonist: { $ne: true } },
+        { $set: { life_state: 'deceased', life_state_sequence: delta.sequence, updated_at: new Date() } },
+      )
+    }
   },
 
   /** Overwrite a character's immutable_facts (used by async compaction to
@@ -998,6 +1033,10 @@ export const characterCodexService = {
       }
       setFields.canonical_name = newName
       setFields.name_normalized = normalizedNewName
+      // A player-entered rename is an explicit identity reveal/correction, not
+      // a narrator guess. Treat it as a real name so a former role/kinship
+      // placeholder immediately stops receiving placeholder-address rules.
+      setFields.identity_kind = 'proper_name'
       // Preserve the old name as an alias so existing references still resolve.
       setFields.aliases = uniqStrings([target.canonical_name, ...(target.aliases || [])], 20)
       // Existing drafts name this card explicitly; never leave a renamed card

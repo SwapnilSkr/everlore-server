@@ -4,6 +4,7 @@
  */
 import { callLLM, AI_MODELS } from '../../src/ai'
 import type { TemplateCastCharacterDoc } from '../../src/models/world-template.model'
+import type { CharacterIdentityKind } from '../../src/models/character-profile.model'
 import { isNonPersonRole } from '../../src/services/character-codex.service'
 import { isAbstractNonPersonTerm } from '../../src/utils/person-identity'
 import {
@@ -53,6 +54,12 @@ function parse(raw: string): Record<string, unknown> {
     if (!object) return {}
     try { return JSON.parse(object) } catch { return {} }
   }
+}
+
+function identityKind(value: unknown): CharacterIdentityKind | undefined {
+  return value === 'proper_name' || value === 'epithet' || value === 'role_label' || value === 'kinship_label'
+    ? value
+    : undefined
 }
 
 /** A deliberately narrow second authoring pass. The initial cast extraction is
@@ -137,11 +144,12 @@ export async function extractTemplateCast(input: TemplateCastInput): Promise<Tem
     'Exclude the player, any you-role, and the locked sentient protagonist supplied separately.',
     'Never include places, organisations, objects, abstractions, emotions, personification, crowds, historical names, hypotheticals, or unnamed passers-by.',
     'Never invent names, aliases, appearance, motives, or facts. Every name and alias must literally appear in the source.',
+    'For every character, classify identity_kind from the authored evidence: proper_name for a personal name (Mara, Captain Rhea); epithet for a deliberate fixed descriptive identity (The Red Knight); role_label for an office/job label (the Butler, Guard); kinship_label for a family label (Mother, Sister). This classification controls dialogue addressing, so do not guess from capitalization alone.',
     'Keep only durable starting facts in immutable_facts. No current mood, hidden thought, relationship meter, or scene-local state.',
     'Set relationship_initialization ONLY if the source explicitly establishes THIS person\'s starting bond toward the player (for example close friend, estranged father, sworn enemy). Return its kind plus an exact short source excerpt. Omit it when the relation is uncertain, inferred from a role, or belongs to someone else.',
     'Merge titles and names: if Sister is explicitly named Mara, output name Mara and aliases [Sister].',
     'Return at most 12 people. Empty is correct when no cast is established.',
-    'Respond ONLY JSON: {"characters":[{"name":"string","aliases":["string"],"role":"string","appearance":"string","persona":"string","immutable_facts":["string"],"relationship_initialization":{"kind":"one allowed relationship kind","evidence":"exact source excerpt"}}]}',
+    'Respond ONLY JSON: {"characters":[{"name":"string","identity_kind":"proper_name|epithet|role_label|kinship_label","aliases":["string"],"role":"string","appearance":"string","persona":"string","immutable_facts":["string"],"relationship_initialization":{"kind":"one allowed relationship kind","evidence":"exact source excerpt"}}]}',
   ].join('\n')
 
   let raw = ''
@@ -170,6 +178,7 @@ export async function extractTemplateCast(input: TemplateCastInput): Promise<Tem
     const key = norm(name)
     if (!name || !key || key === protagonist || seen.has(key) || !appears(name, source)) continue
     const role = typeof item.role === 'string' ? item.role.replace(/\s+/g, ' ').trim().slice(0, 200) : ''
+    const kind = identityKind(item.identity_kind)
     if (isAbstractNonPersonTerm(name) || isNonPersonRole(role)) continue
     const aliases = stringList(item.aliases, 8, 120).filter((alias) => norm(alias) !== key && appears(alias, source))
     const appearance = typeof item.appearance === 'string' ? item.appearance.replace(/\s+/g, ' ').trim().slice(0, 600) : ''
@@ -178,6 +187,7 @@ export async function extractTemplateCast(input: TemplateCastInput): Promise<Tem
     const rawRelationshipInitialization = relationshipInitializationFromEvidence(item.relationship_initialization, source)
     const relationshipInitialization = rawRelationshipInitialization && relationshipEvidenceBindsToCharacter({
       name,
+      ...(kind ? { identity_kind: kind } : {}),
       aliases,
       evidence: rawRelationshipInitialization.evidence,
       sourceText: source,

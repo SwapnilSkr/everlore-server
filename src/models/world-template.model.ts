@@ -1,5 +1,6 @@
 import type { ObjectId } from 'mongodb'
 import type { RelationshipInitialization, RelationshipState } from '../utils/relationship-baseline'
+import type { CharacterIdentityKind } from './character-profile.model'
 
 export interface StatDefinitionDoc {
   default: number
@@ -38,6 +39,7 @@ export interface ProtagonistDoc {
  */
 export interface TemplateCastCharacterDoc {
   name: string
+  identity_kind?: CharacterIdentityKind
   aliases?: string[]
   role?: string
   appearance?: string
