@@ -61,6 +61,7 @@ export async function adjudicateEntityCandidates(params: {
   knownCast: string[]
   knownPlaces: string[]
   worldContext?: string
+  onRaw?: (raw: string) => void
 }): Promise<EntityAdjudicationResult> {
   if (params.candidates.length === 0) return { available: true, decisions: [] }
 
@@ -90,6 +91,7 @@ CANDIDATES: ${JSON.stringify(payload)}`
       maxTokens: 300,
       responseFormat: { type: 'json_object' },
     })
+    params.onRaw?.(raw)
     const parsed = JSON.parse(raw) as { decisions?: unknown }
     const allowed = new Map(params.candidates.map((candidate) => [normalizeEntityName(candidate.key), candidate]))
     const decisions: EntityAdjudication[] = []

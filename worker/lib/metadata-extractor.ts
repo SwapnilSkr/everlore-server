@@ -207,6 +207,9 @@ Rules:
  * (scene stays `intimate` to preserve NSFW momentum) if extraction fails.
  */
 type MetadataOpts = {
+  /** Test-only observability hook. Production callers omit it; it never changes
+   * request construction or validation. */
+  onRaw?: (stage: 'scene_witness' | 'choice_metadata', raw: string) => void
   /** Raw player-authored turn. The witness uses this to identify actual travel
    * intent; it never treats narration alone as player authority. */
   playerInput?: string | null
@@ -364,6 +367,7 @@ export async function extractSceneWitness(
       maxTokens: 450,
       responseSchema: WITNESS_SCHEMA,
     })
+    opts?.onRaw?.('scene_witness', raw)
     const v = validateHalf(raw)
     return {
       ...WITNESS_FALLBACK,
@@ -408,6 +412,7 @@ export async function extractChoiceMetadata(
       maxTokens: 350,
       responseSchema: CHOICE_META_SCHEMA,
     })
+    opts?.onRaw?.('choice_metadata', raw)
     const v = validateHalf(raw)
     return {
       ...WITNESS_FALLBACK,
