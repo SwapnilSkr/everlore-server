@@ -186,11 +186,10 @@ async function main() {
     })
   }
 
-  // Generation failure handling. A turn can fail on a transient hiccup and then
-  // succeed on retry, so we tell the player what's happening at each stage:
-  //  - intermediate attempt failed, more remain → `generation_retrying` (the
-  //    stream is still coming; don't show a dead end)
-  //  - final attempt failed → `generation_failed` + dead-letter + release lock
+  // Generation failure handling. Story turns are deliberately single-attempt:
+  // a visible response is never rejected or replaced by an automatic retry.
+  // A pre-stream failure ends cleanly and leaves the retry decision with the
+  // player; a post-stream failure keeps the visible draft intact.
   generationWorker.on('failed', async (job, err) => {
     if (!job) return
     const attemptsAllowed = job.opts.attempts || 1
