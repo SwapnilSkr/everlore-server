@@ -584,13 +584,13 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
   const ledgerEvents = await events()
     .find(
       { instance_id: event.instance_id, type: { $ne: 'side_chat' } },
-      { projection: { sequence: 1, 'data.codex_deltas': 1 } },
+      { projection: { sequence: 1, 'data.codex_deltas': 1, 'data.character_lifecycle_deltas': 1 } },
     )
     .sort({ sequence: 1 })
     .toArray()
   const batches = ledgerEvents
     .filter((ev) => Array.isArray(ev.data?.codex_deltas) && ev.data.codex_deltas.length > 0)
-    .map((ev) => ({ sequence: ev.sequence, deltas: ev.data!.codex_deltas! }))
+    .map((ev) => ({ sequence: ev.sequence, deltas: ev.data!.codex_deltas!, lifecycleDeltas: ev.data?.character_lifecycle_deltas || [] }))
 
   if (forceExactRebuild || batches.length > 0) {
     await characters().deleteMany({ instance_id: event.instance_id })
@@ -742,13 +742,13 @@ async function rebuildCodexKinshipFromCheckpoint(params: {
         type: { $ne: 'side_chat' },
         sequence: { $gt: latest.sequence },
       },
-      { projection: { sequence: 1, 'data.codex_deltas': 1 } },
+      { projection: { sequence: 1, 'data.codex_deltas': 1, 'data.character_lifecycle_deltas': 1 } },
     )
     .sort({ sequence: 1 })
     .toArray()
   const batches = suffix
     .filter((ev) => Array.isArray(ev.data?.codex_deltas) && ev.data.codex_deltas.length > 0)
-    .map((ev) => ({ sequence: ev.sequence, deltas: ev.data!.codex_deltas! }))
+    .map((ev) => ({ sequence: ev.sequence, deltas: ev.data!.codex_deltas!, lifecycleDeltas: ev.data?.character_lifecycle_deltas || [] }))
   if (batches.length > 0) {
     await characterCodexService.rebuildCodexFromLedger({
       instanceId,
@@ -1599,6 +1599,7 @@ export const memoryService = {
             'data.state_mutations': 1,
             'data.flag_mutations': 1,
             'data.codex_deltas': 1,
+            'data.character_lifecycle_deltas': 1,
           },
         },
       )
@@ -1635,6 +1636,7 @@ export const memoryService = {
         .map((ev) => ({
           sequence: ev.sequence,
           deltas: ev.data!.codex_deltas!,
+          lifecycleDeltas: ev.data?.character_lifecycle_deltas || [],
         }))
       await characterCodexService.rebuildCodexFromLedger({
         instanceId,

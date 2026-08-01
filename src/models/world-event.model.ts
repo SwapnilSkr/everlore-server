@@ -68,12 +68,52 @@ export interface TimeDeltaDoc {
   sequence: number
 }
 
+/** A short-lived, evidence-backed reading of how the player's words landed with
+ * one present character. It is private narrator context, not a fact the prose
+ * should diagnose or announce. Event-ledgered so rewinds remove it naturally. */
+export type PlayerInteractionSignalKind =
+  | 'warmth'
+  | 'repair'
+  | 'vulnerability'
+  | 'flirtation'
+  | 'teasing'
+  | 'pointed_deflection'
+  | 'hostility'
+  | 'withdrawal'
+  | 'boundary'
+  | 'threat'
+
+export interface PlayerInteractionSignalDoc {
+  source: 'player'
+  target_character_id: string
+  target_name: string
+  kind: PlayerInteractionSignalKind
+  /** Exact contiguous excerpt from the player's submitted turn. */
+  evidence: string
+  confidence: number
+  /** Inclusive sequence through which this cue may shape behavior. */
+  expires_after_sequence: number
+}
+
+/** Explicit, witnessed change to an NPC's existence state. Names are ledgered
+ * alongside ids because codex rebuilds mint fresh ids. */
+export interface CharacterLifecycleDeltaDoc {
+  name: string
+  name_normalized: string
+  state: 'deceased'
+  evidence: string
+  sequence: number
+}
+
 export interface EventDataDoc {
   player_input: string
   /** Spoken dialogue outside narration markers. */
   player_spoken_input?: string
   /** Canonical narration/action facts authored inside *...* or **...**. */
   player_narration_facts?: string[]
+  /** Private, temporary behavioral residue from the player's input. */
+  interaction_signals?: PlayerInteractionSignalDoc[]
+  character_lifecycle_deltas?: CharacterLifecycleDeltaDoc[]
   /** Structured, player-confirmed command that drove this turn, when any. */
   world_action?: import('../utils/world-action').PlayerWorldAction
   ai_response: string

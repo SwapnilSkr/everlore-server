@@ -61,6 +61,12 @@ import { detectNarratedRelationCandidates } from '../lib/relation-candidate-dete
 import { detectCanonRevisionCandidates } from '../lib/canon-revision-detector'
 import { establishesSceneLocation } from '../lib/scene-location-signal'
 import { dispatchPostProcessOutbox, stagePostProcess } from '../../src/services/post-process-outbox.service'
+import {
+  activeCastInteractionCandidates,
+  extractPlayerInteractionSignals,
+} from '../lib/player-interaction-signal'
+import type { PlayerInteractionSignalDoc } from '../../src/models/world-event.model'
+import { extractCharacterDeaths } from '../lib/character-lifecycle-extractor'
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -428,6 +434,14 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const instanceOid = parseObjectId(instanceId)
   const playerOid = parseObjectId(playerId)
 
+  // Started during context assembly, never awaited before buildPrompt/stream.
+  // If it settles in the existing context window, the current narrator can use
+  // it; otherwise it becomes continuity for the next turn after this prose has
+  // safely streamed. It can never reject or replace a visible response.
+  let interactionSignalPromise: Promise<PlayerInteractionSignalDoc[]> | null = null
+  let settledInteractionSignals: PlayerInteractionSignalDoc[] = []
+  let interactionSignalSettled = false
+
   // Explicit context packet, assembled here in the worker so RETRIEVAL RUNS
   // BEFORE CODEX SELECTION: cards pin both for names in the player's input and
   // for characters the retrieved memories are about (indirect references).
@@ -437,6 +451,20 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     session,
     userMessage: actionNarration || userMessage,
     isContinuation,
+    onActiveCastReady: ({ characterCodex, currentSequence, presentNames, recentTurns }) => {
+      if (isContinuation || confirmedWorldAction || interactionSignalPromise) return
+      const candidates = activeCastInteractionCandidates(characterCodex, presentNames)
+      interactionSignalPromise = extractPlayerInteractionSignals({
+        playerInput: storedPlayerInput,
+        candidates,
+        sequence: currentSequence + 1,
+        recentTurns,
+      }).then((signals) => {
+        settledInteractionSignals = signals
+        interactionSignalSettled = true
+        return signals
+      })
+    },
   })
   const contextLatencyMs = Date.now() - workerStartedAt
   const {
@@ -541,6 +569,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     positionFacts: packet.positionFacts,
     companionFacts: packet.companionFacts,
     recentEvents,
+    currentInteractionSignals: interactionSignalSettled ? settledInteractionSignals : [],
     userMessage: tickDirective ?? promptUserMessage,
     userSpokenInput: parsedPlayerInput.spoken,
     userNarrationFacts: parsedPlayerInput.narrationFacts,
@@ -555,6 +584,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     playerPersona: session.persona_snapshot || null,
     messageLength: session.message_length,
     characterCodex,
+    deceasedCharacterNames: packet.deceasedCharacterNames,
     timeContext,
     locationContext,
     focusCharacterName: (() => {
@@ -917,6 +947,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     }
     return []
   })()
+  const persistedDeceasedKeys = new Set(packet.deceasedCharacterNames.map((name) => normalizeEntityName(name)))
   // Known places so a RETURN reuses a location's canonical name instead of
   // minting a near-duplicate entity (which would split the Places journal).
   const knownPlaces = await entityGraphService
@@ -983,9 +1014,18 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
     },
   )
+  const deathExtractionPromise = extractCharacterDeaths({
+    prose: rawNarrative,
+    candidates: characterCodex as any[],
+    sequence: nextSequence,
+  })
   // The semantic metadata and entity-adjudication passes are independent and
   // run together after streaming. Neither is allowed to alter visible prose.
-  const [meta, entityAdjudication] = await Promise.all([metaPromise, entityAdjudicationPromise])
+  const [meta, entityAdjudication, characterLifecycleDeltas] = await Promise.all([
+    metaPromise,
+    entityAdjudicationPromise,
+    deathExtractionPromise,
+  ])
   const finalNarrative = rawNarrative
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta }
   const independentlyCorroboratedPeople = adjudicatedPersonKeys(entityCandidates, entityAdjudication)
@@ -994,6 +1034,15 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     entityCandidates,
     entityAdjudication,
   )
+  const deceasedThisTurn = new Set(characterLifecycleDeltas.map((delta) => delta.name_normalized))
+  const blockedLifeStateKeys = new Set([...persistedDeceasedKeys, ...deceasedThisTurn])
+  const blockedLifeStateNames = [...packet.deceasedCharacterNames, ...characterLifecycleDeltas.map((delta) => delta.name)]
+  if (deceasedThisTurn.size) {
+    parsed.present_characters = parsed.present_characters.filter((name) => !blockedLifeStateKeys.has(normalizeEntityName(name)))
+    parsed.choices = (parsed.choices || []).filter((choice) =>
+      !characterLifecycleDeltas.some((delta) => new RegExp(`\\b${escapeRegExp(delta.name)}\\b`, 'i').test(`${choice.label} ${choice.send}`)),
+    )
+  }
   if (entityAdjudication.available && entityAdjudication.decisions.some((decision) => decision.verdict !== 'person')) {
     log.info('entity.adjudication.held', {
       instanceId: idString(instanceId),
@@ -1022,6 +1071,11 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       instanceId: idString(instanceId),
       sequence: nextSequence,
     })
+  }
+  if (blockedLifeStateKeys.size) {
+    parsed.choices = (parsed.choices || []).filter((choice) =>
+      !blockedLifeStateNames.some((name) => name && new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(`${choice.label} ${choice.send}`)),
+    )
   }
   // Closed-check backstop on the choices: the metadata model is *told* never to
   // invent characters, but nothing enforced it — a small model would fabricate a
@@ -1566,6 +1620,9 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       parsed.present_characters = [aiName, ...parsed.present_characters].slice(0, 12)
     }
   }
+  if (blockedLifeStateKeys.size) {
+    parsed.present_characters = parsed.present_characters.filter((name) => !blockedLifeStateKeys.has(normalizeEntityName(name)))
+  }
 
   // WITNESS → ENTITY-STUB tier: every present person the scene just showed who
   // isn't already a codex card gets a lightweight stub entity before the turn is
@@ -1761,6 +1818,14 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     })
   }
 
+  // The stream has conclusively ended. Persist the sidecar on THIS player turn
+  // if it was eligible; waiting here can only defer back-office completion, not
+  // first token, visible prose, choices, or a completed response. The extractor
+  // itself fails closed to [], so this cannot fail the canonical event.
+  const interactionSignals = interactionSignalPromise
+    ? await interactionSignalPromise
+    : []
+
   const event = {
     _id: eventId,
     instance_id: instanceOid,
@@ -1778,6 +1843,8 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       player_input: storedPlayerInput,
       player_spoken_input: storedPlayerSpokenInput,
       player_narration_facts: storedPlayerNarrationFacts,
+      ...(interactionSignals.length ? { interaction_signals: interactionSignals } : {}),
+      ...(characterLifecycleDeltas.length ? { character_lifecycle_deltas: characterLifecycleDeltas } : {}),
       ...(confirmedWorldAction ? { world_action: confirmedWorldAction } : {}),
       ai_response: parsed.narrative,
       choices: parsed.choices,
@@ -1835,6 +1902,14 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   }
 
   await mongoColl.events().insertOne(event)
+  // Materialize only after the event is durable; the ledger remains source of
+  // truth and rewind/replay reconstructs this projection from surviving rows.
+  await characterCodexService.applyLifecycleDeltas({
+    instanceId,
+    deltas: characterLifecycleDeltas,
+  }).catch((err) => {
+    log.warn('character.lifecycle_projection_failed', { instanceId, error: (err as Error).message })
+  })
   const eventIdStr = idString(event._id)
   try {
   await stagePostProcess({

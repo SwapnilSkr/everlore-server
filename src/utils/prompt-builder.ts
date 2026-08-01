@@ -9,6 +9,7 @@ import {
 import { parsePlayerInput } from './player-input-parser'
 import { CHOICE_TAIL_INSTRUCTION } from '../../worker/lib/choice-tail'
 import type { PersonaSnapshotDoc } from '../models/persona.model'
+import type { PlayerInteractionSignalDoc } from '../models/world-event.model'
 
 interface PromptInput {
   seedPrompt: string
@@ -28,6 +29,8 @@ interface PromptInput {
   /** Distant chapter/scene summaries retrieved as relevant to this turn. */
   relevantSummaries?: string[]
   recentEvents: any[]
+  /** Sidecar result which happened to settle before prompt assembly. */
+  currentInteractionSignals?: PlayerInteractionSignalDoc[]
   userMessage: string
   userSpokenInput?: string
   userNarrationFacts?: string[]
@@ -61,6 +64,7 @@ interface PromptInput {
   /** Canonical emergent character cards enforced as story constraints. */
   characterCodex?: Array<{
     canonical_name: string
+    identity_kind?: 'proper_name' | 'epithet' | 'role_label' | 'kinship_label'
     aliases?: string[]
     role?: string
     appearance?: string
@@ -86,6 +90,8 @@ interface PromptInput {
     relationship_state?: { summary: string; evidence?: string; tags?: string[] }
     is_protagonist?: boolean
   }>
+  /** Characters whose explicit lifecycle state forbids normal scene presence. */
+  deceasedCharacterNames?: string[]
   /** Optional focused character id/name chosen by player for this instance. */
   focusCharacterName?: string
   /** CANON BRIEF (relationships) — compact kinship facts incl. lifecycle state
@@ -119,6 +125,13 @@ function openingCharacterName(recentEvents: any[], names: string[]): string | nu
     if (re.test(text)) return name
   }
   return null
+}
+
+function placeholderAddressNames(cards: PromptInput['characterCodex']): string[] {
+  return (cards || [])
+    .filter((card) => card.identity_kind === 'role_label' || card.identity_kind === 'kinship_label')
+    .map((card) => String(card.canonical_name || '').trim())
+    .filter(Boolean)
 }
 
 function eventPlayerParts(event: any): {
@@ -326,6 +339,32 @@ function immediateNarrativeBeat(recentEvents: any[]): string | null {
   return narrative.length <= maxCharacters ? narrative : `…${narrative.slice(-maxCharacters)}`
 }
 
+function activeInteractionSignals(input: PromptInput): PlayerInteractionSignalDoc[] {
+  const currentSequence = Math.max(0, ...input.recentEvents.map((event) => Number(event?.sequence) || 0)) + 1
+  const prior = input.recentEvents.flatMap((event) =>
+    Array.isArray(event?.data?.interaction_signals) ? event.data.interaction_signals : [],
+  )
+  return [...prior, ...(input.currentInteractionSignals || [])]
+    .filter((signal): signal is PlayerInteractionSignalDoc =>
+      signal?.source === 'player' &&
+      typeof signal.target_name === 'string' &&
+      typeof signal.kind === 'string' &&
+      Number(signal.expires_after_sequence) >= currentSequence,
+    )
+    .slice(-2)
+}
+
+function interactionCue(signal: PlayerInteractionSignalDoc): string {
+  const effect: Record<PlayerInteractionSignalDoc['kind'], string> = {
+    warmth: 'the exchange carried warmth', repair: 'the player appeared to be repairing strain',
+    vulnerability: 'the player showed vulnerability', flirtation: 'the exchange carried flirtatious energy',
+    teasing: 'the player teased them', pointed_deflection: 'the player may have deflected pointedly',
+    hostility: 'the player was hostile', withdrawal: 'the player pulled back',
+    boundary: 'the player set a boundary', threat: 'the player made a threat',
+  }
+  return `${signal.target_name}: ${effect[signal.kind] || 'the exchange carried emotional weight'}.`
+}
+
 /**
  * Persisted hygiene findings are safe, useful continuity: they carry a small
  * corrective rule into the next turn without carrying any copyable prose. This
@@ -428,7 +467,8 @@ function finalNarratorContract(input: PromptInput, protagonistName: string, pov:
 2. Use ${povRule}. Keep the selected voice, ${tone} tone, and ${mode} mode; mode changes pacing, never canon or voice.
 3. The player turn already happened. Begin after it with an NPC response, changed action, or concrete consequence—never echo or paraphrase the player.
 4. Treat supplied canon, current location, scene presence, and relationship history as facts. Do not invent prior history, off-screen activity, or a new location.
-5. Output story prose only: dialogue in double quotes; every other visible word in single-asterisk italics. No headings, JSON, commentary, menus, or retries. If a CHOICES tail was explicitly requested above, put it only after the completed story prose.`
+5. ${input.isContinuation ? 'This is an autonomous Continue. The preceding dialogue and narration already happened: do not repeat, rephrase, or quote any of them. Move to a distinct next consequence, response, decision, or reveal.' : 'Do not reuse or lightly rephrase dialogue from earlier assistant turns.'}
+6. Output story prose only: dialogue in double quotes; every other visible word in single-asterisk italics. No headings, JSON, commentary, menus, or retries. If a CHOICES tail was explicitly requested above, put it only after the completed story prose.`
 }
 
 export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
@@ -705,6 +745,18 @@ ${input.locationContext.trim()}
     dynamicContent += `\n`
   }
 
+  const placeholderNames = placeholderAddressNames(npcCodex)
+  if (placeholderNames.length > 0) {
+    dynamicContent += `CHARACTER ADDRESSING POLICY (hard story rule):\n`
+    dynamicContent += `- ${placeholderNames.join(', ')} ${placeholderNames.length === 1 ? 'is' : 'are'} explicitly classified placeholder codex label${placeholderNames.length === 1 ? '' : 's'}, not established proper name${placeholderNames.length === 1 ? '' : 's'}. Never use ${placeholderNames.length === 1 ? 'it' : 'them'} as a spoken vocative or pretend ${placeholderNames.length === 1 ? 'it is' : 'they are'} a first name.\n`
+    dynamicContent += `- When one character addresses one of these people, use an established relationship that is natural from that SPEAKER'S point of view (for example \"my daughter\", \"your sister\") when the relationship canon supports it. Do not assume the player-facing relationship automatically applies between two NPCs.\n`
+    dynamicContent += `- If no speaker-to-recipient relationship or natural title is established and direct address is necessary, introduce one stable, ordinary proper name in the narration/dialogue. Keep the placeholder as that person's role/alias; do not create a second person.\n\n`
+  }
+
+  if (input.deceasedCharacterNames?.length) {
+    dynamicContent += `CHARACTER LIFECYCLE LOCK (hard canon): ${input.deceasedCharacterNames.join(', ')} ${input.deceasedCharacterNames.length === 1 ? 'is' : 'are'} deceased. Do not portray ${input.deceasedCharacterNames.length === 1 ? 'this character' : 'them'} alive, physically present, speaking, acting, selectable, or newly arrived. A memory, grave, legacy, supernatural manifestation, or explicit resurrection is only allowed when the player/current canon establishes it.\n\n`
+  }
+
   // CANON BRIEF (positions) — where off-screen characters were last seen, so a
   // "go find X" / "where is X" turn is grounded instead of teleporting them in.
   if (input.positionFacts && input.positionFacts.length > 0) {
@@ -807,7 +859,14 @@ ${personaLine}
   // function without, so it always gets at least RECENTS_FLOOR_TOKENS even if
   // an oversized static prefix already ate the nominal budget (a bounded
   // overflow of the total cap beats a continuity blackout).
-  const lastBeat = input.proseOnly ? immediateNarrativeBeat(input.recentEvents) : null
+  // A Continue has no new player text to anchor the model. Feeding it the
+  // previous prose verbatim made smaller narration models treat that prose as
+  // an in-context completion and repeat its dialogue word-for-word. The
+  // structured continuity ledger below is enough to advance an autonomous
+  // beat, and deliberately contains no copyable narration.
+  const lastBeat = input.proseOnly && !input.isContinuation
+    ? immediateNarrativeBeat(input.recentEvents)
+    : null
   const lastBeatTokens = lastBeat ? countTokens(lastBeat) : 0
   let tokenBudgetRemaining = Math.max(
     RECENTS_FLOOR_TOKENS,
@@ -854,8 +913,16 @@ ${personaLine}
       : ''
     messages.push({
       role: 'system',
-      content: `RECENT TURN CONTINUITY (structured facts plus one immediate narrative beat for dialogue coherence. Do not recreate a prior response when the current action resembles an earlier one; advance the story with a new consequence):
+      content: `RECENT TURN CONTINUITY (structured facts${lastBeat ? ' plus one immediate narrative beat for dialogue coherence' : ''}. Do not recreate a prior response when the current action resembles an earlier one; advance the story with a new consequence):
 ${continuityTurns.join('\n\n')}${immediateBeat}`,
+    })
+  }
+
+  const interactionSignals = activeInteractionSignals(input)
+  if (interactionSignals.length > 0) {
+    messages.push({
+      role: 'system',
+      content: `PRIVATE INTERACTION CONTINUITY (quiet behavioral residue, not narration instructions):\n${interactionSignals.map((signal) => `- ${interactionCue(signal)}`).join('\n')}\nLet it influence a fitting response only when that character is in the beat. Do not name the category, quote its evidence, diagnose the player, or state that you detected a tone.`,
     })
   }
 

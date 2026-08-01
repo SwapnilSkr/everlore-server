@@ -41,6 +41,8 @@ export interface ContextPacket {
   relevantSummaries: string[]
   /** Ranked + pinned cards: [input mentions, memory-driven pins, ranked top-K]. */
   characterCodex: CharacterProfileDoc[]
+  /** Explicitly deceased NPCs remain canon but must not be cast as alive. */
+  deceasedCharacterNames: string[]
   /** Entity ids the player named this turn (drives neighborhood retrieval). */
   mentionedEntityIds: string[]
   loreTexts: string[]
@@ -105,6 +107,14 @@ export async function buildContextPacket(params: {
   session: PacketSession
   userMessage: string
   isContinuation: boolean
+  /** Optional sidecar hook. Called as soon as the active cast is assembled;
+   * never awaited by packet construction or the narration TTFT path. */
+  onActiveCastReady?: (args: {
+    characterCodex: CharacterProfileDoc[]
+    currentSequence: number
+    presentNames: string[]
+    recentTurns: Array<{ sequence: number; playerInput: string; narration: string }>
+  }) => void
 }): Promise<ContextPacket> {
   const { instanceId, playerId, session, userMessage, isContinuation } = params
   const iid = parseObjectId(instanceId)
@@ -170,10 +180,16 @@ export async function buildContextPacket(params: {
 
   const codexPoolPromise = mongoColl
     .characters()
-    .find({ instance_id: iid })
+    .find({ instance_id: iid, life_state: { $ne: 'deceased' } })
     .sort({ is_protagonist: -1, mention_count: -1, updated_at: -1 })
     .limit(CODEX_POOL_LIMIT)
     .toArray() as Promise<CharacterProfileDoc[]>
+  // Start independently so the lifecycle guard has no serial retrieval cost.
+  const deceasedCardsPromise = mongoColl
+    .characters()
+    .find({ instance_id: iid, life_state: 'deceased' }, { projection: { canonical_name: 1 } })
+    .limit(12)
+    .toArray()
 
   // ── 1. Direct mentions: entities + dormant codex cards named in the input ──
   // (On a continue turn the player says nothing — nothing to resolve.)
@@ -296,6 +312,7 @@ export async function buildContextPacket(params: {
   const seen = new Set<string>()
   const characterCodex: CharacterProfileDoc[] = []
   for (const card of [...mentionPinnedCards, ...memoryPinnedCards, ...ranked]) {
+    if (card.life_state === 'deceased') continue
     const key = card._id ? idString(card._id) : card.canonical_name
     if (seen.has(key)) continue
     seen.add(key)
@@ -321,6 +338,29 @@ export async function buildContextPacket(params: {
       last_seen_sequence: currentSequence,
       is_protagonist: true,
     } as unknown as CharacterProfileDoc)
+  }
+
+  // Let optional semantic sidecars begin while the independent canon briefs
+  // still run. The hook is deliberately fire-and-forget: a sidecar can enrich
+  // this turn only if it wins the race naturally, never by delaying narration.
+  try {
+    const lastScenePresence = recentEvents[recentEvents.length - 1]?.data?.present_characters
+    params.onActiveCastReady?.({
+      characterCodex,
+      currentSequence,
+      presentNames: Array.isArray(lastScenePresence)
+        ? lastScenePresence.filter((name: unknown): name is string => typeof name === 'string')
+        : [],
+      // This is already loaded for the narrator. Bounded excerpts give the
+      // sidecar the pragmatics needed for irony without another database read.
+      recentTurns: recentEvents.slice(-2).map((event) => ({
+        sequence: event.sequence,
+        playerInput: String(event.data?.player_input || ''),
+        narration: String(event.data?.ai_response || ''),
+      })),
+    })
+  } catch {
+    // Optional observers cannot affect context assembly.
   }
 
   // ── 4. Canon brief (relationships): kinship facts for the active cast, surfaced
@@ -424,6 +464,7 @@ export async function buildContextPacket(params: {
     sceneSummary: summaryDoc?.summary_text || null,
     relevantSummaries,
     characterCodex,
+    deceasedCharacterNames: (await deceasedCardsPromise).map((card) => card.canonical_name).filter(Boolean),
     mentionedEntityIds,
     loreTexts,
     memoryTexts,
