@@ -1,3 +1,4 @@
+import './polyfill-v8-snapshot'
 import { Elysia, ValidationError, ParseError, NotFoundError } from 'elysia'
 import { cors } from '@elysiajs/cors'
 import { connectMongo } from './config/mongo'

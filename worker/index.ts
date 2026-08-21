@@ -1,3 +1,4 @@
+import '../src/polyfill-v8-snapshot'
 import { Worker, type Job } from 'bullmq'
 import { connectMongo } from '../src/config/mongo'
 import { connectRedis, getQueueRedisClient, getRedisClient } from '../src/config/redis'
