@@ -74,6 +74,11 @@ export const GenerateImageBody = t.Object({
   prompt: t.String({ minLength: 4, maxLength: FIELD_LIMITS.imagePrompt }),
 })
 
+/** Image bytes are validated again from their decoded content server-side. */
+export const UploadImageBody = t.Object({
+  image: t.File({ maxSize: '15m' }),
+})
+
 export const AutofillBody = t.Object({
   target: t.Union([t.Literal('world'), t.Literal('character')]),
   brief: t.Optional(t.String({ maxLength: 1500 })),

@@ -57,12 +57,12 @@
     "ioredis": "^5.10.1",
     "js-tiktoken": "^1.0.21",
     "mongodb": "^7.1.1",
-    "openai": "^6.33.0"
+    "openai": "^6.33.0",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@types/bun": "latest",
     "detect-libc": "^2.1.2",
-    "sharp": "^0.34.5",
     "typescript": "^6.0.2"
   }
 }

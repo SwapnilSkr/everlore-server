@@ -81,6 +81,27 @@ export const templateController = {
     }
   },
 
+  // Stores a creator-selected image using the same preview → durable-media
+  // lifecycle as generated artwork. The image service validates its real bytes
+  // and creates a lossless WebP derivative before it reaches object storage.
+  uploadImage: async ({
+    user,
+    body,
+  }: {
+    user: AuthUser | null
+    body: { image: File }
+  }) => {
+    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (user.tier !== 'creator' && user.tier !== 'premium') {
+      throw new HttpError(403, 'Creator or premium tier required')
+    }
+    const rl = await rateLimit(user.id, 'image_upload')
+    if (!rl.allowed) {
+      throw new HttpError(429, 'Too many image uploads. Try again shortly.')
+    }
+    return imageService.uploadUserImage(body.image)
+  },
+
   // One-shot creation autofill — drafts an entire world/character from a brief.
   autofill: async ({
     user,
