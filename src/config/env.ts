@@ -58,6 +58,8 @@ const optionalEnvVars = {
   TEMPLATE_CREATE_RATE_MAX: '5',
   /** Keeps the full billing path deployable before Play products are live. */
   BILLING_ENFORCEMENT_ENABLED: 'false',
+  /** Non-production QA checkout. Never enable this in a public production app. */
+  BILLING_SIMULATION_ENABLED: 'false',
   GOOGLE_PLAY_PACKAGE_NAME: '',
   /** JSON service-account credential with Android Publisher API access. */
   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: '',
@@ -100,6 +102,7 @@ export interface Env {
   CHAT_RATE_MAX: number
   TEMPLATE_CREATE_RATE_MAX: number
   BILLING_ENFORCEMENT_ENABLED: boolean
+  BILLING_SIMULATION_ENABLED: boolean
   GOOGLE_PLAY_PACKAGE_NAME: string
   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: string
   GOOGLE_PLAY_RTDN_AUDIENCE: string
@@ -152,6 +155,7 @@ function loadEnv(): Env {
     CHAT_RATE_MAX: Number(process.env.CHAT_RATE_MAX || optionalEnvVars.CHAT_RATE_MAX),
     TEMPLATE_CREATE_RATE_MAX: Number(process.env.TEMPLATE_CREATE_RATE_MAX || optionalEnvVars.TEMPLATE_CREATE_RATE_MAX),
     BILLING_ENFORCEMENT_ENABLED: process.env.BILLING_ENFORCEMENT_ENABLED === 'true',
+    BILLING_SIMULATION_ENABLED: process.env.BILLING_SIMULATION_ENABLED === 'true',
     GOOGLE_PLAY_PACKAGE_NAME: process.env.GOOGLE_PLAY_PACKAGE_NAME || optionalEnvVars.GOOGLE_PLAY_PACKAGE_NAME,
     GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || optionalEnvVars.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON,
     GOOGLE_PLAY_RTDN_AUDIENCE: process.env.GOOGLE_PLAY_RTDN_AUDIENCE || optionalEnvVars.GOOGLE_PLAY_RTDN_AUDIENCE,

@@ -1,4 +1,5 @@
 import { generateImage } from '../ai'
+import sharp from 'sharp'
 import { storageService } from './storage.service'
 import { HttpError } from '../utils/http-error'
 
@@ -90,5 +91,40 @@ export const imageService = {
       throw new HttpError(502, `Image generation failed: ${(e as Error).message}`)
     }
     return storageService.upload(img.data, img.contentType, { prefix: 'previews' })
+  },
+
+  /**
+   * Validate and normalize a user-selected image for stable, efficient delivery.
+   * After any necessary downscale, WebP encoding is lossless; we also strip
+   * private metadata, apply EXIF orientation, and cap the longest edge only
+   * when a source exceeds 2048px (avoiding oversized mobile downloads).
+   */
+  async uploadUserImage(file: File): Promise<{ url: string; key: string }> {
+    const input = Buffer.from(await file.arrayBuffer())
+    if (!input.length || input.length > 15 * 1024 * 1024) {
+      throw new HttpError(400, 'Choose a PNG, JPEG, WebP, or HEIC image up to 15 MB')
+    }
+
+    let image: sharp.Sharp
+    try {
+      image = sharp(input, { limitInputPixels: 40_000_000 }).rotate()
+      const metadata = await image.metadata()
+      if (!['jpeg', 'png', 'webp', 'heif'].includes(metadata.format || '')) {
+        throw new HttpError(400, 'Choose a PNG, JPEG, WebP, or HEIC image')
+      }
+    } catch (error) {
+      if (error instanceof HttpError) throw error
+      throw new HttpError(400, 'That image could not be read. Choose a PNG, JPEG, WebP, or HEIC image')
+    }
+
+    try {
+      const data = await image
+        .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
+        .webp({ lossless: true, effort: 6 })
+        .toBuffer()
+      return storageService.upload(data, 'image/webp', { prefix: 'previews' })
+    } catch (error) {
+      throw new HttpError(400, `Could not process that image: ${(error as Error).message}`)
+    }
   },
 }

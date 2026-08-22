@@ -13,6 +13,12 @@ export const billingRoutes = new Elysia({ prefix: '/billing' })
       kind: t.Union([t.Literal('subscription'), t.Literal('consumable')]),
     }),
   })
+  .post('/simulate-purchase', (ctx) => billingController.simulatePurchase(ctx), {
+    body: t.Object({
+      product_id: t.String({ minLength: 1, maxLength: 120 }),
+      idempotency_key: t.String({ minLength: 1, maxLength: 120 }),
+    }),
+  })
   .post('/google/rtdn', (ctx) => billingController.googleRtdn(ctx), {
     body: t.Object({
       message: t.Optional(t.Object({ data: t.Optional(t.String()) })),

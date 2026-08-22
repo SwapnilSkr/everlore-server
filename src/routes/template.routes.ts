@@ -6,6 +6,7 @@ import {
   TemplateQueryParams,
   MyTemplateQueryParams,
   GenerateImageBody,
+  UploadImageBody,
   AutofillBody,
 } from '../schemas/template.schema'
 import { templateController } from '../controllers/template.controller'
@@ -23,6 +24,10 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
 
   .post('/image/generate', (ctx) => templateController.generateImage(ctx), {
     body: GenerateImageBody,
+  })
+
+  .post('/image/upload', (ctx) => templateController.uploadImage(ctx), {
+    body: UploadImageBody,
   })
 
   .post('/autofill', (ctx) => templateController.autofill(ctx), {

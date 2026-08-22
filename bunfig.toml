@@ -1,0 +1,1 @@
+preload = ["./src/polyfill-v8-snapshot.ts"]

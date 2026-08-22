@@ -235,6 +235,33 @@ async function resolveOpenThreads(
   return resolved
 }
 
+/** Shared request builder lets the no-write replay harness exercise precisely
+ * the same memory-curation prompt as the queued production worker. */
+export function buildMemoryCurationRequest(params: {
+  sceneTag: string; roster: Array<{ canonical_name: string; aliases?: string[]; is_protagonist?: boolean }>
+  isSentient?: boolean; protagonistName?: string | null; playerPersonaName?: string | null
+  precedingAiResponse?: string | null; playerInput: string; playerSpokenInput?: string
+  playerNarrationFacts?: string[]; aiResponse: string
+}) {
+  const rosterLines = params.roster.length
+    ? params.roster.map((c) => {
+        const aliases = (c.aliases || []).filter(Boolean)
+        return `- ${c.canonical_name}${c.is_protagonist ? ' (protagonist)' : ''}${aliases.length ? ` (aka ${aliases.join(', ')})` : ''}`
+      }).join('\n')
+    : '- (no known characters yet)'
+  const identityContext = params.isSentient
+    ? `\nIdentity boundary:\n- This is a sentient/character conversation. The protagonist/main character${params.protagonistName ? ` is "${params.protagonistName}"` : ''}; the human player${params.playerPersonaName ? ` may be called "${params.playerPersonaName}"` : ''} is separate.\n- Any fact in Player input using "I", "me", or "my" belongs to the player. Use subject "player" for those facts, NEVER the protagonist/main character.\n- The narration speaks to/for the player ("you"/first person). A first-person sensation, feeling, or perception in the NARRATION ("a shiver runs through me", "my heart races", "I notice…") is the PLAYER's — use subject "player", NEVER attribute it to the main character. The main character is the subject only when the prose shows THEM acting or feeling by their own name.\n- Player-mentioned off-screen relatives or possessions are facts about the player, not new present characters.\n`
+    : `\nIdentity boundary:\n- This is a GM world: the player speaks as the protagonist. Use "player" for the player's own first-person facts in memory subjects unless a specific other character acted.\n`
+  return {
+    model: AI_MODELS.memoryCuration, temperature: 0.3, maxTokens: 900,
+    responseFormat: { type: 'json_object' },
+    messages: [
+      { role: 'system' as const, content: EXTRACTION_PROMPT },
+      { role: 'user' as const, content: `Scene type: ${params.sceneTag}\n\nCharacter roster (canonical names for resolution):\n${rosterLines}\n${identityContext}\n${params.precedingAiResponse ? `Preceding narration (the line(s) just before this turn — use ONLY to resolve back-references like "stuff like that"; do not re-extract its events as new memories):\n${String(params.precedingAiResponse).slice(0, 700)}\n` : ''}\nPlayer (raw input): ${params.playerInput}\nPlayer spoken dialogue: ${params.playerSpokenInput || '(none)'}\nPlayer canonical narration facts:\n${Array.isArray(params.playerNarrationFacts) && params.playerNarrationFacts.length ? params.playerNarrationFacts.map((f) => `- ${f}`).join('\n') : '- (none)'}\n\nWorld: ${params.aiResponse}` },
+    ],
+  }
+}
+
 export async function memoryProcessor(job: Job) {
   const {
     instanceId,
@@ -293,33 +320,10 @@ export async function memoryProcessor(job: Job) {
     ? `\nIdentity boundary:\n- This is a sentient/character conversation. The protagonist/main character${protagonistName ? ` is "${protagonistName}"` : ''}; the human player${playerPersonaName ? ` may be called "${playerPersonaName}"` : ''} is separate.\n- Any fact in Player input using "I", "me", or "my" belongs to the player. Use subject "player" for those facts, NEVER the protagonist/main character.\n- The narration speaks to/for the player ("you"/first person). A first-person sensation, feeling, or perception in the NARRATION ("a shiver runs through me", "my heart races", "I notice…") is the PLAYER's — use subject "player", NEVER attribute it to the main character. The main character is the subject only when the prose shows THEM acting or feeling by their own name.\n- Player-mentioned off-screen relatives or possessions are facts about the player, not new present characters.\n`
     : `\nIdentity boundary:\n- This is a GM world: the player speaks as the protagonist. Use "player" for the player's own first-person facts in memory subjects unless a specific other character acted.\n`
 
-  const result = await callLLM({
-    model: AI_MODELS.memoryCuration,
-    messages: [
-      { role: 'system', content: EXTRACTION_PROMPT },
-      {
-        role: 'user',
-        content: `Scene type: ${sceneTag}
-
-Character roster (canonical names for resolution):
-${rosterLines}
-${identityContext}
-
-${precedingAiResponse ? `Preceding narration (the line(s) just before this turn — use ONLY to resolve back-references like "stuff like that"; do not re-extract its events as new memories):\n${String(precedingAiResponse).slice(0, 700)}\n` : ''}
-Player (raw input): ${playerInput}
-Player spoken dialogue: ${playerSpokenInput || '(none)'}
-Player canonical narration facts:
-${Array.isArray(playerNarrationFacts) && playerNarrationFacts.length
-    ? playerNarrationFacts.map((f: string) => `- ${f}`).join('\n')
-    : '- (none)'}
-
-World: ${aiResponse}`,
-      },
-    ],
-    temperature: 0.3,
-    maxTokens: 900,
-    responseFormat: { type: 'json_object' },
-  })
+  const result = await callLLM(buildMemoryCurationRequest({
+    sceneTag, roster, isSentient, protagonistName, playerPersonaName,
+    precedingAiResponse, playerInput, playerSpokenInput, playerNarrationFacts, aiResponse,
+  }))
 
   let extracted: any
   try {

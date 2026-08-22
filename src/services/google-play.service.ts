@@ -129,13 +129,23 @@ export const googlePlayService = {
       ? row.lineItems.find((item: any) => item.productId === input.productId) || row.lineItems[0]
       : null
     if (!line || line.productId !== input.productId) throw new HttpError(400, 'This purchase does not match that subscription')
-    const active = row.subscriptionState === 'SUBSCRIPTION_STATE_ACTIVE' || row.subscriptionState === 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD'
+    const expiresAt = line.expiryTime ? new Date(line.expiryTime) : undefined
+    // A user can cancel auto-renewal while retaining access through the end of
+    // the already-paid period. Revoked/expired/on-hold subscriptions do not
+    // grant access, but CANCELLED remains entitled until its expiry time.
+    const activeStates = new Set([
+      'SUBSCRIPTION_STATE_ACTIVE',
+      'SUBSCRIPTION_STATE_IN_GRACE_PERIOD',
+      'SUBSCRIPTION_STATE_CANCELED',
+    ])
+    const active = activeStates.has(row.subscriptionState)
+      && (!expiresAt || expiresAt.getTime() > Date.now())
     return {
       kind: 'subscription',
       productId: line.productId,
       basePlanId: line.offerDetails?.basePlanId,
       purchaseToken: input.purchaseToken,
-      expiresAt: line.expiryTime ? new Date(line.expiryTime) : undefined,
+      expiresAt,
       active,
     }
   },

@@ -1,5 +1,6 @@
 import { callLLM, AI_MODELS } from '../../src/ai'
 import { isEphemeralPersonDescriptor, isNonPersonRole, type CharacterCodexDelta } from '../../src/services/character-codex.service'
+import type { CharacterIdentityKind } from '../../src/models/character-profile.model'
 import { classifyPresenceCodexGaps, isActionableMention } from './presence-gap-detector'
 import { isAbstractNonPersonTerm } from '../../src/utils/person-identity'
 import {
@@ -10,6 +11,7 @@ import {
 
 type ExistingCharacter = {
   canonical_name: string
+  identity_kind?: CharacterIdentityKind
   aliases?: string[]
   role?: string
   appearance?: string
@@ -415,6 +417,10 @@ function toDelta(raw: any, sourceText: string): CharacterCodexDelta | null {
   const relationshipUpdateAllowed = !!relationshipInitialization || Object.keys(evidenceBackedDeltas || {}).length > 0
   return {
     name,
+    identity_kind:
+      raw.identity_kind === 'proper_name' || raw.identity_kind === 'epithet' || raw.identity_kind === 'role_label' || raw.identity_kind === 'kinship_label'
+        ? raw.identity_kind
+        : undefined,
     aliases,
     resolved_name: typeof raw.resolved_name === 'string' ? raw.resolved_name.trim() : undefined,
     role: typeof raw.role === 'string' ? raw.role.trim() : undefined,
@@ -537,6 +543,8 @@ export async function extractCharacterCodexDeltas(params: {
   knownLocations?: { name: string; aliases?: string[] }[]
   /** Named character entities with repeated provenance but no codex card. */
   promotableOffscreenPeople?: string[]
+  /** Test-only raw-response observer; never changes production extraction. */
+  onRaw?: (raw: string) => void
 }): Promise<CharacterCodexDelta[]> {
   const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName, presentCast, knownLocations, promotableOffscreenPeople } = params
 
@@ -566,7 +574,7 @@ export async function extractCharacterCodexDeltas(params: {
         const bondHistoryLine = recentShifts.length
           ? `\n    recent evidence-backed bond shifts: ${recentShifts.join('; ')}`
           : ''
-        return `- ${c.canonical_name}${aliases ? ` (aliases: ${aliases})` : ''}${c.role ? ` role: ${c.role}` : ''}${stateLine}${bondLine}${bondContextLine}${bondJournalLine}${bondHistoryLine}`
+        return `- ${c.canonical_name}${c.identity_kind ? ` (identity kind: ${c.identity_kind})` : ''}${aliases ? ` (aliases: ${aliases})` : ''}${c.role ? ` role: ${c.role}` : ''}${stateLine}${bondLine}${bondContextLine}${bondJournalLine}${bondHistoryLine}`
       })
       .join('\n')
     : '(none yet)'
@@ -605,7 +613,7 @@ Rules:
 - Include non-player characters and entities (and the protagonist described below).
 - ALWAYS create or update a card for any NAMED character who appears, speaks, or is referenced this turn — even with sparse detail. Do not skip newly introduced characters; capturing them promptly keeps the story consistent.
 - Prefer resolving to existing characters when aliases/titles/pronouns refer to the same person; never split one character into two cards. Before creating a NEW card, check whether the name is actually a title, epithet, or description of someone already listed (or of the player) — if so, use "resolved_name" instead of a new card.
-- CANONICAL NAME PRIORITY: a literal proper name always outranks a kinship/role label for the SAME person. If prose says Sister and later directly addresses her as "Mara, ...", output name: "Mara", aliases: ["Sister"], role: "sibling". If an existing card is named "Sister", use resolved_name: "Sister" with name: "Mara" so it is promoted instead of duplicated. Keep a role label canonical only while no literal proper name has appeared.
+- identity_kind: classify the literal identity used for this card: proper_name (Mara, Captain Rhea), epithet (The Mysterious Man), role_label (Butler, Guard), or kinship_label (Mother, Sister). This is durable metadata; do not infer it from capitalization alone. A literal proper name always outranks a kinship/role label for the SAME person. If prose says Sister and later directly addresses her as "Mara, ...", output name: "Mara", identity_kind: "proper_name", aliases: ["Sister"], role: "sibling". If an existing card is named "Sister", use resolved_name: "Sister" with name: "Mara" so it is promoted instead of duplicated. Keep a role label canonical only while no literal proper name has appeared.
 - Generic RELATIONAL or ROLE epithets — "the sister", "his sister", "Sister", "the twin", "Mother", "the father", "the guard", "the innkeeper" — are NOT a new person when the existing roster already has a character in that role. A shorter or vaguer label ("Sister") and a more specific one ("Twin Sister") for the same family role are the SAME person. Resolve the epithet to that existing card with "resolved_name"; never create a second card alongside it. Worked example: the roster already lists "Twin Sister"; this turn the narration says "his sister scoffed" → return that character with "resolved_name": "Twin Sister" (do NOT mint a separate "Sister" card).
 - A named relative mentioned only by the player as off-screen background ("my sister is Mara", "my brother keeps the locket") is NOT a codex card yet. Store that as a memory, not a Bonds card. Create/update the relative only if they physically appear, speak, act, or are already in the existing roster.
 - NEVER INVENT A NAME — NON-NEGOTIABLE. A character's "name" must be a proper name or fixed epithet that LITERALLY appears in this turn's text (player input or narration). NEVER coin a label from the scene's mood, tone, or an action — do NOT produce names like "Mysterious Man", "The Stranger", "Hooded Figure", "The Visitor", "Shadowy Man" unless those exact words appear in the text. A character being secretive, unnamed, or vague is STILL one of the existing roster / present cast — describe their secrecy in their fields, do not give them a new identity.
@@ -633,6 +641,7 @@ Respond ONLY JSON:
   "characters": [
     {
       "name": "string",
+      "identity_kind": "proper_name|epithet|role_label|kinship_label",
       "resolved_name": "string optional; use canonical existing name when this is an alias/title",
       "aliases": ["string"],
       "role": "string",
@@ -674,6 +683,7 @@ Respond ONLY JSON:
   } catch {
     return []
   }
+  params.onRaw?.(raw)
 
   const parsed = parseJsonObject(raw)
   const rawList: unknown[] = Array.isArray((parsed as any).characters) ? (parsed as any).characters : []

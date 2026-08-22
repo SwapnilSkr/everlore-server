@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import type { UserTier } from '../models/user.model'
 import { HttpError } from '../utils/http-error'
-import { parseObjectId } from '../utils/mongo-id'
+import { idString, parseObjectId } from '../utils/mongo-id'
 import { env } from '../config/env'
 import { googlePlayService, type VerifiedGooglePurchase } from './google-play.service'
 
@@ -60,10 +60,22 @@ async function balanceFor(playerId: ObjectId): Promise<number> {
 }
 
 export const billingService = {
+  simulationEnabled() {
+    // A simulated checkout is useful only on a local/internal QA deployment.
+    // Refuse it at runtime in production even if an environment variable is
+    // accidentally set, so a public release can never impersonate Play.
+    return env.BILLING_SIMULATION_ENABLED && process.env.NODE_ENV !== 'production'
+  },
+
   catalog() {
     // Prices live only in Play Console. This is deliberately entitlement and
     // allowance metadata, never a client-side price source.
-    return { ...BILLING_CATALOG, purchases_enabled: googlePlayService.configured(), products: PLAY_PRODUCTS }
+    return {
+      ...BILLING_CATALOG,
+      purchases_enabled: googlePlayService.configured(),
+      simulation_enabled: this.simulationEnabled(),
+      products: PLAY_PRODUCTS,
+    }
   },
 
   async ensureWelcomeInk(playerId: string) {
@@ -181,6 +193,152 @@ export const billingService = {
     )
   },
 
+  /**
+   * Support / QA grant. This is deliberately independent of Play and of the
+   * enforcement switch: an administrator must be able to compensate a player,
+   * run a tester account, or honour a promotion while Google is unavailable.
+   * A caller-provided idempotency key makes a double-click harmless.
+   */
+  async grantAdminInk(playerId: string, input: { amount: number; idempotencyKey: string; note?: string }) {
+    const amount = Math.floor(input.amount)
+    if (!Number.isFinite(amount) || amount < 1 || amount > 1_000_000) {
+      throw new HttpError(400, 'Ink grant amount must be between 1 and 1,000,000')
+    }
+    const idempotencyKey = input.idempotencyKey.trim()
+    if (!idempotencyKey || idempotencyKey.length > 120) {
+      throw new HttpError(400, 'An admin grant idempotency key is required')
+    }
+
+    const playerOid = parseObjectId(playerId)
+    const player = await users().findOne({ _id: playerOid }, { projection: { tier: 1 } })
+    if (!player) throw new HttpError(404, 'User not found')
+
+    const key = `admin_grant:${idempotencyKey}`
+    try {
+      await ledger().insertOne({
+        _id: new ObjectId(),
+        player_id: playerOid,
+        delta: amount,
+        reason: 'adjustment',
+        idempotency_key: key,
+        reference: input.note?.trim().slice(0, 240) || 'admin_grant',
+        created_at: new Date(),
+      })
+    } catch (error: any) {
+      if (error?.code !== 11000) throw error
+    }
+    return this.wallet(playerId, player.tier || 'free')
+  },
+
+  /** Compact, read-only billing view for the authenticated admin dashboard. */
+  async adminAccountSnapshot(playerId: string) {
+    const playerOid = parseObjectId(playerId)
+    const player = await users().findOne({ _id: playerOid }, { projection: { tier: 1 } })
+    if (!player) throw new HttpError(404, 'User not found')
+    const [wallet, recentLedger, activeEntitlements, recentPurchases] = await Promise.all([
+      this.wallet(playerId, player.tier || 'free'),
+      ledger().find({ player_id: playerOid }).sort({ created_at: -1 }).limit(12).toArray(),
+      entitlements().find({ player_id: playerOid }).sort({ updated_at: -1 }).limit(6).toArray(),
+      purchases().find({ player_id: playerOid }).sort({ updated_at: -1 }).limit(12).toArray(),
+    ])
+    return {
+      wallet,
+      ledger: recentLedger.map((entry) => ({
+        id: idString(entry._id),
+        delta: entry.delta,
+        reason: entry.reason,
+        reference: entry.reference || null,
+        created_at: entry.created_at,
+      })),
+      entitlements: activeEntitlements.map((entry) => ({
+        id: idString(entry._id),
+        tier: entry.tier,
+        source: entry.source,
+        product_id: entry.product_id,
+        active: entry.active,
+        expires_at: entry.expires_at || null,
+        updated_at: entry.updated_at,
+      })),
+      purchases: recentPurchases.map((entry) => ({
+        id: idString(entry._id),
+        product_id: entry.product_id,
+        status: entry.status,
+        created_at: entry.created_at,
+        updated_at: entry.updated_at,
+      })),
+    }
+  },
+
+  /** QA-only simulated checkout. It exercises the same entitlement and Ink
+   * ledger outcomes as a verified product, but has no Google token or money
+   * movement and is unavailable when NODE_ENV is production. */
+  async simulatePurchase(playerId: string, input: { productId: string; idempotencyKey: string }) {
+    if (!this.simulationEnabled()) throw new HttpError(404, 'Billing simulation is unavailable')
+    const product = PLAY_PRODUCTS[input.productId as keyof typeof PLAY_PRODUCTS]
+    if (!product) throw new HttpError(400, 'Unknown Everlore product')
+    const idempotencyKey = input.idempotencyKey.trim()
+    if (!idempotencyKey || idempotencyKey.length > 120) {
+      throw new HttpError(400, 'A test checkout idempotency key is required')
+    }
+
+    const playerOid = parseObjectId(playerId)
+    const player = await users().findOne({ _id: playerOid }, { projection: { tier: 1 } })
+    if (!player) throw new HttpError(404, 'User not found')
+
+    if (product.kind === 'consumable') {
+      await ledger().updateOne(
+        { player_id: playerOid, idempotency_key: `simulation_purchase:${idempotencyKey}` },
+        {
+          $setOnInsert: {
+            _id: new ObjectId(),
+            player_id: playerOid,
+            delta: product.ink,
+            reason: 'adjustment',
+            idempotency_key: `simulation_purchase:${idempotencyKey}`,
+            reference: `simulation:${input.productId}`,
+            created_at: new Date(),
+          },
+        },
+        { upsert: true },
+      )
+      return this.wallet(playerId, player.tier || 'free')
+    }
+
+    const tier = product.tier
+    const profile = profileFor(tier)
+    await entitlements().updateOne(
+      { player_id: playerOid, source: 'manual', product_id: `simulation:${input.productId}` },
+      {
+        $set: {
+          tier,
+          active: true,
+          product_id: `simulation:${input.productId}`,
+          expires_at: new Date(Date.now() + 31 * 24 * 60 * 60 * 1000),
+          updated_at: new Date(),
+        },
+        $setOnInsert: { _id: new ObjectId(), player_id: playerOid, source: 'manual', created_at: new Date() },
+      },
+      { upsert: true },
+    )
+    await users().updateOne({ _id: playerOid }, { $set: { tier, updated_at: new Date() } })
+    await ledger().updateOne(
+      { player_id: playerOid, idempotency_key: `simulation_subscription:${idempotencyKey}` },
+      {
+        $setOnInsert: {
+          _id: new ObjectId(),
+          player_id: playerOid,
+          delta: profile.monthly_ink,
+          reason: 'adjustment',
+          idempotency_key: `simulation_subscription:${idempotencyKey}`,
+          reference: `simulation:${input.productId}`,
+          created_at: new Date(),
+        },
+      },
+      { upsert: true },
+    )
+    return this.wallet(playerId, tier)
+  },
+
   async verifyGooglePurchase(playerId: string, input: { product_id: string; purchase_token: string; kind: 'subscription' | 'consumable' }) {
     const configured = PLAY_PRODUCTS[input.product_id as keyof typeof PLAY_PRODUCTS]
     if (!configured || configured.kind !== input.kind) throw new HttpError(400, 'Unknown Everlore product')
@@ -203,6 +361,45 @@ export const billingService = {
       kind: input.kind,
     })
     await this.applyVerifiedPurchase(record.player_id.toString(), verified)
+    return { accepted: true, linked: true }
+  },
+
+  /** Reconcile a refund/chargeback notification after the original client
+   * verification linked the purchase token to a player. A consumed Ink pack is
+   * reversed into the same ledger (which may create a negative balance); we do
+   * not silently leave refunded virtual currency spendable. */
+  async voidGooglePurchase(purchaseToken: string) {
+    const record = await purchases().findOne({ provider: 'google_play', purchase_token: purchaseToken })
+    if (!record) return { accepted: true, linked: false }
+
+    await purchases().updateOne(
+      { _id: record._id },
+      { $set: { status: 'revoked', updated_at: new Date() } },
+    )
+    const product = PLAY_PRODUCTS[record.product_id as keyof typeof PLAY_PRODUCTS]
+    if (product?.kind === 'consumable') {
+      const original = await ledger().findOne({
+        player_id: record.player_id,
+        idempotency_key: `purchase:${purchaseToken}`,
+      })
+      if (original && original.delta > 0) {
+        await ledger().updateOne(
+          { player_id: record.player_id, idempotency_key: `voided:${purchaseToken}` },
+          {
+            $setOnInsert: {
+              _id: new ObjectId(),
+              player_id: record.player_id,
+              delta: -original.delta,
+              reason: 'adjustment',
+              idempotency_key: `voided:${purchaseToken}`,
+              reference: `voided:${record.product_id}`,
+              created_at: new Date(),
+            },
+          },
+          { upsert: true },
+        )
+      }
+    }
     return { accepted: true, linked: true }
   },
 

@@ -64,8 +64,11 @@ export const generationService = {
       },
       {
         priority: 1,
-        attempts: 2,
-        backoff: { type: 'exponential', delay: 3000 },
+        // A turn is a visible interaction, not a background task. Retrying a
+        // failed generation can replace the scene the player just started
+        // reading, so a failed turn is surfaced as a failure and the player
+        // decides whether to try again.
+        attempts: 1,
         removeOnComplete: QUEUE_RETENTION.generation.removeOnComplete,
         removeOnFail: QUEUE_RETENTION.generation.removeOnFail,
       },
