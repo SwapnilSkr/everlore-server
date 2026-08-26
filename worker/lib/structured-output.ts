@@ -14,12 +14,34 @@ export interface ChoiceOption {
   send: string
 }
 
+/**
+ * A compact, non-verbatim record of what the narrator just established.
+ *
+ * This is deliberately semantic rather than a quote or prose recap: it gives
+ * the next turn enough emotional and conversational continuity to respond
+ * naturally without providing an in-context completion the narrator can copy.
+ */
+export interface NarrativeBeatLedger {
+  npc_beats: Array<{
+    character: string
+    intent: string
+    reaction: string | null
+  }>
+  emotional_shift: string | null
+  /** Concrete place/setting carried forward only when the prose establishes it. */
+  setting: string | null
+  consequence: string | null
+  unresolved_hook: string | null
+}
+
 export interface GenerationOutput {
   narrative: string
   state_mutations: Record<string, Mutation>
   flag_mutations: Record<string, FlagMutation>
   scene_tag: string
   emotional_tone: string
+  /** Semantic continuity only — never raw dialogue or prose from this turn. */
+  beat_ledger: NarrativeBeatLedger
   /** 2-4 short suggested player moves for the next turn (tap-to-play chips). */
   choices: ChoiceOption[]
   /** Set only when this turn crossed a true story landmark; null otherwise. */
@@ -49,6 +71,13 @@ export interface GenerationOutput {
    * turn. It is only a candidate; the server verifies it against player text. */
   player_destination?: string | null
   player_travel_confirmed?: boolean
+  /**
+   * Exact short excerpt the scene witness used to ground `current_location`.
+   * It is verified against the player turn or narration before a graph node can
+   * be created; it is never shown to players.
+   */
+  location_evidence?: string | null
+  location_evidence_source?: 'player' | 'narrative' | 'prior' | null
   /**
    * Witness fields for the location-graph cartographer (P1). `containment_hint`
    * is the immediate container of current_location, but ONLY when the passage
@@ -87,6 +116,41 @@ export interface GenerationOutput {
    * for fifty miles"). Append-only place canon. Empty almost always.
    */
   location_permanent_facts?: string[]
+}
+
+function compactBeatText(value: unknown, max = 180): string | null {
+  if (typeof value !== 'string') return null
+  const cleaned = value.replace(/\s+/g, ' ').trim()
+  if (!cleaned || /^(none|null|n\/a)$/i.test(cleaned)) return null
+  return cleaned.slice(0, max)
+}
+
+/** Keep the extracted beat factual, bounded, and safe to inject into prompts. */
+export function sanitizeBeatLedger(raw: unknown): NarrativeBeatLedger {
+  const source = raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : {}
+  const npcBeats = Array.isArray(source.npc_beats) ? source.npc_beats : []
+  const seen = new Set<string>()
+  const normalized = npcBeats.flatMap((item) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return []
+    const row = item as Record<string, unknown>
+    const character = compactBeatText(row.character, 80)
+    const intent = compactBeatText(row.intent)
+    if (!character || !intent) return []
+    const key = `${character.toLowerCase()}\u0000${intent.toLowerCase()}`
+    if (seen.has(key)) return []
+    seen.add(key)
+    return [{ character, intent, reaction: compactBeatText(row.reaction) }]
+  }).slice(0, 4)
+
+  return {
+    npc_beats: normalized,
+    emotional_shift: compactBeatText(source.emotional_shift),
+    setting: compactBeatText(source.setting),
+    consequence: compactBeatText(source.consequence),
+    unresolved_hook: compactBeatText(source.unresolved_hook),
+  }
 }
 
 /**
@@ -134,6 +198,17 @@ export function sanitizeLocationName(raw: unknown): string | null {
   return name
 }
 
+function sanitizeLocationEvidence(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null
+  const excerpt = raw.replace(/\s+/g, ' ').trim().slice(0, 220)
+  if (!excerpt || /^(null|none|n\/?a|unknown)$/i.test(excerpt)) return null
+  return excerpt
+}
+
+function sanitizeLocationEvidenceSource(raw: unknown): 'player' | 'narrative' | 'prior' | null {
+  return raw === 'player' || raw === 'narrative' || raw === 'prior' ? raw : null
+}
+
 const MOVEMENT_VALUES = new Set(['none', 'deeper', 'out', 'lateral', 'world_shift'])
 /** Coerce the cartographer movement hint to a known value; default "none". */
 export function sanitizeMovement(raw: unknown): 'none' | 'deeper' | 'out' | 'lateral' | 'world_shift' {
@@ -162,19 +237,92 @@ export function sanitizePresentCharacters(raw: unknown): string[] {
   return out
 }
 
+const QUOTE_MARKS = /["“”]/g
+
+function choiceLabel(raw: string): string | null {
+  const compact = raw.replace(/\s+/g, ' ').trim()
+  // A label is UI chrome, never a piece of the player's actual input. Reject a
+  // row rather than showing leaked dialogue, markdown, protocol, or a split
+  // send-value inside the chip heading.
+  if (!compact || /["“”*`|\[\]=]/.test(compact)) return null
+  const label = compact.replace(/[.!?,;:]+$/, '').trim()
+  const words = label.split(/\s+/).filter(Boolean)
+  if (words.length < 1 || words.length > 8 || /^i\b/i.test(label)) return null
+  return label.slice(0, 80)
+}
+
+function isBalancedNarration(value: string): boolean {
+  return (value.match(/\*/g) || []).length % 2 === 0
+}
+
+function sentenceEnded(value: string): string {
+  const trimmed = value.trim()
+  return trimmed && /[.!?…]$/.test(trimmed) ? trimmed : `${trimmed}.`
+}
+
+function normalizeActionSend(raw: string): { kind: 'act' | 'say'; send: string } | null {
+  let value = raw.replace(/\s+/g, ' ').trim()
+  if (!value || !isBalancedNarration(value) || /===\s*choices|\[(?:act|say)\]/i.test(value)) return null
+
+  // A quoted value on an [act] row is actually dialogue. Preserve it as a
+  // speaking choice instead of wrapping it as a narrated action.
+  if (/^["“].*["”]$/.test(value)) {
+    const speech = sentenceEnded(value.replace(QUOTE_MARKS, '').trim())
+    return speech ? { kind: 'say', send: speech } : null
+  }
+
+  const pureAction = /^\*([^*]+)\*$/.exec(value)
+  if (pureAction) {
+    const action = pureAction[1].trim()
+    if (!/^I\b/i.test(action)) return null
+    return { kind: 'act', send: `*${sentenceEnded(action)}*` }
+  }
+
+  // A correctly mixed value is necessarily a speaking move: its action is
+  // marked and the spoken words sit outside the markers.
+  if (value.includes('*')) {
+    const spoken = value.replace(/\*[^*]*\*/g, '').replace(QUOTE_MARKS, '').trim()
+    if (!spoken) return null
+    value = value.replace(QUOTE_MARKS, '').trim()
+    return { kind: 'say', send: sentenceEnded(value) }
+  }
+
+  // Bare actions are only safe if they are already in the player's first
+  // person. Do not turn an imperative fragment such as "Turn my attention…"
+  // into a bad prefilled action; the metadata fallback can provide a complete
+  // alternative instead.
+  if (!/^I\b/i.test(value)) return null
+  return { kind: 'act', send: `*${sentenceEnded(value)}*` }
+}
+
+function normalizeSpeechSend(raw: string): { kind: 'act' | 'say'; send: string } | null {
+  let value = raw.replace(/\s+/g, ' ').trim()
+  if (!value || !isBalancedNarration(value) || /===\s*choices|\[(?:act|say)\]/i.test(value)) return null
+  value = value.replace(QUOTE_MARKS, '').trim()
+  if (!value) return null
+
+  const pureAction = /^\*([^*]+)\*$/.exec(value)
+  if (pureAction) {
+    const action = pureAction[1].trim()
+    if (!/^I\b/i.test(action)) return null
+    return { kind: 'act', send: `*${sentenceEnded(action)}*` }
+  }
+  // A say choice may include a narrated gesture, but it must still contain
+  // spoken content outside the asterisks.
+  if (value.includes('*') && !value.replace(/\*[^*]*\*/g, '').trim()) return null
+  return { kind: 'say', send: sentenceEnded(value) }
+}
+
 /**
- * Normalize raw model choices into editable, well-formed {@link ChoiceOption}s.
- *
- * Intentional formatting is preserved: if `send` already marks narration with
- * *asterisks* — including a mix of narration and spoken words — it is trusted
- * as-is. Only a bare, unmarked ACTION is wrapped in asterisks, so that a tapped
- * action like "Take her hand" can never be dispatched as spoken words. A `say`
- * move with no markers is left bare (spoken aloud). Tolerates the legacy
- * `string[]` shape (treated as narrated actions).
+ * Normalize only complete, separate label/send pairs into editable choices.
+ * A malformed choice is discarded rather than exposed as a confusing chip or
+ * an invalid composer value. Both narrator-tail and metadata choices pass
+ * through this same boundary.
  */
 export function sanitizeChoices(raw: unknown): ChoiceOption[] {
   if (!Array.isArray(raw)) return []
   const out: ChoiceOption[] = []
+  const seen = new Set<string>()
   for (const item of raw) {
     let label = ''
     let kind: 'act' | 'say' = 'act'
@@ -195,17 +343,17 @@ export function sanitizeChoices(raw: unknown): ChoiceOption[] {
     } else {
       continue
     }
-    label = label.replace(/\s+/g, ' ').trim().slice(0, 80)
-    if (!label) continue
-    let send = content.replace(/\s+/g, ' ').trim().slice(0, 280)
-    if (!send) continue
-    // A bare action (no narration markers) must be wrapped, or the input parser
-    // would treat it as spoken dialogue. Anything already containing asterisks
-    // (pure narration or mixed narration + speech) is left exactly as authored.
-    if (kind === 'act' && !send.includes('*')) {
-      send = `*${send}*`
-    }
-    out.push({ label, kind, send })
+    const normalizedLabel = choiceLabel(label)
+    if (!normalizedLabel) continue
+    const normalized = kind === 'act' ? normalizeActionSend(content) : normalizeSpeechSend(content)
+    if (!normalized) continue
+    const send = normalized.send.slice(0, 280)
+    const labelKey = normalizedLabel.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    const sendKey = send.toLowerCase().replace(/[*"“”'’\s.!?,;:]+/g, '')
+    // The heading may summarize the value, but must never BE the value.
+    if (!labelKey || labelKey === sendKey || seen.has(`${normalized.kind}\u0000${labelKey}`)) continue
+    seen.add(`${normalized.kind}\u0000${labelKey}`)
+    out.push({ label: normalizedLabel, kind: normalized.kind, send })
     if (out.length >= 4) break
   }
   return out
@@ -267,6 +415,8 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
       parsed.emotional_tone = 'neutral'
     }
 
+    parsed.beat_ledger = sanitizeBeatLedger(parsed.beat_ledger)
+
     // Choices: up to 4 structured, correctly-formatted tap-to-play suggestions.
     parsed.choices = sanitizeChoices(parsed.choices)
 
@@ -282,6 +432,8 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
     parsed.current_location = sanitizeLocationName(parsed.current_location)
     parsed.player_destination = sanitizeLocationName(parsed.player_destination)
     parsed.player_travel_confirmed = parsed.player_travel_confirmed === true
+    parsed.location_evidence = sanitizeLocationEvidence(parsed.location_evidence)
+    parsed.location_evidence_source = sanitizeLocationEvidenceSource(parsed.location_evidence_source)
     parsed.containment_hint = sanitizeLocationName(parsed.containment_hint)
     parsed.movement = sanitizeMovement(parsed.movement)
     parsed.viewpoint_moved = parsed.viewpoint_moved === true
@@ -324,11 +476,22 @@ function repairResponse(raw: string): GenerationOutput {
     flag_mutations: {},
     scene_tag: 'dialogue',
     emotional_tone: 'neutral',
+    beat_ledger: {
+      npc_beats: [],
+      emotional_shift: null,
+      setting: null,
+      consequence: null,
+      unresolved_hook: null,
+    },
     choices: [],
     milestone: null,
     present_characters: [],
     characters_departed: [],
     current_location: null,
+    player_destination: null,
+    player_travel_confirmed: false,
+    location_evidence: null,
+    location_evidence_source: null,
     viewpoint_moved: false,
     time_elapsed: null,
     location_state_changes: [],

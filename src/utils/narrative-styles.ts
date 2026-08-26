@@ -324,7 +324,7 @@ export function buildLengthDirective(len?: MessageLength): string {
       return `LENGTH — STRICT LONG: 3–5 developed paragraphs (roughly 240–650 words) with fuller description, sensory detail, and interiority. Do not pad; every paragraph must add a new reaction, action, consequence, or piece of information. Bring the turn to a clean, deliberate close — do not trail off.`
     case 'medium':
     default:
-      return `LENGTH — STRICT MEDIUM: 2–3 short paragraphs (roughly 100–280 words). Vivid but not bloated: each paragraph must carry the scene forward. Wrap up the beat cleanly rather than stopping abruptly.`
+      return `LENGTH — STRICT MEDIUM: 1–2 compact paragraphs (roughly 80–170 words). Give one clear response and one consequential follow-through; do not recap, pad with atmosphere, or add a third beat. Wrap up cleanly on a playable moment.`
   }
 }
 
@@ -333,7 +333,7 @@ export function buildLengthDirective(len?: MessageLength): string {
  * and latency, and is the safety net for {@link buildLengthDirective}: each value
  * is set ~2x the directive's prose target so the model reaches a natural ending
  * before the cap, and only truly runaway generations get clipped. Rough mapping
- * (≈0.75 words/token): short ≤~1 para, medium ≤~3 paras, long ≤~5 rich paras.
+ * (≈0.75 words/token): short ≤~1 para, medium ≤~2 compact paras, long ≤~5 rich paras.
  */
 export function lengthMaxTokens(len?: MessageLength): number {
   switch (len) {
@@ -343,7 +343,7 @@ export function lengthMaxTokens(len?: MessageLength): number {
       return 900
     case 'medium':
     default:
-      return 400
+      return 260
   }
 }
 
@@ -368,7 +368,7 @@ export function buildStyleReminder(
   const m = (modeLabel || '').trim()
   if (m) bits.push(`mode: ${m}`)
   if (len === 'short') bits.push('LENGTH LOCK: exactly 1 compact paragraph, 2–4 sentences, roughly 40–100 words')
-  else if (len === 'medium') bits.push('LENGTH LOCK: 2–3 short paragraphs, roughly 100–280 words')
+  else if (len === 'medium') bits.push('LENGTH LOCK: 1–2 compact paragraphs, roughly 80–170 words')
   else if (len === 'long') bits.push('LENGTH LOCK: 3–5 developed paragraphs, roughly 240–650 words')
   if (bits.length === 0) return ''
   return `STYLE for your next reply (hold this regardless of how earlier turns read): ${bits.join('; ')}.`

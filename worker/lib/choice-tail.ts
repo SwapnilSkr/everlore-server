@@ -116,19 +116,6 @@ export function makeChoiceTailFilter(): ChoiceTailFilter {
   }
 }
 
-/** The label is a CHIP CAPTION — a clean imperative, never decorated. Even with the
- *  instruction, a model may wrap it in the *asterisks* / "quotes" it (correctly) uses
- *  on the send, or end it with sentence punctuation. Strip that decoration off the
- *  LABEL ONLY (the send stays verbatim) so the button never shows raw markup. */
-function cleanLabel(raw: string): string {
-  return String(raw || '')
-    .trim()
-    .replace(/^[*"'“”‘’\s]+/, '')
-    .replace(/[*"'“”‘’\s]+$/, '')
-    .replace(/[.!?,;:]+$/, '')
-    .trim()
-}
-
 /** Parse the post-sentinel block into raw choices. Tolerant: ignores blank lines,
  *  stray prose, and malformed rows; caps at 4. Lines look like:
  *    [act] Step closer | *I step closer, lowering my voice.* What are you hiding?
@@ -140,7 +127,10 @@ export function parseChoiceTail(block: string): RawTailChoice[] {
   for (const line of String(block || '').split('\n')) {
     const m = line.match(/^\s*[-*]?\s*\[(act|say)\]\s*(.+?)\s*\|\s*(.+?)\s*$/i)
     if (!m) continue
-    const label = cleanLabel(m[2])
+    // Keep the raw label here. `sanitizeChoices` is deliberately strict about
+    // leaked quotes/asterisks so it can reject a send-value that a model put in
+    // the heading instead of silently displaying it as UI text.
+    const label = m[2].trim()
     const send = m[3].trim()
     if (!label || !send) continue
     out.push({ kind: m[1].toLowerCase() as 'act' | 'say', label, send })
@@ -161,13 +151,14 @@ AFTER the story prose, output a line containing ONLY the marker ${CHOICE_SENTINE
 [say] <label> | <send>
 Each line has TWO different parts split by a single pipe (|):
 - <label> = a SHORT button caption, 2-6 words, an imperative the player gives themselves ("Walk away", "Block their view", "Demand an answer"). It is a summary, NOT the literal line — write NO quotation marks, NO *asterisks*, and NO trailing punctuation in the label.
-- <send> = the FULL pre-filled player input that gets sent when the button is tapped. For [say] write the spoken words plainly in quotes; for [act] write the action in first person wrapped in *asterisks*.
+- <send> = the FULL, COMPLETE pre-filled player input that gets sent when the button is tapped. For [say] write spoken words plainly with NO quotation marks. For [act] write one complete first-person action wrapped in *asterisks*. A mixed action + spoken line is [say], with only the action inside *asterisks*.
 The label and the send are NEVER identical — the label is the tidy caption, the send is the literal text. Worked example:
-[say] Challenge the mood | "What exactly is the mood I'm disrupting?"
+[say] Challenge the mood | What exactly is the mood I'm disrupting?
 [act] Retreat to the attic | *I turn my back on them and climb to the only room that is mine.*
 Choice rules:
 - Every choice is the PLAYER'S OWN next move, written in the player's first person ("I ..."). Honor the WORLD MODE / POV established above for who "I" is.
 - Use [say] when the send is words spoken aloud; use [act] when it is a silent physical action or narration.
+- Never put dialogue, quotation marks, *asterisks*, a pipe, or the full send text in <label>. The label is only a clean action summary. Before finishing each row, verify that the label and send are separate and that the send is a complete thought, never a fragment.
 - Make the set distinct in spirit (mix bold / cautious / emotional / curious).
 - If a label sends the player to a specific destination ("Head for the cafe", "Go to the attic"), the <send> MUST explicitly name that exact same destination and describe going there. Never use vague wording such as "the one place that feels neutral"; it cannot be honored as a location commitment.
 - Ground every choice in what THIS scene and the established world actually contain. Never invent a person, place, or relationship that does not exist. A figurative epithet you used for an existing person — "the ghost in the doorway", "the monster at the table" for someone present — is NOT a real separate being; never write a choice that treats it as one. Address the actual person instead.

@@ -211,6 +211,49 @@ function structuredOutcomeFacts(event: any): string[] {
   return facts
 }
 
+/**
+ * Render the semantic turn handoff, never the source prose. This is kept out
+ * of `structuredOutcomeFacts` so it is visually obvious in the prompt that the
+ * model is receiving facts to continue from, not dialogue to complete.
+ */
+function beatLedgerFacts(event: any): string[] {
+  const ledger = event?.data?.beat_ledger
+  if (!ledger || typeof ledger !== 'object' || Array.isArray(ledger)) return []
+  const facts: string[] = []
+  const npcBeats = Array.isArray(ledger.npc_beats) ? ledger.npc_beats : []
+  for (const beat of npcBeats.slice(0, 4)) {
+    const character = String(beat?.character || '').trim()
+    const intent = String(beat?.intent || '').trim()
+    const reaction = String(beat?.reaction || '').trim()
+    if (!character || !intent) continue
+    facts.push(`${character}: ${intent}${reaction ? `; reaction: ${reaction}` : ''}`)
+  }
+  const emotionalShift = String(ledger.emotional_shift || '').trim()
+  const setting = String(ledger.setting || '').trim()
+  const consequence = String(ledger.consequence || '').trim()
+  const unresolvedHook = String(ledger.unresolved_hook || '').trim()
+  if (emotionalShift) facts.push(`Emotional shift: ${emotionalShift}`)
+  if (setting) facts.push(`Scene setting: ${setting}`)
+  if (consequence) facts.push(`Consequence: ${consequence}`)
+  if (unresolvedHook) facts.push(`Open pressure: ${unresolvedHook}`)
+  return facts
+}
+
+/**
+ * A template opening is authored source canon, unlike a model-generated prior
+ * response. Before the first real player turn it is the only reliable record
+ * of where the scene begins and who is there, so carry it once with an explicit
+ * anti-copy instruction. After any generated turn exists, its structured ledger
+ * takes over and raw prose stays out of context as usual.
+ */
+function openingSceneCanon(recentEvents: any[]): string | null {
+  const narrated = recentEvents.filter((event) => String(event?.data?.ai_response || '').trim())
+  if (narrated.length !== 1) return null
+  const opening = narrated[0]
+  if (opening?.data?.model_used !== 'seed') return null
+  return String(opening.data.ai_response).trim().slice(0, 1_800) || null
+}
+
 function compactPersonaLine(input: PromptInput): string {
   const p = input.playerPersona
   if (!p?.name) return ''
@@ -317,26 +360,36 @@ function formatRecentTurnForContinuity(event: any): string {
   for (const fact of structuredOutcomeFacts(event)) {
     lines.push(`- Recorded outcome: ${fact}`)
   }
+  const beatFacts = beatLedgerFacts(event)
+  if (beatFacts.length > 0) {
+    lines.push(`- Non-verbatim beat ledger: ${beatFacts.join(' | ')}`)
+  }
   return lines.join('\n')
 }
 
 /**
- * Keep one compact, verbatim window onto the immediate preceding beat. The
- * structured continuity ledger deliberately omits assistant prose to avoid
- * style-copying, but dialogue needs the last question, decision, or action to
- * resolve a short reply ("yes", "why?", or a Continue) naturally. This is
- * explicitly framed as continuity, never as prose to imitate.
+ * Carry only the *function* of the immediate preceding beat, never its prose.
+ * A short reply such as "yes" still needs to know whether it answers an open
+ * question, but copying an NPC's last sentence into the prompt makes it far too
+ * easy for a narrator to reproduce that dialogue word-for-word on the next
+ * turn. The structured ledger supplies the facts; this adds the minimal
+ * conversational orientation without any copyable wording.
  */
 function immediateNarrativeBeat(recentEvents: any[]): string | null {
   const last = [...recentEvents].reverse().find((event) => String(event?.data?.ai_response || '').trim())
-  const narrative = String(last?.data?.ai_response || '')
-    .replace(/\*+/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
+  const narrative = String(last?.data?.ai_response || '').trim()
   if (!narrative) return null
 
-  const maxCharacters = 480
-  return narrative.length <= maxCharacters ? narrative : `…${narrative.slice(-maxCharacters)}`
+  const spokenLines = Array.from(narrative.matchAll(/"([^"\n]+)"/g), (match) => match[1].trim())
+  const lastSpokenLine = spokenLines.at(-1) || ''
+  const ledgerHook = String(last?.data?.beat_ledger?.unresolved_hook || '').trim()
+  const orientation = ledgerHook
+    ? `The prior beat left this unresolved pressure: ${ledgerHook}. Address its intent with a new response; never quote or closely paraphrase earlier dialogue.`
+    : /\?$/.test(lastSpokenLine)
+    ? 'The prior beat closed on an unresolved NPC question. Address its intent with a new response; never quote or paraphrase that question.'
+    : 'The prior beat is complete. Advance to a new consequence, response, decision, or reveal; never reuse its dialogue, taunts, or sentence shapes.'
+
+  return `Immediate-beat orientation: ${orientation}`
 }
 
 function activeInteractionSignals(input: PromptInput): PlayerInteractionSignalDoc[] {
@@ -452,7 +505,7 @@ function finalNarratorContract(input: PromptInput, protagonistName: string, pov:
       ? 'exactly 1 compact paragraph, 2–4 sentences, about 40–100 words'
       : length === 'long'
         ? '3–5 developed paragraphs, about 240–650 words'
-        : '2–3 short paragraphs, about 100–280 words'
+        : '1–2 compact paragraphs, about 80–170 words'
   const povRule = input.isSentient
     ? pov === 'first'
       ? `first person as ${protagonistName} (I/me/my)`
@@ -854,17 +907,24 @@ ${personaLine}
     })
   }
 
+  const openingCanon = input.proseOnly ? openingSceneCanon(input.recentEvents) : null
+  if (openingCanon) {
+    messages.push({
+      role: 'system',
+      content: `AUTHORED OPENING SCENE CANON (first generated turn only):\n${openingCanon}\n\nThis is source canon for the current setting and people present, not a prose example. Continue directly from it with a new reaction or consequence. Do not quote, imitate, or restage its wording.`,
+    })
+  }
+
   // ── RECENT EVENTS (continuity ledger, not style examples) ───────
   // HARD floor: recent-turn continuity is the one section the story cannot
   // function without, so it always gets at least RECENTS_FLOOR_TOKENS even if
   // an oversized static prefix already ate the nominal budget (a bounded
   // overflow of the total cap beats a continuity blackout).
-  // A Continue has no new player text to anchor the model. Feeding it the
-  // previous prose verbatim made smaller narration models treat that prose as
-  // an in-context completion and repeat its dialogue word-for-word. The
-  // structured continuity ledger below is enough to advance an autonomous
-  // beat, and deliberately contains no copyable narration.
-  const lastBeat = input.proseOnly && !input.isContinuation
+  // The structured continuity ledger below deliberately contains no copyable
+  // narration. `lastBeat` contributes only a semantic orientation (such as an
+  // unanswered question), so it cannot become an in-context completion that
+  // the narrator repeats word-for-word.
+  const lastBeat = input.proseOnly
     ? immediateNarrativeBeat(input.recentEvents)
     : null
   const lastBeatTokens = lastBeat ? countTokens(lastBeat) : 0
@@ -909,11 +969,11 @@ ${personaLine}
 
   if (continuityTurns.length > 0 || lastBeat) {
     const immediateBeat = lastBeat
-      ? `\n\nIMMEDIATE PREVIOUS NARRATIVE BEAT (continuity only — do NOT repeat or paraphrase its prose; use it to understand what the current turn answers or advances):\n${lastBeat}`
+      ? `\n\nIMMEDIATE PREVIOUS BEAT (orientation only; all earlier dialogue is canon but unavailable as text, so do NOT recreate, quote, or paraphrase it):\n${lastBeat}`
       : ''
     messages.push({
       role: 'system',
-      content: `RECENT TURN CONTINUITY (structured facts${lastBeat ? ' plus one immediate narrative beat for dialogue coherence' : ''}. Do not recreate a prior response when the current action resembles an earlier one; advance the story with a new consequence):
+      content: `RECENT TURN CONTINUITY (structured facts${lastBeat ? ' plus immediate-beat orientation' : ''}. Do not recreate a prior response when the current action resembles an earlier one; advance the story with a new consequence):
 ${continuityTurns.join('\n\n')}${immediateBeat}`,
     })
   }
