@@ -17,6 +17,11 @@ const optionalEnvVars = {
   // Narration models — swap freely for A/B (narration is prose-only, no JSON/tools needed).
   NARRATION_SFW_MODEL: 'deepseek/deepseek-v3.2',
   NARRATION_NSFW_MODEL: 'gryphe/mythomax-l2-13b',
+  // Comma-separated fallbacks used only after a pre-stream provider 429. Keep
+  // the NSFW list to models suitable for mature narration; it must never fall
+  // back into a SFW provider simply because capacity is tight.
+  NARRATION_SFW_FALLBACK_MODELS: 'deepseek/deepseek-v3.2,mistralai/mistral-nemo',
+  NARRATION_NSFW_FALLBACK_MODELS: 'thedrummer/unslopnemo-12b,aion-labs/aion-2.0',
   // OpenRouter image-generation model (avatars + chat backgrounds).
   IMAGE_MODEL: 'bytedance-seed/seedream-4.5',
   // One-shot creation autofill (drafts a whole world/character). Cheap, strong JSON + creative.
@@ -80,6 +85,8 @@ export interface Env {
   PINECONE_INDEX: string
   NARRATION_SFW_MODEL: string
   NARRATION_NSFW_MODEL: string
+  NARRATION_SFW_FALLBACK_MODELS: string[]
+  NARRATION_NSFW_FALLBACK_MODELS: string[]
   IMAGE_MODEL: string
   AUTHORING_MODEL: string
   TTS_MODEL: string
@@ -133,6 +140,14 @@ function loadEnv(): Env {
     PINECONE_INDEX: process.env.PINECONE_INDEX || optionalEnvVars.PINECONE_INDEX,
     NARRATION_SFW_MODEL: process.env.NARRATION_SFW_MODEL || optionalEnvVars.NARRATION_SFW_MODEL,
     NARRATION_NSFW_MODEL: process.env.NARRATION_NSFW_MODEL || optionalEnvVars.NARRATION_NSFW_MODEL,
+    NARRATION_SFW_FALLBACK_MODELS: (process.env.NARRATION_SFW_FALLBACK_MODELS || optionalEnvVars.NARRATION_SFW_FALLBACK_MODELS)
+      .split(',')
+      .map((model) => model.trim())
+      .filter(Boolean),
+    NARRATION_NSFW_FALLBACK_MODELS: (process.env.NARRATION_NSFW_FALLBACK_MODELS || optionalEnvVars.NARRATION_NSFW_FALLBACK_MODELS)
+      .split(',')
+      .map((model) => model.trim())
+      .filter(Boolean),
     IMAGE_MODEL: process.env.IMAGE_MODEL || optionalEnvVars.IMAGE_MODEL,
     AUTHORING_MODEL: process.env.AUTHORING_MODEL || optionalEnvVars.AUTHORING_MODEL,
     TTS_MODEL: process.env.TTS_MODEL || optionalEnvVars.TTS_MODEL,

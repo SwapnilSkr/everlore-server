@@ -59,6 +59,37 @@ interface LLMRequest {
   sessionId?: string
 }
 
+export interface LLMStreamResult {
+  content: string
+  /** The model that actually produced the returned content. */
+  model: string
+  /** Primary-model 429s that were bypassed before any prose was visible. */
+  fallbackAttempts: Array<{ from: string; to: string }>
+}
+
+/** Result shape shared by streaming and non-streaming pre-response reroutes. */
+export interface LLMFallbackResult {
+  content: string
+  model: string
+  fallbackAttempts: Array<{ from: string; to: string }>
+}
+
+/**
+ * A 429 is safe to reroute only before a stream has emitted prose. Once the
+ * player has seen a token, switching models would create two incompatible
+ * continuations for one action. The OpenAI SDK exposes `status`; retain the
+ * message check for provider wrappers that only preserve the error text.
+ */
+export function isRateLimitError(error: unknown): boolean {
+  if (typeof error === 'object' && error !== null) {
+    const status = (error as { status?: unknown }).status
+    if (status === 429) return true
+  }
+  return /(?:^|\s)429(?:\s|$)|rate[\s-]?limit/i.test(
+    error instanceof Error ? error.message : String(error),
+  )
+}
+
 function routingParamsFor(req: LLMRequest): Record<string, unknown> {
   if (OPENAI_MODELS.has(req.model)) return {}
   return {
@@ -161,4 +192,87 @@ export async function callLLMStream(
 
   if (!full) throw new Error('Empty LLM response')
   return full
+}
+
+/**
+ * Attempt alternative narration models immediately after a pre-stream 429.
+ * This deliberately wraps only the streamed narration path: post-processing
+ * remains on its existing, purpose-built models, and visible prose is never
+ * restarted or replaced.
+ */
+export async function callLLMStreamWithFallback(
+  req: LLMRequest,
+  fallbackModels: readonly string[],
+  onDelta: (chunk: string) => void,
+  onFallback?: (attempt: { from: string; to: string; error: unknown }) => void,
+): Promise<LLMStreamResult> {
+  const models = [req.model, ...fallbackModels]
+    .map((model) => model.trim())
+    .filter((model, index, all) => model.length > 0 && all.indexOf(model) === index)
+  const fallbackAttempts: Array<{ from: string; to: string }> = []
+  let lastError: unknown
+
+  for (let index = 0; index < models.length; index += 1) {
+    const model = models[index]
+    let streamed = false
+    try {
+      const content = await callLLMStream(
+        {
+          ...req,
+          model,
+          // Keep the same sampling profile across a pre-stream reroute so the
+          // scene's voice does not abruptly change just because a provider is
+          // saturated.
+        },
+        (chunk) => {
+          streamed = true
+          onDelta(chunk)
+        },
+      )
+      return { content, model, fallbackAttempts }
+    } catch (error) {
+      lastError = error
+      const nextModel = models[index + 1]
+      if (streamed || !isRateLimitError(error) || !nextModel) throw error
+      const attempt = { from: model, to: nextModel }
+      fallbackAttempts.push(attempt)
+      onFallback?.({ ...attempt, error })
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('All narration models failed')
+}
+
+/**
+ * Non-streaming counterpart for replay and other prose paths. It retries only
+ * a pre-response 429, so callers never receive a partial answer that could be
+ * replaced under them. Normal success still takes exactly one provider call.
+ */
+export async function callLLMWithFallback(
+  req: LLMRequest,
+  fallbackModels: readonly string[],
+  onFallback?: (attempt: { from: string; to: string; error: unknown }) => void,
+): Promise<LLMFallbackResult> {
+  const models = [req.model, ...fallbackModels]
+    .map((model) => model.trim())
+    .filter((model, index, all) => model.length > 0 && all.indexOf(model) === index)
+  const fallbackAttempts: Array<{ from: string; to: string }> = []
+  let lastError: unknown
+
+  for (let index = 0; index < models.length; index += 1) {
+    const model = models[index]
+    try {
+      const content = await callLLM({ ...req, model })
+      return { content, model, fallbackAttempts }
+    } catch (error) {
+      lastError = error
+      const nextModel = models[index + 1]
+      if (!isRateLimitError(error) || !nextModel) throw error
+      const attempt = { from: model, to: nextModel }
+      fallbackAttempts.push(attempt)
+      onFallback?.({ ...attempt, error })
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error('All narration models failed')
 }

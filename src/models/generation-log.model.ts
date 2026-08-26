@@ -21,6 +21,10 @@ export interface GenerationLogDoc {
   nsfw_path: boolean
   /** Narration model that produced the prose. */
   model_used: string
+  /** Primary narration model requested before any provider fallback. */
+  requested_model?: string
+  /** Pre-stream 429 reroutes used before the successful narration model. */
+  fallback_attempts?: Array<{ from: string; to: string }>
   /** Model used for the structured-metadata extraction pass. */
   metadata_model: string
   tokens_in: number

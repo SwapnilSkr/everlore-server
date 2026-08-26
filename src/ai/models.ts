@@ -36,6 +36,12 @@ export const AI_MODELS = {
   /** Main story narration, NSFW / uncensored. Streamed. Prose only. */
   narrationNsfw: env.NARRATION_NSFW_MODEL,
 
+  /** Alternate prose models, used only for a primary model's pre-stream 429. */
+  narrationSfwFallbacks: env.NARRATION_SFW_FALLBACK_MODELS,
+
+  /** Mature-narration alternatives; intentionally separate from the SFW list. */
+  narrationNsfwFallbacks: env.NARRATION_NSFW_FALLBACK_MODELS,
+
   /** Derives stat/flag mutations, scene tag, and tone from finished prose (NSFW path). */
   metadata: process.env.MODEL_METADATA || 'gpt-4o-mini',
 

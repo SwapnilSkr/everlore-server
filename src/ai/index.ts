@@ -8,7 +8,7 @@
  * override). Nothing else needs to change.
  */
 export { AI_MODELS, type AiModelKey } from './models'
-export { callLLM, callLLMStream } from './client'
+export { callLLM, callLLMStream, callLLMWithFallback, callLLMStreamWithFallback } from './client'
 export { narrationTemperature } from './narration-profile'
 export { embed, embedBatch } from './embedding'
 export { generateImage } from './image'
