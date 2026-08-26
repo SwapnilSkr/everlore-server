@@ -18,7 +18,7 @@ import { entityGraphService } from './entity-graph.service'
 import { timeService } from './time.service'
 import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
 import { repairProseHygiene, validateProseHygiene } from '../utils/prose-hygiene'
-import { callLLM, callLLMStream, embed, AI_MODELS, narrationTemperature } from '../ai'
+import { callLLMWithFallback, callLLMStreamWithFallback, embed, AI_MODELS, narrationTemperature } from '../ai'
 import { classifyScene } from '../../worker/lib/nsfw-classifier'
 import { extractSceneMetadata } from '../../worker/lib/metadata-extractor'
 import { extractCharacterCodexDeltas } from '../../worker/lib/character-codex-extractor'
@@ -28,15 +28,15 @@ import {
   entityAdjudicationCandidates,
   filterAdjudicatedPresence,
 } from '../../worker/lib/entity-adjudicator'
+import { adjudicateSceneEndpoint, type SceneEndpointAdjudication } from '../../worker/lib/scene-endpoint-adjudicator'
 import { EVENT_WINDOWS } from '../utils/event-window'
 import { HttpError } from '../utils/http-error'
 import { kinshipGraphService } from './kinship-graph.service'
 import { projectionCheckpointService } from './projection-checkpoint.service'
 import {
-  extractExplicitPhysicalDestination,
-  isExplicitPlayerLocationChange,
   isExplicitSceneExit,
-  refinePhysicalDestination,
+  hasGroundedWitnessLocationEvidence,
+  isSafeWitnessLocationCandidate,
   validatedContainmentHint,
 } from '../../worker/lib/movement-signal'
 
@@ -139,6 +139,7 @@ function baseReplayVariantFor(event: any) {
     source: 'base',
     choices: Array.isArray(event.data?.choices) ? event.data.choices : [],
     present_characters: Array.isArray(event.data?.present_characters) ? event.data.present_characters : [],
+    beat_ledger: event.data?.beat_ledger,
     retrieval_profile: {
       lore_top_k: 10,
       memory_top_k: 25,
@@ -171,9 +172,21 @@ function carryReplayPresence(
   priorPresent: string[],
   locationChanged: boolean,
   playerBrokeScene: boolean,
+  endpoint: SceneEndpointAdjudication,
 ): string[] {
-  const sceneBroke = playerBrokeScene || meta.viewpoint_moved === true || !!meta.time_elapsed || locationChanged
-  const candidates = sceneBroke ? meta.present_characters || [] : [...priorPresent, ...(meta.present_characters || [])]
+  const sceneBroke =
+    playerBrokeScene ||
+    meta.viewpoint_moved === true ||
+    !!meta.time_elapsed ||
+    locationChanged ||
+    (endpoint.available && endpoint.playerViewpointAtEnd && endpoint.sceneTransition)
+  // Mirror the live fold: when an independent endpoint witness is available,
+  // its evidence-backed cast is the only non-party cast that can cross a scene
+  // boundary. Replays must not resurrect a prior room's NPCs through stale
+  // metadata, otherwise a later rewind could reintroduce the same bad state.
+  const candidates = sceneBroke
+    ? (endpoint.available ? endpoint.present.map((entry) => entry.name) : meta.present_characters || [])
+    : [...priorPresent, ...(meta.present_characters || [])]
   const departed = new Set(
     (meta.characters_departed || [])
       .map((name) =>
@@ -288,8 +301,19 @@ async function projectLatestReplayTurn(params: {
       ...(choiceProtagonist?.aliases || []),
     ],
   })
+  const replayInput = String(event.data?.player_input || event.userMessage || '')
+  const replayAction = event.data?.world_action
 
-  const [meta, entityAdjudication] = await Promise.all([
+  const endpointPromise = adjudicateSceneEndpoint({
+    prose: narrative,
+    playerInput: replayInput,
+    candidates: [
+      ...priorPresent,
+      ...knownNames,
+      ...entityCandidates.map((candidate) => candidate.display),
+    ],
+  })
+  const [meta, entityAdjudication, endpointAdjudication] = await Promise.all([
     extractSceneMetadata(
       narrative,
       Object.keys(instance.world_state || {}),
@@ -301,6 +325,7 @@ async function projectLatestReplayTurn(params: {
         protagonist: choiceProtagonist,
         roster,
         knownPlaces,
+        playerInput: replayInput,
         worldContext: [template.seed_prompt, template.global_lore].filter(Boolean).join('\n'),
       },
     ),
@@ -311,6 +336,7 @@ async function projectLatestReplayTurn(params: {
       knownPlaces: knownPlaces.map((place) => place.name),
       worldContext: [template.seed_prompt, template.global_lore].filter(Boolean).join('\n'),
     }),
+    endpointPromise,
   ])
   meta.present_characters = filterAdjudicatedPresence(
     meta.present_characters || [],
@@ -318,21 +344,43 @@ async function projectLatestReplayTurn(params: {
     entityAdjudication,
   )
 
-  // Replay is a projection of the same player-authored turn, so it must use the
-  // live transition authority rather than letting a fresh witness response move
-  // the map by itself. This keeps replay from resurrecting old companions or
-  // minting a different location graph than the original turn.
-  const replayInput = String(event.data?.player_input || event.userMessage || '')
-  const replayAction = event.data?.world_action
-  const replayPlayerDestination = replayAction?.kind === 'travel'
-    ? String(replayAction.destination || '').trim() || null
-    : extractExplicitPhysicalDestination(replayInput)
-  const replayPlaceName = replayPlayerDestination
-    ? refinePhysicalDestination(replayPlayerDestination, meta.current_location)
-    : meta.current_location
-  const replayViewpointMoved =
-    !!replayPlayerDestination ||
-    isExplicitPlayerLocationChange(replayInput, replayPlaceName, choiceProtagonist?.name || null)
+  // Replay follows the exact same authority boundary as a live turn. A fresh
+  // witness may re-observe the prose, but it cannot turn keyword matches in an
+  // old player action into a new map node.
+  const locationCandidateOptions = {
+    knownPeople: knownNames,
+    knownPlaces: [...knownPlaces.map((place) => place.name), priorLocation?.name || ''],
+  }
+  const evidenceSourceText = meta.location_evidence_source === 'player'
+    ? replayInput
+    : meta.location_evidence_source === 'narrative'
+      ? narrative
+      : ''
+  const validWitnessEvidence =
+    (meta.location_evidence_source === 'player' || meta.location_evidence_source === 'narrative') &&
+    hasGroundedWitnessLocationEvidence(meta.location_evidence, evidenceSourceText)
+  const replayActionDestination = replayAction?.kind === 'travel' &&
+    isSafeWitnessLocationCandidate(replayAction.destination, locationCandidateOptions)
+      ? String(replayAction.destination).trim()
+      : null
+  const replayWitnessDestination =
+    !replayAction &&
+    meta.player_travel_confirmed === true &&
+    meta.viewpoint_moved === true &&
+    meta.location_evidence_source === 'player' &&
+    validWitnessEvidence &&
+    isSafeWitnessLocationCandidate(meta.player_destination, locationCandidateOptions)
+      ? meta.player_destination
+      : null
+  const replayPlaceName = replayActionDestination || replayWitnessDestination ||
+    (!priorLocation && meta.location_evidence_source === 'narrative' && validWitnessEvidence &&
+      isSafeWitnessLocationCandidate(meta.current_location, locationCandidateOptions)
+        ? meta.current_location
+        : null)
+  const replayViewpointMoved = !!replayActionDestination || !!replayWitnessDestination
+  const replaySceneEstablished =
+    !priorLocation && !replayViewpointMoved && !!replayPlaceName &&
+    meta.location_evidence_source === 'narrative' && validWitnessEvidence
   const replayExitedScene = isExplicitSceneExit(replayInput)
   const replayContainmentHint = replayViewpointMoved
     ? validatedContainmentHint({
@@ -349,7 +397,7 @@ async function projectLatestReplayTurn(params: {
     : replayViewpointMoved
       ? 'lateral'
       : 'none'
-  const resolvedLocation = replayViewpointMoved && replayPlaceName
+  const resolvedLocation = (replayViewpointMoved || replaySceneEstablished) && replayPlaceName
     ? await entityGraphService
         .placeLocation({
           instanceId,
@@ -369,7 +417,13 @@ async function projectLatestReplayTurn(params: {
   const locationAnchor = resolvedLocation || priorLocation || null
   const locationChanged =
     !!resolvedLocation && !!priorLocation && idString(resolvedLocation.entity_id) !== idString(priorLocation.entity_id)
-  meta.present_characters = carryReplayPresence(meta, priorPresent, locationChanged, replayExitedScene || replayViewpointMoved)
+  meta.present_characters = carryReplayPresence(
+    meta,
+    priorPresent,
+    locationChanged,
+    replayExitedScene || replayViewpointMoved || replaySceneEstablished,
+    endpointAdjudication,
+  )
 
   const statLimits: Record<string, { min: number; max: number }> = {}
   let worldState: Record<string, number> = {}
@@ -1883,6 +1937,7 @@ export const memoryService = {
     // the prose — and its chips — unchanged.
     let editChoices: Awaited<ReturnType<typeof extractSceneMetadata>>['choices'] | null = null
     let editPresent: string[] | null = null
+    let editBeatLedger: Awaited<ReturnType<typeof extractSceneMetadata>>['beat_ledger'] | null = null
     let editTrackableMentions: ReturnType<typeof trackableMentionsForProse> | null = null
 
     if (aiChanged && typeof nextAiResponse === 'string' && nextAiResponse.trim()) {
@@ -1947,6 +2002,7 @@ export const memoryService = {
       )
       editChoices = editMeta.choices
       editPresent = editMeta.present_characters
+      editBeatLedger = editMeta.beat_ledger
       editTrackableMentions = trackableMentionsForProse({
         prose: nextAiResponse,
         present: editPresent,
@@ -1965,6 +2021,7 @@ export const memoryService = {
           prose_hygiene_issues: proseHygieneIssues,
           choices: editChoices,
           present_characters: editPresent,
+          beat_ledger: editBeatLedger,
           trackable_mentions: editTrackableMentions || [],
         })
       }
@@ -1991,6 +2048,7 @@ export const memoryService = {
           ? {
               'data.choices': editChoices || [],
               'data.present_characters': editPresent || [],
+              'data.beat_ledger': editBeatLedger,
               'data.trackable_mentions': editTrackableMentions || [],
             }
           : {}),
@@ -2154,6 +2212,9 @@ export const memoryService = {
       sceneClass === 'nsfw'
         ? template.model_preferences?.narration_nsfw || AI_MODELS.narrationNsfw
         : template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw
+    const replayFallbackModels = sceneClass === 'nsfw'
+      ? AI_MODELS.narrationNsfwFallbacks
+      : AI_MODELS.narrationSfwFallbacks
 
     const prompt = buildPrompt({
       seedPrompt: template.seed_prompt,
@@ -2233,8 +2294,8 @@ ${replayDirective || '(none)'}`,
     // exactly like the primary turn — so a regenerate respects short/medium/long
     // instead of always running to a fixed 900-token ceiling.
     const replayMaxTokens = lengthMaxTokens(instance.message_length || 'medium')
-    const replayNarrative = onDelta
-      ? await callLLMStream(
+    const replayResult = onDelta
+      ? await callLLMStreamWithFallback(
           {
             model: modelId,
             messages: replayMessages,
@@ -2242,15 +2303,21 @@ ${replayDirective || '(none)'}`,
             maxTokens: replayMaxTokens,
             sessionId: idString(instance._id),
           },
+          replayFallbackModels,
           onDelta,
         )
-      : await callLLM({
-          model: modelId,
-          messages: replayMessages,
-          temperature: replayTemp,
-          maxTokens: replayMaxTokens,
-          sessionId: idString(instance._id),
-        })
+      : await callLLMWithFallback(
+          {
+            model: modelId,
+            messages: replayMessages,
+            temperature: replayTemp,
+            maxTokens: replayMaxTokens,
+            sessionId: idString(instance._id),
+          },
+          replayFallbackModels,
+        )
+    const replayNarrative = replayResult.content
+    const replayModelId = replayResult.model
     const repairedReplay = await repairProseHygiene({
       narrative: replayNarrative.trim(),
       characterNames: replayCodex.map((c) => c.canonical_name),
@@ -2315,12 +2382,15 @@ ${replayDirective || '(none)'}`,
     const nextVariant = {
       id: randomUUID(),
       narrative: repairedReplay.narrative,
-      model_used: modelId,
+      model_used: replayModelId,
+      ...(replayModelId !== modelId ? { requested_model: modelId } : {}),
+      ...(replayResult.fallbackAttempts.length ? { fallback_attempts: replayResult.fallbackAttempts } : {}),
       created_at: new Date(),
       source: 'replay',
       prose_hygiene_issues: repairedReplay.issues,
       choices: replayMeta.choices,
       present_characters: replayMeta.present_characters,
+      beat_ledger: replayMeta.beat_ledger,
       trackable_mentions: replayTrackableMentions,
       state_mutations: replayMeta.state_mutations,
       flag_mutations: replayMeta.flag_mutations,
@@ -2343,7 +2413,9 @@ ${replayDirective || '(none)'}`,
       },
       $set: {
         'data.ai_response': nextVariant.narrative,
-        'data.model_used': modelId,
+        'data.model_used': replayModelId,
+        ...(replayModelId !== modelId ? { 'data.requested_model': modelId } : {}),
+        ...(replayResult.fallbackAttempts.length ? { 'data.fallback_attempts': replayResult.fallbackAttempts } : {}),
         'data.replay_variants': nextVariants,
         'data.selected_replay_index': selectedIdx,
         'data.prose_hygiene_issues': repairedReplay.issues,
@@ -2351,6 +2423,7 @@ ${replayDirective || '(none)'}`,
         // reflected the replaced prose).
         'data.choices': replayMeta.choices,
         'data.present_characters': replayMeta.present_characters,
+        'data.beat_ledger': replayMeta.beat_ledger,
         'data.trackable_mentions': replayTrackableMentions,
         'data.state_mutations': replayMeta.state_mutations,
         'data.flag_mutations': replayMeta.flag_mutations,
@@ -2534,6 +2607,7 @@ ${replayDirective || '(none)'}`,
     const selectedPresentCharacters = Array.isArray(chosen.present_characters)
       ? chosen.present_characters
       : selectedProjection?.meta.present_characters ?? []
+    const selectedBeatLedger = chosen.beat_ledger ?? selectedProjection?.meta.beat_ledger ?? event.data?.beat_ledger
 
     const nextVariants = [...variants]
     if (selectedProjection) {
@@ -2542,6 +2616,7 @@ ${replayDirective || '(none)'}`,
         prose_hygiene_issues: proseHygieneIssues,
         choices: selectedChoices,
         present_characters: selectedPresentCharacters,
+        beat_ledger: selectedBeatLedger,
         trackable_mentions: selectedTrackableMentions ?? chosen.trackable_mentions ?? [],
         state_mutations: selectedProjection.meta.state_mutations,
         flag_mutations: selectedProjection.meta.flag_mutations,
@@ -2567,6 +2642,7 @@ ${replayDirective || '(none)'}`,
         // fields cannot leave stale chips/presence/state behind.
         'data.choices': selectedChoices,
         'data.present_characters': selectedPresentCharacters,
+        ...(selectedBeatLedger ? { 'data.beat_ledger': selectedBeatLedger } : {}),
         ...(selectedTrackableMentions ? { 'data.trackable_mentions': selectedTrackableMentions } : {}),
         ...(selectedCodexDeltas ? { 'data.codex_deltas': selectedCodexDeltas } : {}),
         ...(selectedProjection

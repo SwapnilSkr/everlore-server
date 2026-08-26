@@ -5,6 +5,7 @@ import type { LocationStatsDoc } from '../models/location-stats.model'
 import type { EntityDoc } from '../models/entity.model'
 import type { WorldEventDoc } from '../models/world-event.model'
 import type { MemoryDoc } from '../models/memory.model'
+import { isSafeWitnessLocationCandidate } from '../../worker/lib/movement-signal'
 
 /**
  * The materialized location_stats collection (see location-stats.model.ts).
@@ -136,6 +137,19 @@ export const locationService = {
       }
     }
 
+    // Older saves may contain nodes minted before the evidence-gated witness
+    // contract existed. Never surface a clearly malformed dialogue fragment as
+    // a place while its owner repairs/rebuilds that legacy projection.
+    const personRows = await mongoColl.characters()
+      .find({ instance_id: iid }, { projection: { canonical_name: 1, aliases: 1 } })
+      .limit(80)
+      .toArray() as Array<{ canonical_name?: string; aliases?: string[] }>
+    const knownPeople = personRows.flatMap((person) => [person.canonical_name || '', ...(person.aliases || [])])
+    const knownPlaces = stats.map((stat) => stat.name || '')
+    const isSafePlace = (name: string | null | undefined) =>
+      isSafeWitnessLocationCandidate(name, { knownPeople, knownPlaces })
+    stats = stats.filter((stat) => isSafePlace(stat.name))
+
     const places = stats.map((s) => ({
       entity_id: idString(s.entity_id),
       name: s.name || 'An unnamed place',
@@ -148,7 +162,9 @@ export const locationService = {
       last_seen_sequence: s.last_seen_sequence ?? null,
     }))
 
-    const cursor = instance.current_location
+    const cursor = instance.current_location && isSafePlace(instance.current_location.name)
+      ? instance.current_location
+      : null
     return {
       current_location: cursor
         ? { entity_id: cursor.entity_id ? idString(cursor.entity_id) : null, name: cursor.name }

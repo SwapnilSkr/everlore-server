@@ -1,7 +1,7 @@
 import type { ObjectId } from 'mongodb'
 import type { ProseHygieneIssue } from '../utils/prose-hygiene'
 import type { CharacterCodexDelta } from '../services/character-codex.service'
-import type { ChoiceOption } from '../../worker/lib/structured-output'
+import type { ChoiceOption, NarrativeBeatLedger } from '../../worker/lib/structured-output'
 import type { TimeAnchorDoc } from './time.model'
 import type { LocationAnchorDoc } from './location.model'
 
@@ -36,6 +36,8 @@ export interface ReplayVariantDoc {
    *  selecting a variant restores its own chips without re-running the extractor. */
   choices?: ChoiceOption[]
   present_characters?: string[]
+  /** Non-verbatim continuity snapshot for this specific replay variant. */
+  beat_ledger?: NarrativeBeatLedger
   /** Backend-OWNED trackable mentions derived from THIS variant's prose, so
    *  browsing/committing a variant carries its own underline data without
    *  re-running the canon-gap classifier. Same shape as EventDataDoc. */
@@ -117,6 +119,8 @@ export interface EventDataDoc {
   /** Structured, player-confirmed command that drove this turn, when any. */
   world_action?: import('../utils/world-action').PlayerWorldAction
   ai_response: string
+  /** Compact semantic record of the prior beat; safe for the next-turn prompt. */
+  beat_ledger?: NarrativeBeatLedger
   /** Suggested next moves (tap-to-play chips) derived in the metadata pass.
    *  `send` is the formatted player input dispatched on tap (act = *narration*,
    *  say = spoken aloud); `label` is the chip caption shown to the player. */

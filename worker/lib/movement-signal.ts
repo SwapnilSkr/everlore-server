@@ -23,6 +23,79 @@ function clean(text: string): string {
     .trim()
 }
 
+/**
+ * The location witness, not a regex, decides whether a scene has moved and
+ * what the place is called.  These checks deliberately do not *extract* a
+ * destination from player prose; they only reject a malformed model label
+ * before it can become a durable graph entity.
+ */
+const LOCATION_CLAUSE_WORDS = new Set([
+  'where', 'when', 'while', 'because', 'though', 'although', 'which', 'who',
+  'that', 'then', 'but', 'and', 'if', 'after', 'before', 'once', 'until',
+])
+const LOCATION_ACTION_WORDS = new Set([
+  'am', 'are', 'is', 'was', 'were', 'be', 'been', 'being', 'go', 'going',
+  'gone', 'take', 'care', 'tell', 'tells', 'told', 'say', 'says', 'said',
+  'ask', 'asks', 'asked', 'wait', 'waits', 'waiting', 'meet', 'meets',
+  'met', 'come', 'comes', 'coming', 'leave', 'leaves', 'left', 'stay',
+  'stays', 'staying', 'return', 'returns', 'returned',
+])
+const LOCATION_PRONOUNS = new Set([
+  'i', 'me', 'my', 'mine', 'we', 'us', 'our', 'you', 'your', 'he', 'him',
+  'his', 'she', 'her', 'they', 'them', 'their', 'it', 'its',
+])
+const PHYSICAL_LOCATION_WORD = /\b(?:room|hall|chambers?|table|court|council|kitchen|bedroom|study|library|attic|basement|cellar|parlou?r|lounge|foyer|corridor|passage|stair(?:case)?|apartment|flat|house|home|mansion|manor|villa|cottage|cabin|tavern|inn|bar|restaurant|cafe|office|shop|store|market|garden|courtyard|terrace|balcony|yard|street|road|alley|station|dock|harbor|harbour|ship|train|car|castle|keep|palace|tower|gate|camp|village|town|city|capital|kingdom|realm|forest|mountain|coast|island|district|quarter|borough)\b/i
+
+function locationComparable(value: string): string {
+  return String(value || '')
+    .replace(/[\*_`]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLocaleLowerCase()
+}
+
+/** A compact, noun-like location label is safe to persist as a graph node. */
+export function isSafeWitnessLocationCandidate(
+  raw: string | null | undefined,
+  options: { knownPeople?: string[]; knownPlaces?: string[] } = {},
+): boolean {
+  const value = String(raw || '').replace(/\s+/g, ' ').trim()
+  if (!value || value.length < 3 || value.length > 72) return false
+  if (/[.!?;:"“”`*\n]/.test(value)) return false
+  const words = value.toLocaleLowerCase().match(/[\p{L}\p{N}-]+/gu) || []
+  if (!words.length || words.length > 8) return false
+  if (words.some((word) => LOCATION_CLAUSE_WORDS.has(word) || LOCATION_ACTION_WORDS.has(word) || LOCATION_PRONOUNS.has(word))) {
+    return false
+  }
+  const normalized = locationComparable(value)
+  if (/^(?:here|there|inside|outside|the room|a room|this place|that place|somewhere)$/i.test(normalized)) return false
+
+  // A trailing card name is a common witness failure: "the war room Cedric".
+  // Never "clean" it heuristically—reject it so the witness has to return the
+  // actual place label on the next turn instead of silently inventing one.
+  const knownPeople = (options.knownPeople || []).map(locationComparable).filter(Boolean)
+  if (knownPeople.some((person) => normalized === person || normalized.endsWith(` ${person}`))) return false
+
+  const knownPlaces = new Set((options.knownPlaces || []).map(locationComparable).filter(Boolean))
+  if (knownPlaces.has(normalized)) return true
+
+  // Permit a concrete place noun ("war room", "royal table") or a compact
+  // proper-name location ("Milan", "Ebonreach"). This is validation only;
+  // it never scans narrative/player text to manufacture a destination.
+  const looksLikeProperName = value.split(/\s+/).every((word) => /^[A-Z][\p{L}'’-]*$/u.test(word))
+  return PHYSICAL_LOCATION_WORD.test(value) || looksLikeProperName
+}
+
+/** Verify that the witness supplied a real, quoted-free excerpt of its source. */
+export function hasGroundedWitnessLocationEvidence(
+  evidence: string | null | undefined,
+  sourceText: string | null | undefined,
+): boolean {
+  const excerpt = locationComparable(String(evidence || ''))
+  const source = locationComparable(String(sourceText || ''))
+  return excerpt.length >= 3 && excerpt.length <= 220 && source.includes(excerpt)
+}
+
 /** A direction/target word that turns a locomotion verb into an actual relocation.
  *  "for"/"towards" cover "set off for the mountains" / "ride towards the keep". */
 const DIRECTION = '(?:to|into|inside|outside|out|toward|towards|back|upstairs|downstairs|up|down|through|onto|across|over to|off to|in|for)'
@@ -58,6 +131,17 @@ const DOOR_BEHIND = /\b(?:shut|shuts|shutting|close|closes|closing|closed|lock|l
 // clear a scene cast.
 const EXPLICIT_SCENE_EXIT =
   /\b(?:i|we)\b[^.!?]{0,72}\b(?:leave|exit|walk\s+out|step\s+out|head\s+out|go\s+out)\b(?:\s+(?:(?:of|from)\s+)?(?:[a-z]+(?:['’]s)?\s+){0,4}(?:room|hall|house|home|apartment|mansion|manor|townhouse|villa|estate|compound|building|office|cafe|restaurant|bar|club|shop|store|gallery|museum|warehouse|hotel|inn|theat(?:er|re)|library|market|courtyard|garden|yard|street|station|airport|hospital|school|campus|church|temple|car|train|ship)\b|\s+into\s+(?:the\s+)?(?:night|rain|street|outside|open\s+air)\b)/i
+
+// A player commonly describes a scene transition in natural story prose rather
+// than through the travel control: "I enter my room" or "I leave in disguise
+// as I approach the kingdom." This is intentionally used only to reset the
+// *scene cast* and to direct the narrator's viewpoint. It never creates or
+// selects a durable location — that remains gated by the LLM witness + its
+// quoted evidence below.
+const OWNED_SPACE_ENTRY =
+  /\b(?:i|we)\b[^.!?]{0,48}\b(?:go|head|walk|run|move|step|enter|stride|return|retire|slip)\b[^.!?]{0,24}\b(?:to\s+)?(?:my|our)\s+(?:room|bedroom|chambers?|study|quarters|cabin|den|office|cell|suite|loft|dorm|house|home|apartment|flat|cottage|hut|tent|attic|basement|workshop|studio|garret|penthouse|villa|bungalow|lodge)\b/i
+const DEPARTURE_TO_PHYSICAL_DESTINATION =
+  /\b(?:i|we)\b[^.!?]{0,64}\b(?:leave|depart|set\s+off|travel|journey|ride|walk|head|go)\b[^.!?]{0,64}\b(?:approach(?:ing)?|reach(?:ing)?|arrive(?:s|d|ing)?|enter(?:s|ed|ing)?)\b[^.!?]{0,48}\b(?:the\s+)?(?:room|hall|house|home|apartment|mansion|manor|townhouse|villa|estate|compound|building|office|cafe|restaurant|bar|club|shop|store|gallery|museum|warehouse|hotel|inn|library|market|courtyard|garden|yard|street|station|airport|campus|temple|car|train|ship|city|town|village|capital|kingdom|realm|forest|mountain|coast|island|district|quarter|borough)\b/i
 
 // This is intentionally much narrower than `detectNarratedMovement`. The broad
 // detector is useful for telemetry and for spotting likely missed moves, but it is
@@ -289,6 +373,23 @@ export function detectNarratedMovement(playerInput: string | null | undefined): 
 /** A verified departure that resets scene presence without guessing a location. */
 export function isExplicitSceneExit(playerInput: string | null | undefined): boolean {
   return EXPLICIT_SCENE_EXIT.test(clean(playerInput || ''))
+}
+
+/**
+ * A high-confidence player-authored scene transition. Unlike the map cursor,
+ * presence can safely fail closed: carrying prior locals into a place the
+ * player has just entered is worse than allowing a newly introduced local to
+ * be discovered on the following turn.
+ */
+export function isExplicitPlayerSceneTransition(playerInput: string | null | undefined): boolean {
+  const text = clean(playerInput || '')
+  if (!text) return false
+  return (
+    isExplicitSceneExit(text) ||
+    OWNED_SPACE_ENTRY.test(text) ||
+    DEPARTURE_TO_PHYSICAL_DESTINATION.test(text) ||
+    extractExplicitPhysicalDestination(text) != null
+  )
 }
 
 // Personal/owned spaces only — a room or a dwelling the protagonist holds. NOT

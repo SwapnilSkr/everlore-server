@@ -36,6 +36,12 @@ const WITNESS_SCHEMA = {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
     player_travel_confirmed: { type: 'boolean' },
+    location_evidence: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    },
+    location_evidence_source: {
+      anyOf: [{ type: 'string', enum: ['player', 'narrative', 'prior'] }, { type: 'null' }],
+    },
     containment_hint: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
@@ -58,7 +64,7 @@ const WITNESS_SCHEMA = {
       items: { type: 'string' },
     },
   },
-  required: ['present_characters', 'characters_departed', 'current_location', 'player_destination', 'player_travel_confirmed', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
+  required: ['present_characters', 'characters_departed', 'current_location', 'player_destination', 'player_travel_confirmed', 'location_evidence', 'location_evidence_source', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
 }
 
 /** CHOICE/STAT schema — the player-moves + bookkeeping half: choices, scene tag,
@@ -103,6 +109,31 @@ const CHOICE_META_SCHEMA = {
       enum: ['dialogue', 'combat', 'romantic', 'intimate', 'exploration', 'existential', 'cosmic', 'mundane'],
     },
     emotional_tone: { type: 'string' },
+    beat_ledger: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        npc_beats: {
+          type: 'array',
+          maxItems: 4,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              character: { type: 'string' },
+              intent: { type: 'string' },
+              reaction: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            },
+            required: ['character', 'intent', 'reaction'],
+          },
+        },
+        emotional_shift: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        setting: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        consequence: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        unresolved_hook: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+      },
+      required: ['npc_beats', 'emotional_shift', 'setting', 'consequence', 'unresolved_hook'],
+    },
     choices: {
       type: 'array',
       maxItems: 4,
@@ -121,7 +152,7 @@ const CHOICE_META_SCHEMA = {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
   },
-  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'choices', 'milestone'],
+  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'beat_ledger', 'choices', 'milestone'],
 }
 
 /** Default for the WITNESS half — used when its call fails so a witness outage
@@ -132,6 +163,8 @@ const WITNESS_FALLBACK: SceneMetadata = {
   current_location: null,
   player_destination: null,
   player_travel_confirmed: false,
+  location_evidence: null,
+  location_evidence_source: null,
   containment_hint: null,
   movement: 'none',
   viewpoint_moved: false,
@@ -142,6 +175,7 @@ const WITNESS_FALLBACK: SceneMetadata = {
   flag_mutations: {},
   scene_tag: 'dialogue',
   emotional_tone: 'neutral',
+  beat_ledger: { npc_beats: [], emotional_shift: null, setting: null, consequence: null, unresolved_hook: null },
   choices: [],
   milestone: null,
 }
@@ -177,6 +211,7 @@ Rules:
 - flag_mutations: include ONLY flags that changed. op is "set"|"increment"|"decrement". Only the tracked flag names listed in CONTEXT below may be used.
 - scene_tag: one of dialogue, combat, romantic, intimate, exploration, existential, cosmic, mundane. Use "romantic" for affectionate/romantic but non-explicit scenes (flirting, kissing, emotional intimacy). Use "intimate" ONLY for explicit sexual content.
 - emotional_tone: a single word.
+- beat_ledger: a compact semantic handoff for the NEXT turn, not a recap for the player. It has five fields: npc_beats, emotional_shift, setting, consequence, unresolved_hook. Use only what this passage establishes. npc_beats lists up to four NPCs who materially spoke, acted, or reacted, each as { character, intent, reaction }. The intent is the purpose or pressure behind their contribution; reaction is their observable/emotional response. emotional_shift is the scene's meaningful change in feeling or power dynamic. setting is the concrete current place/setting ONLY when the prose makes it clear (for example "at the royal table" or "in the library"); never guess it. consequence is the concrete new situation caused this turn. unresolved_hook is the next question, decision, threat, promise, or pressure left open. Keep each string concise (roughly 4-16 words). NEVER quote dialogue, copy distinctive phrasing, or closely paraphrase a spoken line; write neutral semantic facts instead. Example: {"npc_beats":[{"character":"Lyra","intent":"challenges Aurelius's standing","reaction":"openly disdainful"}],"emotional_shift":"the family conflict sharpens","setting":"at the royal table","consequence":"invasion news raises the stakes","unresolved_hook":"whether Aurelius will answer the challenge"}. Use null/[] when nothing applies.
 - choices: 2-4 distinct suggested next moves for the player, ALWAYS written from the PLAYER's own first-person viewpoint ("I ..."). Who the player is — and whether this is a Game-Master world where the player IS the protagonist, or a sentient world where the player is a separate person talking to the main character — is given under WORLD MODE in the CONTEXT section below; honor it. NEVER refer to the player's own character in the third person or by role in either the label or the send (e.g. do not write "Observe the son" when the player IS the son — write "Watch my brother" / "*I watch him closely*"). Each is an object { label, kind, send }:
     - label: the short chip caption shown to the player — an imperative the player gives THEMSELF, 2-6 words, no trailing punctuation (e.g. "Take her hand", "Ask what she's hiding", "Draw your blade"). It must share the send's first-person viewpoint: address other people from the player's vantage ("Confront my brother"), never narrate the player's own character from outside ("Observe the son" when the player is the son is WRONG).
     - send: the player's move, in FIRST PERSON ("I ..."), pre-formatted so the player can edit it before sending. Wrap any narrated action/gesture in *single asterisks*; write spoken words as plain text OUTSIDE the asterisks (no quotation marks). You MAY combine a brief narration and a spoken line when it fits the moment. Examples:
@@ -188,8 +223,9 @@ Rules:
 - milestone: null almost always. Set a short evocative label (3-8 words) ONLY when this passage crossed a true story landmark: a vow or marriage, a first kiss, a death of a significant character, a title/power gained, a major victory or betrayal, a life-changing decision. Routine progress is NOT a milestone.
 - present_characters: the PEOPLE who appear physically in the scene WITH the viewpoint during THIS passage — anyone who speaks, acts, or is shown to be in the room right now. (You do NOT need to re-list people from earlier who simply weren't mentioned this turn; the system carries them forward automatically — the people present at the end of last turn are listed in CONTEXT below for your reference.) For anyone matching the KNOWN CAST, use their CANONICAL name (not the alias/role/pronoun the prose used); for a genuinely new person not in the cast, use the clearest name the prose gives. NEVER put a location, landmark, building, city, district, country, vehicle, or object here — even if it is capitalized or personified by prose ("Milan greeted him", "near the Duomo"). Those are places/things, never scene participants. EXCLUDE the player/narrator themself, and anyone only mentioned, remembered, or written about while not actually in the room. Also EXCLUDE a figurative epithet that is really an existing person under a metaphor (per the FIGURATIVE vs LITERAL rule above) — "the ghost", "the monster" for the overlooked protagonist is NOT a separate present character in a grounded world. CRUCIAL: if a person LEAVES by the end of the passage, do NOT list them here — list them in characters_departed instead, even if they spoke or acted earlier in the same passage.
 - characters_departed: the people who physically LEFT the scene by the end of this passage — walked out, exited, stormed off, were dismissed, sent away, or died — EVEN IF they spoke or acted earlier in the same passage before leaving. Use their CANONICAL name. A person who rises and leaves the room this turn belongs HERE, not in present_characters. This is the only way someone stops being "present" (the system keeps everyone else from the prior turn in the scene), so a clearly narrated exit MUST be listed. Worked example: prose says "Bram set down his cup, bowed stiffly, and strode from the hall" → characters_departed includes "Bram" (and he is NOT in present_characters). Empty array [] when no one left.
-- current_location: the place the viewpoint/protagonist is PHYSICALLY STANDING IN at the end of the passage — where this turn's action and dialogue actually happen. Report ONLY a place the prose shows them physically occupying RIGHT NOW. NEVER report a place that is merely mentioned, named, planned, anticipated, remembered, or where some future event will be held while the characters are not yet there. Worked example: if they sit at the table in the dining room discussing a party that will be held in the great room, current_location is "dining room" — NOT "great room". If the scene simply continues where it already was, return the prior known location unchanged. If the viewpoint is at a place listed in KNOWN PLACES (in CONTEXT below) — including returning to one they left earlier — return that place's EXACT canonical name, never a new variant spelling ("the garden" when KNOWN PLACES has "Night Garden" → return "Night Garden"). Use a fresh name only for a place that is genuinely not yet known. NEVER report a vague or relative label as the location — "the room", "here", "inside", "outside", "this place" are NOT place names; use the SPECIFIC place's name (e.g. "dining room", "the night garden"), or return the prior known location if the viewpoint has not moved. If the viewpoint moves into a personal space the prose marks as someone's OWN ("my room", "her chambers", "his study"), name it for its owner so it is specific and distinct — e.g. the protagonist retreating to "my room" → the protagonist's name (from CONTEXT) + "'s room" (for a protagonist named Mara, "Mara's room"), NOT the bare "the room". Return null ONLY if no place has ever been established. The Prior known location is given in CONTEXT below — return THAT unless the viewpoint has physically moved.
-- player_destination and player_travel_confirmed: read the PLAYER TURN in CONTEXT together with the narrative. Set player_travel_confirmed true ONLY when the player is physically travelling/arriving NOW in that turn, not merely discussing, planning, remembering, or promising a future trip. player_destination is the clean place name the player actually goes to/arrives at; remove purpose clauses and direct addresses ("go to the living room to say goodbye to Lisa" → "living room"; "go to the airport, Dad" → "airport"). An unnamed but physically entered venue is still a destination: "I take a hotel to stay at", "I check into a hotel", or "I get a room at an inn" → player_travel_confirmed true and player_destination "hotel" or "inn" (not "hotel lobby" unless the player named the lobby). Return null/false when no travel happened.
+- current_location: the place the viewpoint/protagonist is PHYSICALLY STANDING IN at the end of the passage — where this turn's action and dialogue actually happen. Report ONLY a compact PLACE NAME (not a sentence, quote, player action, or a person's name): "war room", "Royal Council Chamber", "Milan". NEVER report a place that is merely mentioned, named, planned, anticipated, remembered, or where some future event will be held while the characters are not yet there. Worked example: if they sit at the table in the dining room discussing a party that will be held in the great room, current_location is "dining room" — NOT "great room". If the scene simply continues where it already was, return the prior known location unchanged. If the viewpoint is at a place listed in KNOWN PLACES (in CONTEXT below) — including returning to one they left earlier — return that place's EXACT canonical name, never a new variant spelling ("the garden" when KNOWN PLACES has "Night Garden" → return "Night Garden"). Use a fresh name only for a place that is genuinely not yet known. NEVER report a vague or relative label as the location — "the room", "here", "inside", "outside", "this place" are NOT place names; use the SPECIFIC place's name (e.g. "dining room", "the night garden"), or return the prior known location if the viewpoint has not moved. If the viewpoint moves into a personal space the prose marks as someone's OWN ("my room", "her chambers", "his study"), name it for its owner so it is specific and distinct — e.g. the protagonist retreating to "my room" → the protagonist's name (from CONTEXT) + "'s room" (for a protagonist named Mara, "Mara's room"), NOT the bare "the room". Return null ONLY if no place has ever been established. The Prior known location is given in CONTEXT below — return THAT unless the viewpoint has physically moved.
+- location_evidence and location_evidence_source: REQUIRED provenance for current_location. Return one SHORT exact excerpt (3-20 words) from the indicated source that proves the viewpoint is physically there. source="player" only when the PLAYER TURN itself moves/arrives there; source="narrative" when the completed narrative establishes the setting; source="prior" only when you return the prior known location unchanged (then evidence may be null). Never invent or paraphrase the excerpt. If you cannot cite an exact excerpt, current_location must be null. This evidence is machine-checked before a location enters the map.
+- player_destination and player_travel_confirmed: read the PLAYER TURN in CONTEXT together with the narrative. Set player_travel_confirmed true ONLY when the player is physically travelling/arriving NOW in that turn, not merely discussing, planning, remembering, or promising a future trip. player_destination is the clean compact place name the player actually goes to/arrives at; remove purpose clauses and direct addresses ("go to the living room to say goodbye to Lisa" → "living room"; "go to the airport, Dad" → "airport"). An unnamed but physically entered venue is still a destination: "I take a hotel to stay at", "I check into a hotel", or "I get a room at an inn" → player_travel_confirmed true and player_destination "hotel" or "inn" (not "hotel lobby" unless the player named the lobby). Return null/false when no travel happened.
 - viewpoint_moved: a boolean. true whenever THIS passage narrates the viewpoint/protagonist physically CHANGING place — walking out, entering another room, setting off on a journey, RETURNING TO or RE-ENTERING a place they had left (e.g. coming back indoors from the garden, stepping back into the mansion), or a scene-cut that puts them somewhere new. It is false when they stay put and nothing relocates them, and ESPECIALLY when another place is only mentioned, named, discussed, or planned while they remain where they are. Rule of thumb: if current_location differs from the prior known location because they actually went there, viewpoint_moved is true; if current_location is unchanged, it is false.
 - containment_hint: the name of the place that DIRECTLY CONTAINS current_location, but ONLY when THIS passage actually states or makes it plain (e.g. the prose says they are "in the library of the manor" → containment_hint "the manor"; "a tavern in the riverside district" → "riverside district"). This is the immediate parent, one level up — a room's building, a building's district, a city's realm. Return null when the passage does not make the container explicit. NEVER guess or invent a container to fill this in.
 - movement: how current_location relates to the PRIOR known location this turn — one of: "none" (did not move / stayed put), "deeper" (went INTO a place contained by where they were — entered a room of the current building), "out" (LEFT the current place to its surrounding area — stepped outside the house onto the street), "lateral" (moved to another place at the SAME level — one room to another in the same building), "world_shift" (crossed into a wholly different world/realm/plane — a portal to the shadow realm, abduction to another planet, waking in a dream-world). Use "none" whenever viewpoint_moved is false. Choose the single best fit; when unsure between out/lateral use "lateral".
@@ -237,6 +273,13 @@ type MetadataOpts = {
    *  e.g. "the ghost in the doorway" is a real spirit in a horror world but a
    *  metaphor for an overlooked person in a grounded drama. */
   worldContext?: string | null
+  /**
+   * Bounded, narrator-equivalent story facts for the choice half only. This
+   * carries the selected lore/memories/threads and active cast that made the
+   * prose possible, without copying the narrator's large instruction prefix or
+   * historical prose into a second request.
+   */
+  choiceContext?: string | null
 }
 
 /** Build the STATIC rules + dynamic CONTEXT system prompt shared by both halves.
@@ -376,6 +419,8 @@ export async function extractSceneWitness(
       current_location: v.current_location ?? null,
       player_destination: v.player_destination ?? null,
       player_travel_confirmed: v.player_travel_confirmed === true,
+      location_evidence: v.location_evidence ?? null,
+      location_evidence_source: v.location_evidence_source ?? null,
       containment_hint: v.containment_hint ?? null,
       movement: v.movement ?? 'none',
       viewpoint_moved: v.viewpoint_moved === true,
@@ -400,7 +445,15 @@ export async function extractChoiceMetadata(
   flagKeys: string[],
   opts?: MetadataOpts,
 ): Promise<SceneMetadata> {
-  const system = buildMetadataSystem(opts, normalizeStats(stats), flagKeys)
+  const baseSystem = buildMetadataSystem(opts, normalizeStats(stats), flagKeys)
+  const choiceContext = String(opts?.choiceContext || '')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, 18_000)
+  const system = choiceContext
+    ? `${baseSystem}\n\n--- CHOICE DECISION CONTEXT (selected story facts available to the narrator) ---\n${choiceContext}\nUse these facts together with the completed narrative. They are canon for grounding choices, not dialogue to quote or replay.\n--- END CHOICE DECISION CONTEXT ---`
+    : baseSystem
   try {
     const raw = await callLLM({
       model: AI_MODELS.metadata,
@@ -409,7 +462,11 @@ export async function extractChoiceMetadata(
         { role: 'user', content: narrative },
       ],
       temperature: 0.2,
-      maxTokens: 350,
+      // The beat ledger adds a handful of short semantic fields to this
+      // existing post-stream pass. It never sits on the narrator's first-token
+      // path, but leave enough room that a valid ledger cannot crowd out the
+      // core choices/state metadata.
+      maxTokens: 450,
       responseSchema: CHOICE_META_SCHEMA,
     })
     opts?.onRaw?.('choice_metadata', raw)
@@ -420,6 +477,7 @@ export async function extractChoiceMetadata(
       flag_mutations: v.flag_mutations,
       scene_tag: v.scene_tag,
       emotional_tone: v.emotional_tone,
+      beat_ledger: v.beat_ledger,
       choices: v.choices,
       milestone: v.milestone,
     }
@@ -455,6 +513,8 @@ export async function extractSceneMetadata(
     current_location: witness.current_location,
     player_destination: witness.player_destination,
     player_travel_confirmed: witness.player_travel_confirmed,
+    location_evidence: witness.location_evidence,
+    location_evidence_source: witness.location_evidence_source,
     containment_hint: witness.containment_hint,
     movement: witness.movement,
     viewpoint_moved: witness.viewpoint_moved,
@@ -466,6 +526,7 @@ export async function extractSceneMetadata(
     flag_mutations: choice.flag_mutations,
     scene_tag: choice.scene_tag,
     emotional_tone: choice.emotional_tone,
+    beat_ledger: choice.beat_ledger,
     choices: choice.choices,
     milestone: choice.milestone,
   }

@@ -476,6 +476,14 @@ export const entityGraphService = {
     // insert lost a duplicate race and never landed.
     const pendingLinks: Array<{ card: CharacterProfileDoc; entity: EntityDoc }> = []
 
+    const identityOwnerCount = new Map<string, number>()
+    for (const card of cards) {
+      for (const name of [card?.canonical_name, ...(card?.aliases || [])]) {
+        const normalized = normalizeEntityName(name || '')
+        if (normalized) identityOwnerCount.set(normalized, (identityOwnerCount.get(normalized) || 0) + 1)
+      }
+    }
+    const mergedStubIds = new Set<string>()
     for (const card of cards) {
       if (!card?._id || !card.canonical_name) continue
       const wantType: EntityType = card.is_protagonist ? 'protagonist' : 'character'
@@ -595,6 +603,42 @@ export const entityGraphService = {
       )
       card.entity_id = entity._id
     }
+
+    // A scene witness can mint a lightweight stub before the codex extractor
+    // has supplied a character's full card. If the eventual card calls that
+    // person by a longer canonical name but includes the stub as an alias
+    // ("Cedric" → "Crown Prince Cedric"), the exact-name lookup above rightly
+    // selects the canonical entity but leaves the old stub visible in graph
+    // surfaces. Merge only STUB identities here—never two active cards—so a
+    // declared alias heals its provisional predecessor without guessing that
+    // two established people are the same person.
+    for (const card of cards) {
+      if (!card?._id || !card.canonical_name) continue
+      const target = result.get(card.name_normalized)
+      if (!target) continue
+      const identityNames = new Set(
+        [card.canonical_name, ...(card.aliases || [])]
+          .map(normalizeEntityName)
+          .filter(Boolean),
+      )
+      if (!identityNames.size) continue
+      const duplicateStubs = existing.filter((candidate) => {
+        if (candidate._id.equals(target._id) || mergedStubIds.has(idString(candidate._id)) || !isStubStatus(candidate.status)) return false
+        return [candidate.canonical_name, ...(candidate.aliases || [])]
+          .map(normalizeEntityName)
+          .some((name) => identityNames.has(name) && identityOwnerCount.get(name) === 1)
+      })
+      for (const stub of duplicateStubs) {
+        await this.mergeCharacterEntities({
+          instanceId,
+          playerId,
+          sourceEntityId: idString(stub._id),
+          targetEntityId: idString(target._id),
+          targetCard: card,
+        })
+        mergedStubIds.add(idString(stub._id))
+      }
+    }
     return result
   },
 
@@ -713,6 +757,9 @@ export const entityGraphService = {
           character_id: params.targetCard._id,
           updated_at: now,
         },
+        $inc: { mention_count: source.mention_count || 0 },
+        $max: { last_seen_sequence: source.last_seen_sequence || 0 },
+        $addToSet: { source_event_ids: { $each: source.source_event_ids || [] } },
       },
     )
     await entities().deleteOne({ _id: sourceId })
