@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { getRedisClient } from '../../src/config/redis'
-import { callLLMStream, AI_MODELS, narrationTemperature } from '../../src/ai'
+import { callLLMStreamWithFallback, AI_MODELS, narrationTemperature } from '../../src/ai'
 import { buildContextPacket } from '../../src/services/context-packet.service'
 import { buildPrompt } from '../../src/utils/prompt-builder'
 import { lengthMaxTokens } from '../../src/utils/narrative-styles'
@@ -16,8 +16,8 @@ import { normalizeNarrationMarkers, validateProseHygiene } from '../../src/utils
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { generationLockKey, releaseGenerationLock } from '../../src/utils/generation-lock'
 import { scoreScene, classifyBorderlineIntent } from '../lib/nsfw-classifier'
-import { type GenerationOutput, type ChoiceOption, sanitizeChoices } from '../lib/structured-output'
-import { makeChoiceTailFilter, parseChoiceTail } from '../lib/choice-tail'
+import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
+import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
 import { extractSceneMetadata } from '../lib/metadata-extractor'
 import { extractCharacterCodexDeltas } from '../lib/character-codex-extractor'
@@ -29,21 +29,20 @@ import {
   entityAdjudicationCandidates,
   filterAdjudicatedPresence,
 } from '../lib/entity-adjudicator'
+import { adjudicateSceneEndpoint } from '../lib/scene-endpoint-adjudicator'
 import { characterCodexService, type RelationAssertion } from '../../src/services/character-codex.service'
 import { kinshipGraphService } from '../../src/services/kinship-graph.service'
-import { entityGraphService, isVagueLocationLabel, normalizeEntityName } from '../../src/services/entity-graph.service'
+import { entityGraphService, normalizeEntityName } from '../../src/services/entity-graph.service'
 import { locationService } from '../../src/services/location.service'
 import {
-  detectNarratedMovement,
   extractExplicitPhysicalDestination,
-  isGroundedPlayerDestination,
-  isExplicitPlayerLocationChange,
   isExplicitSceneExit,
-  refinePhysicalDestination,
-  resolvePossessiveRoomName,
+  isExplicitPlayerSceneTransition,
+  hasGroundedWitnessLocationEvidence,
+  isSafeWitnessLocationCandidate,
   validatedContainmentHint,
 } from '../lib/movement-signal'
-import { auditChoices, repairStaleDepartureChoices } from '../lib/choice-grounding-audit'
+import { auditChoices } from '../lib/choice-grounding-audit'
 import { classifyChoiceGrounding, computeGroundingContext } from '../lib/choice-grounding'
 import { detectProjectionAnomalies } from '../lib/projection-anomaly-detector'
 import { buildSignalLedger } from '../lib/signal-ledger'
@@ -59,7 +58,6 @@ import type { PlayerWorldAction } from '../../src/utils/world-action'
 import { surfaceToKind } from '../../src/utils/kinship-ontology'
 import { detectNarratedRelationCandidates } from '../lib/relation-candidate-detector'
 import { detectCanonRevisionCandidates } from '../lib/canon-revision-detector'
-import { establishesSceneLocation } from '../lib/scene-location-signal'
 import { dispatchPostProcessOutbox, stagePostProcess } from '../../src/services/post-process-outbox.service'
 import {
   activeCastInteractionCandidates,
@@ -124,6 +122,103 @@ function completeNarrativePrefix(narrative: string): string | null {
     if (italicsBalanced && quotesBalanced) return candidate
   }
   return null
+}
+
+const CHOICE_CONTEXT_TOKEN_LIMIT = 3_200
+
+/**
+ * Build the small, fact-only packet the structured choice model needs to make
+ * the same grounded decisions as the narrator. It deliberately excludes the
+ * narrator's large static instruction prefix and all raw historical prose, so
+ * this second request cannot bloat toward the narration context window or turn
+ * earlier dialogue into a copyable completion example.
+ */
+function buildChoiceDecisionContext(input: {
+  isSentient: boolean
+  playerName?: string | null
+  playerInput: string
+  locationContext?: string | null
+  timeContext?: string | null
+  worldState: Record<string, unknown>
+  activeFlags: Record<string, unknown>
+  characterCodex: any[]
+  loreTexts: string[]
+  memoryTexts: string[]
+  openThreads: string[]
+  sceneSummary?: string | null
+  relevantSummaries: string[]
+  relationshipFacts: string[]
+  positionFacts: string[]
+  companionFacts: string[]
+  recentEvents: any[]
+}): string {
+  const sections: string[] = []
+  const playerLabel = input.isSentient
+    ? `The player is ${input.playerName || 'a separate person interacting with the cast'}.`
+    : `The player is the GM-world protagonist${input.playerName ? `, ${input.playerName}` : ''}.`
+  sections.push(`WORLD MODE\n${playerLabel}\nCurrent player turn: ${input.playerInput.slice(0, 900) || '(continue)'}`)
+  const onlyOpening = input.recentEvents.length === 1 && input.recentEvents[0]?.data?.model_used === 'seed'
+    ? String(input.recentEvents[0]?.data?.ai_response || '').trim()
+    : ''
+  if (onlyOpening) {
+    sections.push(`AUTHORED OPENING SCENE\n${onlyOpening.slice(0, 1_800)}`)
+  }
+  if (input.locationContext) sections.push(`CURRENT PLACE\n${input.locationContext.slice(0, 700)}`)
+  if (input.timeContext) sections.push(`STORY TIME\n${input.timeContext.slice(0, 360)}`)
+  if (Object.keys(input.worldState || {}).length || Object.keys(input.activeFlags || {}).length) {
+    sections.push(`CURRENT STATE\nStats: ${JSON.stringify(input.worldState || {}).slice(0, 700)}\nFlags: ${JSON.stringify(input.activeFlags || {}).slice(0, 500)}`)
+  }
+
+  // Most recent semantic continuity is highly relevant to a player's next
+  // move, so reserve it before the larger cast/retrieval sections consume the
+  // bounded packet.
+  const recent = input.recentEvents.slice(-4).map((event) => {
+    const ledger = event?.data?.beat_ledger
+    const facts = [
+      ...(Array.isArray(ledger?.npc_beats) ? ledger.npc_beats.map((beat: any) => `${beat.character}: ${beat.intent}`).filter(Boolean) : []),
+      ledger?.consequence ? `Consequence: ${ledger.consequence}` : '',
+      ledger?.unresolved_hook ? `Open pressure: ${ledger.unresolved_hook}` : '',
+    ].filter(Boolean)
+    return facts.length ? `- Turn ${event?.sequence || '?'}: ${facts.join('; ')}` : ''
+  }).filter(Boolean)
+  if (recent.length) sections.push(`RECENT SEMANTIC CONTINUITY\n${recent.join('\n')}`)
+
+  const cast = (input.characterCodex || []).slice(0, 16).map((card) => {
+    const name = String(card?.canonical_name || '').trim()
+    if (!name) return ''
+    const details = [
+      card.role,
+      card.persona,
+      Array.isArray(card.immutable_facts) ? card.immutable_facts.slice(0, 2).join('; ') : '',
+      Array.isArray(card.mutable_state) ? card.mutable_state.slice(0, 2).join('; ') : '',
+      card.disposition_to_player ? `Disposition: ${card.disposition_to_player}` : '',
+      card.relationship_state?.summary ? `Bond: ${card.relationship_state.summary}` : '',
+    ].filter(Boolean).join(' — ')
+    return `- ${name}${details ? `: ${String(details).slice(0, 420)}` : ''}`
+  }).filter(Boolean)
+  if (cast.length) sections.push(`ACTIVE CAST & CHARACTER FACTS\n${cast.join('\n')}`)
+
+  const canon = [
+    ...input.relationshipFacts.slice(0, 10),
+    ...input.positionFacts.slice(0, 8),
+    ...input.companionFacts.slice(0, 6),
+  ].filter(Boolean)
+  if (canon.length) sections.push(`CANON BRIEF\n${canon.map((fact) => `- ${String(fact).slice(0, 260)}`).join('\n')}`)
+  if (input.sceneSummary) sections.push(`SCENE SUMMARY\n${input.sceneSummary.slice(0, 650)}`)
+  if (input.openThreads.length) sections.push(`OPEN THREADS\n${input.openThreads.slice(0, 5).map((item) => `- ${String(item).slice(0, 260)}`).join('\n')}`)
+  if (input.relevantSummaries.length) sections.push(`RELEVANT PAST CHAPTERS\n${input.relevantSummaries.slice(0, 3).map((item) => `- ${String(item).slice(0, 360)}`).join('\n')}`)
+  if (input.loreTexts.length) sections.push(`RETRIEVED LORE\n${input.loreTexts.slice(0, 4).map((item) => `- ${String(item).slice(0, 420)}`).join('\n')}`)
+  if (input.memoryTexts.length) sections.push(`RETRIEVED MEMORIES\n${input.memoryTexts.slice(0, 5).map((item) => `- ${String(item).slice(0, 360)}`).join('\n')}`)
+
+  const out: string[] = []
+  let used = 0
+  for (const section of sections) {
+    const tokens = countTokens(section)
+    if (used + tokens > CHOICE_CONTEXT_TOKEN_LIMIT) break
+    out.push(section)
+    used += tokens
+  }
+  return out.join('\n\n')
 }
 
 /** An explicit player destination is a semantic commitment, not a stylistic
@@ -410,11 +505,26 @@ export async function generationProcessor(job: Job) {
   const explicitPhysicalDestination = confirmedWorldAction
     ? null
     : extractExplicitPhysicalDestination(parsedPlayerInput.raw)
+  // This only governs narrator viewpoint and presence folding. Location graph
+  // changes remain witness-evidence gated below, so a natural-language exit
+  // cannot mint a place from a stray phrase.
+  const playerSceneTransition =
+    !confirmedWorldAction &&
+    !isContinuation &&
+    isExplicitPlayerSceneTransition(parsedPlayerInput.raw)
+  // The explicit travel control is the same boundary in stronger form: its
+  // selected companions are the complete travelling party, so locals from the
+  // place left behind may never reappear at the destination by metadata drift.
+  const playerForcesFreshCast =
+    playerSceneTransition || confirmedWorldAction?.kind === 'travel'
 
   const promptUserMessage = confirmedWorldAction
     ? worldActionDirective(confirmedWorldAction)
     : explicitPhysicalDestination
       ? `[PLAYER MOVEMENT COMMITMENT: The player has explicitly chosen to go to ${explicitPhysicalDestination}. Narrate the route and arrival at that exact destination. Do not redirect them to another place, substitute a different destination, or leave the journey unresolved.]
+PLAYER ACTION: ${parsedPlayerInput.raw}`
+      : playerSceneTransition
+        ? `[PLAYER SCENE TRANSITION: The player has physically left the prior scene. Keep the narration anchored to the player's viewpoint and the place they reach. Do NOT cut away to, or keep scene focus on, people they left behind unless the player explicitly brought them along.]
 PLAYER ACTION: ${parsedPlayerInput.raw}`
       : isContinuation
         ? "[The player waits and observes. Continue the current beat naturally without asking what they do. You MUST move the scene through a concrete response: a present NPC speaks (preferred in a conversation), takes a meaningful action, makes a decision, reveals information, or produces a consequence. Do NOT answer a Continue with only silence, tension, glances, hesitation, body language, or atmospheric description; never repeat a stalled silence from the preceding beat. A detached or disinterested character still responds through a terse dismissal, evasion, refusal, cold action, or consequential withdrawal. Do not introduce a new complication, location, character, danger, romance escalation, or major plot turn unless it was already clearly set up by recent events. Because this is an autonomous continuation, do not open with the active character's name; begin with pronoun, action, body language, speech, or setting instead.]"
@@ -547,13 +657,16 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     modelId = session.model_preferences?.narration_nsfw || AI_MODELS.narrationNsfw
     isNsfwTurn = true
   }
+  const requestedModelId = modelId
+  const narrationFallbackModels = isNsfwTurn
+    ? AI_MODELS.narrationNsfwFallbacks
+    : AI_MODELS.narrationSfwFallbacks
 
-  // Option A spike: when on, the narrator emits its own tap-to-play choices in a
-  // sentinel-delimited tail (generated WITH full context — see worker/lib/choice-tail),
-  // and we skip nothing else. Off by default so it ships additively; if the narrator
-  // omits/malforms the tail we fall straight back to the metadata-pass choices below.
-  const useNarratorChoices = process.env.NARRATOR_CHOICES === 'on'
-
+  // Choices are deliberately NOT authored in a prose-model tail. Different
+  // narrators treat markdown/quotes inconsistently, which can mix the chip
+  // heading with its prefilled value. The structured choice pass below is now
+  // authoritative and receives a bounded equivalent of the narrator's story
+  // context, so it stays grounded without depending on tail syntax.
   const prompt = buildPrompt({
     seedPrompt: session.seed_prompt,
     isSentient: session.is_sentient,
@@ -597,8 +710,32 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     // arrive (low TTFT), and uncensored models can't do the JSON envelope anyway.
     // Structured fields (stats/flags/scene tag) are derived in a cheap pass below.
     proseOnly: true,
-    emitChoices: useNarratorChoices,
+    emitChoices: false,
   })
+
+  const choicePlayerName = session.is_sentient
+    ? session.persona_snapshot?.name || null
+    : (characterCodex as any[]).find((card) => card?.is_protagonist)?.canonical_name || session.protagonist?.name || null
+  const choiceDecisionContext = buildChoiceDecisionContext({
+    isSentient: !!session.is_sentient,
+    playerName: choicePlayerName,
+    playerInput: confirmedWorldAction ? actionNarration : isContinuation ? 'Continue the current scene.' : parsedPlayerInput.raw,
+    locationContext,
+    timeContext,
+    worldState: session.world_state || {},
+    activeFlags: session.active_flags || {},
+    characterCodex: characterCodex as any[],
+    loreTexts,
+    memoryTexts,
+    openThreads,
+    sceneSummary: activeSummary,
+    relevantSummaries: packet.relevantSummaries,
+    relationshipFacts: packet.relationshipFacts,
+    positionFacts: packet.positionFacts,
+    companionFacts: packet.companionFacts,
+    recentEvents,
+  })
+  const choiceContextTokens = countTokens(choiceDecisionContext)
 
   // Stream the narrative token-by-token so the player sees words within ~1s
   // instead of waiting for the full completion. Deltas ride the same Redis
@@ -688,8 +825,9 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   }
 
   let streamFailure: unknown = null
+  let fallbackAttempts: Array<{ from: string; to: string }> = []
   try {
-    await callLLMStream(
+    const narration = await callLLMStreamWithFallback(
       {
         model: modelId,
         messages: prompt.messages,
@@ -697,6 +835,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         maxTokens: lengthMaxTokens(session.message_length),
         sessionId: instanceId,
       },
+      narrationFallbackModels,
       (chunk) => {
         // First streamed delta = the latency the player actually feels.
         if (ttftMs === 0) {
@@ -707,7 +846,20 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         // Once the sentinel arrives, all prose is in and the rest is hidden choices —
         // close the visible stream now so the indicator doesn't hang through them.
       },
+      ({ from, to, error }) => {
+        // This happens only before any prose was published. The client keeps its
+        // existing loading state, so the reroute is invisible to the player.
+        log.warn('generation.model_rate_limited_fallback', {
+          jobId: job.id,
+          instanceId,
+          from,
+          to,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      },
     )
+    modelId = narration.model
+    fallbackAttempts = narration.fallbackAttempts
   } catch (err) {
     streamFailure = err
   }
@@ -736,10 +888,6 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       error: (streamFailure as Error).message,
     })
   }
-  // Narrator-grounded choices parsed from the tail (empty → fall back below).
-  let narratorChoices: ChoiceOption[] = useNarratorChoices
-    ? sanitizeChoices(parseChoiceTail(choiceFilter.choiceBlock()))
-    : []
   const latencyMs = Date.now() - genStart
   const endToEndTtftMs = firstTokenAt > 0 ? firstTokenAt - requestStartedAt : 0
 
@@ -750,17 +898,21 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     // metadata model later, off the TTFT path, and is reported separately so
     // operational logs cannot make a DeepSeek narration look like gpt-4o-mini.
     model: modelId,
+    requestedModel: requestedModelId,
+    fallbackAttempts,
     hygieneModel: AI_MODELS.metadata,
     contextLatencyMs,
     queueWaitMs,
     ttftMs,
     endToEndTtftMs,
     latencyMs,
+    choiceContextTokens,
   })
 
-  // Guard: choices_ready is published AT MOST ONCE per turn. Narrator choices
-  // receive a cheap current-location audit below before their early publication;
-  // this remains ahead of all LLM bookkeeping and outside the TTFT path.
+  // Guard: choices_ready is published AT MOST ONCE per turn. Do not publish
+  // narrator-tail choices until the full structural + grounding audit has run:
+  // showing a fast malformed chip and silently replacing it later is worse UX
+  // than a brief post-prose preparation state.
   let choicesReadySent = false
 
   // RAW witness prose: what the model actually generated. All world-state
@@ -769,39 +921,6 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // dangling final clause, discard only that clause first — it contains no
   // complete fact and must never enter canonical history.
   let rawNarrative = prose.trim()
-
-  // A recent venue can be highly salient in prose and still not be the current
-  // one. Before early-publishing narrator-owned chips, reject the narrow but
-  // destructive case "leave [stale venue]". The full audit later still checks
-  // kinship and world facts; this fast pass exists so the bad chip is never
-  // tappable during the post-prose tail.
-  const earlyLocationAudit = repairStaleDepartureChoices(
-    narratorChoices,
-    currentLocation?.name || null,
-  )
-  narratorChoices = earlyLocationAudit.choices
-  if (earlyLocationAudit.repairedCount > 0 || earlyLocationAudit.dropped.length > 0) {
-    log.warn('choices.location_continuity_repaired', {
-      instanceId: idString(instanceId),
-      sequence: nextSequence,
-      repaired: earlyLocationAudit.results
-        .filter((result) => result.repaired)
-        .map((result) => ({ from: result.choice.label, to: result.repaired!.label })),
-      dropped: earlyLocationAudit.dropped.map((result) => result.choice.label),
-    })
-  }
-
-  if (narratorChoices.length > 0 && !explicitPhysicalDestination) {
-    redis.publish(
-      channel,
-      JSON.stringify({
-        type: 'choices_ready',
-        instanceId,
-        choices: narratorChoices,
-      }),
-    )
-    choicesReadySent = true
-  }
 
   if (explicitPhysicalDestination && !narrativeHonorsDestination(rawNarrative, explicitPhysicalDestination)) {
     log.warn('generation.destination_not_named', {
@@ -877,21 +996,6 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // completion guard has processed it. This never swaps out visible prose for
   // a fresh generation just because it missed a quality target.
   publishStreamEnd(rawNarrative)
-
-  // Destination-bound choices were deliberately held until the completed prose
-  // passed its commitment guard. They are now safe to expose alongside the
-  // settled stream end; ordinary turns retain the earlier low-latency path.
-  if (!choicesReadySent && narratorChoices.length > 0) {
-    redis.publish(
-      channel,
-      JSON.stringify({
-        type: 'choices_ready',
-        instanceId,
-        choices: narratorChoices,
-      }),
-    )
-    choicesReadySent = true
-  }
 
   const previousOpeningName = openingCharacterName(recentEvents || [], characterNames)
   // A live stream is an interaction contract: once prose is visible, no
@@ -1012,19 +1116,35 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       // overlooked person in a grounded drama) instead of reifying the metaphor
       // into a "ask her about the ghost" choice.
       worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
+      choiceContext: choiceDecisionContext,
     },
   )
+  // Do not wait for the broad metadata pass just to build a candidate set. The
+  // endpoint judge receives the prior cast, every known card/alias, and the
+  // same gated walk-on candidates the entity judge sees. That is sufficient to
+  // verify physical co-location while keeping this call in the post-stream
+  // parallel batch rather than adding a second completion-time round trip.
+  const endpointAdjudicationPromise = adjudicateSceneEndpoint({
+    prose: rawNarrative,
+    playerInput: parsedPlayerInput.raw,
+    candidates: [
+      ...priorPresent,
+      ...choiceRoster.flatMap((card) => [card.name, ...(card.aliases || [])]),
+      ...entityCandidates.map((candidate) => candidate.display),
+    ],
+  })
   const deathExtractionPromise = extractCharacterDeaths({
     prose: rawNarrative,
     candidates: characterCodex as any[],
     sequence: nextSequence,
   })
-  // The semantic metadata and entity-adjudication passes are independent and
-  // run together after streaming. Neither is allowed to alter visible prose.
-  const [meta, entityAdjudication, characterLifecycleDeltas] = await Promise.all([
+  // All post-stream checks run together. None is allowed to alter visible prose
+  // or delay the narrator's first token.
+  const [meta, entityAdjudication, characterLifecycleDeltas, endpointAdjudication] = await Promise.all([
     metaPromise,
     entityAdjudicationPromise,
     deathExtractionPromise,
+    endpointAdjudicationPromise,
   ])
   const finalNarrative = rawNarrative
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta }
@@ -1052,26 +1172,8 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         .map((decision) => ({ key: decision.key, verdict: decision.verdict, evidence: decision.evidenceType })),
     })
   }
-  // Option A: when the narrator produced grounded choices, they REPLACE the
-  // context-starved metadata-pass choices (everything else — presence, location,
-  // stats, scene tag — still comes from the cheap extraction passes, which is
-  // correct: those are extraction, choices are generation). The auditChoices net
-  // below still runs, now demoted from primary defense to a thin backstop. If the
-  // narrator emitted no/malformed tail, parsed.choices keeps the metadata-pass set
-  // → identical to today's behavior, zero regression.
-  if (narratorChoices.length > 0) {
-    parsed.choices = narratorChoices
-    log.info('choices.narrator.used', {
-      instanceId: idString(instanceId),
-      sequence: nextSequence,
-      count: narratorChoices.length,
-    })
-  } else if (useNarratorChoices) {
-    log.warn('choices.narrator.fallback', {
-      instanceId: idString(instanceId),
-      sequence: nextSequence,
-    })
-  }
+  // Choices come solely from the schema-enforced choice metadata pass. The
+  // prose narrator never controls their wire format or their visibility.
   if (blockedLifeStateKeys.size) {
     parsed.choices = (parsed.choices || []).filter((choice) =>
       !blockedLifeStateNames.some((name) => name && new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(`${choice.label} ${choice.send}`)),
@@ -1150,14 +1252,10 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   }
   parsed.choices = audited.choices
 
-  // Fallback-path early delivery: the narrator emitted no usable tail, so no
-  // choices_ready fired at the prose-settle point above. parsed.choices now holds
-  // the FINAL, audited metadata-pass choices — the same set generation_complete
-  // will carry. Ship them NOW, before the remaining bookkeeping (DB writes,
-  // codex/kinship/memory) and before generation_complete, so the chips appear the
-  // instant they exist instead of after the whole turn finalizes. The client's
-  // choices_ready handler updates the still-optimistic event's choices; safe
-  // because generation_complete hasn't fired yet.
+  // The structural + grounding audit is complete. `parsed.choices` now holds the
+  // ONLY set the player may see — narrator-tail or metadata fallback alike. Ship
+  // it before persistence/back-office projections, but never expose an earlier,
+  // unvalidated preview that could have mismatched labels and composer values.
   if (!choicesReadySent && (parsed.choices?.length ?? 0) > 0) {
     redis.publish(
       channel,
@@ -1180,51 +1278,51 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const newFlags = applyFlagMutations(session.active_flags, parsed.flag_mutations)
   const eventCreatedAt = new Date()
   const previousEventId = recentEvents.length ? (recentEvents[recentEvents.length - 1] as any)._id : null
-  // The metadata witness may suggest a location, but it is not allowed to move the
-  // cursor by itself. A wrong move contaminates presence, time, memory retrieval,
-  // and the map, so this seam fails closed: only an explicit first-person physical
-  // destination in the player's input may commit an anchor.
-  const narratedMove = !isContinuation && detectNarratedMovement(parsedPlayerInput.raw)
+  // The scene witness is the sole semantic authority for a normal prose move.
+  // We intentionally do NOT derive a location from keyword/regex signals in the
+  // player input: that was how dialogue such as "Cedric, take care of things…"
+  // turned into a Places node. The worker only verifies the witness's compact
+  // label and exact evidence before it can touch the durable graph.
   const playerExitedScene = !isContinuation && isExplicitSceneExit(parsedPlayerInput.raw)
-  const cursorName = currentLocation?.name || null
-  const normEq = (a: string | null, b: string | null) => !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase()
-  // Name override: when the player retreats to their OWN space and the model
-  // returned a vague label / nothing / just the place they were already in, give
-  // it a specific owner-scoped name so the cartographer mints a DISTINCT room
-  // instead of collapsing onto the cursor ("the room" → the dining room).
-  const aiGroundedDestination =
+  const locationCandidateOptions = {
+    knownPeople: priorCardNamesForPresence,
+    knownPlaces: [...knownPlaces.map((place) => place.name), currentLocation?.name || ''],
+  }
+  const validWitnessLocation = isSafeWitnessLocationCandidate(parsed.current_location, locationCandidateOptions)
+  const validWitnessDestination = isSafeWitnessLocationCandidate(parsed.player_destination, locationCandidateOptions)
+  const evidenceSourceText = parsed.location_evidence_source === 'player'
+    ? parsedPlayerInput.raw
+    : parsed.location_evidence_source === 'narrative'
+      ? rawNarrative
+      : ''
+  const hasValidWitnessEvidence =
+    (parsed.location_evidence_source === 'player' || parsed.location_evidence_source === 'narrative') &&
+    hasGroundedWitnessLocationEvidence(parsed.location_evidence, evidenceSourceText)
+
+  // A typed travel command is an explicit product action and may proceed on its
+  // own. Every free-form player turn, however, requires the LLM witness to say
+  // both "this is travel" and "this is the exact player excerpt that proves it".
+  const actionDestination = confirmedWorldAction?.kind === 'travel' &&
+    isSafeWitnessLocationCandidate(confirmedWorldAction.destination, locationCandidateOptions)
+      ? confirmedWorldAction.destination
+      : null
+  const witnessedDestination =
     !confirmedWorldAction &&
+    !isContinuation &&
     parsed.player_travel_confirmed === true &&
-    isGroundedPlayerDestination(parsedPlayerInput.raw, parsed.player_destination)
+    parsed.viewpoint_moved === true &&
+    parsed.location_evidence_source === 'player' &&
+    hasValidWitnessEvidence &&
+    validWitnessDestination
       ? parsed.player_destination
       : null
-  // AI interprets the player turn; regex extraction is retained only as a
-  // fallback when that structured witness is unavailable or ungrounded.
-  const playerDestination =
-    confirmedWorldAction?.kind === 'travel'
-      ? confirmedWorldAction.destination
-      : aiGroundedDestination || explicitPhysicalDestination
-  // The witness can refine a player-written area into the precise place actually
-  // reached (“Brera district” → “Via Brera, 14”), but cannot redirect the player
-  // to an unrelated location. When the player supplied no concrete target, the
-  // existing overlap gate below remains the only route by which a witness place
-  // may move the cursor.
-  let placeName = playerDestination
-    ? refinePhysicalDestination(playerDestination, parsed.current_location)
-    : parsed.current_location
-  const possessiveRoom = narratedMove
-    ? resolvePossessiveRoomName(parsedPlayerInput.raw, choiceProtagonist?.name || null)
-    : null
-  if (possessiveRoom && (!placeName || isVagueLocationLabel(placeName) || normEq(placeName, cursorName))) {
-    placeName = possessiveRoom
-  }
-  const playerDroveMove =
-    !isContinuation &&
-    (confirmedWorldAction?.kind === 'travel' ||
-      !!aiGroundedDestination ||
-      !!explicitPhysicalDestination ||
-      isExplicitPlayerLocationChange(parsedPlayerInput.raw, placeName, choiceProtagonist?.name || null))
-  const viewpointMoved = playerDroveMove
+  const witnessedMovementDetected =
+    !isContinuation && parsed.player_travel_confirmed === true && parsed.viewpoint_moved === true
+  const placeName = actionDestination || witnessedDestination ||
+    (!currentLocation && parsed.location_evidence_source === 'narrative' && hasValidWitnessEvidence && validWitnessLocation
+      ? parsed.current_location
+      : null)
+  const viewpointMoved = !!actionDestination || !!witnessedDestination
   // The witness is a semantic observer, not a world-authority. Its containment
   // claim reaches the graph only after it corroborates the player-selected
   // destination and names an already-known parent (normally the current cursor).
@@ -1246,12 +1344,13 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       : 'none'
   const moveSource: WorldFactSource = 'player_narration'
   const moveConfidence = confidenceFor(moveSource)
-  // When no cursor exists yet, allow a very narrow narrator-only setting
-  // signal to establish it. This records an actual scene (“The dining room
-  // was…”) without treating a discussed/anticipated place as a visit and
-  // without claiming the viewpoint moved there.
+  // The first anchor comes from the witness's cited narration, never from a
+  // word-pattern scan. A mentioned/anticipated place cannot pass this gate
+  // because the witness must cite the exact sentence that physically establishes
+  // the current setting.
   const sceneEstablishedLocation =
-    !currentLocation && !viewpointMoved && establishesSceneLocation(rawNarrative, placeName)
+    !currentLocation && !viewpointMoved && !!placeName &&
+    parsed.location_evidence_source === 'narrative' && hasValidWitnessEvidence
   const locationSource: WorldFactSource = viewpointMoved ? moveSource : 'narrator'
   const locationConfidence = viewpointMoved ? moveConfidence : 0.98
   const resolvedLocation =
@@ -1323,7 +1422,13 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // the very first concrete setting starts a fresh scene instead of carrying an
   // unanchored cast into it (the Mother/Charles-at-the-café bug).
   const sceneBroke =
-    viewpointMoved || playerExitedScene || sceneEstablishedLocation || !!narratedTimeLabel || placeEntityChanged
+    viewpointMoved ||
+    playerSceneTransition ||
+    playerExitedScene ||
+    sceneEstablishedLocation ||
+    !!narratedTimeLabel ||
+    placeEntityChanged ||
+    (endpointAdjudication.available && endpointAdjudication.playerViewpointAtEnd && endpointAdjudication.sceneTransition)
   // Resolve every presence name to a CANONICAL identity before set ops, using the
   // SAME registry the codex resolves with (normalizeEntityName over each card's
   // canonical_name + aliases). Without this, "the captain" and "Bram" are two
@@ -1394,6 +1499,26 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     !session.is_sentient && protagonistCard?.canonical_name
       ? presenceKeyOf(String(protagonistCard.canonical_name))
       : null
+  const priorPresenceKeys = new Set(priorPresent.map((name) => presenceKeyOf(name)).filter(Boolean))
+  const endpointPresenceNames = endpointAdjudication.playerViewpointAtEnd
+    ? endpointAdjudication.present.map((entry) => entry.name)
+    : []
+  const endpointPresenceKeys = new Set(endpointPresenceNames.map((name) => presenceKeyOf(name)).filter(Boolean))
+  if (sceneBroke && endpointAdjudication.available) {
+    const witnessOnlyNames = (parsed.present_characters || []).filter((name) => !endpointPresenceKeys.has(presenceKeyOf(name)))
+    if (witnessOnlyNames.length || !endpointAdjudication.playerViewpointAtEnd) {
+      // Operational signal, not player-visible state. This makes future witness
+      // drift diagnosable from one turn rather than requiring a screenshot and
+      // manual reconstruction of which cast carried across a boundary.
+      log.info('scene.endpoint.reconciled', {
+        instanceId: idString(instanceId),
+        sequence: nextSequence,
+        playerViewpointAtEnd: endpointAdjudication.playerViewpointAtEnd,
+        primaryOnly: witnessOnlyNames.slice(0, 12),
+        endpointPresent: endpointPresenceNames.slice(0, 12),
+      })
+    }
+  }
   // A label that resolved to NO card AND is generic — an article-led role tag
   // ("the son") or an all-lowercase common noun ("guard") — is the player under a
   // role title or scene-dressing, not a trackable person. Drop it. An unresolved
@@ -1554,8 +1679,16 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const blockedUngroundedPresence: string[] = []
   const heldUncorroboratedPresence: string[] = []
   parsed.present_characters = (() => {
+    // On a boundary the endpoint judge becomes the authoritative cast when it
+    // is available. A known old name cannot survive just because the first
+    // witness saw it earlier in the prose or an NPC-only cutaway. If the judge
+    // is temporarily unavailable, retain the existing witness-only fallback so
+    // an auxiliary model outage never erases a valid live scene.
     const candidates = sceneBroke
-      ? [...(parsed.present_characters || []), ...partyNames]
+      ? [
+          ...(endpointAdjudication.available ? endpointPresenceNames : (parsed.present_characters || [])),
+          ...partyNames,
+        ]
       : [...priorPresent, ...(parsed.present_characters || [])]
     const departed = new Set((parsed.characters_departed || []).map((n) => presenceKeyOf(n)).filter(Boolean))
     const out: string[] = []
@@ -1564,6 +1697,12 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       const key = presenceKeyOf(name)
       if (!key || seen.has(key) || departed.has(key)) continue
       if (playerPresenceKey && key === playerPresenceKey) continue
+      // A player-authored transition (free-form or the travel control) is
+      // authoritative about who did *not* automatically come along. The witness
+      // can still introduce a new local in the destination, and explicit
+      // travelling companions remain below, but stale names from the room left
+      // behind cannot survive merely because the model mentioned them in a cutaway.
+      if (playerForcesFreshCast && priorPresenceKeys.has(key) && !partyByKey.has(key)) continue
       // A known city, room, landmark, etc. is never a member of the scene cast.
       // Bias toward the location meaning on a collision; an actual character with
       // that unusual name needs an explicit card and can be resolved deliberately.
@@ -1680,6 +1819,10 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     evidence: m.evidence,
   }))
   const presentGaps = actionableMentions
+    // Do not let the late walk-on promotion path undo endpoint verification on
+    // a boundary. It is allowed only when the same evidence witness placed the
+    // person with the player at the end of the prose.
+    .filter((mention) => !sceneBroke || !endpointAdjudication.available || endpointPresenceKeys.has(presenceKeyOf(mention.display)))
   if (presentGaps.length) {
     const presentSeen = new Set(parsed.present_characters.map((n) => normalizeEntityName(n)))
     for (const gap of presentGaps) {
@@ -1847,6 +1990,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       ...(characterLifecycleDeltas.length ? { character_lifecycle_deltas: characterLifecycleDeltas } : {}),
       ...(confirmedWorldAction ? { world_action: confirmedWorldAction } : {}),
       ai_response: parsed.narrative,
+      beat_ledger: parsed.beat_ledger,
       choices: parsed.choices,
       milestone: parsed.milestone,
       present_characters: parsed.present_characters,
@@ -1876,6 +2020,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           source: 'base',
           choices: parsed.choices,
           present_characters: parsed.present_characters,
+          beat_ledger: parsed.beat_ledger,
           retrieval_profile: {
             lore_top_k: session.max_lore_results || 10,
             memory_top_k: session.max_context_memories || 25,
@@ -1887,6 +2032,8 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       state_mutations: parsed.state_mutations,
       flag_mutations: parsed.flag_mutations,
       model_used: modelId,
+      ...(modelId !== requestedModelId ? { requested_model: requestedModelId } : {}),
+      ...(fallbackAttempts.length ? { fallback_attempts: fallbackAttempts } : {}),
       tokens_in: countTokens(JSON.stringify(prompt.messages)),
       tokens_out: countTokens(parsed.narrative),
       prose_hygiene_issues: proseHygieneIssues,
@@ -2004,6 +2151,8 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       scene_classification: sceneClassification,
       nsfw_path: isNsfwTurn,
       model_used: modelId,
+      ...(modelId !== requestedModelId ? { requested_model: requestedModelId } : {}),
+      ...(fallbackAttempts.length ? { fallback_attempts: fallbackAttempts } : {}),
       metadata_model: AI_MODELS.metadata,
       tokens_in: event.data.tokens_in,
       tokens_out: event.data.tokens_out,
@@ -2691,7 +2840,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           }
           const ledger = buildSignalLedger({
             movement: {
-              detected: narratedMove,
+              detected: witnessedMovementDetected || !!actionDestination,
               committed: !!locationAnchor?.name && viewpointMoved,
               source: moveSource,
               confidence: moveConfidence,
