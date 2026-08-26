@@ -9,6 +9,9 @@ import {
   verifyPhoneOtp,
 } from '../providers/auth.provider'
 
+/** Ceiling on stored guide arcs; the app declares roughly a dozen. */
+const MAX_GUIDE_FLOWS = 64
+
 export function defaultUserPreferences(): UserDoc['preferences'] {
   return {
     nsfw_enabled: false,
@@ -219,6 +222,16 @@ export const authService = {
   async updatePreferences(userId: string, body: Record<string, unknown>) {
     const updateFields: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(body)) {
+      // guide_progress is a client-authored map with free-form keys, so it is
+      // the one field here that could grow without bound. Keep it to a sane
+      // ceiling — the app declares roughly a dozen arcs.
+      if (key === 'guide_progress' && value && typeof value === 'object') {
+        const entries = Object.entries(value as Record<string, unknown>)
+          .filter(([flowId]) => flowId.length <= 64)
+          .slice(0, MAX_GUIDE_FLOWS)
+        updateFields[`preferences.${key}`] = Object.fromEntries(entries)
+        continue
+      }
       updateFields[`preferences.${key}`] = value
     }
     updateFields.updated_at = new Date()

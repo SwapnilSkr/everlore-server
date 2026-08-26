@@ -16,6 +16,34 @@ export interface UserPreferences {
   gender?: PlayerGender
   /** Genre taste from onboarding (narrative_style keys); biases discovery. */
   interests?: string[]
+  /**
+   * Guide arcs this account has already been shown, keyed by flow id.
+   *
+   * The account is the source of truth: it survives reinstalls, follows the
+   * player between devices, and is the only place the onboarding funnel can be
+   * measured. Clients keep a device cache but reconcile against this.
+   */
+  guide_progress?: Record<string, GuideFlowProgress>
+  /** Player asked the guide to stay quiet. Honoured on every device. */
+  guide_opt_out?: boolean
+}
+
+/** Where a player stands with one guide arc. */
+export interface GuideFlowProgress {
+  /**
+   * Flow version the player actually saw. Bumping a flow's version in the app
+   * replays that one arc — once — for everybody.
+   */
+  version: number
+  /** Last beat reached, for resume and for drop-off analysis. */
+  step: number
+  /**
+   * `seen` is written when an arc starts, not when it ends, so a crash or a
+   * force-quit mid-arc can never cause it to run again.
+   */
+  status: 'seen' | 'skipped' | 'done'
+  /** ISO timestamp of the last change. */
+  at: string
 }
 
 /**

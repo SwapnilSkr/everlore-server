@@ -24,6 +24,14 @@ export const VerifyOtpBody = t.Object({
   code: t.String({ minLength: 4, maxLength: 10 }),
 })
 
+/** One arc's progress record — see `GuideFlowProgress` in user.model.ts. */
+const GuideFlowProgressBody = t.Object({
+  version: t.Integer({ minimum: 1, maximum: 10_000 }),
+  step: t.Integer({ minimum: 0, maximum: 1_000 }),
+  status: t.Union([t.Literal('seen'), t.Literal('skipped'), t.Literal('done')]),
+  at: t.String({ maxLength: 40 }),
+})
+
 export const UpdatePreferencesBody = t.Object({
   nsfw_enabled: t.Optional(t.Boolean()),
   preferred_model: t.Optional(t.String()),
@@ -41,6 +49,8 @@ export const UpdatePreferencesBody = t.Object({
     t.Literal('non_binary'),
   ])),
   interests: t.Optional(t.Array(t.String())),
+  guide_progress: t.Optional(t.Record(t.String(), GuideFlowProgressBody)),
+  guide_opt_out: t.Optional(t.Boolean()),
 })
 
 /** Body for admin tier updates. Guarded by env-backed admin auth. */
