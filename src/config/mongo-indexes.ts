@@ -457,6 +457,32 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { instance_id: 1, last_seen_sequence: -1 },
     options: { name: "idx_location_stats_instance_last_seen" },
   },
+
+  // content_reports (player abuse reports). The triage read is "open reports,
+  // most severe first, then oldest first" — a moderation queue is worked from
+  // the back, unlike every other listing in this file.
+  {
+    collection: COLLECTIONS.content_reports,
+    key: { status: 1, is_critical: -1, created_at: 1 },
+    options: { name: "idx_content_reports_triage" },
+  },
+  {
+    collection: COLLECTIONS.content_reports,
+    key: { target_type: 1, target_id: 1, created_at: -1 },
+    options: { name: "idx_content_reports_target" },
+  },
+  // One open report per reporter per target: re-reporting the same world is a
+  // no-op rather than a way to flood the queue. Partial so a reporter can file
+  // again after the first report has been resolved.
+  {
+    collection: COLLECTIONS.content_reports,
+    key: { reporter_id: 1, target_type: 1, target_id: 1 },
+    options: {
+      unique: true,
+      name: "uniq_content_reports_open_per_reporter",
+      partialFilterExpression: { status: { $in: ["open", "reviewing"] } },
+    },
+  },
 ]
 
 /**

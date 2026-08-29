@@ -6,6 +6,7 @@ import { connectRedis } from './config/redis'
 import { env } from './config/env'
 import { authRoutes } from './routes/auth.routes'
 import { templateRoutes } from './routes/template.routes'
+import { moderationRoutes } from './routes/moderation.routes'
 import { instanceRoutes } from './routes/instance.routes'
 import { personaRoutes } from './routes/persona.routes'
 import { chronicleRoutes } from './routes/chronicle.routes'
@@ -113,6 +114,7 @@ async function main() {
     .use(authRoutes)
     .use(adminRoutes)
     .use(templateRoutes)
+    .use(moderationRoutes)
     .use(instanceRoutes)
     .use(personaRoutes)
     .use(chronicleRoutes)

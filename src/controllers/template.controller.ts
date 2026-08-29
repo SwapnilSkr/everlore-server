@@ -39,11 +39,20 @@ export const templateController = {
     const template = await templateService.getById(params.id)
     if (!template) throw new HttpError(404, 'Template not found')
 
+    const isOwner = Boolean(user && idString(template.creator_id) === user.id)
+
     if (!template.is_published) {
       if (!user) throw new HttpError(401, 'Unauthorized')
-      if (idString(template.creator_id) !== user.id) {
+      if (!isOwner) {
         throw new HttpError(403, 'You do not have access to this template')
       }
+    }
+
+    // A world an admin has hidden stays visible to its own creator (so they can
+    // see and fix it) and to nobody else. Reported as "not found" rather than
+    // "forbidden": a deep link should not confirm the world still exists.
+    if (template.moderation_status === 'hidden' && !isOwner) {
+      throw new HttpError(404, 'Template not found')
     }
 
     return template

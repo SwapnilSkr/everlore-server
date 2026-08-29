@@ -30,6 +30,7 @@ export const COLLECTIONS = {
   billing_entitlements: 'billing_entitlements',
   store_purchases: 'store_purchases',
   post_process_outbox: 'post_process_outbox',
+  content_reports: 'content_reports',
 } as const
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS]

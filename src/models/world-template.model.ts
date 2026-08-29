@@ -63,6 +63,19 @@ export interface WorldTemplateDoc {
    *  chat-with-a-character (always sentient, stats optional). Defaults to 'world'. */
   kind?: 'world' | 'character'
   is_published: boolean
+  /**
+   * Moderation state, set only by an admin acting on a report.
+   *
+   * 'hidden' takes a world out of discovery and blocks new playthroughs while
+   * leaving the creator's own copy and existing playthroughs intact — the
+   * reversible action. Deleting is still available for content that must go.
+   * Absent means never moderated, which is the same as 'active'.
+   */
+  moderation_status?: 'active' | 'hidden'
+  moderation_reason?: string
+  moderated_at?: Date
+  /** Admin username from Basic auth that last changed {@link moderation_status}. */
+  moderated_by?: string
   is_sentient: boolean
   is_nsfw_capable: boolean
   version: number

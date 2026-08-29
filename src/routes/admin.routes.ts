@@ -2,6 +2,11 @@ import { Elysia, t } from 'elysia'
 import { AdminSetTierBody, AdminSetUserStatusBody } from '../schemas/user.schema'
 import { adminController } from '../controllers/admin.controller'
 import { requireAdmin } from '../middleware/admin-auth'
+import {
+  AdminReportQuery,
+  AdminResolveReportBody,
+  AdminWorldModerationBody,
+} from '../schemas/moderation.schema'
 
 const PageQuery = t.Object({
   page: t.Optional(t.Numeric({ minimum: 1 })),
@@ -41,6 +46,20 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
   })
   .get('/users/:userId/billing', (ctx) => adminController.getUserBilling(ctx))
   .delete('/users/:userId', (ctx) => adminController.deleteUser(ctx))
+
+  // Moderation queue. Reports are listed in triage order by default
+  // (unresolved, critical first, oldest first) so the console opens on the
+  // work that matters rather than on the newest noise.
+  .get('/reports', (ctx) => adminController.listReports(ctx), { query: AdminReportQuery })
+  .get('/reports/:reportId', (ctx) => adminController.getReport(ctx))
+  .patch('/reports/:reportId', (ctx) => adminController.resolveReport(ctx), {
+    body: AdminResolveReportBody,
+  })
+  .post('/reports/:reportId/reopen', (ctx) => adminController.reopenReport(ctx))
+
+  .patch('/worlds/:worldId/moderation', (ctx) => adminController.patchWorldModeration(ctx), {
+    body: AdminWorldModerationBody,
+  })
 
   .get('/worlds', (ctx) => adminController.listWorlds(ctx), {
     query: t.Composite([

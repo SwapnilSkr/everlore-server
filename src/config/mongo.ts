@@ -25,6 +25,7 @@ import type { LocationStatsDoc } from '../models/location-stats.model'
 import type { RelationCandidateDoc } from '../models/relation-candidate.model'
 import type { InkLedgerDoc, BillingEntitlementDoc, StorePurchaseDoc } from '../models/billing.model'
 import type { PostProcessOutboxDoc } from '../models/post-process-outbox.model'
+import type { ContentReportDoc } from '../models/content-report.model'
 
 let client: MongoClient | null = null
 let database: Db | null = null
@@ -67,6 +68,7 @@ export const mongoColl = {
   billingEntitlements: () => coll<WithoutId<BillingEntitlementDoc>>(COLLECTIONS.billing_entitlements),
   storePurchases: () => coll<WithoutId<StorePurchaseDoc>>(COLLECTIONS.store_purchases),
   postProcessOutbox: () => coll<WithoutId<PostProcessOutboxDoc>>(COLLECTIONS.post_process_outbox),
+  contentReports: () => coll<WithoutId<ContentReportDoc>>(COLLECTIONS.content_reports),
 } as const
 
 export async function connectMongo(): Promise<Db> {

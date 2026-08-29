@@ -38,3 +38,16 @@ export type {
 export type { PersonaGender, PersonaSnapshotDoc, PersonaDoc } from './persona.model'
 export type { SceneEventRangeDoc, SceneSummaryDoc } from './scene-summary.model'
 export type { DeadLetterJobDoc } from './dead-letter-job.model'
+export type {
+  ReportTargetType,
+  ReportReason,
+  ReportStatus,
+  ReportAction,
+  ContentReportDoc,
+  ContentReportInsertDoc,
+} from './content-report.model'
+export {
+  REPORT_REASONS,
+  CRITICAL_REPORT_REASONS,
+  REPORT_REASON_LABELS,
+} from './content-report.model'

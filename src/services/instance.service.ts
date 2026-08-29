@@ -54,6 +54,14 @@ export const instanceService = {
       }
     }
 
+    // A world hidden by moderation takes no new playthroughs. Existing ones are
+    // deliberately left alone — removing a story someone is in the middle of is
+    // a heavier action than a report warrants, and deletion covers the cases
+    // where the content genuinely has to go.
+    if (template.moderation_status === 'hidden' && idString(template.creator_id) !== playerId) {
+      throw new HttpError(403, 'This world is unavailable while it is under review')
+    }
+
     const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
     const instanceCount = await worldInstances().countDocuments({
       player_id: playerOid,

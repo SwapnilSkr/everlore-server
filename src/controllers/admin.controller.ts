@@ -1,6 +1,8 @@
 import { adminService } from '../services/admin.service'
 import { continuityAuditService } from '../services/continuity-audit.service'
 import { billingService } from '../services/billing.service'
+import { moderationService } from '../services/moderation.service'
+import type { ReportAction, ReportReason, ReportStatus, ReportTargetType } from '../models/content-report.model'
 
 function boolQuery(value: unknown): boolean | undefined {
   if (value === undefined || value === null || value === '') return undefined
@@ -17,7 +19,68 @@ function pageQuery(query: { page?: number; limit?: number }) {
 }
 
 export const adminController = {
-  overview: async () => adminService.overview(),
+  overview: async () => ({
+    ...(await adminService.overview()),
+    ...(await moderationService.queueStats()),
+  }),
+
+  listReports: async ({
+    query,
+  }: {
+    query: {
+      page?: number
+      limit?: number
+      status?: ReportStatus | 'all' | 'unresolved'
+      reason?: ReportReason
+      target_type?: ReportTargetType
+      critical?: boolean | string
+    }
+  }) =>
+    moderationService.listReports({
+      ...pageQuery(query),
+      status: query.status,
+      reason: query.reason,
+      target_type: query.target_type,
+      critical: boolQuery(query.critical),
+    }),
+
+  getReport: async ({ params }: { params: { reportId: string } }) =>
+    moderationService.getReport(params.reportId),
+
+  resolveReport: async ({
+    params,
+    body,
+    adminUser,
+  }: {
+    params: { reportId: string }
+    body: { action: ReportAction; note?: string; status?: 'actioned' | 'dismissed' }
+    adminUser?: string
+  }) =>
+    moderationService.resolveReport(params.reportId, {
+      action: body.action,
+      note: body.note,
+      status: body.status,
+      resolved_by: adminUser,
+    }),
+
+  reopenReport: async ({ params }: { params: { reportId: string } }) =>
+    moderationService.reopenReport(params.reportId),
+
+  patchWorldModeration: async ({
+    params,
+    body,
+    adminUser,
+  }: {
+    params: { worldId: string }
+    body: { moderation_status: 'active' | 'hidden'; reason?: string }
+    adminUser?: string
+  }) =>
+    moderationService.setWorldModeration(
+      params.worldId,
+      body.moderation_status,
+      body.reason,
+      adminUser,
+    ),
 
   listUsers: async ({ query }: { query: { page?: number; limit?: number; search?: string } }) =>
     adminService.listUsers({ ...pageQuery(query), search: query.search }),

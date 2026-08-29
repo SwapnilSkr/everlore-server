@@ -12,6 +12,9 @@ const LIMITS: Record<string, { max: number; windowSeconds: number }> = {
   image_generate: { max: 40, windowSeconds: 3600 },
   image_upload: { max: 40, windowSeconds: 3600 },
   autofill: { max: 30, windowSeconds: 3600 },
+  // A moderation queue is only useful if it cannot be flooded. Generous enough
+  // that a player cleaning up a bad browse session never hits it.
+  content_report: { max: 20, windowSeconds: 3600 },
   auth_attempt: { max: 10, windowSeconds: 300 },
   otp_send: { max: 5, windowSeconds: 600 },
   otp_verify: { max: 10, windowSeconds: 600 },

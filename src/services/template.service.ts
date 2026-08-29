@@ -15,6 +15,7 @@ import { storageService } from './storage.service'
 import { familyExpandedKeys } from '../utils/narrative-styles'
 import { extractTemplateCast } from '../../worker/lib/template-cast-extractor'
 import { FIELD_LIMITS } from '../schemas/template.schema'
+import { moderationService } from './moderation.service'
 
 const worldTemplates = () => mongoColl.worldTemplates()
 const users = () => mongoColl.users()
@@ -213,7 +214,13 @@ export const templateService = {
     search?: string,
     userId?: string,
   ) {
-    const filter: Record<string, unknown> = { is_published: true }
+    // Discovery must never surface admin-hidden worlds, nor anything this
+    // player has blocked. Merged in before the search terms so both a plain
+    // listing and a search go through the same gate.
+    const filter: Record<string, unknown> = {
+      is_published: true,
+      ...(await moderationService.discoveryFilter(userId)),
+    }
     if (search) {
       filter.$or = [
         { title: { $regex: search, $options: 'i' } },

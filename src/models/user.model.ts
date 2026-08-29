@@ -76,6 +76,17 @@ export interface UserDoc {
   firebase_uid?: string
   preferences: UserPreferences
   token_balance: number
+  /**
+   * Creators this account has blocked. Their published worlds disappear from
+   * this player's discovery and search results.
+   *
+   * Blocking is one-directional and private: the blocked creator is never told,
+   * and nothing about their account changes. Held on the blocker's document so
+   * the check is a single already-loaded array rather than a second query.
+   */
+  blocked_user_ids?: ObjectId[]
+  /** Individual worlds hidden by this player, without blocking the creator. */
+  blocked_template_ids?: ObjectId[]
   created_at: Date
   updated_at: Date
 }

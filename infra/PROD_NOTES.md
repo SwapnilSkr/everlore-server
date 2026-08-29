@@ -69,3 +69,41 @@
 #   number (see providers/auth.provider.ts and `bun run audit:review-access`).
 #   Rotate REVIEW_DEMO_OTP like a password, keep it out of git, and unset both
 #   variables once there is a sign-in path a reviewer can use unaided.
+
+## Admin API authentication (fixed 2026-08-30)
+
+`requireAdmin` guarded nothing. Its `onBeforeHandle` had no scope, and Elysia
+hooks default to `'local'` — they apply only to routes declared on the instance
+that registers them, and that instance declares none. Every `/admin` route
+answered unauthenticated callers with 200, in production, including
+`GET /admin/users` (emails and phone numbers), `PATCH /admin/users/:id`,
+`DELETE /admin/users/:id`, and the ink-grant endpoint.
+
+Both hooks in `src/middleware/admin-auth.ts` are now `{ as: 'scoped' }`, which
+propagates the guard to the router that mounts it without making it app-wide the
+way `'global'` would. `authPlugin` was never affected: it already declared
+`.derive({ as: 'global' }, ...)`.
+
+Verify after any deploy that touches routing or middleware — a silent regression
+here looks identical to a working system:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://api.everloreapp.com/admin/overview   # expect 401
+curl -s -o /dev/null -w '%{http_code}\n' -u "$ADMIN_USERNAME:$ADMIN_PASSWORD" \
+  https://api.everloreapp.com/admin/overview                                          # expect 200
+```
+
+Rotate `ADMIN_USERNAME` / `ADMIN_PASSWORD` when this fix ships: the credentials
+were never required, so they must be assumed known.
+
+## Content moderation
+
+Player reporting and blocking (`/moderation/*`) and the admin review queue
+(`/admin/reports`) exist because Google Play requires in-app reporting and
+blocking for any app that shows one account's content to another.
+
+- `bun run audit:moderation` — 37 cases against a scratch mongod, no network.
+- Hiding a world is reversible and leaves existing playthroughs alone; deleting
+  is the irreversible path.
+- Banning a creator also hides their whole published catalogue. A ban that only
+  blocks sign-in leaves their worlds circulating.
