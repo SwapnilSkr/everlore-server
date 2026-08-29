@@ -48,7 +48,7 @@ export async function synthesizeSpeech(req: TtsRequest): Promise<TtsResult> {
     headers: {
       Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://everlore.app',
+      'HTTP-Referer': 'https://everloreapp.com',
       'X-Title': 'Everlore',
     },
     body: JSON.stringify(body),
