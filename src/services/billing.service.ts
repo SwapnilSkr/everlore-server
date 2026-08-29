@@ -10,6 +10,7 @@ const ledger = () => mongoColl.inkLedger()
 const entitlements = () => mongoColl.billingEntitlements()
 const purchases = () => mongoColl.storePurchases()
 const users = () => mongoColl.users()
+export const MAX_ADMIN_INK_ADJUSTMENT = Number.MAX_SAFE_INTEGER
 
 export const BILLING_CATALOG = {
   premium: {
@@ -59,7 +60,56 @@ async function balanceFor(playerId: ObjectId): Promise<number> {
   return row?.balance ?? 0
 }
 
+function utcDayStart(now = new Date()): Date {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()))
+}
+
+/**
+ * Story turns attempted today. Reservations are deliberately counted rather
+ * than only settled turns: a caller cannot bypass the daily safety rail by
+ * repeatedly starting work and forcing it to fail. A refunded reservation
+ * still consumed provider capacity and therefore belongs in the safety cap.
+ */
+async function storyTurnsToday(playerId: ObjectId): Promise<number> {
+  const [row] = await ledger().aggregate<{ reserved: number }>([
+    {
+      $match: {
+        player_id: playerId,
+        reason: 'reserve',
+        reference: 'story_turn',
+        created_at: { $gte: utcDayStart() },
+      },
+    },
+    { $group: { _id: null, reserved: { $sum: { $multiply: ['$delta', -1] } } } },
+  ]).toArray()
+  return Math.max(0, Math.floor(row?.reserved ?? 0))
+}
+
+async function tierFor(playerId: ObjectId, fallbackTier = 'free'): Promise<UserTier> {
+  const now = new Date()
+  const [active, user] = await Promise.all([
+    entitlements().findOne({
+      player_id: playerId,
+      active: true,
+      $or: [{ expires_at: { $exists: false } }, { expires_at: { $gt: now } }],
+    }, { projection: { tier: 1 } }),
+    users().findOne({ _id: playerId }, { projection: { tier: 1, admin_tier_override: 1 } }),
+  ])
+  // An explicit administrator decision always wins over a Play entitlement;
+  // removing the override restores normal entitlement inheritance.
+  return (user?.admin_tier_override || active?.tier || user?.tier || fallbackTier) as UserTier
+}
+
 export const billingService = {
+  /**
+   * Keep local development opt-in, but do not let a production deployment
+   * accidentally run with free billing after Play credentials are configured.
+   */
+  enforcementEnabled() {
+    return env.BILLING_ENFORCEMENT_ENABLED ||
+      (process.env.NODE_ENV === 'production' && googlePlayService.configured())
+  },
+
   simulationEnabled() {
     // A simulated checkout is useful only on a local/internal QA deployment.
     // Refuse it at runtime in production even if an environment variable is
@@ -73,6 +123,7 @@ export const billingService = {
     return {
       ...BILLING_CATALOG,
       purchases_enabled: googlePlayService.configured(),
+      enforcement_enabled: this.enforcementEnabled(),
       simulation_enabled: this.simulationEnabled(),
       products: PLAY_PRODUCTS,
     }
@@ -105,9 +156,11 @@ export const billingService = {
       active: true,
       $or: [{ expires_at: { $exists: false } }, { expires_at: { $gt: now } }],
     })
-    const tier = active?.tier || (fallbackTier as UserTier)
+    const player = await users().findOne({ _id: playerOid }, { projection: { tier: 1, admin_tier_override: 1 } })
+    const tier = player?.admin_tier_override || active?.tier || player?.tier || (fallbackTier as UserTier)
     return {
       tier,
+      admin_tier_override: player?.admin_tier_override ?? null,
       balance: await balanceFor(playerOid),
       profile: profileFor(tier),
       entitlement: active
@@ -123,7 +176,7 @@ export const billingService = {
   async reserve(playerId: string, action: BillableAction, requestId: string) {
     const cost = BILLING_CATALOG.costs[action]
     if (!requestId.trim()) throw new HttpError(400, 'A billing request id is required')
-    if (!env.BILLING_ENFORCEMENT_ENABLED) {
+    if (!this.enforcementEnabled()) {
       return { reservation_id: null, cost: 0, balance: null }
     }
     await this.ensureWelcomeInk(playerId)
@@ -131,6 +184,18 @@ export const billingService = {
     const key = `reserve:${action}:${requestId}`
     const already = await ledger().findOne({ player_id: playerOid, idempotency_key: key })
     if (already) return { reservation_id: key, cost, balance: await balanceFor(playerOid) }
+
+    // A daily story cap is a provider-cost safety rail, not a replacement for
+    // Ink balance. It is intentionally checked after idempotency so reconnects
+    // do not consume a second slot for the same request.
+    if (action === 'story_turn') {
+      const tier = await tierFor(playerOid)
+      const cap = profileFor(tier).daily_story_safety_cap
+      const used = await storyTurnsToday(playerOid)
+      if (used + cost > cap) {
+        throw new HttpError(429, `Daily story safety limit reached (${cap} turns). Please try again tomorrow.`)
+      }
+    }
 
     // Mongo's single-document conditional update would require a materialized
     // balance; the ledger is intentionally authoritative. The generation lock
@@ -155,7 +220,7 @@ export const billingService = {
   },
 
   async release(playerId: string, reservationId: string | null) {
-    if (!reservationId || !env.BILLING_ENFORCEMENT_ENABLED) return
+    if (!reservationId || !this.enforcementEnabled()) return
     const playerOid = parseObjectId(playerId)
     const reservation = await ledger().findOne({ player_id: playerOid, idempotency_key: reservationId })
     if (!reservation || reservation.delta >= 0) return
@@ -177,7 +242,7 @@ export const billingService = {
   },
 
   async settle(playerId: string, reservationId: string | null) {
-    if (!reservationId || !env.BILLING_ENFORCEMENT_ENABLED) return
+    if (!reservationId || !this.enforcementEnabled()) return
     const playerOid = parseObjectId(playerId)
     const reservation = await ledger().findOne({ player_id: playerOid, idempotency_key: reservationId })
     if (!reservation || reservation.delta >= 0) return
@@ -201,8 +266,8 @@ export const billingService = {
    */
   async grantAdminInk(playerId: string, input: { amount: number; idempotencyKey: string; note?: string }) {
     const amount = Math.floor(input.amount)
-    if (!Number.isFinite(amount) || amount < 1 || amount > 1_000_000) {
-      throw new HttpError(400, 'Ink grant amount must be between 1 and 1,000,000')
+    if (!Number.isSafeInteger(amount) || amount < 1 || amount > MAX_ADMIN_INK_ADJUSTMENT) {
+      throw new HttpError(400, `Ink grant amount must be a safe integer between 1 and ${MAX_ADMIN_INK_ADJUSTMENT.toLocaleString()}`)
     }
     const idempotencyKey = input.idempotencyKey.trim()
     if (!idempotencyKey || idempotencyKey.length > 120) {

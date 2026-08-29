@@ -32,10 +32,23 @@ export const adminController = {
     body,
   }: {
     params: { userId: string }
-    body: { tier: 'free' | 'premium' | 'creator' }
+    body: { tier: 'free' | 'premium' | 'creator' | 'inherit' }
   }) => ({
     ...(await adminService.setUserTier(params.userId, body.tier)),
-    note: 'Existing JWTs still carry the old tier until the user signs in again.',
+    note: 'The tier override is applied on the next authenticated request, including existing JWTs and WebSocket frames.',
+  }),
+
+  patchUserStatus: async ({
+    params,
+    body,
+  }: {
+    params: { userId: string }
+    body: { status: 'active' | 'banned'; reason?: string }
+  }) => ({
+    ...(await adminService.setUserStatus(params.userId, body.status, body.reason)),
+    note: body.status === 'banned'
+      ? 'The account is blocked on new HTTP and WebSocket authentication immediately.'
+      : 'The account is active again; the user may sign in normally.',
   }),
 
   grantUserInk: async ({

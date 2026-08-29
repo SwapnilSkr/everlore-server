@@ -1,6 +1,6 @@
 import { ObjectId, type Document } from 'mongodb'
 import { mongoColl } from '../config/mongo'
-import type { UserTier } from '../models/user.model'
+import type { UserAccountStatus, UserTier } from '../models/user.model'
 import { memoryProjectionStatus } from '../models/projection.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
@@ -9,7 +9,7 @@ import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default
 import { storageService } from './storage.service'
 import { deletePineconeVector } from './pinecone-cleanup.service'
 
-export type AdminUserTier = 'free' | 'premium' | 'creator'
+export type AdminUserTier = 'free' | 'premium' | 'creator' | 'inherit'
 
 const users = () => mongoColl.users()
 const worldTemplates = () => mongoColl.worldTemplates()
@@ -20,7 +20,19 @@ const characters = () => mongoColl.characters()
 const sceneSummaries = () => mongoColl.sceneSummaries()
 const generationLogs = () => mongoColl.generationLogs()
 
-const BLOCKED_UPDATE_KEYS = new Set(['_id', 'created_at', 'password_hash', 'google_sub', 'providers'])
+// Account access is changed only through the explicit tier/status operations
+// below; generic JSON patching must not bypass those invariants.
+const BLOCKED_UPDATE_KEYS = new Set([
+  '_id',
+  'created_at',
+  'password_hash',
+  'google_sub',
+  'providers',
+  'account_status',
+  'admin_tier_override',
+  'banned_at',
+  'ban_reason',
+])
 
 function paging(opts: { page?: number; limit?: number }) {
   const limit = Math.min(Math.max(Number(opts.limit || 50), 1), 200)
@@ -118,7 +130,12 @@ export const adminService = {
         { phone: { $regex: opts.search, $options: 'i' } },
       ]
     }
-    return listCollection(users(), filter, { created_at: -1 }, opts)
+    const { limit, page, skip } = paging(opts)
+    const [total, rows] = await Promise.all([
+      users().countDocuments(filter),
+      users().find(filter, { projection: { password_hash: 0 } }).sort({ created_at: -1 }).skip(skip).limit(limit).toArray(),
+    ])
+    return { total, page, limit, items: rows.map((row: Document) => serialize(row)) }
   },
 
   async getUser(userId: string) {
@@ -159,7 +176,42 @@ export const adminService = {
   },
 
   async setUserTier(userId: string, tier: AdminUserTier) {
-    return this.updateUser(userId, { tier })
+    const uid = parseObjectId(userId)
+    const update: any = tier === 'inherit'
+      ? { $set: { tier: 'free' as UserTier, updated_at: new Date() }, $unset: { admin_tier_override: '' } }
+      : { $set: { tier: tier as UserTier, admin_tier_override: tier, updated_at: new Date() } }
+    const updated = await users().findOneAndUpdate(
+      { _id: uid },
+      update,
+      { returnDocument: 'after', projection: { password_hash: 0 } },
+    )
+    if (!updated) throw new HttpError(404, 'User not found')
+    return { user: serialize(updated) }
+  },
+
+  async setUserStatus(userId: string, status: UserAccountStatus, reason?: string) {
+    const uid = parseObjectId(userId)
+    const normalizedReason = String(reason || '').trim().slice(0, 240)
+    const update: any = status === 'banned'
+      ? {
+          $set: {
+            account_status: 'banned' as const,
+            banned_at: new Date(),
+            ban_reason: normalizedReason || 'Banned by administrator',
+            updated_at: new Date(),
+          },
+        }
+      : {
+          $set: { account_status: 'active' as const, updated_at: new Date() },
+          $unset: { banned_at: '', ban_reason: '' },
+        }
+    const updated = await users().findOneAndUpdate(
+      { _id: uid },
+      update,
+      { returnDocument: 'after', projection: { password_hash: 0 } },
+    )
+    if (!updated) throw new HttpError(404, 'User not found')
+    return { user: serialize(updated) }
   },
 
   async deleteUser(userId: string) {
@@ -183,13 +235,23 @@ export const adminService = {
     const tid = parseObjectId(templateId)
     const template = await worldTemplates().findOne({ _id: tid })
     if (!template) throw new HttpError(404, 'World not found')
-    const [instances, eventsCount, memoriesCount] = await Promise.all([
+    const [instances, eventsCount, memoriesCount, charactersCount, generationStats] = await Promise.all([
       worldInstances().countDocuments({ template_id: tid }),
       events()
         .aggregate([{ $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } }, { $match: { 'i.template_id': tid } }, { $count: 'count' }])
         .toArray(),
       memories()
         .aggregate([{ $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } }, { $match: { 'i.template_id': tid } }, { $count: 'count' }])
+        .toArray(),
+      characters()
+        .aggregate([{ $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } }, { $match: { 'i.template_id': tid } }, { $count: 'count' }])
+        .toArray(),
+      generationLogs()
+        .aggregate([
+          { $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } },
+          { $match: { 'i.template_id': tid } },
+          { $group: { _id: null, count: { $sum: 1 }, tokens_in: { $sum: { $ifNull: ['$tokens_in', 0] } }, tokens_out: { $sum: { $ifNull: ['$tokens_out', 0] } } } },
+        ])
         .toArray(),
     ])
     return {
@@ -198,6 +260,10 @@ export const adminService = {
         instances,
         events: Number(eventsCount[0]?.count || 0),
         memories: Number(memoriesCount[0]?.count || 0),
+        characters: Number(charactersCount[0]?.count || 0),
+        generation_logs: Number(generationStats[0]?.count || 0),
+        tokens_in: Number(generationStats[0]?.tokens_in || 0),
+        tokens_out: Number(generationStats[0]?.tokens_out || 0),
       },
     }
   },
@@ -313,12 +379,26 @@ export const adminService = {
     const iid = parseObjectId(instanceId)
     const instance = await worldInstances().findOne({ _id: iid })
     if (!instance) throw new HttpError(404, 'Instance not found')
-    const [eventsCount, memoriesCount, charactersCount, summariesCount, logsCount] = await Promise.all([
+    const [eventsCount, memoriesCount, charactersCount, summariesCount, logsCount, chat, tokenStats] = await Promise.all([
       events().countDocuments({ instance_id: iid }),
       memories().countDocuments({ instance_id: iid }),
       characters().countDocuments({ instance_id: iid }),
       sceneSummaries().countDocuments({ instance_id: iid }),
       generationLogs().countDocuments({ instance_id: iid }),
+      events()
+        .find(
+          { instance_id: iid },
+          { projection: { sequence: 1, scene_tag: 1, created_at: 1, 'data.player_input': 1, 'data.ai_response': 1, 'data.model_used': 1 } },
+        )
+        .sort({ sequence: 1 })
+        .limit(200)
+        .toArray(),
+      generationLogs()
+        .aggregate([
+          { $match: { instance_id: iid } },
+          { $group: { _id: null, tokens_in: { $sum: { $ifNull: ['$tokens_in', 0] } }, tokens_out: { $sum: { $ifNull: ['$tokens_out', 0] } }, avg_ttft_ms: { $avg: '$ttft_ms' } } },
+        ])
+        .toArray(),
     ])
     return {
       instance: serialize(instance),
@@ -328,7 +408,19 @@ export const adminService = {
         characters: charactersCount,
         scene_summaries: summariesCount,
         generation_logs: logsCount,
+        tokens_in: Number(tokenStats[0]?.tokens_in || 0),
+        tokens_out: Number(tokenStats[0]?.tokens_out || 0),
+        avg_ttft_ms: typeof tokenStats[0]?.avg_ttft_ms === 'number' ? Math.round(Number(tokenStats[0].avg_ttft_ms)) : null,
       },
+      chat: chat.map((event) => serialize({
+        id: event._id,
+        sequence: event.sequence,
+        scene_tag: event.scene_tag,
+        created_at: event.created_at,
+        player_input: event.data?.player_input || '',
+        ai_response: event.data?.ai_response || '',
+        model_used: event.data?.model_used || null,
+      })),
     }
   },
 

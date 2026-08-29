@@ -36,9 +36,11 @@ export const authPlugin = new Elysia({ name: 'auth-plugin' })
     const user = payloadToUser(payload)
     if (!user) return { user: null as AuthUser | null }
 
-    // Tier is stored on the user doc; JWT may still say `free` until re-login.
-    const tier = await authService.getLiveTier(user.id)
-    return { user: { ...user, tier } }
+    // Tier and ban state are read live so an admin change takes effect without
+    // waiting for the user's existing JWT to expire.
+    const live = await authService.getLiveAccess(user.id)
+    if (!live || live.account_status === 'banned') return { user: null as AuthUser | null }
+    return { user: { ...user, tier: live.tier } }
   })
 
 /** Chain after `authPlugin` to reject unauthenticated requests (optional helper). */

@@ -1,5 +1,5 @@
 import { Elysia, t } from 'elysia'
-import { AdminSetTierBody } from '../schemas/user.schema'
+import { AdminSetTierBody, AdminSetUserStatusBody } from '../schemas/user.schema'
 import { adminController } from '../controllers/admin.controller'
 import { requireAdmin } from '../middleware/admin-auth'
 
@@ -17,7 +17,7 @@ const SearchPageQuery = t.Composite([
 
 const AdminPatchBody = t.Record(t.String(), t.Any())
 const AdminGrantInkBody = t.Object({
-  amount: t.Numeric({ minimum: 1, maximum: 1_000_000 }),
+  amount: t.Numeric({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
   idempotency_key: t.String({ minLength: 1, maxLength: 120 }),
   note: t.Optional(t.String({ maxLength: 240 })),
 })
@@ -32,6 +32,9 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
   .patch('/users/:userId', (ctx) => adminController.patchUser(ctx), { body: AdminPatchBody })
   .patch('/users/:userId/tier', (ctx) => adminController.patchUserTier(ctx), {
     body: AdminSetTierBody,
+  })
+  .patch('/users/:userId/status', (ctx) => adminController.patchUserStatus(ctx), {
+    body: AdminSetUserStatusBody,
   })
   .post('/users/:userId/ink-grants', (ctx) => adminController.grantUserInk(ctx), {
     body: AdminGrantInkBody,

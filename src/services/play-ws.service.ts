@@ -6,6 +6,7 @@ import { rateLimit } from '../middleware/rate-limit'
 import { log } from '../utils/logger'
 import { GENERATION_LOCK_TTL_SECONDS, generationLockKey } from '../utils/generation-lock'
 import { billingService } from './billing.service'
+import { authService } from './auth.service'
 
 /** Underlying Bun socket — stable identity; Elysia passes a new `ElysiaWS` wrapper per event. */
 type RawWs = { send: (data: string) => void }
@@ -94,12 +95,23 @@ export const playWsService = {
       return
     }
 
-    const user = await verifyWsToken(jwt, token)
-    if (!user) {
+    const tokenUser = await verifyWsToken(jwt, token)
+    if (!tokenUser) {
       ws.send(JSON.stringify({ type: 'error', message: 'Invalid token' }))
       ws.close()
       return
     }
+
+    // WebSockets do not pass through the HTTP auth middleware on every frame;
+    // check the live account state at connection time so a banned user cannot
+    // keep using an already-issued JWT.
+    const live = await authService.getLiveAccess(tokenUser.id)
+    if (!live || live.account_status === 'banned') {
+      ws.send(JSON.stringify({ type: 'error', code: 'ACCOUNT_BANNED', message: 'This account is banned' }))
+      ws.close()
+      return
+    }
+    const user = { ...tokenUser, tier: live.tier }
 
     getWsData(ws)._user = user
 
@@ -128,6 +140,19 @@ export const playWsService = {
     const redis = getRedisClient()
     const data = typeof msg === 'string' ? JSON.parse(msg) : msg
     const action = (data as { action?: string }).action
+
+    // Re-check on every non-heartbeat frame so a ban also cuts off an already
+    // open socket, rather than only preventing the next connection.
+    if (action !== 'ping') {
+      const live = await authService.getLiveAccess(user.id)
+      if (!live || live.account_status === 'banned') {
+        ws.send(JSON.stringify({ type: 'error', code: 'ACCOUNT_BANNED', message: 'This account is banned' }))
+        ws.close()
+        return
+      }
+      // Keep the cached tier current after an admin promotion/demotion.
+      user.tier = live.tier
+    }
 
     if (action !== 'ping') {
       log.info('ws.message', {

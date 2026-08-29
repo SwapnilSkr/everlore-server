@@ -1,6 +1,7 @@
 import type { ObjectId } from 'mongodb'
 
 export type UserTier = 'free' | 'premium' | 'creator'
+export type UserAccountStatus = 'active' | 'banned'
 
 export type PlayerGender = 'male' | 'female' | 'non_binary'
 
@@ -56,6 +57,11 @@ export interface UserDoc {
   username: string
   password_hash: string
   tier: UserTier
+  /** Administrative override. When present it wins over a Play entitlement. */
+  admin_tier_override?: UserTier | null
+  account_status?: UserAccountStatus
+  banned_at?: Date
+  ban_reason?: string
   providers: string[]
   google_sub?: string
   preferences: UserPreferences

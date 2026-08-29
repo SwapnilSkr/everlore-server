@@ -59,7 +59,13 @@ export const AdminSetTierBody = t.Object({
     t.Literal('free'),
     t.Literal('premium'),
     t.Literal('creator'),
+    t.Literal('inherit'),
   ]),
+})
+
+export const AdminSetUserStatusBody = t.Object({
+  status: t.Union([t.Literal('active'), t.Literal('banned')]),
+  reason: t.Optional(t.String({ maxLength: 240 })),
 })
 
 export const AdminUserListQuery = t.Object({

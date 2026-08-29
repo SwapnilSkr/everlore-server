@@ -1,6 +1,6 @@
 import * as argon2 from 'argon2'
 import { mongoColl } from '../config/mongo'
-import type { UserDoc, UserInsertDoc, UserTier } from '../models/user.model'
+import type { UserAccountStatus, UserDoc, UserInsertDoc, UserTier } from '../models/user.model'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import {
@@ -98,6 +98,7 @@ export const authService = {
 
     const valid = await argon2.verify(userDoc.password_hash, input.password)
     if (!valid) throw new HttpError(401, 'Invalid credentials')
+    if (userDoc.account_status === 'banned') throw new HttpError(403, 'This account is banned')
 
     return userDoc
   },
@@ -125,6 +126,7 @@ export const authService = {
       const { insertedId } = await users().insertOne(doc)
       userDoc = { ...doc, _id: insertedId } as UserDoc
     } else {
+      if (userDoc.account_status === 'banned') throw new HttpError(403, 'This account is banned')
       const prov = Array.isArray(userDoc.providers)
         ? new Set<string>(userDoc.providers)
         : new Set<string>()
@@ -178,6 +180,7 @@ export const authService = {
       const { insertedId } = await users().insertOne(doc)
       userDoc = { ...doc, _id: insertedId } as UserDoc
     } else {
+      if (userDoc.account_status === 'banned') throw new HttpError(403, 'This account is banned')
       const prov = Array.isArray(userDoc.providers)
         ? new Set<string>(userDoc.providers)
         : new Set<string>()
@@ -212,11 +215,21 @@ export const authService = {
 
   /** JWT tier can lag after admin upgrades — read the live value from Mongo. */
   async getLiveTier(userId: string): Promise<UserTier> {
+    const row = await this.getLiveAccess(userId)
+    return row?.tier ?? 'free'
+  },
+
+  async getLiveAccess(userId: string): Promise<{ tier: UserTier; account_status: UserAccountStatus; admin_tier_override?: UserTier | null } | null> {
     const row = await users().findOne(
       { _id: parseObjectId(userId) },
-      { projection: { tier: 1 } },
+      { projection: { tier: 1, account_status: 1, admin_tier_override: 1 } },
     )
-    return (row?.tier as UserTier | undefined) ?? 'free'
+    if (!row) return null
+    return {
+      tier: row.admin_tier_override || (row.tier as UserTier | undefined) || 'free',
+      account_status: row.account_status === 'banned' ? 'banned' : 'active',
+      admin_tier_override: row.admin_tier_override ?? null,
+    }
   },
 
   async updatePreferences(userId: string, body: Record<string, unknown>) {
