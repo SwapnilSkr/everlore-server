@@ -120,6 +120,19 @@ async function parseJsonSafely(response: Response): Promise<any> {
  * accidentally authenticate against the old path.
  */
 
+/**
+ * The code mock mode will accept, or null when nothing is being mocked.
+ *
+ * This used to be returned from `/auth/otp/send` unconditionally as
+ * `mockCode: '123456'` — a development convenience that shipped to production
+ * and told every caller, truthfully or not, that a fixed code existed. It is
+ * only ever non-null on a deployment that is genuinely mocking Twilio.
+ */
+export function mockOtpCode(phone: string): string | null {
+  if (isReviewPhone(phone)) return null
+  return isMockTwilioMode() ? '123456' : null
+}
+
 export async function sendPhoneOtp(phone: string): Promise<void> {
   // The reviewer's code is fixed and already in Play Console. Sending an SMS
   // to a number we do not own would be both useless and rude.

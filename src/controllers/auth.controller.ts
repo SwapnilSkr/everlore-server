@@ -4,6 +4,7 @@ import { disconnectUserSockets } from '../services/play-ws.service'
 import { rateLimit } from '../middleware/rate-limit'
 import type { AuthUser } from '../middleware/auth'
 import { HttpError } from '../utils/http-error'
+import { mockOtpCode } from '../providers/auth.provider'
 
 type JwtApi = { sign: (payload: ReturnType<typeof authService.toJwtPayload>) => Promise<string> }
 
@@ -48,7 +49,8 @@ export const authController = {
     }
 
     await authService.sendPhoneOtp(phone)
-    return { success: true, mockCode: '123456' }
+    const mockCode = mockOtpCode(phone)
+    return mockCode ? { success: true, mockCode } : { success: true }
   },
 
   verifyOtp: async ({ body, jwt }: { body: { phone: string; code: string }; jwt: JwtApi }) => {
