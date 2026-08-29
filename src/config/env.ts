@@ -44,6 +44,13 @@ const optionalEnvVars = {
   TWILIO_VERIFY_SERVICE_SID: '',
   /** When true, OTP send/verify skip Redis rate limits (local dev only). */
   DISABLE_OTP_RATE_LIMIT: 'false',
+  /**
+   * Google Play reviewer sign-in. Both must be set or the path stays inert.
+   * REVIEW_DEMO_OTP must be exactly six digits and not a guessable one — see
+   * providers/auth.provider.ts for the full set of guards.
+   */
+  REVIEW_DEMO_PHONE: '',
+  REVIEW_DEMO_OTP: '',
   // ── Cheap-LLM signal flags (default OFF — both fall back to today's behavior) ──
   // Cheap aux model used by the optional re-rank / borderline-intent passes.
   // Keep this NON-Claude (cost). gpt-4o-mini is in OPENAI_MODELS so it uses the
@@ -106,6 +113,8 @@ export interface Env {
   TWILIO_AUTH_TOKEN: string
   TWILIO_VERIFY_SERVICE_SID: string
   DISABLE_OTP_RATE_LIMIT: boolean
+  REVIEW_DEMO_PHONE: string
+  REVIEW_DEMO_OTP: string
   CHEAP_RANK_MODEL: string
   RAG_RERANK_ENABLED: boolean
   NSFW_INTENT_DEFER_ENABLED: boolean
@@ -168,6 +177,8 @@ function loadEnv(): Env {
     TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN || optionalEnvVars.TWILIO_AUTH_TOKEN,
     TWILIO_VERIFY_SERVICE_SID: process.env.TWILIO_VERIFY_SERVICE_SID || optionalEnvVars.TWILIO_VERIFY_SERVICE_SID,
     DISABLE_OTP_RATE_LIMIT: process.env.DISABLE_OTP_RATE_LIMIT === 'true',
+    REVIEW_DEMO_PHONE: process.env.REVIEW_DEMO_PHONE || optionalEnvVars.REVIEW_DEMO_PHONE,
+    REVIEW_DEMO_OTP: process.env.REVIEW_DEMO_OTP || optionalEnvVars.REVIEW_DEMO_OTP,
     CHEAP_RANK_MODEL: process.env.CHEAP_RANK_MODEL || optionalEnvVars.CHEAP_RANK_MODEL,
     RAG_RERANK_ENABLED: process.env.RAG_RERANK_ENABLED === 'true',
     NSFW_INTENT_DEFER_ENABLED: process.env.NSFW_INTENT_DEFER_ENABLED === 'true',

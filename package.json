@@ -13,6 +13,7 @@
     "test:sfw": "bun run scripts/test-sfw-model.ts",
     "test:tts": "bun run scripts/test-tts-model.ts",
     "audit:choices": "bun run scripts/choice-audit.ts",
+    "audit:review-access": "bun run scripts/review-access-audit.ts",
     "audit:choice-grounding": "bun run scripts/choice-grounding-audit.ts",
     "audit:projection-checkpoint": "bun run scripts/projection-checkpoint-audit.ts",
     "audit:location": "bun run scripts/location-audit.ts",

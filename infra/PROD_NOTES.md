@@ -61,3 +61,11 @@
 #
 # GUIDE_REHEARSAL needs no override: AppConfig.guideRehearsal returns false
 # unconditionally under kReleaseMode.
+#
+# REVIEW_DEMO_PHONE / REVIEW_DEMO_OTP
+#   The Google Play reviewer's sign-in. Play will not review an app it cannot
+#   get into, reviewers cannot receive our OTP SMS, and Everlore has no other
+#   credential to hand them — so this is a deliberate, fenced bypass for one
+#   number (see providers/auth.provider.ts and `bun run audit:review-access`).
+#   Rotate REVIEW_DEMO_OTP like a password, keep it out of git, and unset both
+#   variables once there is a sign-in path a reviewer can use unaided.
