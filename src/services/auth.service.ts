@@ -3,11 +3,8 @@ import { mongoColl } from '../config/mongo'
 import type { UserAccountStatus, UserDoc, UserInsertDoc, UserTier } from '../models/user.model'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
-import {
-  sendPhoneOtp,
-  verifyGoogleIdToken,
-  verifyPhoneOtp,
-} from '../providers/auth.provider'
+import { sendPhoneOtp, verifyPhoneOtp } from '../providers/auth.provider'
+import { verifyFirebaseIdToken } from '../providers/firebase-auth.provider'
 
 /** Ceiling on stored guide arcs; the app declares roughly a dozen. */
 const MAX_GUIDE_FLOWS = 64
@@ -104,16 +101,21 @@ export const authService = {
   },
 
   async signInWithGoogle(idToken: string): Promise<UserDoc> {
-    const profile = await verifyGoogleIdToken(idToken)
+    // A Firebase ID token now, not a raw Google one. `googleSubject` is the
+    // original Google `sub` lifted out of the Firebase token, so the lookup
+    // below is unchanged and every account that existed before the migration
+    // still matches on its first sign-in afterwards.
+    const profile = await verifyFirebaseIdToken(idToken)
 
     let userDoc: UserDoc | null = await users().findOne({
-      $or: [{ google_sub: profile.subject }, { email: profile.email }],
+      $or: [{ google_sub: profile.googleSubject }, { email: profile.email }],
     })
 
     if (!userDoc) {
       const doc: UserInsertDoc = {
         email: profile.email,
-        google_sub: profile.subject,
+        google_sub: profile.googleSubject,
+        firebase_uid: profile.firebaseUid,
         username: usernameFromSeed(profile.email.split('@')[0] || profile.name || 'player'),
         password_hash: '',
         tier: 'free' as UserTier,
@@ -137,7 +139,8 @@ export const authService = {
         {
           $set: {
             email: profile.email,
-            google_sub: profile.subject,
+            google_sub: profile.googleSubject,
+            firebase_uid: profile.firebaseUid,
             providers: [...prov],
             updated_at: new Date(),
           },
@@ -147,7 +150,8 @@ export const authService = {
       userDoc = {
         ...userDoc,
         email: profile.email,
-        google_sub: profile.subject,
+        google_sub: profile.googleSubject,
+        firebase_uid: profile.firebaseUid,
         providers: [...prov],
       }
     }

@@ -13,6 +13,7 @@
         "bullmq": "^5.78.0",
         "elysia": "^1.4.18",
         "ioredis": "^5.10.1",
+        "jose": "^6.2.2",
         "js-tiktoken": "^1.0.21",
         "mongodb": "^7.1.1",
         "openai": "^6.33.0",

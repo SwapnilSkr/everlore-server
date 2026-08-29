@@ -1,21 +1,5 @@
 import { env } from '../config/env'
 
-interface GoogleTokenInfo {
-  sub?: string
-  email?: string
-  email_verified?: string
-  name?: string
-  picture?: string
-  aud?: string
-}
-
-export interface VerifiedGoogleProfile {
-  subject: string
-  email: string
-  name?: string
-  picture?: string
-}
-
 function isMockTwilioMode(): boolean {
   return (
     !env.TWILIO_ACCOUNT_SID ||
@@ -42,39 +26,13 @@ async function parseJsonSafely(response: Response): Promise<any> {
   }
 }
 
-export async function verifyGoogleIdToken(
-  idToken: string,
-): Promise<VerifiedGoogleProfile> {
-  const response = await fetch(
-    `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
-  )
-  const payload = (await parseJsonSafely(response)) as GoogleTokenInfo & {
-    error_description?: string
-  }
-
-  if (!response.ok) {
-    throw new Error(payload.error_description || 'Invalid Google token')
-  }
-
-  if (!payload.sub || !payload.email) {
-    throw new Error('Google token is missing required user information')
-  }
-
-  if (payload.email_verified !== 'true') {
-    throw new Error('Google account email is not verified')
-  }
-
-  if (env.GOOGLE_CLIENT_ID && payload.aud !== env.GOOGLE_CLIENT_ID) {
-    throw new Error('Google token audience mismatch')
-  }
-
-  return {
-    subject: payload.sub,
-    email: payload.email,
-    name: payload.name,
-    picture: payload.picture,
-  }
-}
+/*
+ * verifyGoogleIdToken lived here. Google sign-in now arrives as a Firebase ID
+ * token and is verified in providers/firebase-auth.provider.ts, against
+ * Google's published keys rather than by asking the `tokeninfo` endpoint to
+ * vouch for the string. Removed rather than left dormant so nothing can
+ * accidentally authenticate against the old path.
+ */
 
 export async function sendPhoneOtp(phone: string): Promise<void> {
   if (isMockTwilioMode()) return

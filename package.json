@@ -44,7 +44,9 @@
     "seed:default-cover": "bun run scripts/seed-default-cover.ts",
     "clean:queue-jobs": "bun run scripts/clean-redis-jobs.ts",
     "report:redis-hygiene": "bun run scripts/clean-redis-jobs.ts",
-    "prune:redis-completed-jobs": "bun run scripts/clean-redis-jobs.ts --execute"
+    "prune:redis-completed-jobs": "bun run scripts/clean-redis-jobs.ts --execute",
+    "audit:firebase-auth": "bun run scripts/firebase-auth-audit.ts",
+    "audit:firebase-token": "bun run scripts/firebase-token-audit.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",
@@ -55,6 +57,7 @@
     "bullmq": "^5.78.0",
     "elysia": "^1.4.18",
     "ioredis": "^5.10.1",
+    "jose": "^6.2.2",
     "js-tiktoken": "^1.0.21",
     "mongodb": "^7.1.1",
     "openai": "^6.33.0",

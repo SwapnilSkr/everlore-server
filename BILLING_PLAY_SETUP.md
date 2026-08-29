@@ -32,7 +32,7 @@ will display the appropriate local currency elsewhere.
 3. Set these server environment variables:
 
 ```text
-GOOGLE_PLAY_PACKAGE_NAME=com.yourcompany.everlore
+GOOGLE_PLAY_PACKAGE_NAME=com.everloreapp
 GOOGLE_PLAY_SERVICE_ACCOUNT_JSON={...service account JSON...}
 BILLING_ENFORCEMENT_ENABLED=true
 ```

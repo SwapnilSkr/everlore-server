@@ -64,6 +64,16 @@ export interface UserDoc {
   ban_reason?: string
   providers: string[]
   google_sub?: string
+  /**
+   * Firebase's account id, recorded from the ID token at sign-in.
+   *
+   * Identity still keys on [google_sub] — that is what survived the move to
+   * Firebase Auth and what existing rows already carry. This is kept alongside
+   * it so an account can be found from the Firebase console, and so a future
+   * provider (Apple, needed for the App Store once social sign-in ships) has
+   * something to hang off.
+   */
+  firebase_uid?: string
   preferences: UserPreferences
   token_balance: number
   created_at: Date

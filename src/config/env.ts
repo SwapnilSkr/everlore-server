@@ -33,6 +33,12 @@ const optionalEnvVars = {
   S3_BUCKET: '',
   CDN_BASE_URL: '',
   GOOGLE_CLIENT_ID: '',
+  /**
+   * Firebase project that mints the ID tokens `/auth/google` accepts.
+   * Doubles as the required `aud` and `iss` on every one of them, so a token
+   * for somebody else's Firebase project cannot authenticate here.
+   */
+  FIREBASE_PROJECT_ID: '',
   TWILIO_ACCOUNT_SID: '',
   TWILIO_AUTH_TOKEN: '',
   TWILIO_VERIFY_SERVICE_SID: '',
@@ -95,6 +101,7 @@ export interface Env {
   CDN_BASE_URL: string
   CLIENT_ORIGINS: string[]
   GOOGLE_CLIENT_ID: string
+  FIREBASE_PROJECT_ID: string
   TWILIO_ACCOUNT_SID: string
   TWILIO_AUTH_TOKEN: string
   TWILIO_VERIFY_SERVICE_SID: string
@@ -156,6 +163,7 @@ function loadEnv(): Env {
     CDN_BASE_URL: process.env.CDN_BASE_URL || optionalEnvVars.CDN_BASE_URL,
     CLIENT_ORIGINS: (process.env.CLIENT_ORIGINS || optionalEnvVars.CLIENT_ORIGINS).split(','),
     GOOGLE_CLIENT_ID: process.env.GOOGLE_CLIENT_ID || optionalEnvVars.GOOGLE_CLIENT_ID,
+    FIREBASE_PROJECT_ID: process.env.FIREBASE_PROJECT_ID || optionalEnvVars.FIREBASE_PROJECT_ID,
     TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID || optionalEnvVars.TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN || optionalEnvVars.TWILIO_AUTH_TOKEN,
     TWILIO_VERIFY_SERVICE_SID: process.env.TWILIO_VERIFY_SERVICE_SID || optionalEnvVars.TWILIO_VERIFY_SERVICE_SID,
