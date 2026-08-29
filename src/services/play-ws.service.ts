@@ -4,6 +4,7 @@ import { parsePlayerWorldAction } from '../utils/world-action'
 import { verifyWsToken, type AuthUser } from '../middleware/auth'
 import { rateLimit } from '../middleware/rate-limit'
 import { log } from '../utils/logger'
+import { toClientError } from '../utils/ws-error'
 import { GENERATION_LOCK_TTL_SECONDS, generationLockKey } from '../utils/generation-lock'
 import { billingService } from './billing.service'
 import { authService } from './auth.service'
@@ -216,8 +217,7 @@ export const playWsService = {
         } catch (err: unknown) {
           await billingService.release(user.id, reservationId)
           await redis.del(lockKey)
-          const message = err instanceof Error ? err.message : String(err)
-          ws.send(JSON.stringify({ type: 'error', message }))
+          ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.send', userId: user.id, instanceId }) }))
         }
         break
       }
@@ -268,8 +268,7 @@ export const playWsService = {
         } catch (err: unknown) {
           await billingService.release(user.id, reservationId)
           await redis.del(lockKey)
-          const message = err instanceof Error ? err.message : String(err)
-          ws.send(JSON.stringify({ type: 'error', message }))
+          ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.continue', userId: user.id }) }))
         }
         break
       }
@@ -308,7 +307,7 @@ export const playWsService = {
         } catch (err: unknown) {
           await billingService.release(user.id, reservationId)
           await redis.del(lockKey)
-          ws.send(JSON.stringify({ type: 'error', message: err instanceof Error ? err.message : String(err) }))
+          ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.world_action', userId: user.id }) }))
         }
         break
       }
@@ -353,9 +352,12 @@ export const playWsService = {
         } catch (err: unknown) {
           await billingService.release(user.id, reservationId)
           await redis.del(lockKey)
-          const message = err instanceof Error ? err.message : String(err)
-          log.error('ws.replay.failed', { userId: user.id, instanceId, eventId, error: message })
-          ws.send(JSON.stringify({ type: 'error', message }))
+          ws.send(
+            JSON.stringify({
+              type: 'error',
+              ...toClientError(err, { at: 'ws.replay', userId: user.id, instanceId, eventId }),
+            }),
+          )
         }
         break
       }
@@ -366,8 +368,7 @@ export const playWsService = {
           const state = await generationService.loadInstance(instanceId!, user.id)
           ws.send(JSON.stringify({ type: 'instance_loaded', data: state }))
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err)
-          ws.send(JSON.stringify({ type: 'error', message }))
+          ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.load_instance', userId: user.id }) }))
         }
         break
       }
