@@ -25,3 +25,39 @@
 #
 # Stack: everlore-prod (CloudFormation, ap-south-1)
 # Soft AWS ceiling: $12/mo (budget alarm email: swapnilmkab@gmail.com)
+#
+# ── Production environment invariants (/etc/everlore/env) ────────────────
+#
+# NODE_ENV=production
+#   Not optional. billingService.enforcementEnabled() only auto-arms when
+#   NODE_ENV is production AND Play credentials are configured, and
+#   simulationEnabled() refuses a simulated checkout on the same signal. With
+#   NODE_ENV unset, a public build could keep serving free entitlements after
+#   Play products go live, and the simulation kill-switch is inert.
+#
+# CLIENT_ORIGINS
+#   https://everloreapp.com,https://www.everloreapp.com,https://api.everloreapp.com
+#   No localhost entries in production — CORS is the only thing standing
+#   between a hostile page and an authenticated browser session.
+#
+# TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_VERIFY_SERVICE_SID
+#   Must be the real Verify credentials. providers/auth.provider.ts falls into
+#   mock mode when any of the three is blank or the SID is AC_MOCK_SID, and in
+#   mock mode `123456` is accepted as the OTP for ANY phone number. A
+#   production deploy that loses these variables silently becomes an open
+#   account-takeover endpoint, so treat them as a required, not optional, set.
+#
+# DISABLE_OTP_RATE_LIMIT=false, BILLING_SIMULATION_ENABLED=false
+#   Both are local-development affordances. Neither belongs on in production.
+#
+# ── Release app builds ──────────────────────────────────────────────────
+#
+# The bundled Flutter .env carries localhost dev URLs, and AppConfig throws on
+# a plaintext endpoint in release mode, so a release build MUST override both:
+#
+#   flutter build appbundle --release \
+#     --dart-define=API_BASE_URL=https://api.everloreapp.com \
+#     --dart-define=WS_BASE_URL=wss://api.everloreapp.com
+#
+# GUIDE_REHEARSAL needs no override: AppConfig.guideRehearsal returns false
+# unconditionally under kReleaseMode.
