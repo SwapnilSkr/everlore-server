@@ -1,6 +1,11 @@
 import { adminService } from '../services/admin.service'
 import { continuityAuditService } from '../services/continuity-audit.service'
 import { billingService } from '../services/billing.service'
+import {
+  BILLING_DEFAULTS,
+  effectiveBilling,
+  saveBillingConfig,
+} from '../services/billing-config.service'
 import { moderationService } from '../services/moderation.service'
 import type { ReportAction, ReportReason, ReportStatus, ReportTargetType } from '../models/content-report.model'
 
@@ -126,6 +131,30 @@ export const adminController = {
       idempotencyKey: body.idempotency_key,
       note: body.note,
     }),
+
+  patchUserLimits: async ({
+    params,
+    body,
+  }: {
+    params: { userId: string }
+    body: { monthly_ink?: number | null; daily_story_safety_cap?: number | null }
+  }) => adminService.setUserBillingLimits(params.userId, body),
+
+  getBillingConfig: async () => ({
+    config: await effectiveBilling(),
+    defaults: BILLING_DEFAULTS,
+  }),
+
+  putBillingConfig: async ({
+    body,
+    adminUser,
+  }: {
+    body: Record<string, unknown>
+    adminUser: string
+  }) => ({
+    config: await saveBillingConfig(body as never, adminUser),
+    defaults: BILLING_DEFAULTS,
+  }),
 
   getUserBilling: async ({ params }: { params: { userId: string } }) =>
     billingService.adminAccountSnapshot(params.userId),

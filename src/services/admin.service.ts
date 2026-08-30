@@ -175,6 +175,46 @@ export const adminService = {
     return { user: serialize(updated) }
   },
 
+  /**
+   * Per-account billing limits.
+   *
+   * `null` clears a key so the account falls back to its tier, which is a
+   * different state from setting the tier's current number: the tier default
+   * can then move without stranding this account on a stale copy of it.
+   */
+  async setUserBillingLimits(
+    userId: string,
+    limits: { monthly_ink?: number | null; daily_story_safety_cap?: number | null },
+  ) {
+    const uid = parseObjectId(userId)
+    const set: Record<string, unknown> = { updated_at: new Date() }
+    const unset: Record<string, ''> = {}
+
+    for (const key of ['monthly_ink', 'daily_story_safety_cap'] as const) {
+      const value = limits[key]
+      if (value === undefined) continue
+      if (value === null) {
+        unset[`billing_overrides.${key}`] = ''
+        continue
+      }
+      const max = key === 'monthly_ink' ? 100_000_000 : 1_000_000
+      if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+        throw new HttpError(400, `${key} must be a whole number between 0 and ${max.toLocaleString()}`)
+      }
+      set[`billing_overrides.${key}`] = value
+    }
+
+    const update: Record<string, unknown> = { $set: set }
+    if (Object.keys(unset).length) update.$unset = unset
+
+    const updated = await users().findOneAndUpdate({ _id: uid }, update, {
+      returnDocument: 'after',
+      projection: { password_hash: 0 },
+    })
+    if (!updated) throw new HttpError(404, 'User not found')
+    return { user: serialize(updated) }
+  },
+
   async setUserTier(userId: string, tier: AdminUserTier) {
     const uid = parseObjectId(userId)
     const update: any = tier === 'inherit'

@@ -5,6 +5,15 @@ import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { env } from '../config/env'
 import { googlePlayService, type VerifiedGooglePurchase } from './google-play.service'
+import { BILLING_CATALOG, type BillableAction } from './billing-catalog'
+import {
+  effectiveBilling,
+  resolveProfile,
+  type UserBillingOverrides,
+} from './billing-config.service'
+
+export { BILLING_CATALOG } from './billing-catalog'
+export type { BillableAction } from './billing-catalog'
 
 const ledger = () => mongoColl.inkLedger()
 const entitlements = () => mongoColl.billingEntitlements()
@@ -12,30 +21,7 @@ const purchases = () => mongoColl.storePurchases()
 const users = () => mongoColl.users()
 export const MAX_ADMIN_INK_ADJUSTMENT = Number.MAX_SAFE_INTEGER
 
-export const BILLING_CATALOG = {
-  premium: {
-    tier: 'premium' as const,
-    monthly_ink: 3000,
-    daily_story_safety_cap: 160,
-  },
-  creator: {
-    tier: 'creator' as const,
-    monthly_ink: 6000,
-    daily_story_safety_cap: 320,
-  },
-  free: {
-    tier: 'free' as const,
-    monthly_ink: 60,
-    daily_story_safety_cap: 25,
-  },
-  welcome_ink: 180,
-  costs: {
-    story_turn: 1,
-    character_autofill: 12,
-    world_autofill: 20,
-    image_preview: 45,
-  },
-} as const
+
 
 const PLAY_PRODUCTS = {
   everlore_premium: { kind: 'subscription' as const, tier: 'premium' as const },
@@ -45,11 +31,28 @@ const PLAY_PRODUCTS = {
   everlore_ink_900: { kind: 'consumable' as const, ink: 900 },
 } as const
 
-export type BillableAction = keyof typeof BILLING_CATALOG.costs
 
-function profileFor(tier: string) {
-  return BILLING_CATALOG[tier as keyof Pick<typeof BILLING_CATALOG, 'free' | 'premium' | 'creator'>]
-    || BILLING_CATALOG.free
+/**
+ * The limits in force for one account, narrowest source winning: a per-account
+ * override, else the administrator's tier default, else the compiled-in
+ * constant. Async because the defaults are now data rather than code.
+ */
+async function profileForPlayer(tier: string, playerOid?: ObjectId) {
+  const config = await effectiveBilling()
+  let overrides: UserBillingOverrides | null = null
+  if (playerOid) {
+    const player = await users().findOne(
+      { _id: playerOid },
+      { projection: { billing_overrides: 1 } },
+    )
+    overrides = (player?.billing_overrides as UserBillingOverrides) || null
+  }
+  return resolveProfile(config, tier, overrides)
+}
+
+/** Tier defaults only, for surfaces that describe plans rather than a person. */
+async function profileForTier(tier: string) {
+  return resolveProfile(await effectiveBilling(), tier, null)
 }
 
 async function balanceFor(playerId: ObjectId): Promise<number> {
@@ -117,11 +120,18 @@ export const billingService = {
     return env.BILLING_SIMULATION_ENABLED && process.env.NODE_ENV !== 'production'
   },
 
-  catalog() {
+  async catalog() {
     // Prices live only in Play Console. This is deliberately entitlement and
-    // allowance metadata, never a client-side price source.
+    // allowance metadata, never a client-side price source. The allowances are
+    // whatever an administrator has set, so a client reading this sees the live
+    // numbers without needing a new build.
+    const config = await effectiveBilling()
     return {
-      ...BILLING_CATALOG,
+      premium: { tier: 'premium' as const, ...config.tiers.premium },
+      creator: { tier: 'creator' as const, ...config.tiers.creator },
+      free: { tier: 'free' as const, ...config.tiers.free },
+      welcome_ink: config.welcome_ink,
+      costs: config.costs,
       purchases_enabled: googlePlayService.configured(),
       enforcement_enabled: this.enforcementEnabled(),
       simulation_enabled: this.simulationEnabled(),
@@ -137,7 +147,7 @@ export const billingService = {
         $setOnInsert: {
           _id: new ObjectId(),
           player_id: playerOid,
-          delta: BILLING_CATALOG.welcome_ink,
+          delta: (await effectiveBilling()).welcome_ink,
           reason: 'welcome',
           idempotency_key: 'welcome:v1',
           created_at: new Date(),
@@ -162,7 +172,7 @@ export const billingService = {
       tier,
       admin_tier_override: player?.admin_tier_override ?? null,
       balance: await balanceFor(playerOid),
-      profile: profileFor(tier),
+      profile: await profileForPlayer(tier, playerOid),
       entitlement: active
         ? {
             product_id: active.product_id,
@@ -174,7 +184,7 @@ export const billingService = {
   },
 
   async reserve(playerId: string, action: BillableAction, requestId: string) {
-    const cost = BILLING_CATALOG.costs[action]
+    const cost = (await effectiveBilling()).costs[action]
     if (!requestId.trim()) throw new HttpError(400, 'A billing request id is required')
     if (!this.enforcementEnabled()) {
       return { reservation_id: null, cost: 0, balance: null }
@@ -190,7 +200,7 @@ export const billingService = {
     // do not consume a second slot for the same request.
     if (action === 'story_turn') {
       const tier = await tierFor(playerOid)
-      const cap = profileFor(tier).daily_story_safety_cap
+      const cap = (await profileForPlayer(tier, playerOid)).daily_story_safety_cap
       const used = await storyTurnsToday(playerOid)
       if (used + cost > cap) {
         throw new HttpError(429, `Daily story safety limit reached (${cap} turns). Please try again tomorrow.`)
@@ -275,7 +285,10 @@ export const billingService = {
     }
 
     const playerOid = parseObjectId(playerId)
-    const player = await users().findOne({ _id: playerOid }, { projection: { tier: 1 } })
+    const player = await users().findOne(
+      { _id: playerOid },
+      { projection: { tier: 1, billing_overrides: 1 } },
+    )
     if (!player) throw new HttpError(404, 'User not found')
 
     const key = `admin_grant:${idempotencyKey}`
@@ -298,7 +311,10 @@ export const billingService = {
   /** Compact, read-only billing view for the authenticated admin dashboard. */
   async adminAccountSnapshot(playerId: string) {
     const playerOid = parseObjectId(playerId)
-    const player = await users().findOne({ _id: playerOid }, { projection: { tier: 1 } })
+    const player = await users().findOne(
+      { _id: playerOid },
+      { projection: { tier: 1, billing_overrides: 1 } },
+    )
     if (!player) throw new HttpError(404, 'User not found')
     const [wallet, recentLedger, activeEntitlements, recentPurchases] = await Promise.all([
       this.wallet(playerId, player.tier || 'free'),
@@ -306,8 +322,27 @@ export const billingService = {
       entitlements().find({ player_id: playerOid }).sort({ updated_at: -1 }).limit(6).toArray(),
       purchases().find({ player_id: playerOid }).sort({ updated_at: -1 }).limit(12).toArray(),
     ])
+    // The console needs to distinguish a limit this account was *given* from
+    // one it merely inherits, because clearing an override and setting it to
+    // the tier's current number look identical in the result and behave
+    // differently the moment the tier default moves.
+    const config = await effectiveBilling()
+    const tierDefaults = resolveProfile(config, wallet.tier, null)
+    const overrides = (player.billing_overrides as UserBillingOverrides) || {}
+
     return {
       wallet,
+      limits: {
+        effective: wallet.profile,
+        tier_defaults: tierDefaults,
+        overrides: {
+          monthly_ink: typeof overrides.monthly_ink === 'number' ? overrides.monthly_ink : null,
+          daily_story_safety_cap:
+            typeof overrides.daily_story_safety_cap === 'number'
+              ? overrides.daily_story_safety_cap
+              : null,
+        },
+      },
       ledger: recentLedger.map((entry) => ({
         id: idString(entry._id),
         delta: entry.delta,
@@ -347,7 +382,10 @@ export const billingService = {
     }
 
     const playerOid = parseObjectId(playerId)
-    const player = await users().findOne({ _id: playerOid }, { projection: { tier: 1 } })
+    const player = await users().findOne(
+      { _id: playerOid },
+      { projection: { tier: 1, billing_overrides: 1 } },
+    )
     if (!player) throw new HttpError(404, 'User not found')
 
     if (product.kind === 'consumable') {
@@ -370,7 +408,7 @@ export const billingService = {
     }
 
     const tier = product.tier
-    const profile = profileFor(tier)
+    const profile = await profileForTier(tier)
     await entitlements().updateOne(
       { player_id: playerOid, source: 'manual', product_id: `simulation:${input.productId}` },
       {
@@ -513,7 +551,7 @@ export const billingService = {
     }
 
     const tier = (product as { tier: UserTier }).tier
-    const profile = profileFor(tier)
+    const profile = await profileForTier(tier)
     await entitlements().updateOne(
       { player_id: playerOid, source: 'google_play', product_id: verified.productId },
       {

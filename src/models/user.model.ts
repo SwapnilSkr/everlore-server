@@ -59,6 +59,12 @@ export interface UserDoc {
   tier: UserTier
   /** Administrative override. When present it wins over a Play entitlement. */
   admin_tier_override?: UserTier | null
+  /**
+   * Per-account billing limits. Any absent key falls through to the
+   * administrator's tier default, so one tester can be lifted without moving
+   * everyone who shares their tier.
+   */
+  billing_overrides?: { monthly_ink?: number; daily_story_safety_cap?: number }
   account_status?: UserAccountStatus
   banned_at?: Date
   ban_reason?: string

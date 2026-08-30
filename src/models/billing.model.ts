@@ -39,3 +39,30 @@ export interface StorePurchaseDoc {
   created_at: Date
   updated_at: Date
 }
+
+/**
+ * Administrator-owned billing settings, replacing what used to be compile-time
+ * constants.
+ *
+ * Tier allowances and action costs were fixed in code, so changing what a free
+ * player gets meant a deploy — too slow for a decision that is commercial
+ * rather than technical, and impossible to make for one account. This document
+ * holds the current values; anything absent falls back to the constants in
+ * `billing.service.ts`, so a missing or partial document can never leave the
+ * server without a price list.
+ *
+ * There is exactly one, at `_id: 'singleton'`.
+ */
+export interface BillingTierProfileDoc {
+  monthly_ink: number
+  daily_story_safety_cap: number
+}
+
+export interface BillingConfigDoc {
+  _id: string
+  tiers?: Partial<Record<UserTier, Partial<BillingTierProfileDoc>>>
+  welcome_ink?: number
+  costs?: Partial<Record<'story_turn' | 'character_autofill' | 'world_autofill' | 'image_preview', number>>
+  updated_at?: Date
+  updated_by?: string
+}

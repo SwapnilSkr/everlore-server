@@ -27,6 +27,7 @@ export const COLLECTIONS = {
   location_stats: 'location_stats',
   relation_candidates: 'relation_candidates',
   ink_ledger: 'ink_ledger',
+  billing_config: 'billing_config',
   billing_entitlements: 'billing_entitlements',
   store_purchases: 'store_purchases',
   post_process_outbox: 'post_process_outbox',

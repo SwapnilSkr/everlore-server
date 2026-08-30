@@ -27,6 +27,37 @@ const AdminGrantInkBody = t.Object({
   note: t.Optional(t.String({ maxLength: 240 })),
 })
 
+
+const NullableCount = t.Union([t.Null(), t.Numeric({ minimum: 0 })])
+const AdminUserLimitsBody = t.Object({
+  monthly_ink: t.Optional(NullableCount),
+  daily_story_safety_cap: t.Optional(NullableCount),
+})
+
+const TierProfilePatch = t.Object({
+  monthly_ink: t.Optional(t.Numeric({ minimum: 0 })),
+  daily_story_safety_cap: t.Optional(t.Numeric({ minimum: 0 })),
+})
+
+const AdminBillingConfigBody = t.Object({
+  tiers: t.Optional(
+    t.Object({
+      free: t.Optional(TierProfilePatch),
+      premium: t.Optional(TierProfilePatch),
+      creator: t.Optional(TierProfilePatch),
+    }),
+  ),
+  welcome_ink: t.Optional(t.Numeric({ minimum: 0 })),
+  costs: t.Optional(
+    t.Object({
+      story_turn: t.Optional(t.Numeric({ minimum: 0 })),
+      character_autofill: t.Optional(t.Numeric({ minimum: 0 })),
+      world_autofill: t.Optional(t.Numeric({ minimum: 0 })),
+      image_preview: t.Optional(t.Numeric({ minimum: 0 })),
+    }),
+  ),
+})
+
 export const adminRoutes = new Elysia({ prefix: '/admin' })
   .use(requireAdmin)
 
@@ -45,6 +76,17 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
     body: AdminGrantInkBody,
   })
   .get('/users/:userId/billing', (ctx) => adminController.getUserBilling(ctx))
+  .patch('/users/:userId/limits', (ctx) => adminController.patchUserLimits(ctx), {
+    body: AdminUserLimitsBody,
+  })
+
+  // Server-wide allowances. Deliberately not under /users: these are the
+  // defaults every account inherits, and editing one account must not look
+  // like the same gesture as editing everybody.
+  .get('/billing/config', () => adminController.getBillingConfig())
+  .put('/billing/config', (ctx) => adminController.putBillingConfig(ctx), {
+    body: AdminBillingConfigBody,
+  })
   .delete('/users/:userId', (ctx) => adminController.deleteUser(ctx))
 
   // Moderation queue. Reports are listed in triage order by default

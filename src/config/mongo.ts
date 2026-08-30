@@ -23,7 +23,12 @@ import type { SignalLedgerDoc } from '../models/signal-ledger.model'
 import type { ProjectionCheckpointChunkDoc, ProjectionCheckpointDoc } from '../models/projection-checkpoint.model'
 import type { LocationStatsDoc } from '../models/location-stats.model'
 import type { RelationCandidateDoc } from '../models/relation-candidate.model'
-import type { InkLedgerDoc, BillingEntitlementDoc, StorePurchaseDoc } from '../models/billing.model'
+import type {
+  BillingConfigDoc,
+  InkLedgerDoc,
+  BillingEntitlementDoc,
+  StorePurchaseDoc,
+} from '../models/billing.model'
 import type { PostProcessOutboxDoc } from '../models/post-process-outbox.model'
 import type { ContentReportDoc } from '../models/content-report.model'
 
@@ -65,6 +70,7 @@ export const mongoColl = {
   locationStats: () => coll<WithoutId<LocationStatsDoc>>(COLLECTIONS.location_stats),
   relationCandidates: () => coll<WithoutId<RelationCandidateDoc>>(COLLECTIONS.relation_candidates),
   inkLedger: () => coll<WithoutId<InkLedgerDoc>>(COLLECTIONS.ink_ledger),
+  billingConfig: () => coll<BillingConfigDoc>(COLLECTIONS.billing_config),
   billingEntitlements: () => coll<WithoutId<BillingEntitlementDoc>>(COLLECTIONS.billing_entitlements),
   storePurchases: () => coll<WithoutId<StorePurchaseDoc>>(COLLECTIONS.store_purchases),
   postProcessOutbox: () => coll<WithoutId<PostProcessOutboxDoc>>(COLLECTIONS.post_process_outbox),
