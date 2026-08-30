@@ -16,6 +16,11 @@ const LIMITS: Record<string, { max: number; windowSeconds: number }> = {
   // that a player cleaning up a bad browse session never hits it.
   content_report: { max: 20, windowSeconds: 3600 },
   auth_attempt: { max: 10, windowSeconds: 300 },
+  // Failed admin sign-ins, keyed by client address. The admin console is
+  // reachable from anywhere and a username/password is the entire gate, so
+  // without this the password can be guessed at line speed. Only failures
+  // consume a slot — an operator working normally never spends one.
+  admin_auth_failure: { max: 20, windowSeconds: 900 },
   otp_send: { max: 5, windowSeconds: 600 },
   otp_verify: { max: 10, windowSeconds: 600 },
 }
