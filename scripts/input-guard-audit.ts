@@ -10,7 +10,8 @@
  *
  * Pure function, no DB or network. Run: bun run audit:input-guard
  */
-import { screenPlayerInput, type GuardCategory } from '../src/utils/input-guard'
+import { screenPlayerInput, screenImagePrompt, type GuardCategory } from '../src/utils/input-guard'
+import { decorateImagePrompt, stripServerDecorations } from '../src/services/image.service'
 
 let pass = 0
 let fail = 0
@@ -97,6 +98,57 @@ allows('sex as a field of study', 'the healer teaches anatomy to the village chi
 // rephrase ("inbreeding"). Drop the term from SEXUAL_TERMS to trade this
 // away — at the cost of missing "I want incest with my sister".
 blocks('discussion of bloodline incest (known, accepted over-block)', 'my father warned me about the incest in that bloodline', 'incest')
+
+function imgBlocks(desc: string, text: string, category: GuardCategory) {
+  const v = screenImagePrompt(text)
+  if (v.blocked && v.category === category) {
+    console.log(`  ok   ${desc}`)
+    pass++
+  } else {
+    console.log(`  FAIL ${desc}\n       expected ${category}, got ${v.blocked ? v.category : 'allowed'}`)
+    fail++
+  }
+}
+
+function imgAllows(desc: string, text: string) {
+  const v = screenImagePrompt(text)
+  if (!v.blocked) {
+    console.log(`  ok   ${desc}`)
+    pass++
+  } else {
+    console.log(`  FAIL ${desc}\n       blocked as ${v.category}`)
+    fail++
+  }
+}
+
+console.log('\nimage prompts — blocked')
+imgBlocks('explicit act with a minor noun', 'a nude child on a bed', 'minor_sexual')
+imgBlocks('sexualized appearance with a stated age', 'a 12 year old girl in a bikini', 'minor_sexual')
+imgBlocks('no explicit word at all, appearance term only', 'teenager, lingerie, suggestive pose', 'minor_sexual')
+imgBlocks('coded term', 'loli, ecchi, bedroom', 'minor_sexual')
+imgBlocks('WHOLE-prompt scope: fragments describe one image', 'a young child. a nude woman.', 'minor_sexual')
+imgBlocks('family sexual imagery', 'my mother and I having sex', 'incest')
+
+console.log('\nimage prompts — allowed')
+imgAllows('adult nude art', 'a nude woman reclining by firelight, oil painting')
+imgAllows('adult sexualized art direction', 'a seductive sorceress in a corset, dramatic lighting')
+imgAllows('adult in swimwear', 'a woman in a bikini on a beach at sunset')
+imgAllows('appearance terms are NOT enough for the incest rule', 'my sister in a bikini')
+imgAllows('a child in an ordinary scene', 'a child playing in a village square, watercolour')
+imgAllows('a child in a grim scene', 'a frightened child watching the village burn')
+imgAllows('family portrait', 'a mother holding her newborn, renaissance painting')
+imgAllows('violence is untouched', 'a knight covered in blood standing over a corpse')
+
+console.log('\nimage prompts — the service\'s own decorations must not trip the guard')
+for (const style of ['flirty', 'dark_romance', 'epic_fantasy', 'horror']) {
+  const decorated = decorateImagePrompt('a child watching from the tavern doorway', style)
+  imgAllows(`${style} cover mentioning a child`, stripServerDecorations(decorated))
+}
+imgBlocks(
+  'stripping decorations does not weaken the rule itself',
+  stripServerDecorations(decorateImagePrompt('a nude child', 'flirty')),
+  'minor_sexual',
+)
 
 console.log(`\n${pass} passed, ${fail} failed\n`)
 process.exit(fail === 0 ? 0 : 1)

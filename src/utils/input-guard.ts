@@ -219,3 +219,71 @@ export function screenPlayerInput(text: string): GuardVerdict {
 
   return { blocked: false }
 }
+
+/**
+ * Signals that a requested IMAGE is sexualized, beyond the explicit vocabulary
+ * shared with chat. These are broad on purpose and are used for ONE thing: they
+ * count as a sexual signal only when a minor marker is also present.
+ *
+ * "A seductive sorceress in a corset" is a legitimate adult request and passes.
+ * "A 12 year old in a swimsuit" does not — no explicit word appears in it, so
+ * the text lexicon alone would let it through, and for a generated image that
+ * is the wrong side to be wrong on.
+ */
+const VISUAL_SEXUAL_TERMS = new Set([
+  'bikini', 'swimsuit', 'swimwear', 'underwear', 'bra', 'braless', 'thong',
+  'negligee', 'corset', 'garter', 'fishnet', 'stockings', 'shirtless',
+  'cleavage', 'scantily', 'skimpy', 'revealing', 'sheer', 'see-through',
+  'lewd', 'erotic', 'erotica', 'seductive', 'provocative', 'suggestive',
+  'sensual', 'fetish', 'bdsm', 'bondage', 'pinup', 'boudoir', 'upskirt',
+  'nsfw', 'hentai', 'ecchi', 'rule34',
+])
+
+const VISUAL_SEXUAL_PHRASES = [
+  'spread legs', 'legs spread', 'bent over', 'barely dressed', 'no clothes',
+  'without clothes', 'suggestive pose',
+]
+
+const IMAGE_MESSAGES: Record<GuardCategory, string> = {
+  minor_sexual:
+    'Everlore will not generate imagery that sexualises a minor. Change the description and try again.',
+  incest:
+    'Everlore will not generate sexual imagery involving family members. Change the description and try again.',
+}
+
+/**
+ * Screen an image-generation prompt.
+ *
+ * Two things differ from the chat guard, both because a prompt describes ONE
+ * picture rather than a passage of prose:
+ *
+ *  - Scope is the WHOLE prompt, not per sentence. Image prompts are comma-
+ *    separated fragments, and every fragment describes the same image, so
+ *    "a young girl. a nude woman." is one request and must be read as one.
+ *  - The minor category additionally counts sexualized-appearance terms. The
+ *    incest category does not: it keeps the strict explicit lexicon, so ordinary
+ *    adult art direction is never caught by the broader list.
+ */
+export function screenImagePrompt(text: string): GuardVerdict {
+  if (!text || typeof text !== 'string') return { blocked: false }
+
+  const normalized = normalize(maskFigurativeKin(text))
+  const words = new Set(normalized.match(TOKEN) ?? [])
+
+  const explicit = hasSexualSignal(words, normalized)
+  const sexualized =
+    explicit ||
+    hasTerm(words, VISUAL_SEXUAL_TERMS) ||
+    VISUAL_SEXUAL_PHRASES.some((p) => normalized.includes(p))
+
+  if (GUARD_CATEGORIES.minor_sexual && sexualized && hasMinorSignal(words, normalized)) {
+    return { blocked: true, category: 'minor_sexual', message: IMAGE_MESSAGES.minor_sexual }
+  }
+
+  const kinSignal = hasTerm(words, KIN_TERMS) || POSSESSED_KIN_ADDRESS.test(normalized)
+  if (GUARD_CATEGORIES.incest && explicit && kinSignal) {
+    return { blocked: true, category: 'incest', message: IMAGE_MESSAGES.incest }
+  }
+
+  return { blocked: false }
+}

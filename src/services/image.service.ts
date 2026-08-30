@@ -2,6 +2,7 @@ import { generateImage } from '../ai'
 import sharp from 'sharp'
 import { storageService } from './storage.service'
 import { HttpError } from '../utils/http-error'
+import { screenImagePrompt } from '../utils/input-guard'
 
 /**
  * Generated-media orchestration: decorate a visual-description core with the
@@ -52,6 +53,24 @@ const COMPOSITION =
   'no frame, no border, no mockup, no UI chrome, no text, no watermark, no logo'
 
 /**
+ * Remove the style hint and composition suffix this service itself appends,
+ * so content screening reads only what a human actually asked for.
+ *
+ * Two style hints ("flirty", "dark_romance") legitimately contain the word
+ * "sensual", which the image guard counts as a sexualized-appearance signal.
+ * Left in place, a perfectly ordinary cover for a flirty world that happened to
+ * mention a child would be refused because of a constant WE appended, not
+ * anything the creator wrote.
+ */
+export function stripServerDecorations(text: string): string {
+  let out = text
+  for (const hint of [...Object.values(STYLE_HINT), DEFAULT_HINT, COMPOSITION]) {
+    out = out.split(hint).join(' ')
+  }
+  return out
+}
+
+/**
  * Strip wording that causes Seedream/Flux to put the art inside a phone mockup.
  * Applied to autofill cores and to any prompt sent to image generation.
  */
@@ -84,6 +103,13 @@ export const imageService = {
   async generatePreview(prompt: string): Promise<{ url: string; key: string }> {
     const clean = scrubDeviceLeakage(prompt || '')
     if (clean.length < 4) throw new HttpError(400, 'Image prompt is too short')
+    // The prompt is creator-editable and reached the generator unscreened: the
+    // only thing standing between it and an image was the provider's own
+    // filter, which is not ours, can change without notice, and is explicitly
+    // not sufficient on its own. Screened here rather than at the controller so
+    // every caller of this service inherits it.
+    const verdict = screenImagePrompt(stripServerDecorations(clean))
+    if (verdict.blocked) throw new HttpError(400, verdict.message!)
     let img: { data: Buffer; contentType: string }
     try {
       img = await generateImage(clean)
