@@ -11,6 +11,7 @@ import { instanceRoutes } from './routes/instance.routes'
 import { personaRoutes } from './routes/persona.routes'
 import { chronicleRoutes } from './routes/chronicle.routes'
 import { adminRoutes } from './routes/admin.routes'
+import { adminSessionRoutes } from './routes/admin-session.routes'
 import { wsRoutes } from './routes/ws.routes'
 import { billingRoutes } from './routes/billing.routes'
 import { setupRedisPubSub } from './services/play-ws.service'
@@ -112,6 +113,7 @@ async function main() {
     .get('/', () => 'Everlore API')
     .get('/health', () => ({ ok: true, timestamp: new Date().toISOString() }))
     .use(authRoutes)
+    .use(adminSessionRoutes)
     .use(adminRoutes)
     .use(templateRoutes)
     .use(moderationRoutes)
