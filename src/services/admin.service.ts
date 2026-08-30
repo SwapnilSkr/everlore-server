@@ -125,6 +125,10 @@ export const adminService = {
     const filter: Record<string, unknown> = {}
     if (opts.search) {
       filter.$or = [
+        // The display name is searched alongside the handle: an operator
+        // following up a report or a support message has the name the player
+        // uses, not the generated username.
+        { 'preferences.player_name': { $regex: opts.search, $options: 'i' } },
         { username: { $regex: opts.search, $options: 'i' } },
         { email: { $regex: opts.search, $options: 'i' } },
         { phone: { $regex: opts.search, $options: 'i' } },
