@@ -17,7 +17,7 @@ import { env } from '../config/env'
  *  PURPOSE              MODEL (default)              STREAMED?  PROVIDER   ENV OVERRIDE
  *  ───────────────────────────────────────────────────────────────────────────────────
  *  narrationSfw         deepseek/deepseek-v3.2       yes        OpenRouter NARRATION_SFW_MODEL
- *  narrationNsfw        gryphe/mythomax-l2-13b       yes        OpenRouter NARRATION_NSFW_MODEL
+ *  narrationNsfw        thedrummer/cydonia-24b-v4.1  yes        OpenRouter NARRATION_NSFW_MODEL
  *  metadata             gpt-4o-mini                  no         OpenAI     MODEL_METADATA
  *  memoryCuration       gpt-4o-mini                  no         OpenAI     MODEL_MEMORY_CURATION
  *  sceneSummary         gpt-4o-mini                  no         OpenAI     MODEL_SCENE_SUMMARY
