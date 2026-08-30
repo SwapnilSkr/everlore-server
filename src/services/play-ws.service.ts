@@ -86,19 +86,42 @@ function getRawSocket(ws: PlayWs): RawWs {
   return (ws as unknown as { raw: RawWs }).raw
 }
 
+/**
+ * A rate-limit frame the player can actually act on.
+ *
+ * The code alone reached the client as a bare `RATE_LIMITED` with no message,
+ * so the app fell back to its generic line and — because a rate limit is an
+ * authored failure, not a retryable one — offered no action either. The player
+ * was told nothing and given nothing. Carry the wait in words.
+ */
+function rateLimitedFrame(retryAfter?: number) {
+  const seconds = Math.max(1, Math.ceil(retryAfter ?? 0))
+  const wait =
+    seconds >= 120
+      ? `about ${Math.ceil(seconds / 60)} minutes`
+      : seconds >= 60
+        ? 'about a minute'
+        : `${seconds} second${seconds === 1 ? '' : 's'}`
+  return {
+    code: 'RATE_LIMITED',
+    retryAfter,
+    message: `You're moving faster than the story can keep up. Try again in ${wait}.`,
+  }
+}
+
 export const playWsService = {
   async handleOpen(ws: PlayWs) {
     const { query, jwt } = getWsData(ws)
     const token = query?.token
     if (!token) {
-      ws.send(JSON.stringify({ type: 'error', message: 'No token provided' }))
+      ws.send(JSON.stringify({ type: 'error', code: 'UNAUTHENTICATED', message: 'Your session has expired. Sign in again to continue.' }))
       ws.close()
       return
     }
 
     const tokenUser = await verifyWsToken(jwt, token)
     if (!tokenUser) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Invalid token' }))
+      ws.send(JSON.stringify({ type: 'error', code: 'UNAUTHENTICATED', message: 'Your session has expired. Sign in again to continue.' }))
       ws.close()
       return
     }
@@ -134,7 +157,7 @@ export const playWsService = {
   async handleMessage(ws: PlayWs, msg: unknown) {
     const user = getWsData(ws)._user
     if (!user) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Not authenticated' }))
+      ws.send(JSON.stringify({ type: 'error', code: 'UNAUTHENTICATED', message: 'Your session has expired. Sign in again to continue.' }))
       return
     }
 
@@ -232,7 +255,7 @@ export const playWsService = {
         const rl = await rateLimit(user.id, 'chat')
         if (!rl.allowed) {
           ws.send(
-            JSON.stringify({ type: 'error', code: 'RATE_LIMITED', retryAfter: rl.retryAfter }),
+            JSON.stringify({ type: 'error', ...rateLimitedFrame(rl.retryAfter) }),
           )
           return
         }
@@ -282,7 +305,7 @@ export const playWsService = {
         }
         const rl = await rateLimit(user.id, 'chat')
         if (!rl.allowed) {
-          ws.send(JSON.stringify({ type: 'error', code: 'RATE_LIMITED', retryAfter: rl.retryAfter }))
+          ws.send(JSON.stringify({ type: 'error', ...rateLimitedFrame(rl.retryAfter) }))
           return
         }
         const lockKey = generationLockKey(user.id, instanceId)
@@ -323,7 +346,7 @@ export const playWsService = {
         const rl = await rateLimit(user.id, 'chat')
         if (!rl.allowed) {
           ws.send(
-            JSON.stringify({ type: 'error', code: 'RATE_LIMITED', retryAfter: rl.retryAfter }),
+            JSON.stringify({ type: 'error', ...rateLimitedFrame(rl.retryAfter) }),
           )
           return
         }
