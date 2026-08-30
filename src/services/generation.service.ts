@@ -11,6 +11,8 @@ import { EVENT_WINDOWS, buildEventWindow } from '../utils/event-window'
 import type { PlayerWorldAction } from '../utils/world-action'
 import { getRedisClient } from '../config/redis'
 import { generationLockKey } from '../utils/generation-lock'
+import { screenPlayerInput } from '../utils/input-guard'
+import { HttpError } from '../utils/http-error'
 
 const users = () => mongoColl.users()
 const worldInstances = () => mongoColl.worldInstances()
@@ -32,6 +34,14 @@ export const generationService = {
     billingReservationId?: string | null
   }) {
     const { instanceId, playerId, userMessage, isContinuation = false, timeAdvance, worldAction, billingReservationId } = params
+
+    // Hard content bound on the player's own words, before any model sees them.
+    // Runs first so a blocked turn costs nothing: the WS handler releases the
+    // billing reservation on throw, and 400 reaches the client as BAD_REQUEST
+    // carrying copy that names the theme (see utils/input-guard.ts).
+    const verdict = screenPlayerInput(userMessage)
+    if (verdict.blocked) throw new HttpError(400, verdict.message!)
+
     const requestedAt = Date.now()
     const session = await instanceService.loadSession(instanceId, playerId)
 

@@ -48,7 +48,8 @@
     "report:redis-hygiene": "bun run scripts/clean-redis-jobs.ts",
     "prune:redis-completed-jobs": "bun run scripts/clean-redis-jobs.ts --execute",
     "audit:firebase-auth": "bun run scripts/firebase-auth-audit.ts",
-    "audit:firebase-token": "bun run scripts/firebase-token-audit.ts"
+    "audit:firebase-token": "bun run scripts/firebase-token-audit.ts",
+    "audit:input-guard": "bun run scripts/input-guard-audit.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",

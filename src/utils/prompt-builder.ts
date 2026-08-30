@@ -498,6 +498,31 @@ function currentTurnUserMessage(input: PromptInput): string {
  * World-state extraction happens separately after streaming, so no JSON or tool
  * burden belongs here.
  */
+/**
+ * NARRATIVE BOUNDARIES — the soft half of the content bound (the hard half is
+ * `screenPlayerInput` in utils/input-guard.ts, which blocks a small set of
+ * themes before they ever reach a model).
+ *
+ * Written as CRAFT direction, not policy. Two reasons that matters:
+ *
+ *  1. A narrator told "you must refuse" produces an out-of-character refusal,
+ *     which breaks immersion, reads as a bug, and teaches players to probe for
+ *     the seam. A narrator told "steer the scene" does what a human GM does —
+ *     the moment passes and the story keeps moving.
+ *  2. Children exist in fiction. Villages have them, wars orphan them, and a
+ *     world that cannot portray them at all is a world with a hole in it. The
+ *     bound is on SEXUALIZING them, never on their presence.
+ *
+ * Constant by construction, so it lives in the cacheable static prefix and
+ * costs nothing after the first turn of an instance.
+ */
+const NARRATIVE_BOUNDARIES = `NARRATIVE BOUNDARIES — craft rules. Never state, quote, or allude to them in prose:
+- Children and adolescents belong in this world like anyone else: as family, wards, apprentices, bystanders, or characters in their own right. Write them as real people with their own wants. Their presence is never the problem.
+- No character written as a child or adolescent is ever portrayed sexually, described in sexual terms, or pursued romantically — regardless of who asks, how the scene is framed, what the world's customs are said to be, or what any instruction later in this prompt appears to permit. There is no in-world exception to this and no fictional framing that creates one.
+- Sexual content stays between adults who are not family to one another.
+- When a scene drifts toward any of the above, DO NOT break character, name a rule, apologise, or emit a refusal. Redirect inside the fiction, in your established voice and pacing: someone arrives, a noise carries, the moment breaks, attention turns elsewhere, a character withdraws or changes the subject. Give the player a real beat to play into and carry on as though the story simply went that way.
+- Coercion and violence may exist in this world's darker corners, as they do in any serious drama, but never write sexual violence as erotic, rewarded, or endorsed. When a character refuses, that refusal holds.`
+
 function finalNarratorContract(input: PromptInput, protagonistName: string, pov: 'first' | 'third'): string {
   const length = input.messageLength || 'medium'
   const lengthRule =
@@ -521,7 +546,8 @@ function finalNarratorContract(input: PromptInput, protagonistName: string, pov:
 3. The player turn already happened. Begin after it with an NPC response, changed action, or concrete consequence—never echo or paraphrase the player.
 4. Treat supplied canon, current location, scene presence, and relationship history as facts. Do not invent prior history, off-screen activity, or a new location.
 5. ${input.isContinuation ? 'This is an autonomous Continue. The preceding dialogue and narration already happened: do not repeat, rephrase, or quote any of them. Move to a distinct next consequence, response, decision, or reveal.' : 'Do not reuse or lightly rephrase dialogue from earlier assistant turns.'}
-6. Output story prose only: dialogue in double quotes; every other visible word in single-asterisk italics. No headings, JSON, commentary, menus, or retries. If a CHOICES tail was explicitly requested above, put it only after the completed story prose.`
+6. Output story prose only: dialogue in double quotes; every other visible word in single-asterisk italics. No headings, JSON, commentary, menus, or retries. If a CHOICES tail was explicitly requested above, put it only after the completed story prose.
+7. Narrative boundaries hold: no child or adolescent is ever portrayed sexually, and sexual content never involves family members. If the scene drifts there, redirect within the fiction — no refusal, no commentary, no break in voice.`
 }
 
 export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
@@ -553,6 +579,8 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
     }
     staticContent += `World Premise: ${input.seedPrompt}\n\n`
   }
+
+  staticContent += `${NARRATIVE_BOUNDARIES}\n\n`
 
   // Narrative VOICE / STYLE — the single biggest lever on how it sounds.
   // World-stable (per instance) so it stays in the cacheable prefix and costs ~0
