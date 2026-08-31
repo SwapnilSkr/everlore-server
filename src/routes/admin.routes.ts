@@ -83,6 +83,9 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
   // Server-wide allowances. Deliberately not under /users: these are the
   // defaults every account inherits, and editing one account must not look
   // like the same gesture as editing everybody.
+  .get('/web-events', (ctx) => adminController.getWebEvents(ctx), {
+    query: t.Object({ days: t.Optional(t.String()) }),
+  })
   .get('/billing/config', () => adminController.getBillingConfig())
   .put('/billing/config', (ctx) => adminController.putBillingConfig(ctx), {
     body: AdminBillingConfigBody,

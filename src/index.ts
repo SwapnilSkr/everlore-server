@@ -14,6 +14,7 @@ import { adminRoutes } from './routes/admin.routes'
 import { adminSessionRoutes } from './routes/admin-session.routes'
 import { wsRoutes } from './routes/ws.routes'
 import { billingRoutes } from './routes/billing.routes'
+import { webEventRoutes } from './routes/web-event.routes'
 import { setupRedisPubSub } from './services/play-ws.service'
 import { HttpError } from './utils/http-error'
 import { httpLoggerPlugin } from './plugins/http-logger.plugin'
@@ -121,6 +122,7 @@ async function main() {
     .use(personaRoutes)
     .use(chronicleRoutes)
     .use(billingRoutes)
+    .use(webEventRoutes)
     .use(wsRoutes)
     .listen(env.PORT)
 

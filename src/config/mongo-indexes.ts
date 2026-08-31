@@ -483,6 +483,26 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
       partialFilterExpression: { status: { $in: ["open", "reviewing"] } },
     },
   },
+  // web_events (marketing-site interactions). Two reads only: "what happened in
+  // the last N days, by name" for the funnel, and the per-session rollup that
+  // turns raw clicks into "of the people who did A, how many went on to do C".
+  {
+    collection: COLLECTIONS.web_events,
+    key: { created_at: -1, name: 1 },
+    options: { name: "idx_web_events_recent" },
+  },
+  {
+    collection: COLLECTIONS.web_events,
+    key: { session: 1, created_at: 1 },
+    options: { name: "idx_web_events_session" },
+  },
+  // Nobody needs to know what a stranger clicked half a year ago, and an
+  // anonymous log that grows forever is a liability rather than an asset.
+  {
+    collection: COLLECTIONS.web_events,
+    key: { created_at: 1 },
+    options: { name: "ttl_web_events_180d", expireAfterSeconds: 60 * 60 * 24 * 180 },
+  },
 ]
 
 /**

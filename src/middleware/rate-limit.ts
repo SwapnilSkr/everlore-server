@@ -21,6 +21,9 @@ const LIMITS: Record<string, { max: number; windowSeconds: number }> = {
   // without this the password can be guessed at line speed. Only failures
   // consume a slot — an operator working normally never spends one.
   admin_auth_failure: { max: 20, windowSeconds: 900 },
+  // Marketing-site beacon, keyed by address. A real visitor fires a handful of
+  // events a minute; this only stops a script from writing the collection full.
+  web_event: { max: 120, windowSeconds: 60 },
   otp_send: { max: 5, windowSeconds: 600 },
   otp_verify: { max: 10, windowSeconds: 600 },
 }

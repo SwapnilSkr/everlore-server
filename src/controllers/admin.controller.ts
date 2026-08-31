@@ -1,4 +1,5 @@
 import { adminService } from '../services/admin.service'
+import { webEventService } from '../services/web-event.service'
 import { continuityAuditService } from '../services/continuity-audit.service'
 import { billingService } from '../services/billing.service'
 import {
@@ -139,6 +140,15 @@ export const adminController = {
     params: { userId: string }
     body: { monthly_ink?: number | null; daily_story_safety_cap?: number | null }
   }) => adminService.setUserBillingLimits(params.userId, body),
+
+  /** Marketing-site funnel: who landed, who clicked, who left for Play. */
+  getWebEvents: async ({ query }: { query: { days?: string } }) => {
+    const days = Math.min(Math.max(Number(query.days) || 30, 1), 180)
+    return {
+      ...(await webEventService.summary(days)),
+      daily: await webEventService.daily('page_view', days),
+    }
+  },
 
   getBillingConfig: async () => ({
     config: await effectiveBilling(),
