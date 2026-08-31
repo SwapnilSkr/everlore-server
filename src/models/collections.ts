@@ -33,6 +33,7 @@ export const COLLECTIONS = {
   post_process_outbox: 'post_process_outbox',
   content_reports: 'content_reports',
   web_events: 'web_events',
+  web_traffic_daily: 'web_traffic_daily',
 } as const
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS]

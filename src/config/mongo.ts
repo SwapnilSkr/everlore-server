@@ -3,6 +3,7 @@ import { env } from './env'
 import { ensureEverloreIndexes } from './mongo-indexes'
 import { COLLECTIONS } from '../models/collections'
 import type { WebEventDoc } from '../models/web-event.model'
+import type { WebTrafficDailyDoc } from '../models/web-traffic-daily.model'
 import type { UserDoc } from '../models/user.model'
 import type { WorldTemplateDoc } from '../models/world-template.model'
 import type { WorldInstanceDoc } from '../models/world-instance.model'
@@ -72,6 +73,7 @@ export const mongoColl = {
   relationCandidates: () => coll<WithoutId<RelationCandidateDoc>>(COLLECTIONS.relation_candidates),
   inkLedger: () => coll<WithoutId<InkLedgerDoc>>(COLLECTIONS.ink_ledger),
   webEvents: () => coll<WithoutId<WebEventDoc>>(COLLECTIONS.web_events),
+  webTrafficDaily: () => coll<WebTrafficDailyDoc>(COLLECTIONS.web_traffic_daily),
   billingConfig: () => coll<BillingConfigDoc>(COLLECTIONS.billing_config),
   billingEntitlements: () => coll<WithoutId<BillingEntitlementDoc>>(COLLECTIONS.billing_entitlements),
   storePurchases: () => coll<WithoutId<StorePurchaseDoc>>(COLLECTIONS.store_purchases),

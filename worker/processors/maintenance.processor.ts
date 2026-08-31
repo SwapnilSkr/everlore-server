@@ -8,6 +8,7 @@ import { getMaintenanceQueue, QUEUE_RETENTION } from '../../src/queues'
 import { MANAGED_QUEUES, pruneExpiredCompletedQueueJobs } from '../../src/services/queue-hygiene.service'
 import { log } from '../../src/utils/logger'
 import { dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
+import { webTrafficRollupService } from '../../src/services/web-traffic-rollup.service'
 import { characterProjectionProcessor } from './character-projection.processor'
 import { CHARACTER_PROJECTION_CLAIM_LEASE_MS } from '../lib/character-projection-lease'
 
@@ -66,6 +67,15 @@ export async function maintenanceProcessor(job: Job) {
 
     case 'dispatch_post_process_outbox':
       return dispatchPostProcessOutbox()
+
+    // Cloudflare forgets page views after seven days and our own events after
+    // 180, so the only way to have a year of history a year from now is to
+    // write each day down as it happens.
+    case 'rollup_web_traffic': {
+      const rolled = await webTrafficRollupService.rollupRecent(3)
+      log.info('maintenance.web_traffic_rolled', { days: rolled.length })
+      return { rolled }
+    }
 
     case 'character_projection':
       return characterProjectionProcessor(job)

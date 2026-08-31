@@ -84,6 +84,28 @@ export const cloudflareAnalyticsService = {
     )
   },
 
+  /** How far back this dataset can be asked about, for callers that schedule. */
+  maxDays() {
+    return MAX_DAYS
+  },
+
+  /**
+   * One calendar day in UTC, uncached.
+   *
+   * The daily rollup needs a specific day rather than a trailing window, and it
+   * runs rarely enough that a cache would only ever miss. Null means the day is
+   * older than Cloudflare keeps — better than storing a zero that reads like a
+   * quiet Tuesday.
+   */
+  async day(dayIso: string): Promise<CloudflareTraffic | null> {
+    if (!this.configured()) return null
+    const start = new Date(`${dayIso}T00:00:00Z`)
+    if (Number.isNaN(start.getTime())) return null
+    if (Date.now() - start.getTime() > MAX_DAYS * 24 * 60 * 60 * 1000) return null
+    const result = await this.query(start, new Date(start.getTime() + 86_400_000), 1, false)
+    return result.error ? null : result
+  },
+
   async traffic(requested: number): Promise<CloudflareTraffic> {
     const days = Math.min(requested, MAX_DAYS)
     const capped = days < requested
@@ -97,6 +119,13 @@ export const cloudflareAnalyticsService = {
 
     const end = new Date()
     const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
+    const value = await this.query(start, end, days, capped)
+    if (!value.error) cache.set(days, { at: Date.now(), value: { ...value, capped: false } })
+    return value
+  },
+
+  /** The single GraphQL round trip both callers above are built on. */
+  async query(start: Date, end: Date, days: number, capped: boolean): Promise<CloudflareTraffic> {
     const filter = `{datetime_geq: "${start.toISOString()}", datetime_lt: "${end.toISOString()}", siteTag: "${env.CLOUDFLARE_RUM_SITE_TAG}"}`
 
     // One request, six aggregations. Cloudflare bills a query, not a field.
@@ -155,8 +184,7 @@ export const cloudflareAnalyticsService = {
         devices: rows(account?.devices, 'deviceType'),
       }
 
-      cache.set(days, { at: Date.now(), value })
-      return { ...value, capped }
+      return value
     } catch (error) {
       // A third party being slow or down must not take the console's own
       // numbers with it — the caller renders what it has and says the rest

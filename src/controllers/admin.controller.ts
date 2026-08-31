@@ -1,6 +1,7 @@
 import { adminService } from '../services/admin.service'
 import { webEventService } from '../services/web-event.service'
 import { cloudflareAnalyticsService } from '../services/cloudflare-analytics.service'
+import { webTrafficRollupService } from '../services/web-traffic-rollup.service'
 import { continuityAuditService } from '../services/continuity-audit.service'
 import { billingService } from '../services/billing.service'
 import {
@@ -151,13 +152,22 @@ export const adminController = {
    * overlapping populations — a ratio between them would be fiction.
    */
   getWebEvents: async ({ query }: { query: { days?: string } }) => {
-    const days = Math.min(Math.max(Number(query.days) || 30, 1), 180)
-    const [summary, daily, traffic] = await Promise.all([
+    const days = Math.min(Math.max(Number(query.days) || 30, 1), 365)
+
+    // Today is only as accurate as its last rollup, and someone opening the
+    // console is exactly when it should be current. Cheap: the Cloudflare call
+    // behind it is cached, and yesterday is included because a late visit can
+    // land after that day was first written.
+    await webTrafficRollupService.rollupRecent(2)
+
+    const [summary, daily, traffic, series, totals] = await Promise.all([
       webEventService.summary(days),
       webEventService.daily('page_view', days),
       cloudflareAnalyticsService.traffic(days),
+      webTrafficRollupService.series(days),
+      webTrafficRollupService.totals(days),
     ])
-    return { ...summary, daily, cloudflare: traffic }
+    return { ...summary, daily, cloudflare: traffic, series, totals }
   },
 
   getBillingConfig: async () => ({

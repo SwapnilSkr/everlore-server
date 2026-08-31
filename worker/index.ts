@@ -144,6 +144,12 @@ async function main() {
     removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
     removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
   })
+  await maintenanceQueue.add('web-traffic-rollup', { task: 'rollup_web_traffic' }, {
+    repeat: { pattern: '40 * * * *' },
+    priority: 45,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+  })
   await maintenanceQueue.add('projection-checkpoint-scheduler', { task: 'schedule_projection_checkpoints' }, {
     repeat: { pattern: '15 * * * *' },
     priority: 30,
