@@ -6,10 +6,40 @@ import { env } from '../config/env'
  * routed through OpenRouter (e.g. `deepseek/…`, `gryphe/…`). Keep narration and
  * auxiliary OpenAI models (gpt-4o-mini, gpt-4o, …) here.
  */
-const OPENAI_MODELS = new Set(['gpt-5', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'])
+const OPENAI_MODELS = new Set(['gpt-5', 'gpt-5.6-luna', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'])
 
 function clientFor(model: string) {
   return OPENAI_MODELS.has(model) ? getOpenAI() : getOpenRouter()
+}
+
+/**
+ * GPT-5-era OpenAI models changed the completion contract: `max_tokens` is
+ * rejected in favour of `max_completion_tokens`, and `temperature` accepts only
+ * its default — any explicit value is a 400. Callers keep passing our normal
+ * options; this maps them per model instead of forcing every call site to know.
+ */
+function isNextGenOpenAIModel(model: string): boolean {
+  return /^gpt-5(\.|-|$)/.test(model) && model !== 'gpt-5'
+}
+
+/**
+ * Headroom added to a caller's token budget on reasoning models. Their
+ * `max_completion_tokens` covers INTERNAL reasoning as well as the visible
+ * answer, so passing our normal budget straight through truncates the JSON and
+ * the whole structured pass falls back to empty — losing the turn's choices,
+ * not just its stats.
+ */
+const REASONING_TOKEN_HEADROOM = 1200
+
+/** Apply a model's completion-parameter dialect to an outgoing request body. */
+function applyCompletionDialect(params: Record<string, any>, model: string): void {
+  if (!isNextGenOpenAIModel(model)) return
+  if ('max_tokens' in params) {
+    params.max_completion_tokens = params.max_tokens + REASONING_TOKEN_HEADROOM
+    delete params.max_tokens
+  }
+  // Only the default temperature is accepted; sending one at all is an error.
+  delete params.temperature
 }
 
 /**
@@ -122,6 +152,7 @@ export async function callLLM(req: LLMRequest): Promise<string> {
   }
 
   Object.assign(params, routingParamsFor(req))
+  applyCompletionDialect(params, req.model)
 
   const response = await client.chat.completions.create(params, {
     timeout: req.timeoutMs ?? 90000,
