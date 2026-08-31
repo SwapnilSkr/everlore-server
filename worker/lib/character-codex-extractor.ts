@@ -1,6 +1,6 @@
 import { callLLM, AI_MODELS } from '../../src/ai'
 import { isEphemeralPersonDescriptor, isNonPersonRole, type CharacterCodexDelta } from '../../src/services/character-codex.service'
-import type { CharacterIdentityKind } from '../../src/models/character-profile.model'
+import type { CharacterIdentityKind, RelationshipMeterKey } from '../../src/models/character-profile.model'
 import { classifyPresenceCodexGaps, isActionableMention } from './presence-gap-detector'
 import { isAbstractNonPersonTerm } from '../../src/utils/person-identity'
 import {
@@ -225,6 +225,11 @@ function parseJsonObject(raw: string): Record<string, unknown> {
 
 const METER_KEYS = ['trust', 'affection', 'fear', 'rivalry'] as const
 
+/** Minimum normalized length for a SALVAGED evidence fragment. Deliberately
+ *  above the 8 required of a whole verbatim quote: a partial quote must carry
+ *  more text, not less, before it can back a bond change. */
+const MIN_SALVAGED_EVIDENCE = 12
+
 function toRelationshipDeltas(raw: any): CharacterCodexDelta['relationship_deltas'] {
   if (!raw || typeof raw !== 'object') return undefined
   const out: Record<string, number> = {}
@@ -250,9 +255,45 @@ function toRelationshipEvidence(
     const normalized = normForMatch(evidence)
     // Evidence must be a substantial literal excerpt from this turn. This
     // rejects model-supplied rationales that were never actually narrated.
-    if (normalized.length >= 8 && source.includes(normalized)) out[key] = evidence
+    if (normalized.length >= 8 && source.includes(normalized)) {
+      out[key] = evidence
+      continue
+    }
+    // Near miss: the quote is real but stitched. Models routinely splice two
+    // narrated fragments into one tidy line ('"Don\'t," she whispers. "Please."'
+    // quoted as "Don't, please."), which is not contiguous in the source and
+    // used to void the whole meter silently. Fall back to the longest fragment
+    // of the model's own quote that IS contiguous in this turn — still strictly
+    // evidence-bound, just no longer all-or-nothing.
+    const salvaged = longestSourceBackedFragment(evidence, source)
+    if (salvaged) out[key] = salvaged
   }
   return Object.keys(out).length ? out : undefined
+}
+
+/** Longest run of the model's quote that appears verbatim in this turn. Split
+ *  on the quote's own punctuation, then grow the longest contiguous window of
+ *  adjacent fragments that the source still contains. Returns null when no
+ *  fragment clears MIN_SALVAGED_EVIDENCE — a stricter bar than a whole quote
+ *  gets, so salvage can never admit weaker evidence than the exact path. */
+function longestSourceBackedFragment(evidence: string, normalizedSource: string): string | null {
+  const pieces = evidence
+    .split(/[.,;:!?—–\n"'\u2018\u2019\u201c\u201d*]+/)
+    .map((piece) => piece.trim())
+    .filter(Boolean)
+  if (pieces.length < 2) return null
+  let best: string | null = null
+  for (let start = 0; start < pieces.length; start++) {
+    for (let end = pieces.length; end > start; end--) {
+      const window = pieces.slice(start, end).join(' ').trim()
+      const normalized = normForMatch(window)
+      if (normalized.length < MIN_SALVAGED_EVIDENCE) continue
+      if (!normalizedSource.includes(normalized)) continue
+      if (!best || normalized.length > normForMatch(best).length) best = window
+      break
+    }
+  }
+  return best
 }
 
 function toInteractionHints(raw: any): CharacterCodexDelta['interaction_hints'] {
@@ -330,6 +371,87 @@ function toRelationshipFactAdditions(
   return out.length ? out : undefined
 }
 
+/** Fold adjudicator supplements into the reviewed candidate list. A supplement
+ *  naming a character already in the list contributes only the meters (and bond
+ *  facts) that character does not already carry; one naming a new character is
+ *  appended as its own entry. */
+export function mergeSupplements(reviewed: unknown[], supplements: unknown[]): unknown[] {
+  if (!supplements.length) return reviewed
+  const out = [...reviewed]
+  const indexByName = new Map<string, number>()
+  out.forEach((item, index) => {
+    for (const field of ['resolved_name', 'name']) {
+      const key = normForMatch(String((item as any)?.[field] || ''))
+      if (key && !indexByName.has(key)) indexByName.set(key, index)
+    }
+  })
+  for (const supplement of supplements) {
+    const key = normForMatch(String((supplement as any)?.name || ''))
+    const at = key ? indexByName.get(key) : undefined
+    if (at === undefined) {
+      out.push(supplement)
+      continue
+    }
+    const target = { ...(out[at] as Record<string, unknown>) }
+    const targetDeltas = (target.relationship_deltas || {}) as Record<string, unknown>
+    const targetEvidence = (target.relationship_evidence || {}) as Record<string, unknown>
+    const supplementDeltas = ((supplement as any)?.relationship_deltas || {}) as Record<string, unknown>
+    const supplementEvidence = ((supplement as any)?.relationship_evidence || {}) as Record<string, unknown>
+    const deltas = { ...targetDeltas }
+    const evidence = { ...targetEvidence }
+    for (const meter of METER_KEYS) {
+      // Already claimed by the candidate — adding the supplement's value on top
+      // would count the same beat twice.
+      if (Number(targetDeltas[meter]) || !Number(supplementDeltas[meter])) continue
+      deltas[meter] = supplementDeltas[meter]
+      if (supplementEvidence[meter]) evidence[meter] = supplementEvidence[meter]
+    }
+    target.relationship_deltas = deltas
+    target.relationship_evidence = evidence
+    const supplementFacts = (supplement as any)?.relationship_facts
+    if (supplementFacts && !target.relationship_facts) target.relationship_facts = supplementFacts
+    out[at] = target
+  }
+  return out
+}
+
+/** Strip only the bond fields from a codex candidate, leaving the rest of the
+ *  card update intact. Used when the relationship adjudicator rejects a bond
+ *  claim: its remit is the bond, not the character. */
+export function withoutRelationshipFields(item: unknown): unknown {
+  if (!item || typeof item !== 'object') return item
+  const {
+    relationship_deltas: _deltas,
+    relationship_evidence: _evidence,
+    relationship_initialization: _initialization,
+    relationship_state: _state,
+    relationship_facts: _facts,
+    ...rest
+  } = item as Record<string, unknown>
+  return rest
+}
+
+/** Drop only the named meters from a candidate's bond proposal, leaving the
+ *  other meters — and the rest of the card — untouched. */
+export function withoutMeters(item: unknown, meters: Set<RelationshipMeterKey>): unknown {
+  if (!item || typeof item !== 'object') return item
+  const record = item as Record<string, unknown>
+  const strip = (field: unknown): unknown => {
+    if (!field || typeof field !== 'object') return field
+    const kept = Object.fromEntries(
+      Object.entries(field as Record<string, unknown>).filter(
+        ([key]) => !meters.has(key as RelationshipMeterKey),
+      ),
+    )
+    return Object.keys(kept).length ? kept : undefined
+  }
+  return {
+    ...record,
+    relationship_deltas: strip(record.relationship_deltas),
+    relationship_evidence: strip(record.relationship_evidence),
+  }
+}
+
 /** A narrow second opinion for relationship mutations only. It never rewrites
  * prose and runs after it has streamed. Existing proposed changes are rejected
  * only on an explicit verdict; a supported omitted direct interaction may be
@@ -338,7 +460,7 @@ async function adjudicateRelationshipProposals(params: {
   sourceText: string
   existing: ExistingCharacter[]
   proposed: unknown[]
-}): Promise<{ rejected: Set<number>; supplements: unknown[] }> {
+}): Promise<{ rejected: Map<number, Set<RelationshipMeterKey> | 'all'>; supplements: unknown[] }> {
   const candidates = params.proposed
     .map((item, index) => ({
       index,
@@ -359,7 +481,7 @@ async function adjudicateRelationshipProposals(params: {
       messages: [
         {
           role: 'system',
-          content: 'You are a conservative relationship-event adjudicator. Review only direct player↔character bond changes. Reject a proposal only if its quoted evidence does not support that named character or the claimed change. You may add a supplement only for a clearly missed direct interaction, with exact evidence. Never infer motives, indirect atmosphere, or changes without proof. Return ONLY JSON: {"reject":[candidate index],"supplements":[{"name":"existing or present character name","relationship_deltas":{"trust":integer},"relationship_evidence":{"trust":"exact quote"},"relationship_facts":{"add":[{"statement":"concise bond fact","evidence":"exact quote","tags":["tag"]}],"retire":[]} }]}.' ,
+          content: 'You are a conservative relationship-event adjudicator. Review only direct player↔character bond changes. Reject a proposal ONLY when the SOURCE does not actually show that named character undergoing that change — a wrong character, an invented interaction, or a change nothing in the source supports. Judge the SUBSTANCE, not the transcription: a quote that is trimmed, lightly re-punctuated, or spliced from two adjacent lines is NOT grounds for rejection so long as the source really shows the interaction, and it is not your job to verify quotes character-by-character. Never reject a well-supported change merely because its excerpt is imprecise. You may add a supplement only for a clearly missed direct interaction, with exact contiguous evidence. Never infer motives, indirect atmosphere, or changes without proof. A proposal may move several meters at once; judge EACH METER SEPARATELY and reject only the ones the source does not support — never discard a well-supported meter because a different meter on the same character is wrong. Return ONLY JSON: {"reject":[{"index":candidate index,"meters":["only the unsupported meter names"]}],"supplements":[{"name":"existing or present character name","relationship_deltas":{"trust":integer,"affection":integer,"fear":integer,"rivalry":integer},"relationship_evidence":{"trust":"exact contiguous quote","affection":"exact contiguous quote","fear":"exact contiguous quote","rivalry":"exact contiguous quote"},"relationship_facts":{"add":[{"statement":"concise bond fact","evidence":"exact quote","tags":["tag"]}],"retire":[]} }]}.' ,
         },
         {
           role: 'user',
@@ -368,12 +490,35 @@ async function adjudicateRelationshipProposals(params: {
       ],
     })
   } catch {
-    return { rejected: new Set(), supplements: [] }
+    return { rejected: new Map(), supplements: [] }
   }
   const parsed = parseJsonObject(raw) as any
-  const indexes = new Set<number>((Array.isArray(parsed.reject) ? parsed.reject : [])
-    .filter((index: unknown) => Number.isInteger(index) && candidates.some((candidate) => candidate.index === index)))
-  return { rejected: indexes, supplements: Array.isArray(parsed.supplements) ? parsed.supplements.slice(0, 2) : [] }
+  // Accepts both shapes: a bare index rejects the whole bond (the original
+  // contract), an { index, meters } object rejects only the meters it names.
+  const rejected = new Map<number, Set<RelationshipMeterKey> | 'all'>()
+  for (const entry of Array.isArray(parsed.reject) ? parsed.reject : []) {
+    const index = Number.isInteger(entry) ? (entry as number) : Number((entry as any)?.index)
+    if (!Number.isInteger(index) || !candidates.some((candidate) => candidate.index === index)) continue
+    const rawMeters = Array.isArray((entry as any)?.meters) ? (entry as any).meters : null
+    if (!rawMeters) {
+      rejected.set(index, 'all')
+      continue
+    }
+    const meters = new Set<RelationshipMeterKey>(
+      rawMeters.filter((meter: unknown): meter is RelationshipMeterKey =>
+        (METER_KEYS as readonly string[]).includes(String(meter)),
+      ),
+    )
+    const existingEntry = rejected.get(index)
+    if (existingEntry === 'all') continue
+    if (!meters.size) {
+      rejected.set(index, 'all')
+      continue
+    }
+    if (existingEntry) for (const meter of existingEntry) meters.add(meter)
+    rejected.set(index, meters)
+  }
+  return { rejected, supplements: Array.isArray(parsed.supplements) ? parsed.supplements.slice(0, 2) : [] }
 }
 
 function toDelta(raw: any, sourceText: string): CharacterCodexDelta | null {
@@ -627,8 +772,9 @@ Rules:
 - disposition_to_player: concise sentiment toward the player right now.
 - relationship_initialization: ONLY when this character has no established meter state and the world seed, current player turn, or narration explicitly establishes their starting bond. Allowed kinds: best_friend, close_friend, friend, acquaintance, trusted_ally, reluctant_ally, mentor_bond, protector, dependent, romantic_partner, unrequited_attraction, ex_partner, family_warm, family_protective, family_strained, estranged, sibling_close, sibling_resentful, enemy, sworn_enemy, fearful, rival, indebted, betrayed, authority_trust. Return { "kind": one allowed kind, "evidence": "an exact short excerpt from that supplied source" }. Omit it for a stranger, uncertain relationship, or an existing meter state. Never infer it from a role alone.
 - relationship_facts: ONLY alongside relationship_initialization or an evidence-backed relationship_deltas update. Return { "add": [{ "statement": "one concise, nuanced emotional truth about this bond", "evidence": "exact short excerpt from this turn or seed", "tags": ["1-4 short descriptive tags"] }], "retire": ["an EXACT existing bond-context statement this direct interaction made false"] }. These are an append/retire journal, not a replacement summary: preserve unresolved hurt, guilt, promises, or mixed feelings unless this turn directly changes them. Add 0-3 facts; omit the field when none apply. Never invent a motive or retire a fact without direct relationship evidence.
-- relationship_deltas: how THIS TURN shifted the character's stance toward the player, as integer changes to four meters: trust, affection, fear, rivalry. Existing bond state and recent shifts in the roster are SERVER-OWNED continuity: use them to keep the new disposition and proposed delta proportionate. Include ONLY meters that genuinely moved after a DIRECT interaction with the player, ONLY for characters present this turn. Tension, atmosphere, a glance, or a generic smile alone NEVER changes a meter. Scale: ±1-3 for small moments (kind words, minor friction), ±4-7 for significant ones (a gift, a confession, a public insult), ±8-10 ONLY for dramatic turning points (betrayal, a life saved, a vow broken). Omit the field entirely when nothing shifted. NEVER include it for the player's own protagonist card in a Game Master world (a character has no meters toward themself).
-- relationship_evidence: for EVERY nonzero relationship_deltas meter, provide a short EXACT verbatim excerpt from this turn that proves the direct interaction and change. If no exact evidence exists, omit that meter. This field is mandatory for any relationship movement.
+- relationship_deltas: how THIS TURN shifted the character's stance toward the player, as integer changes to four meters: trust, affection, fear, rivalry. Existing bond state and recent shifts in the roster are SERVER-OWNED continuity: use them to keep the new disposition and proposed delta proportionate. Include ONLY meters that genuinely moved after a DIRECT interaction with the player, ONLY for characters present this turn. Tension, atmosphere, a glance, or a generic smile alone NEVER changes a meter. But a direct interaction with real weight MUST be recorded — do not return all zeros for a turn where the player saved this character's life, threatened or hurt them, kissed or rejected them, confessed something, kept or broke a promise, defended or humiliated them in front of others. Judge ALL FOUR meters, not just trust: affection moves on warmth, desire, tenderness or their withdrawal; fear moves on threat, violence, intimidation or reassurance after it; rivalry moves on competition, being bested, humiliation or public defeat. A single turn may move several meters at once, and often should — a threat at gunpoint raises fear AND lowers trust. Scale: ±1-3 for small moments (kind words, minor friction), ±4-7 for significant ones (a gift, a confession, a public insult), ±8-10 ONLY for dramatic turning points (betrayal, a life saved, a vow broken). Omit the field entirely when nothing shifted. NEVER include it for the player's own protagonist card in a Game Master world (a character has no meters toward themself).
+  Worked examples. The player drags a wounded character from a burning wreck and stays until medics arrive → { "trust": 8 } with evidence "You could have run. You didn't." The player holds a gun to a character's face → { "fear": 6, "trust": -5 } with evidence "She goes very still, and for the first time the clinical blue optic flickers." The player takes a contract out from under a rival in front of everyone → { "rivalry": 5 } with evidence "You will not get the next one." Two people simply talk in a bar and nothing is risked → omit the field entirely.
+- relationship_evidence: for EVERY nonzero relationship_deltas meter, provide an EXACT verbatim excerpt from this turn that proves the direct interaction and change. The excerpt must be ONE unbroken run of text copied straight from the turn — never two separate fragments stitched together, never re-punctuated, never tidied up. Quote a WHOLE CLAUSE of at least four or five words ("she goes very still and the optic flickers", "You could have run. You didn't."); a one- or two-word scrap ("Don't,", "Please.") is too short to count and is thrown out. If the proof spans a gap, quote the single strongest contiguous clause. A meter whose excerpt cannot be found verbatim in the turn is DISCARDED, so an imprecise or over-short quote silently throws the bond change away. Each nonzero meter needs its own excerpt, including affection, fear, and rivalry — not only trust. If no exact excerpt exists, omit that meter. This field is mandatory for any relationship movement.
 - is_protagonist: true ONLY for the world's main character (see below); otherwise false.
 - relation_assertions (a TOP-LEVEL array, sibling to "characters" — NOT inside a character): typed family/relationship ties this turn ESTABLISHES or REVEALS between two specific people (or the player). Each: { from, to, kind, label, gender, source }. "from"/"to" are names from the cast; use "player" for the human player's own character. "kind" MUST be exactly one of: parent_of, child_of, sibling_of, partner_of, progenitor_of, descendant_of, superior_of, subordinate_of, kin_of, bonded_of — read as "from is to's <kind>". Worked example: "Mara is the player's sister" → { "from": "Mara", "to": "player", "kind": "sibling_of", "label": "sister", "gender": "f" }. Map ANY world-native term (clone-sister, sire, liege, bondmate, broodmother) to the CLOSEST kind and keep the native word in "label". gender: m|f|n implied by the label. source: "narrator" when the narration states the tie, "character_claim" when a character merely CLAIMS it (may be a lie). polarity: "sever" when a tie ENDS this turn (divorce, death, disownment), else omit. ONLY include a tie the text actually establishes or reveals THIS turn — do NOT re-list every relationship that already exists, and NEVER a figurative one ("like a brother to me"). Empty array [] when no tie is asserted.
 ${protagonistBlock}${presentBlock}
@@ -654,7 +800,7 @@ Respond ONLY JSON:
       "disposition_to_player": "string",
       "hidden_thought": "string",
       "relationship_deltas": { "trust": 0, "affection": 0, "fear": 0, "rivalry": 0 },
-      "relationship_evidence": { "trust": "exact words from the turn" },
+      "relationship_evidence": { "trust": "exact words from the turn", "affection": "exact words from the turn", "fear": "exact words from the turn", "rivalry": "exact words from the turn" },
       "relationship_initialization": { "kind": "close_friend", "evidence": "my close friend" },
       "relationship_facts": { "add": [{ "statement": "A close friend who is protective but worried about the player.", "evidence": "my close friend", "tags": ["protective", "worried"] }], "retire": [] },
       "is_protagonist": false
@@ -693,10 +839,22 @@ Respond ONLY JSON:
     existing,
     proposed: rawList,
   })
-  const list = [
-    ...rawList.filter((_, index) => !adjudication.rejected.has(index)),
-    ...adjudication.supplements,
-  ]
+  // A rejection is a verdict on the BOND ONLY, and on only the meters it names.
+  // The adjudicator reviews nothing else, so a rejected candidate keeps its card
+  // update (appearance, state, hints, facts) and loses just the meters actually
+  // faulted — dropping the whole entry threw away unrelated codex work, and
+  // dropping every meter threw away well-evidenced ones, every time a single
+  // quote looked shaky.
+  const reviewed = rawList.map((item, index) => {
+    const verdict = adjudication.rejected.get(index)
+    if (!verdict) return item
+    return verdict === 'all' ? withoutRelationshipFields(item) : withoutMeters(item, verdict)
+  })
+  // A supplement for someone the extractor ALREADY proposed is merged into that
+  // entry, never appended beside it: foldDelta applies every entry in turn to
+  // the same card, so two entries naming one character would apply their meters
+  // twice. The candidate's own meters win; the supplement only fills gaps.
+  const list = mergeSupplements(reviewed, adjudication.supplements)
 
   // Deterministic anti-duplication backstop (defends the prompt rules above):
   // a brand-new card is only allowed when its name (or an alias) actually appears
