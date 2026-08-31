@@ -108,6 +108,40 @@ export const webTrafficRollupService = {
   },
 
   /**
+   * Write every day that has raw events but no row yet.
+   *
+   * The record starts empty while the events do not, and a day that closed
+   * before this existed would otherwise never be written at all. Bounded by
+   * what the raw events themselves still cover, so it is finite by
+   * construction and becomes a no-op once it has caught up.
+   */
+  async backfillMissing() {
+    const days = (await mongoColl.webEvents().aggregate([
+      { $group: { _id: { $dateToString: { format: '%Y-%m-%d', date: '$created_at' } } } },
+      { $sort: { _id: 1 } },
+    ]).toArray()).map((row) => row._id as string)
+
+    const existing = new Set(
+      (await mongoColl.webTrafficDaily().find({}, { projection: { _id: 1 } }).toArray()).map(
+        (row) => row._id,
+      ),
+    )
+
+    const missing = days.filter((day) => !existing.has(day))
+    for (const day of missing) {
+      try {
+        await this.rollupDay(day)
+      } catch (error) {
+        log.error('web traffic backfill failed', {
+          day,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return { checked: days.length, written: missing.length }
+  },
+
+  /**
    * The stored history for a range, oldest first.
    *
    * This is the honest long view: every day since the rollup started, whatever

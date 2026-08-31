@@ -159,6 +159,7 @@ export const adminController = {
     // behind it is cached, and yesterday is included because a late visit can
     // land after that day was first written.
     await webTrafficRollupService.rollupRecent(2)
+    await webTrafficRollupService.backfillMissing()
 
     const [summary, daily, traffic, series, totals] = await Promise.all([
       webEventService.summary(days),

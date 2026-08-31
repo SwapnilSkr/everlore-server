@@ -73,8 +73,11 @@ export async function maintenanceProcessor(job: Job) {
     // write each day down as it happens.
     case 'rollup_web_traffic': {
       const rolled = await webTrafficRollupService.rollupRecent(3)
-      log.info('maintenance.web_traffic_rolled', { days: rolled.length })
-      return { rolled }
+      // Catches days that closed before this job existed, and any the worker
+      // was down for. A no-op once the record has caught up.
+      const backfilled = await webTrafficRollupService.backfillMissing()
+      log.info('maintenance.web_traffic_rolled', { days: rolled.length, backfilled })
+      return { rolled, backfilled }
     }
 
     case 'character_projection':
