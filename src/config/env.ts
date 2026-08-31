@@ -78,6 +78,12 @@ const optionalEnvVars = {
   BILLING_ENFORCEMENT_ENABLED: 'false',
   /** Non-production QA checkout. Never enable this in a public production app. */
   BILLING_SIMULATION_ENABLED: 'false',
+  // Cloudflare Web Analytics, read-only. The marketing site's page views live
+  // there; the admin console reads them through us so the token never reaches a
+  // browser. Absent means the traffic panel simply says it is not configured.
+  CLOUDFLARE_API_TOKEN: '',
+  CLOUDFLARE_ACCOUNT_ID: '',
+  CLOUDFLARE_RUM_SITE_TAG: '',
   GOOGLE_PLAY_PACKAGE_NAME: '',
   /** JSON service-account credential with Android Publisher API access. */
   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: '',
@@ -126,6 +132,9 @@ export interface Env {
   TEMPLATE_CREATE_RATE_MAX: number
   BILLING_ENFORCEMENT_ENABLED: boolean
   BILLING_SIMULATION_ENABLED: boolean
+  CLOUDFLARE_API_TOKEN: string
+  CLOUDFLARE_ACCOUNT_ID: string
+  CLOUDFLARE_RUM_SITE_TAG: string
   GOOGLE_PLAY_PACKAGE_NAME: string
   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: string
   GOOGLE_PLAY_RTDN_AUDIENCE: string
@@ -190,6 +199,9 @@ function loadEnv(): Env {
     TEMPLATE_CREATE_RATE_MAX: Number(process.env.TEMPLATE_CREATE_RATE_MAX || optionalEnvVars.TEMPLATE_CREATE_RATE_MAX),
     BILLING_ENFORCEMENT_ENABLED: process.env.BILLING_ENFORCEMENT_ENABLED === 'true',
     BILLING_SIMULATION_ENABLED: process.env.BILLING_SIMULATION_ENABLED === 'true',
+    CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN || optionalEnvVars.CLOUDFLARE_API_TOKEN,
+    CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID || optionalEnvVars.CLOUDFLARE_ACCOUNT_ID,
+    CLOUDFLARE_RUM_SITE_TAG: process.env.CLOUDFLARE_RUM_SITE_TAG || optionalEnvVars.CLOUDFLARE_RUM_SITE_TAG,
     GOOGLE_PLAY_PACKAGE_NAME: process.env.GOOGLE_PLAY_PACKAGE_NAME || optionalEnvVars.GOOGLE_PLAY_PACKAGE_NAME,
     GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || optionalEnvVars.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON,
     GOOGLE_PLAY_RTDN_AUDIENCE: process.env.GOOGLE_PLAY_RTDN_AUDIENCE || optionalEnvVars.GOOGLE_PLAY_RTDN_AUDIENCE,

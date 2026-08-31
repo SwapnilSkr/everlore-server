@@ -1,5 +1,6 @@
 import { adminService } from '../services/admin.service'
 import { webEventService } from '../services/web-event.service'
+import { cloudflareAnalyticsService } from '../services/cloudflare-analytics.service'
 import { continuityAuditService } from '../services/continuity-audit.service'
 import { billingService } from '../services/billing.service'
 import {
@@ -141,13 +142,22 @@ export const adminController = {
     body: { monthly_ink?: number | null; daily_story_safety_cap?: number | null }
   }) => adminService.setUserBillingLimits(params.userId, body),
 
-  /** Marketing-site funnel: who landed, who clicked, who left for Play. */
+  /**
+   * The marketing site on one screen.
+   *
+   * Two sources that must not be added together: Cloudflare counts page views
+   * from its own beacon, we count interactions from ours. They are blocked by
+   * different lists and served from different domains, so they measure two
+   * overlapping populations — a ratio between them would be fiction.
+   */
   getWebEvents: async ({ query }: { query: { days?: string } }) => {
     const days = Math.min(Math.max(Number(query.days) || 30, 1), 180)
-    return {
-      ...(await webEventService.summary(days)),
-      daily: await webEventService.daily('page_view', days),
-    }
+    const [summary, daily, traffic] = await Promise.all([
+      webEventService.summary(days),
+      webEventService.daily('page_view', days),
+      cloudflareAnalyticsService.traffic(days),
+    ])
+    return { ...summary, daily, cloudflare: traffic }
   },
 
   getBillingConfig: async () => ({
