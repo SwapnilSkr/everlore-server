@@ -89,8 +89,11 @@ export const cloudflareAnalyticsService = {
     const capped = days < requested
     if (!this.configured()) return empty(days, { capped })
 
+    // Keyed by the clamped window, so a 30-day request reuses the 7-day answer.
+    // `capped` belongs to the request rather than the data, so it is stamped on
+    // the way out — otherwise the first caller's flag is served to everyone.
     const hit = cache.get(days)
-    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value
+    if (hit && Date.now() - hit.at < CACHE_TTL_MS) return { ...hit.value, capped }
 
     const end = new Date()
     const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
@@ -153,7 +156,7 @@ export const cloudflareAnalyticsService = {
       }
 
       cache.set(days, { at: Date.now(), value })
-      return value
+      return { ...value, capped }
     } catch (error) {
       // A third party being slow or down must not take the console's own
       // numbers with it — the caller renders what it has and says the rest
