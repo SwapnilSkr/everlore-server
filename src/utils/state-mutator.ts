@@ -8,15 +8,44 @@ export interface FlagMutation {
   value?: unknown
 }
 
+/** Loose key for matching a model-emitted stat name to a tracked gauge:
+ *  case-folded with separators and spaces removed, so "Heat", "heat ", and
+ *  "player_heat" style casing/punctuation drift still lands on `heat`. */
+function statKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '')
+}
+
+/**
+ * Resolve a model-emitted stat name to the tracked gauge it means. Exact match
+ * first; otherwise a single unambiguous case/punctuation-insensitive match.
+ * Returns null when the name matches no tracked gauge (or more than one) — an
+ * unknown gauge is dropped rather than guessed at.
+ */
+export function resolveStatKey(
+  name: string,
+  trackedKeys: readonly string[],
+): string | null {
+  if (trackedKeys.includes(name)) return name
+  const wanted = statKey(name)
+  if (!wanted) return null
+  const matches = trackedKeys.filter((key) => statKey(key) === wanted)
+  return matches.length === 1 ? matches[0] : null
+}
+
 export function applyStateMutations(
   currentState: Record<string, number>,
   mutations: Record<string, Mutation>,
   statLimits?: Record<string, { min: number; max: number }>,
 ): Record<string, number> {
   const newState = { ...currentState }
+  const trackedKeys = Object.keys(newState)
 
-  for (const [key, mutation] of Object.entries(mutations)) {
-    if (!(key in newState)) continue
+  for (const [rawKey, mutation] of Object.entries(mutations)) {
+    // A mutation naming an untracked gauge is dropped — but casing/punctuation
+    // drift ("Heat" for `heat`) is a near miss, not an untracked gauge, and
+    // silently dropping it froze every stat it touched.
+    const key = resolveStatKey(rawKey, trackedKeys)
+    if (!key) continue
 
     switch (mutation.op) {
       case 'add':

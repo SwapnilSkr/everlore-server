@@ -20,7 +20,7 @@ import { applyStateMutations, applyFlagMutations } from '../utils/state-mutator'
 import { repairProseHygiene, validateProseHygiene } from '../utils/prose-hygiene'
 import { callLLMWithFallback, callLLMStreamWithFallback, embed, AI_MODELS, narrationTemperature } from '../ai'
 import { classifyScene } from '../../worker/lib/nsfw-classifier'
-import { extractSceneMetadata } from '../../worker/lib/metadata-extractor'
+import { extractSceneMetadata, statDescriptors } from '../../worker/lib/metadata-extractor'
 import { extractCharacterCodexDeltas } from '../../worker/lib/character-codex-extractor'
 import { classifyPresenceCodexGaps } from '../../worker/lib/presence-gap-detector'
 import {
@@ -316,7 +316,7 @@ async function projectLatestReplayTurn(params: {
   const [meta, entityAdjudication, endpointAdjudication] = await Promise.all([
     extractSceneMetadata(
       narrative,
-      Object.keys(instance.world_state || {}),
+      statDescriptors(template.base_stats_template || instance.world_state),
       Object.keys(instance.active_flags || {}),
       {
         isSentient: !!template.is_sentient,
@@ -1977,7 +1977,7 @@ export const memoryService = {
       const [editMeta, editEntityAdjudication] = await Promise.all([
         extractSceneMetadata(
           nextAiResponse,
-          Object.keys(editInstance?.world_state || {}),
+          statDescriptors(editTemplate?.base_stats_template || editInstance?.world_state),
           Object.keys(editInstance?.active_flags || {}),
           {
             isSentient: !!editTemplate?.is_sentient,

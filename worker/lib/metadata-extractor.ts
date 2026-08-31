@@ -207,7 +207,7 @@ function safeParseObject(raw: string): Record<string, unknown> {
 const METADATA_RULES = `You are a game-state analyst for a narrative RPG engine. Given a narrative passage, determine what changed in the world and suggest next moves. Respond ONLY with JSON matching the required schema.
 
 Rules:
-- state_mutations: include ONLY stats that actually changed this passage. op is "add"|"subtract"|"set"; for add/subtract keep value between 1 and 20. Only the tracked stat names listed in CONTEXT below may be used.
+- state_mutations: the tracked stats are this world's live gauges, and judging them is a PRIMARY job of this pass, not an afterthought. Walk EVERY tracked stat listed in CONTEXT below and ask whether this passage moved it, using that stat's own description as the definition of what moves it. Report the ones that moved and omit the ones that did not — but do NOT default to reporting none: a passage with a visible cause (violence, a threat, exposure or being seen, a public act, a favour, trust earned or broken, a betrayal, a loss, a reward, or time spent lying low) almost always moves at least one gauge, and you must record it. op is "add"|"subtract"|"set"; for add/subtract keep value between 1 and 20 — 1-4 for an incidental nudge, 5-10 for a clear beat, 11-20 only for a decisive, world-visible event. Use "set" only when the prose makes the new level absolute (a gauge wiped clean, a rank formally conferred). Only the tracked stat names listed in CONTEXT below may be used, spelled EXACTLY as listed — never invent a stat and never substitute a synonym; a change with no matching tracked stat is simply not reported. Worked examples, for a world tracking heat [0-100] ("how much attention the corps and cops are paying to you") and reputation [0-100] ("how much the city's players respect or fear you"): the protagonist guns down a guard on camera and the incident is logged with their name → {"heat":{"op":"add","value":12}}; they win a public duel in front of the whole district → {"reputation":{"op":"add","value":8},"heat":{"op":"add","value":3}}; they spend a month underground under a false ID and the bounty notice stops running → {"heat":{"op":"subtract","value":8}}; two people talk quietly over a meal and nothing is risked, revealed, or witnessed → {}.
 - flag_mutations: include ONLY flags that changed. op is "set"|"increment"|"decrement". Only the tracked flag names listed in CONTEXT below may be used.
 - scene_tag: one of dialogue, combat, romantic, intimate, exploration, existential, cosmic, mundane. Use "romantic" for affectionate/romantic but non-explicit scenes (flirting, kissing, emotional intimacy). Use "intimate" ONLY for explicit sexual content.
 - emotional_tone: a single word.
@@ -287,6 +287,33 @@ type MetadataOpts = {
  *  caching reuse the ~2.5K-token rules prefix across turns and worlds. */
 type StatDescriptor = { name: string; min: number; max: number; description: string }
 type StatInput = StatDescriptor[] | string[]
+
+/**
+ * Build the extractor's stat descriptors from a template's `base_stats_template`
+ * (or, when only the runtime gauge map is at hand, from its bare keys). The
+ * authored description and bounds are what let the metadata pass judge each
+ * gauge on its own terms, so every caller — live turn, replay, edit — must pass
+ * these rather than bare stat names.
+ */
+export function statDescriptors(
+  defs: Record<string, unknown> | null | undefined,
+): StatDescriptor[] {
+  return Object.entries(defs || {}).map(([name, raw]) => {
+    const def = (raw && typeof raw === 'object' ? raw : {}) as {
+      min?: unknown
+      max?: unknown
+      description?: unknown
+    }
+    return {
+      name,
+      min: Number.isFinite(def.min) ? (def.min as number) : 0,
+      max: Number.isFinite(def.max) ? (def.max as number) : 100,
+      description: typeof def.description === 'string' && def.description.trim()
+        ? def.description.slice(0, 160)
+        : name,
+    }
+  })
+}
 
 function normalizeStats(stats: StatInput): StatDescriptor[] {
   return stats.map((stat) =>

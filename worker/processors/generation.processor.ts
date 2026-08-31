@@ -19,7 +19,7 @@ import { scoreScene, classifyBorderlineIntent } from '../lib/nsfw-classifier'
 import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
 import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
-import { extractSceneMetadata } from '../lib/metadata-extractor'
+import { extractSceneMetadata, statDescriptors } from '../lib/metadata-extractor'
 import { extractCharacterCodexDeltas } from '../lib/character-codex-extractor'
 import { compactImmutableFacts } from '../lib/codex-compactor'
 import { classifyPresenceCodexGaps, isActionableMention } from '../lib/presence-gap-detector'
@@ -1093,15 +1093,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   })
   const metaPromise = extractSceneMetadata(
     rawNarrative,
-    Object.entries(session.stat_definitions || session.world_state || {}).map(([name, raw]) => {
-      const def = raw && typeof raw === 'object' ? raw as any : {}
-      return {
-        name,
-        min: Number.isFinite(def.min) ? def.min : 0,
-        max: Number.isFinite(def.max) ? def.max : 100,
-        description: typeof def.description === 'string' ? def.description.slice(0, 160) : name,
-      }
-    }),
+    statDescriptors(session.stat_definitions || session.world_state),
     Object.keys(session.active_flags || {}),
     {
       isSentient: session.is_sentient,
