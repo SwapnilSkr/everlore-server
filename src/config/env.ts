@@ -83,6 +83,13 @@ const optionalEnvVars = {
   // browser. Absent means the traffic panel simply says it is not configured.
   CLOUDFLARE_API_TOKEN: '',
   CLOUDFLARE_ACCOUNT_ID: '',
+  // NOT the beacon token in the site's <script data-cf-beacon> tag. Cloudflare
+  // issues two different ids per site: the snippet token, which identifies the
+  // page when it reports, and the site tag, which identifies the same site when
+  // you read the data back. Using the first here returns a valid, empty answer
+  // with no error — it filters on a site that never reported anything. Read the
+  // real one off the data itself: query rumPageloadEventsAdaptiveGroups with no
+  // siteTag filter and select `dimensions { siteTag }`.
   CLOUDFLARE_RUM_SITE_TAG: '',
   GOOGLE_PLAY_PACKAGE_NAME: '',
   /** JSON service-account credential with Android Publisher API access. */
