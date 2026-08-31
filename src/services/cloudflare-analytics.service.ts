@@ -18,13 +18,26 @@ const ENDPOINT = 'https://api.cloudflare.com/client/v4/graphql'
 /** RUM aggregates are minutes behind live, so a short cache costs nothing and
  *  keeps a refreshed panel from spending the account's query budget. */
 const CACHE_TTL_MS = 60_000
+
+/**
+ * How far back the RUM dataset will actually answer.
+ *
+ * Ask for thirty days and Cloudflare returns an empty result with no error —
+ * indistinguishable from "nobody visited" unless you already know. Measured,
+ * not documented: 7 days answers, 8 comes back empty. The caller is told which
+ * window it really got so the console can say so rather than render zeros.
+ */
+const MAX_DAYS = 7
 const cache = new Map<number, { at: number; value: CloudflareTraffic }>()
 
 export type TrafficRow = { label: string; views: number }
 
 export type CloudflareTraffic = {
   configured: boolean
+  /** The window actually queried, which may be shorter than the one asked for. */
   days: number
+  /** True when the request was trimmed to what the dataset can answer. */
+  capped: boolean
   page_views: number
   visits: number
   daily: Array<{ day: string; views: number; visits: number }>
@@ -40,6 +53,7 @@ function empty(days: number, patch: Partial<CloudflareTraffic> = {}): Cloudflare
   return {
     configured: false,
     days,
+    capped: false,
     page_views: 0,
     visits: 0,
     daily: [],
@@ -70,8 +84,10 @@ export const cloudflareAnalyticsService = {
     )
   },
 
-  async traffic(days: number): Promise<CloudflareTraffic> {
-    if (!this.configured()) return empty(days)
+  async traffic(requested: number): Promise<CloudflareTraffic> {
+    const days = Math.min(requested, MAX_DAYS)
+    const capped = days < requested
+    if (!this.configured()) return empty(days, { capped })
 
     const hit = cache.get(days)
     if (hit && Date.now() - hit.at < CACHE_TTL_MS) return hit.value
@@ -113,7 +129,7 @@ export const cloudflareAnalyticsService = {
       if (!response.ok || body.errors?.length) {
         const message = body.errors?.[0]?.message || `HTTP ${response.status}`
         log.error('cloudflare analytics query failed', { message })
-        return empty(days, { configured: true, error: message })
+        return empty(days, { configured: true, capped, error: message })
       }
 
       const account = body.data?.viewer?.accounts?.[0]
@@ -122,6 +138,7 @@ export const cloudflareAnalyticsService = {
       const value: CloudflareTraffic = {
         configured: true,
         days,
+        capped,
         page_views: totals?.count || 0,
         visits: totals?.sum?.visits || 0,
         daily: (account?.daily || []).map((g) => ({
@@ -143,7 +160,7 @@ export const cloudflareAnalyticsService = {
       // is missing.
       const message = error instanceof Error ? error.message : String(error)
       log.error('cloudflare analytics request failed', { error: message })
-      return empty(days, { configured: true, error: message })
+      return empty(days, { configured: true, capped, error: message })
     }
   },
 }
