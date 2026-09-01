@@ -3,7 +3,9 @@
  *
  *  B2b — codex carding heuristics:
  *    - isBareDescriptorName: a bare role/descriptor ("the merchant", "a guard")
- *      is a passer-by, never a Bonds card; a proper/qualified name is NOT bare.
+ *      is a passer-by, never a Bonds card on sight; a proper/qualified name is
+ *      NOT bare. Judged against the prose's own capitalization rather than a
+ *      hardcoded role vocabulary, so it holds for roles no list anticipated.
  *    - isPlayerMentionedRelative: an absent relative the player names is a memory
  *      fact, not a card — even when the NAME is supplied by the NARRATION
  *      answering the player ("what's my sister's name?" → "Mira").
@@ -18,6 +20,7 @@
 import {
   isBareDescriptorName,
   isPlayerMentionedRelative,
+  looksLikeUnnamedLabel,
 } from "../worker/lib/character-codex-extractor";
 import { isEphemeralPersonDescriptor, isNonPersonRole } from "../src/services/character-codex.service";
 import { classifyScene } from "../worker/lib/nsfw-classifier";
@@ -31,13 +34,62 @@ function ok(label: string, cond: boolean, detail = "") {
 const card = (p: Partial<CharacterCodexDelta>): CharacterCodexDelta =>
   ({ name: "", aliases: [], is_protagonist: false, ...p } as CharacterCodexDelta);
 
+// The descriptor test reads the STORY'S OWN capitalization rather than a word
+// list, so every case supplies the prose it is judged against. This is the whole
+// point of the change: no vocabulary can cover an open world's roles.
+const PROSE = [
+  "The merchant spits. A guard blocks the stair while the stranger waits.",
+  "An old man coughs; the woman looks away and the villagers mutter.",
+  "Merchant Voss counts coin beside the iron merchant of Ashford.",
+  "Mira laughs. Captain Rhea salutes, and Elara says nothing.",
+  "The rider dismounts. The knight raises his visor.",
+].join(" ");
+
 console.log("=== B2b.1 bare-descriptor passer-by is not a card ===");
 for (const n of ["Merchant", "the merchant", "a guard", "the stranger", "an old man", "the woman", "villagers"]) {
-  ok(`"${n}" is a bare descriptor`, isBareDescriptorName(n));
+  ok(`"${n}" is a bare descriptor`, isBareDescriptorName(n, PROSE));
 }
 console.log("=== B2b.1 proper / qualified names are NOT bare ===");
-for (const n of ["Merchant Voss", "Mira", "the iron merchant of Ashford", "Captain", "Elara"]) {
-  ok(`"${n}" is NOT a bare descriptor`, !isBareDescriptorName(n));
+for (const n of ["Merchant Voss", "Mira", "the iron merchant of Ashford", "Captain Rhea", "Elara"]) {
+  ok(`"${n}" is NOT a bare descriptor`, !isBareDescriptorName(n, PROSE));
+}
+
+console.log("=== B2b.1a the test is structural, not a vocabulary ===");
+// The roles below were never on the old hardcoded list and sailed straight
+// through it; "knight" WAS on it and could never reach the roster in a world
+// full of knights. Both are now decided by how the prose writes them.
+for (const n of ["the rider", "the outrider", "the herald", "the quartermaster"]) {
+  ok(
+    `unlisted role "${n}" is a descriptor when the prose lowercases it`,
+    isBareDescriptorName(n, `A hush falls as ${n} steps forward.`),
+  );
+}
+ok(
+  '"the knight" is a descriptor when written as a common noun',
+  isBareDescriptorName("the knight", PROSE),
+);
+ok(
+  '"the Knight" is NOT a descriptor when the story capitalizes it as a title',
+  !isBareDescriptorName("the Knight", "She waves the Knight through the gate."),
+);
+ok(
+  '"Ser Aldric" is NOT a descriptor',
+  !isBareDescriptorName("Ser Aldric", "Ser Aldric raises his visor."),
+);
+ok(
+  "a sentence-initial capital proves nothing on its own",
+  isBareDescriptorName("the rider", "Rider and horse both stagger. the rider spits."),
+);
+
+console.log("=== B2b.1a-2 unnamed-label test (no prose available) ===");
+for (const [n, want] of [
+  ["the rider", true],
+  ["rider", true],
+  ["the Rider", false],
+  ["Merchant Voss", false],
+  ["Mira", false],
+] as Array<[string, boolean]>) {
+  ok(`"${n}" unnamed-label = ${want}`, looksLikeUnnamedLabel(n) === want);
 }
 
 console.log("=== B2b.1b places and objects are never character-card roles ===");

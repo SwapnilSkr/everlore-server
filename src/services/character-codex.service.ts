@@ -12,7 +12,7 @@ import type { CharacterLifecycleDeltaDoc } from '../models/world-event.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import type { WorldFactSource } from '../utils/world-authority'
-import { isAbstractNonPersonTerm } from '../utils/person-identity'
+import { isAbstractNonPersonTerm, isLabelLike } from '../utils/person-identity'
 import {
   relationshipBaseline,
   type RelationshipInitialization,
@@ -36,6 +36,9 @@ export type InteractionHintDraft = {
 export type CharacterCodexDelta = {
   name: string
   identity_kind?: CharacterIdentityKind
+  /** Label disambiguator, decided at extraction time and carried in the ledger so
+   *  replay reproduces the same identity split. Null/absent for proper names. */
+  identity_scope?: string
   aliases?: string[]
   resolved_name?: string
   role?: string
@@ -362,6 +365,45 @@ function reconcileMutableState(
   return uniqKeepRecent([...kept, ...(add || [])], max)
 }
 
+/**
+ * Strip bare TITLES that a card should never own as an alias.
+ *
+ * The extractor already refuses to emit them, judging by how the prose spells
+ * the word. But foldDelta is also the replay path, and a ledger row written
+ * before that guard existed would put "Ser" straight back on the protagonist —
+ * the same reason abstract nouns and non-person roles are re-checked here.
+ *
+ * Replay has no prose, so the evidence is the ROSTER instead: a single word that
+ * leads SOMEBODY ELSE's longer name ("Ser" in front of "Ser Edric") is a title,
+ * not an identity. Matching against a different card is what makes it safe —
+ * "Michael" leading this card's own "Michael Oliver" is just his first name.
+ */
+function withoutBareTitles(
+  aliases: string[],
+  state: FoldState,
+  self: CharacterProfileDoc | undefined,
+): string[] {
+  // Every multi-word name this person goes by. A FIRST NAME leads their own full
+  // name ("Elara" → "Elara Thornwood") and must never read as a title merely
+  // because a relative shares it — a dry run over 85 real cards caught exactly
+  // that, and it would have stripped two people's actual names.
+  const ownMultiWord = aliases
+    .concat(self ? [self.canonical_name, ...(self.aliases || [])] : [])
+    .map(normalizeName)
+    .filter((n) => n.includes(' '))
+  return aliases.filter((alias) => {
+    const a = normalizeName(alias)
+    if (!a || a.includes(' ')) return true
+    if (ownMultiWord.some((n) => n.split(' ').includes(a))) return true
+    for (const [key, card] of state.byName) {
+      if (card === self || !key.includes(' ')) continue
+      if (ownMultiWord.includes(key)) continue
+      if (key.split(' ')[0] === a) return false
+    }
+    return true
+  })
+}
+
 function buildAliasSet(delta: CharacterCodexDelta): string[] {
   return uniqStrings([
     delta.name,
@@ -375,18 +417,39 @@ function buildAliasSet(delta: CharacterCodexDelta): string[] {
  * changed (to update). `byName` maps every name + alias → its card so referents
  * resolve, and `protagonist` enforces the single-protagonist invariant.
  */
-interface FoldState {
+export interface FoldState {
   byName: Map<string, CharacterProfileDoc>
   created: Set<CharacterProfileDoc>
   dirty: Set<CharacterProfileDoc>
   protagonist?: CharacterProfileDoc
 }
 
-function newFoldState(existing: CharacterProfileDoc[]): FoldState {
+/**
+ * The key a card is resolved by. A named person is their name. A person known
+ * only by a label is that label WITHIN a scope, so two riders never collide.
+ *
+ * A card with no scope (every card that existed before this field) keys exactly
+ * as it always did, which is what makes this change migration-free.
+ */
+export function identityKey(name: string, scope?: string | null): string {
+  const n = normalizeName(name)
+  return scope ? `${n}#${scope}` : n
+}
+
+export function newFoldState(existing: CharacterProfileDoc[]): FoldState {
   const byName = new Map<string, CharacterProfileDoc>()
   for (const c of existing) {
-    byName.set(c.name_normalized, c)
-    for (const a of c.aliases || []) byName.set(normalizeName(a), c)
+    byName.set(identityKey(c.canonical_name, c.identity_scope), c)
+    for (const a of c.aliases || []) byName.set(identityKey(a, c.identity_scope), c)
+    // A scoped card is ALSO reachable by its bare key, but only as a fallback —
+    // an unscoped delta for a label only one person currently holds must still
+    // find them. A later scoped delta overwrites nothing, because the scoped key
+    // above is distinct. Registered last-wins in first_seen order, so the bare
+    // label resolves to the ORIGINAL holder, never to a newcomer.
+    if (c.identity_scope) {
+      const bare = normalizeName(c.canonical_name)
+      if (!byName.has(bare)) byName.set(bare, c)
+    }
   }
   return {
     byName,
@@ -403,7 +466,7 @@ function newFoldState(existing: CharacterProfileDoc[]): FoldState {
  * ({@link rebuildCodexFromLedger}) so the two can never diverge. Pure (no I/O):
  * mutates the in-memory state only.
  */
-function foldDelta(
+export function foldDelta(
   state: FoldState,
   delta: CharacterCodexDelta,
   sequence: number,
@@ -431,13 +494,29 @@ function foldDelta(
     delta.resolved_name || '',
     delta.name,
     ...(delta.aliases || []),
-  ], 10).map(normalizeName)
+  ], 10)
 
+  // Scoped lookup first: a delta carrying a scope may ONLY land on that identity.
+  // Falling back to the bare key afterwards is what keeps every unscoped delta —
+  // i.e. every card that predates this field — resolving exactly as it used to.
   let target: CharacterProfileDoc | undefined
   for (const n of candidateNames) {
     if (!n) continue
-    target = state.byName.get(n)
+    target = state.byName.get(identityKey(n, delta.identity_scope))
     if (target) break
+  }
+  if (!target) {
+    for (const n of candidateNames) {
+      if (!n) continue
+      const bare = state.byName.get(normalizeName(n))
+      if (!bare) continue
+      // An UNSCOPED delta may land on anyone holding the label. A SCOPED one may
+      // only adopt a card that has no scope yet — a card minted before this
+      // field existed. Letting it match a differently-scoped card would re-open
+      // the very collision the scope exists to close.
+      const legacyLabelCard = !bare.identity_scope && isLabelLike(bare.canonical_name)
+      if (!delta.identity_scope || legacyLabelCard) { target = bare; break }
+    }
   }
 
   // A NEW name claiming to be the protagonist is a referent of the protagonist
@@ -447,7 +526,7 @@ function foldDelta(
     target = state.protagonist
   }
 
-  const aliases = buildAliasSet(delta)
+  const aliases = withoutBareTitles(buildAliasSet(delta), state, target)
   const name = (delta.resolved_name || delta.name).trim()
   const normalized = normalizeName(name)
 
@@ -462,6 +541,7 @@ function foldDelta(
       name_normalized: normalized,
       aliases,
       identity_kind: delta.identity_kind,
+      ...(delta.identity_scope ? { identity_scope: delta.identity_scope } : {}),
       role: shouldSetText(delta.role) ? delta.role.trim() : undefined,
       appearance: shouldSetText(delta.appearance) ? delta.appearance.trim() : undefined,
       persona: shouldSetText(delta.persona) ? delta.persona.trim() : undefined,
@@ -496,7 +576,7 @@ function foldDelta(
   }
 
   // Merge into the existing card (mutate in place).
-  target.aliases = uniqStrings([...(target.aliases || []), ...aliases], 20)
+  target.aliases = withoutBareTitles(uniqStrings([...(target.aliases || []), ...aliases], 20), state, target)
   target.immutable_facts = uniqKeepRecent(
     [...(target.immutable_facts || []), ...(delta.immutable_facts || [])],
     IMMUTABLE_STORE_MAX,
@@ -509,6 +589,12 @@ function foldDelta(
   )
   target.last_seen_sequence = sequence
   target.updated_at = ctx.now
+  // Lazy adoption: a card minted before identity scoping existed takes the first
+  // scope that resolves to it. That is the entire migration — it happens on the
+  // user's next turn, in place, and costs nothing.
+  if (!target.identity_scope && delta.identity_scope && !target.is_protagonist) {
+    target.identity_scope = delta.identity_scope
+  }
   if (!target.role && shouldSetText(delta.role)) target.role = delta.role.trim()
   // Identity labels can only become more specific. A proper name or fixed
   // epithet learned later promotes a seed role/kinship placeholder, while an
@@ -560,10 +646,26 @@ function foldDelta(
     normalizeName(delta.name) !== normalizeName(target.canonical_name)
   ) {
     const oldName = target.canonical_name
+    const priorScope = target.identity_scope
+    const wasLabel = isLabelLike(oldName)
     target.canonical_name = delta.name.trim().slice(0, 120)
     target.name_normalized = normalizeName(target.canonical_name)
-    target.aliases = uniqStrings([oldName, ...(target.aliases || []), ...aliases], 20)
+    target.aliases = withoutBareTitles(uniqStrings([oldName, ...(target.aliases || []), ...aliases], 20), state, target)
     target.identity_kind = delta.identity_kind === 'epithet' ? 'epithet' : 'proper_name'
+    if (wasLabel) {
+      // He has a name now, so he stops OWNING the label he used to go by. Left in
+      // aliases it would capture every later rider in the world; moved here it is
+      // still shown and still recalled, but it can no longer resolve to him.
+      const released = [oldName, ...(target.aliases || [])].filter((a) => isLabelLike(a))
+      target.former_labels = uniqStrings([...(target.former_labels || []), ...released], 20)
+      target.aliases = (target.aliases || []).filter((a) => !isLabelLike(a))
+      for (const label of released) {
+        state.byName.delete(normalizeName(label))
+        state.byName.delete(identityKey(label, priorScope))
+      }
+      // A proper name is its own identity; the disambiguator has done its job.
+      target.identity_scope = undefined
+    }
   }
   // Materialize after a possible rename so the complete draft and label always
   // use the canonical name that the player sees.
@@ -592,8 +694,11 @@ function foldDelta(
   }
   target.mention_count = (target.mention_count || 0) + 1
   // Newly-learned referents resolve to this card for the rest of the fold.
-  state.byName.set(target.name_normalized, target)
-  for (const a of target.aliases) state.byName.set(normalizeName(a), target)
+  state.byName.set(identityKey(target.canonical_name, target.identity_scope), target)
+  for (const a of target.aliases) state.byName.set(identityKey(a, target.identity_scope), target)
+  if (target.identity_scope && !state.byName.has(target.name_normalized)) {
+    state.byName.set(target.name_normalized, target)
+  }
   if (!state.created.has(target)) state.dirty.add(target)
 }
 

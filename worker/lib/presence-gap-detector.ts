@@ -15,17 +15,29 @@ function normalizeName(name: string): string {
     .replace(/\s+/g, ' ')
 }
 
-/** Bare common-noun person labels: passer-by descriptors, not tracked people. */
-export const GENERIC_PERSON_DESCRIPTORS = new Set<string>([
-  'man', 'woman', 'boy', 'girl', 'child', 'kid', 'person', 'figure', 'stranger',
-  'old man', 'old woman', 'young man', 'young woman', 'lady', 'gentleman', 'guy',
-  'merchant', 'trader', 'vendor', 'shopkeeper', 'clerk', 'seller',
-  'guard', 'soldier', 'sentry', 'watchman', 'knight', 'officer',
-  'innkeeper', 'barkeep', 'bartender', 'waiter', 'waitress', 'servant', 'maid',
-  'driver', 'pilot', 'sailor', 'beggar', 'priest', 'monk', 'nun', 'farmer',
-  'hunter', 'fisherman', 'worker', 'passerby', 'passer by', 'bystander',
-  'crowd', 'people', 'men', 'women', 'guards', 'soldiers', 'villagers', 'citizens',
-])
+/**
+ * Is this capitalized token a COMMON NOUN the prose merely happened to
+ * capitalize (a sentence opener like "Guards rushed in", a title case run)
+ * rather than somebody's name?
+ *
+ * The evidence is the prose's own usage: if the same word also appears in
+ * lowercase anywhere in the passage, the story is treating it as a kind of
+ * thing, not as a name. This replaces a hardcoded list of English role nouns,
+ * which could never cover an open platform's worlds — it blocked "knight" and
+ * "merchant" while passing "rider", "outrider", "acolyte" and every invented or
+ * non-English role.
+ *
+ * Deliberately one-directional: only positive lowercase evidence removes a
+ * candidate. A name seen once at a sentence start stays a candidate, because
+ * this is the high-recall witness tier where a missed person is the costly
+ * error and a surplus stub is cheap (archiveStaleStubs reaps the one-offs).
+ */
+export function readsAsCommonNoun(token: string, prose: string): boolean {
+  const word = String(token || '').trim()
+  if (word.length < 3) return false
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp(`(?<![A-Za-z])${escaped.toLowerCase()}(?![A-Za-z])`).test(String(prose || ''))
+}
 
 /** Trackable role words that can be real scene participants even without names. */
 export const FAMILY_ROLE_WORDS = new Set<string>([
@@ -121,7 +133,7 @@ export function visibleNameCandidatesDetailed(prose: string): VisibleNameCandida
     const key = normalizeName(t)
     if (!key || seen.has(key)) continue
     if (isAbstractNonPersonTerm(key)) continue
-    if (GENERIC_PERSON_DESCRIPTORS.has(key) && !FAMILY_ROLE_WORDS.has(key)) continue
+    if (readsAsCommonNoun(t, text) && !FAMILY_ROLE_WORDS.has(key)) continue
     seen.add(key)
     out.push({ key, display: t })
   }

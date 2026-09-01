@@ -304,6 +304,12 @@ function isStubStatus(s: string | undefined): boolean {
 /** Cap on per-entity witness provenance — enough to survive partial rewinds. */
 const STUB_SOURCE_EVENTS_MAX = 30
 
+/** Entity lookup key. Mirrors the unique index: a label-only identity is keyed
+ *  within its scope, a named one by name alone exactly as before. */
+function scopedKey(nameNormalized: string, scope?: string): string {
+  return scope ? `${nameNormalized}#${scope}` : nameNormalized
+}
+
 
 async function loadEntityRegistry(iid: ObjectId): Promise<Map<string, EntityDoc>> {
   const all = (await entities()
@@ -462,10 +468,10 @@ export const entityGraphService = {
     const byName = new Map<string, EntityDoc>()
     for (const e of existing) {
       if (e.character_id) byCharId.set(idString(e.character_id), e)
-      byName.set(e.name_normalized, e)
+      byName.set(scopedKey(e.name_normalized, e.identity_scope), e)
       for (const a of e.aliases || []) {
         const n = normalizeEntityName(a)
-        if (n && !byName.has(n)) byName.set(n, e)
+        if (n && !byName.has(scopedKey(n, e.identity_scope))) byName.set(scopedKey(n, e.identity_scope), e)
       }
     }
 
@@ -492,7 +498,7 @@ export const entityGraphService = {
       let entity =
         (card.entity_id && existing.find((e) => e._id.equals(card.entity_id!))) ||
         byCharId.get(idString(card._id)) ||
-        cardNames.map((n) => byName.get(n)).find(Boolean)
+        cardNames.map((n) => byName.get(scopedKey(n, card.identity_scope))).find(Boolean)
 
       if (!entity) {
         entity = {
@@ -502,6 +508,7 @@ export const entityGraphService = {
           type: wantType,
           canonical_name: card.canonical_name,
           name_normalized: card.name_normalized,
+          ...(card.identity_scope ? { identity_scope: card.identity_scope } : {}),
           aliases: uniqNames(card.aliases || []),
           name_tokens: entityNameTokens(card.canonical_name, uniqNames(card.aliases || [])),
           character_id: card._id,
@@ -513,7 +520,7 @@ export const entityGraphService = {
           updated_at: now,
         }
         toCreate.push(entity)
-        byName.set(entity.name_normalized, entity)
+        byName.set(scopedKey(entity.name_normalized, entity.identity_scope), entity)
         byCharId.set(idString(card._id), entity)
       } else {
         // Sync identity drift: renamed card, new aliases, re-minted card _id
@@ -526,6 +533,7 @@ export const entityGraphService = {
         const dirty =
           !entity.character_id?.equals(card._id) ||
           entity.canonical_name !== card.canonical_name ||
+          entity.identity_scope !== card.identity_scope ||
           entity.type !== wantType ||
           entity.status !== 'active' ||
           mergedAliases.length !== (entity.aliases || []).length ||
@@ -534,6 +542,8 @@ export const entityGraphService = {
           entity.character_id = card._id
           entity.canonical_name = card.canonical_name
           entity.name_normalized = card.name_normalized
+          // A promotion to a proper name drops the disambiguator on both sides.
+          entity.identity_scope = card.identity_scope
           entity.type = wantType
           entity.status = 'active'
           entity.aliases = mergedAliases
@@ -827,6 +837,8 @@ export const entityGraphService = {
     playerId: string
     sequence: number
     name: string
+    /** Label disambiguator — two same-labelled people get two rows. */
+    identityScope?: string
     /** A coarse role/descriptor for an unnamed witness ("the butler"). */
     roleLabel?: string
     /** 0-1 confidence this is a real trackable person (from the presence tier). */
@@ -836,7 +848,7 @@ export const entityGraphService = {
     /** The place this stub was witnessed in — wakes the stub on return there. */
     locationEntityId?: ObjectId | null
   }): Promise<string | null> {
-    const { instanceId, playerId, sequence, name, roleLabel, confidence, sourceEventId, locationEntityId } = params
+    const { instanceId, playerId, sequence, name, identityScope, roleLabel, confidence, sourceEventId, locationEntityId } = params
     const trimmed = (name || '').trim().slice(0, 120)
     if (!trimmed) return null
     const iid = parseObjectId(instanceId)
@@ -846,11 +858,28 @@ export const entityGraphService = {
 
     // An existing character/protagonist entity (stub or active) for this name
     // already satisfies the call — return it rather than mint a duplicate.
-    const existing = await entities().findOne({
-      instance_id: iid,
-      type: { $in: ['character', 'protagonist'] },
-      name_normalized: normalized,
-    })
+    // Scope joins the lookup exactly as it joins the unique key, so a second
+    // "the rider" finds nothing and mints his own row instead of fusing.
+    //
+    // ALIASES join it too. The prose calls one man "Alaric" and "Ser Alaric" in
+    // the same breath, and matching the canonical name alone minted a second,
+    // card-less row for the honorific — so his memories and edges split across
+    // two nodes for the same person. Deliberately NOT a list of titles: an open
+    // platform's worlds invent their own (Ser, Archon, Kaptan, Vex-Prime), and
+    // the codex already records every form it has seen this person called.
+    const existing =
+      (await entities().findOne({
+        instance_id: iid,
+        type: { $in: ['character', 'protagonist'] },
+        name_normalized: normalized,
+        ...(identityScope ? { identity_scope: identityScope } : {}),
+      })) ||
+      (await entities().findOne({
+        instance_id: iid,
+        type: { $in: ['character', 'protagonist'] },
+        aliases: { $elemMatch: { $regex: `^${escapeRegex(trimmed)}$`, $options: 'i' } },
+        ...(identityScope ? { identity_scope: identityScope } : {}),
+      }))
     if (existing) {
       if (isStubStatus(existing.status) || existing.status === 'archived') {
         // Re-witnessing bumps provenance and WAKES a dormant/archived stub back to
@@ -894,6 +923,7 @@ export const entityGraphService = {
       last_seen_sequence: sequence,
       mention_count: 1,
       witness_count: 1,
+      ...(identityScope ? { identity_scope: identityScope } : {}),
       ...(roleLabel ? { role_label: roleLabel.slice(0, 80) } : {}),
       ...(typeof confidence === 'number' ? { confidence } : {}),
       ...(sourceEventId ? { source_event_ids: [sourceEventId] } : {}),

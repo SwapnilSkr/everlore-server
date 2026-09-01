@@ -92,6 +92,9 @@ export interface EntityDoc {
   /** A coarse role/descriptor the prose gave an unnamed witness ("the butler",
    *  "the veiled pianist") — helps resolve + display a stub before it earns a card. */
   role_label?: string
+  /** Mirrors the codex card's identity_scope so two same-labelled people get two
+   *  entity rows (joined to the unique key). Null for named people. */
+  identity_scope?: string
   /** 0-1 confidence the stub is a real trackable person (from the presence tier
    *  that minted it: confirmed > probable). Low-confidence one-offs archive first. */
   confidence?: number

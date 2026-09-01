@@ -20,7 +20,7 @@ import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output
 import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
 import { extractSceneMetadata, statDescriptors } from '../lib/metadata-extractor'
-import { extractCharacterCodexDeltas } from '../lib/character-codex-extractor'
+import { extractCharacterCodexDeltas, looksLikeUnnamedLabel } from '../lib/character-codex-extractor'
 import { compactImmutableFacts } from '../lib/codex-compactor'
 import { classifyPresenceCodexGaps, isActionableMention } from '../lib/presence-gap-detector'
 import {
@@ -41,6 +41,8 @@ import {
   hasGroundedWitnessLocationEvidence,
   isSafeWitnessLocationCandidate,
   validatedContainmentHint,
+  detectNarratedMovement,
+  locationNamesCompatible,
 } from '../lib/movement-signal'
 import { auditChoices } from '../lib/choice-grounding-audit'
 import { classifyChoiceGrounding, computeGroundingContext } from '../lib/choice-grounding'
@@ -1310,11 +1312,40 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       : null
   const witnessedMovementDetected =
     !isContinuation && parsed.player_travel_confirmed === true && parsed.viewpoint_moved === true
-  const placeName = actionDestination || witnessedDestination ||
+
+  // NARRATED ARRIVAL. The witness names the place the player has arrived AT
+  // ("gatehouse of Blackstone Keep") far more reliably than it fills in a
+  // separate `player_destination`, and it sources the evidence to the NARRATIVE
+  // because the arrival is what the narrator describes. The old gate demanded a
+  // player-sourced destination for every move after the first, so in practice
+  // the cursor anchored once and then never moved again for the rest of a
+  // playthrough — the player rides for days and the map still says "the road".
+  //
+  // Reopening it needs a second, independent witness or we are back to phantom
+  // travel from a merely-mentioned venue. That witness already existed and was
+  // wired to nothing: detectNarratedMovement reads the PLAYER'S OWN action,
+  // which is the one thing a mentioned-but-not-visited place can never have.
+  // Both must agree — the model says "they moved and this is where", the
+  // player's text says "I went somewhere" — before the cursor follows.
+  const narratedArrival =
+    !isContinuation &&
+    !actionDestination &&
+    !witnessedDestination &&
+    parsed.player_travel_confirmed === true &&
+    parsed.viewpoint_moved === true &&
+    parsed.location_evidence_source === 'narrative' &&
+    hasValidWitnessEvidence &&
+    validWitnessLocation &&
+    detectNarratedMovement(parsedPlayerInput.raw) &&
+    !locationNamesCompatible(parsed.current_location, currentLocation?.name || null)
+      ? parsed.current_location
+      : null
+
+  const placeName = actionDestination || witnessedDestination || narratedArrival ||
     (!currentLocation && parsed.location_evidence_source === 'narrative' && hasValidWitnessEvidence && validWitnessLocation
       ? parsed.current_location
       : null)
-  const viewpointMoved = !!actionDestination || !!witnessedDestination
+  const viewpointMoved = !!actionDestination || !!witnessedDestination || !!narratedArrival
   // The witness is a semantic observer, not a world-authority. Its containment
   // claim reaches the graph only after it corroborates the player-selected
   // destination and names an already-known parent (normally the current cursor).
@@ -2376,10 +2407,17 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         },
       )
       if (claimed.modifiedCount !== 1) return
-      // Repeated named figures that the entity/memory graph already corroborates
-      // may earn a codex card off-screen. This is intentionally a small, proven
-      // set—not a free pass for every capitalized mention.
-      const promotableOffscreenPeople = (await mongoColl
+      // Repeated figures the entity/memory graph already corroborates may earn a
+      // codex card on recurrence — off-screen, and named or not. This is
+      // intentionally a small, proven set, not a free pass for every mention.
+      //
+      // Unnamed figures are held to a HIGHER bar than named ones. A name is a
+      // signal a person matters, so a label carries none and must show its own
+      // evidence: the story has to have recorded them DOING or RECEIVING
+      // something (a memory naming them as subject or object) more than once,
+      // not merely mentioned them in passing. So a rider the player duels across
+      // three turns earns a card, while "the crowd" said three times does not.
+      const promotableCandidates = (await mongoColl
         .entities()
         .find(
           {
@@ -2388,18 +2426,65 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
             mention_count: { $gte: 3 },
             character_id: { $exists: false },
           },
-          { projection: { canonical_name: 1 } },
+          { projection: { _id: 1, canonical_name: 1 } },
         )
-        .toArray())
-        .map((entity: any) => String(entity.canonical_name || '').trim())
+        .toArray()) as Array<{ _id: ObjectId; canonical_name?: string }>
+
+      const unnamedIds = new Set(
+        promotableCandidates
+          .filter((e) => looksLikeUnnamedLabel(String(e.canonical_name || '')))
+          .map((e) => idString(e._id)),
+      )
+      const unnamedCandidates = promotableCandidates.filter((e) => unnamedIds.has(idString(e._id)))
+      // One scoped count for the unnamed ones only; the named path is unchanged
+      // and costs nothing extra.
+      const involvedEntityIds = new Set<string>()
+      if (unnamedCandidates.length) {
+        const ids = unnamedCandidates.map((e) => e._id)
+        const involvementByEntity = new Map<string, number>()
+        const memRefs = await mongoColl
+          .memories()
+          .find(
+            {
+              instance_id: instanceOid,
+              $or: [{ subject_entity_ids: { $in: ids } }, { object_entity_ids: { $in: ids } }],
+            },
+            { projection: { subject_entity_ids: 1, object_entity_ids: 1 } },
+          )
+          .limit(200)
+          .toArray()
+        for (const m of memRefs as any[]) {
+          for (const id of [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])]) {
+            const key = idString(id)
+            involvementByEntity.set(key, (involvementByEntity.get(key) || 0) + 1)
+          }
+        }
+        for (const [key, count] of involvementByEntity) {
+          if (count >= 2) involvedEntityIds.add(key)
+        }
+      }
+
+      const promotableRecurringPeople = promotableCandidates
+        .filter((e) =>
+          unnamedIds.has(idString(e._id)) ? involvedEntityIds.has(idString(e._id)) : true,
+        )
+        .map((entity) => String(entity.canonical_name || '').trim())
         .filter(Boolean)
         .slice(0, 12)
       const deltas = await extractCharacterCodexDeltas({
         playerInput: parsedPlayerInput.raw,
         aiResponse: rawNarrative,
+        sequence: nextSequence,
         existing: (characterCodex || []).map((c: any) => ({
           canonical_name: c.canonical_name,
           aliases: c.aliases || [],
+          // The prompt renders "(identity kind: role_label)" so the model knows a
+          // card is a PLACEHOLDER still waiting for a name — it was never sent,
+          // so that clause has been dead and label→name promotion was a coin flip.
+          identity_kind: c.identity_kind,
+          identity_scope: c.identity_scope,
+          last_seen_sequence: c.last_seen_sequence,
+          former_labels: c.former_labels || [],
           role: c.role,
           appearance: c.appearance,
           persona: c.persona,
@@ -2417,7 +2502,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         playerPersonaName: session.persona_snapshot?.name,
         presentCast: parsed.present_characters,
         knownLocations: knownPlaces,
-        promotableOffscreenPeople,
+        promotableRecurringPeople,
       })
       // Sentient worlds: the player is the persona TALKING TO the world's main
       // character — they are not part of the cast. Drop any delta that would
@@ -2786,6 +2871,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
             hadRelationAssertion: relationAssertions.length > 0,
             droppedChoices: audited.dropped,
             locationAnchorName: locationAnchor?.name ?? null,
+            witnessLocationName: parsed.current_location ?? null,
             newCardNames,
           })
           // FN candidates = "miss" findings (prose named a person/kin/place the

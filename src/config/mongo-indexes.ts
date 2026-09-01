@@ -229,10 +229,15 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   // null, so the constraint reduces to the old (instance, type, name). Reuse-vs-mint
   // is governed by AREA-scoped resolution (resolveLocationAnchor); this index is the
   // race-safe enforcement. Also serves world-scoped exact lookup. See LOCATION_GRAPH.md.
+  // identity_scope joins the unique key so two people the story knows only by the
+  // SAME label ("the rider") can each have their own row — the person-shaped twin
+  // of the world_root_id/parent_id fix above. Null for every named character and
+  // for every row that predates the field, so the key reduces to the previous one
+  // and no existing document can violate it: looser, never tighter.
   {
     collection: COLLECTIONS.entities,
-    key: { instance_id: 1, type: 1, world_root_id: 1, parent_id: 1, name_normalized: 1 },
-    options: { unique: true, name: "idx_entities_instance_type_root_parent_name" },
+    key: { instance_id: 1, type: 1, world_root_id: 1, parent_id: 1, name_normalized: 1, identity_scope: 1 },
+    options: { unique: true, name: "idx_entities_instance_type_root_parent_name_scope" },
   },
   {
     collection: COLLECTIONS.entities,
@@ -528,6 +533,12 @@ export const DEPRECATED_INDEXES: Array<{ collection: string; name: string }> = [
   // — intra-world collision fix). Looser than the old key, so no existing row can
   // violate the new one; safe to drop + recreate at startup.
   { collection: COLLECTIONS.entities, name: "idx_entities_instance_type_root_name" },
+  // Replaced by idx_entities_instance_type_root_parent_name_scope (identity_scope
+  // joined the unique key so two same-labelled PEOPLE coexist — the character
+  // twin of the intra-world place collision). Strictly looser than the old key,
+  // so no existing row can violate the new one; safe to drop + recreate at
+  // startup, and no data migration is required.
+  { collection: COLLECTIONS.entities, name: "idx_entities_instance_type_root_parent_name" },
 ]
 
 function isTextIndexDef(desired: Document): boolean {

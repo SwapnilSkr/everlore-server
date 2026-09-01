@@ -35,6 +35,8 @@ export interface AnomalyInput {
   droppedChoices?: { issues: ChoiceGroundingIssue[] }[]
   /** The resolved current-place name, or null when none. */
   locationAnchorName?: string | null
+  /** The place the scene witness reported for this turn, if any. */
+  witnessLocationName?: string | null
   /** Canonical names of codex cards MINTED this turn (new this turn). */
   newCardNames?: string[]
 }
@@ -47,7 +49,10 @@ const POSSESSIVE_KIN = new RegExp(
   `\\b(?:my|your|his|her|their|our)\\s+(?:${[...SURFACE_KIN_TERMS].sort((a, b) => b.length - a.length).join('|')})\\b`,
   'i',
 )
-const PLACE_PHRASE = /\b(?:in|inside|within|at|into)\s+the\s+[a-z]+(?:\s+[a-z]+)?\b/i
+// NOTE: a regex over "in the <noun>" used to stand in for "the prose names a
+// place". It fired on "in the mud", "in the saddle", "in the cold air" — an
+// anomaly feed nobody could read. The real anomaly is narrower and exact: the
+// WITNESS named a place this turn and the projection anchored nothing.
 
 /**
  * Run all checks for one turn. Bounded; returns the findings (possibly empty).
@@ -90,13 +95,15 @@ export function detectProjectionAnomalies(input: AnomalyInput): AnomalyFinding[]
     })
   }
 
-  // 4. The prose names a place but no anchor resolved this turn.
-  if (!input.locationAnchorName && PLACE_PHRASE.test(prose)) {
-    const m = prose.match(PLACE_PHRASE)
+  // 4. The witness named a place this turn and nothing anchored to it. This is
+  // a genuine extraction/projection mismatch — unlike a prose phrase, a witness
+  // label is an actual claim that a place was identified.
+  const witnessPlace = String(input.witnessLocationName || '').trim()
+  if (!input.locationAnchorName && witnessPlace) {
     findings.push({
       type: 'location_phrase_no_anchor',
-      severity: 'info',
-      details: `prose references a place (${m?.[0] ?? 'place phrase'}) but no location anchor resolved`,
+      severity: 'warn',
+      details: `the scene witness identified "${witnessPlace}" but no location anchor resolved`,
     })
   }
 

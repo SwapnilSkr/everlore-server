@@ -2,7 +2,7 @@ import { callLLM, AI_MODELS } from '../../src/ai'
 import { isEphemeralPersonDescriptor, isNonPersonRole, type CharacterCodexDelta } from '../../src/services/character-codex.service'
 import type { CharacterIdentityKind, RelationshipMeterKey } from '../../src/models/character-profile.model'
 import { classifyPresenceCodexGaps, isActionableMention } from './presence-gap-detector'
-import { isAbstractNonPersonTerm } from '../../src/utils/person-identity'
+import { isAbstractNonPersonTerm, isLabelLike } from '../../src/utils/person-identity'
 import {
   relationshipEvidenceBindsToCharacter,
   relationshipInitializationFromEvidence,
@@ -12,6 +12,11 @@ import {
 type ExistingCharacter = {
   canonical_name: string
   identity_kind?: CharacterIdentityKind
+  /** Label disambiguator + continuity clock, both read by resolveIdentityScope. */
+  identity_scope?: string
+  last_seen_sequence?: number
+  /** Labels this person used to go by; kept resolvable only through continuity. */
+  former_labels?: string[]
   aliases?: string[]
   role?: string
   appearance?: string
@@ -173,40 +178,319 @@ export function isPlayerMentionedRelative(
   return names.some((n) => turn.includes(` ${n} `) || turn.endsWith(` ${n}`) || turn.startsWith(`${n} `))
 }
 
-/** Bare common-noun person labels — a role or descriptor with no proper name
- *  ("the merchant", "a guard", "the stranger", "an old man"). These are the
- *  character analog of vague location labels: a one-off passer-by named only by
- *  function is NOT a Bonds card. If they matter later they'll be named or already
- *  on the roster (resolvesToKnown lets those through). Matched as the WHOLE
- *  article-stripped label, so a PROPER name ("Merchant Voss") or a qualified
- *  descriptor stays specific and is NOT blocked. */
-const GENERIC_PERSON_DESCRIPTORS = new Set<string>([
-  'man', 'woman', 'boy', 'girl', 'child', 'kid', 'person', 'figure', 'stranger',
-  'old man', 'old woman', 'young man', 'young woman', 'lady', 'gentleman', 'guy',
-  'merchant', 'trader', 'vendor', 'shopkeeper', 'shopkeep', 'clerk', 'seller',
-  'guard', 'soldier', 'sentry', 'watchman', 'guardsman', 'knight', 'officer',
-  'innkeeper', 'barkeep', 'bartender', 'waiter', 'waitress', 'servant', 'maid',
-  'driver', 'pilot', 'sailor', 'beggar', 'priest', 'monk', 'nun', 'farmer',
-  'hunter', 'fisherman', 'worker', 'passerby', 'passer by', 'bystander',
-  'crowd', 'people', 'men', 'women', 'guards', 'soldiers', 'villagers', 'citizens',
-])
+/** Determiners that mark a phrase as a REFERENCE to a kind of person rather than
+ *  a name for one. A proper name does not take an article ("the Mara" is not a
+ *  thing English says); a common-noun label almost always does. */
+const DETERMINER_PREFIX = /^(?:the|a|an|some|that|this|another|one)\s+/i
 
-/** True when a card name is just a bare role/descriptor common noun (article
- *  stripped), so it should not mint a standalone card. */
-export function isBareDescriptorName(name: string | null | undefined): boolean {
-  const n = normForMatch(String(name || '')).replace(/^(?:the|a|an|some)\s+/, '')
-  return GENERIC_PERSON_DESCRIPTORS.has(n)
+/** Characters that may sit between a sentence boundary and the word that opens
+ *  the sentence — quotes, the italic asterisks the narrator writes in, brackets. */
+const OPENING_MARKS = /["“”'‘’*_(\[\s]/
+
+/**
+ * Is the match at `index` the first word of a sentence? Scan back over opening
+ * marks and whitespace: if we reach the start of the text or a terminator, the
+ * word is sentence-initial and its capital letter carries NO information about
+ * whether it is a proper name.
+ */
+function isSentenceInitial(text: string, index: number): boolean {
+  for (let i = index - 1; i >= 0; i--) {
+    const ch = text[i]
+    if (OPENING_MARKS.test(ch)) continue
+    return /[.!?…:;\n]/.test(ch)
+  }
+  return true
 }
 
-/** A named figure repeatedly established by the story can earn a codex card
- * before appearing on-screen. This replaces the old all-or-nothing presence
- * requirement without allowing a one-off mention to mint a character. */
-export function isEligibleOffscreenPromotion(
+/**
+ * What the PROSE says about a person-label, judged structurally rather than
+ * against a word list.
+ *
+ * English capitalizes a proper name or an honorific everywhere it appears, and
+ * capitalizes a common noun only at the start of a sentence or a line of
+ * dialogue. So the way the story itself writes a label is the evidence:
+ *
+ *   "the rider dismounts"          → 'common'  (a kind of person)
+ *   "the Rider dismounts"          → 'proper'  (the author made it a title)
+ *   "Merchant Voss dismounts"      → 'proper'
+ *   "the iron merchant of Ashford" → 'proper'  (a capitalized token qualifies it)
+ *   label never occurs in prose    → 'absent'
+ *
+ * Sentence-initial occurrences are ignored on purpose: "Rider looked up." tells
+ * us nothing. A label seen ONLY there returns 'absent' and the caller falls back
+ * to the determiner.
+ *
+ * This replaces a hardcoded 58-word English vocabulary that was wrong in both
+ * directions — it blocked "knight" (a real recurring character in half the
+ * fantasy worlds on the platform, with no way onto the roster) while letting
+ * "rider", "herald", "outrider" and every non-English or invented role through.
+ * A world model for an open platform cannot carry a list of what people are
+ * called.
+ */
+export function labelCapitalizationEvidence(
+  phrase: string,
+  prose: string,
+): 'proper' | 'common' | 'absent' {
+  const words = String(phrase || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s'-]+/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+  const text = String(prose || '')
+  if (!words.length || !text) return 'absent'
+  const pattern = new RegExp(
+    `(?<![A-Za-z])${words.map((w) => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('\\s+')}(?![A-Za-z])`,
+    'gi',
+  )
+  let sawLowercase = false
+  for (const match of text.matchAll(pattern)) {
+    const at = match.index ?? 0
+    const span = match[0]
+    // Any capitalized word INSIDE the span makes the whole label specific: the
+    // capital in "iron merchant of Ashford" is what separates a named trader
+    // from any trader. Skip only a capital that is merely sentence-initial.
+    let offset = 0
+    let proper = false
+    for (const token of span.split(/(\s+)/)) {
+      if (token.trim() && /^[A-Z]/.test(token) && !isSentenceInitial(text, at + offset)) {
+        proper = true
+        break
+      }
+      offset += token.length
+    }
+    if (proper) return 'proper'
+    if (/^[a-z]/.test(span)) sawLowercase = true
+  }
+  return sawLowercase ? 'common' : 'absent'
+}
+
+/**
+ * True when a card name is a bare common-noun label for a kind of person
+ * ("the rider", "a guard", "the man in a dark suit") rather than an identity.
+ * A one-off passer-by named only by function is not a Bonds card.
+ *
+ * This is NOT a permanent exclusion. A label that keeps coming back earns a
+ * card through the recurrence path instead (see `isEligibleRecurringPromotion`
+ * and the promotable block in the extraction prompt) — recurrence, not a name,
+ * is what proves a person matters.
+ */
+export function isBareDescriptorName(name: string | null | undefined, prose = ''): boolean {
+  const raw = String(name || '').trim()
+  if (!raw) return false
+  const hadDeterminer = DETERMINER_PREFIX.test(raw)
+  const head = raw.replace(DETERMINER_PREFIX, '').trim()
+  if (!head) return false
+  const evidence = labelCapitalizationEvidence(head, prose)
+  if (evidence === 'proper') return false
+  if (evidence === 'common') return true
+  // No usable evidence in the prose (a coined or off-screen label): the article
+  // the model itself chose is the only remaining signal.
+  return hadDeterminer
+}
+
+/**
+ * Is this stored entity name a LABEL for a kind of person ("the rider") rather
+ * than a name for one ("Rider Voss")? Unlike {@link isBareDescriptorName} there
+ * is no prose to consult here — only the name the witness tier recorded — so the
+ * test is the label's own casing: a proper name or an authored epithet carries a
+ * capital ("the Rider"), a common noun does not.
+ *
+ * Used only to decide who must clear the HIGHER promotion bar, so the failure
+ * mode is asymmetric by design: a script without letter case reads as unnamed
+ * and is simply held to more evidence, never waved through.
+ */
+export function looksLikeUnnamedLabel(name: string | null | undefined): boolean {
+  return isLabelLike(name)
+}
+
+/**
+ * A figure the story keeps returning to can earn a codex card on RECURRENCE
+ * alone — off-screen, and named or not. Recurrence plus direct involvement is
+ * what proves a person matters to the story; a proper name is only a proxy for
+ * it, and a bad one (a rider the player duels across three turns has no name; a
+ * shopkeeper named once in passing does).
+ *
+ * The caller decides what earns a place on `promotableNames`, and holds unnamed
+ * figures to a higher bar than named ones — see the promotable query in
+ * generation.processor.ts. This function only checks membership, so a one-off
+ * mention can still never self-promote.
+ */
+export function isEligibleRecurringPromotion(
   candidateNames: string[],
   promotableNames: string[],
 ): boolean {
-  const allowed = new Set(promotableNames.map(normForMatch).filter(Boolean))
-  return candidateNames.map(normForMatch).some((name) => name && allowed.has(name))
+  // Matched with the determiner stripped on BOTH sides. The stored label and the
+  // one the extractor returns disagree about "the" constantly ("the rider" vs
+  // "rider"), and an article is never what makes two people different — letting
+  // it decide promotion made the whole path a coin flip.
+  const key = (n: string) => normForMatch(n).replace(/^(?:the|a|an|some)\s+/, '')
+  const allowed = new Set(promotableNames.map(key).filter(Boolean))
+  return candidateNames.map(key).some((name) => name && allowed.has(name))
+}
+
+
+/**
+ * How many turns a label-only identity stays "live". Past this, a bare label
+ * appearing in the prose is more likely a NEW person than the return of one the
+ * story dropped — the rider you duelled in chapter one is not the rider blocking
+ * the ford thirty turns later just because the narrator used the same noun.
+ */
+export const IDENTITY_SCOPE_STALE_TURNS = 12
+
+
+
+
+/**
+ * Does this single word read as a bare TITLE rather than a name?
+ *
+ * A title leads other people's names ("Ser Roland") and is written lowercase
+ * when it stands on its own ("as you say, ser"). A name is capitalized wherever
+ * it stands alone. So the evidence is only the STANDALONE occurrences — the ones
+ * not immediately followed by another capitalized word — because in "Ser Roland"
+ * the capital belongs to Roland's name, not to Ser.
+ *
+ * Sentence-initial standalone occurrences prove nothing and are skipped, exactly
+ * as in {@link labelCapitalizationEvidence}. No list of honorifics: Ser, Archon,
+ * Kaptan and whatever the next world invents are judged by their own prose.
+ */
+export function readsAsBareTitle(token: string, prose: string): boolean {
+  const word = String(token || '').trim()
+  if (!word || /\s/.test(word)) return false
+  const text = String(prose || '')
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const re = new RegExp(`(?<![A-Za-z])${escaped}(?![A-Za-z])`, 'gi')
+  let sawStandaloneLowercase = false
+  let sawStandaloneProper = false
+  for (const match of text.matchAll(re)) {
+    const at = match.index ?? 0
+    const after = text.slice(at + match[0].length)
+    // "Ser Roland" — the next word is capitalized, so this occurrence is a
+    // modifier on somebody else's name and says nothing about this word.
+    if (/^\s+[A-Z][a-z]/.test(after)) continue
+    if (/^[a-z]/.test(match[0])) sawStandaloneLowercase = true
+    else if (!isSentenceInitial(text, at)) sawStandaloneProper = true
+  }
+  return sawStandaloneLowercase && !sawStandaloneProper
+}
+
+/**
+ * A person known only by a LABEL may be given a proper name only when the prose
+ * actually says that name is theirs.
+ *
+ * Without this the promotion is the model's judgement alone, and the failure is
+ * silent and permanent: "the rider" who serves House Thorne becomes a card named
+ * "Thorne", fusing an envoy with the lord he answers to, and every bond either
+ * of them earns lands on one card. The prose is full of proper nouns that are
+ * NOT the speaker — houses, lords spoken of in the third person, places.
+ *
+ * Accepted as proof, both already used for relational epithets:
+ *   - a self-introduction  ("I am Aldric" / the answer to "what's your name?")
+ *   - a literal naming     (quoted address `"Aldric,"` or "a man named Aldric")
+ * A name that merely APPEARS nearby proves nothing.
+ *
+ * Returns the evidence kind, or null when the promotion is unsupported.
+ */
+export function namePromotionEvidence(
+  name: string,
+  prose: string,
+  playerInput: string,
+): 'self_introduction' | 'named_in_prose' | null {
+  const candidate = String(name || '').trim()
+  if (candidate.length < 2) return null
+  if (isDirectSelfIntroduction(candidate, prose, playerInput)) return 'self_introduction'
+  const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
+  const text = String(prose || '')
+  // "a rider named Aldric" / "the man they called Aldric"
+  if (new RegExp(`\\b(?:named|called)\\s+${escaped}\\b`, 'i').test(text)) return 'named_in_prose'
+  // A VOCATIVE: the name stands alone as the thing being said — it must be
+  // followed by punctuation, not by more of a phrase. This is the whole
+  // difference between «"Aldric, hold there."» and «"Blackstone Keep is yours"»,
+  // where the opening quote sits in front of a name that belongs to a castle.
+  if (new RegExp(`["“,]\\s*${escaped}\\s*[,.!?;:]`, 'i').test(text)) return 'named_in_prose'
+  return null
+}
+
+/**
+ * A label someone USED to go by still points at them — but only while nobody
+ * else holds it and the story has kept them warm.
+ *
+ * Releasing "the rider" from Aldric's aliases is what stops a stranger inheriting
+ * his bond. It must not also stop the player from calling him "rider". So the
+ * former label resolves by CONTINUITY rather than by ownership: if Aldric is in
+ * the scene, or was recently, and no current rider is competing for the word,
+ * it is him. Expressed as an explicit resolved_name so the ledger records the
+ * decision and a rewind replays it.
+ */
+export function resolveFormerLabelHolder(params: {
+  label: string
+  sequence: number
+  presentCast: string[]
+  existing: Array<{
+    canonical_name: string
+    aliases?: string[]
+    former_labels?: string[]
+    identity_scope?: string
+    last_seen_sequence?: number
+  }>
+}): string | undefined {
+  const key = normForMatch(params.label).replace(/^(?:the|a|an|some)\s+/, '')
+  if (!key) return undefined
+  const strip = (n: string) => normForMatch(n).replace(/^(?:the|a|an|some)\s+/, '')
+  // Anyone currently identified BY this label owns it outright; a former holder
+  // never competes with the person the story is using the word for right now.
+  const activeHolder = params.existing.some((c) =>
+    [c.canonical_name, ...(c.aliases || [])].some((n) => strip(n) === key),
+  )
+  if (activeHolder) return undefined
+  const present = new Set(params.presentCast.map(strip))
+  const holders = params.existing.filter((c) =>
+    (c.former_labels || []).some((n) => strip(n) === key),
+  )
+  // Ambiguous between two former holders is not a guess worth making.
+  if (holders.length !== 1) return undefined
+  const holder = holders[0]
+  const warm =
+    present.has(strip(holder.canonical_name)) ||
+    params.sequence - (holder.last_seen_sequence ?? 0) <= IDENTITY_SCOPE_STALE_TURNS
+  return warm ? holder.canonical_name : undefined
+}
+
+/**
+ * Decide which identity a label-only delta belongs to, and return the scope that
+ * decision implies. This is the character analog of AREA-scoped location
+ * resolution (resolveLocationAnchor): reuse-vs-mint is a judgement, and the
+ * unique index is only the race-safe enforcement of it.
+ *
+ * Deterministic and computed BEFORE the ledger write, so a rewind replays the
+ * same split — the scope travels in the delta, never re-derived at read time.
+ *
+ * Named people are unaffected: a proper name is its own identity, so this
+ * returns undefined and every downstream key reduces to what it was before.
+ */
+export function resolveIdentityScope(params: {
+  delta: CharacterCodexDelta
+  sequence: number
+  existing: Array<{ canonical_name: string; aliases?: string[]; identity_scope?: string; last_seen_sequence?: number }>
+  prose: string
+}): string | undefined {
+  const { delta, sequence, existing, prose } = params
+  // Only label-only identities need disambiguating.
+  if (!isBareDescriptorName(delta.name, prose)) return undefined
+  // An explicit correction ("this IS the rider you know") is the model telling us
+  // the identity outright; honour it and inherit that card's scope.
+  const keys = [delta.resolved_name || '', delta.name, ...(delta.aliases || [])]
+    .map(normForMatch)
+    .filter(Boolean)
+  const match = existing.find((c) =>
+    [c.canonical_name, ...(c.aliases || [])].map(normForMatch).some((n) => n && keys.includes(n)),
+  )
+  if (!match) return `s${sequence}`
+  if ((delta.resolved_name || '').trim()) return match.identity_scope || `s${sequence}`
+  // Continuity is the test: a label the story has kept warm refers to the person
+  // holding it. A cold one has been released back to the world.
+  const lastSeen = match.last_seen_sequence ?? 0
+  const live = sequence - lastSeen <= IDENTITY_SCOPE_STALE_TURNS
+  return live ? match.identity_scope || `s${lastSeen || sequence}` : `s${sequence}`
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> {
@@ -686,12 +970,15 @@ export async function extractCharacterCodexDeltas(params: {
   /** Known locations are excluded from person corroboration even when prose
    * personifies them ("Milan greeted him"). */
   knownLocations?: { name: string; aliases?: string[] }[]
-  /** Named character entities with repeated provenance but no codex card. */
-  promotableOffscreenPeople?: string[]
+  /** Character entities with repeated provenance but no codex card — named, or
+   *  unnamed and corroborated by direct involvement. Recurrence, not a name. */
+  promotableRecurringPeople?: string[]
+  /** This turn's sequence — the clock identity scoping is judged against. */
+  sequence?: number
   /** Test-only raw-response observer; never changes production extraction. */
   onRaw?: (raw: string) => void
 }): Promise<CharacterCodexDelta[]> {
-  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName, presentCast, knownLocations, promotableOffscreenPeople } = params
+  const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName, presentCast, knownLocations, promotableRecurringPeople, sequence } = params
 
   const existingText = existing.length
     ? existing
@@ -728,8 +1015,12 @@ export async function extractCharacterCodexDeltas(params: {
   const presentBlock = presentList.length
     ? `\nPRESENT THIS TURN (these exact people are in the scene now): ${presentList.join(', ')}.\nA bare descriptor in the narration ("the man", "the woman", "the figure", "the stranger", "the boy") almost always refers to one of these present people — resolve it to them, never to a new card.\n`
     : ''
-  const promotableOffscreenBlock = (promotableOffscreenPeople || []).length
-    ? `\nREPEATED OFF-SCREEN FIGURES (already established by several grounded story mentions; create/update their card when named this turn even if they are not physically present): ${(promotableOffscreenPeople || []).join(', ')}.\n`
+  const promotableRecurringBlock = (promotableRecurringPeople || []).length
+    ? `\nREPEATED FIGURES THIS STORY HAS ALREADY ESTABLISHED (each has several grounded mentions and real involvement; create or update their card even when they are not physically present this turn): ${(promotableRecurringPeople || []).join(', ')}.
+- If one of them has a proper name, card them under it.
+- If one is still UNNAMED, card them anyway, with identity_kind "role_label". The story returning to them has already established them as a real, tracked person — do NOT wait for a name, and do NOT skip them because their label is generic.
+- Name that card with the MOST SPECIFIC label the prose actually uses for them ("the grey-bearded rider", "the Thorne outrider"), never a bare one ("the rider") when a distinguishing one exists, and list the bare label in "aliases". Two different people who share a bare label MUST NOT share a card: if this turn's figure is a DIFFERENT person from a listed one with a similar label, say so with a distinguishing name of their own and set no "resolved_name".
+- When a proper name for one of them appears later, return that name with "resolved_name" set to their existing label, so the SAME card is promoted rather than duplicated.\n`
     : ''
 
   const protagonistBlock =
@@ -778,7 +1069,7 @@ Rules:
 - is_protagonist: true ONLY for the world's main character (see below); otherwise false.
 - relation_assertions (a TOP-LEVEL array, sibling to "characters" — NOT inside a character): typed family/relationship ties this turn ESTABLISHES or REVEALS between two specific people (or the player). Each: { from, to, kind, label, gender, source }. "from"/"to" are names from the cast; use "player" for the human player's own character. "kind" MUST be exactly one of: parent_of, child_of, sibling_of, partner_of, progenitor_of, descendant_of, superior_of, subordinate_of, kin_of, bonded_of — read as "from is to's <kind>". Worked example: "Mara is the player's sister" → { "from": "Mara", "to": "player", "kind": "sibling_of", "label": "sister", "gender": "f" }. Map ANY world-native term (clone-sister, sire, liege, bondmate, broodmother) to the CLOSEST kind and keep the native word in "label". gender: m|f|n implied by the label. source: "narrator" when the narration states the tie, "character_claim" when a character merely CLAIMS it (may be a lie). polarity: "sever" when a tie ENDS this turn (divorce, death, disownment), else omit. ONLY include a tie the text actually establishes or reveals THIS turn — do NOT re-list every relationship that already exists, and NEVER a figurative one ("like a brother to me"). Empty array [] when no tie is asserted.
 ${protagonistBlock}${presentBlock}
-${promotableOffscreenBlock}
+${promotableRecurringBlock}
 Existing characters (with their current state and server-owned bond state — reconcile against this):
 ${existingText}
 
@@ -863,6 +1154,9 @@ Respond ONLY JSON:
   // when a roster already exists; it is a duplicate of someone already carded.
   // Drop the phantom mint; the genuine character is re-emitted on adjacent turns.
   const normText = normForMatch(`${playerInput || ''} ${aiResponse || ''}`)
+  // The RAW turn, case intact: descriptor detection reads the story's own
+  // capitalization, which normalization would destroy.
+  const turnText = `${playerInput || ''}\n${aiResponse || ''}`
   const knownNames = new Set<string>()
   // Map every known name/alias (normalized) → its CANONICAL spelling, so a
   // correction's two names can each be resolved to a single canonical identity
@@ -944,13 +1238,25 @@ Respond ONLY JSON:
       console.warn(`[codex-extractor] blocked personified abstract noun "${delta.name}"`)
       continue
     }
-    if (delta.is_protagonist !== true && !resolvesToKnown(delta)) {
-      // A bare role/descriptor with no proper name ("the merchant", "a guard") is
-      // a passer-by, not a tracked character — never mint a card for it (it would
-      // resolve to a known roster member above if it were one we follow).
+    // Recurrence is checked BEFORE the descriptor block, not after: a label the
+    // story keeps coming back to has already earned its card, and the whole point
+    // of the promotable list is that being unnamed no longer disqualifies it.
+    const promotableKeys = [delta.name, delta.resolved_name || '', ...(delta.aliases || [])]
+      .map(normForMatch)
+      .filter(Boolean)
+    const recurringPromotion = isEligibleRecurringPromotion(
+      promotableKeys,
+      promotableRecurringPeople || [],
+    )
+    if (delta.is_protagonist !== true && !resolvesToKnown(delta) && !recurringPromotion) {
+      // A bare role/descriptor for a kind of person ("the merchant", "a guard")
+      // is a passer-by on first sight, not a tracked character — never mint a
+      // card for it. Judged against the prose itself (see isBareDescriptorName),
+      // so this holds in any world whose roles we have never heard of. If they
+      // keep turning up, the promotable list above lets them through instead.
       if (
-        isBareDescriptorName(delta.name) &&
-        isBareDescriptorName(delta.resolved_name || delta.name)
+        isBareDescriptorName(delta.name, turnText) &&
+        isBareDescriptorName(delta.resolved_name || delta.name, turnText)
       ) {
         console.warn(
           `[codex-extractor] blocked bare-descriptor card "${delta.name}" (passer-by, not a tracked character)`,
@@ -977,12 +1283,11 @@ Respond ONLY JSON:
       const corroboratedPerson = candidateKeys.some((name) => personEvidenceKeys.has(name))
       const directSelfIntroduction = [delta.name, delta.resolved_name || '', ...(delta.aliases || [])]
         .some((name) => isDirectSelfIntroduction(name, aiResponse, playerInput))
-      const offscreenPromotion = isEligibleOffscreenPromotion(candidateKeys, promotableOffscreenPeople || [])
       // A literal in-scene self-introduction is both presence and person
       // evidence. It is the only exception to the usual two-source gate, so a
       // named walk-on is not lost just because the independent metadata pass
       // missed them on their entrance.
-      if ((!physicallyPresent || !corroboratedPerson) && !directSelfIntroduction && !offscreenPromotion) {
+      if ((!physicallyPresent || !corroboratedPerson) && !directSelfIntroduction && !recurringPromotion) {
         console.warn(
           `[codex-extractor] held uncorroborated new card "${delta.name}" (present=${physicallyPresent}, personEvidence=${corroboratedPerson}, directIntro=${directSelfIntroduction})`,
         )
@@ -1004,6 +1309,96 @@ Respond ONLY JSON:
         )
         continue
       }
+    }
+    // A promotion from a LABEL to a proper name is only as good as its evidence.
+    // Strip an unsupported one rather than dropping the delta: the turn's real
+    // content (bond movement, state) still belongs on the card — it just keeps
+    // the label it had.
+    {
+      const targetLabel = (delta.resolved_name || '').trim()
+      if (targetLabel && !isLabelLike(delta.name) && isLabelLike(targetLabel)) {
+        const holder = existing.find((c) =>
+          [c.canonical_name, ...(c.aliases || [])].map(normForMatch).includes(normForMatch(targetLabel)),
+        )
+        const labelIdentified =
+          !!holder &&
+          (isLabelLike(holder.canonical_name) ||
+            holder.identity_kind === 'role_label' ||
+            holder.identity_kind === 'kinship_label')
+        if (labelIdentified && !namePromotionEvidence(delta.name, aiResponse, playerInput)) {
+          console.warn(
+            `[codex-extractor] refused unsupported promotion "${targetLabel}" -> "${delta.name}" (no self-introduction or literal naming in the turn)`,
+          )
+          const rejected = normForMatch(delta.name)
+          delta.name = holder!.canonical_name
+          delta.resolved_name = undefined
+          delta.identity_kind = holder!.identity_kind
+          delta.aliases = (delta.aliases || []).filter((a) => normForMatch(a) !== rejected)
+        }
+      }
+    }
+
+    // A NAMED person must not collect a bare TITLE as an alias. The prose calls
+    // the protagonist "ser" the way it calls a dozen other knights "ser", so
+    // storing it as his alias makes every later lone "Ser" resolve to him.
+    //
+    // Judged the same structural way as everything else here: a word the story
+    // writes in lowercase is a common noun, not a name. No list of honorifics —
+    // Ser, Archon, Kaptan and whatever the next world invents are all covered by
+    // how their own prose spells them. Multi-word aliases are left alone: they
+    // are specific enough to identify somebody ("the grey-bearded rider").
+    if (!isLabelLike(delta.name) && (delta.aliases || []).length) {
+      const kept = (delta.aliases || []).filter((alias) => {
+        const t = String(alias || '').trim()
+        if (!t) return false
+        if (t.split(/\s+/).length > 1) return true
+        return !readsAsBareTitle(t, turnText)
+      })
+      if (kept.length !== (delta.aliases || []).length) {
+        const dropped = (delta.aliases || []).filter((a) => !kept.includes(a))
+        console.warn(
+          `[codex-extractor] dropped bare-title alias(es) ${JSON.stringify(dropped)} from "${delta.name}" (the prose lowercases them)`,
+        )
+      }
+      delta.aliases = kept
+    }
+
+    // Decide which identity this label belongs to and record it IN the delta, so
+    // the ledger carries the split and a rewind reproduces it.
+    if (typeof sequence === 'number') {
+      // A bare label the model did not resolve may still belong to someone who
+      // has since been named. Settle that BEFORE scoping, so it resolves to them
+      // instead of opening a new identity.
+      if (!(delta.resolved_name || '').trim() && isBareDescriptorName(delta.name, turnText)) {
+        const formerHolder = resolveFormerLabelHolder({
+          label: delta.name,
+          sequence,
+          presentCast: presentCast || [],
+          existing: existing.map((c) => ({
+            canonical_name: c.canonical_name,
+            aliases: c.aliases,
+            former_labels: (c as { former_labels?: string[] }).former_labels,
+            identity_scope: (c as { identity_scope?: string }).identity_scope,
+            last_seen_sequence: (c as { last_seen_sequence?: number }).last_seen_sequence,
+          })),
+        })
+        if (formerHolder) {
+          delta.resolved_name = formerHolder
+          delta.identity_kind = undefined
+        }
+      }
+      const scope = resolveIdentityScope({
+        delta,
+        sequence,
+        existing: existing.map((c) => ({
+          canonical_name: c.canonical_name,
+          aliases: c.aliases,
+          identity_scope: (c as { identity_scope?: string }).identity_scope,
+          last_seen_sequence: (c as { last_seen_sequence?: number }).last_seen_sequence,
+        })),
+        prose: turnText,
+      })
+      if (scope) delta.identity_scope = scope
     }
     out.push(delta)
     if (out.length >= 6) break

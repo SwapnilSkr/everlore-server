@@ -93,6 +93,27 @@ console.log('gap detector - passer-by descriptors are NOT gaps:')
   check('merchant/old woman/figure filtered', detectPresenceCodexGaps(prose, {}), [])
 }
 
+console.log('gap detector - a CAPITALIZED common noun is judged by the prose, not a word list:')
+{
+  // Sentence-initial capitals on words the same passage also lowercases: the
+  // story is naming a kind of person, not a person. This must hold for roles no
+  // hardcoded list would have contained ("rider", "outrider").
+  const prose = `Guards rushed the stair. The guards fanned out. Riders wheeled in the yard; two riders broke away.`
+  check('capitalized-but-lowercased-elsewhere filtered', detectPresenceCodexGaps(prose, {}), [])
+}
+{
+  // No lowercase usage anywhere = no evidence it is a common noun, so the
+  // high-recall witness tier keeps it. A real name must never be dropped.
+  const prose = `Aldric rushed the stair. Mira held the door.`
+  check('real names always survive', detectPresenceCodexGaps(prose, {}).sort(), ['aldric', 'mira'])
+}
+{
+  // The old list blocked "knight" outright, so a knight could never reach the
+  // roster in a world full of them. Capitalized as a title, it is now a person.
+  const prose = `The Knight lowered his visor and waited.`
+  check('an authored title is a person', detectPresenceCodexGaps(prose, {}), ['knight'])
+}
+
 console.log('gap detector - present family role covered by stub -> no gap:')
 {
   const prose = `Father sat at the head of the table, silent.`

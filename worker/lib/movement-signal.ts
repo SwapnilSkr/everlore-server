@@ -98,7 +98,7 @@ export function hasGroundedWitnessLocationEvidence(
 
 /** A direction/target word that turns a locomotion verb into an actual relocation.
  *  "for"/"towards" cover "set off for the mountains" / "ride towards the keep". */
-const DIRECTION = '(?:to|into|inside|outside|out|toward|towards|back|upstairs|downstairs|up|down|through|onto|across|over to|off to|in|for)'
+const DIRECTION = '(?:to|into|inside|outside|out|toward|towards|back|upstairs|downstairs|up|down|through|onto|across|over to|off to|in|for|north|south|east|west|northward|southward|eastward|westward|northwards|southwards|eastwards|westwards|inland|abroad|onward|onwards|homeward|homewards)'
 
 /** Verbs of self-locomotion that need a direction/target to count as a move. Open-
  *  world scale: not just walking between rooms but travelling between settlements,
@@ -119,6 +119,11 @@ const DEPARTURE_VERB =
 // a stay-put turn is inert because the caller only acts when the resolved place changed.
 const DIRECTED_MOVE = new RegExp(`\\b${DIRECTED_VERB}\\b(?:\\s+\\w+){0,4}?\\s+${DIRECTION}\\b`)
 const DEPARTURE = new RegExp(`\\b${DEPARTURE_VERB}\\b`)
+/** Arriving is a move even with no direction word: "we reach the gatehouse",
+ *  "I arrive at the keep". The determiner is required so "I reach for my sword"
+ *  and "I reach out to him" stay put, and an infinitive of purpose is excluded
+ *  so "I stand on tiptoe TO REACH the shelf" is a stretch, not a journey. */
+const ARRIVAL = /(?<!\bto\s)\b(?:reach|reaches|reached|reaching|arrive|arrives|arrived|arriving|approach|approaches|approached|approaching)\b\s+(?:at\s+|in\s+)?(?:the|a|an|my|our|his|her|their)\b/
 // "leave/left" only counts with a place-ish object or clause end (not "leave me alone")
 const LEAVE_MOVE = /\b(?:leave|leaves|leaving|left)\b(?!\s+(?:me|him|her|them|us|it|you)\b)/
 // sealing a door behind you is an unambiguous exit of a space
@@ -290,6 +295,9 @@ export function extractExplicitPhysicalDestination(
  * “Via Brera, 14”.
  */
 export function locationNamesCompatible(a: string | null | undefined, b: string | null | undefined): boolean {
+  const rawLeft = String(a || '').trim().toLowerCase()
+  const rawRight = String(b || '').trim().toLowerCase()
+  if (rawLeft && rawLeft === rawRight) return true
   const left = comparableTokens(String(a || '')).filter((token) => !GENERIC_LOCATION_TOKENS.has(token))
   const right = new Set(comparableTokens(String(b || '')).filter((token) => !GENERIC_LOCATION_TOKENS.has(token)))
   return left.length > 0 && left.some((token) => right.has(token))
@@ -367,7 +375,7 @@ export function validatedContainmentHint(params: {
 export function detectNarratedMovement(playerInput: string | null | undefined): boolean {
   const t = clean(playerInput || '')
   if (!t) return false
-  return DIRECTED_MOVE.test(t) || DEPARTURE.test(t) || LEAVE_MOVE.test(t) || DOOR_BEHIND.test(t)
+  return DIRECTED_MOVE.test(t) || DEPARTURE.test(t) || LEAVE_MOVE.test(t) || DOOR_BEHIND.test(t) || ARRIVAL.test(t)
 }
 
 /** A verified departure that resets scene presence without guessing a location. */

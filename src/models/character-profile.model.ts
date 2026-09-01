@@ -63,6 +63,23 @@ export interface CharacterProfileDoc {
   aliases: string[]
   /** Optional for cards created before identity metadata was introduced. */
   identity_kind?: CharacterIdentityKind
+  /**
+   * Disambiguator for people the story identifies only by a LABEL ("the rider").
+   * A proper name is its own identity, so a named card leaves this null and the
+   * unique key reduces to exactly what it was before this field existed — which
+   * is why no existing row needs migrating.
+   *
+   * Two different riders get two scopes and therefore two cards, two entities
+   * and two bonds. Written by the extractor into the ledgered delta, never
+   * inferred at read time, so a rewind replays the same split deterministically.
+   */
+  identity_scope?: string
+  /**
+   * Labels this person USED to be known by, kept for display and recall but
+   * deliberately NOT resolvable. Once "the rider" is revealed as Aldric, that
+   * bare label must stop capturing every later rider in the world.
+   */
+  former_labels?: string[]
   /** Ledger-projected; deceased cards cannot re-enter normal scene presence. */
   life_state?: CharacterLifeState
   life_state_sequence?: number
