@@ -3,8 +3,14 @@ import {
   hasGroundedWitnessLocationEvidence,
   isSafeWitnessLocationCandidate,
   locationNamesCompatible,
+  sameLocationLabel,
 } from './movement-signal'
-import { evaluateLocationCitation, citationAdmitsLocation, passageSituatesViewpoint } from './location-citation'
+import {
+  evaluateLocationCitation,
+  citationAdmitsLocation,
+  passageSituatesViewpoint,
+  playerTextSituatesViewpoint,
+} from './location-citation'
 import { decideCursorDrift, type DriftDecision, type DriftState } from './cursor-drift'
 
 /**
@@ -188,7 +194,14 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
   // trusted alone — the judge must have named the place first, from the finished
   // prose — so this is the same two-independent-witnesses discipline as the rest
   // of the stack, with the second witness allowed to be the player.
-  const judgedProven =
+  //
+  // The judge's evidence comes in two strengths, and conflating them is what
+  // let a dinner-table promise about dawn move the map. A claim that VERIFIES
+  // — its own citation passes the stack, or some sentence of the narration or
+  // of the player's instruction situates the viewpoint there — stands on its
+  // own. A claim that merely AGREES with the witness is a second namer, not a
+  // second proof: it says where the scene is, never that the scene moved.
+  const judgedVerified =
     !!input.endpoint?.location &&
     (citationAdmitsLocation(
       evaluateLocationCitation({
@@ -199,7 +212,25 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
       }),
     ) ||
       passageSituatesViewpoint(judgedName, input.narrative, { people: input.knownPeople }) ||
-      passageSituatesViewpoint(judgedName, input.playerInput, { people: input.knownPeople }))
+      playerTextSituatesViewpoint(judgedName, input.playerInput, { people: input.knownPeople }))
+  // Two INDEPENDENT namers landing on the same place. The witness extractor and
+  // the endpoint judge are separate calls with separate prompts, and the judge
+  // is deliberately never told the cursor or the known places, so it cannot be
+  // agreeing by anchoring on the same prior. Demanding a third proof of a
+  // sentence neither of them quoted well is how "I leave the window and go back
+  // to the hearth" left the cursor at the north wall for seven turns — but
+  // agreement alone also put the cursor in a war room the player had only
+  // agreed to visit at dawn, so it may only complete a move something else
+  // already says happened.
+  // Agreement is checked on the NAMES THEMSELVES, not by the fuzzy compatibility
+  // used to decide whether two labels are the same node. "terminal table" and
+  // "terminal room" share a token and compare as compatible, which turned a
+  // piece of furniture into a corroborated second namer and held a whole world
+  // at it for five turns. Two models agreeing is only evidence when they said
+  // the same thing.
+  const judgedAgreed =
+    !!judgedName && !!witness.current_location && sameLocationLabel(judgedName, witness.current_location)
+  const judgedProven = judgedVerified || (judgedAgreed && transitionCorroborated)
   const judgedIsPlace = isSafeWitnessLocationCandidate(judgedName, options)
   const judgedLocation = judgedProven && judgedIsPlace ? judgedName : null
 
@@ -217,13 +248,56 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
     validDestination
       ? witness.player_destination
       : null
+  // The witness is instructed to HOLD the prior place unless the viewpoint
+  // moved, and it obeys past the point of truth — on the corpus it reported
+  // "the green room" for five consecutive turns spent on a loading dock. So its
+  // claim may move the cursor only when this passage actually names the place
+  // and puts the viewpoint there: its own citation must pass the whole stack,
+  // or some sentence of the narration must. The old fallback here asked only
+  // for a real excerpt plus a corroborated transition, which is (a) alone; on a
+  // turn that did break scene it promoted the stale held name over a citation
+  // that never mentioned it.
+  //
+  // The second chance is the same pair of independent witnesses the judge gets:
+  // a sentence of the NARRATION that situates the viewpoint there, or the
+  // PLAYER'S OWN instruction saying they went. "I walk down to the root cellars
+  // alone" is the strongest locative claim in the turn, and the prose that
+  // follows it describes the descent without ever naming the room.
+  const witnessSecondNamer =
+    !!witness.current_location &&
+    (passageSituatesViewpoint(witness.current_location, input.narrative, { people: input.knownPeople }) ||
+      playerTextSituatesViewpoint(witness.current_location, input.playerInput, { people: input.knownPeople }))
+  //
+  // A MOVE on a turn where nothing transitioned needs the player's own words.
+  //
+  // Both namers read one passage and name one place, and on a continuous scene
+  // they name whichever part of it the sentence they picked was about — the
+  // table, the court, the hearth, the city outside. Every one of those is a
+  // faithful reading and none of them is a move, and the grammar of "in this
+  // court, you will learn it" is indistinguishable from "in the hall, the air
+  // is cold". No verifier separates them, which is the same wall placehood hits
+  // from five other directions.
+  //
+  // What separates them is not the sentence but the turn: if nothing in the
+  // narration or the player's instruction says the scene changed, then a new
+  // name is a re-description of where they already are. The exception is the
+  // player saying where they are in their own words — "I sit on the edge of the
+  // dock", "I stop under the bridge" — which is the player operating the
+  // product, and the two namers independently returning the SAME label, which
+  // is a coincidence a re-description does not produce.
+  const movedOrNamedByPlayer = (place: string | null): boolean =>
+    !!place &&
+    (transitionCorroborated ||
+      playerTextSituatesViewpoint(place, input.playerInput, { people: input.knownPeople }) ||
+      (!!witness.current_location && !!judgedName && sameLocationLabel(judgedName, witness.current_location)))
+
   const narratedArrival =
     !input.isContinuation &&
     !actionDestination &&
     !witnessedDestination &&
     validLocationCited &&
-    (citedVerified ||
-      (witness.location_evidence_source === 'narrative' && validEvidence && transitionCorroborated)) &&
+    (citedVerified || (witnessSecondNamer && transitionCorroborated)) &&
+    movedOrNamedByPlayer(witness.current_location) &&
     !locationNamesCompatible(witness.current_location, cursorName)
       ? witness.current_location
       : null
@@ -233,6 +307,7 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
     !witnessedDestination &&
     !narratedArrival &&
     !!judgedLocation &&
+    movedOrNamedByPlayer(judgedLocation) &&
     !locationNamesCompatible(judgedLocation, cursorName)
       ? judgedLocation
       : null
@@ -247,6 +322,14 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
     compatible: locationNamesCompatible,
   })
 
+  // The FIRST anchor stays permissive on purpose. It was tightened to the same
+  // bar as every other path — a passing citation or a second namer — and that
+  // left FOUR turns of a cold-start world with NO CURSOR AT ALL, which is worse
+  // than a provisional one: an unset cursor tells the narrator nothing, and the
+  // narrator then invents a setting that the next turn's extractors read back
+  // as canon. A first anchor is the two-tier map's provisional tier — it names
+  // the setting for this turn and mints nothing (`LocationAnchorDoc.entity_id`
+  // is nullable for exactly this), so being wrong costs one turn.
   const firstAnchor = !cursorName
     ? validLocationCited && ((witness.location_evidence_source === 'narrative' && validEvidence) || citedVerified)
       ? witness.current_location

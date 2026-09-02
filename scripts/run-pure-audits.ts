@@ -21,6 +21,7 @@ const PURE_AUDITS = [
   'audit:presence-codex-gap',
   'audit:presence-evidence',
   'audit:location-evidence',
+  'audit:location-decision',
   'audit:time-evidence',
   'audit:durability',
   'audit:place-promotion',

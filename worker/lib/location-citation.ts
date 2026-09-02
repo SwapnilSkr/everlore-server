@@ -131,11 +131,22 @@ export function excerptSituatesViewpoint(
   evidence: string,
   options: { people?: string[] } = {},
 ): boolean {
+  // Clause splitting can DECAPITATE a clause: "He leans forward, elbows on the
+  // terminal table" becomes "elbows on the terminal table", a bare locative
+  // phrase whose owner is stranded in the fragment before it. So each fragment
+  // is judged with the sentence text that precedes it, and a subject found
+  // there still owns the locative. A fragment in which the PLACE is the subject
+  // is unaffected — that is a new clause, not a continuation.
+  const whole = comparable(evidence)
   // Test each clause on its own. A subordinate clause about somebody else must
   // not poison the main clause that does situate the viewpoint — a live witness
   // cited "When he pushes the heavy door open, the great hall greets him" for a
   // player walking back into the hall, and a whole-excerpt read refused it.
-  return splitClauses(evidence).some((clause) => clauseSituatesViewpoint(place, clause, options))
+  return splitClauses(evidence).some((clause) => {
+    const at = whole.indexOf(clause)
+    const prefix = at > 0 ? whole.slice(0, at) : ''
+    return clauseSituatesViewpoint(place, clause, { ...options, prefix })
+  })
 }
 
 /** Closed-class clause boundaries: punctuation, coordinators, subordinators. */
@@ -158,7 +169,7 @@ function splitClauses(evidence: string): string[] {
 function clauseSituatesViewpoint(
   place: string,
   evidence: string,
-  options: { people?: string[] } = {},
+  options: { people?: string[]; prefix?: string } = {},
 ): boolean {
   const tokens = tokenize(evidence)
   if (!tokens.length) return false
@@ -185,16 +196,30 @@ function clauseSituatesViewpoint(
   // cellars while I wait").
   const competitorOwnsClause = competitorAt >= 0 && (viewpointAt < 0 || competitorAt < viewpointAt)
 
-  // C. subject position: the excerpt opens with the place.
+  // C. subject position: the excerpt opens with the place, and something is
+  // PREDICATED of it. The length test used to count the place name's own second
+  // word, so the two-token fragment "Sapphire Tower" — a rendezvous named in
+  // dialogue, split off at a comma — read as a clause whose subject was there.
   if (head.length === 0 || head.every((token) => NP_SKIP.has(token) || CLAUSE_BOUNDARY.has(token))) {
-    return tokens.length > start + 1
+    const named = tokenize(core).filter((token) => !DETERMINER.has(token)).length
+    return tokens.length > start + Math.max(named, 1)
   }
 
-  // A. governed by a locative preposition.
+  // A. governed by a locative preposition. A subject stranded in an earlier
+  // fragment of the same sentence still owns this phrase.
   let cursor = start - 1
   while (cursor >= 0 && NP_SKIP.has(head[cursor])) cursor--
   const governor = cursor >= 0 ? head[cursor] : ''
-  if (LOCATIVE_PREPOSITION.has(governor) && !competitorOwnsClause) return true
+  if (LOCATIVE_PREPOSITION.has(governor)) {
+    const carried = tokenize(options.prefix || '')
+    const carriedViewpoint = carried.findIndex((token) => VIEWPOINT_TOKEN.has(token))
+    const carriedCompetitor = carried.findIndex(
+      (token) => THIRD_PERSON_TOKEN.has(token) || otherPeople.has(token.replace(/'s$/, '')),
+    )
+    const carriedOwns =
+      viewpointAt < 0 && carriedCompetitor >= 0 && (carriedViewpoint < 0 || carriedCompetitor < carriedViewpoint)
+    if (!competitorOwnsClause && !carriedOwns) return true
+  }
 
   // B. the viewpoint owns the clause containing the place — but wanting to go
   // somewhere is not being there. Shape B is the loosest of the three (any
@@ -345,4 +370,139 @@ export function extractStatedPosition(
     return span
   }
   return null
+}
+
+
+/**
+ * Does the PLAYER'S OWN TEXT put their viewpoint at this place?
+ *
+ * The judge names the place from the finished prose; this is the second
+ * witness, and it exists because second-person and sentient narration rarely
+ * writes "you are at X" — The City narrates as "She's still at the bridge",
+ * where the one locative sentence in the passage is owned by the city itself.
+ *
+ * It is NOT `passageSituatesViewpoint` pointed at the player's text, and that
+ * distinction cost four turns on the controlled corpus. Narration and a player's
+ * instruction are different registers. Narration fronts locatives about the
+ * scene ("Back in the root cellars, the air is cold"), so the loose shapes are
+ * safe there. A player's line is a sentence ABOUT something, and its locative
+ * phrase routinely modifies a noun rather than the predicate:
+ *
+ *   "I tell him about the ledgers in the cellars."   ← the LEDGERS are there
+ *   "I think about the girl from the arcade."        ← the GIRL is from there
+ *   "Let's get out of here — walk me to the dock."   ← a request, nobody moved
+ *
+ * Each of those moved the live cursor. So this test asks for the one shape a
+ * locative NP-modifier cannot take: the viewpoint owns the clause and the
+ * locative phrase sits on the PREDICATE, with at most one content word between
+ * the two. "I stop under the bridge" passes; "I tell him about the ledgers in
+ * the cellars" does not, because `tell` and `ledgers` are both content words
+ * standing between "I" and "in".
+ *
+ * Everything it counts is a closed grammatical class — determiners, pronouns,
+ * prepositions, auxiliaries, negation, particles, conjunctions — plus the
+ * caller's own cast names. It never asks what a word MEANS, only what class it
+ * belongs to, so no list of verbs or of places decides anything here.
+ */
+
+/**
+ * Modal auxiliaries — a closed grammatical class of about a dozen words, and
+ * the difference between a move and an appointment. "I will meet you in the war
+ * room at dawn" carries every structural mark of a first-person locative claim
+ * and describes a room the player is not in and will not be in for hours; it
+ * moved the live cursor and held it there for five turns. `INTENT_MARKER`
+ * covers volition (want, plan, hope); this covers futurity and irrealis, and it
+ * applies to the PLAYER'S text only — narration in the conditional is still
+ * describing a scene that exists.
+ */
+const IRREALIS_MARKER =
+  /\b(?:will|'ll|shall|would|'d|should|could|might|may|must|can|cannot|can't|won't|let's|gonna|about\s+to)\b/
+
+/** Goal/source markers. Locative on their own proves nothing ("the road TO
+ *  Marrow Ford"), but a viewpoint that owns the predicate makes them a move. */
+const DIRECTIONAL_PREPOSITION = new Set(['to', 'into', 'onto', 'toward', 'towards', 'for', 'from'])
+
+/** Particles and closed-class adverbs that attach to a verb without being one. */
+const PARTICLE = new Set([
+  'down', 'up', 'back', 'out', 'over', 'away', 'off', 'along', 'through',
+  'around', 'across', 'aside', 'apart', 'together', 'here', 'there', 'now',
+  'then', 'again', 'still', 'just', 'only', 'even', 'quietly', 'slowly',
+  'finally', 'already', 'never', 'not', 'no',
+])
+
+/** Auxiliaries and copulas — grammar, not fiction. */
+const AUXILIARY = new Set([
+  'am', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'do', 'does', 'did',
+  'have', 'has', 'had', 'will', "'ll", "'m", "'re", "'ve", "'s", 'let', "let's",
+])
+
+/** Prepositions and complementizers that may sit inside the predicate head. */
+const FUNCTIONAL = new Set([
+  ...LOCATIVE_PREPOSITION, ...DIRECTIONAL_PREPOSITION, ...PARTICLE, ...AUXILIARY,
+  ...DETERMINER, ...VIEWPOINT_TOKEN, 'of', 'about', 'with', 'without', 'and',
+  'but', 'or', 'so', 'that', 'this', 'these', 'those', 'it', "it's",
+])
+
+function isContentWord(token: string): boolean {
+  const bare = token.replace(/^[^a-z0-9']+|[^a-z0-9']+$/g, '')
+  return !!bare && !FUNCTIONAL.has(bare) && !NP_SKIP.has(bare)
+}
+
+export function playerTextSituatesViewpoint(
+  place: string,
+  playerInput: string,
+  options: { people?: string[] } = {},
+): boolean {
+  const text = String(playerInput || '')
+  if (!text.trim() || !String(place || '').trim()) return false
+  const core = placeCore(place)
+  const otherPeople = new Set(
+    (options.people || []).flatMap((name) => tokenize(name)).filter((token) => token.length >= 3),
+  )
+  for (const token of tokenize(core)) otherPeople.delete(token)
+
+  for (const sentence of text.split(/(?<=[.!?…])\s+|\n+/)) {
+    for (const clause of splitClauses(sentence)) {
+      if (!excerptNamesPlace(core, clause)) continue
+      if (INTENT_MARKER.test(clause) || IRREALIS_MARKER.test(clause)) continue
+      const tokens = tokenize(clause)
+      const start = findPlaceStart(tokens, core)
+      if (start < 0) continue
+
+      // The locative or directional phrase must govern the place name itself.
+      // `of` is a particle inside the noun phrase, not a preposition of its own
+      // — in "I sit on the edge OF the dock" the governor is `on`, and stopping
+      // at `of` (or at `edge`) refuses a player who said plainly where they sat.
+      // The same rule was already earned by `place-promotion.ts`.
+      let cursor = start - 1
+      while (cursor >= 0) {
+        if (NP_SKIP.has(tokens[cursor])) { cursor--; continue }
+        if (tokens[cursor] === 'of') { cursor -= 2; continue }
+        break
+      }
+      if (cursor < 0) continue
+      const governor = tokens[cursor]
+      const directional = DIRECTIONAL_PREPOSITION.has(governor)
+      if (!LOCATIVE_PREPOSITION.has(governor) && !directional) continue
+
+      const head = tokens.slice(0, cursor)
+      // Somebody else owning the clause takes the position with them.
+      if (head.some((token) => THIRD_PERSON_TOKEN.has(token) || otherPeople.has(token.replace(/'s$/, '')))) continue
+
+      const viewpointAt = head.findIndex((token) => VIEWPOINT_TOKEN.has(token))
+      // A goal marker needs an explicit mover: "the road to Marrow Ford" is not
+      // a journey, "I walk to the canal bridge" is.
+      if (directional && viewpointAt < 0) continue
+      // The viewpoint has to be the one DOING it. In "walk me to the loading
+      // dock" the viewpoint is the object of a request and nobody has moved;
+      // the tell is a content word standing in front of it.
+      if (viewpointAt > 0 && head.slice(0, viewpointAt).some(isContentWord)) continue
+      // At most one content word between the viewpoint (or the clause opening)
+      // and the preposition. That is the predicate head; a second content word
+      // means an object noun intervened and the phrase modifies IT, not the verb.
+      if (head.slice(viewpointAt + 1).filter(isContentWord).length > 1) continue
+      return true
+    }
+  }
+  return false
 }

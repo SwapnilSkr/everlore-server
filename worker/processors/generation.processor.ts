@@ -1223,9 +1223,23 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const persistedDeceasedKeys = new Set(packet.deceasedCharacterNames.map((name) => normalizeEntityName(name)))
   // Known places so a RETURN reuses a location's canonical name instead of
   // minting a near-duplicate entity (which would split the Places journal).
-  const knownPlaces = await entityGraphService
-    .listKnownLocations(instanceId, 30)
-    .catch(() => [] as { name: string; aliases: string[] }[])
+  //
+  // Filtered through the same hygiene gate that decides what may be minted
+  // today, because minting is self-justifying: `knownPlaces` is a short-circuit
+  // meaning "this is definitely a place", so a node written before the gate
+  // existed hands its own mistake back as authority — to the witness as a
+  // location to anchor on, and to the gate as proof that a name is a place.
+  // A live world carries "Cedric Take care of stuff here when I am gone okay"
+  // and "the war room where Father is already waiting" as locations; the
+  // witness duly reported the war room for a scene at a dinner table, on turn
+  // two, before the player had gone anywhere. The graph is not repaired here —
+  // that is `repair:duplicate-places` and `merge:location` — but nothing the
+  // gate would refuse today gets to speak as canon.
+  const knownPlaces = (
+    await entityGraphService
+      .listKnownLocations(instanceId, 30)
+      .catch(() => [] as { name: string; aliases: string[] }[])
+  ).filter((place) => isSafeWitnessLocationCandidate(place.name))
   // Places are a separate graph type from people. Keep their names available to
   // every downstream presence seam so a capitalized city/landmark cannot become
   // a participant merely because the narrator personifies it.

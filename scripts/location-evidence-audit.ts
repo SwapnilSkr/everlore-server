@@ -9,7 +9,9 @@ import {
   citationAdmitsLocation,
   passageSituatesViewpoint,
   extractStatedPosition,
+  playerTextSituatesViewpoint,
 } from '../worker/lib/location-citation'
+import { sameLocationLabel } from '../worker/lib/movement-signal'
 
 let failed = 0
 function ok(label: string, pass: boolean) {
@@ -133,5 +135,69 @@ ok('looking AT a person is not a position', extractStatedPosition('I look at Sor
 ok('a named companion is not a position', extractStatedPosition('I turn to Tomas.', { people: ['Tomas'] }) === null)
 ok('a bare action has none', extractStatedPosition('I nod.') === null)
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The player's own text as the SECOND NAMER for the judge's place.
+//
+// Every FAIL below moved the live cursor on the controlled corpus. This started
+// as `passageSituatesViewpoint` pointed at the player's instruction, and that
+// cost nine points: narration and an instruction are different registers. A
+// narrator fronts locatives about the scene; a player writes a sentence ABOUT
+// something, and its locative phrase routinely modifies a NOUN rather than the
+// predicate. So the shape required here is the one an NP-modifier cannot take —
+// the viewpoint is the SUBJECT, and the locative sits on the predicate with at
+// most one content word between them.
+// ─────────────────────────────────────────────────────────────────────────────
+console.log("\nthe player's own words as the second namer (expect true):")
+const claims = (place: string, text: string) => playerTextSituatesViewpoint(place, text, { people: CAST })
+ok('a plain first-person locative', claims('the bridge', 'I stop under the bridge and watch the water.'))
+ok('a directional with an explicit mover', claims('root cellars', 'I walk down to the root cellars alone.'))
+ok('a particle does not count as a content word', claims('the cellars', 'I go down into the cellars.'))
+ok('"of" is a particle inside the noun phrase, not a governor',
+  claims('the dock', 'I sit on the edge of the dock and let my feet hang.'))
+ok('a coordinated clause has its own opening', claims('north wall', 'I cross the hall and stand at the north wall, looking out.'))
+ok('second person, as a sentient world addresses the player', claims('the canal', 'you wait by the canal until the rain stops'))
+
+console.log("\nthe player's own words — refusals (expect false):")
+ok('a locative modifying an OBJECT noun is not a position',
+  claims('the cellars', 'I tell him about the ledgers in the cellars.') === false)
+ok('a locative modifying a mentioned person is not a position',
+  claims('the arcade', 'I think about the girl from the arcade and what she said.') === false)
+ok('the viewpoint must be the SUBJECT, not the object of a request',
+  claims('the loading dock', "Let's get out of here — walk me to the loading dock.") === false)
+ok('a modal makes it an appointment, not a move',
+  claims('the war room', 'I will meet you in the war room at dawn.') === false)
+ok('asking someone else to walk you somewhere is not arriving',
+  claims('the canal bridge', 'Soren, lock up and walk with me to the canal bridge — I need the air.') === false)
+ok('an intention is not a position', claims('the cafe', 'I want to head for the cafe later.') === false)
+ok('somebody else owning the clause takes the position with them',
+  claims('the cellars', "Bram's down there in the cellars with his ledgers.") === false)
+ok('a goal marker with no mover is not a journey',
+  claims('Marrow Ford', 'the low road to Marrow Ford is washed out') === false)
+ok('naming a place with no locative relation is not a position',
+  claims('the granary', 'I ask Tomas what the granary looked like when it was still full.') === false)
+
+console.log('\nclause splitting must not DECAPITATE a clause:')
+ok('a stranded subject still owns the locative phrase',
+  situates('terminal table', 'He leans forward, elbows on the terminal table.') === false)
+ok('a fronted locative has no stranded subject to lose',
+  situates('root cellars', 'Back in the root cellars, the air is cold.'))
+ok('the place as subject of its own clause is unaffected',
+  situates('the great hall', 'When he pushes the heavy door open, the great hall greets him.'))
+ok('the viewpoint reclaims a phrase a third party did not own',
+  situates('the hall', 'The door swings wide, and I step into the hall.'))
+
+console.log('\nsubject position needs a PREDICATE, not just a name:')
+ok('a rendezvous named in dialogue is not a location',
+  situates('Sapphire Tower', "Eight o'clock sharp, Sapphire Tower.") === false)
+ok('a place with something predicated of it still passes', situates('the hall', 'The hall is quiet again.'))
+ok('a one-word name with a predicate still passes', situates('Falkreath', 'Falkreath sleeps under a low grey sky.'))
+
+console.log('\nagreement between two namers is checked on the LABELS:')
+ok('articles and case do not break agreement', sameLocationLabel('War Room', 'the war room'))
+ok('a shared token is not agreement', sameLocationLabel('terminal table', 'terminal room') === false)
+ok('a qualifier is not agreement', sameLocationLabel('the old bench', 'the hall') === false)
+ok('an empty label agrees with nothing', sameLocationLabel('', 'the hall') === false)
+
 console.log(`\nlocation evidence audit: ${failed === 0 ? 'ALL GREEN' : `${failed} FAILED`}`)
 process.exit(failed === 0 ? 0 : 1)
+

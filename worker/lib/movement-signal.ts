@@ -459,3 +459,23 @@ export function resolvePossessiveRoomName(
   const noun = ROOM_NOUN_CANON[m[2]] || 'room'
   return `${ownerName.trim()}'s ${noun}`
 }
+
+/**
+ * Do two labels name the same place LITERALLY, ignoring articles and case?
+ *
+ * `locationNamesCompatible` is deliberately fuzzy — it decides whether two
+ * labels should resolve to one graph node, so "the hall" and "great hall" must
+ * match. That is the wrong test for asking whether two independent extractors
+ * AGREED: "terminal table" and "terminal room" share a token and compare as
+ * compatible, so a piece of furniture read as a corroborated second namer.
+ */
+export function sameLocationLabel(a: string | null | undefined, b: string | null | undefined): boolean {
+  const strip = (value: string) =>
+    locationComparable(value)
+      .replace(/^(?:the|a|an|my|our|his|her|their|its)\s+/, '')
+      .replace(/[^\p{L}\p{N} ]+/gu, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+  const [x, y] = [strip(String(a || '')), strip(String(b || ''))]
+  return !!x && x === y
+}
