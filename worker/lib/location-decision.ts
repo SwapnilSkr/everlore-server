@@ -175,6 +175,12 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
     proseCited: citedVerified,
   })
 
+  // The witness's `containment_hint` is NOT a third namer, and it was checked:
+  // it names the ENCLOSING place ("Vesperkeep" for the hall, "the keep" for the
+  // root cellars), which is its job, and it also emits a character's name as a
+  // container. Present on ~30% of turns and agreeing with the scene's own place
+  // on 17%/27% across the two corpora. It belongs to the promotion path, where
+  // a containment edge is evidence a name is a place at all, not here.
   const judgeTransition = input.endpoint?.available ? input.endpoint.sceneTransition : null
   const transitionCorroborated = judgeTransition === true || detectNarratedMovement(input.playerInput)
 
@@ -230,6 +236,13 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
   // the same thing.
   const judgedAgreed =
     !!judgedName && !!witness.current_location && sameLocationLabel(judgedName, witness.current_location)
+  //
+  // MEASURED, do not drop the transition requirement here. Letting strict
+  // agreement admit on its own recovers one turn — a move into a war room whose
+  // transition the judge missed — and loses five, because "I will meet you in
+  // the war room at dawn" is also strict agreement with no transition, and the
+  // map follows the player to an appointment they will keep at dawn. Held-out
+  // 94.9% → 90.9%. One turn of lag is the right side of that trade.
   const judgedProven = judgedVerified || (judgedAgreed && transitionCorroborated)
   const judgedIsPlace = isSafeWitnessLocationCandidate(judgedName, options)
   const judgedLocation = judgedProven && judgedIsPlace ? judgedName : null
