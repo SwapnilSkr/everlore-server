@@ -101,6 +101,12 @@ export const deletionService = {
         mongoColl.storyCalendars().deleteMany({ instance_id: { $in: instanceIds } }),
         mongoColl.timelineBranches().deleteMany({ instance_id: { $in: instanceIds } }),
         mongoColl.generationLogs().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.locationStats().deleteMany({ instance_id: { $in: instanceIds } }),
+        // Diagnostics are per-instance too. Left behind they are orphans that
+        // accumulate forever and re-attach to nothing — the same shape as the
+        // entity-graph rows that used to survive a delete and bleed into a
+        // reused instance, just in the observability tables.
+        mongoColl.projectionAnomalies().deleteMany({ instance_id: { $in: instanceIds } }),
       ])
     }
 
@@ -183,6 +189,7 @@ export const deletionService = {
     await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
     await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
     await mongoColl.generationLogs().deleteMany({ instance_id: iid })
+    await mongoColl.projectionAnomalies().deleteMany({ instance_id: iid })
 
     // 2. Restore world state / flags / scene from template defaults.
     const worldState: Record<string, number> = {}
@@ -368,6 +375,7 @@ export const deletionService = {
 
     // Delete observability logs for this instance
     await mongoColl.generationLogs().deleteMany({ instance_id: iid })
+    await mongoColl.projectionAnomalies().deleteMany({ instance_id: iid })
 
     // Delete the instance
     await worldInstances().deleteOne({ _id: iid })
