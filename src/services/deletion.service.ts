@@ -107,6 +107,11 @@ export const deletionService = {
         // entity-graph rows that used to survive a delete and bleed into a
         // reused instance, just in the observability tables.
         mongoColl.projectionAnomalies().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.signalLedger().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.relationCandidates().deleteMany({ instance_id: { $in: instanceIds } }),
+        // The outbox is QUEUED WORK, not a log: a row left behind is a job still
+        // waiting to run against a save that no longer exists.
+        mongoColl.postProcessOutbox().deleteMany({ instance_id: { $in: instanceIds } }),
       ])
     }
 
@@ -190,6 +195,9 @@ export const deletionService = {
     await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
     await mongoColl.generationLogs().deleteMany({ instance_id: iid })
     await mongoColl.projectionAnomalies().deleteMany({ instance_id: iid })
+    await mongoColl.signalLedger().deleteMany({ instance_id: iid })
+    await mongoColl.relationCandidates().deleteMany({ instance_id: iid })
+    await mongoColl.postProcessOutbox().deleteMany({ instance_id: iid })
 
     // 2. Restore world state / flags / scene from template defaults.
     const worldState: Record<string, number> = {}
@@ -372,10 +380,16 @@ export const deletionService = {
 
     await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
     await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
+    // Reset and template-delete both purged this; deleting a single save did
+    // not, so every deleted instance left its place statistics behind.
+    await mongoColl.locationStats().deleteMany({ instance_id: iid })
 
     // Delete observability logs for this instance
     await mongoColl.generationLogs().deleteMany({ instance_id: iid })
     await mongoColl.projectionAnomalies().deleteMany({ instance_id: iid })
+    await mongoColl.signalLedger().deleteMany({ instance_id: iid })
+    await mongoColl.relationCandidates().deleteMany({ instance_id: iid })
+    await mongoColl.postProcessOutbox().deleteMany({ instance_id: iid })
 
     // Delete the instance
     await worldInstances().deleteOne({ _id: iid })
