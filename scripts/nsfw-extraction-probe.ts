@@ -8,6 +8,7 @@ import { extractCharacterCodexDeltas } from '../worker/lib/character-codex-extra
 import { extractCharacterDeaths } from '../worker/lib/character-lifecycle-extractor'
 import { extractPlayerInteractionSignals } from '../worker/lib/player-interaction-signal'
 import { entityAdjudicationCandidates, adjudicateEntityCandidates } from '../worker/lib/entity-adjudicator'
+import { adjudicateSceneEndpoint } from '../worker/lib/scene-endpoint-adjudicator'
 import { buildMemoryCurationRequest } from '../worker/processors/memory.processor'
 import { auditChoices } from '../worker/lib/choice-grounding-audit'
 import { sanitizeChoices } from '../worker/lib/structured-output'
@@ -46,7 +47,7 @@ console.log(JSON.stringify({ probe: 'production-extraction-replay', model, write
 // This mirrors the real post-stream fan-out. Calls that production runs in
 // parallel run in parallel here too; the only difference is persistence/queues.
 const unfamiliar = entityAdjudicationCandidates({ prose, knownNames: CAST.flatMap((c) => [c.name, ...c.aliases]), exclude: [] })
-const [metadata, codex, deaths, interaction, entityJudgement] = await Promise.all([
+const [metadata, codex, deaths, interaction, entityJudgement, endpoint] = await Promise.all([
   extractSceneMetadata(prose, [], [], {
     currentLocationName: CURRENT_LOCATION, priorPresent: PRIOR_PRESENT,
     roster: CAST.map((c) => ({ name: c.name, aliases: c.aliases })), worldContext: WORLD_CONTEXT,
@@ -61,6 +62,11 @@ const [metadata, codex, deaths, interaction, entityJudgement] = await Promise.al
     onRaw: record('interaction_signal'),
   }),
   adjudicateEntityCandidates({ prose, candidates: unfamiliar, knownCast: CAST.map((c) => c.name), knownPlaces: [], worldContext: WORLD_CONTEXT, onRaw: record('entity_adjudication') }),
+  adjudicateSceneEndpoint({
+    prose, playerInput: PLAYER_INPUT,
+    candidates: [...PRIOR_PRESENT, ...CAST.map((c) => c.name), ...unfamiliar.map((c) => c.display)],
+    onRaw: record('scene_endpoint'),
+  }),
 ])
 
 // Memory runs asynchronously from the event outbox in production. This invokes
@@ -82,4 +88,4 @@ const choiceAudit = auditChoices(sanitizeChoices(metadata.choices || []), castVo
 
 for (const [stage, value] of raw) console.log(`\n=== RAW ${stage.toUpperCase()} ===\n${value}`)
 console.log('\n=== VALIDATED / WOULD-BE PROJECTIONS (NO WRITES) ===')
-console.log(JSON.stringify({ metadata, choiceAudit, finalPublishedChoices: choiceAudit.choices, entityJudgement, codexDeltas: codex, lifecycleDeltas: deaths, interactionSignals: interaction, memoryExtraction: memory }, null, 2))
+console.log(JSON.stringify({ metadata, choiceAudit, finalPublishedChoices: choiceAudit.choices, entityJudgement, endpointAdjudication: endpoint, codexDeltas: codex, lifecycleDeltas: deaths, interactionSignals: interaction, memoryExtraction: memory }, null, 2))

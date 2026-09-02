@@ -33,7 +33,7 @@ export async function extractCharacterDeaths(params: {
   if (!prose || !candidates.length) return []
   try {
     const raw = await callLLM({
-      model: AI_MODELS.metadata, temperature: 0, maxTokens: 180, responseSchema: SCHEMA,
+      model: AI_MODELS.metadata, purpose: 'character_deaths', temperature: 0, maxTokens: 180, responseSchema: SCHEMA,
       messages: [
         { role: 'system', content: 'Extract only explicit, certain narrator-established deaths of known NPCs from STORY PROSE. Return [] for threats, attempted killings, hypotheticals, memories of an already-dead person, uncertain reports, metaphor, dialogue claims not confirmed by narration, or any player/protagonist. Every evidence field must be an exact contiguous excerpt of STORY PROSE.' },
         { role: 'user', content: `KNOWN NPCS (use canonical name only):\n${candidates.map((card) => `- ${card.name}${card.aliases.length ? ` (aliases: ${card.aliases.join(', ')})` : ''}`).join('\n')}\n\nSTORY PROSE:\n${prose}` },

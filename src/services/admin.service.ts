@@ -528,6 +528,7 @@ export const adminService = {
     }
     if (mems.length > 0) await memories().deleteMany({ _id: { $in: mems.map((m) => m._id) } })
     await generationLogs().deleteMany({ instance_id: event.instance_id, sequence: event.sequence })
+    await mongoColl.extractorRaw().deleteMany({ instance_id: event.instance_id, sequence: event.sequence })
     await events().deleteOne({ _id: eid })
     await worldInstances().updateOne(
       { _id: event.instance_id },

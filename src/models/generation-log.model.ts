@@ -1,5 +1,6 @@
 import type { ObjectId } from 'mongodb'
 import type { ProseHygieneIssue } from '../utils/prose-hygiene'
+import type { LLMCallUsage } from '../ai/usage'
 
 /**
  * generation_logs — one document per narration generation. Non-blocking,
@@ -36,6 +37,8 @@ export interface GenerationLogDoc {
   /** Time-to-first-token: ms from request start until the first streamed delta.
    *  The latency the player actually feels. 0 if no tokens streamed. */
   ttft_ms: number
+  /** Per-call provider usage captured during this turn (narration + post-stream). */
+  llm_calls?: LLMCallUsage[]
   /** Time spent waiting for a generation worker after the job was enqueued. */
   queue_wait_ms?: number
   /** Worker-side context/retrieval/prompt construction before the provider call. */
