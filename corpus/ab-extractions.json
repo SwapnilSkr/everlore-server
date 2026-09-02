@@ -1,0 +1,3031 @@
+{
+  "6a9838c242bd67e3f97250da:14": {
+    "witness": {
+      "present_characters": [
+        "Tomas",
+        "Bram"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The hall stays cold.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": "a day",
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the root cellars",
+        "evidence": "Bram emerges from the stairwell that leads down to the root cellars."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:15": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The hall is otherwise empty",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "The hall is otherwise empty; no one else has entered since the steward agreed"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:16": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He stands by the cold hearth, his back to the empty fireplace",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "weary",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "offers information about Bram",
+            "reaction": "weary and fixed in posture"
+          }
+        ],
+        "emotional_shift": "the atmosphere feels heavy with waiting",
+        "setting": "the hall",
+        "consequence": "Tomas remains unyielding and watchful",
+        "unresolved_hook": "whether I want to hear Bram's numbers or not"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the cold hearth",
+        "evidence": "He stands by the cold hearth, his back to the empty fireplace"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:17": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "His numbers are down in the cellars",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "weary",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "inform Kael about the ledgers",
+            "reaction": "weary and knowing"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavy with unspoken truths",
+        "setting": "in the hall",
+        "consequence": "the need to retrieve the ledgers becomes clear",
+        "unresolved_hook": "whether I will go to the cellars for the ledgers"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the cellars",
+        "evidence": "His numbers are down in the cellars, where the ledgers are kept."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:18": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He looks back up, his expression flat and resigned.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "suggests moving to the gatehouse",
+            "reaction": "expression flat and resigned"
+          }
+        ],
+        "emotional_shift": "the tension of indecision hangs in the air",
+        "setting": "the hall",
+        "consequence": "the choice to move or stay is presented",
+        "unresolved_hook": "whether I will follow him to the gatehouse or not"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "I hand Tomas the empty cup and wait without leaving the hall."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:19": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Tomas’s weary gaze doesn’t leave the cold hearth",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "weary",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "explains the rations situation",
+            "reaction": "weary and flat"
+          }
+        ],
+        "emotional_shift": "the mood grows tense over dwindling supplies",
+        "setting": "the hall",
+        "consequence": "concerns about food reserves deepen",
+        "unresolved_hook": "how to address the dwindling rations"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "You want their meaning?"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:20": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "His expression doesn’t change, but something settles in his shoulders",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "resignation",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "inform about the north wall and root cellars",
+            "reaction": "grim resignation"
+          }
+        ],
+        "emotional_shift": "a sense of inevitability settles in the air",
+        "setting": "the hall",
+        "consequence": "the choice to act or remain still is laid before me",
+        "unresolved_hook": "whether I will choose to visit the root cellars or stay"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hearth",
+        "evidence": "I stay by the hearth."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:21": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "contact",
+          "statement": "Kael has Tomas by the sleeve",
+          "actors": [
+            "Kael",
+            "Tomas"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "his weary gaze snapping up from the hearth",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "warns Kael about the cold",
+            "reaction": "grim resignation"
+          }
+        ],
+        "emotional_shift": "the tension between them deepens",
+        "setting": "the hall",
+        "consequence": "Kael must decide whether to venture out alone",
+        "unresolved_hook": "whether Kael will heed Tomas's warning"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hearth",
+        "evidence": "his weary gaze snapping up from the hearth to meet Kael’s own."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:22": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "he gestures with his chin toward the hall's entrance",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "warns Kael about the cold",
+            "reaction": "flat and weary expression"
+          }
+        ],
+        "emotional_shift": "the tension between them deepens",
+        "setting": "the hall",
+        "consequence": "Kael feels the weight of Tomas's words",
+        "unresolved_hook": "whether Kael will heed Tomas's warning"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "He gestures with his chin toward the hall's entrance"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:23": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "His expression stays flat, but something tightens in his jaw",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "convey resignation and finality",
+            "reaction": "his expression stays flat, jaw tightens"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavier with unspoken truths",
+        "setting": "the hall",
+        "consequence": "the weight of loss hangs between us",
+        "unresolved_hook": "how will I respond to Tomas's words?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:24": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the cold from the north wall seems to press a little closer",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "convey finality about Mara's absence",
+            "reaction": "steadfast and serious"
+          }
+        ],
+        "emotional_shift": "the tension in the air thickens",
+        "setting": "in the hall",
+        "consequence": "Kael feels the weight of loss more acutely",
+        "unresolved_hook": "how Kael will respond to Tomas's words"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "I just listen to the hall."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:25": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the cold's already past the north wall",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "remind Kael of urgency",
+            "reaction": "grim and patient"
+          }
+        ],
+        "emotional_shift": "the atmosphere thickens with tension",
+        "setting": "in the hall",
+        "consequence": "the urgency of the situation is clear",
+        "unresolved_hook": "how will Kael respond to Tomas's warning?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the keep",
+        "evidence": "the distant groan of timber somewhere in the keep's bones"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:26": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He doesn't glance toward the kitchens or the cellar stairs.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "weary",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "to convey the situation",
+            "reaction": "flat and weary"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavier with concern",
+        "setting": "the hall",
+        "consequence": "the focus remains on the emptiness of the keep",
+        "unresolved_hook": "what Bram is doing below right now"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "All you can see is this hall, and me, and the cold settling in deeper."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:27": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Only Tomas stands there",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "Kael’s gaze moves across the hall: the cold hearth, the empty benches, the worn stone floor."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:28": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "posture",
+          "statement": "Tomas settles into a weary stance as if for a long vigil",
+          "actors": [
+            "Tomas"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He doesn't move toward the door.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "weary",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "accepts the situation",
+            "reaction": "settles into a weary stance"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavy with resignation",
+        "setting": "the hall",
+        "consequence": "Tomas remains in the hall, ready for a long wait",
+        "unresolved_hook": "how long will this vigil last?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "The cold doesn't care who chooses it. It comes for everyone in this hall."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:29": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the air feels heavier",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "heavy",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "warns about the hearth",
+            "reaction": "flat and final voice"
+          }
+        ],
+        "emotional_shift": "the weight of impending cold settles in",
+        "setting": "the hall",
+        "consequence": "a sense of urgency about the hearth",
+        "unresolved_hook": "how to prepare for the cold night ahead"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the stone",
+        "evidence": "I sit down against the cold stone and stay."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:30": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [
+        {
+          "statement": "Kael has Tomas by the sleeve",
+          "evidence": "You're letting go"
+        }
+      ],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the hearth's glow is a shallow, dying orange",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "reflective",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "acknowledges Kael's action",
+            "reaction": "breath hitches, settles deeper into vigil"
+          }
+        ],
+        "emotional_shift": "tension eases slightly",
+        "setting": "the hall",
+        "consequence": "a moment of quiet understanding",
+        "unresolved_hook": "what will happen next in this vigil?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "I stay in the hall."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:31": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [
+        {
+          "statement": "Tomas settles into a weary stance as if for a long vigil",
+          "evidence": "Tomas lets out a low, weary sigh"
+        }
+      ],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "his gaze fixed on the cold hearth",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "weary",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "expresses solitude and resignation",
+            "reaction": "sighs and gazes at the hearth"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavier with isolation",
+        "setting": "the hall",
+        "consequence": "a sense of desolation lingers",
+        "unresolved_hook": "how will we endure the cold together?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "The cold's up here, where we are."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:32": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "across the hearth",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "impart a sense of urgency",
+            "reaction": "flat and final in his delivery"
+          }
+        ],
+        "emotional_shift": "the weight of inevitability settles in",
+        "setting": "the hall",
+        "consequence": "the time of reckoning approaches",
+        "unresolved_hook": "what will happen at midnight?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hearth",
+        "evidence": "Tomas watches him from across the hearth, a shadow against the stone."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:33": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": "root cellars",
+      "player_travel_confirmed": true,
+      "location_evidence": "descending the worn steps into the damp dark beneath the kitchen",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the keep",
+      "movement": "deeper",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:34": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The root cellar is empty.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:35": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The cellars are empty except for the shelves and the ledgers",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:36": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the shelves settling under the weight of their own emptiness",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "heavy",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": "the atmosphere grows more oppressive",
+        "setting": "in the root cellars",
+        "consequence": "the ration ledger reveals a troubling lack of supplies",
+        "unresolved_hook": "what happened to the missing rations?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:37": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the ledger’s final tallies weeks old",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:38": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": true,
+      "location_evidence": "When he pushes the heavy door open, the great hall greets him",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Vesperkeep",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "convey urgency about the ledgers",
+            "reaction": "voice flat in the stillness"
+          }
+        ],
+        "emotional_shift": "the atmosphere thickens with tension",
+        "setting": "in the great hall",
+        "consequence": "Kael realizes the urgency of the situation",
+        "unresolved_hook": "what actions will Kael take next?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the great hall",
+        "evidence": "the great hall greets him with a deeper silence"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:39": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Only one other person is in the great hall now.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "great hall",
+        "evidence": "Only one other person is in the great hall now."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:40": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "I settle onto the stone beside the hearth",
+      "location_evidence_source": "player",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "somber",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "seeks companionship",
+            "reaction": "sits beside Kael, staring at his hands"
+          }
+        ],
+        "emotional_shift": "the atmosphere of shared solitude deepens",
+        "setting": "the hall",
+        "consequence": "the two sit together in silence",
+        "unresolved_hook": "what they are waiting for"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "beside the hearth",
+        "evidence": "Kael settles onto the stone beside the hearth"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:41": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The hall is quiet.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "reflect on their situation",
+            "reaction": "somber and distant"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavier with unease",
+        "setting": "the hall",
+        "consequence": "the tension in the air thickens",
+        "unresolved_hook": "what will the wind bring next?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "The hall is quiet."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:42": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": "root cellars",
+      "player_travel_confirmed": true,
+      "location_evidence": "The sound of Kael’s footsteps fades down the stone stairwell",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Vesperkeep",
+      "movement": "deeper",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "location_state_changes": [
+        "the sacks are fewer than Kael remembers",
+        "Bram’s ledger lies open on a barrel"
+      ],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:43": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": true,
+      "location_evidence": "I walk back up to the hall",
+      "location_evidence_source": "player",
+      "containment_hint": "Vesperkeep",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "convey knowledge of the cellars",
+            "reaction": "remains seated, voice flat"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavier with unspoken truths",
+        "setting": "in the great hall",
+        "consequence": "Tomas acknowledges the weight of the situation",
+        "unresolved_hook": "what truths does Tomas know about the cellars?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "great hall",
+        "evidence": "The silence in the great hall is a solid thing"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:44": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": true,
+      "location_evidence": "as Kael enters",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Vesperkeep",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Tomas",
+          "intent": "inquire about the numbers",
+          "reaction": "dark and tired eyes track Kael's hands"
+        }
+      ],
+      "emotional_shift": "the atmosphere grows tense with expectation",
+      "setting": "in the great hall",
+      "consequence": "Tomas awaits Kael's response about the numbers",
+      "unresolved_hook": "whether Kael found the information he sought"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "great hall",
+        "evidence": "The cold of the hall hits him like a wall after the cellar's damp chill."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:45": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "north wall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The north wall faces the mist road",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the hall",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "bleak",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "inform about the outside conditions",
+            "reaction": "flat and weary voice"
+          }
+        ],
+        "emotional_shift": "the atmosphere feels colder and more isolating",
+        "setting": "at the north wall",
+        "consequence": "the sense of confinement deepens",
+        "unresolved_hook": "how long will this cold last?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "The cold radiating from the stone seeps through his tunic, a deeper chill than the hall’s air."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:46": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "north wall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "his gaze lifts to the high, narrow windows set in the north wall",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the hall",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "bleak",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "provides information about the road",
+            "reaction": "flat tone, resigned"
+          }
+        ],
+        "emotional_shift": "the atmosphere feels heavy with uncertainty",
+        "setting": "by the hearth",
+        "consequence": "the road remains obscured by mist",
+        "unresolved_hook": "when will the fog finally lift?"
+      },
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hearth",
+        "evidence": "He doesn’t move from his spot by the hearth"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:47": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "north wall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "His voice is low, almost lost to the cold air.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the hall",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "reflective",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "reflects on the past",
+            "reaction": "nostalgic and somber"
+          }
+        ],
+        "emotional_shift": "a sense of loss permeates the conversation",
+        "setting": "at the north wall",
+        "consequence": "the emptiness of the granary is emphasized",
+        "unresolved_hook": "what else has changed since the granary was full?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the north wall",
+        "evidence": "Tomas doesn’t turn from the north wall."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:48": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "north wall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The mist doesn't lift. It hangs like a shroud over the road.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the hall",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "somber",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "expresses resignation about Mara's absence",
+            "reaction": "voice flat and worn"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavier with loss",
+        "setting": "in the hall",
+        "consequence": "the sense of emptiness deepens",
+        "unresolved_hook": "what will I do in her absence?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "his voice comes from across the hall"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:49": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "When Kael settles beside him",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "somber",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "express discomfort",
+            "reaction": "voice low and flat, gaze fixed on the hearth"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavier with cold",
+        "setting": "the hall",
+        "consequence": "the hearth remains cold and empty",
+        "unresolved_hook": "how to warm the hall"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "When Kael settles beside him, Tomas lets out a slow breath, his gaze fixed on the empty hearth."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:50": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the hearth is just a heap of dead ash",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": "the next morning",
+      "time_evidence": "When a grey, thin light finally filters through the high windows",
+      "location_state_changes": [
+        "the hearth is now just a heap of dead ash"
+      ],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "somber",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "inform Kael of the morning",
+            "reaction": "rough voice, slow motion"
+          }
+        ],
+        "emotional_shift": "the atmosphere shifts to morning's reality",
+        "setting": "the hall",
+        "consequence": "the fire is out, the cold settles in",
+        "unresolved_hook": "whether Kael will check Bram's ledger"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:51": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the silence stretches, thin and brittle as the ice on the north wall",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "reveals Bram's location",
+            "reaction": "flat, exhausted"
+          }
+        ],
+        "emotional_shift": "the tension thickens with revelation",
+        "setting": "the hall",
+        "consequence": "Kael learns Bram is in the cellars",
+        "unresolved_hook": "what will Kael do about Bram's situation?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the cellars",
+        "evidence": "He's in the cellars."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:52": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the keep didn't look like a tomb from the mist",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "somber",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "reflect on the past",
+            "reaction": "visibly tense and focused on the hearth"
+          }
+        ],
+        "emotional_shift": "the weight of loss is palpable",
+        "setting": "the hall",
+        "consequence": "the memory of the fire deepens the atmosphere",
+        "unresolved_hook": "how will we face the future without warmth?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the dead hearth",
+        "evidence": "his gaze stays fixed on the dead hearth"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:53": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": "root cellars",
+      "player_travel_confirmed": true,
+      "location_evidence": "you’ll find the same thing",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Vesperkeep",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:54": {
+    "witness": {
+      "present_characters": [
+        "Tomas",
+        "Bram"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": "root cellars",
+      "player_travel_confirmed": true,
+      "location_evidence": "the cellar air is a solid, damp cold",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the hall",
+      "movement": "deeper",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "root cellars",
+        "evidence": "The cellar air is a solid, damp cold that smells of earth and rot."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:55": {
+    "witness": {
+      "present_characters": [
+        "Bram"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The sacks are few—you count them twice",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the keep",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [
+        "the granary is nearly empty"
+      ],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "grim",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Bram",
+            "intent": "acknowledges the count",
+            "reaction": "remains focused on his ledger"
+          }
+        ],
+        "emotional_shift": "the weight of scarcity settles in",
+        "setting": "in the root cellars",
+        "consequence": "the food supply is critically low",
+        "unresolved_hook": "how to address the dwindling supplies"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the cellar",
+        "evidence": "his voice hollow in the cellar’s chill."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:56": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": "the hall",
+      "player_travel_confirmed": true,
+      "location_evidence": "the cellar door groaning open to spill cold stone light into the hall above",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Vesperkeep",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "inquire about Kael's search",
+            "reaction": "voice flat, back turned"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows colder and more strained",
+        "setting": "in the hall",
+        "consequence": "Tomas remains unyielding and distant",
+        "unresolved_hook": "whether Kael will respond to Tomas's question"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the hall",
+        "evidence": "the cellar door groaning open to spill cold stone light into the hall above."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:57": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the silence stretches, broken only by the faint, distant creak of the keep settling into the night",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:58": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the dark stone seems to drink the last of the lamplight",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:59": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "His gaze stays fixed on the north wall",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "expresses frustration about the ledgers",
+            "reaction": "gaze fixed, jaw tightens"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavy with unspoken tension",
+        "setting": "the hall",
+        "consequence": "Tomas reveals his discontent with the situation",
+        "unresolved_hook": "how will I respond to Tomas's frustration?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the cellars",
+        "evidence": "You went down there to count the dark, Kael."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:60": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The cold has seeped into the flagstones",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hearth",
+        "evidence": "his own gaze fixed on the same empty stone hearth."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:61": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "His breath mists in the air between them.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "bleak",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "reveals the dire situation",
+            "reaction": "expression bleak and stripped bare"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavy with despair",
+        "setting": "the hall",
+        "consequence": "awareness of dwindling supplies deepens",
+        "unresolved_hook": "what will we do with so little left?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the dead hearth",
+        "evidence": "Tomas doesn’t look away from the dead hearth."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:62": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Tomas watches him rise",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the cold hearth",
+        "evidence": "his own posture still fixed by the cold hearth."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:63": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The silence stretches, filled with the brittle chill of the stone around them.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "bleak",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "expresses resignation",
+            "reaction": "exhausted and indifferent"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavy with despair",
+        "setting": "the hall",
+        "consequence": "Tomas remains unhelpful and distant",
+        "unresolved_hook": "whether Kael will find warmth or comfort"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the old bench",
+        "evidence": "The old bench groaning under him."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:64": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the cold won't care if your eyes are open or shut",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "mundane",
+      "emotional_tone": "heavy",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "encourages Kael to rest",
+            "reaction": "offers a quiet, watchful presence"
+          }
+        ],
+        "emotional_shift": "the atmosphere thickens with tension",
+        "setting": "in the hall",
+        "consequence": "Kael remains alert despite the cold",
+        "unresolved_hook": "how long will the silence last?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "I pull my cloak over me and settle in the hall for the night."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:65": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The hall is a bowl of deep blue shadow",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "mundane",
+      "emotional_tone": "somber",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "shares a thought about the dawn",
+            "reaction": "voice low and raspy, eyes closed"
+          }
+        ],
+        "emotional_shift": "a sense of foreboding lingers in the air",
+        "setting": "the hall",
+        "consequence": "Tomas appears weary and burdened",
+        "unresolved_hook": "what lies ahead as dawn approaches?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "The hall is a bowl of deep blue shadow"
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:66": {
+    "witness": {
+      "present_characters": [
+        "Tomas"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the dark watches. Someone has to.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "mundane",
+      "emotional_tone": "somber",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Tomas",
+            "intent": "expresses weariness",
+            "reaction": "remains seated, eyes closed"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows heavy with fatigue",
+        "setting": "the hall",
+        "consequence": "Tomas's vigilance continues despite exhaustion",
+        "unresolved_hook": "what will happen as dawn approaches?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hearthstone",
+        "evidence": "He’s still sitting against the hearthstone, wrapped in his own threadbare cloak."
+      }
+    }
+  },
+  "6a9838c242bd67e3f97250da:67": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": "root cellars",
+      "player_travel_confirmed": true,
+      "location_evidence": "into the deeper dark.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the hall",
+      "movement": "deeper",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:68": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the shelves stretch along the stone wall",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the hall",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [
+        "the shelves are bare and dusty",
+        "Bram's ledger shows all zeroes"
+      ],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c242bd67e3f97250da:69": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "root cellars",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the ledger is there—a thick, cold book of bound parchment",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the hall",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c442bd67e3f97250e1:14": {
+    "witness": {
+      "present_characters": [
+        "Soren"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "he slides the drink across the bar toward you",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Soren",
+            "intent": "engages the player in conversation",
+            "reaction": "observant and slightly guarded"
+          }
+        ],
+        "emotional_shift": "the atmosphere thickens with unspoken tension",
+        "setting": "at the bar",
+        "consequence": "the conversation is poised to deepen",
+        "unresolved_hook": "what am I really looking for?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the bar",
+        "evidence": "He slides the drink across the bar toward you"
+      }
+    }
+  },
+  "6a9838c442bd67e3f97250e1:15": {
+    "witness": {
+      "present_characters": [
+        "Soren"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the low hum of the bar's lights",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Soren",
+            "intent": "shares information about the north wall",
+            "reaction": "thoughtful and reflective"
+          }
+        ],
+        "emotional_shift": "the atmosphere thickens with unspoken stories",
+        "setting": "in the bar",
+        "consequence": "the significance of the north wall is revealed",
+        "unresolved_hook": "what will I do with this information?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the bar",
+        "evidence": "the low hum of the bar's lights and the distant, rhythmic drip of a leak"
+      }
+    }
+  },
+  "6a9838c442bd67e3f97250e1:16": {
+    "witness": {
+      "present_characters": [
+        "Soren"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He sets the glass down on the bar.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c442bd67e3f97250e1:17": {
+    "witness": {
+      "present_characters": [
+        "Soren"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the glass in his hand no longer moving",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Soren",
+            "intent": "engages the player",
+            "reaction": "observant and steady"
+          }
+        ],
+        "emotional_shift": "the tension deepens",
+        "setting": "at the bar",
+        "consequence": "the conversation about the wall continues",
+        "unresolved_hook": "what will I reveal or ask next?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the bar",
+        "evidence": "He sets the glass down on the bar with a soft tap."
+      }
+    }
+  },
+  "6a9838c442bd67e3f97250e1:18": {
+    "witness": {
+      "present_characters": [
+        "Soren"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": "canal",
+      "player_travel_confirmed": true,
+      "location_evidence": "the canal's empty this time of night",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Canal Street",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "dialogue",
+      "emotional_tone": "curious",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Soren",
+            "intent": "questions the player's motives",
+            "reaction": "holds a steady gaze"
+          }
+        ],
+        "emotional_shift": "the tension of the request deepens",
+        "setting": "behind the bar",
+        "consequence": "Soren is hesitant about the walk",
+        "unresolved_hook": "what is the player really seeking at the canal?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c442bd67e3f97250e1:19": {
+    "witness": {
+      "present_characters": [
+        "The City"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "under the bridge is heavy with the promise of it",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Split Lamp",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "reflective",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "The City",
+            "intent": "observes Wren's actions",
+            "reaction": "feels a gentle tug in her chest"
+          }
+        ],
+        "emotional_shift": "a sense of longing and contemplation",
+        "setting": "under the bridge",
+        "consequence": "Wren's decision to give away the umbrella is noted",
+        "unresolved_hook": "whether Wren plans to stay or leave"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "under the bridge",
+        "evidence": "The air under the bridge is heavy with the promise of it."
+      }
+    }
+  },
+  "6a9838c442bd67e3f97250e1:20": {
+    "witness": {
+      "present_characters": [
+        "Soren"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He's still behind the bar",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "reflective",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Soren",
+            "intent": "inquire about the girl",
+            "reaction": "curious and attentive"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows more intimate",
+        "setting": "at the bar",
+        "consequence": "Soren shows a deeper interest in the girl's honesty",
+        "unresolved_hook": "what the girl said to me"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "behind the bar",
+        "evidence": "He's still behind the bar, but the glass is finally down."
+      }
+    }
+  },
+  "6a9838c442bd67e3f97250e1:21": {
+    "witness": {
+      "present_characters": [
+        "Soren"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": "canal bridge",
+      "player_travel_confirmed": true,
+      "location_evidence": "I'll walk with you.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Soren",
+            "intent": "wants information about the girl",
+            "reaction": "demanding a price for his company"
+          }
+        ],
+        "emotional_shift": "the negotiation sharpens",
+        "setting": "in the bar",
+        "consequence": "Soren agrees to walk with me",
+        "unresolved_hook": "what will I reveal about the girl?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the canal bridge",
+        "evidence": "Soren, lock up and walk with me to the canal bridge"
+      }
+    }
+  },
+  "6a9838c442bd67e3f97250e1:22": {
+    "witness": {
+      "present_characters": [
+        "Soren"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "I'm here. Now tell me what she said to you.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Soren",
+            "intent": "seeks information about the girl",
+            "reaction": "leans on the railing, waiting"
+          }
+        ],
+        "emotional_shift": "tension builds as Soren presses for answers",
+        "setting": "on the bridge overlooking the canal",
+        "consequence": "the conversation about the girl remains unresolved",
+        "unresolved_hook": "what will I reveal about the girl?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the bridge",
+        "evidence": "We stop on the bridge and look down at the black water."
+      }
+    }
+  },
+  "6a9838c442bd67e3f97250e1:23": {
+    "witness": {
+      "present_characters": [
+        "Soren"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the only sound the rain hissing on the canal's black surface",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Soren",
+            "intent": "demands information",
+            "reaction": "patient but firm"
+          }
+        ],
+        "emotional_shift": "the pressure to reveal increases",
+        "setting": "on the canal's edge",
+        "consequence": "the conversation hangs in the balance",
+        "unresolved_hook": "whether I will share the truth"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the canal",
+        "evidence": "the rain hissing on the canal's black surface"
+      }
+    }
+  },
+  "6a9838c442bd67e3f97250e1:24": {
+    "witness": {
+      "present_characters": [
+        "Soren"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Split Lamp",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "I'm here because you promised an answer.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Soren",
+            "intent": "demands information",
+            "reaction": "determined and confrontational"
+          }
+        ],
+        "emotional_shift": "the tension escalates",
+        "setting": "on the bridge",
+        "consequence": "Soren is unwilling to move forward without answers",
+        "unresolved_hook": "whether I will reveal the information Soren seeks"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the canal",
+        "evidence": "the rain starts again, a soft hiss on the canal."
+      }
+    }
+  },
+  "6a9838c742bd67e3f97250e8:14": {
+    "witness": {
+      "present_characters": [
+        "Reese"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the green room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the weight of your words settling in the room’s stale air",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "intimate",
+      "emotional_tone": "vulnerable",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": "the atmosphere deepens with shared vulnerability",
+        "setting": "in the green room",
+        "consequence": "a moment of connection lingers in the air",
+        "unresolved_hook": "what will you say next?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the empty stage",
+        "evidence": "almost lost in the hum of the empty stage beyond the door."
+      }
+    }
+  },
+  "6a9838c742bd67e3f97250e8:15": {
+    "witness": {
+      "present_characters": [
+        "Reese"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "held",
+          "statement": "Reese holds a cigarette and a lighter",
+          "actors": [
+            "Reese"
+          ]
+        }
+      ],
+      "physical_state_closed": [
+        {
+          "statement": "Reese holds a cigarette and a lighter",
+          "evidence": "I crush the cigarette into the heel of my boot"
+        }
+      ],
+      "current_location": "the green room",
+      "player_destination": "loading dock",
+      "player_travel_confirmed": true,
+      "location_evidence": "The dock's just out back.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the Half Light",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the loading dock",
+        "evidence": "The dock's just out back."
+      }
+    }
+  },
+  "6a9838c742bd67e3f97250e8:16": {
+    "witness": {
+      "present_characters": [
+        "Jax"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "posture",
+          "statement": "Reese is sitting a few feet from Jax, legs dangling over the edge.",
+          "actors": [
+            "Reese"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "the green room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "I stay leaning against the brick wall beside the open dock door",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the Half Light",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the dock",
+        "evidence": "I stay leaning against the brick wall beside the open dock door"
+      }
+    }
+  },
+  "6a9838c742bd67e3f97250e8:17": {
+    "witness": {
+      "present_characters": [
+        "Jax"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "held",
+          "statement": "Reese holds a cigarette and a lighter",
+          "actors": [
+            "Reese"
+          ]
+        },
+        {
+          "kind": "posture",
+          "statement": "Reese is sitting a few feet from Jax, legs dangling over the edge",
+          "actors": [
+            "Reese"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "the green room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the dim light",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a9838c742bd67e3f97250e8:18": {
+    "witness": {
+      "present_characters": [
+        "Reese"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [
+        {
+          "statement": "Reese holds a cigarette and a lighter",
+          "evidence": "the cigarette between my fingers forgotten"
+        }
+      ],
+      "current_location": "the green room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the green room",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "mundane",
+      "emotional_tone": "reflective",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": "the weight of past experiences lingers",
+        "setting": "in the green room",
+        "consequence": "the tension of expectation hangs in the air",
+        "unresolved_hook": "whether I will break the silence again"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "loading dock",
+        "evidence": "the dim light of the loading dock"
+      }
+    }
+  },
+  "6a9838c742bd67e3f97250e8:19": {
+    "witness": {
+      "present_characters": [
+        "Reese"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "posture",
+          "statement": "Reese is pushing up from the edge.",
+          "actors": [
+            "Reese"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "the green room",
+      "player_destination": "the alley",
+      "player_travel_confirmed": true,
+      "location_evidence": "I glance toward the alley’s mouth",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the Half Light",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the alley",
+        "evidence": "I push up from the edge, feeling the folded receipt in my pocket like a secret weight."
+      }
+    }
+  },
+  "6a9838c742bd67e3f97250e8:20": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [
+        "Jax"
+      ],
+      "physical_state_opened": [
+        {
+          "kind": "posture",
+          "statement": "Reese is pushing up from the edge of the couch",
+          "actors": [
+            "Reese"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "the green room",
+      "player_destination": "the alley",
+      "player_travel_confirmed": true,
+      "location_evidence": "I follow you out the side door",
+      "location_evidence_source": "player",
+      "containment_hint": "the Half Light",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the alley",
+        "evidence": "the cool air of the alley hitting me like a reset."
+      }
+    }
+  }
+}
