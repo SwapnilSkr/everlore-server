@@ -26,8 +26,20 @@ const uniq = (xs: string[]) => {
   return out
 }
 
-async function findLoc(iid: ObjectId, name: string) {
-  return coll('entities').findOne({ instance_id: iid, type: 'location', name_normalized: norm(name) }) as any
+/**
+ * Accepts a NAME or an entity _id. The id form exists because the worst
+ * duplicates share a normalized name and differ only by parent — a name lookup
+ * cannot tell them apart, and `findOne` would return the same document twice.
+ */
+async function findLoc(iid: ObjectId, nameOrId: string) {
+  if (/^[0-9a-f]{24}$/i.test(nameOrId)) {
+    return coll('entities').findOne({
+      _id: ObjectId.createFromHexString(nameOrId),
+      instance_id: iid,
+      type: 'location',
+    }) as any
+  }
+  return coll('entities').findOne({ instance_id: iid, type: 'location', name_normalized: norm(nameOrId) }) as any
 }
 
 async function main() {
