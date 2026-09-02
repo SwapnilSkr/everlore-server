@@ -80,6 +80,9 @@ const WITNESS_SCHEMA = {
     time_elapsed: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
+    time_evidence: {
+      anyOf: [{ type: 'string' }, { type: 'null' }],
+    },
     location_state_changes: {
       type: 'array',
       maxItems: 6,
@@ -91,7 +94,7 @@ const WITNESS_SCHEMA = {
       items: { type: 'string' },
     },
   },
-  required: ['present_characters', 'characters_departed', 'physical_state_opened', 'physical_state_closed', 'current_location', 'player_destination', 'player_travel_confirmed', 'location_evidence', 'location_evidence_source', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
+  required: ['present_characters', 'characters_departed', 'physical_state_opened', 'physical_state_closed', 'current_location', 'player_destination', 'player_travel_confirmed', 'location_evidence', 'location_evidence_source', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'time_evidence', 'location_state_changes', 'location_permanent_facts'],
 }
 
 /** CHOICE/STAT schema — the player-moves + bookkeeping half: choices, scene tag,
@@ -198,6 +201,7 @@ const WITNESS_FALLBACK: SceneMetadata = {
   movement: 'none',
   viewpoint_moved: false,
   time_elapsed: null,
+  time_evidence: null,
   location_state_changes: [],
   location_permanent_facts: [],
   state_mutations: {},
@@ -256,13 +260,14 @@ Rules:
 - physical_state_closed: ONLY the ongoing configurations that this passage actually ENDED — the grip released, the embrace broken, the blade sheathed, the character rising out of the chair. For each one give { "statement": the text copied from ONGOING PHYSICAL STATE, "evidence": an EXACT verbatim excerpt (4-20 words) from the player turn or the narrative that shows it ending }. The evidence is machine-checked against the text: if it cannot be found verbatim, the close is DISCARDED and the configuration stays open, so never paraphrase or invent it.
   DO NOT simply copy the ONGOING PHYSICAL STATE list here. Most passages end nothing, and the correct answer is then []. A configuration that is merely mentioned, described again, tightened, resisted, or endured is STILL OPEN and must NOT be listed. Worked examples, with ongoing state "Aurelian has Doran by the collar against the wall": the player turn is "*I hold him tighter, refusing to back down*" and the prose says his grip does not loosen → physical_state_closed is [] (it INTENSIFIED, it did not end). The player turn is "*I release Doran, but keep my gaze steady*" → [{"statement":"Aurelian has Doran by the collar against the wall","evidence":"I release Doran"}]. The prose says only that Doran's face goes pale and he speaks → [] (nothing about the grip changed).
   A configuration also ends implicitly when a person it binds leaves the scene, and you do NOT need to list that case — the system closes it. But if the player's own action ends it ("I let go of him", "I lower the blade"), it MUST be listed here with the player's words as evidence.
-- current_location: the place the viewpoint/protagonist is PHYSICALLY STANDING IN at the end of the passage — where this turn's action and dialogue actually happen. Report ONLY a compact PLACE NAME (not a sentence, quote, player action, or a person's name): "war room", "Royal Council Chamber", "Milan". NEVER report a place that is merely mentioned, named, planned, anticipated, remembered, or where some future event will be held while the characters are not yet there. Worked example: if they sit at the table in the dining room discussing a party that will be held in the great room, current_location is "dining room" — NOT "great room". If the scene simply continues where it already was, return the prior known location unchanged. If the viewpoint is at a place listed in KNOWN PLACES (in CONTEXT below) — including returning to one they left earlier — return that place's EXACT canonical name, never a new variant spelling ("the garden" when KNOWN PLACES has "Night Garden" → return "Night Garden"). Use a fresh name only for a place that is genuinely not yet known. NEVER report a vague or relative label as the location — "the room", "here", "inside", "outside", "this place" are NOT place names; use the SPECIFIC place's name (e.g. "dining room", "the night garden"), or return the prior known location if the viewpoint has not moved. If the viewpoint moves into a personal space the prose marks as someone's OWN ("my room", "her chambers", "his study"), name it for its owner so it is specific and distinct — e.g. the protagonist retreating to "my room" → the protagonist's name (from CONTEXT) + "'s room" (for a protagonist named Mara, "Mara's room"), NOT the bare "the room". Return null ONLY if no place has ever been established. The Prior known location is given in CONTEXT below — return THAT unless the viewpoint has physically moved.
-- location_evidence and location_evidence_source: REQUIRED provenance for current_location. Return one SHORT exact excerpt (3-20 words) from the indicated source that proves the viewpoint is physically there. source="player" only when the PLAYER TURN itself moves/arrives there; source="narrative" when the completed narrative establishes the setting; source="prior" only when you return the prior known location unchanged (then evidence may be null). Never invent or paraphrase the excerpt. If you cannot cite an exact excerpt, current_location must be null. This evidence is machine-checked before a location enters the map.
+- current_location: the place the viewpoint/protagonist is PHYSICALLY STANDING IN at the end of the passage — where this turn's action and dialogue actually happen. Report ONLY a compact PLACE NAME (not a sentence, quote, player action, or a person's name): "war room", "Royal Council Chamber", "Milan". NEVER report a place that is merely mentioned, named, planned, anticipated, remembered, or where some future event will be held while the characters are not yet there. Worked example: if they sit at the table in the dining room discussing a party that will be held in the great room, current_location is "dining room" — NOT "great room". If the scene simply continues where it already was, return the prior known location unchanged. If the viewpoint is at a place listed in KNOWN PLACES (in CONTEXT below) — including returning to one they left earlier — return that place's EXACT canonical name, never a new variant spelling ("the garden" when KNOWN PLACES has "Night Garden" → return "Night Garden"). Use a fresh name only for a place that is genuinely not yet known. NEVER report a vague or relative label as the location — "the room", "here", "inside", "outside", "this place" are NOT place names; use the SPECIFIC place's name (e.g. "dining room", "the night garden"), or return the prior known location if the viewpoint has not moved. If the viewpoint moves into a personal space the prose marks as someone's OWN ("my room", "her chambers", "his study"), name it for its owner so it is specific and distinct — e.g. the protagonist retreating to "my room" → the protagonist's name (from CONTEXT) + "'s room" (for a protagonist named Mara, "Mara's room"), NOT the bare "the room". If you are NOT SURE where they are, return null. Returning null is CORRECT and costs nothing — the map simply keeps what it had. GUESSING costs a great deal: a wrong place is written to the map and the story is told from there. Never name a place to avoid leaving the field empty, never infer one from the kind of scene it feels like, and never promote a thing in the room to be the room ('the table', 'the terminal', 'the bench', 'the hearth' are objects, not places). Return null ONLY if no place has ever been established. The Prior known location is given in CONTEXT below — return THAT unless the viewpoint has physically moved.
+- location_evidence and location_evidence_source: REQUIRED provenance for current_location. Return one SHORT exact excerpt (3-20 words) from the indicated source that proves the viewpoint is physically there. source="player" only when the PLAYER TURN itself moves/arrives there; source="narrative" when the completed narrative establishes the setting; source="prior" only when you return the prior known location unchanged (then evidence may be null). Never invent or paraphrase the excerpt. If you cannot cite an exact excerpt, current_location must be null. The excerpt MUST contain the place's own name and MUST show the viewpoint being AT it — a locative statement ("back in the root cellars, the air is cold", "we reach the village square", "The hall is quiet") — not a sentence that merely mentions it ("the low road to Marrow Ford"), and not a sentence about where somebody ELSE is ("Bram's down there in the cellars"). Prefer the sentence that establishes the setting over an atmosphere line that never names the place. This evidence is machine-checked before a location enters the map.
 - player_destination and player_travel_confirmed: read the PLAYER TURN in CONTEXT together with the narrative. Set player_travel_confirmed true ONLY when the player is physically travelling/arriving NOW in that turn, not merely discussing, planning, remembering, or promising a future trip. player_destination is the clean compact place name the player actually goes to/arrives at; remove purpose clauses and direct addresses ("go to the living room to say goodbye to Lisa" → "living room"; "go to the airport, Dad" → "airport"). An unnamed but physically entered venue is still a destination: "I take a hotel to stay at", "I check into a hotel", or "I get a room at an inn" → player_travel_confirmed true and player_destination "hotel" or "inn" (not "hotel lobby" unless the player named the lobby). Return null/false when no travel happened.
 - viewpoint_moved: a boolean. true whenever THIS passage narrates the viewpoint/protagonist physically CHANGING place — walking out, entering another room, setting off on a journey, RETURNING TO or RE-ENTERING a place they had left (e.g. coming back indoors from the garden, stepping back into the mansion), or a scene-cut that puts them somewhere new. It is false when they stay put and nothing relocates them, and ESPECIALLY when another place is only mentioned, named, discussed, or planned while they remain where they are. Rule of thumb: if current_location differs from the prior known location because they actually went there, viewpoint_moved is true; if current_location is unchanged, it is false.
 - containment_hint: the name of the place that DIRECTLY CONTAINS current_location, but ONLY when THIS passage actually states or makes it plain (e.g. the prose says they are "in the library of the manor" → containment_hint "the manor"; "a tavern in the riverside district" → "riverside district"). This is the immediate parent, one level up — a room's building, a building's district, a city's realm. Return null when the passage does not make the container explicit. NEVER guess or invent a container to fill this in.
 - movement: how current_location relates to the PRIOR known location this turn — one of: "none" (did not move / stayed put), "deeper" (went INTO a place contained by where they were — entered a room of the current building), "out" (LEFT the current place to its surrounding area — stepped outside the house onto the street), "lateral" (moved to another place at the SAME level — one room to another in the same building), "world_shift" (crossed into a wholly different world/realm/plane — a portal to the shadow realm, abduction to another planet, waking in a dream-world). Use "none" whenever viewpoint_moved is false. Choose the single best fit; when unsure between out/lateral use "lateral".
 - time_elapsed: how much IN-WORLD time the passage itself narrates passing during this turn — a short human label ("three days", "a week later", "a few hours", "the next morning"). Use this ONLY when the prose clearly skips or spans time (a journey, a "later that night", "weeks passed"). Return null for a continuous, real-time scene where no meaningful time elapses (most dialogue/combat turns). Do not invent time; report only what the passage states or strongly implies.
+- time_evidence: REQUIRED whenever time_elapsed is not null. One SHORT exact excerpt (3-20 words) from the COMPLETED NARRATIVE that states the span passing ("Two days later, the rain finally stopped", "weeks wore on"). It must contain the same time unit the label claims. Never paraphrase. If you cannot cite the sentence, time_elapsed must be null — this is machine-checked before the story calendar moves.
 - location_state_changes: short clauses for what BECAME TRUE about the CURRENT place this turn — its mutable condition. Capture changes in EITHER direction, not only destruction: damage/decline ("the gate now lies in ruins", "the tavern has burned down", "soldiers occupy the square") AND improvement/transformation ("the garden has been restored to bloom", "the hall is now decorated for the feast", "the overgrown courtyard has been cleared", "the hearth is lit and the room is warm again"). If the prose shows the place visibly altered — repaired, rebuilt, cleaned, decorated, brought to life, flooded, emptied, transformed — record it. Each clause must be self-contained and name what changed. Empty array [] when the place's condition did not change (the usual case).
 - location_permanent_facts: short clauses for ENDURING, canonical facts about the current place newly established this turn ("the temple was built over a buried god", "this bridge is the only crossing for fifty miles"). These are lasting truths, not passing events or moods. Empty array [] almost always — use sparingly.`
 
@@ -276,6 +281,9 @@ Rules:
  * (scene stays `intimate` to preserve NSFW momentum) if extraction fails.
  */
 type MetadataOpts = {
+  /** Model override. Production omits it and gets `AI_MODELS.metadata`; the
+   *  corpus tier experiment uses it to run the same prompt on another tier. */
+  model?: string
   /** Test-only observability hook. Production callers omit it; it never changes
    * request construction or validation. */
   onRaw?: (stage: 'scene_witness' | 'choice_metadata', raw: string) => void
@@ -481,7 +489,8 @@ export async function extractSceneWitness(
   const system = buildMetadataSystem(opts, [], [])
   try {
     const raw = await callLLM({
-      model: AI_MODELS.metadata,
+      model: opts?.model || AI_MODELS.metadata,
+      purpose: 'scene_witness',
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: narrative },
@@ -510,6 +519,7 @@ export async function extractSceneWitness(
       movement: v.movement ?? 'none',
       viewpoint_moved: v.viewpoint_moved === true,
       time_elapsed: v.time_elapsed ?? null,
+      time_evidence: v.time_evidence ?? null,
       location_state_changes: v.location_state_changes ?? [],
       location_permanent_facts: v.location_permanent_facts ?? [],
     }
@@ -542,6 +552,7 @@ export async function extractChoiceMetadata(
   try {
     const raw = await callLLM({
       model: AI_MODELS.metadata,
+      purpose: 'choice_metadata',
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: narrative },
@@ -606,6 +617,7 @@ export async function extractSceneMetadata(
     movement: witness.movement,
     viewpoint_moved: witness.viewpoint_moved,
     time_elapsed: witness.time_elapsed,
+    time_evidence: witness.time_evidence,
     location_state_changes: witness.location_state_changes,
     location_permanent_facts: witness.location_permanent_facts,
     // CHOICE/STAT half

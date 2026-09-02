@@ -100,7 +100,7 @@ function locationComparable(value: string): string {
 /** A compact, noun-like location label is safe to persist as a graph node. */
 export function isSafeWitnessLocationCandidate(
   raw: string | null | undefined,
-  options: { knownPeople?: string[]; knownPlaces?: string[] } = {},
+  options: { knownPeople?: string[]; knownPlaces?: string[]; proseCited?: boolean } = {},
 ): boolean {
   const value = String(raw || '').replace(/\s+/g, ' ').trim()
   if (!value || value.length < 3 || value.length > 72) return false
@@ -121,6 +121,12 @@ export function isSafeWitnessLocationCandidate(
 
   const knownPlaces = new Set((options.knownPlaces || []).map(locationComparable).filter(Boolean))
   if (knownPlaces.has(normalized)) return true
+
+  // A label whose placehood the model has already PROVED — it cited a verbatim
+  // excerpt that names this place and situates the viewpoint at it — does not
+  // also have to appear in a vocabulary of place nouns. That list is the
+  // fallback for an uncited label, not the arbiter of what a place is.
+  if (options.proseCited) return true
 
   // Permit a concrete place noun ("war room", "royal table") or a compact
   // proper-name location ("Milan", "Ebonreach"). This is validation only;
@@ -212,24 +218,8 @@ const OWNED_SPACE_ENTRY =
 const DEPARTURE_TO_PHYSICAL_DESTINATION =
   /\b(?:i|we)\b[^.!?]{0,64}\b(?:leave|depart|set\s+off|travel|journey|ride|walk|head|go)\b[^.!?]{0,64}\b(?:approach(?:ing)?|reach(?:ing)?|arrive(?:s|d|ing)?|enter(?:s|ed|ing)?)\b[^.!?]{0,48}\b(?:the\s+)?(?:room|hall|house|home|apartment|mansion|manor|townhouse|villa|estate|compound|building|office|cafe|restaurant|bar|club|shop|store|gallery|museum|warehouse|hotel|inn|library|market|courtyard|garden|yard|street|station|airport|campus|temple|car|train|ship|city|town|village|capital|kingdom|realm|forest|mountain|coast|island|district|quarter|borough)\b/i
 
-// This is intentionally much narrower than `detectNarratedMovement`. The broad
-// detector is useful for telemetry and for spotting likely missed moves, but it is
-// not proof that the player changed location: "leave the decision", "return to the
-// question", and "retreat into myself" are all valid non-spatial sentences.
-// State-changing consumers must use this matcher instead.
-const EXPLICIT_DESTINATION = new RegExp(
-  '\\b(?:i|we)\\s+(?:(?:quietly|quickly|slowly|carefully|immediately)\\s+){0,2}' +
-    '(?:go|head|walk|run|move|step|enter|stride|storm|march|wander|slip|climb|descend|ascend|sneak|rush|creep|hurry|retire|travel|journey|ride|sail|fly|cross|venture|voyage|drive|trek|hike|proceed|advance|teleport|warp|clamber|make my way|made my way|set off|set out|return)' +
-    '(?:\\s+\\w+){0,3}?\\s+(?:to|into|inside|through|onto|in|back to)\\s+([^,.!?;]{2,60})',
-)
 const DESTINATION_STOP_WORDS = new Set([
   'the', 'a', 'an', 'my', 'our', 'own', 'of', 'at', 'on', 'in', 'to', 'back',
-])
-const ABSTRACT_DESTINATIONS = new Set([
-  'decision', 'question', 'answer', 'subject', 'topic', 'matter', 'issue',
-  'argument', 'conversation', 'discussion', 'memory', 'past', 'future',
-  'myself', 'yourself', 'himself', 'herself', 'ourselves', 'themselves',
-  'meeting', 'appointment', 'plan', 'idea', 'dream', 'thought', 'mind',
 ])
 
 const PHYSICAL_DESTINATION_WORD =
@@ -239,10 +229,9 @@ const PHYSICAL_DESTINATION_WORD =
 // valid place candidate only after an explicit locomotion/arrival pattern has
 // already matched; it never scans arbitrary prose for place-like words.
 const NAMED_DESTINATION = /\b[A-Z][\p{L}'’-]{2,}\b/u
-// Kept separate from EXPLICIT_DESTINATION: this captures the exact physical
-// destination a player writes in a normal action/choice, including "head for"
-// and "aiming for". The caller treats it as a commitment only after the
-// physical-place guard below passes.
+// Arrival verbs need no direction preposition: "After two days, I finally
+// reach Milan" is just as explicit a move as "I travel to Milan". Keeping
+// this separate avoids turning "reach for my coat" into a destination.
 const EXPLICIT_PHYSICAL_DESTINATION =
   /\b(?:go|head|walk|run|move|step|travel|journey|ride|drive|aim|aiming|turn|turning|set\s+off|make\s+my\s+way)\b(?:\s+\w+){0,6}?\s+(?:to|into|toward|towards|for)\s+([^,.!?;*]{2,80})/gi
 // Arrival verbs need no direction preposition: "After two days, I finally
@@ -294,16 +283,6 @@ const GENERIC_LOCATION_TOKENS = new Set([
   'the', 'a', 'an', 'my', 'our', 'this', 'that', 'place', 'room', 'hall',
   'house', 'home', 'building', 'street', 'road', 'district', 'city', 'town',
   'village', 'garden', 'gallery', 'hotel', 'warehouse', 'office', 'shop', 'store',
-])
-
-// A player can deliberately choose an unnamed but still real venue: “I take a
-// hotel to stay at”, “I check into an inn”, “I go to the airport”. These labels
-// are too broad to compare arbitrary graph nodes, but they are concrete enough
-// for an AI witness candidate when the player wrote the same word this turn.
-const PLAYER_GROUNDED_GENERIC_DESTINATIONS = new Set([
-  'hotel', 'inn', 'hostel', 'motel', 'airport', 'station', 'terminal',
-  'restaurant', 'cafe', 'bar', 'tavern', 'hospital', 'clinic', 'store', 'shop',
-  'market', 'gallery', 'museum', 'library', 'theater', 'theatre',
 ])
 
 function comparableTokens(value: string): string[] {
@@ -365,47 +344,6 @@ export function locationNamesCompatible(a: string | null | undefined, b: string 
   const left = comparableTokens(String(a || '')).filter((token) => !GENERIC_LOCATION_TOKENS.has(token))
   const right = new Set(comparableTokens(String(b || '')).filter((token) => !GENERIC_LOCATION_TOKENS.has(token)))
   return left.length > 0 && left.some((token) => right.has(token))
-}
-
-/**
- * Minimal server-side validation for the AI movement witness. Meaning comes from
- * the witness; this only proves its proposed place was actually named by the
- * player, so an LLM cannot relocate the map to an invented destination.
- */
-export function isGroundedPlayerDestination(
-  playerInput: string | null | undefined,
-  destination: string | null | undefined,
-): boolean {
-  const dest = String(destination || '').replace(/\s+/g, ' ').trim()
-  if (!dest || /^(?:here|there|this place|that place|the room|outside|inside)$/i.test(dest)) return false
-  const input = clean(playerInput || '')
-  const allTokens = comparableTokens(dest)
-  const distinctiveTokens = allTokens.filter((token) => !GENERIC_LOCATION_TOKENS.has(token))
-  const tokens = distinctiveTokens.length > 0
-    ? distinctiveTokens
-    : allTokens.filter((token) => PLAYER_GROUNDED_GENERIC_DESTINATIONS.has(token))
-  if (!tokens.length) return false
-  return tokens.every((token) => new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(input))
-}
-
-/**
- * A witness may refine an explicitly chosen destination to the more precise
- * place the narration actually reaches, but it can never redirect the player.
- * The witness value is used only when it shares a distinctive location token.
- */
-export function refinePhysicalDestination(
-  explicitDestination: string | null | undefined,
-  witnessLocation: string | null | undefined,
-): string | null {
-  const explicit = String(explicitDestination || '').replace(/\s+/g, ' ').trim()
-  const witness = String(witnessLocation || '').replace(/\s+/g, ' ').trim()
-  if (!explicit) return null
-  if (!witness || !locationNamesCompatible(explicit, witness)) return explicit
-  const explicitTokens = comparableTokens(explicit).filter((token) => !GENERIC_LOCATION_TOKENS.has(token))
-  const witnessTokens = comparableTokens(witness).filter((token) => !GENERIC_LOCATION_TOKENS.has(token))
-  // Only replace the player target when the observation is strictly more
-  // specific (e.g. Brera district → Via Brera, 14), never merely different.
-  return witnessTokens.length > explicitTokens.length || /\d/.test(witness) ? witness : explicit
 }
 
 /**
@@ -520,34 +458,4 @@ export function resolvePossessiveRoomName(
   }
   const noun = ROOM_NOUN_CANON[m[2]] || 'room'
   return `${ownerName.trim()}'s ${noun}`
-}
-
-/**
- * High-precision location-commit gate. It requires a first-person physical action
- * with an explicit destination that materially overlaps the extracted place. The
- * metadata witness may suggest the destination, but can never move the cursor on
- * its own. Ambiguous or figurative wording fails closed and leaves the cursor put.
- */
-export function isExplicitPlayerLocationChange(
-  playerInput: string | null | undefined,
-  extractedLocation: string | null | undefined,
-  ownerName: string | null | undefined,
-): boolean {
-  const input = clean(playerInput || '')
-  const location = clean(extractedLocation || '')
-  if (!input || !location) return false
-
-  const personalSpace = resolvePossessiveRoomName(input, ownerName)
-  if (personalSpace && clean(personalSpace) === location) return true
-
-  const match = input.match(EXPLICIT_DESTINATION)
-  if (!match) return false
-  const target = match[1]
-    .split(/\b(?:and|then|but|before|after|while)\b/)[0]
-    .trim()
-  const targetTokens = comparableTokens(target)
-  if (!targetTokens.length || ABSTRACT_DESTINATIONS.has(targetTokens[0])) return false
-
-  const locationTokens = new Set(comparableTokens(location))
-  return targetTokens.some((token) => locationTokens.has(token))
 }

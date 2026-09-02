@@ -119,6 +119,8 @@ export interface GenerationOutput {
    * skips, not only the explicit wait/continue button.
    */
   time_elapsed?: string | null
+  /** Verbatim excerpt from the narration proving the span passed. */
+  time_evidence?: string | null
   /**
    * Things that became true about the CURRENT place this turn — mutable world
    * state of the location ("the gate now lies in ruins", "the market is
@@ -569,6 +571,7 @@ function repairResponse(raw: string): GenerationOutput {
     location_evidence_source: null,
     viewpoint_moved: false,
     time_elapsed: null,
+    time_evidence: null,
     location_state_changes: [],
     location_permanent_facts: [],
   }

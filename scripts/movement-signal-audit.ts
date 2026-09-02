@@ -5,11 +5,8 @@
 import {
   detectNarratedMovement,
   extractExplicitPhysicalDestination,
-  isGroundedPlayerDestination,
-  isExplicitPlayerLocationChange,
   isExplicitSceneExit,
   locationNamesCompatible,
-  refinePhysicalDestination,
   resolvePossessiveRoomName,
   validatedContainmentHint,
 } from '../worker/lib/movement-signal'
@@ -101,16 +98,6 @@ check('my kingdom (settlement, NOT owned)', resolvePossessiveRoomName('I ride to
 check('no possessive', resolvePossessiveRoomName('I walk into the hall', O), null)
 check('no owner', resolvePossessiveRoomName('I go to my room', null), null)
 
-console.log('isExplicitPlayerLocationChange — state-commit gate:')
-check('walk into named room', isExplicitPlayerLocationChange('I walk into the dining room.', 'dining room', 'Caelum'), true)
-check('return to known garden variant', isExplicitPlayerLocationChange('I return to the garden.', 'Night Garden', 'Caelum'), true)
-check('personal room', isExplicitPlayerLocationChange('I retreat to my room.', "Caelum's room", 'Caelum'), true)
-check('leave decision', isExplicitPlayerLocationChange('I leave the decision to Mother.', "Mother's room", 'Caelum'), false)
-check('return to question', isExplicitPlayerLocationChange('I return to the question of who betrayed us.', 'study', 'Caelum'), false)
-check('retreat into myself', isExplicitPlayerLocationChange('I retreat into myself.', 'inner sanctum', 'Caelum'), false)
-check('cross arms', isExplicitPlayerLocationChange('I cross my arms toward Mother.', "Mother's room", 'Caelum'), false)
-check('meeting is abstract', isExplicitPlayerLocationChange('I head to the meeting tomorrow.', 'meeting hall', 'Caelum'), false)
-
 console.log('physical destination + scene exit gates:')
 check('district destination', extractExplicitPhysicalDestination('I begin the walk toward the Brera district.'), 'the Brera district')
 check('action clause is not part of bedroom name', extractExplicitPhysicalDestination('I go to my bedroom as I begin packing.'), 'my bedroom')
@@ -119,10 +106,6 @@ check('direct address is not part of airport name', extractExplicitPhysicalDesti
 check('arrival verb registers Milan', extractExplicitPhysicalDestination('After two days, I finally reach Milan.'), 'Milan')
 check('reach for a coat is not travel', extractExplicitPhysicalDestination('I reach for my coat.'), null)
 check('taking a hotel registers the venue', extractExplicitPhysicalDestination('*I take a hotel to stay at.*'), 'hotel')
-check('AI witness destination is grounded in player turn', isGroundedPlayerDestination('After two days, I finally reach Milan.', 'Milan'), true)
-check('AI witness cannot invent destination', isGroundedPlayerDestination('After two days, I finally reach Milan.', 'Rome'), false)
-check('AI witness accepts an explicitly chosen unnamed hotel', isGroundedPlayerDestination('*I take a hotel to stay at.*', 'hotel'), true)
-check('AI witness cannot turn a hotel into an invented lobby', isGroundedPlayerDestination('*I take a hotel to stay at.*', 'hotel lobby'), false)
 check('street address beats approached door', extractExplicitPhysicalDestination('I walk directly up to the heavy oak door at Via Brera, 14, and knock.'), 'Via Brera, 14')
 check('square my shoulders remains a cafe journey', extractExplicitPhysicalDestination('*I square my shoulders and walk with purpose toward the cafe.*'), 'the cafe')
 check('abstract answer is not a destination', extractExplicitPhysicalDestination('I head for an answer.'), null)
@@ -134,8 +117,6 @@ check('leave the question does not break scene', isExplicitSceneExit('I leave th
 console.log('witness location validation:')
 check('Brera district corroborates Via Brera address', locationNamesCompatible('the Brera district', 'Via Brera, 14'), true)
 check('different rooms do not corroborate', locationNamesCompatible('dining room', 'kitchen'), false)
-check('witness may refine to precise address', refinePhysicalDestination('the Brera district', 'Via Brera, 14'), 'Via Brera, 14')
-check('witness cannot redirect destination', refinePhysicalDestination('the cafe', 'warehouse'), 'the cafe')
 check(
   'known current city accepted as container',
   validatedContainmentHint({
