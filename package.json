@@ -81,7 +81,9 @@
     "corpus:travel-actions": "bun run scripts/corpus-travel-actions.ts",
     "audit:location-decision": "bun run scripts/location-decision-audit.ts",
     "corpus:cast-ab": "bun run scripts/corpus-cast-ab.ts",
-    "corpus:cast-extract": "bun run scripts/corpus-cast-extract.ts"
+    "corpus:cast-extract": "bun run scripts/corpus-cast-extract.ts",
+    "audit:character-lifecycle": "bun run scripts/character-lifecycle-audit.ts",
+    "repair:false-deaths": "bun run scripts/repair-false-deaths.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",
