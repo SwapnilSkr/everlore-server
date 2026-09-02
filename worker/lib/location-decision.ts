@@ -340,10 +340,27 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
   // as canon. A first anchor is the two-tier map's provisional tier — it names
   // the setting for this turn and mints nothing (`LocationAnchorDoc.entity_id`
   // is nullable for exactly this), so being wrong costs one turn.
+  // The FIRST anchor stays permissive on purpose — tightening it to the same bar
+  // as every other path left FOUR turns of a cold-start world with NO CURSOR AT
+  // ALL, which is worse than a provisional one: an unset cursor tells the
+  // narrator nothing and it invents a setting the next turn reads back as canon.
+  // This is the two-tier map's provisional tier; being wrong costs one turn.
+  //
+  // But permissive is not the same as unordered, and it was ordered wrongly. The
+  // witness won on a REAL EXCERPT alone — check (a), which proves only that the
+  // sentence exists — while a fully verified judge claim sat behind it. On turn
+  // two of a court drama the witness reported "the war room", citing "all eyes
+  // remain on you"; the judge read the same passage, said the scene was at the
+  // table, and quoted a sentence that names it and situates the viewpoint at it.
+  // The map took the war room. A verified claim now goes first, from either
+  // namer, and the unverified witness claim is only the last resort that keeps
+  // the cursor from being unset.
   const firstAnchor = !cursorName
-    ? validLocationCited && ((witness.location_evidence_source === 'narrative' && validEvidence) || citedVerified)
-      ? witness.current_location
-      : judgedLocation
+    ? (citedVerified && validLocationCited ? witness.current_location : null) ||
+      judgedLocation ||
+      (validLocationCited && witness.location_evidence_source === 'narrative' && validEvidence
+        ? witness.current_location
+        : null)
     : null
   const placeName =
     actionDestination || witnessedDestination || narratedArrival || judgedArrival || drift.repair || firstAnchor

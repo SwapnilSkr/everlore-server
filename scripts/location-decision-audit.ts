@@ -212,5 +212,34 @@ console.log('\nthe typed travel control:')
   check('...on the action path', d.path, 'action')
 }
 
+// ── The first anchor is permissive, but it is ORDERED. ──────────────────────
+console.log('\nthe first anchor prefers a VERIFIED claim over a real excerpt:')
+{
+  // Aurelius Valemont seq 2 — turn two of a world with no cursor yet. The
+  // witness reports a room from a poisoned graph and cites a sentence that
+  // never names it; the judge reads the same passage and quotes one that does.
+  const d = decide({
+    cursorName: null,
+    playerInput: '',
+    narrative:
+      "Isolde's fingers tighten around her wine glass. Cedric shifts uncomfortably in his chair. The tension at the table thickens as all eyes remain on you.",
+    witness: { current_location: 'the war room', location_evidence: 'all eyes remain on you' },
+    endpoint: judge('the table', 'The tension at the table thickens as all eyes remain on you'),
+  })
+  check('an unverified witness claim does not outrank a verified judge one', d.placeName, 'the table')
+}
+{
+  // …but an unverified witness claim is still better than no cursor at all.
+  const d = decide({
+    cursorName: null,
+    playerInput: '',
+    narrative: 'The hearth has gone cold and the benches are empty.',
+    witness: { current_location: 'the hall', location_evidence: 'The hearth has gone cold' },
+    endpoint: null,
+  })
+  check('with nothing verified, the cursor is still set', d.placeName, 'the hall')
+  check('...and it is an established scene, not a move', [d.viewpointMoved, d.sceneEstablished], [false, true])
+}
+
 console.log(`\nlocation decision audit: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
