@@ -11,6 +11,8 @@ import { EVENT_WINDOWS } from '../utils/event-window'
 import type { TimeAnchorDoc } from '../models/time.model'
 import type { LocationAnchorDoc } from '../models/location.model'
 import { type WorldFactSource, confidenceTier } from '../utils/world-authority'
+import { loadCurrentSceneState } from './scene-state.service'
+import type { SceneStateDoc } from '../models/scene-state.model'
 
 /** Injected codex size (recency-ranked top-K before pinning). */
 const CODEX_INJECT_LIMIT = 16
@@ -58,6 +60,11 @@ export interface ContextPacket {
    *  are NOT in the current place ("Mara was last seen in the Ash Tavern"), so a
    *  "go find X" / "where is X" turn resolves against canon. */
   positionFacts: string[]
+  /** SCENE STATE — who is physically in the room and what physical configuration
+   *  holds, as of the end of the previous turn. This is the ONE thing the
+   *  narrator was never told, which is why characters entered rooms they were
+   *  already standing in and let go of collars they were no longer holding. */
+  sceneState: SceneStateDoc | null
   /** CANON BRIEF (companions) — who is travelling WITH the player right now, surfaced
    *  so the narrator keeps them present by default (they don't show in positionFacts). */
   companionFacts: string[]
@@ -127,6 +134,10 @@ export async function buildContextPacket(params: {
     .toArray() as WorldEventDoc[]
   recentEvents.reverse()
   const currentSequence = recentEvents[recentEvents.length - 1]?.sequence || 0
+
+  // Scene state is read from the event ledger, so it is rewind-safe for free.
+  // Started here and awaited at the return so it never adds serial latency.
+  const sceneStatePromise = loadCurrentSceneState(iid).catch(() => null)
 
   // These reads are independent of entity resolution and RAG. Start them now
   // and await each only at its first real consumer below; keeping them off the
@@ -461,6 +472,7 @@ export async function buildContextPacket(params: {
 
   return {
     recentEvents,
+    sceneState: await sceneStatePromise,
     sceneSummary: summaryDoc?.summary_text || null,
     relevantSummaries,
     characterCodex,

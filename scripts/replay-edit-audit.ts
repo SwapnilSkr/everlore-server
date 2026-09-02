@@ -52,7 +52,13 @@ async function main() {
   await connectRedis()
 
   const src = await mongoColl.worldInstances().findOne({ _id: new ObjectId(SOURCE) })
-  if (!src) throw new Error('source instance not found')
+  if (!src) {
+    throw new Error(
+      `source instance ${SOURCE} not found. This audit clones a REAL save and needs one to ` +
+        'exist: pass an instance id explicitly — bun run scripts/replay-edit-audit.ts <instanceId>. ' +
+        `(The built-in default is only a convenience and goes stale when that save is deleted.)`,
+    )
+  }
   const tempId = new ObjectId()
   const playerId = src.player_id
 

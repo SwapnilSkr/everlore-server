@@ -22,7 +22,7 @@ import { makeProseStreamFilter } from '../lib/prose-stream-filter'
 import { extractSceneMetadata, statDescriptors } from '../lib/metadata-extractor'
 import { extractCharacterCodexDeltas, looksLikeUnnamedLabel } from '../lib/character-codex-extractor'
 import { compactImmutableFacts } from '../lib/codex-compactor'
-import { classifyPresenceCodexGaps, isActionableMention } from '../lib/presence-gap-detector'
+import { classifyPresenceCodexGaps, isActionableMention, hasSceneParticipationGrammar } from '../lib/presence-gap-detector'
 import {
   adjudicateEntityCandidates,
   adjudicatedPersonKeys,
@@ -49,13 +49,16 @@ import { classifyChoiceGrounding, computeGroundingContext } from '../lib/choice-
 import { detectProjectionAnomalies } from '../lib/projection-anomaly-detector'
 import { buildSignalLedger } from '../lib/signal-ledger'
 import { detectNarratedTimeSkip } from '../lib/time-skip-signal'
-import { detectCompanionJoins, detectCompanionDepartures } from '../lib/party-signal'
+import { detectCompanionJoins, detectCompanionDepartures, detectSoloTravel } from '../lib/party-signal'
 import { type WorldFactSource, SOURCE_RANK, confidenceFor, isWorldFactSource } from '../../src/utils/world-authority'
 import { memorySupersessionService } from '../../src/services/memory-supersession.service'
 import { relationCandidateService } from '../../src/services/relation-candidate.service'
 import { timeService } from '../../src/services/time.service'
 import { replayProcessor } from './replay.processor'
 import { log } from '../../src/utils/logger'
+import { recordAnomaly } from '../../src/utils/record-anomaly'
+import { projectCharacterEvent } from './character-projection.processor'
+import { deriveNextSceneState, renderSceneStateForPrompt, PRESENCE_TITLE_WORDS, sceneIdentityKey } from '../../src/services/scene-state.service'
 import type { PlayerWorldAction } from '../../src/utils/world-action'
 import { surfaceToKind } from '../../src/utils/kinship-ontology'
 import { detectNarratedRelationCandidates } from '../lib/relation-candidate-detector'
@@ -151,6 +154,10 @@ function buildChoiceDecisionContext(input: {
   relevantSummaries: string[]
   relationshipFacts: string[]
   positionFacts: string[]
+  /** Who is physically in the room. Choices that reference an absent character
+   *  are exactly what the grounding guard has to drop after the fact; giving
+   *  the choice pass the real roster prevents most of them being minted. */
+  sceneStateText?: string
   companionFacts: string[]
   recentEvents: any[]
 }): string {
@@ -165,6 +172,7 @@ function buildChoiceDecisionContext(input: {
   if (onlyOpening) {
     sections.push(`AUTHORED OPENING SCENE\n${onlyOpening.slice(0, 1_800)}`)
   }
+  if (input.sceneStateText) sections.push(`SCENE STATE (who is physically here)\n${input.sceneStateText.slice(0, 700)}`)
   if (input.locationContext) sections.push(`CURRENT PLACE\n${input.locationContext.slice(0, 700)}`)
   if (input.timeContext) sections.push(`STORY TIME\n${input.timeContext.slice(0, 360)}`)
   if (Object.keys(input.worldState || {}).length || Object.keys(input.activeFlags || {}).length) {
@@ -370,6 +378,109 @@ function worldActionDirective(action: PlayerWorldAction): string {
 /** Min turns between fate-seeded tick beats — keeps old promises from nagging. */
 const FATE_SEED_COOLDOWN_TURNS = 8
 
+
+/** How long the fence will spend repairing the previous turn before giving up
+ *  and generating anyway. The player is waiting on this — a stale-but-prompt
+ *  turn beats a correct one that never arrives. */
+const PROJECTION_FENCE_BUDGET_MS = 4_000
+
+/**
+ * Refuse to read the previous turn's state while it is known to be incomplete.
+ *
+ * Projections are asynchronous, so a turn can finish streaming before its codex
+ * deltas land — and if that projection then FAILS, every later turn silently
+ * reads the turn-before-last as though it were current. Repair it inline when
+ * we can, and record the degradation when we cannot, so a desynchronised
+ * session is a visible event rather than an inexplicable run of bad prose.
+ */
+async function fenceOnPriorProjection(params: {
+  instanceId: string
+  playerId: string
+  instanceOid: ObjectId
+  playerOid: ObjectId
+}): Promise<void> {
+  const { instanceId, playerId, instanceOid, playerOid } = params
+  try {
+    const prior = await mongoColl
+      .events()
+      .find(
+        { instance_id: instanceOid, type: { $ne: 'side_chat' } },
+        { projection: { _id: 1, sequence: 1, 'data.codex_projection_status': 1, 'data.ai_response': 1, 'data.model_used': 1 } },
+      )
+      .sort({ sequence: -1 })
+      .limit(1)
+      .next()
+    if (!prior) return
+    const status = (prior as any).data?.codex_projection_status
+    // The authored opening has no extraction pass and never will; only a
+    // generated turn can be unprojected in the sense that matters here.
+    if ((prior as any).data?.model_used === 'seed') return
+    if (!status || status === 'completed') return
+
+    const startedAt = Date.now()
+    let repaired = false
+
+    // 'processing' with a live claim is the NORMAL case, not a fault: projections
+    // run asynchronously on the turn tail, so the previous one is often still in
+    // flight when the next turn starts. The correctness requirement is simply to
+    // WAIT for it. Treating this as staleness (the first version did) fires an
+    // error on every healthy turn and drowns the real signal.
+    if (status === 'processing') {
+      while (Date.now() - startedAt < PROJECTION_FENCE_BUDGET_MS) {
+        await new Promise((resolve) => setTimeout(resolve, 120))
+        const now = await mongoColl
+          .events()
+          .findOne({ _id: prior._id }, { projection: { 'data.codex_projection_status': 1 } })
+        const nowStatus = (now as any)?.data?.codex_projection_status
+        if (!nowStatus || nowStatus === 'completed') {
+          repaired = true
+          break
+        }
+        if (nowStatus !== 'processing') break
+      }
+      if (repaired) return
+    }
+
+    if (status !== 'failed') {
+      try {
+        const result = (await Promise.race([
+          projectCharacterEvent({ instanceId, playerId, eventId: idString(prior._id) }),
+          new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), PROJECTION_FENCE_BUDGET_MS)),
+        ])) as Record<string, unknown>
+        repaired =
+          result?.projected === true ||
+          result?.skipped === 'already_projected' ||
+          // Another worker holds a live claim and is still applying it. That is
+          // progress, not staleness.
+          result?.skipped === 'claimed_by_active_worker'
+      } catch {
+        repaired = false
+      }
+    }
+    if (repaired) {
+      log.info('projection.fence_repaired', {
+        instanceId,
+        sequence: (prior as any).sequence,
+        ms: Date.now() - startedAt,
+      })
+      return
+    }
+    await recordAnomaly({
+      instanceId: instanceOid,
+      playerId: playerOid,
+      eventId: prior._id,
+      sequence: (prior as any).sequence,
+      type: 'stale_scene_state',
+      severity: 'error',
+      details: `generated on top of turn ${(prior as any).sequence} whose projection is '${status}'`,
+    })
+    log.warn('projection.fence_degraded', { instanceId, sequence: (prior as any).sequence, status })
+  } catch (err) {
+    // The fence is a safety net, never a new failure mode.
+    log.warn('projection.fence_error', { instanceId, reason: (err as Error).message })
+  }
+}
+
 export async function generationProcessor(job: Job) {
   // Replay turns reuse the generation queue/worker but follow a distinct path:
   // they stream an alternative for an existing event instead of appending one.
@@ -554,6 +665,20 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   let settledInteractionSignals: PlayerInteractionSignalDoc[] = []
   let interactionSignalSettled = false
 
+  // ── FENCE ───────────────────────────────────────────────────────────────
+  // Never generate on top of a turn whose projection did not complete. When the
+  // previous turn's codex/scene projection is missing, the cards and scene state
+  // this turn reads are silently the turn-BEFORE-last's: a released grip is
+  // still gripped, someone who left is still in the room. That is not a rare
+  // edge — one dropped projection is enough to desynchronise the rest of a
+  // session, because every later turn compounds the stale reading.
+  //
+  // Repair it inline, bounded, before assembling context. If it cannot be
+  // repaired in time we still generate (the player is waiting, and a late turn
+  // is worse than a slightly stale one) but the degradation is recorded rather
+  // than invisible.
+  await fenceOnPriorProjection({ instanceId, playerId, instanceOid, playerOid })
+
   // Explicit context packet, assembled here in the worker so RETRIEVAL RUNS
   // BEFORE CODEX SELECTION: cards pin both for names in the player's input and
   // for characters the retrieved memories are about (indirect references).
@@ -682,6 +807,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     relevantSummaries: packet.relevantSummaries,
     relationshipFacts: packet.relationshipFacts,
     positionFacts: packet.positionFacts,
+    sceneStateText: renderSceneStateForPrompt(packet.sceneState),
     companionFacts: packet.companionFacts,
     recentEvents,
     currentInteractionSignals: interactionSignalSettled ? settledInteractionSignals : [],
@@ -734,6 +860,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     relevantSummaries: packet.relevantSummaries,
     relationshipFacts: packet.relationshipFacts,
     positionFacts: packet.positionFacts,
+    sceneStateText: renderSceneStateForPrompt(packet.sceneState),
     companionFacts: packet.companionFacts,
     recentEvents,
   })
@@ -1101,6 +1228,9 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       isSentient: session.is_sentient,
       currentLocationName: currentLocation?.name || null,
       priorPresent,
+      // Open configurations entering this turn, so the witness can close the
+      // ones this passage ends instead of leaving them to outlive the story.
+      priorPhysical: (packet.sceneState?.physical || []).map((fact) => fact.statement),
       protagonist: choiceProtagonist,
       roster: choiceRoster,
       knownPlaces,
@@ -1327,12 +1457,23 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // which is the one thing a mentioned-but-not-visited place can never have.
   // Both must agree — the model says "they moved and this is where", the
   // player's text says "I went somewhere" — before the cursor follows.
+  //
+  // The two witnesses this path requires are the model's SUBSTANTIVE claim (it
+  // names a different current place AND cites the sentence of narration that
+  // establishes it) and the player's own text ("I went somewhere"). It used to
+  // additionally require the model's `player_travel_confirmed` / `viewpoint_moved`
+  // BOOLEANS, and those are the unreliable part: on a logged run the witness set
+  // both to false while correctly reporting current_location "village square"
+  // (the player had just dismounted in it) and "great hall" (the player had just
+  // ridden home into it), with valid cited evidence for each. The cursor sat on
+  // "low road to Marrow Ford" for the rest of the session. Dropping the flags
+  // does not weaken the guarantee — a merely-MENTIONED venue can never both be
+  // cited as the established setting of this passage and coincide with the
+  // player narrating their own movement.
   const narratedArrival =
     !isContinuation &&
     !actionDestination &&
     !witnessedDestination &&
-    parsed.player_travel_confirmed === true &&
-    parsed.viewpoint_moved === true &&
     parsed.location_evidence_source === 'narrative' &&
     hasValidWitnessEvidence &&
     validWitnessLocation &&
@@ -1395,6 +1536,29 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           })
       : null
   const locationAnchor = resolvedLocation || currentLocation || null
+  // The location cursor had NO logging of any kind, which is why "the cursor is
+  // stuck" survived several playtests as folklore: every gate input is a witness
+  // field that is never persisted, so a stuck cursor was indistinguishable from a
+  // correctly-refused phantom move after the fact. Log the whole decision.
+  log.info('location.decision', {
+    instanceId: idString(instanceId),
+    sequence: nextSequence,
+    from: currentLocation?.name || null,
+    to: locationAnchor?.name || null,
+    moved: viewpointMoved,
+    placeName,
+    w_travel: parsed.player_travel_confirmed,
+    w_moved: parsed.viewpoint_moved,
+    w_current: parsed.current_location,
+    w_dest: parsed.player_destination,
+    w_evsrc: parsed.location_evidence_source,
+    w_ev: String(parsed.location_evidence || '').slice(0, 80),
+    validEv: hasValidWitnessEvidence,
+    validLoc: validWitnessLocation,
+    validDest: validWitnessDestination,
+    narratedMove: detectNarratedMovement(parsedPlayerInput.raw),
+    compatible: locationNamesCompatible(parsed.current_location, currentLocation?.name || null),
+  })
 
   // A travel marker now follows the same high-precision player destination gate.
   const isTravel =
@@ -1624,6 +1788,11 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const partyDepartures =
     confirmedWorldAction?.kind === 'travel' ? [] : detectCompanionDepartures(parsedPlayerInput.raw)
   const partyDepartedKeys = new Set(partyDepartures.map((d) => presenceKeyOf(d.name)).filter(Boolean))
+  // "I ride back alone" names nobody, so no departure signal fires — but it is an
+  // explicit statement that the party is empty. Without this the companion stays
+  // in `travelling_with`, and travel-party membership skips scene-state
+  // corroboration, so she is silently carried into every later scene.
+  const soloTravel = !isContinuation && detectSoloTravel(parsedPlayerInput.raw)
   const partyRosterKeys = new Set<string>()
   for (const c of characterCodex as any[]) {
     const ck = presenceKeyOf(c.canonical_name)
@@ -1659,6 +1828,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   )
   for (const m of session.travelling_with || []) {
     const k = presenceKeyOf(m.name)
+    if (soloTravel) continue
     if (!k || partyDepartedKeys.has(k) || (explicitTravelParty && !explicitTravelParty.has(k))) continue
     const source = isWorldFactSource((m as { source?: unknown }).source)
       ? ((m as { source?: WorldFactSource }).source as WorldFactSource)
@@ -1786,6 +1956,230 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     parsed.present_characters = parsed.present_characters.filter((name) => !blockedLifeStateKeys.has(normalizeEntityName(name)))
   }
 
+  // ── SCENE STATE ─────────────────────────────────────────────────────────
+  // Fold this turn into the authoritative model of the present moment. The cast
+  // is a closed set: carrying someone forward is free, but ADMITTING someone new
+  // requires justification. Previously that bar applied only to names with no
+  // codex card, so an existing character could be teleported into any room by a
+  // single hallucinated metadata field and then carried there indefinitely.
+  //
+  // The bar for a carded newcomer is deliberately the weakest sound one: the
+  // prose has to mention them at all. A character the narration never names did
+  // not walk into the room this turn.
+  const proseCorroborated = (() => {
+    const text = ` ${rawNarrative.toLowerCase().replace(/[^a-z0-9\s'-]+/g, ' ').replace(/\s+/g, ' ')} `
+    const corroborated = new Set<string>(independentlyCorroboratedPeople)
+    for (const name of independentlyCorroboratedPeople) corroborated.add(sceneIdentityKey(name))
+    // Being NAMED is not being PRESENT. An earlier version accepted any
+    // occurrence of the name, and a passing reference to something a character
+    // had said a day's ride away ("the rations Bram had noted") put him at the
+    // top of a ruined watchtower, where carry-forward kept him for the rest of
+    // the scene. Require the prose to show the person actually participating —
+    // speaking, acting, being addressed — using the same evidence patterns the
+    // trackable-mention gate uses, so the two can never disagree.
+    const mentioned = (surface: string): boolean => {
+      const phrase = String(surface || '').trim()
+      if (normalizeEntityName(phrase).length < 3) return false
+      if (hasSceneParticipationGrammar(phrase, rawNarrative)) return true
+      // Prose names a titled cast member bare ("Ardren" for Lord Ardren), so
+      // test the distinctive tokens too — still against scene-participation
+      // grammar, never against a bare occurrence.
+      for (const token of phrase.split(/\s+/)) {
+        const normalized = normalizeEntityName(token)
+        if (normalized.length < 3 || PRESENCE_TITLE_WORDS.has(normalized)) continue
+        if (hasSceneParticipationGrammar(token, rawNarrative)) return true
+      }
+      return false
+    }
+    for (const name of parsed.present_characters || []) {
+      const presenceKey = normalizeEntityName(name)
+      if (!presenceKey || corroborated.has(presenceKey)) continue
+      const card = (characterCodex as any[]).find(
+        (c) =>
+          normalizeEntityName(c?.canonical_name || '') === presenceKey ||
+          (c?.aliases || []).some((a: string) => normalizeEntityName(a) === presenceKey),
+      )
+      const surfaces = card
+        ? ([card.canonical_name, ...(card.aliases || [])].filter(Boolean) as string[])
+        : [name]
+      // Scene membership is keyed title-insensitively ("Crown Prince Doran" and
+      // "Doran" are one man), so the corroboration set must answer to the SAME
+      // key or every titled character is refused entry to their own scene.
+      if (surfaces.some(mentioned)) {
+        corroborated.add(presenceKey)
+        corroborated.add(sceneIdentityKey(name))
+      }
+    }
+    return corroborated
+  })()
+
+  // The player is never a member of their own scene cast. The existing presence
+  // filter keys off the protagonist CARD, which does not exist on the opening
+  // turns — so name the persona/protagonist directly rather than relying on a
+  // card that may not have been minted yet.
+  const sceneExcludedKeys = (() => {
+    const keys = new Set<string>()
+    for (const raw of [
+      choiceProtagonist?.name,
+      ...(choiceProtagonist?.aliases || []),
+      session.persona_snapshot?.name,
+      session.protagonist?.name,
+      ...(session.is_sentient ? [] : [(characterCodex as any[]).find((c) => c?.is_protagonist)?.canonical_name]),
+    ]) {
+      const full = normalizeEntityName(String(raw || ''))
+      if (!full) continue
+      keys.add(full)
+      // The prose calls the protagonist "Aurelian" while the persona is
+      // "Aurelian Marek", so a whole-name comparison never matches and the
+      // player ends up listed as a member of their own scene.
+      for (const token of full.split(' ')) {
+        if (token.length >= 3 && !PRESENCE_TITLE_WORDS.has(token)) keys.add(token)
+      }
+    }
+    return keys
+  })()
+
+  const verifiedPhysicalCloses = (() => {
+    const haystack = ` ${`${rawNarrative} ${parsedPlayerInput.raw}`
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]+/g, ' ')
+      .replace(/\s+/g, ' ')} `
+    const kept: string[] = []
+    for (const close of parsed.physical_state_closed || []) {
+      const needle = String(close?.evidence || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+      // Too short to be a real citation, or simply not in the text.
+      if (needle.split(' ').filter((w) => w.length > 2).length < 2) continue
+      if (!haystack.includes(` ${needle} `) && !haystack.includes(needle)) {
+        log.info('scene_state.close_rejected', {
+          instanceId: idString(instanceId),
+          sequence: nextSequence,
+          statement: close?.statement,
+          evidence: close?.evidence,
+        })
+        continue
+      }
+      kept.push(String(close.statement))
+    }
+    return kept
+  })()
+
+  // True while the only prose behind us is the AUTHORED OPENING, so the room has
+  // never been furnished by a generated turn.
+  const openingScene =
+    !packet.sceneState ||
+    (packet.sceneState.cast.length === 0 &&
+      recentEvents.filter((e: any) => String(e?.data?.ai_response || '').trim()).length <= 1)
+
+  // The AUTHORED OPENING furnishes the room, and it is the one piece of prose in
+  // the world that is source canon rather than model output. The opening turn had
+  // been trusting the extractor's report for its cast — so a character the author
+  // explicitly placed in the scene ("Your sister Neva leans against the hearth")
+  // was simply absent if that one cheap pass failed to list her. The closed-set
+  // rule then made the omission permanent, and the scene-state block went on to
+  // tell the narrator "Nobody else is present" — which is how a live run had the
+  // narrator write the player's sister out of the hall she was standing in.
+  //
+  // Seed the opening cast from the codex cards the opening prose actually shows
+  // participating. Same evidence bar as every other admission, so a character the
+  // opening only NAMES in passing still has to earn their way in.
+  const openingCast: Array<{ name: string }> = (() => {
+    if (!openingScene) return []
+    const authored = String(
+      (recentEvents || []).find((event: any) => event?.data?.model_used === 'seed')?.data?.ai_response || '',
+    )
+    if (!authored.trim()) return []
+    const out: Array<{ name: string }> = []
+    for (const card of (characterCodex as any[]) || []) {
+      const canonical = String(card?.canonical_name || '').trim()
+      if (!canonical || card?.is_protagonist) continue
+      if (sceneExcludedKeys.has(normalizeEntityName(canonical))) continue
+      // The author writes a card's full name on one line and its bare form on the
+      // next, so test every surface the card answers to plus its distinctive
+      // tokens — "Neva" is how the opening names "Neva Vale".
+      const surfaces = new Set<string>([canonical, ...((card?.aliases || []) as string[])])
+      for (const surface of [...surfaces]) {
+        for (const token of String(surface).split(/\s+/)) {
+          if (normalizeEntityName(token).length >= 3 && !PRESENCE_TITLE_WORDS.has(normalizeEntityName(token))) {
+            surfaces.add(token)
+          }
+        }
+      }
+      if ([...surfaces].some((surface) => hasSceneParticipationGrammar(surface, authored))) {
+        out.push({ name: canonical })
+      }
+    }
+    return out
+  })()
+
+  const sceneDerivation = deriveNextSceneState({
+    prior: packet.sceneState,
+    sequence: nextSequence,
+    sceneBroke,
+    place: locationAnchor
+      ? { entity_id: (locationAnchor as any).entity_id ?? null, name: (locationAnchor as any).name || '' }
+      : null,
+    reportedPresent: [
+      ...(parsed.present_characters || [])
+        .filter((name) => !sceneExcludedKeys.has(normalizeEntityName(name)))
+        .map((name) => ({ name })),
+      ...openingCast,
+    ],
+    departed: parsed.characters_departed || [],
+    corroborated: proseCorroborated,
+    travelParty: partyNames,
+    physicalOpened: (parsed.physical_state_opened || []).map((fact) => ({
+      kind: fact.kind,
+      statement: fact.statement,
+      actors: fact.actors || [],
+      since_sequence: nextSequence,
+    })),
+    // A close is honored only when its excerpt is really in the text. Asked
+    // "which of these ended?", a small model echoes the whole list back — on a
+    // live run it closed a collar grip on the very turn the player wrote "I hold
+    // him tighter". Requiring a citation is the same machine-checked discipline
+    // this codebase already applies to location and bond evidence.
+    physicalClosed: verifiedPhysicalCloses,
+    protagonistNames: [...sceneExcludedKeys],
+    // The authored opening furnishes the room; nothing else has yet.
+    openingScene,
+  })
+  const sceneState = sceneDerivation.state
+  log.info('scene_state.derived', {
+    instanceId: idString(instanceId),
+    sequence: nextSequence,
+    broke: sceneBroke,
+    cast: sceneState.cast.map((c) => c.name),
+    physIn: (packet.sceneState?.physical || []).map((f) => f.statement),
+    physOpened: (parsed.physical_state_opened || []).map((f) => f.statement),
+    physClosed: verifiedPhysicalCloses,
+    physOut: sceneState.physical.map((f) => f.statement),
+  })
+  // The scene roster is now the authority, so presence follows it rather than
+  // the other way round — one list, one writer, no second opinion for the UI.
+  parsed.present_characters = sceneState.cast.map((member) => member.name)
+  if (sceneDerivation.contradictions.length > 0) {
+    log.warn('scene_state.contradictions', {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      contradictions: sceneDerivation.contradictions,
+    })
+    for (const contradiction of sceneDerivation.contradictions.slice(0, 4)) {
+      void recordAnomaly({
+        instanceId: instanceOid,
+        playerId: playerOid,
+        eventId: null,
+        sequence: nextSequence,
+        type: 'scene_contradiction',
+        severity: 'warn',
+        details: `${contradiction.kind}: ${contradiction.details}`,
+      })
+    }
+  }
+
   // WITNESS → ENTITY-STUB tier: every present person the scene just showed who
   // isn't already a codex card gets a lightweight stub entity before the turn is
   // released. Codex extraction remains async below, but stubs must exist before
@@ -1812,6 +2206,21 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   }
   const selfIntroForGap = session.is_sentient ? detectSelfIntroName(parsedPlayerInput.raw) : null
   if (selfIntroForGap) presenceGapExcludes.push(selfIntroForGap)
+  // Prose refers to a titled cast member by their bare name ("Ardren" for Lord
+  // Ardren, "Holt" for Bram Holt). The gap classifier compares on exact
+  // normalized names, so it reported those as untracked strangers on EVERY
+  // turn — logging a false anomaly each time and, worse, minting a `bram` stub
+  // entity beside the real `bram holt` card. That is the same identity split
+  // that froze a whole playthrough, arriving by a different door. Exclude every
+  // distinctive token of anyone already in the scene or on a card.
+  for (const name of [...sceneState.cast.map((m) => m.name), ...knownCardNames]) {
+    const normalized = normalizeEntityName(String(name || ''))
+    if (!normalized) continue
+    presenceGapExcludes.push(normalized)
+    for (const token of normalized.split(' ')) {
+      if (token.length >= 3 && !PRESENCE_TITLE_WORDS.has(token)) presenceGapExcludes.push(token)
+    }
+  }
   // Backend-OWNED trackable mentions: classify the turn's presence/codex gaps into
   // confidence tiers. Only CONFIRMED (a person-grammar signal: speech/action verb,
   // address, appositive, title, or possessive-kinship) joins present_characters and
@@ -1835,25 +2244,51 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       !adjudicatedCandidateKeys.has(normalizeEntityName(mention.key)) ||
       independentlyCorroboratedPeople.has(normalizeEntityName(mention.key)),
     )
-  const trackableMentions = actionableMentions.map((m) => ({
-    key: m.key,
-    display: m.display,
-    tier: m.tier,
-    evidence: m.evidence,
-  }))
+  // Never offer the player a "track this person" underline for someone already
+  // standing in the room. The gap classifier compares on a plain normalization,
+  // so it reports the bare surname of a titled cast member as an untracked
+  // stranger; the cast's own identity key is what settles who is already here.
+  const sceneCastKeys = new Set(sceneState.cast.map((member) => sceneIdentityKey(member.name)))
+  const trackableMentions = actionableMentions
+    .filter((m) => {
+      const k = sceneIdentityKey(m.display)
+      return !!k && !sceneCastKeys.has(k) && !sceneExcludedKeys.has(k)
+    })
+    .map((m) => ({
+      key: m.key,
+      display: m.display,
+      tier: m.tier,
+      evidence: m.evidence,
+    }))
   const presentGaps = actionableMentions
     // Do not let the late walk-on promotion path undo endpoint verification on
     // a boundary. It is allowed only when the same evidence witness placed the
     // person with the player at the end of the prose.
     .filter((mention) => !sceneBroke || !endpointAdjudication.available || endpointPresenceKeys.has(presenceKeyOf(mention.display)))
   if (presentGaps.length) {
-    const presentSeen = new Set(parsed.present_characters.map((n) => normalizeEntityName(n)))
+    // Admit late walk-ons THROUGH scene state, never alongside it. This used to
+    // push straight onto present_characters after the cast was already closed,
+    // and it keyed on a plain normalization — so "Ardren" and "Holt" were
+    // appended next to "Lord Ardren" and "Bram Holt" and the same two men stood
+    // in the room four times. A second writer to presence is the exact problem
+    // scene state exists to remove; these are corroborated arrivals by
+    // construction (isActionableMention requires person-grammar in the prose),
+    // so they join the cast under the cast's own identity key.
+    const presentSeen = new Set(sceneState.cast.map((member) => sceneIdentityKey(member.name)))
     for (const gap of presentGaps) {
-      if (parsed.present_characters.length >= 12) break
-      if (!gap.key || presentSeen.has(gap.key)) continue
-      presentSeen.add(gap.key)
-      parsed.present_characters.push(gap.display)
+      if (sceneState.cast.length >= 12) break
+      const gapKey = sceneIdentityKey(gap.display)
+      if (!gap.key || !gapKey || presentSeen.has(gapKey)) continue
+      if (sceneExcludedKeys.has(gapKey)) continue
+      presentSeen.add(gapKey)
+      sceneState.cast.push({
+        entity_id: null,
+        name: gap.display,
+        since_sequence: nextSequence,
+        source: 'arrival',
+      })
     }
+    parsed.present_characters = sceneState.cast.map((member) => member.name)
     log.info('presence.gaps.stubbed.live', {
       instanceId: idString(instanceId),
       sequence: nextSequence,
@@ -2017,6 +2452,9 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       choices: parsed.choices,
       milestone: parsed.milestone,
       present_characters: parsed.present_characters,
+      // The authoritative present moment. Stored on the event so it rewinds for
+      // free — deleting turns restores the previous snapshot with no repair.
+      scene_state: sceneState,
       trackable_mentions: trackableMentions,
       ...(locationDeltas.length ? { location_deltas: locationDeltas } : {}),
       ...(effectiveTimeAdvance ? { time_advanced: effectiveTimeAdvance } : {}),
@@ -2356,6 +2794,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         choices: parsed.choices,
         milestone: parsed.milestone,
         present_characters: parsed.present_characters,
+        scene_state: sceneState,
         trackable_mentions: trackableMentions,
         time_advanced: timeAdvanceLabel || null,
         time_anchor: timeAnchor,
@@ -2792,6 +3231,34 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
                 return assertions
               })()
             : []
+        // STEP 0, SELF-HEALING. Premise kinship ("Your sister Neva Vale") is seeded
+        // once, from the authored premise — but the only two callers were instance
+        // creation for SENTIENT worlds and the protagonist-onboarding endpoint. A GM
+        // world whose player never completes that onboarding (the app treats the call
+        // as best-effort and lets the protagonist card "seed emergently on the next
+        // turn") therefore never seeded kinship at all, and nothing ever retried.
+        //
+        // That is why a 15-turn playthrough of a world whose premise literally says
+        // "their sister Neva Vale" produced zero kinship edges: the extractor is told
+        // not to re-list ties that already exist, and the tie was established before
+        // turn 1 — so no turn ever claimed it and no seed ever ran. Retry here, the
+        // moment a protagonist card exists. Idempotent (`meta.kinship_seeded`) and
+        // off the TTFT path.
+        if (codex.some((c) => c.is_protagonist)) {
+          await kinshipGraphService
+            .seedPremiseKinship({ instanceId, playerId })
+            .then((res) => {
+              if (res.seeded > 0) {
+                log.info('kinship.premise_seeded_late', {
+                  instanceId: idString(instanceId),
+                  sequence: nextSequence,
+                  seeded: res.seeded,
+                  notes: res.notes.slice(0, 4),
+                })
+              }
+            })
+            .catch(() => undefined)
+        }
         const relationAssertions = mergeRelationAssertions([], [...deterministicAssertions, ...explicitRelationship])
         // Committed kinship edge count, hoisted for the FP/FN signal ledger below.
         let kinWritten = 0
@@ -2873,6 +3340,9 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
             locationAnchorName: locationAnchor?.name ?? null,
             witnessLocationName: parsed.current_location ?? null,
             newCardNames,
+            // The same distinctive-token surfaces the live gap path excludes, so
+            // the anomaly log and the presence gate agree on who is tracked.
+            excludeNames: presenceGapExcludes,
           })
           // FN candidates = "miss" findings (prose named a person/kin/place the
           // projection didn't record). Drift findings (ungrounded choice, card with
@@ -3025,7 +3495,22 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         { _id: event._id },
         { $unset: { 'data.codex_projection_claimed_at': '' }, $set: { 'data.codex_projection_status': 'pending', 'data.codex_projection_error': (err as Error).message } },
       ).catch(() => {})
-      console.warn('character codex update failed:', (err as Error).message)
+      // A silent console.warn was the whole visibility budget for a failure that
+      // freezes the world. It now leaves a durable, queryable trace.
+      await recordAnomaly({
+        instanceId: instanceOid,
+        playerId: playerOid,
+        eventId: event._id,
+        sequence: nextSequence,
+        type: 'projection_failed',
+        severity: 'error',
+        details: `inline codex projection: ${(err as Error).message}`,
+      })
+      log.warn('projection.codex_failed', {
+        instanceId: idString(instanceId),
+        sequence: nextSequence,
+        reason: (err as Error).message,
+      })
     }
   })()
 

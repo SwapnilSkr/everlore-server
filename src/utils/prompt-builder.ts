@@ -101,6 +101,10 @@ interface PromptInput {
   /** CANON BRIEF (positions) — where active characters were last seen when elsewhere
    *  ("Mara was last seen in the Ash Tavern"), so "go find X" stays grounded. */
   positionFacts?: string[]
+  /** Rendered SCENE STATE block — who is physically in this room right now and
+   *  what physical configuration holds. Asserted positively so a re-entrance or
+   *  a re-grip is a contradiction rather than a plausible next sentence. */
+  sceneStateText?: string
   /** CANON BRIEF (companions) — who is travelling WITH the player, present by default. */
   companionFacts?: string[]
 }
@@ -164,7 +168,80 @@ function eventPlayerParts(event: any): {
  * (and through RAG/memories).  This deliberately keeps the recent-turn ledger
  * factual, compact, and free of copyable story phrasing.
  */
-function structuredOutcomeFacts(event: any): string[] {
+/** Same normalization the codex retires with, so a retirement written against a
+ *  card also matches the copy of that statement frozen on an earlier event. */
+function normalizeStateFact(value: string): string {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9\s]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Every state statement retired at or after `fromSequence` in this window.
+ *
+ * Retirements are applied to the CARD, but each event keeps its own frozen copy
+ * of the delta it produced — and the recent-turn ledger reads those event copies.
+ * So a fact could be retired from the card and still be re-injected into the
+ * prompt as "current state" for the rest of the 6-turn window. That is how a
+ * collar released on turn 21 was still being gripped on turn 24, and how a
+ * player's "I gather my thoughts" on turn 26 was still answerable on turn 29.
+ * Superseding facts must be subtracted from history, not only from the card.
+ */
+function retiredAfter(recentEvents: any[], fromSequence: number): Set<string> {
+  const retired = new Set<string>()
+  for (const event of recentEvents || []) {
+    if ((Number(event?.sequence) || 0) < fromSequence) continue
+    for (const delta of event?.data?.codex_deltas || []) {
+      for (const statement of delta?.retire_state || []) {
+        const key = normalizeStateFact(statement)
+        if (key.length >= 3) retired.add(key)
+      }
+    }
+  }
+  return retired
+}
+
+/** True when a later turn in the window retired this exact statement. Matched
+ *  with the same containment rule the codex uses, so a re-worded retirement
+ *  ("pinned against the wall" vs "is pinned against the wall") still lands. */
+function isRetired(statement: string, retired: Set<string>): boolean {
+  if (retired.size === 0) return false
+  const key = normalizeStateFact(statement)
+  if (!key) return false
+  for (const r of retired) {
+    if (key === r || key.includes(r) || r.includes(key)) return true
+  }
+  return false
+}
+
+/**
+ * The last sequence in the window at which each character's state was written.
+ *
+ * Only the NEWEST snapshot per character is current; every older one is a
+ * historical reading that has since been superseded. The ledger used to render
+ * all of them with the identical label "current state", so the narrator saw
+ * turn 19's "pinned against the wall" and turn 22's "furious in the doorway"
+ * with equal authority, and a player's momentary "gathering his thoughts" on
+ * turn 26 was still answerable as a live state on turn 29. Supersession by
+ * recency is the invariant that was missing.
+ */
+function latestStateSequenceByCharacter(recentEvents: any[]): Map<string, number> {
+  const latest = new Map<string, number>()
+  for (const event of recentEvents || []) {
+    const sequence = Number(event?.sequence) || 0
+    for (const delta of event?.data?.codex_deltas || []) {
+      const name = String(delta?.resolved_name || delta?.name || '').trim().toLowerCase()
+      if (!name) continue
+      if (!Array.isArray(delta?.mutable_state) || delta.mutable_state.length === 0) continue
+      if ((latest.get(name) ?? -1) < sequence) latest.set(name, sequence)
+    }
+  }
+  return latest
+}
+
+function structuredOutcomeFacts(
+  event: any,
+  retired: Set<string> = new Set(),
+  latestStateSequence?: Map<string, number>,
+): string[] {
   const data = event?.data || {}
   const facts: string[] = []
 
@@ -180,10 +257,15 @@ function structuredOutcomeFacts(event: any): string[] {
   for (const delta of deltas.slice(0, 4)) {
     const name = String(delta?.resolved_name || delta?.name || '').trim()
     if (!name) continue
-    const state = Array.isArray(delta?.mutable_state)
+    // A superseded snapshot is history, not the present. Drop its state rather
+    // than re-asserting it alongside the newer one.
+    const newest = latestStateSequence?.get(name.toLowerCase())
+    const superseded = newest !== undefined && newest > (Number(event?.sequence) || 0)
+    const state = !superseded && Array.isArray(delta?.mutable_state)
       ? delta.mutable_state
           .map((item: unknown) => String(item || '').trim())
           .filter(Boolean)
+          .filter((item: string) => !isRetired(item, retired))
           .slice(0, 3)
       : []
     const disposition = String(delta?.disposition_to_player || '').trim()
@@ -333,7 +415,11 @@ function withinTokenBudget(items: string[], budget: number): string[] {
   return kept
 }
 
-function formatRecentTurnForContinuity(event: any): string {
+function formatRecentTurnForContinuity(
+  event: any,
+  retired: Set<string> = new Set(),
+  latestStateSequence?: Map<string, number>,
+): string {
   const action = event?.data?.world_action as Record<string, unknown> | undefined
   const parts = eventPlayerParts(event)
   const lines = [`Turn ${event.sequence || '?'}:`]
@@ -357,7 +443,7 @@ function formatRecentTurnForContinuity(event: any): string {
   } else if (!action && parts.narrationFacts.length === 0) {
     lines.push(`- Player waited/observed without speaking.`)
   }
-  for (const fact of structuredOutcomeFacts(event)) {
+  for (const fact of structuredOutcomeFacts(event, retired, latestStateSequence)) {
     lines.push(`- Recorded outcome: ${fact}`)
   }
   const beatFacts = beatLedgerFacts(event)
@@ -806,6 +892,17 @@ ${input.timeContext.trim()}
 `
   }
 
+  // SCENE STATE — the present moment, stated positively. Everything else in
+  // this prompt describes the past; this is the only section that tells the
+  // narrator what is true right now. Placed immediately before the location so
+  // the model reads place-then-people as one physical picture.
+  if (input.sceneStateText && input.sceneStateText.trim()) {
+    dynamicContent += `SCENE STATE (hard canon — the physical truth of this moment; never contradict it):
+${input.sceneStateText.trim()}
+
+`
+  }
+
   if (input.locationContext && input.locationContext.trim()) {
     dynamicContent += `CURRENT LOCATION:
 ${input.locationContext.trim()}
@@ -963,6 +1060,7 @@ ${personaLine}
   tokenBudgetRemaining = Math.max(0, tokenBudgetRemaining - lastBeatTokens)
 
   const continuityTurns: string[] = []
+  const latestStateSequence = latestStateSequenceByCharacter(input.recentEvents)
   for (const event of input.recentEvents) {
     const playerMsg = event.data?.player_input || ''
     const aiMsg = event.data?.ai_response || ''
@@ -970,7 +1068,16 @@ ${personaLine}
     // ledger, never their prose. Budget the content we actually send rather
     // than the omitted prose; otherwise one long historical response can
     // unnecessarily evict several recent, high-value continuity facts.
-    const continuityTurn = input.proseOnly ? formatRecentTurnForContinuity(event) : ''
+    // Retirements written by any LATER turn in this window supersede this
+    // turn's frozen state snapshot. Without this subtraction every stale state
+    // in the window is presented to the narrator as equally "current".
+    const continuityTurn = input.proseOnly
+      ? formatRecentTurnForContinuity(
+          event,
+          retiredAfter(input.recentEvents, (Number(event?.sequence) || 0) + 1),
+          latestStateSequence,
+        )
+      : ''
     const turnTokens = input.proseOnly
       ? countTokens(continuityTurn)
       : countTokens(playerMsg) + countTokens(aiMsg)

@@ -4,6 +4,7 @@ import type { CharacterCodexDelta } from '../services/character-codex.service'
 import type { ChoiceOption, NarrativeBeatLedger } from '../../worker/lib/structured-output'
 import type { TimeAnchorDoc } from './time.model'
 import type { LocationAnchorDoc } from './location.model'
+import type { SceneStateDoc } from './scene-state.model'
 
 export type StateMutationOp = 'add' | 'subtract' | 'set'
 
@@ -150,11 +151,18 @@ export interface EventDataDoc {
    *  the surviving deltas are replayed deterministically, so no fact or meter
    *  from a removed turn can ever linger. Absent on pre-ledger (legacy) turns. */
   codex_deltas?: CharacterCodexDelta[]
+  /** SCENE STATE at the END of this turn — the authoritative present moment
+   *  (who is physically here, what physical configuration holds). Stored per
+   *  event so it is a rebuildable, rewind-safe projection like the others. */
+  scene_state?: SceneStateDoc
   /** Durable projection lifecycle for post-stream codex/relationship work. */
   codex_projection_status?: 'pending' | 'processing' | 'completed' | 'failed'
   codex_projection_claimed_at?: Date
   codex_projection_completed_at?: Date
   codex_projection_error?: string
+  /** Failed repair attempts. At CHARACTER_PROJECTION_MAX_ATTEMPTS the status
+   *  becomes 'failed' so a deterministic error stops being retried forever. */
+  codex_projection_attempts?: number
   /** This turn's location changes, ledgered with authority for an exact rebuild of
    *  the place graph (anchor + containment + state + enduring facts). */
   location_deltas?: LocationDeltaDoc[]

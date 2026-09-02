@@ -63,6 +63,22 @@ export interface GenerationOutput {
    */
   characters_departed?: string[]
   /**
+   * Sustained physical configurations that BEGAN this turn and are still true
+   * at its end — a grip, an embrace, a held blade, a body position. These are
+   * the story facts that used to exist only in prose and in accreted state
+   * strings nothing ever closed, so a released grip stayed gripped for turns.
+   */
+  physical_state_opened?: Array<{
+    kind: 'restraint' | 'contact' | 'posture' | 'held'
+    statement: string
+    actors: string[]
+  }>
+  /** Ongoing physical configurations that ENDED this turn, each with a verbatim
+   *  excerpt proving it. The evidence is machine-checked: a small model asked
+   *  "which of these ended?" will happily echo the whole list back, so an
+   *  uncitable close is discarded and the configuration stays open. */
+  physical_state_closed?: Array<{ statement: string; evidence: string }>
+  /**
    * Named place where the viewpoint ends this turn. Null/empty means the
    * passage did not establish a place change or concrete current location.
    */
@@ -158,6 +174,61 @@ export function sanitizeBeatLedger(raw: unknown): NarrativeBeatLedger {
  * array, trims/collapses/dedupes case-insensitively, drops the model's empty
  * sentinels, and bounds count and per-item length.
  */
+/**
+ * Bound and clean the physical-state facts a witness reports.
+ *
+ * Kept strict: an entry with no kind, no statement, or no actors is not a
+ * physical configuration — it is a stray sentence, and admitting it would put
+ * an unclosable claim into scene state.
+ */
+export function sanitizePhysicalFacts(
+  raw: unknown,
+  max = 4,
+): Array<{ kind: 'restraint' | 'contact' | 'posture' | 'held'; statement: string; actors: string[] }> {
+  const KINDS = new Set(['restraint', 'contact', 'posture', 'held'])
+  const items = Array.isArray(raw) ? raw : []
+  const out: Array<{ kind: 'restraint' | 'contact' | 'posture' | 'held'; statement: string; actors: string[] }> = []
+  const seen = new Set<string>()
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue
+    const kind = String((item as any).kind || '').toLowerCase()
+    if (!KINDS.has(kind)) continue
+    const statement = String((item as any).statement || '').replace(/\s+/g, ' ').trim().slice(0, 200)
+    if (statement.length < 6) continue
+    const actors = sanitizePresentCharacters((item as any).actors).slice(0, 4)
+    if (actors.length === 0) continue
+    const key = statement.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ kind: kind as 'restraint' | 'contact' | 'posture' | 'held', statement, actors })
+    if (out.length >= max) break
+  }
+  return out
+}
+
+/** Bound the physical-state closes. An entry with no citable evidence is
+ *  meaningless — it is exactly the echo we are trying to reject. */
+export function sanitizePhysicalCloses(
+  raw: unknown,
+  max = 4,
+): Array<{ statement: string; evidence: string }> {
+  const items = Array.isArray(raw) ? raw : []
+  const out: Array<{ statement: string; evidence: string }> = []
+  const seen = new Set<string>()
+  for (const item of items) {
+    if (!item || typeof item !== 'object') continue
+    const statement = String((item as any).statement || '').replace(/\s+/g, ' ').trim().slice(0, 200)
+    const evidence = String((item as any).evidence || '').replace(/\s+/g, ' ').trim().slice(0, 200)
+    if (statement.length < 6 || evidence.length < 4) continue
+    const key = statement.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push({ statement, evidence })
+    if (out.length >= max) break
+  }
+  return out
+}
+
 export function sanitizeFactList(raw: unknown, max = 6): string[] {
   const items = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : []
   const out: string[] = []
@@ -429,6 +500,8 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
     // Present characters: clean, bounded list driving scene-aware bond actions.
     parsed.present_characters = sanitizePresentCharacters(parsed.present_characters)
     parsed.characters_departed = sanitizePresentCharacters(parsed.characters_departed)
+    parsed.physical_state_opened = sanitizePhysicalFacts(parsed.physical_state_opened)
+    parsed.physical_state_closed = sanitizePhysicalCloses(parsed.physical_state_closed)
     parsed.current_location = sanitizeLocationName(parsed.current_location)
     parsed.player_destination = sanitizeLocationName(parsed.player_destination)
     parsed.player_travel_confirmed = parsed.player_travel_confirmed === true
@@ -487,6 +560,8 @@ function repairResponse(raw: string): GenerationOutput {
     milestone: null,
     present_characters: [],
     characters_departed: [],
+    physical_state_opened: [],
+    physical_state_closed: [],
     current_location: null,
     player_destination: null,
     player_travel_confirmed: false,

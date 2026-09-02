@@ -29,6 +29,33 @@ const WITNESS_SCHEMA = {
       maxItems: 12,
       items: { type: 'string' },
     },
+    physical_state_opened: {
+      type: 'array',
+      maxItems: 4,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          kind: { type: 'string', enum: ['restraint', 'contact', 'posture', 'held'] },
+          statement: { type: 'string' },
+          actors: { type: 'array', maxItems: 4, items: { type: 'string' } },
+        },
+        required: ['kind', 'statement', 'actors'],
+      },
+    },
+    physical_state_closed: {
+      type: 'array',
+      maxItems: 4,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          statement: { type: 'string' },
+          evidence: { type: 'string' },
+        },
+        required: ['statement', 'evidence'],
+      },
+    },
     current_location: {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
@@ -64,7 +91,7 @@ const WITNESS_SCHEMA = {
       items: { type: 'string' },
     },
   },
-  required: ['present_characters', 'characters_departed', 'current_location', 'player_destination', 'player_travel_confirmed', 'location_evidence', 'location_evidence_source', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
+  required: ['present_characters', 'characters_departed', 'physical_state_opened', 'physical_state_closed', 'current_location', 'player_destination', 'player_travel_confirmed', 'location_evidence', 'location_evidence_source', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'location_state_changes', 'location_permanent_facts'],
 }
 
 /** CHOICE/STAT schema — the player-moves + bookkeeping half: choices, scene tag,
@@ -160,6 +187,8 @@ const CHOICE_META_SCHEMA = {
 const WITNESS_FALLBACK: SceneMetadata = {
   present_characters: [],
   characters_departed: [],
+  physical_state_opened: [],
+  physical_state_closed: [],
   current_location: null,
   player_destination: null,
   player_travel_confirmed: false,
@@ -223,6 +252,10 @@ Rules:
 - milestone: null almost always. Set a short evocative label (3-8 words) ONLY when this passage crossed a true story landmark: a vow or marriage, a first kiss, a death of a significant character, a title/power gained, a major victory or betrayal, a life-changing decision. Routine progress is NOT a milestone.
 - present_characters: the PEOPLE who appear physically in the scene WITH the viewpoint during THIS passage — anyone who speaks, acts, or is shown to be in the room right now. (You do NOT need to re-list people from earlier who simply weren't mentioned this turn; the system carries them forward automatically — the people present at the end of last turn are listed in CONTEXT below for your reference.) For anyone matching the KNOWN CAST, use their CANONICAL name (not the alias/role/pronoun the prose used); for a genuinely new person not in the cast, use the clearest name the prose gives. NEVER put a location, landmark, building, city, district, country, vehicle, or object here — even if it is capitalized or personified by prose ("Milan greeted him", "near the Duomo"). Those are places/things, never scene participants. EXCLUDE the player/narrator themself, and anyone only mentioned, remembered, or written about while not actually in the room. Also EXCLUDE a figurative epithet that is really an existing person under a metaphor (per the FIGURATIVE vs LITERAL rule above) — "the ghost", "the monster" for the overlooked protagonist is NOT a separate present character in a grounded world. CRUCIAL: if a person LEAVES by the end of the passage, do NOT list them here — list them in characters_departed instead, even if they spoke or acted earlier in the same passage.
 - characters_departed: the people who physically LEFT the scene by the end of this passage — walked out, exited, stormed off, were dismissed, sent away, or died — EVEN IF they spoke or acted earlier in the same passage before leaving. Use their CANONICAL name. A person who rises and leaves the room this turn belongs HERE, not in present_characters. This is the only way someone stops being "present" (the system keeps everyone else from the prior turn in the scene), so a clearly narrated exit MUST be listed. Worked example: prose says "Bram set down his cup, bowed stiffly, and strode from the hall" → characters_departed includes "Bram" (and he is NOT in present_characters). Empty array [] when no one left.
+- physical_state_opened: sustained PHYSICAL configurations that BEGAN in this passage and are still true at the end of it. Not emotions, not intentions, not one-off motions that complete themselves. A configuration qualifies only if the next moment of the story would still be inside it: a grip or restraint ("Aurelius has Cedric by the collar against the wall"), sustained contact (an embrace still held, a hand still clasped), a body position that persists (kneeling, seated at the head of the council table), or an object actively held/wielded (a blade drawn and levelled). kind is one of restraint/contact/posture/held. statement is ONE short third-person clause naming the people involved. actors lists the CANONICAL names of everyone the configuration binds — both the person acting and the person acted upon. A slap, a shove that ends, a glance, a step taken, or a door closed is NOT a sustained configuration: leave those out. Empty array [] almost always.
+- physical_state_closed: ONLY the ongoing configurations that this passage actually ENDED — the grip released, the embrace broken, the blade sheathed, the character rising out of the chair. For each one give { "statement": the text copied from ONGOING PHYSICAL STATE, "evidence": an EXACT verbatim excerpt (4-20 words) from the player turn or the narrative that shows it ending }. The evidence is machine-checked against the text: if it cannot be found verbatim, the close is DISCARDED and the configuration stays open, so never paraphrase or invent it.
+  DO NOT simply copy the ONGOING PHYSICAL STATE list here. Most passages end nothing, and the correct answer is then []. A configuration that is merely mentioned, described again, tightened, resisted, or endured is STILL OPEN and must NOT be listed. Worked examples, with ongoing state "Aurelian has Doran by the collar against the wall": the player turn is "*I hold him tighter, refusing to back down*" and the prose says his grip does not loosen → physical_state_closed is [] (it INTENSIFIED, it did not end). The player turn is "*I release Doran, but keep my gaze steady*" → [{"statement":"Aurelian has Doran by the collar against the wall","evidence":"I release Doran"}]. The prose says only that Doran's face goes pale and he speaks → [] (nothing about the grip changed).
+  A configuration also ends implicitly when a person it binds leaves the scene, and you do NOT need to list that case — the system closes it. But if the player's own action ends it ("I let go of him", "I lower the blade"), it MUST be listed here with the player's words as evidence.
 - current_location: the place the viewpoint/protagonist is PHYSICALLY STANDING IN at the end of the passage — where this turn's action and dialogue actually happen. Report ONLY a compact PLACE NAME (not a sentence, quote, player action, or a person's name): "war room", "Royal Council Chamber", "Milan". NEVER report a place that is merely mentioned, named, planned, anticipated, remembered, or where some future event will be held while the characters are not yet there. Worked example: if they sit at the table in the dining room discussing a party that will be held in the great room, current_location is "dining room" — NOT "great room". If the scene simply continues where it already was, return the prior known location unchanged. If the viewpoint is at a place listed in KNOWN PLACES (in CONTEXT below) — including returning to one they left earlier — return that place's EXACT canonical name, never a new variant spelling ("the garden" when KNOWN PLACES has "Night Garden" → return "Night Garden"). Use a fresh name only for a place that is genuinely not yet known. NEVER report a vague or relative label as the location — "the room", "here", "inside", "outside", "this place" are NOT place names; use the SPECIFIC place's name (e.g. "dining room", "the night garden"), or return the prior known location if the viewpoint has not moved. If the viewpoint moves into a personal space the prose marks as someone's OWN ("my room", "her chambers", "his study"), name it for its owner so it is specific and distinct — e.g. the protagonist retreating to "my room" → the protagonist's name (from CONTEXT) + "'s room" (for a protagonist named Mara, "Mara's room"), NOT the bare "the room". Return null ONLY if no place has ever been established. The Prior known location is given in CONTEXT below — return THAT unless the viewpoint has physically moved.
 - location_evidence and location_evidence_source: REQUIRED provenance for current_location. Return one SHORT exact excerpt (3-20 words) from the indicated source that proves the viewpoint is physically there. source="player" only when the PLAYER TURN itself moves/arrives there; source="narrative" when the completed narrative establishes the setting; source="prior" only when you return the prior known location unchanged (then evidence may be null). Never invent or paraphrase the excerpt. If you cannot cite an exact excerpt, current_location must be null. This evidence is machine-checked before a location enters the map.
 - player_destination and player_travel_confirmed: read the PLAYER TURN in CONTEXT together with the narrative. Set player_travel_confirmed true ONLY when the player is physically travelling/arriving NOW in that turn, not merely discussing, planning, remembering, or promising a future trip. player_destination is the clean compact place name the player actually goes to/arrives at; remove purpose clauses and direct addresses ("go to the living room to say goodbye to Lisa" → "living room"; "go to the airport, Dad" → "airport"). An unnamed but physically entered venue is still a destination: "I take a hotel to stay at", "I check into a hotel", or "I get a room at an inn" → player_travel_confirmed true and player_destination "hotel" or "inn" (not "hotel lobby" unless the player named the lobby). Return null/false when no travel happened.
@@ -254,6 +287,8 @@ type MetadataOpts = {
   /** Characters present at the END of the PRIOR turn, so a character still in
    *  the scene but not named in this passage isn't dropped to "elsewhere". */
   priorPresent?: string[]
+  /** Open physical configurations entering this turn, rendered as statements. */
+  priorPhysical?: string[]
   /** Places this world already knows (canonical name + aliases). Lets a RETURN
    *  to a known place reuse its canonical name instead of minting a duplicate. */
   knownPlaces?: { name: string; aliases?: string[] }[]
@@ -357,7 +392,24 @@ function buildMetadataSystem(opts: MetadataOpts | undefined, stats: StatDescript
 
   const priorPresent = (opts?.priorPresent || []).map((p) => p.trim()).filter(Boolean)
   const priorPresentLabel = priorPresent.length ? priorPresent.join(', ') : '(none / unknown)'
+  // The open physical configurations this passage may close. Without them the
+  // model has no idea a grip is still on, so it can neither sustain it nor end
+  // it — and an unclosed grip outlives the release by however long the state
+  // happens to survive downstream.
+  const priorPhysical = (opts?.priorPhysical || []).map((p) => p.trim()).filter(Boolean)
+  const priorPhysicalLabel = priorPhysical.length ? priorPhysical.join(' | ') : '(none)'
   const priorLocationLabel = opts?.currentLocationName || '(none established yet)'
+  // BOOTSTRAP. With no cursor yet there is nothing to carry, so source="prior" is
+  // not an available answer — but the witness kept returning it anyway (with a
+  // null current_location), and because a null location leaves the cursor unset,
+  // the next turn asked the same question with the same empty prior and got the
+  // same answer. The opening scene of a world could therefore never anchor: eight
+  // consecutive turns of `location_anchor: null` while the authored opening said
+  // "the great hall" in its first sentence. Say the quiet part explicitly.
+  const bootstrapClause = opts?.currentLocationName
+    ? ''
+    : '\nNO LOCATION IS ESTABLISHED YET. "prior" is therefore NOT a valid location_evidence_source this turn: there is nothing to carry forward. Read the passage and name the place the viewpoint is physically in, citing the exact sentence that establishes it (source="narrative"), or the player turn if that is what puts them there (source="player"). Only return current_location null if the passage genuinely names no physical setting at all.'
+
   const playerTurn = (opts?.playerInput || '').replace(/\s+/g, ' ').trim().slice(0, 900)
 
   const places = (opts?.knownPlaces || [])
@@ -398,9 +450,10 @@ function buildMetadataSystem(opts: MetadataOpts | undefined, stats: StatDescript
 
 --- CONTEXT (specific to this world and this turn) ---
 WORLD MODE & VIEWPOINT: ${viewpointContext}${worldContextClause}
-Prior known location (return THIS unless the viewpoint has physically moved): ${priorLocationLabel}
+Prior known location (return THIS unless the viewpoint has physically moved): ${priorLocationLabel}${bootstrapClause}
 PLAYER TURN (authoritative for player movement; empty means no new player turn): ${playerTurn || '(none)'}
 People present at the end of last turn (carried forward automatically — for your reference): ${priorPresentLabel}
+ONGOING PHYSICAL STATE (still true entering this passage — list any that ENDED in physical_state_closed): ${priorPhysicalLabel}
 Tracked stats (only these names may appear in state_mutations): ${stats.length ? stats.map((s) => `${s.name} [${s.min}–${s.max}]: ${s.description}`).join('; ') : '(none)'}
 Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}${rosterClause}${knownPlacesClause}`
   return METADATA_RULES + context
@@ -434,7 +487,10 @@ export async function extractSceneWitness(
         { role: 'user', content: narrative },
       ],
       temperature: 0.2,
-      maxTokens: 450,
+      // Raised with the physical-state fields: at 450 a turn with a grip plus a
+      // location change could truncate, and a truncated witness falls back to
+      // empty — silently losing the presence read for that turn.
+      maxTokens: 620,
       responseSchema: WITNESS_SCHEMA,
     })
     opts?.onRaw?.('scene_witness', raw)
@@ -443,6 +499,8 @@ export async function extractSceneWitness(
       ...WITNESS_FALLBACK,
       present_characters: v.present_characters,
       characters_departed: v.characters_departed ?? [],
+      physical_state_opened: v.physical_state_opened ?? [],
+      physical_state_closed: v.physical_state_closed ?? [],
       current_location: v.current_location ?? null,
       player_destination: v.player_destination ?? null,
       player_travel_confirmed: v.player_travel_confirmed === true,
@@ -537,6 +595,8 @@ export async function extractSceneMetadata(
     // WITNESS half
     present_characters: witness.present_characters,
     characters_departed: witness.characters_departed,
+    physical_state_opened: witness.physical_state_opened,
+    physical_state_closed: witness.physical_state_closed,
     current_location: witness.current_location,
     player_destination: witness.player_destination,
     player_travel_confirmed: witness.player_travel_confirmed,

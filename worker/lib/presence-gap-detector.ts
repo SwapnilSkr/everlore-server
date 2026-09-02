@@ -226,7 +226,28 @@ const ACTION_VERBS =
   'turned|turns|smiled|smiles|nodded|nods|stepped|steps|reached|reaches|leaned|leans|stood|stands|sat|sits|moved|moves|looked|looks|glanced|glances|frowned|frowns|sighed|sighs|gripped|grips|grabbed|grabs|walked|walks|entered|enters|approached|approaches|crossed|crosses|raised|raises|shook|shakes|gestured|gestures|pointed|points|rose|rises|knelt|kneels|gazed|gazes|pulled|pulls|pressed|presses'
 
 const PERSON_POSSESSIONS =
-  'eyes|eye|jaw|hand|hands|mouth|lips|face|smile|frown|voice|shoulders|shoulder|fingers|nails|gaze|breath|head|cheek|cheeks|brow|expression'
+  'eyes|eye|jaw|hand|hands|mouth|lips|face|smile|frown|voice|shoulders|shoulder|fingers|nails|gaze|breath|head|cheek|cheeks|brow|expression|' +
+  // Worn or carried things are as good as a body part for proving someone is
+  // physically here — a place cannot have a collar or a chair scrape back.
+  'arm|arms|wrist|wrists|throat|chest|knuckles|knees|knee|boots|cloak|coat|sleeve|sleeves|collar|hood|belt|blade|sword|knife|reins|chair|seat'
+
+/**
+ * A thing the person OWNS doing something physical: "Halvard's chair scrapes
+ * back and topples", "Mara's cup rattles against the saucer".
+ *
+ * The possessive rule above is deliberately restricted to a fixed noun list so
+ * that civic personification ("Milan's predawn chill") is not read as a person
+ * in the room. But that list can never be complete, and a live turn showed the
+ * cost: the player grabbed the steward by the collar, the prose read "Halvard's
+ * chair scrapes back and topples", and because "chair" was not in the list the
+ * man was refused entry to his own scene — which then rejected the restraint the
+ * player had just applied to him, as naming an absent actor.
+ *
+ * The discriminator is not WHICH noun is possessed but whether it ACTS. A chill
+ * does not scrape, topple or rattle; a chair belonging to someone present does.
+ */
+const POSSESSED_THING_ACTS_VERBS =
+  'scrapes|scraped|topples|toppled|rattles|rattled|clatters|clattered|creaks|creaked|thuds|thudded|slams|slammed|falls|fell|tightens|tightened|jerks|jerked|snaps|snapped|drops|dropped|swings|swung|hits|hit'
 
 const TITLE_WORDS =
   'captain|king|queen|prince|princess|lord|lady|sir|dame|dr|doctor|father|mother|sister|brother|master|mistress|professor|sergeant|general|admiral|commander|duke|duchess|count|countess|baron|reverend|elder|chief'
@@ -280,6 +301,23 @@ function hasIndependentPersonSignal(display: string, prose: string): boolean {
 }
 
 /** Decide the tier for one candidate display name within `prose`. */
+/**
+ * Does the prose show this person PARTICIPATING in the scene, as opposed to
+ * merely naming them?
+ *
+ * This is the `confirmed` tier's evidence, exposed on its own so scene state can
+ * use the same bar to admit someone to the cast. A bare mention is not presence:
+ * "the untouched rations Bram had noted" is a reference to something Bram said
+ * a day's ride away, and taking that as corroboration put him at the top of a
+ * ruined watchtower he never visited, where carry-forward then kept him.
+ *
+ * Deliberately the same patterns as {@link tierFor} so the admission gate and
+ * the trackable-mention gate can never drift apart.
+ */
+export function hasSceneParticipationGrammar(display: string, prose: string): boolean {
+  return tierFor(display, String(prose || '')).tier === 'confirmed'
+}
+
 function tierFor(display: string, prose: string): { tier: MentionTier; evidence: string; count: number } {
   const n = escapeRe(display)
   const count = (prose.match(new RegExp(`\\b${n}\\b`, 'g')) || []).length
@@ -297,6 +335,9 @@ function tierFor(display: string, prose: string): { tier: MentionTier; evidence:
   // such as "Milan's predawn chill" for a participant.
   if (new RegExp(`\\b${n}(?:'s|\\u2019s)\\s+(?:${PERSON_POSSESSIONS})\\b`, 'i').test(prose)) {
     return { tier: 'confirmed', evidence: 'person possessive', count }
+  }
+  if (new RegExp(`\\b${n}(?:'s|\\u2019s)\\s+\\w+\\s+(?:${POSSESSED_THING_ACTS_VERBS})\\b`, 'i').test(prose)) {
+    return { tier: 'confirmed', evidence: 'possession in motion', count }
   }
   // appositive: "Mara, my sister" / "Mara, the captain" → introduced present.
   if (new RegExp(`\\b${n},\\s+(?:my|his|her|their|the|a|an)\\s+\\w+`, 'i').test(prose)) {

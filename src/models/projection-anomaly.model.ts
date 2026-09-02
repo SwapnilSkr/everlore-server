@@ -17,6 +17,18 @@ export type ProjectionAnomalyType =
   | 'private_fact_leak'
   | 'card_without_prose_anchor'
   | 'orphan_dormant_stub'
+  /** A projection pass threw. Until this existed, a crashed pass left the world
+   *  frozen at the last good turn with NOTHING logged anywhere — the story kept
+   *  advancing on state everyone believed was current. */
+  | 'projection_failed'
+  /** Two entity rows claim one identity, so the converging write cannot land. */
+  | 'identity_collision'
+  /** The turn generated against a previous turn whose projection never completed. */
+  | 'stale_scene_state'
+  /** Scene state was told something impossible: an arrival for someone already
+   *  present, a departure for someone absent, a physical fact naming an absent
+   *  actor. The claim is rejected, not folded in. */
+  | 'scene_contradiction'
 
 export type ProjectionAnomalySeverity = 'info' | 'warn' | 'error'
 

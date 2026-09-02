@@ -228,7 +228,9 @@ check('explicit fallback override honored', confidenceTier(undefined, 'hidden'),
 // Real source baselines land where the kinship brief intends them to.
 check('narrator (0.9) → canon', confidenceTier(confidenceFor('narrator')), 'canon')
 check('player_correction (1.0) → canon', confidenceTier(confidenceFor('player_correction')), 'canon')
-check('side_chat (0.75) → canon', confidenceTier(confidenceFor('side_chat')), 'canon')
+check('system_seed (authored canon) → canon', confidenceTier(confidenceFor('system_seed')), 'canon')
+check('player_narration (0.9) → canon', confidenceTier(confidenceFor('player_narration')), 'canon')
+check('player_claim → hint (a character may be lying)', confidenceTier(confidenceFor('player_claim')), 'hint')
 check('character_claim (0.5) → hint', confidenceTier(confidenceFor('character_claim')), 'hint')
 check('inferred co-parent (0.4) → hint', confidenceTier(0.4), 'hint')
 check('inference floor (0.35) → hidden', confidenceTier(confidenceFor('inference')), 'hidden')

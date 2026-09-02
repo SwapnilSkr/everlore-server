@@ -5,11 +5,13 @@ import type { CharacterProfileDoc, RelationshipMeters } from '../models/characte
 import { characterCodexService } from './character-codex.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { type WorldFactSource, confidenceFor } from '../utils/world-authority'
+import { log } from '../utils/logger'
 
 const entities = () => mongoColl.entities()
 const entityEdges = () => mongoColl.entityEdges()
 const memories = () => mongoColl.memories()
 const characters = () => mongoColl.characters()
+const relationCandidates = () => mongoColl.relationCandidates()
 
 /** Same normalization as the codex so the two registries resolve identically. */
 export function normalizeEntityName(name: string): string {
@@ -311,6 +313,118 @@ function scopedKey(nameNormalized: string, scope?: string): string {
 }
 
 
+/**
+ * Fold a LOSER entity row into a WINNER row and delete the loser.
+ *
+ * One person must be exactly one entity row. When two rows exist for the same
+ * identity — a witness stub minted from prose ("Cedric") and the card's own row
+ * still carrying an older canonical name ("Crown Prince Cedric") — every write
+ * that tries to converge them collides with the unique name index, and the
+ * throw takes the whole projection pass down with it. Absorbing is the only
+ * safe convergence: re-point every reference, union the identity fields, then
+ * remove the duplicate so the rename that follows has an unoccupied key.
+ *
+ * Callers MUST have established that the two rows are the same person. This
+ * does no matching of its own.
+ */
+async function absorbEntityInto(
+  iid: ObjectId,
+  loser: EntityDoc,
+  winner: EntityDoc,
+): Promise<void> {
+  const loserId = loser._id
+  const winnerId = winner._id
+  if (loserId.equals(winnerId)) return
+
+  // Memories reference entities as array members, so add-then-pull keeps a
+  // memory that already named both from losing the winner on the pull.
+  for (const field of ['subject_entity_ids', 'object_entity_ids'] as const) {
+    await memories().updateMany({ instance_id: iid, [field]: loserId }, { $addToSet: { [field]: winnerId } } as never)
+    await memories().updateMany({ instance_id: iid, [field]: loserId }, { $pull: { [field]: loserId } } as never)
+  }
+
+  // Edges are (source, kind, target) triples. Re-pointing can create a
+  // duplicate of an edge the winner already owns, and a self-edge if the two
+  // rows were the endpoints of the same relationship — drop both rather than
+  // write them.
+  for (const field of ['source_entity_id', 'target_entity_id'] as const) {
+    const edges = await entityEdges().find({ instance_id: iid, [field]: loserId }).toArray()
+    for (const edge of edges as any[]) {
+      const other = field === 'source_entity_id' ? edge.target_entity_id : edge.source_entity_id
+      if (winnerId.equals(other)) {
+        await entityEdges().deleteOne({ _id: edge._id })
+        continue
+      }
+      const twin = await entityEdges().findOne({
+        instance_id: iid,
+        kind: edge.kind,
+        source_entity_id: field === 'source_entity_id' ? winnerId : edge.source_entity_id,
+        target_entity_id: field === 'target_entity_id' ? winnerId : edge.target_entity_id,
+        _id: { $ne: edge._id },
+      })
+      if (twin) await entityEdges().deleteOne({ _id: edge._id })
+      else await entityEdges().updateOne({ _id: edge._id }, { $set: { [field]: winnerId } })
+    }
+  }
+
+  for (const field of ['character_entity_id', 'player_entity_id', 'counterpart_entity_id'] as const) {
+    await relationCandidates().updateMany(
+      { instance_id: iid, [field]: loserId },
+      { $set: { [field]: winnerId } } as never,
+    )
+  }
+  await characters().updateMany({ instance_id: iid, entity_id: loserId }, { $set: { entity_id: winnerId } })
+  await entities().updateMany(
+    { instance_id: iid, $or: [{ first_location_entity_id: loserId }, { last_location_entity_id: loserId }] },
+    [
+      {
+        $set: {
+          first_location_entity_id: {
+            $cond: [{ $eq: ['$first_location_entity_id', loserId] }, winnerId, '$first_location_entity_id'],
+          },
+          last_location_entity_id: {
+            $cond: [{ $eq: ['$last_location_entity_id', loserId] }, winnerId, '$last_location_entity_id'],
+          },
+        },
+      },
+    ] as never,
+  )
+
+  // Union the identity surface so nothing the loser answered to stops
+  // resolving, and keep the widest provenance of the two.
+  const mergedAliases = uniqNames([
+    ...(winner.aliases || []),
+    ...(loser.aliases || []),
+    loser.canonical_name,
+  ]).filter((a) => normalizeEntityName(a) !== winner.name_normalized)
+  winner.aliases = mergedAliases
+  winner.name_tokens = entityNameTokens(winner.canonical_name, mergedAliases)
+  winner.mention_count = (winner.mention_count || 0) + (loser.mention_count || 0)
+  winner.first_seen_sequence = Math.min(
+    winner.first_seen_sequence ?? Number.MAX_SAFE_INTEGER,
+    loser.first_seen_sequence ?? Number.MAX_SAFE_INTEGER,
+  )
+  winner.last_seen_sequence = Math.max(winner.last_seen_sequence || 0, loser.last_seen_sequence || 0)
+
+  await entities().deleteOne({ _id: loserId })
+  await entities().updateOne(
+    { _id: winnerId },
+    {
+      $set: {
+        aliases: winner.aliases,
+        name_tokens: winner.name_tokens,
+        mention_count: winner.mention_count,
+        first_seen_sequence: winner.first_seen_sequence,
+        last_seen_sequence: winner.last_seen_sequence,
+        updated_at: new Date(),
+      },
+      ...(loser.source_event_ids?.length
+        ? { $addToSet: { source_event_ids: { $each: loser.source_event_ids.slice(-STUB_SOURCE_EVENTS_MAX) } } }
+        : {}),
+    } as never,
+  )
+}
+
 async function loadEntityRegistry(iid: ObjectId): Promise<Map<string, EntityDoc>> {
   const all = (await entities()
     .find({ instance_id: iid, status: { $ne: 'archived' } })
@@ -490,6 +604,10 @@ export const entityGraphService = {
       }
     }
     const mergedStubIds = new Set<string>()
+    // Renames that could not be applied because a different card owns the target
+    // name. Surfaced (never thrown) so a real identity conflict is visible in the
+    // logs instead of silently freezing this instance's projections.
+    const identityCollisions: Array<{ name: string; keptEntityId: string; blockedBy: string }> = []
     for (const card of cards) {
       if (!card?._id || !card.canonical_name) continue
       const wantType: EntityType = card.is_protagonist ? 'protagonist' : 'character'
@@ -539,6 +657,56 @@ export const entityGraphService = {
           mergedAliases.length !== (entity.aliases || []).length ||
           (entity.last_seen_sequence || 0) < (card.last_seen_sequence || 0)
         if (dirty) {
+          // A RENAME moves this row onto a different unique key. If another row
+          // already occupies that key, the update throws E11000 and — because
+          // this runs inside the post-stream projection — takes the entire turn's
+          // codex extraction down with it, leaving the world frozen at the last
+          // good turn. That is exactly how a released collar stayed gripped for
+          // four turns. Converge the rows first, and never let this throw.
+          const keyChanging =
+            entity.name_normalized !== card.name_normalized ||
+            (entity.identity_scope ?? null) !== (card.identity_scope ?? null)
+          if (keyChanging) {
+            const occupant = (await entities().findOne({
+              instance_id: iid,
+              type: { $in: ['protagonist', 'character'] },
+              name_normalized: card.name_normalized,
+              // Mongo's unique index treats a MISSING field as null, so the
+              // occupant lookup must match both spellings — that null/undefined
+              // split is precisely what made this collision invisible.
+              identity_scope: (card.identity_scope ?? null) as never,
+              _id: { $ne: entity._id },
+            })) as EntityDoc | null
+            if (occupant) {
+              // A stub/unlinked row is a witness sighting of this same person:
+              // absorb it. A row owned by a DIFFERENT card is a real identity
+              // conflict — renaming would silently merge two people, so hold the
+              // old name and leave the collision visible instead.
+              const occupantIsOwned =
+                !!occupant.character_id && !occupant.character_id.equals(card._id)
+              if (occupantIsOwned) {
+                identityCollisions.push({
+                  name: card.canonical_name,
+                  keptEntityId: idString(entity._id),
+                  blockedBy: idString(occupant._id),
+                })
+                result.set(card.name_normalized, entity)
+                if (!card.entity_id || !card.entity_id.equals(entity._id)) {
+                  pendingLinks.push({ card, entity })
+                }
+                continue
+              }
+              await absorbEntityInto(iid, occupant, entity)
+              for (const [key, value] of byName) {
+                if (value._id.equals(occupant._id)) byName.delete(key)
+              }
+              mergedAliases.push(
+                ...uniqNames([occupant.canonical_name, ...(occupant.aliases || [])]).filter(
+                  (a) => normalizeEntityName(a) !== card.name_normalized,
+                ),
+              )
+            }
+          }
           entity.character_id = card._id
           entity.canonical_name = card.canonical_name
           entity.name_normalized = card.name_normalized
@@ -546,15 +714,26 @@ export const entityGraphService = {
           entity.identity_scope = card.identity_scope
           entity.type = wantType
           entity.status = 'active'
-          entity.aliases = mergedAliases
-          entity.name_tokens = entityNameTokens(card.canonical_name, mergedAliases)
+          entity.aliases = uniqNames(mergedAliases)
+          entity.name_tokens = entityNameTokens(card.canonical_name, entity.aliases)
           entity.last_seen_sequence = Math.max(
             entity.last_seen_sequence || 0,
             card.last_seen_sequence || 0,
           )
           entity.updated_at = now
           const { _id, ...rest } = entity
-          await entities().updateOne({ _id }, { $set: rest })
+          try {
+            await entities().updateOne({ _id }, { $set: rest })
+          } catch (err) {
+            // Backstop: a concurrent writer can still take the key between the
+            // check above and this write. A stale name is survivable; a dead
+            // projection pass is not.
+            identityCollisions.push({
+              name: card.canonical_name,
+              keptEntityId: idString(entity._id),
+              blockedBy: (err as Error).message.slice(0, 200),
+            })
+          }
         }
       }
       result.set(card.name_normalized, entity)
@@ -648,6 +827,13 @@ export const entityGraphService = {
         })
         mergedStubIds.add(idString(stub._id))
       }
+    }
+    if (identityCollisions.length > 0) {
+      log.warn('entity.identity_collision', {
+        instanceId: idString(iid),
+        sequence,
+        collisions: identityCollisions,
+      })
     }
     return result
   },

@@ -7,11 +7,28 @@ import { entityGraphService } from '../../src/services/entity-graph.service'
 import { extractCharacterCodexDeltas } from '../lib/character-codex-extractor'
 import { getRedisClient } from '../../src/config/redis'
 import { CHARACTER_PROJECTION_CLAIM_LEASE_MS } from '../lib/character-projection-lease'
+import { recordAnomaly } from '../../src/utils/record-anomaly'
+
+/** Retries before an event's projection is declared poisoned. A deterministic
+ *  failure (duplicate key, malformed row) never heals, so retrying past this is
+ *  pure noise that hides the real defect. */
+export const CHARACTER_PROJECTION_MAX_ATTEMPTS = 4
 
 /** Recovery path for a post-stream inline codex projection that did not finish.
  * It claims one event atomically, so retries cannot apply the same deltas twice. */
 export async function characterProjectionProcessor(job: Job) {
   const { instanceId, playerId, eventId } = job.data as { instanceId: string; playerId: string; eventId: string }
+  return projectCharacterEvent({ instanceId, playerId, eventId })
+}
+
+/** The recovery pass itself, callable outside the queue so the generation fence
+ *  can repair the previous turn synchronously before reading its state. */
+export async function projectCharacterEvent(params: {
+  instanceId: string
+  playerId: string
+  eventId: string
+}) {
+  const { instanceId, playerId, eventId } = params
   const iid = parseObjectId(instanceId)
   const eid = parseObjectId(eventId)
   const event = await mongoColl.events().findOne({ _id: eid, instance_id: iid })
@@ -75,21 +92,37 @@ export async function characterProjectionProcessor(job: Job) {
     const codex = deltas.length
       ? await characterCodexService.applyDeltas({ instanceId, playerId, sequence: event.sequence, deltas })
       : cards
-    const entities = await entityGraphService.syncCodexEntities({ instanceId, playerId, sequence: event.sequence, cards: codex })
-    const touched = codex.filter((c) => c.last_seen_sequence === event.sequence && c.relationship)
-    if (touched.length) {
-      await entityGraphService.syncRelationshipEdges({
-        instanceId, playerId, sequence: event.sequence, eventId: event._id,
-        cards: touched, entitiesByCardName: entities, playerName: session.persona_snapshot?.name,
-      })
-    }
+
+    // Ledger the deltas BEFORE the derived graph work. The deltas ARE the story
+    // state; the entity graph is an index over it. This used to run last, so a
+    // graph failure discarded a perfectly good extraction and left the turn
+    // permanently unprojected — the world frozen mid-scene while play continued.
     await mongoColl.events().updateOne(
       { _id: eid },
       {
         $set: { 'data.codex_deltas': deltas, 'data.codex_projection_status': 'completed', 'data.codex_projection_completed_at': new Date() },
-        $unset: { 'data.codex_projection_claimed_at': '', 'data.codex_projection_error': '' },
+        $unset: { 'data.codex_projection_claimed_at': '', 'data.codex_projection_error': '', 'data.codex_projection_attempts': '' },
       },
     )
+
+    // Best-effort, matching the inline path: a graph failure is logged and
+    // repaired later, never allowed to un-project a completed turn.
+    try {
+      const entities = await entityGraphService.syncCodexEntities({ instanceId, playerId, sequence: event.sequence, cards: codex })
+      const touched = codex.filter((c) => c.last_seen_sequence === event.sequence && c.relationship)
+      if (touched.length) {
+        await entityGraphService.syncRelationshipEdges({
+          instanceId, playerId, sequence: event.sequence, eventId: event._id,
+          cards: touched, entitiesByCardName: entities, playerName: session.persona_snapshot?.name,
+        })
+      }
+    } catch (err) {
+      await recordAnomaly({
+        instanceId, playerId, eventId: eid, sequence: event.sequence,
+        type: 'projection_failed', severity: 'warn',
+        details: `entity graph sync (repair path): ${(err as Error).message}`,
+      })
+    }
     await getRedisClient().publish(`user:${playerId}:events`, JSON.stringify({
       type: 'character_codex_updated', instanceId,
       focused_character_id: session.focus_character_id || null,
@@ -97,10 +130,30 @@ export async function characterProjectionProcessor(job: Job) {
     }))
     return { projected: true, deltas: deltas.length }
   } catch (err) {
+    // Poison pill. A collision or malformed row fails IDENTICALLY on every
+    // retry, so an unbounded 'pending' means the sweeper re-queues the same
+    // doomed job forever while the turn stays unprojected and silent. After a
+    // bounded number of attempts the event is marked 'failed' — the sweeper
+    // skips it, and it becomes a visible thing to repair rather than a loop.
+    const attempts = (Number(event.data.codex_projection_attempts) || 0) + 1
+    const poisoned = attempts >= CHARACTER_PROJECTION_MAX_ATTEMPTS
     await mongoColl.events().updateOne(
       { _id: eid },
-      { $set: { 'data.codex_projection_status': 'pending', 'data.codex_projection_error': (err as Error).message }, $unset: { 'data.codex_projection_claimed_at': '' } },
+      {
+        $set: {
+          'data.codex_projection_status': poisoned ? 'failed' : 'pending',
+          'data.codex_projection_error': (err as Error).message,
+          'data.codex_projection_attempts': attempts,
+        },
+        $unset: { 'data.codex_projection_claimed_at': '' },
+      },
     )
+    await recordAnomaly({
+      instanceId, playerId, eventId: eid, sequence: event.sequence,
+      type: 'projection_failed',
+      severity: poisoned ? 'error' : 'warn',
+      details: `${poisoned ? 'POISONED' : 'attempt'} ${attempts}/${CHARACTER_PROJECTION_MAX_ATTEMPTS}: ${(err as Error).message}`,
+    })
     throw err
   }
 }

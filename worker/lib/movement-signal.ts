@@ -44,7 +44,50 @@ const LOCATION_PRONOUNS = new Set([
   'i', 'me', 'my', 'mine', 'we', 'us', 'our', 'you', 'your', 'he', 'him',
   'his', 'she', 'her', 'they', 'them', 'their', 'it', 'its',
 ])
-const PHYSICAL_LOCATION_WORD = /\b(?:room|hall|chambers?|table|court|council|kitchen|bedroom|study|library|attic|basement|cellar|parlou?r|lounge|foyer|corridor|passage|stair(?:case)?|apartment|flat|house|home|mansion|manor|villa|cottage|cabin|tavern|inn|bar|restaurant|cafe|office|shop|store|market|garden|courtyard|terrace|balcony|yard|street|road|alley|station|dock|harbor|harbour|ship|train|car|castle|keep|palace|tower|gate|camp|village|town|city|capital|kingdom|realm|forest|mountain|coast|island|district|quarter|borough)\b/i
+/**
+ * Concrete place nouns that make a witness label safe to persist as a graph node.
+ *
+ * Two defects lived here and both produced the same symptom — a cursor that
+ * silently refuses to move. (1) There was no plural tolerance, so `cellar`
+ * matched "cellar" but not "root cellars". (2) The list was missing ordinary
+ * place nouns: a player who climbed to the "north wall", dismounted at the
+ * "stables" or went down to the "root cellars" was refused every time, and the
+ * place was minted as a `concept` entity instead of a location.
+ *
+ * Kept as an explicit stem list (rather than "any noun") because this is a
+ * SAFETY gate: it is the thing standing between the witness and a Places graph
+ * full of "the quiet road" and "the last report's location". Stems are matched
+ * with optional -s/-es so the plural of every entry is covered once.
+ */
+const PLACE_STEMS = [
+  // interiors
+  'room', 'hall', 'hallway', 'chamber', 'table', 'court', 'courtroom', 'council', 'kitchen',
+  'bedroom', 'study', 'library', 'attic', 'basement', 'cellar', 'parlour', 'parlor', 'lounge',
+  'foyer', 'corridor', 'passage', 'passageway', 'stair', 'staircase', 'landing', 'cloister',
+  'apartment', 'flat', 'house', 'home', 'mansion', 'manor', 'villa', 'cottage', 'cabin', 'hut',
+  'lodge', 'tavern', 'inn', 'bar', 'restaurant', 'cafe', 'office', 'shop', 'store', 'market',
+  'stall', 'workshop', 'forge', 'smithy', 'mill', 'barn', 'stable', 'granary', 'larder',
+  'pantry', 'vault', 'armoury', 'armory', 'barracks', 'dungeon', 'cell', 'crypt', 'tomb',
+  'shrine', 'temple', 'chapel', 'cathedral', 'church', 'monastery', 'abbey', 'hospital',
+  'clinic', 'ward', 'infirmary', 'school', 'academy', 'hangar', 'warehouse', 'laboratory',
+  'lab', 'bunker', 'deck', 'cockpit', 'bridge', 'cabin',
+  // exteriors + settlement
+  'garden', 'courtyard', 'terrace', 'balcony', 'yard', 'street', 'road', 'lane', 'alley',
+  'path', 'trail', 'track', 'square', 'plaza', 'green', 'common', 'bridge', 'well', 'fountain',
+  'gate', 'gatehouse', 'wall', 'rampart', 'parapet', 'battlement', 'watchtower', 'tower',
+  'keep', 'castle', 'fortress', 'citadel', 'palace', 'camp', 'encampment', 'outpost',
+  'station', 'dock', 'pier', 'quay', 'harbor', 'harbour', 'port', 'ford', 'crossing',
+  'village', 'hamlet', 'town', 'city', 'capital', 'kingdom', 'realm', 'province', 'district',
+  'quarter', 'borough', 'ward',
+  // vehicles that function as places
+  'ship', 'boat', 'train', 'car', 'carriage', 'wagon', 'shuttle', 'vessel',
+  // natural
+  'forest', 'wood', 'grove', 'mountain', 'hill', 'ridge', 'peak', 'cliff', 'coast', 'shore',
+  'beach', 'island', 'valley', 'glen', 'moor', 'marsh', 'swamp', 'desert', 'plain', 'field',
+  'meadow', 'farm', 'orchard', 'river', 'stream', 'lake', 'pond', 'spring', 'cave', 'cavern',
+  'grotto', 'canyon', 'gorge', 'pass', 'summit', 'clearing', 'quarry', 'mine', 'pit',
+]
+const PHYSICAL_LOCATION_WORD = new RegExp(`\\b(?:${PLACE_STEMS.join('|')})(?:s|es)?\\b`, 'i')
 
 function locationComparable(value: string): string {
   return String(value || '')
@@ -107,7 +150,7 @@ const DIRECTION = '(?:to|into|inside|outside|out|toward|towards|back|upstairs|do
  *  HAPPENED so the cursor/presence/travel-marker stay honest when the model
  *  under-flags it. */
 const DIRECTED_VERB =
-  '(?:go|goes|going|gone|went|head|heads|heading|headed|return|returns|returning|returned|walk|walks|walking|walked|run|runs|running|ran|move|moves|moving|moved|step|steps|stepping|stepped|enter|enters|entering|entered|stride|strides|striding|strode|storm|storms|storming|stormed|march|marches|marching|marched|wander|wanders|wandering|wandered|slip|slips|slipping|slipped|climb|climbs|climbing|climbed|descend|descends|descending|descended|ascend|ascends|ascending|ascended|sneak|sneaks|sneaking|snuck|rush|rushes|rushing|rushed|creep|creeps|creeping|crept|hurry|hurries|hurrying|hurried|make my way|made my way|making my way|retire|retires|retiring|retired|travel|travels|travelling|traveling|travelled|traveled|journey|journeys|journeying|journeyed|ride|rides|riding|rode|ridden|sail|sails|sailing|sailed|fly|flies|flying|flew|flown|cross|crosses|crossing|crossed|venture|ventures|venturing|ventured|voyage|voyages|voyaging|voyaged|drive|drives|driving|drove|driven|trek|treks|trekking|trekked|hike|hikes|hiking|hiked|set off|set out|sets off|sets out|setting off|setting out|proceed|proceeds|proceeding|proceeded|advance|advances|advancing|advanced|teleport|teleports|teleporting|teleported|warp|warps|warping|warped|clamber|clambers|clambering|clambered)'
+  '(?:go|goes|going|gone|went|head|heads|heading|headed|return|returns|returning|returned|walk|walks|walking|walked|run|runs|running|ran|move|moves|moving|moved|step|steps|stepping|stepped|enter|enters|entering|entered|stride|strides|striding|strode|storm|storms|storming|stormed|march|marches|marching|marched|wander|wanders|wandering|wandered|slip|slips|slipping|slipped|climb|climbs|climbing|climbed|descend|descends|descending|descended|ascend|ascends|ascending|ascended|sneak|sneaks|sneaking|snuck|rush|rushes|rushing|rushed|creep|creeps|creeping|crept|hurry|hurries|hurrying|hurried|make my way|made my way|making my way|retire|retires|retiring|retired|travel|travels|travelling|traveling|travelled|traveled|journey|journeys|journeying|journeyed|ride|rides|riding|rode|ridden|sail|sails|sailing|sailed|fly|flies|flying|flew|flown|cross|crosses|crossing|crossed|venture|ventures|venturing|ventured|voyage|voyages|voyaging|voyaged|drive|drives|driving|drove|driven|trek|treks|trekking|trekked|hike|hikes|hiking|hiked|set off|set out|sets off|sets out|setting off|setting out|proceed|proceeds|proceeding|proceeded|advance|advances|advancing|advanced|teleport|teleports|teleporting|teleported|warp|warps|warping|warped|clamber|clambers|clambering|clambered|follow|follows|following|followed|accompany|accompanies|accompanying|accompanied|trail|trails|trailing|trailed)'
 
 /** Verbs that mean "left the current place" with no direction needed. */
 const DEPARTURE_VERB =
@@ -124,6 +167,27 @@ const DEPARTURE = new RegExp(`\\b${DEPARTURE_VERB}\\b`)
  *  and "I reach out to him" stay put, and an infinitive of purpose is excluded
  *  so "I stand on tiptoe TO REACH the shelf" is a stretch, not a journey. */
 const ARRIVAL = /(?<!\bto\s)\b(?:reach|reaches|reached|reaching|arrive|arrives|arrived|arriving|approach|approaches|approached|approaching)\b\s+(?:at\s+|in\s+)?(?:the|a|an|my|our|his|her|their)\b/
+/**
+ * Arrival phrasings the determiner-gated ARRIVAL above cannot see.
+ *
+ * Each of these was a live stuck-cursor turn. "I arrive at Marrow Ford" names a
+ * PROPER place, so there is no determiner to match (the text is lowercased by
+ * then, so capitalization is gone too). "I dismount in the village square" and
+ * "we make camp by the river" establish a place without any locomotion verb at
+ * all. "I am led into the great hall" moves the player without them doing the
+ * moving. In every case the witness correctly named the new place and the cursor
+ * refused it, because the player-side corroboration this is paired with saw
+ * nothing.
+ *
+ * Pronoun objects are excluded so "I arrive at her side" / "we approach him"
+ * stay put — arriving at a PERSON is not arriving at a PLACE.
+ */
+const ARRIVAL_NAMED =
+  /(?<!\bto\s)\b(?:reach|reaches|reached|reaching|arrive|arrives|arrived|arriving)\b\s+(?:at|in)\s+(?!(?:me|him|her|them|us|you|it|his|their)\b)[a-z][a-z'’-]{2,}/
+const ALIGHT = /\b(?:dismount|dismounts|dismounted|dismounting|alight|alights|alighted|alighting|make camp|makes camp|made camp|making camp|set up camp|sets up camp)\b/
+const ESCORTED = new RegExp(
+  `\\b(?:am|are|is|was|were|get|gets|got)\\s+(?:led|taken|brought|escorted|guided|ushered|marched|shown|carried)\\b(?:\\s+\\w+){0,3}?\\s+${DIRECTION}\\b`,
+)
 // "leave/left" only counts with a place-ish object or clause end (not "leave me alone")
 const LEAVE_MOVE = /\b(?:leave|leaves|leaving|left)\b(?!\s+(?:me|him|her|them|us|it|you)\b)/
 // sealing a door behind you is an unambiguous exit of a space
@@ -375,7 +439,16 @@ export function validatedContainmentHint(params: {
 export function detectNarratedMovement(playerInput: string | null | undefined): boolean {
   const t = clean(playerInput || '')
   if (!t) return false
-  return DIRECTED_MOVE.test(t) || DEPARTURE.test(t) || LEAVE_MOVE.test(t) || DOOR_BEHIND.test(t) || ARRIVAL.test(t)
+  return (
+    DIRECTED_MOVE.test(t) ||
+    DEPARTURE.test(t) ||
+    LEAVE_MOVE.test(t) ||
+    DOOR_BEHIND.test(t) ||
+    ARRIVAL.test(t) ||
+    ARRIVAL_NAMED.test(t) ||
+    ALIGHT.test(t) ||
+    ESCORTED.test(t)
+  )
 }
 
 /** A verified departure that resets scene presence without guessing a location. */

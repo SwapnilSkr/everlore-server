@@ -39,6 +39,16 @@ export interface AnomalyInput {
   witnessLocationName?: string | null
   /** Canonical names of codex cards MINTED this turn (new this turn). */
   newCardNames?: string[]
+  /**
+   * Extra surfaces that count as ALREADY tracked — the distinctive tokens of
+   * everyone in the scene or on a card ("Neva" for "Neva Vale").
+   *
+   * Without these the detector compares on whole normalized names, so the prose's
+   * ordinary short form of a character who is standing in the room AND has a card
+   * was reported as an untracked stranger on nearly every turn. That is pure noise
+   * in a log whose entire value is that it only fires on real misses.
+   */
+  excludeNames?: string[]
 }
 
 function norm(s: string): string {
@@ -66,6 +76,7 @@ export function detectProjectionAnomalies(input: AnomalyInput): AnomalyFinding[]
     present: input.presentNames,
     codex: input.codexNames,
     stubs: input.stubNames,
+    exclude: input.excludeNames || [],
   }
   const confirmedUntracked = classifyPresenceCodexGaps(prose, tracked).filter((m) => m.tier === 'confirmed')
   for (const m of confirmedUntracked.slice(0, 5)) {
