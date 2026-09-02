@@ -291,6 +291,16 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
       playerTextSituatesViewpoint(place, input.playerInput, { people: input.knownPeople }) ||
       (!!witness.current_location && !!judgedName && sameLocationLabel(judgedName, witness.current_location)))
 
+  //
+  // TRIED AND REVERTED: treating the witness ABANDONING its prior as evidence.
+  // It is told to hold unless the viewpoint moved, so letting go looks like a
+  // deliberate decision — and it recovers the runner's corridor, which the
+  // judge lost to the district he was heading towards. But a witness reading a
+  // poisoned graph abandons just as confidently: on a world whose locations
+  // included "the war room where Father is already waiting", it moved a dinner
+  // scene into the war room on turn six and held it there. Held-out 94.9% →
+  // 89.9%, and it cost a keeper turn as well. The bias is real; it is not
+  // separable from a hallucination.
   const narratedArrival =
     !input.isContinuation &&
     !actionDestination &&

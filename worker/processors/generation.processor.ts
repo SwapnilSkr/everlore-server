@@ -1235,16 +1235,18 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // two, before the player had gone anywhere. The graph is not repaired here —
   // that is `repair:duplicate-places` and `merge:location` — but nothing the
   // gate would refuse today gets to speak as canon.
-  const knownPlaces = (
-    await entityGraphService
-      .listKnownLocations(instanceId, 30)
-      .catch(() => [] as { name: string; aliases: string[] }[])
-  ).filter((place) => isSafeWitnessLocationCandidate(place.name))
+  const allKnownPlaces = await entityGraphService
+    .listKnownLocations(instanceId, 30)
+    .catch(() => [] as { name: string; aliases: string[] }[])
+  const knownPlaces = allKnownPlaces.filter((place) => isSafeWitnessLocationCandidate(place.name))
   // Places are a separate graph type from people. Keep their names available to
   // every downstream presence seam so a capitalized city/landmark cannot become
   // a participant merely because the narrator personifies it.
+  // Built from the UNFILTERED list on purpose. This set stops a city or a
+  // landmark being read as a person; a node too malformed to be canon is still
+  // not a person, so nothing is gained by letting it through here.
   const knownPlacePresenceKeys = new Set<string>()
-  for (const place of knownPlaces) {
+  for (const place of allKnownPlaces) {
     const canonical = normalizeEntityName(place.name || '')
     if (canonical) knownPlacePresenceKeys.add(canonical)
     for (const alias of place.aliases || []) {
