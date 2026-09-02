@@ -10,13 +10,22 @@
 //   "/continue [span]"      -> continue (span = hours|day|days|season for a time skip)
 //   "/replay <eventId>"     -> regenerate an existing turn
 //
+// The server URL comes from AGENT_CHAT_BASE_URL, else http://localhost:$PORT,
+// else :3000. Bun loads .env from the server root, so running this from
+// everlore-server picks up that PORT automatically.
+//
 // CRITICAL for PARALLEL agents: all agents share ONE account, and the server fans
 // every frame out to ALL of that user's sockets. This harness therefore IGNORES
 // any frame whose instanceId is not ours — so N agents on N instances don't
 // cross-talk. Give each parallel agent its OWN instance.
-const BASE = 'http://localhost:3000'
-const WS = 'ws://localhost:3000/ws/play'
-const PHONE = '+19474877175'
+// The API's port is configurable (`.env` sets PORT=8081), so a hardcoded 3000
+// here meant the harness silently pointed at nothing whenever the server was
+// started normally — surfacing only as `ws error [object ErrorEvent]`, which
+// names neither the port nor the cause. Take the URL from the environment,
+// defaulting to the port the server would actually bind.
+const BASE = (process.env.AGENT_CHAT_BASE_URL || `http://localhost:${process.env.PORT || 3000}`).replace(/\/+$/, '')
+const WS = `${BASE.replace(/^http/, 'ws')}/ws/play`
+const PHONE = '+919474877175'
 
 const [instanceId, ...steps] = process.argv.slice(2)
 if (!instanceId || steps.length === 0) {
@@ -26,8 +35,21 @@ if (!instanceId || steps.length === 0) {
 
 let token = process.env.TOKEN
 if (!token) {
-  await fetch(`${BASE}/auth/otp/send`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: PHONE }) })
-  token = (await (await fetch(`${BASE}/auth/otp/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: PHONE, code: '123456' }) })).json()).token
+  // An unreachable API throws here, before the socket is ever opened, and a bare
+  // ConnectionRefused stack says nothing about which port was tried.
+  try {
+    await fetch(`${BASE}/auth/otp/send`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: PHONE }) })
+    token = (await (await fetch(`${BASE}/auth/otp/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ phone: PHONE, code: '123456' }) })).json()).token
+  } catch (err) {
+    console.error(`\ncannot reach the API at ${BASE} — ${(err as Error).message}`)
+    console.error('  • start it:  PORT=%s bun run src/index.ts', process.env.PORT || '3000')
+    console.error('  • or point this harness elsewhere with AGENT_CHAT_BASE_URL')
+    process.exit(1)
+  }
+  if (!token) {
+    console.error(`\nlogin at ${BASE} returned no token — is this an Everlore API?`)
+    process.exit(1)
+  }
 }
 
 const ws = new WebSocket(`${WS}?token=${token}`)
@@ -84,4 +106,11 @@ ws.onmessage = (ev) => {
     case 'error': console.log(`  !! ERROR ${f.code ?? ''} ${f.message ?? ''}`); break
   }
 }
-ws.onerror = (e) => { console.error('ws error', String(e)); process.exit(1) }
+ws.onerror = () => {
+  // A WebSocket ErrorEvent stringifies to "[object ErrorEvent]" and carries no
+  // usable detail, so say what we tried to reach and what usually explains it.
+  console.error(`\nws error — could not reach ${WS}`)
+  console.error('  • is the API running, and on this port? (.env sets PORT; override with AGENT_CHAT_BASE_URL)')
+  console.error('  • the worker must be running too, or turns only ack and never generate')
+  process.exit(1)
+}

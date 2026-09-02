@@ -545,5 +545,23 @@ console.log('opening scene canon:')
   check('...but a narrated departure still removes them', names(state), [])
 }
 
+// ── THE EVIDENCE BAR MUST COVER ORDINARY ACTIONS ───────────────────────────
+// The action-verb list was built from a few examples and missed most of them,
+// so a brother who "gave a slow nod" and "lets out a low chuckle" was refused
+// entry to his own scene for three straight turns while speaking in it — and
+// the physical fact naming him was rejected as naming an absent actor.
+{
+  const acts = (name: string, prose: string) => hasSceneParticipationGrammar(name, prose)
+  check('"gave a slow nod" is acting', acts('Tomas', 'Tomas gave a slow nod, his expression unreadable.'), true)
+  check('"lets out a chuckle" is acting', acts('Tomas', 'Tomas lets out a low, humorless chuckle.'), true)
+  check('"shrugs" is acting', acts('Mara', 'Mara shrugs and looks away.'), true)
+  check('"waited by the door" is acting', acts('Bram', 'Bram waited by the door.'), true)
+  // ...and the offstage cases the gate exists to reject stay rejected.
+  check('a past reference is not presence', acts('Bram', 'the untouched rations Bram had noted a day ago.'), false)
+  check('travelling elsewhere is not presence', acts('Mara', 'Mara went to the capital last spring.'), false)
+  check('being talked about is not presence', acts('Halvard', 'They spoke of Halvard often.'), false)
+  check('being reported elsewhere is not presence', acts('Ilse', 'Ilse is somewhere on the passes.'), false)
+}
+
 console.log(`\nscene-state audit: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

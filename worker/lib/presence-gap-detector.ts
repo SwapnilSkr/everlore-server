@@ -222,8 +222,32 @@ export interface MentionCandidate extends VisibleNameCandidate {
 const SPEECH_VERBS =
   'said|says|asked|asks|replied|replies|answered|answers|whispered|whispers|shouted|shouts|murmured|murmurs|growled|growls|muttered|mutters|called|calls|added|adds|continued|continues|cried|cries|hissed|hisses|snapped|snaps|breathed|breathes|begged|begs|warned|warns|laughed|laughs'
 
+/**
+ * Verbs that show a person DOING something in the scene.
+ *
+ * The list was built from a handful of examples and was far too small: a
+ * character who "gave a slow nod" or "lets out a low chuckle" matched nothing,
+ * so the corroboration gate refused him entry to his own scene — on a live run
+ * the brother the player was talking to went missing for three consecutive
+ * turns while speaking, and the physical fact naming him was rejected too.
+ *
+ * Deliberately restricted to BODILY and REACTIVE actions, which only make sense
+ * for someone physically present. Verbs of travel (went, came, ran, left) are
+ * NOT here on purpose: "Mara went to the capital" describes someone who is
+ * elsewhere, and admitting that is the phantom-presence bug this gate exists to
+ * stop.
+ */
 const ACTION_VERBS =
-  'turned|turns|smiled|smiles|nodded|nods|stepped|steps|reached|reaches|leaned|leans|stood|stands|sat|sits|moved|moves|looked|looks|glanced|glances|frowned|frowns|sighed|sighs|gripped|grips|grabbed|grabs|walked|walks|entered|enters|approached|approaches|crossed|crosses|raised|raises|shook|shakes|gestured|gestures|pointed|points|rose|rises|knelt|kneels|gazed|gazes|pulled|pulls|pressed|presses'
+  'turned|turns|smiled|smiles|nodded|nods|stepped|steps|reached|reaches|leaned|leans|stood|stands|sat|sits|' +
+  'moved|moves|looked|looks|glanced|glances|frowned|frowns|sighed|sighs|gripped|grips|grabbed|grabs|' +
+  'walked|walks|entered|enters|approached|approaches|crossed|crosses|raised|raises|shook|shakes|' +
+  'gestured|gestures|pointed|points|rose|rises|knelt|kneels|gazed|gazes|pulled|pulls|pressed|presses|' +
+  'gave|gives|let|lets|shifted|shifts|shrugged|shrugs|chuckled|chuckles|snorted|snorts|' +
+  'exhaled|exhales|inhaled|inhales|swallowed|swallows|blinked|blinks|straightened|straightens|' +
+  'tensed|tenses|stiffened|stiffens|hesitated|hesitates|paused|pauses|watched|watches|' +
+  'studied|studies|regarded|regards|tilted|tilts|lifted|lifts|dropped|drops|folded|folds|' +
+  'settled|settles|sank|sinks|spat|spits|scowled|scowls|grinned|grins|smirked|smirks|' +
+  'winced|winces|flinched|flinches|listened|listens|waited|waits'
 
 const PERSON_POSSESSIONS =
   'eyes|eye|jaw|hand|hands|mouth|lips|face|smile|frown|voice|shoulders|shoulder|fingers|nails|gaze|breath|head|cheek|cheeks|brow|expression|' +
