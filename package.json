@@ -33,6 +33,7 @@
     "audit:time-skip": "bun run scripts/time-skip-audit.ts",
     "audit:signal-ledger": "bun run scripts/signal-ledger-audit.ts",
     "report:signal-ledger": "bun run scripts/signal-ledger-report.ts",
+    "report:corpus-census": "bun run scripts/corpus-census.ts",
     "audit:codex-dedup": "bun run scripts/codex-dedup-audit.ts",
     "audit:kinship": "bun run scripts/kinship-audit.ts",
     "audit:scene-state": "bun run scripts/scene-state-audit.ts",
