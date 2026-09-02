@@ -508,7 +508,7 @@ export async function memoryProcessor(job: Job) {
       ...(eventLocationAnchor
         ? {
             location_anchor: eventLocationAnchor,
-            location_entity_id: eventLocationAnchor.entity_id,
+            location_entity_id: eventLocationAnchor.entity_id ?? undefined,
             location_name: eventLocationAnchor.name,
           }
         : {}),

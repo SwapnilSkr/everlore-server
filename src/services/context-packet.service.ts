@@ -166,9 +166,14 @@ export async function buildContextPacket(params: {
   // Enriched with the containment ANCESTRY (owner-scoped identity, so "Marcus's
   // penthouse, within Downtown" can't be confused with another penthouse) and the
   // place's canon facts + current condition.
+  // A PROVISIONAL anchor has no entity_id: the place is not on the map yet, so
+  // there is no ancestry or canon to enrich it with. The name still reaches the
+  // narrator.
   const locationContextPromise: Promise<string | null> = !currentLocation
     ? Promise.resolve(null)
-    : Promise.all([
+    : !currentLocation.entity_id
+      ? Promise.resolve(`Current place: ${currentLocation.name}.`)
+      : Promise.all([
         entityGraphService
           .placeAncestry(instanceId, idString(currentLocation.entity_id))
           .catch(() => [] as string[]),
