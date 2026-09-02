@@ -1606,6 +1606,8 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       candidate: promotionCandidate,
       sequence: nextSequence,
       relation: classifyPlaceRelation(promotionCandidate, rawNarrative, { people: priorCardNamesForPresence }),
+      // The cursor moving here IS the arrival, decided by the citation stack.
+      arrived: viewpointMoved,
       containment: !!approvedContainmentHint,
       // An authored place is the world's own canon: a typed travel destination
       // the player chose in the product, or a place the template already knows.
@@ -1625,6 +1627,25 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           { upsert: true },
         )
         .catch(() => null)
+    }
+    // The place being LEFT accrues the exit. A departure is the other half of
+    // "entered and left", and the processor is the only thing that knows it:
+    // the passage describes arriving somewhere, not leaving the room whose name
+    // it no longer mentions. Without this a place could be entered a dozen times
+    // and never earn the map, because `exits` stayed at zero forever.
+    const departedName = viewpointMoved ? currentLocation?.name || null : null
+    if (departedName && !locationNamesCompatible(departedName, promotionCandidate)) {
+      const departedKey = normalizeEntityName(departedName)
+      if (departedKey) {
+        await mongoColl
+          .placeCandidates()
+          .updateOne(
+            { instance_id: instanceOid, name_normalized: departedKey },
+            { $inc: { exits: 1 }, $setOnInsert: { instance_id: instanceOid, name_normalized: departedKey, name: departedName } },
+            { upsert: true },
+          )
+          .catch(() => null)
+      }
     }
     log.info('location.promotion', {
       instanceId: idString(instanceId),

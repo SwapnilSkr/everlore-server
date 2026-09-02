@@ -161,6 +161,26 @@ export function decidePlacePromotion(params: {
   relation: PlaceRelation
   containment: boolean
   authored: boolean
+  /**
+   * The location decision's own verdict that the viewpoint MOVED here this turn.
+   *
+   * `classifyPlaceRelation` reads an entry from a preposition sitting next to
+   * the place name in a viewpoint-owned clause, and real arrivals are almost
+   * never written that way — "Wick pushed open the heavy door, and the smell of
+   * wet wood washed over him" names no place at all, and the room is named a
+   * sentence later. Measured over the corpus it fires on 2 passages in 15, and
+   * live it recorded ZERO entries across sixteen turns and two walks between
+   * rooms. So nothing accrued, nothing promoted, nothing was ever minted, and
+   * `authored` — which asks whether the place is already on the map — could
+   * never become true either. A world created after this gate landed could not
+   * put a single place on its own map.
+   *
+   * A cursor move is the same claim, decided by the whole citation stack instead
+   * of by one preposition: strictly stronger evidence that the viewpoint entered.
+   */
+  arrived: boolean
+  /** The viewpoint moved AWAY from this place this turn. */
+  departed?: boolean
   prior: PlaceAccrual | null
 }): PromotionDecision {
   const prior = params.prior
@@ -168,8 +188,8 @@ export function decidePlacePromotion(params: {
   const next: PlaceAccrual = {
     name: params.candidate,
     sightings: (prior?.sightings || 0) + (fresh ? 1 : 0),
-    entries: (prior?.entries || 0) + (fresh && params.relation.entry ? 1 : 0),
-    exits: (prior?.exits || 0) + (fresh && params.relation.exit ? 1 : 0),
+    entries: (prior?.entries || 0) + (fresh && (params.relation.entry || params.arrived) ? 1 : 0),
+    exits: (prior?.exits || 0) + (fresh && (params.relation.exit || params.departed === true) ? 1 : 0),
     containment: !!prior?.containment || params.containment,
     first_sequence: prior?.first_sequence ?? params.sequence,
     last_sequence: params.sequence,

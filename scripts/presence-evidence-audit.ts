@@ -413,5 +413,47 @@ check('"the van where Jax is waiting" does not admit him',
   cite('Jax', 'It is the long way around to the van where Jax is waiting, engine off.') === false, true)
 check('a TITLE in the same position still does', cite('Isolde', 'Queen Isolde barely glances at you across the table.'), true)
 
+console.log('\na citation drawn from inside a quotation is reported speech:')
+{
+  const prose =
+    '*The damp air swallowed his words.* "Just me," *Marn\'s voice came from the shadowed mouth of a low tunnel.* "Deshi send you down here to get your boots wet, or is this your own bright idea?"'
+  check(
+    'a name spoken by the person who IS here does not admit the person who is not',
+    citationAdmitsToPresent(
+      evaluatePresenceCitation({ name: 'Deshi', evidence: 'Deshi send you down here to get your boots wet', prose }),
+    ),
+    false,
+  )
+  check(
+    'the speaker is still admitted by the attribution, which is narration',
+    citationAdmitsToPresent(
+      evaluatePresenceCitation({ name: 'Marn', evidence: "Marn's voice came from the shadowed mouth of a low tunnel", prose }),
+    ),
+    true,
+  )
+  check(
+    'a span straddling the quote and its attribution survives',
+    citationAdmitsToPresent(
+      evaluatePresenceCitation({
+        name: 'Tomas',
+        evidence: 'Tomas repeats, his voice flat',
+        prose: '"The road stays empty," Tomas repeats, his voice flat.',
+      }),
+    ),
+    true,
+  )
+  check(
+    'narration is untouched',
+    citationAdmitsToPresent(
+      evaluatePresenceCitation({
+        name: 'Tomas',
+        evidence: "Tomas hasn't moved from the hearth.",
+        prose: "Tomas hasn't moved from the hearth. \"Midnight's closer than you think.\"",
+      }),
+    ),
+    true,
+  )
+}
+
 console.log(`\npresence evidence audit: ${fail === 0 ? 'ALL GREEN' : `${fail} FAILED`} (${pass} passed)`)
 process.exit(fail === 0 ? 0 : 1)

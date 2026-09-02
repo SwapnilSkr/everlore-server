@@ -204,6 +204,18 @@ export function excerptShowsSubjectPredicate(name: string, evidence: string): bo
  * subject of anything. It is also blind to adverbs, auxiliaries and participles
  * the list cannot reach ("Tomas hasn't moved", "Mara almost nodded").
  */
+/**
+ * The passage with REPORTED SPEECH removed — what the narration says happened,
+ * without what the characters said about each other.
+ *
+ * Only a CLOSED span of ordinary length is stripped, so an unbalanced quote
+ * cannot swallow the passage. Attribution survives: "he says" and "Tomas
+ * repeats" sit outside the quotes, where they belong.
+ */
+export function narrationOnly(prose: string): string {
+  return String(prose || '').replace(/[“"]([^”"]{0,600})[”"]/g, ' ')
+}
+
 export function showsParticipationInPassage(name: string, prose: string): boolean {
   const text = String(prose || '')
   if (!text.trim() || !String(name || '').trim()) return false
@@ -217,7 +229,7 @@ export function showsParticipationInPassage(name: string, prose: string): boolea
   //
   // Only a CLOSED span is stripped, and only one of ordinary length, so an
   // unbalanced quote cannot swallow the passage.
-  const narration = text.replace(/[“"]([^”"]{0,600})[”"]/g, ' ')
+  const narration = narrationOnly(text)
   // Sentence and clause boundaries only — punctuation, never vocabulary.
   for (const sentence of narration.split(/(?<=[.!?…])\s+|\n+|["“”]/)) {
     const trimmed = sentence.trim()
@@ -283,8 +295,22 @@ export function evaluatePresenceCitation(params: {
 }): CitationVerdict {
   const a = hasExactEvidence(params.evidence, params.prose)
   const b = excerptNamesPerson(params.name, params.evidence)
-  const structural = b && excerptShowsSubjectPredicate(params.name, params.evidence)
-  const listedAction = b && hasSceneParticipationGrammar(params.name, params.evidence, { evidence: 'action' })
+  // An excerpt that exists in the prose ONLY INSIDE QUOTATION MARKS is reported
+  // speech: one character talking about another, not the other one acting.
+  //
+  // The stripper was added a layer up, to the passage-level corroboration, and
+  // this seam was missed — so a live turn whose narration says "Just me" put a
+  // second person in the room on the strength of the line "Deshi send you down
+  // here to get your boots wet?", spoken by the only character actually present.
+  // It has perfect subject-predicate shape and it is verbatim in the prose;
+  // what it is not is narration.
+  //
+  // A span that straddles the quote and its attribution is untouched, because it
+  // still appears in the narration-only text.
+  const quotedOnly = a && !hasExactEvidence(params.evidence, narrationOnly(params.prose))
+  const structural = b && !quotedOnly && excerptShowsSubjectPredicate(params.name, params.evidence)
+  const listedAction =
+    b && !quotedOnly && hasSceneParticipationGrammar(params.name, params.evidence, { evidence: 'action' })
   const c = structural || listedAction
   const rejected: CitationCheck[] = []
   if (!a) rejected.push('a')
