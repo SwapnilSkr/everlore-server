@@ -16,6 +16,18 @@
  * Cursors are threaded per world in sequence order, because a cast that empties
  * and stays empty is the failure being measured.
  *
+ * FIDELITY — what this replay does NOT model, and why the held-out number is
+ * the weaker of the two. It has no `openingCast` seed, so a world whose whole
+ * cast is established in the AUTHORED OPENING (a court already seated at a
+ * table) starts empty and has to re-earn every member; no codex, so identity
+ * resolution is the turn's roster rather than the card registry; and no
+ * `playerForcesFreshCast`, so a player-authored departure is approximated by
+ * the judge's `player_viewpoint_at_end`. Each of those cost this harness real
+ * turns before it was noticed — it scored 29% on a world before the title-token
+ * fallback was added, and it wiped a hall on a turn nobody moved because it
+ * broke scenes on the witness's raw boolean instead of the location decision.
+ * Read the keeper number as the measurement and the held-out number as a floor.
+ *
  * Run: bun run corpus:cast-ab <instanceIds>
  */
 import { readFileSync } from 'node:fs'
@@ -26,7 +38,7 @@ import {
   showsParticipationInPassage,
 } from '../worker/lib/scene-endpoint-adjudicator'
 import { hasSceneParticipationGrammar } from '../worker/lib/presence-gap-detector'
-import { sceneIdentityKey } from '../src/services/scene-state.service'
+import { sceneIdentityKey, PRESENCE_TITLE_WORDS } from '../src/services/scene-state.service'
 import { decideLocation } from '../worker/lib/location-decision'
 import type { DriftState } from '../worker/lib/cursor-drift'
 
@@ -37,6 +49,11 @@ const gold: Record<string, CastLabel> = JSON.parse(
   readFileSync(process.env.GOLD_CAST || 'corpus/gold-cast-hand.json', 'utf8'),
 )
 const travel: Record<string, string> = JSON.parse(readFileSync('corpus/travel-actions.json', 'utf8'))
+/** Worlds the corpus captured no production extractions for — see
+ *  `corpus:cast-extract`, which writes the full endpoint adjudication. */
+const extra: Record<string, any> = process.env.CAST_CACHE
+  ? JSON.parse(readFileSync(process.env.CAST_CACHE, 'utf8'))
+  : {}
 const selected = turns
   .filter((t) => instances.has(t.instance) && gold[t.id])
   .sort((a, b) => (a.instance === b.instance ? a.sequence - b.sequence : a.instance.localeCompare(b.instance)))
@@ -71,15 +88,30 @@ function replay(label: string, mode: 'legacy' | 'current'): Run {
   let instance = ''
   let cursor: string | null = null
   let drift: DriftState | null = null
+  /** Consecutive turns a carried member has gone unseen — see `decidePartyDecay`. */
+  let misses = new Map<string, number>()
   for (const turn of selected) {
     if (turn.instance !== instance) {
       instance = turn.instance
       prior = turn.context.priorPresent
       cursor = turn.context.priorLocation
       drift = null
+      misses = new Map()
     }
-    const witness: any = turn.observed.witness
+    const witness: any = turn.observed.witness ?? extra[turn.id]?.witness
+    const raw: any = extra[turn.id]?.endpoint
+    // A freshly-run adjudication reports its citations as `citationVerdicts`;
+    // a production capture stored the raw judge JSON. Same rows, two shapes.
     const endpoint: any = turn.observed.endpoint
+      ? turn.observed.endpoint
+      : raw
+        ? {
+            player_viewpoint_at_end: raw.playerViewpointAtEnd,
+            scene_transition: raw.sceneTransition,
+            location_at_end: raw.location,
+            present_at_end: (raw.citationVerdicts || []).map((v: any) => ({ name: v.name, evidence: v.evidence })),
+          }
+        : null
     if (!witness) continue
     const available = !!endpoint
     const cited: { name: string; evidence: string }[] = endpoint?.present_at_end || []
@@ -136,11 +168,25 @@ function replay(label: string, mode: 'legacy' | 'current'): Run {
         if (v.a && v.b && v.c) corroborated.add(key(c.name))
       }
     }
-    const shows = (name: string) =>
+    // Mirrors the processor: prose names a titled cast member bare ("Cedric"
+    // for "Crown Prince Cedric"), so the distinctive tokens are tested too —
+    // still against scene-participation grammar, never a bare occurrence.
+    // Without this the replay lost every titled character in a court scene and
+    // scored the whole world at 29%.
+    const showsOne = (phrase: string) =>
       mode === 'current'
-        ? showsParticipationInPassage(name, turn.prose) ||
-          hasSceneParticipationGrammar(name, turn.prose, { evidence: 'action' })
-        : hasSceneParticipationGrammar(name, turn.prose)
+        ? showsParticipationInPassage(phrase, turn.prose) ||
+          hasSceneParticipationGrammar(phrase, turn.prose, { evidence: 'action' })
+        : hasSceneParticipationGrammar(phrase, turn.prose)
+    const shows = (name: string) => {
+      if (showsOne(name)) return true
+      for (const token of String(name || '').split(/\s+/)) {
+        const normalized = token.toLowerCase().replace(/[^a-z0-9']+/g, '')
+        if (normalized.length < 3 || PRESENCE_TITLE_WORDS.has(normalized)) continue
+        if (showsOne(token)) return true
+      }
+      return false
+    }
 
     const departed = new Set((witness.characters_departed || []).map(key).filter(Boolean))
     const priorKeys = new Set(prior.map(key))
@@ -160,18 +206,51 @@ function replay(label: string, mode: 'legacy' | 'current'): Run {
     // the air is still" shows Tomas acting, in the room the player just left.
     // Only a citation about the END of the scene can admit across a break.
     const next = sceneBroke
-      ? out.filter((n) => (mode === 'current' ? corroborated.has(key(n)) : shows(n)))
+      ? out.filter((n) =>
+          mode === 'current'
+            ? corroborated.has(key(n)) || (viewpointAtEnd && shows(n))
+            : shows(n),
+        )
       : out
-    prior = next
+    // CAST DECAY — an EXPERIMENT, off by default, not shipped behaviour.
+    //
+    // Carrying a quiet person forward is right: a passage that does not name
+    // them has not removed them. But "quiet" and "gone" are the same state
+    // today, so on the held-out corpus a king who walked out of his war room
+    // stayed in the room for six more turns. This is the presence twin of
+    // `decidePartyDecay`. Set CAST_DECAY=<n> to score it.
+    //
+    //   threshold   keeper 74   held-out 99
+    //       off       94.6%        56.6%
+    //        2        90.5%        60.6%
+    //        5        94.6%        61.6%
+    //
+    // Worth about five turns on one world and nothing on the other, which is
+    // not enough evidence to add a persisted per-member counter to the scene
+    // state — and the held-out replay is the weaker instrument (see the
+    // fidelity note at the top). Recorded so the next attempt starts here.
+    const decayAfter = Number(process.env.CAST_DECAY || 0)
+    const kept: string[] = []
+    for (const name of next) {
+      const k = key(name)
+      const seenNow = corroborated.has(k) || shows(name)
+      const missed = seenNow ? 0 : (misses.get(k) || 0) + 1
+      misses.set(k, missed)
+      if (!decayAfter || missed < decayAfter) kept.push(name)
+      else misses.delete(k)
+    }
+    for (const k of [...misses.keys()]) if (!kept.some((n) => key(n) === k)) misses.delete(k)
+    prior = mode === 'current' ? kept : next
 
+    const shipped = mode === 'current' ? kept : next
     const g = gold[turn.id]
-    if (g.accepted.some((a) => setOf(a) === setOf(next))) run.right++
+    if (g.accepted.some((a) => setOf(a) === setOf(shipped))) run.right++
     else {
       run.wrong++
       if (run.rows.length < 24) {
         run.rows.push(
           `    ${(turn.world || '').slice(0, 14).padEnd(14)} seq ${String(turn.sequence).padStart(3)}  ` +
-            `cast=${JSON.stringify(next).padEnd(14)} truth=${JSON.stringify(g.primary)}`,
+            `cast=${JSON.stringify(shipped).padEnd(14)} truth=${JSON.stringify(g.primary)}`,
         )
       }
     }
