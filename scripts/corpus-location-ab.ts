@@ -15,6 +15,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import type { CorpusTurn } from './corpus-freeze'
 import type { GoldLabel } from './corpus-gold'
 import { extractSceneWitness } from '../worker/lib/metadata-extractor'
+import { isSafeWitnessLocationCandidate } from '../worker/lib/movement-signal'
 import { adjudicateSceneEndpoint } from '../worker/lib/scene-endpoint-adjudicator'
 import { decideLocation, decideLocationLegacy, type LocationDecisionInput } from '../worker/lib/location-decision'
 import type { DriftState } from '../worker/lib/cursor-drift'
@@ -22,17 +23,46 @@ import type { DriftState } from '../worker/lib/cursor-drift'
 const instances = new Set((process.argv[2] || '').split(',').filter(Boolean))
 const minSeq = Number(process.argv[3] || 0)
 const turns: CorpusTurn[] = JSON.parse(readFileSync('corpus/turns.json', 'utf8'))
-const gold: Record<string, GoldLabel> = JSON.parse(readFileSync('corpus/gold-shipped.json', 'utf8'))
+/**
+ * Ground truth. `gold-hand.json` is hand-labelled: every one of these 74 turns
+ * was read and labelled by a person, with an ACCEPTED SET rather than a single
+ * string, because several turns have more than one defensible answer — "the
+ * bar" and "Split Lamp" are the same room, and "the north wall" is a station
+ * inside "the hall". The model-written `gold-shipped.json` verified at ~67% on
+ * the hard subset, which is not a usable instrument for a 99% target: it cannot
+ * distinguish a naming dispute from a wrong position, and it scored three of
+ * these turns wrong itself.
+ */
+interface HandLabel { accepted: string[]; primary: string; note?: string }
+const handPath = process.env.GOLD_HAND || 'corpus/gold-hand.json'
+const hand: Record<string, HandLabel> = existsSync(handPath) ? JSON.parse(readFileSync(handPath, 'utf8')) : {}
+/** The player's typed travel destinations — see `corpus:travel-actions`. */
+const travel: Record<string, string> = existsSync('corpus/travel-actions.json')
+  ? JSON.parse(readFileSync('corpus/travel-actions.json', 'utf8'))
+  : {}
+const gold: Record<string, GoldLabel> = existsSync(process.env.GOLD_MODEL || 'corpus/gold-shipped.json')
+  ? JSON.parse(readFileSync(process.env.GOLD_MODEL || 'corpus/gold-shipped.json', 'utf8'))
+  : {}
 
 const selected = turns
-  .filter((t) => instances.has(t.instance) && t.sequence >= minSeq && gold[t.id])
+  .filter((t) => instances.has(t.instance) && t.sequence >= minSeq && (hand[t.id] || gold[t.id]))
   .sort((a, b) => (a.instance === b.instance ? a.sequence - b.sequence : a.instance.localeCompare(b.instance)))
 
 /** Extractor output is cached on disk: it is the CONTROL and must not vary. */
-const cachePath = 'corpus/ab-extractions.json'
+// `ab-extractions.json` is the frozen CONTROL for the three keeper worlds and
+// must not be regenerated. A held-out run points AB_CACHE at its own file so a
+// world the corpus never captured can be extracted without touching it.
+const cachePath = process.env.AB_CACHE || 'corpus/ab-extractions.json'
 const cache: Record<string, { witness: any; endpoint: any }> = existsSync(cachePath)
   ? JSON.parse(readFileSync(cachePath, 'utf8'))
   : {}
+
+/** Mirrors the processor: the graph's memory of a mistake is not authority. */
+for (const turn of selected) {
+  turn.context.knownPlaces = turn.context.knownPlaces.filter((place) =>
+    isSafeWitnessLocationCandidate(place.name),
+  )
+}
 
 for (const [i, turn] of selected.entries()) {
   if (cache[turn.id]) continue
@@ -112,7 +142,7 @@ function replay(label: string, decide: (input: LocationDecisionInput) => ReturnT
         location_evidence: w.location_evidence ?? null,
         location_evidence_source: w.location_evidence_source ?? null,
       },
-      actionDestination: null,
+      actionDestination: travel[turn.id] ?? null,
       endpoint: entry.endpoint,
       priorDrift: drift,
       sequence: turn.sequence,
@@ -122,15 +152,18 @@ function replay(label: string, decide: (input: LocationDecisionInput) => ReturnT
       if (decision.viewpointMoved) run.moves++
       cursor = decision.placeName
     }
+    const h = hand[turn.id]
     const g = gold[turn.id]
     if (!cursor) run.unset++
-    else if (g.place && same(cursor, g.place)) (g.placeIsSpace ? run.right++ : run.placehood++)
+    else if (h ? h.accepted.some((name) => same(cursor!, name)) : g.place && same(cursor, g.place))
+      run.right++
+    else if (!h && g.place && same(cursor, g.place)) run.placehood++
     else {
       run.wrong++
-      if (run.rows.length < 10) {
+      if (run.rows.length < 60) {
         run.rows.push(
           `    ${(turn.world || '').slice(0, 20).padEnd(20)} seq ${String(turn.sequence).padStart(3)}  ` +
-            `cursor=${JSON.stringify(cursor).padEnd(20)} gold=${JSON.stringify(g.place)}`,
+            `cursor=${JSON.stringify(cursor).padEnd(22)} truth=${JSON.stringify(h ? h.primary : g.place)}`,
         )
       }
     }

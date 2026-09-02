@@ -77,7 +77,9 @@
     "audit:firebase-token": "bun run scripts/firebase-token-audit.ts",
     "audit:input-guard": "bun run scripts/input-guard-audit.ts",
     "audit:stat-mutations": "bun run scripts/stat-mutation-audit.ts",
-    "audit:bond-meters": "bun run scripts/bond-meter-audit.ts"
+    "audit:bond-meters": "bun run scripts/bond-meter-audit.ts",
+    "corpus:travel-actions": "bun run scripts/corpus-travel-actions.ts",
+    "audit:location-decision": "bun run scripts/location-decision-audit.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",
