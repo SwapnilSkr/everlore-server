@@ -101,6 +101,16 @@ const CLAUSE_SKIP = new Set([
   'here', 'there',
 ])
 
+/** Relativizers and subordinating conjunctions — a closed grammatical class. */
+const SUBORDINATOR = new Set([
+  'where', 'when', 'while', 'who', 'whom', 'whose', 'which', 'that', 'because',
+  'since', 'until', 'unless', 'although', 'though', 'if', 'whether', 'after',
+  'before', 'as', 'wherever', 'whenever',
+])
+
+/** Particles that make `there` mean *not here*. A closed grammatical class. */
+const DISTAL_PARTICLE = new Set(['out', 'down', 'over', 'back', 'up', 'in', 'off', 'across'])
+
 const LOCATIVE_COPULA = new Set([
   'inside', 'outside', 'here', 'there', 'back', 'away', 'gone', 'out',
   'behind', 'beside', 'near', 'nearby', 'ahead', 'around',
@@ -120,8 +130,15 @@ export function excerptShowsSubjectPredicate(name: string, evidence: string): bo
   const n = comparable(name)
   if (!ev || !n) return false
   const nameRe = escapeRe(n)
-  const start = ev.match(new RegExp(`^(?:[a-z]+\\s+)?${nameRe}\\b`))
+  const start = ev.match(new RegExp(`^(?:([a-z]+)\\s+)?${nameRe}\\b`))
   if (!start) return false
+  // The one optional leading token is there for a TITLE — "Queen Isolde barely
+  // glances". It was swallowing subordinators too, so the relative clause
+  // "the long way around to the van where Jax is waiting" read as a main clause
+  // and put a man sitting in a parked van into the scene. Relativizers and
+  // subordinating conjunctions are a closed class; a clause that begins with one
+  // is describing somewhere else.
+  if (start[1] && SUBORDINATOR.has(start[1])) return false
   let rest = ev.slice(start[0].length).trim()
 
   const poss = rest.match(/^'s\b(.*)$/)
@@ -159,6 +176,19 @@ export function excerptShowsSubjectPredicate(name: string, evidence: string): bo
   if (!head) return false
   if (CLAUSE_SKIP.has(head) || DETERMINER.has(head)) return false
   if (head === 'who' || head === 'whom' || head === 'whose' || head === 'which') return false
+  // A DISTAL DEICTIC is a report of where somebody is, not their presence here.
+  // "Jax is out there" has the shape of an action — a name, then a predicate
+  // head — and it describes a man sitting in a parked van the player can see
+  // from the loading dock. Admitted once, carry-forward kept him in the scene
+  // for five turns. `here` and `there` are a closed deictic pair and `out`,
+  // `down`, `over`, `back`, `up`, `in` are particles: this is grammar, and it
+  // is the presence twin of the location stack refusing "Bram's down there".
+  //
+  // "Tomas is still there, seated on the same bench" is untouched — `there` is
+  // skipped as an adverb and the predicate head is `seated`. It is specifically
+  // PARTICLE + `there` that means somewhere other than this room.
+  const next = (tokens[1] || '').replace(/^[^a-z']+|[^a-z']+$/g, '')
+  if (next === 'there' && DISTAL_PARTICLE.has(head)) return false
   return true
 }
 
@@ -177,8 +207,19 @@ export function excerptShowsSubjectPredicate(name: string, evidence: string): bo
 export function showsParticipationInPassage(name: string, prose: string): boolean {
   const text = String(prose || '')
   if (!text.trim() || !String(name || '').trim()) return false
+  // Reported speech is what somebody SAID, not what happened in the room. The
+  // passage was split ON the quote marks, which promoted the contents of a
+  // quotation to a sentence of the narration — so a musician recalling a drive
+  // ("Jax drove the whole night while I stared at the ceiling of the van") put
+  // a man who never left his parked van into the scene, and carry-forward kept
+  // him. Quoted spans are removed instead. Attribution stays: "he says" and
+  // "Tomas repeats" are outside the quotes, where they belong.
+  //
+  // Only a CLOSED span is stripped, and only one of ordinary length, so an
+  // unbalanced quote cannot swallow the passage.
+  const narration = text.replace(/[“"]([^”"]{0,600})[”"]/g, ' ')
   // Sentence and clause boundaries only — punctuation, never vocabulary.
-  for (const sentence of text.split(/(?<=[.!?…])\s+|\n+|["“”]/)) {
+  for (const sentence of narration.split(/(?<=[.!?…])\s+|\n+|["“”]/)) {
     const trimmed = sentence.trim()
     if (!trimmed) continue
     if (excerptShowsSubjectPredicate(name, trimmed)) return true
@@ -203,8 +244,22 @@ export function citationAdmitsToPresent(verdict: CitationVerdict): boolean {
 /**
  * Scene-break: endpoint cast (or witness fallback) plus party.
  * Continuation: prior cast (quiet people stay) plus endpoint-verified arrivals
- * plus party. Witness `present_characters` is not a new-admit path when the
- * judge ran — that is Phase 1. Outage falls back to the old witness merge.
+ * plus party.
+ *
+ * This returns CANDIDATES. Everyone here who is not already in the room still
+ * has to clear the corroboration bar — the prose must show them participating —
+ * so a name on this list is a name the caller will look for, not a name it will
+ * admit. That distinction is why the witness belongs on it.
+ *
+ * It was excluded because mixing `present_characters` into the admit path
+ * unconditionally is the Isolde/Lyra class: a metadata guess became a scene
+ * member. But excluding it from the CANDIDATES too meant that when the judge
+ * named nobody, nobody was even considered. On the hand-labelled corpus the
+ * player walked down to a cellar where Bram sits over his ledger — "Bram
+ * doesn't look up from his ledger. His quill scratches a final line" — the
+ * judge returned an empty cast, the witness said Bram, and the room the player
+ * was standing in came back empty for two turns. The prose proves him; nothing
+ * was ever asked.
  */
 export function mergePresenceCandidates(params: {
   sceneBroke: boolean
@@ -216,12 +271,9 @@ export function mergePresenceCandidates(params: {
 }): string[] {
   const party = params.partyNames
   if (params.sceneBroke) {
-    return [...(params.endpointAvailable ? params.endpointPresent : params.witnessPresent), ...party]
+    return [...params.endpointPresent, ...params.witnessPresent, ...party]
   }
-  if (params.endpointAvailable) {
-    return [...params.priorPresent, ...params.endpointPresent, ...party]
-  }
-  return [...params.priorPresent, ...params.witnessPresent, ...party]
+  return [...params.priorPresent, ...params.endpointPresent, ...params.witnessPresent, ...party]
 }
 
 export function evaluatePresenceCitation(params: {

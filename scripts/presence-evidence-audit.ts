@@ -283,8 +283,15 @@ console.log('Phase 1 — present[] admits only (a)∧(b)∧(c); continuations ca
   })
   check('pronoun span does not admit to present[]', citationAdmitsToPresent(pronoun), false)
 
+  // These return CANDIDATES — names the caller will look for evidence about, not
+  // names it will admit. `deriveSceneState` refuses any newcomer the prose does
+  // not show acting (`uncorroborated_arrival`), which is where the Isolde/Lyra
+  // property is actually enforced and where `audit:scene-state` pins it. Keeping
+  // the witness off the CANDIDATE list as well meant that when the judge named
+  // nobody, nobody was even considered — and the player stood in a cellar with
+  // Bram over his ledger while the room came back empty.
   check(
-    'continuation keeps quiet prior and adds endpoint arrival, not witness Isolde',
+    'a continuation keeps the quiet prior cast and considers both namers',
     mergePresenceCandidates({
       sceneBroke: false,
       endpointAvailable: true,
@@ -293,10 +300,10 @@ console.log('Phase 1 — present[] admits only (a)∧(b)∧(c); continuations ca
       witnessPresent: ['Isolde', 'Lyra'],
       partyNames: [],
     }),
-    ['Cedric', 'Tomas'],
+    ['Cedric', 'Tomas', 'Isolde', 'Lyra'],
   )
   check(
-    'scene break uses endpoint, not the old room',
+    'a scene break drops the old room and considers both namers',
     mergePresenceCandidates({
       sceneBroke: true,
       endpointAvailable: true,
@@ -305,7 +312,19 @@ console.log('Phase 1 — present[] admits only (a)∧(b)∧(c); continuations ca
       witnessPresent: ['Isolde'],
       partyNames: [],
     }),
-    ['Mara'],
+    ['Mara', 'Isolde'],
+  )
+  check(
+    'the endpoint judge is listed FIRST, so its verified name wins a collision',
+    mergePresenceCandidates({
+      sceneBroke: true,
+      endpointAvailable: true,
+      endpointPresent: ['Bram'],
+      priorPresent: ['Tomas'],
+      witnessPresent: ['Bram', 'Tomas'],
+      partyNames: [],
+    })[0],
+    'Bram',
   )
   check(
     'judge outage falls back to witness on continuation',
@@ -354,6 +373,45 @@ console.log('Phase 1 — present[] admits only (a)∧(b)∧(c); continuations ca
   check('a name in a later sentence is found',
     shows('Tomas', 'The hall was cold and empty of talk. Tomas watched the exchange without a word.'), true)
 }
+
+console.log('\nreported speech is what somebody SAID, not what happened here:')
+check(
+  'a memory told in dialogue does not put its subject in the room',
+  showsParticipationInPassage(
+    'Jax',
+    'I look back at you, the cigarette forgotten. "The last tour ended in a motel outside Boise. Jax drove the whole night while I stared at the ceiling of the van."',
+  ) === false,
+  true,
+)
+check(
+  'the attribution around a quote still counts — it is narration',
+  showsParticipationInPassage('Tomas', '"The road stays empty," Tomas repeats, his voice flat.'),
+  true,
+)
+check(
+  'narration outside any quote is untouched',
+  showsParticipationInPassage('Tomas', "Tomas hasn't moved. He stands by the cold hearth."),
+  true,
+)
+check(
+  'an unbalanced quote cannot swallow the passage',
+  showsParticipationInPassage('Tomas', 'Tomas sets the cup down. "You already know that'),
+  true,
+)
+
+console.log('\na distal deictic is a report of position, not presence:')
+const cite = (name: string, evidence: string) =>
+  citationAdmitsToPresent(evaluatePresenceCitation({ name, evidence, prose: evidence }))
+check('"Jax is out there" is a man somewhere else', cite('Jax', 'Jax is out there.') === false, true)
+check('"Bram is down there" likewise', cite('Bram', 'Bram is down there with the ledgers.') === false, true)
+check('"Tomas is still there" is the same spot, not a distal report',
+  cite('Tomas', 'Tomas is still there, seated on the same bench.'), true)
+check('an ordinary action is untouched', cite('Tomas', "Tomas hasn't moved from the hearth."), true)
+
+console.log('\na relative clause is not a main clause:')
+check('"the van where Jax is waiting" does not admit him',
+  cite('Jax', 'It is the long way around to the van where Jax is waiting, engine off.') === false, true)
+check('a TITLE in the same position still does', cite('Isolde', 'Queen Isolde barely glances at you across the table.'), true)
 
 console.log(`\npresence evidence audit: ${fail === 0 ? 'ALL GREEN' : `${fail} FAILED`} (${pass} passed)`)
 process.exit(fail === 0 ? 0 : 1)

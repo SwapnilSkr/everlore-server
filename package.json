@@ -79,7 +79,8 @@
     "audit:stat-mutations": "bun run scripts/stat-mutation-audit.ts",
     "audit:bond-meters": "bun run scripts/bond-meter-audit.ts",
     "corpus:travel-actions": "bun run scripts/corpus-travel-actions.ts",
-    "audit:location-decision": "bun run scripts/location-decision-audit.ts"
+    "audit:location-decision": "bun run scripts/location-decision-audit.ts",
+    "corpus:cast-ab": "bun run scripts/corpus-cast-ab.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",
