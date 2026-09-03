@@ -83,6 +83,13 @@ export interface CharacterProfileDoc {
   /** Ledger-projected; deceased cards cannot re-enter normal scene presence. */
   life_state?: CharacterLifeState
   life_state_sequence?: number
+  /** The sentence this was decided from, so the player can see the reasoning
+   *  and disagree with it. A death that happens invisibly is a death nobody
+   *  catches — the last wrong one hid for thirty turns. */
+  life_state_evidence?: string
+  /** 'player' when the player authored it inside *asterisks* (canon, never
+   *  re-litigated), 'narration' when the story established it. */
+  life_state_source?: 'player' | 'narration'
   role?: string
   appearance?: string
   persona?: string

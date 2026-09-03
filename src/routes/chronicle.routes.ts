@@ -98,6 +98,7 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
       mutable_state: t.Optional(t.Array(t.String({ maxLength: 400 }))),
       disposition_to_player: t.Optional(t.String({ maxLength: 400 })),
       hidden_thought: t.Optional(t.String({ maxLength: 400 })),
+      life_state: t.Optional(t.Union([t.Literal('alive'), t.Literal('deceased')])),
     }),
   })
 

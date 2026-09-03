@@ -896,17 +896,37 @@ export const characterCodexService = {
     })
   },
 
-  /** Materialize explicit event-ledgered NPC deaths. This is deliberately a
-   * narrow projection: only a later explicit resurrection/undead transition may
-   * change it, never an ordinary codex extraction or narration mention. */
+  /**
+   * Materialize explicit event-ledgered changes to who is alive.
+   *
+   * BOTH DIRECTIONS. A death is not a tombstone, it is a state the story can
+   * revise: the body was someone else's, the wound was survivable, the player
+   * wrote *Marn coughs and sits up*. Applied in sequence order so the LAST word
+   * on a character wins — replaying a rebuild must land on the same answer as
+   * living through it, and a revival at turn 40 must not be undone by re-reading
+   * the death at turn 12.
+   *
+   * Still a narrow projection: only an explicit ledgered transition moves this,
+   * never an ordinary codex extraction or a passing mention in narration.
+   */
   async applyLifecycleDeltas(params: { instanceId: string; deltas: CharacterLifecycleDeltaDoc[] }): Promise<void> {
     if (!params.deltas.length) return
     const iid = parseObjectId(params.instanceId)
-    for (const delta of params.deltas) {
-      if (delta.state !== 'deceased' || !delta.name_normalized) continue
+    const ordered = [...params.deltas].sort((a, b) => (a.sequence || 0) - (b.sequence || 0))
+    for (const delta of ordered) {
+      if (!delta.name_normalized) continue
+      if (delta.state !== 'deceased' && delta.state !== 'alive') continue
       await characters().updateMany(
         { instance_id: iid, name_normalized: delta.name_normalized, is_protagonist: { $ne: true } },
-        { $set: { life_state: 'deceased', life_state_sequence: delta.sequence, updated_at: new Date() } },
+        {
+          $set: {
+            life_state: delta.state,
+            life_state_sequence: delta.sequence,
+            life_state_evidence: delta.evidence,
+            life_state_source: delta.source || 'narration',
+            updated_at: new Date(),
+          },
+        },
       )
     }
   },
@@ -1092,6 +1112,10 @@ export const characterCodexService = {
       mutable_state?: string[]
       disposition_to_player?: string
       hidden_thought?: string
+      /** Alive or dead is the player's to set, like everything else on this
+       *  card. It was the ONE field they could not touch, which is why a wrong
+       *  death could only be undone by someone with database access. */
+      life_state?: 'alive' | 'deceased'
     }
   }): Promise<{ character: CharacterProfileDoc; instanceId: string; retiredFacts: string[] }> {
     const { playerId, characterId, updates } = params
@@ -1153,6 +1177,12 @@ export const characterCodexService = {
     if (updates.persona !== undefined) setFields.persona = updates.persona.trim() || undefined
     if (updates.disposition_to_player !== undefined) {
       setFields.disposition_to_player = updates.disposition_to_player.trim()
+    }
+    if (updates.life_state === 'alive' || updates.life_state === 'deceased') {
+      setFields.life_state = updates.life_state
+      setFields.life_state_source = 'player'
+      setFields.life_state_evidence =
+        updates.life_state === 'alive' ? 'The player brought them back.' : 'The player marked them dead.'
     }
     if (updates.hidden_thought !== undefined) {
       setFields.hidden_thought = updates.hidden_thought.trim()

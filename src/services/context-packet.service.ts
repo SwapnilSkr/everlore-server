@@ -45,6 +45,12 @@ export interface ContextPacket {
   characterCodex: CharacterProfileDoc[]
   /** Explicitly deceased NPCs remain canon but must not be cast as alive. */
   deceasedCharacterNames: string[]
+  /** Every NPC this save knows, living and dead, with the surfaces they answer
+   *  to. Names only, and deliberately NOT the narrator's budget-ranked pool:
+   *  that pool is empty on a world's opening turns, which meant nobody could
+   *  die then, and it excludes the dead, which meant nobody could ever come
+   *  back. */
+  lifecycleRoster: Array<{ canonical_name: string; aliases: string[] }>
   /** Entity ids the player named this turn (drives neighborhood retrieval). */
   mentionedEntityIds: string[]
   loreTexts: string[]
@@ -88,6 +94,10 @@ interface PacketSession {
   /** Companions explicitly travelling with the player (cache stores entity_id as a
    *  string). Surfaced to the narrator as present-by-default. */
   travelling_with?: Array<{ entity_id?: string; name: string; source?: WorldFactSource; confidence?: number }> | null
+  /** The world's authored cast. These people have no `characters` row until the
+   *  codex mints one, so they must be named from here or a death on the opening
+   *  turns has no victim it is allowed to name. */
+  seed_cast_snapshot?: Array<{ name?: string; aliases?: string[] }> | null
 }
 
 function normalizeLocationAnchor(raw: any): LocationAnchorDoc | null {
@@ -219,10 +229,21 @@ export async function buildContextPacket(params: {
     .limit(CODEX_POOL_LIMIT)
     .toArray() as Promise<CharacterProfileDoc[]>
   // Start independently so the lifecycle guard has no serial retrieval cost.
-  const deceasedCardsPromise = mongoColl
+  // EVERY card in the save, names only — not the ranked pool the narrator gets.
+  //
+  // The lifecycle pass was fed `characterCodex`, which is budget-ranked for the
+  // prompt and is EMPTY on a world's first turns because nothing has been
+  // mentioned or retrieved yet. So for the opening stretch of every story the
+  // pass logged `no_candidates` and nobody could die at all — the seed cast was
+  // sitting in the database the whole time. Matching a name costs nothing;
+  // there is no reason for it to share the narrator's context budget.
+  const lifecycleRosterPromise = mongoColl
     .characters()
-    .find({ instance_id: iid, life_state: 'deceased' }, { projection: { canonical_name: 1 } })
-    .limit(12)
+    .find(
+      { instance_id: iid, is_protagonist: { $ne: true } },
+      { projection: { canonical_name: 1, aliases: 1, life_state: 1 } },
+    )
+    .limit(80)
     .toArray()
 
   // ── 1. Direct mentions: entities + dormant codex cards named in the input ──
@@ -499,7 +520,34 @@ export async function buildContextPacket(params: {
     sceneSummary: summaryDoc?.summary_text || null,
     relevantSummaries,
     characterCodex,
-    deceasedCharacterNames: (await deceasedCardsPromise).map((card) => card.canonical_name).filter(Boolean),
+    deceasedCharacterNames: (await lifecycleRosterPromise)
+      .filter((card) => (card as any).life_state === 'deceased')
+      .map((card) => card.canonical_name)
+      .filter(Boolean),
+    // Everyone this save knows about, living and dead. The dead are kept OUT of
+    // the codex pool so the narrator cannot cast them as alive — but that also
+    // hid them from the one pass that could bring them back, which would have
+    // made every revival impossible. A story that cannot un-kill anyone is
+    // exactly the one-way door this work exists to remove.
+    lifecycleRoster: ((cards: any[]) => {
+      const roster = cards.map((card) => ({
+        canonical_name: card.canonical_name,
+        aliases: ((card as any).aliases || []) as string[],
+      }))
+      // …plus the AUTHORED SEED CAST, which has no card until the codex mints
+      // one the first time someone acts in prose. Without this, a death on the
+      // opening turns could not even name its victim: the roster was empty and
+      // the pass abstained with `no_candidates`.
+      const seen = new Set(roster.map((r) => entityGraphService.normalizeEntityName(r.canonical_name)))
+      for (const seed of (session.seed_cast_snapshot || []) as any[]) {
+        const name = String(seed?.name || '').trim()
+        const key = name ? entityGraphService.normalizeEntityName(name) : ''
+        if (!key || seen.has(key)) continue
+        seen.add(key)
+        roster.push({ canonical_name: name, aliases: (seed?.aliases || []) as string[] })
+      }
+      return roster
+    })(await lifecycleRosterPromise),
     mentionedEntityIds,
     loreTexts,
     memoryTexts,

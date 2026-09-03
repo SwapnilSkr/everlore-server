@@ -586,6 +586,12 @@ function codexSocketPayload(codex: any[]) {
     relationship_state: c.relationship_state || null,
     mention_count: c.mention_count,
     is_protagonist: c.is_protagonist === true,
+    // Dead-or-alive travels with the card, WITH the sentence it was decided
+    // from. A death nobody can see is a death nobody catches — the last wrong
+    // one hid for thirty turns behind a room that just read empty.
+    life_state: c.life_state || 'alive',
+    life_state_evidence: c.life_state_evidence || null,
+    life_state_source: c.life_state_source || null,
   }))
 }
 

@@ -663,10 +663,17 @@ export const instanceService = {
       current_time_anchor: instance.current_time_anchor || null,
       active_timeline_id: instance.active_timeline_id || 'main',
       default_calendar_id: instance.default_calendar_id ? idString(instance.default_calendar_id) : null,
+      // `idString(null)` returns the STRING "null", and a provisional anchor has
+      // no entity_id by design. That string is truthy, so the packet's
+      // normaliser tried to parse it as an ObjectId, threw, and discarded the
+      // whole anchor — silently losing the cursor the authored opening had just
+      // established. Keep null as null.
       current_location: instance.current_location
         ? {
             ...instance.current_location,
-            entity_id: idString(instance.current_location.entity_id),
+            entity_id: instance.current_location.entity_id
+              ? idString(instance.current_location.entity_id)
+              : null,
           }
         : null,
       seed_prompt: template.seed_prompt,
@@ -684,6 +691,13 @@ export const instanceService = {
       max_context_memories: template.max_context_memories,
       max_lore_results: template.max_lore_results,
       template_id: idString(template._id),
+      // The authored cast. These people have no `characters` row until the codex
+      // mints one from prose, so without this the lifecycle pass cannot name a
+      // victim on a world's opening turns.
+      seed_cast_snapshot: (instance.seed_cast_snapshot || []).map((character) => ({
+        name: character.name,
+        aliases: character.aliases || [],
+      })),
     }
 
     await redis.set(`session:${iidStr}`, JSON.stringify(session), 'EX', 3600)

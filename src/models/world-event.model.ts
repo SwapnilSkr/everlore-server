@@ -99,13 +99,29 @@ export interface PlayerInteractionSignalDoc {
 }
 
 /** Explicit, witnessed change to an NPC's existence state. Names are ledgered
- * alongside ids because codex rebuilds mint fresh ids. */
+ * alongside ids because codex rebuilds mint fresh ids.
+ *
+ * `state` runs BOTH WAYS. It used to be the literal 'deceased', which meant the
+ * ledger had no way to write down that someone came back — and stories bring
+ * people back constantly. A body turns out to be someone else's, a wound was
+ * survivable, the player writes *Marn coughs and sits up*. Because the record
+ * could only say "died", a mistake was permanent, and because a mistake was
+ * permanent the detector had to be so cautious it caught almost nothing. The
+ * one-way door and the missed deaths were the same defect.
+ *
+ * `source` says who established it, because they do not carry equal weight:
+ *
+ *   'player'    the player authored it inside *asterisks*. Canon. Never
+ *               second-guessed — it is their story and their pen.
+ *   'narration' the narrator wrote it. Must survive the citation checks.
+ */
 export interface CharacterLifecycleDeltaDoc {
   name: string
   name_normalized: string
-  state: 'deceased'
+  state: 'deceased' | 'alive'
   evidence: string
   sequence: number
+  source?: 'player' | 'narration'
 }
 
 export interface EventDataDoc {

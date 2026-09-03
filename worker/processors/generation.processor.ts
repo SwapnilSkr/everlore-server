@@ -83,7 +83,7 @@ import {
   extractPlayerInteractionSignals,
 } from '../lib/player-interaction-signal'
 import type { PlayerInteractionSignalDoc } from '../../src/models/world-event.model'
-import { extractCharacterDeaths } from '../lib/character-lifecycle-extractor'
+import { extractLifecycleChanges } from '../lib/character-lifecycle-extractor'
 import { createExtractorRawSink } from '../lib/extractor-raw'
 
 function escapeRegExp(value: string): string {
@@ -1315,9 +1315,17 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     ],
     onRaw: extractorRaw.capture('scene_endpoint'),
   })
-  const deathExtractionPromise = extractCharacterDeaths({
+  const deathExtractionPromise = extractLifecycleChanges({
     prose: rawNarrative,
-    candidates: characterCodex as any[],
+    // What the player authored inside *asterisks* this turn. It is canon, and
+    // it is the only thing that can bring someone back in the same breath the
+    // prose lays them down — the story does not get a veto over the player's
+    // own pen.
+    playerNarration: parsedPlayerInput.narrationFacts,
+    // Everyone this save knows, living and dead — NOT the narrator's ranked
+    // pool, which is empty on opening turns and never contains the dead.
+    candidates: packet.lifecycleRoster || [],
+    deceasedNames: packet.deceasedCharacterNames || [],
     sequence: nextSequence,
     onRaw: extractorRaw.capture('character_deaths'),
   })
@@ -3823,6 +3831,23 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           })),
         }),
       )
+      // RE-APPLY the turn's lifecycle deltas now that the codex has minted this
+      // turn's cards.
+      //
+      // Cards are created LAZILY, by this projection, when someone first acts in
+      // prose — the authored seed cast sits in the template snapshot until then.
+      // So a death on an early turn was written to the ledger and then applied
+      // to a `characters` row that did not exist yet, and quietly matched
+      // nothing. `applyLifecycleDeltas` is a `$set` keyed on the name, so running
+      // it twice costs one no-op update and closes the window.
+      const lifecycleForTurn = (event.data as any)?.character_lifecycle_deltas
+      if (Array.isArray(lifecycleForTurn) && lifecycleForTurn.length) {
+        await characterCodexService
+          .applyLifecycleDeltas({ instanceId, deltas: lifecycleForTurn })
+          .catch((err) => {
+            log.warn('character.lifecycle_reprojection_failed', { instanceId, error: (err as Error).message })
+          })
+      }
       await mongoColl.events().updateOne(
         { _id: event._id },
         {

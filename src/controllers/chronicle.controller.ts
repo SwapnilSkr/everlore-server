@@ -546,6 +546,7 @@ export const chronicleController = {
       mutable_state?: string[]
       disposition_to_player?: string
       hidden_thought?: string
+      life_state?: 'alive' | 'deceased'
     }
     user: AuthUser | null
   }) => {
@@ -593,6 +594,12 @@ export const chronicleController = {
         hidden_thought: c.hidden_thought,
         mention_count: c.mention_count,
         is_protagonist: c.is_protagonist === true,
+        // Dead-or-alive travels with the card, WITH the sentence it was decided
+        // from. A death nobody can see is a death nobody catches — the last wrong
+        // one hid for thirty turns behind a room that just read empty.
+        life_state: c.life_state || 'alive',
+        life_state_evidence: c.life_state_evidence || null,
+        life_state_source: c.life_state_source || null,
       },
     }
   },
@@ -852,6 +859,12 @@ export const chronicleController = {
             relationship_state: c.relationship_state || null,
             mention_count: c.mention_count,
             is_protagonist: c.is_protagonist === true,
+            // Dead-or-alive travels with the card, WITH the sentence it was decided
+            // from. A death nobody can see is a death nobody catches — the last wrong
+            // one hid for thirty turns behind a room that just read empty.
+            life_state: c.life_state || 'alive',
+            life_state_evidence: c.life_state_evidence || null,
+            life_state_source: c.life_state_source || null,
           })),
         }),
       )
@@ -892,6 +905,12 @@ export const chronicleController = {
         hidden_thought: tracked.hidden_thought,
         mention_count: tracked.mention_count,
         is_protagonist: tracked.is_protagonist === true,
+        // Dead-or-alive travels with the card, WITH the sentence it was decided
+        // from. A death nobody can see is a death nobody catches — the last wrong
+        // one hid for thirty turns behind a room that just read empty.
+        life_state: tracked.life_state || 'alive',
+        life_state_evidence: tracked.life_state_evidence || null,
+        life_state_source: tracked.life_state_source || null,
       },
       relation_asserted: relationAssertion
         ? { kind: relationAssertion.kind, label: relationAssertion.label ?? null, to: relationAssertion.to }

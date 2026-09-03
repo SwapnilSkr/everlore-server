@@ -11,7 +11,7 @@
  * alive and speaking, and one of them buried a man on a sentence about a
  * different person entirely.
  */
-import { verifyDeathCitation } from '../worker/lib/character-lifecycle-extractor'
+import { verifyDeathCitation, findAuthoredCitation } from '../worker/lib/character-lifecycle-extractor'
 
 let pass = 0
 let fail = 0
@@ -231,6 +231,74 @@ check(
     prose: 'Maker froze, his eyes locked on Bryn\u2019s body slumped against the crates.',
   }),
   false,
+)
+
+console.log('\nthe player\u2019s pen, and taking a death back:')
+// The player authored it inside *asterisks*, so there is no witness to
+// cross-examine — they are the author. The excerpt must be their own words and
+// must name the person; that is the whole test. A subject-predicate check here
+// would refuse "*the knife goes into Marn's throat*", which is the player
+// plainly killing someone.
+check(
+  'the player writes someone dead, in their own words',
+  findAuthoredCitation({
+    name: 'Marn',
+    aliases: [],
+    evidence: "the knife goes into Marn's throat",
+    text: "the knife goes into Marn's throat",
+  }),
+  "the knife goes into Marn's throat",
+)
+check(
+  'the player writes someone back up off the floor',
+  findAuthoredCitation({
+    name: 'Marn',
+    aliases: [],
+    evidence: 'Marn coughs and sits up.',
+    text: 'Marn coughs and sits up.',
+  }),
+  'Marn coughs and sits up.',
+)
+// Even the player's pen has to be POINTED at someone. Words that name nobody
+// cannot move anybody's state, or the wrong person gets buried.
+check(
+  'words that name nobody move nobody',
+  findAuthoredCitation({ name: 'Marn', aliases: [], evidence: 'the knife goes in', text: 'the knife goes in' }),
+  null,
+)
+// …and it has to be what they actually wrote, not what a model remembered.
+check(
+  'a sentence the player never wrote is not their pen',
+  findAuthoredCitation({
+    name: 'Marn',
+    aliases: [],
+    evidence: 'Marn is alive.',
+    text: 'I look at the water where he went under.',
+  }),
+  null,
+)
+// A REVIVAL from narration takes the lenient path too. Bringing someone back
+// only restores them, so it is not held to the bar that burying them is —
+// the two mistakes do not cost the same.
+check(
+  'the story reveals the body was somebody else',
+  findAuthoredCitation({
+    name: 'Marn',
+    aliases: [],
+    evidence: "The dead man in the coat was not Marn.",
+    text: "They turned the body over. The dead man in the coat was not Marn.",
+  }),
+  'The dead man in the coat was not Marn.',
+)
+check(
+  'a wound that turns out to be survivable',
+  findAuthoredCitation({
+    name: 'Deshi',
+    aliases: [],
+    evidence: 'Deshi was still breathing when they pulled him out.',
+    text: 'Deshi was still breathing when they pulled him out.',
+  }),
+  'Deshi was still breathing when they pulled him out.',
 )
 
 console.log(`\ncharacter lifecycle audit: ${pass} passed, ${fail} failed`)
