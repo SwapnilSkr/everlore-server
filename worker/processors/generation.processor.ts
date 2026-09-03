@@ -47,8 +47,7 @@ import {
   isSafeWitnessLocationCandidate,
   validatedContainmentHint,
   detectNarratedMovement,
-  locationNamesCompatible,
-} from '../lib/movement-signal'
+  locationNamesCompatible, locationCandidateKey} from '../lib/movement-signal'
 import {
   evaluateLocationCitation,
   citationAdmitsLocation,
@@ -1595,7 +1594,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   let placePromoted = !promotionCandidate
   let promotionReason = 'none'
   if (promotionCandidate) {
-    const candidateKey = normalizeEntityName(promotionCandidate)
+    const candidateKey = locationCandidateKey(promotionCandidate)
     const priorAccrual = candidateKey
       ? await mongoColl
           .placeCandidates()
@@ -1635,7 +1634,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     // and never earn the map, because `exits` stayed at zero forever.
     const departedName = viewpointMoved ? currentLocation?.name || null : null
     if (departedName && !locationNamesCompatible(departedName, promotionCandidate)) {
-      const departedKey = normalizeEntityName(departedName)
+      const departedKey = locationCandidateKey(departedName)
       if (departedKey) {
         await mongoColl
           .placeCandidates()

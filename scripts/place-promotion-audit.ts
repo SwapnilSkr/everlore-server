@@ -6,6 +6,7 @@
  * canal are the places the old vocabulary gate got wrong in the other direction.
  */
 import { classifyPlaceRelation, decidePlacePromotion, type PlaceAccrual } from '../worker/lib/place-promotion'
+import { locationCandidateKey } from '../worker/lib/movement-signal'
 
 let pass = 0
 let fail = 0
@@ -115,6 +116,27 @@ console.log('\na cursor move is the arrival the preposition scan misses:')
   check('furniture named six times still never promotes', promote('the old bench', none, bench, 13, {}).promote, false)
   check('...and a departure alone does not promote it', promote('the old bench', none, bench, 13, { departed: true }).promote, false)
 }
+
+// The narrator alternates "The Counting House" and "Counting House" freely, and
+// keying accrual on the raw name split one room into two candidates that each
+// counted half the visits — so a room plainly entered and left twice could
+// never reach `entered_and_left`. Seen live on the first world created after
+// the authored opening began seeding the cursor.
+check(
+  'an article does not create a second candidate',
+  locationCandidateKey('The Counting House') === locationCandidateKey('Counting House'),
+  true,
+)
+check(
+  'nor does a possessive',
+  locationCandidateKey("my brother's room") === locationCandidateKey("brother's room"),
+  true,
+)
+check(
+  'but two different rooms stay apart',
+  locationCandidateKey('the tide-stair') === locationCandidateKey('the terminal room'),
+  false,
+)
 
 console.log(`\nplace promotion audit: ${fail === 0 ? 'ALL GREEN' : `${fail} FAILED`} (${pass} passed)`)
 process.exit(fail === 0 ? 0 : 1)

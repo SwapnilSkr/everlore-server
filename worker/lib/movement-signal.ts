@@ -469,13 +469,32 @@ export function resolvePossessiveRoomName(
  * AGREED: "terminal table" and "terminal room" share a token and compare as
  * compatible, so a piece of furniture read as a corroborated second namer.
  */
+/**
+ * The key a place accrues its entries and exits under.
+ *
+ * Article-stripped, because the narrator alternates freely — "The Counting
+ * House" on the turn you arrive, "Counting House" on the turn you come back —
+ * and keying on the raw name split one room into two candidates that each
+ * counted half the visits:
+ *
+ *   "The Counting House"   entries 0  exits 1
+ *   "Counting House"       entries 1  exits 0
+ *
+ * Neither can reach `entered_and_left`, so a room you have plainly entered and
+ * left twice never earns the map. This is the same stripping
+ * {@link sameLocationLabel} already does to decide two labels are one place;
+ * the accrual just was not using it.
+ */
+export function locationCandidateKey(value: string | null | undefined): string {
+  return locationComparable(String(value || ''))
+    .replace(/^(?:the|a|an|my|our|his|her|their|its)\s+/, '')
+    .replace(/[^\p{L}\p{N} ]+/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export function sameLocationLabel(a: string | null | undefined, b: string | null | undefined): boolean {
-  const strip = (value: string) =>
-    locationComparable(value)
-      .replace(/^(?:the|a|an|my|our|his|her|their|its)\s+/, '')
-      .replace(/[^\p{L}\p{N} ]+/gu, '')
-      .replace(/\s+/g, ' ')
-      .trim()
+  const strip = locationCandidateKey
   const [x, y] = [strip(String(a || '')), strip(String(b || ''))]
   return !!x && x === y
 }

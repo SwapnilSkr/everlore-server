@@ -2027,6 +2027,40 @@ export const entityGraphService = {
     // while same-building returns still resolve. Only when we have a container to
     // anchor the area on — a parentless top-level placement keeps the lenient
     // world-root match (and the unique index already blocks a true top-level dupe).
+    // A PLACE IS NEVER ITS OWN CHILD.
+    //
+    // Walk out of a room into the building that contains it and the inferred
+    // parent is the cursor's parent — which, for "back up to the Counting House
+    // from the tide-stair", IS the Counting House. The area-scoped dedup below
+    // then searches for a place of that name INSIDE that area, does not count
+    // the area node itself, finds nothing, and mints a second Counting House
+    // parented to the first:
+    //
+    //   Counting House   parent=null   seq 4
+    //   Counting House   parent=^^^^   seq 7
+    //
+    // Two nodes for one room in the player's atlas. This is the shape
+    // `repair:duplicate-places` was written to clean up after — same name,
+    // differing only by parent — and the repair existed while the cause did
+    // not. Returning to your own container is a RETURN, not a descent.
+    if (parentId) {
+      const container = (await entities().findOne(
+        { _id: parentId, instance_id: iid, type: 'location', status: { $ne: 'archived' } },
+        { projection: { canonical_name: 1, name_normalized: 1 } },
+      )) as EntityDoc | null
+      if (container && container.name_normalized === normalized) {
+        await entities().updateOne(
+          { _id: container._id },
+          { $inc: { mention_count: 1 }, $max: { last_seen_sequence: params.sequence }, $set: { updated_at: new Date() } },
+        )
+        return {
+          entity_id: container._id,
+          name: container.canonical_name,
+          name_normalized: container.name_normalized,
+        }
+      }
+    }
+
     const areaScope = parentId ? { areaId: await resolveAreaId(iid, parentId) } : undefined
 
     return this.resolveLocationAnchor({

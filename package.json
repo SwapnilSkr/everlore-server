@@ -82,6 +82,7 @@
     "audit:location-decision": "bun run scripts/location-decision-audit.ts",
     "corpus:cast-ab": "bun run scripts/corpus-cast-ab.ts",
     "corpus:cast-extract": "bun run scripts/corpus-cast-extract.ts",
+    "audit:opening-place": "bun run scripts/opening-place-audit.ts",
     "audit:character-lifecycle": "bun run scripts/character-lifecycle-audit.ts",
     "repair:false-deaths": "bun run scripts/repair-false-deaths.ts"
   },

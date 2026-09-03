@@ -3,6 +3,7 @@ import { mongoColl } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
 import { deletePineconeNamespace } from './pinecone-cleanup.service'
 import { characterCodexService } from './character-codex.service'
+import { extractOpeningPlace } from './opening-place.service'
 import { kinshipGraphService } from './kinship-graph.service'
 import { isDefaultCoverUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
@@ -279,13 +280,19 @@ export const deletionService = {
 
     // 4. Re-seed the opening line so the chat reopens with the greeting.
     if (template.opening_line && template.opening_line.trim().length > 0) {
-      const openingTimeAnchor = await timeService.anchorForNextEvent({
-        instanceId: iidStr,
-        templateId: idString(template._id),
-        previous: initialTimeAnchor,
-        sequence: 1,
-        eventTimeLabel: 'Opening scene',
-      })
+      // A reset re-opens the world, so it must re-read the authored opening's
+      // place too. This block and the one in instance.service are the same
+      // ceremony written twice; keep them in step.
+      const [openingTimeAnchor, openingPlace] = await Promise.all([
+        timeService.anchorForNextEvent({
+          instanceId: iidStr,
+          templateId: idString(template._id),
+          previous: initialTimeAnchor,
+          sequence: 1,
+          eventTimeLabel: 'Opening scene',
+        }),
+        extractOpeningPlace({ openingLine: template.opening_line.trim(), instanceId: iidStr }),
+      ])
       await events().insertOne({
         _id: new ObjectId(),
         instance_id: iid,
@@ -305,6 +312,7 @@ export const deletionService = {
         edit_history: [],
         scene_tag: 'dialogue',
         time_anchor: openingTimeAnchor,
+        ...(openingPlace ? { location_anchor: openingPlace } : {}),
         created_at: new Date(),
       } as unknown as WorldEventDoc)
       await worldInstances().updateOne(
@@ -314,7 +322,7 @@ export const deletionService = {
             current_time_anchor: openingTimeAnchor,
             active_timeline_id: openingTimeAnchor.timeline_id,
             default_calendar_id: openingTimeAnchor.story_calendar?.calendar_id,
-            current_location: null,
+            current_location: openingPlace,
             'meta.total_events': 1,
           },
         },

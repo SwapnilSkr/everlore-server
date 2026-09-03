@@ -23,6 +23,7 @@ const PURE_AUDITS = [
   'audit:location-evidence',
   'audit:location-decision',
   'audit:character-lifecycle',
+  'audit:opening-place',
   'audit:time-evidence',
   'audit:durability',
   'audit:place-promotion',

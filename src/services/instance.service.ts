@@ -8,6 +8,7 @@ import { getRedisClient } from '../config/redis'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { characterCodexService } from './character-codex.service'
+import { extractOpeningPlace } from './opening-place.service'
 import { kinshipGraphService } from './kinship-graph.service'
 import { personaService } from './persona.service'
 import { timeService } from './time.service'
@@ -175,13 +176,20 @@ export const instanceService = {
     // so the chat opens with the character speaking instead of a blank screen.
     if (template.opening_line && template.opening_line.trim().length > 0) {
       const greeting = template.opening_line.trim()
-      const openingTimeAnchor = await timeService.anchorForNextEvent({
-        instanceId: idString(_id),
-        templateId,
-        previous: initialTimeAnchor,
-        sequence: 1,
-        eventTimeLabel: 'Opening scene',
-      })
+      // The authored opening says where the player is standing. Read it, so the
+      // FIRST generated turn arbitrates against a real cursor instead of taking
+      // the loose first-anchor branch and adopting whatever the witness names.
+      // See opening-place.service for the live case this fixes.
+      const [openingTimeAnchor, openingPlace] = await Promise.all([
+        timeService.anchorForNextEvent({
+          instanceId: idString(_id),
+          templateId,
+          previous: initialTimeAnchor,
+          sequence: 1,
+          eventTimeLabel: 'Opening scene',
+        }),
+        extractOpeningPlace({ openingLine: greeting, instanceId: idString(_id) }),
+      ])
       await events().insertOne({
         _id: new ObjectId(),
         instance_id: _id,
@@ -201,6 +209,7 @@ export const instanceService = {
         edit_history: [],
         scene_tag: 'dialogue',
         time_anchor: openingTimeAnchor,
+        ...(openingPlace ? { location_anchor: openingPlace } : {}),
         created_at: new Date(),
       } as unknown as WorldEventDoc)
       await worldInstances().updateOne(
@@ -208,6 +217,7 @@ export const instanceService = {
         {
           $set: {
             current_time_anchor: openingTimeAnchor,
+            ...(openingPlace ? { current_location: openingPlace } : {}),
             active_timeline_id: openingTimeAnchor.timeline_id,
             default_calendar_id: openingTimeAnchor.story_calendar?.calendar_id,
             'meta.total_events': 1,
@@ -215,6 +225,7 @@ export const instanceService = {
         },
       )
       instance.current_time_anchor = openingTimeAnchor
+      if (openingPlace) (instance as any).current_location = openingPlace
       instance.active_timeline_id = openingTimeAnchor.timeline_id
       instance.default_calendar_id = openingTimeAnchor.story_calendar?.calendar_id
       instance.meta.total_events = 1
