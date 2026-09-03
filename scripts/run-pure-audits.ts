@@ -7,6 +7,7 @@ const PURE_AUDITS = [
   'audit:choice-grounding',
   'audit:movement',
   'audit:narrated-arrival',
+  'audit:thread-closure',
   'audit:narrator-harness',
   'audit:codex-promotion',
   'audit:identity-promotion',

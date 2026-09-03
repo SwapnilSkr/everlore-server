@@ -63,6 +63,7 @@
     "repair:split-identities": "bun run scripts/repair-split-identities.ts",
     "audit:replay-edit": "bun run scripts/replay-edit-audit.ts",
     "audit:memory-links": "bun run scripts/memory-links-audit.ts",
+    "audit:thread-closure": "bun run scripts/thread-closure-audit.ts",
     "audit:carding-routing": "bun run scripts/carding-routing-audit.ts",
     "audit:entity-adjudication": "bun run scripts/entity-adjudication-audit.ts",
     "merge:character": "bun run scripts/merge-character-cards.ts",
