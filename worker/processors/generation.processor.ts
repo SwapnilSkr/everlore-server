@@ -34,6 +34,7 @@ import {
   mergePresenceCandidates,
   citationAdmitsToPresent,
   showsParticipationInPassage,
+  narrationOnly,
 } from '../lib/scene-endpoint-adjudicator'
 import { characterCodexService, type RelationAssertion } from '../../src/services/character-codex.service'
 import { kinshipGraphService } from '../../src/services/kinship-graph.service'
@@ -1883,6 +1884,31 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     ? endpointAdjudication.present.map((entry) => entry.name)
     : []
   const endpointPresenceKeys = new Set(endpointPresenceNames.map((name) => presenceKeyOf(name)).filter(Boolean))
+  // A FAILED CITATION IS AN ANSWER, NOT A HINT.
+  //
+  // The endpoint judge already evaluates every candidate it reports against the
+  // (a)(b)(c) stack, and those verdicts were documented as "advisory... never
+  // gates" — they were written to a debug collection and otherwise discarded.
+  // So on a live turn the judge recorded
+  //
+  //   { name: "Roland", evidence: "Roland, huh?", a: true, b: true, c: false }
+  //
+  // — a dockside thug repeating the name of a man half a mile away at the city
+  // gate — and Roland was seated at the player's table for the next eight
+  // turns, through an alley, a locked door and a private back room.
+  //
+  // A rejection now blocks ADMISSION. It deliberately does not evict anybody:
+  // carry-forward stays free, because a quiet character who does nothing this
+  // turn should not flicker out. It only means a name cannot ENTER a scene on
+  // evidence its own judge just rejected.
+  const endpointRefusedKeys = new Set(
+    endpointAdjudication.available && endpointAdjudication.playerViewpointAtEnd
+      ? endpointAdjudication.citationVerdicts
+          .filter((verdict) => !(verdict.a && verdict.b && verdict.c))
+          .map((verdict) => presenceKeyOf(verdict.name))
+          .filter(Boolean)
+      : [],
+  )
   if (endpointAdjudication.available) {
     const witnessOnlyNames = (parsed.present_characters || []).filter((name) => !endpointPresenceKeys.has(presenceKeyOf(name)))
     const endpointOnlyNames = endpointPresenceNames.filter((name) =>
@@ -2124,6 +2150,31 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
 
   const blockedUngroundedPresence: string[] = []
   const heldUncorroboratedPresence: string[] = []
+  /**
+   * Does the NARRATION show this person taking part in this passage?
+   *
+   * Quoted speech is removed first. Somebody saying a name out loud is not that
+   * person walking into the room, and the whole reason Roland was seated at a
+   * table he had never been near is that this test ran over the raw passage
+   * with the dialogue still in it. The death extractor has stripped quotes
+   * since it was written; presence never did.
+   */
+  const showsSceneParticipation = (label: string): boolean => {
+    const narration = narrationOnly(rawNarrative)
+    const card = (characterCodex as any[]).find(
+      (c) =>
+        normalizeEntityName(c?.canonical_name || '') === normalizeEntityName(label) ||
+        (c?.aliases || []).some((a: string) => normalizeEntityName(a) === normalizeEntityName(label)),
+    )
+    const surfaces = card
+      ? ([card.canonical_name, ...(card.aliases || [])].filter(Boolean) as string[])
+      : [label]
+    return surfaces.some(
+      (surface) =>
+        showsParticipationInPassage(surface, narration) ||
+        hasSceneParticipationGrammar(surface, narration, { evidence: 'action' }),
+    )
+  }
   parsed.present_characters = (() => {
     // Phase 1: on a continuation, new admits come from the endpoint judge we
     // already pay for. Prior cast still carries (quiet people stay). Scene-break
@@ -2160,6 +2211,26 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       if (explicitTravelParty && priorPartyKeys.has(key) && !explicitTravelParty.has(key)) continue
       const familyLabel = !presenceIsKnown(name) ? familyPresenceLabel(name) : null
       if (!presenceIsKnown(name) && isGenericLabel(name) && !familyLabel) continue
+      // ONE GATE, FOR EVERYONE.
+      //
+      // The evidence requirement below used to apply only to names with no
+      // codex card. A carded character therefore entered the scene on nothing
+      // but a metadata field — which is exactly the failure the scene-state
+      // layer was hardened against a layer down, while THIS list, the one
+      // written to the event and rendered in the app, kept letting them in.
+      //
+      // Carrying somebody forward is still free: a quiet character does not
+      // flicker out. Only ARRIVING needs a reason, and it is the same reason
+      // for the palace guard and for the king.
+      const carried = priorPresenceKeys.has(key) || partyByKey.has(key)
+      if (!carried && endpointRefusedKeys.has(key)) {
+        heldUncorroboratedPresence.push(name)
+        continue
+      }
+      if (!carried && !familyLabel && !endpointPresenceKeys.has(key) && !showsSceneParticipation(name)) {
+        heldUncorroboratedPresence.push(name)
+        continue
+      }
       // An unknown participant is useful immediately as a witnessed scene fact,
       // but only when prose independently shows person-specific grammar. This
       // keeps automatic discovery (speech/action/body-language) while holding a
@@ -2263,22 +2334,26 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       // running it over a whole passage is how "Mara, my sister, had been gone
       // for years" corroborated Mara's arrival. openingCast keeps the full
       // grammar — the authored seed has no judge to delegate identity to.
-      if (showsParticipationInPassage(phrase, rawNarrative)) return true
-      if (hasSceneParticipationGrammar(phrase, rawNarrative, { evidence: 'action' })) return true
+      if (showsParticipationInPassage(phrase, narrationOnly(rawNarrative))) return true
+      if (hasSceneParticipationGrammar(phrase, narrationOnly(rawNarrative), { evidence: 'action' })) return true
       // Prose names a titled cast member bare ("Ardren" for Lord Ardren), so
       // test the distinctive tokens too — still against scene-participation
       // grammar, never against a bare occurrence.
       for (const token of phrase.split(/\s+/)) {
         const normalized = normalizeEntityName(token)
         if (normalized.length < 3 || PRESENCE_TITLE_WORDS.has(normalized)) continue
-        if (showsParticipationInPassage(token, rawNarrative)) return true
-        if (hasSceneParticipationGrammar(token, rawNarrative, { evidence: 'action' })) return true
+        if (showsParticipationInPassage(token, narrationOnly(rawNarrative))) return true
+        if (hasSceneParticipationGrammar(token, narrationOnly(rawNarrative), { evidence: 'action' })) return true
       }
       return false
     }
     for (const name of parsed.present_characters || []) {
       const presenceKey = normalizeEntityName(name)
       if (!presenceKey || corroborated.has(presenceKey)) continue
+      // The judge already read this passage and rejected this person's own
+      // citation. A weaker scan running afterwards must not overturn it — that
+      // ordering is how a verified "no" became a "yes" for eight turns.
+      if (endpointRefusedKeys.has(presenceKeyOf(name)) && !priorPresenceKeys.has(presenceKeyOf(name))) continue
       const card = (characterCodex as any[]).find(
         (c) =>
           normalizeEntityName(c?.canonical_name || '') === presenceKey ||

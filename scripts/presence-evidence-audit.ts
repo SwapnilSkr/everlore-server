@@ -14,6 +14,7 @@ import {
   citationAdmitsToPresent,
   mergePresenceCandidates,
   showsParticipationInPassage,
+  narrationOnly,
 } from '../worker/lib/scene-endpoint-adjudicator'
 
 let pass = 0
@@ -452,6 +453,52 @@ console.log('\na citation drawn from inside a quotation is reported speech:')
       }),
     ),
     true,
+  )
+}
+
+// ─── Aurelius Valemont, live save 6a993adf, turn 77 ───────────────────────────
+// A dockside enforcer repeats the name of the captain at the city gate, half a
+// mile away. The endpoint judge evaluated it and recorded a=true b=true c=FALSE
+// — and the verdict was documented as advisory, so a weaker scan running after
+// it admitted him. He sat at the player's table for the next eight turns,
+// through an alley, a locked door and a private back room.
+{
+  const turn77 =
+    '*The tall man\u2019s smile vanished. His partner\u2019s hand tightened on the knife hilt.*\n' +
+    '"Roland, huh?" *the taller one said.* "The captain of the gate. You\u2019re a man with interesting friends, then."'
+  check(
+    'a name spoken ABOUT an absent person is not that person acting',
+    showsParticipationInPassage('Roland', narrationOnly(turn77)),
+    false,
+  )
+  check(
+    '...and the man who actually spoke still is',
+    showsParticipationInPassage('the taller one', narrationOnly(turn77)),
+    true,
+  )
+  // Turn 10 of the same save: the King had been seated in the council chamber
+  // since turn 4, discussed but absent, and this is the turn he walks in.
+  // The possessive opening ("Aldric's entrance cut the tension") is not Aldric
+  // as a subject, and on its own it is correctly refused. The turn admits him
+  // on the sentence where he acts, which is how the passage is actually read.
+  check(
+    'an entrance the narration shows is admitted',
+    showsParticipationInPassage(
+      'Aldric',
+      narrationOnly(
+        '*Aldric\u2019s entrance cut the tension like a blade through a knotted rope.* ' +
+          'The king\u2019s presence drew every eye. *Aldric looked at Isolde, then at his son.*',
+      ),
+    ),
+    true,
+  )
+  check(
+    'being talked about is not being in the room',
+    showsParticipationInPassage(
+      'the king',
+      narrationOnly('"The king gave you a covert assignment without informing his council," *she said.*'),
+    ),
+    false,
   )
 }
 
