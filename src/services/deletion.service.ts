@@ -115,6 +115,8 @@ export const deletionService = {
         // The outbox is QUEUED WORK, not a log: a row left behind is a job still
         // waiting to run against a save that no longer exists.
         mongoColl.postProcessOutbox().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.projectionCheckpoints().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.projectionCheckpointChunks().deleteMany({ instance_id: { $in: instanceIds } }),
       ])
     }
 
@@ -203,6 +205,8 @@ export const deletionService = {
     await mongoColl.signalLedger().deleteMany({ instance_id: iid })
     await mongoColl.relationCandidates().deleteMany({ instance_id: iid })
     await mongoColl.postProcessOutbox().deleteMany({ instance_id: iid })
+    await mongoColl.projectionCheckpoints().deleteMany({ instance_id: iid })
+    await mongoColl.projectionCheckpointChunks().deleteMany({ instance_id: iid })
 
     // 2. Restore world state / flags / scene from template defaults.
     const worldState: Record<string, number> = {}
@@ -404,6 +408,8 @@ export const deletionService = {
     await mongoColl.signalLedger().deleteMany({ instance_id: iid })
     await mongoColl.relationCandidates().deleteMany({ instance_id: iid })
     await mongoColl.postProcessOutbox().deleteMany({ instance_id: iid })
+    await mongoColl.projectionCheckpoints().deleteMany({ instance_id: iid })
+    await mongoColl.projectionCheckpointChunks().deleteMany({ instance_id: iid })
 
     // Delete the instance
     await worldInstances().deleteOne({ _id: iid })
