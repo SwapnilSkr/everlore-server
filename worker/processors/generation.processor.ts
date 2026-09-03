@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { getRedisClient } from '../../src/config/redis'
-import { callLLMStreamWithFallback, AI_MODELS, narrationTemperature } from '../../src/ai'
+import { callLLMStreamWithFallback, AI_MODELS, narrationTemperature, runWithLLMUsage, isLLMUsageActive, snapshotLLMUsage } from '../../src/ai'
 import { buildContextPacket } from '../../src/services/context-packet.service'
 import { buildPrompt } from '../../src/utils/prompt-builder'
 import { lengthMaxTokens } from '../../src/utils/narrative-styles'
@@ -29,7 +29,12 @@ import {
   entityAdjudicationCandidates,
   filterAdjudicatedPresence,
 } from '../lib/entity-adjudicator'
-import { adjudicateSceneEndpoint } from '../lib/scene-endpoint-adjudicator'
+import {
+  adjudicateSceneEndpoint,
+  mergePresenceCandidates,
+  citationAdmitsToPresent,
+  showsParticipationInPassage,
+} from '../lib/scene-endpoint-adjudicator'
 import { characterCodexService, type RelationAssertion } from '../../src/services/character-codex.service'
 import { kinshipGraphService } from '../../src/services/kinship-graph.service'
 import { entityGraphService, normalizeEntityName } from '../../src/services/entity-graph.service'
@@ -44,6 +49,16 @@ import {
   detectNarratedMovement,
   locationNamesCompatible,
 } from '../lib/movement-signal'
+import {
+  evaluateLocationCitation,
+  citationAdmitsLocation,
+  passageSituatesViewpoint,
+  extractStatedPosition,
+} from '../lib/location-citation'
+import { evaluateTimeCitation, citationAdmitsTimeSkip } from '../lib/time-citation'
+import { decidePartyDecay, type DriftState } from '../lib/cursor-drift'
+import { decideLocation } from '../lib/location-decision'
+import { decidePlacePromotion, classifyPlaceRelation } from '../lib/place-promotion'
 import { auditChoices } from '../lib/choice-grounding-audit'
 import { classifyChoiceGrounding, computeGroundingContext } from '../lib/choice-grounding'
 import { detectProjectionAnomalies } from '../lib/projection-anomaly-detector'
@@ -70,6 +85,7 @@ import {
 } from '../lib/player-interaction-signal'
 import type { PlayerInteractionSignalDoc } from '../../src/models/world-event.model'
 import { extractCharacterDeaths } from '../lib/character-lifecycle-extractor'
+import { createExtractorRawSink } from '../lib/extractor-raw'
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -481,11 +497,14 @@ async function fenceOnPriorProjection(params: {
   }
 }
 
-export async function generationProcessor(job: Job) {
+export async function generationProcessor(job: Job): Promise<{ eventId: string; sequence: number } | void> {
   // Replay turns reuse the generation queue/worker but follow a distinct path:
   // they stream an alternative for an existing event instead of appending one.
   if (job.data?.mode === 'replay') {
     return replayProcessor(job)
+  }
+  if (!isLLMUsageActive()) {
+    return runWithLLMUsage(() => generationProcessor(job))
   }
 
   const {
@@ -618,6 +637,22 @@ export async function generationProcessor(job: Job) {
   const explicitPhysicalDestination = confirmedWorldAction
     ? null
     : extractExplicitPhysicalDestination(parsedPlayerInput.raw)
+  // THE LOOP THIS BREAKS. The narrator is told `CURRENT PLACE: <cursor>` every
+  // turn. When the cursor is stale and the player writes their own movement, the
+  // narrator follows the cursor and writes them back where they were — and that
+  // prose then re-confirms the stale cursor to every post-stream extractor. No
+  // extractor improvement can break it: by the time they run, the fiction has
+  // already been written the wrong way.
+  //
+  // The existing guard required the destination to match PHYSICAL_DESTINATION_WORD,
+  // a place vocabulary that — unlike the other place vocabulary in the same file —
+  // does not contain "bridge". So "I walk to the canal bridge" produced nothing,
+  // and a world's map sat in a bar for a dozen turns because of a missing word in
+  // one of two lists that disagree. This quotes the player instead of resolving a
+  // place: no vocabulary, nothing minted, nothing validated.
+  const statedPosition = confirmedWorldAction || isContinuation
+    ? null
+    : extractStatedPosition(parsedPlayerInput.raw)
   // This only governs narrator viewpoint and presence folding. Location graph
   // changes remain witness-evidence gated below, so a natural-language exit
   // cannot mint a place from a stray phrase.
@@ -633,6 +668,8 @@ export async function generationProcessor(job: Job) {
 
   const promptUserMessage = confirmedWorldAction
     ? worldActionDirective(confirmedWorldAction)
+    : statedPosition && !explicitPhysicalDestination
+      ? `[PLAYER POSITION: The player has placed themselves "${statedPosition}". That is where this scene happens. Narrate from there. Do not return them to the previous place, and do not contradict their own statement of where they are.]`
     : explicitPhysicalDestination
       ? `[PLAYER MOVEMENT COMMITMENT: The player has explicitly chosen to go to ${explicitPhysicalDestination}. Narrate the route and arrival at that exact destination. Do not redirect them to another place, substitute a different destination, or leave the journey unresolved.]
 PLAYER ACTION: ${parsedPlayerInput.raw}`
@@ -656,6 +693,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const lockKey = generationLockKey(playerId, instanceId)
   const instanceOid = parseObjectId(instanceId)
   const playerOid = parseObjectId(playerId)
+  const extractorRaw = createExtractorRawSink()
 
   // Started during context assembly, never awaited before buildPrompt/stream.
   // If it settles in the existing context window, the current narrator can use
@@ -696,6 +734,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         candidates,
         sequence: currentSequence + 1,
         recentTurns,
+        onRaw: extractorRaw.capture('player_interaction'),
       }).then((signals) => {
         settledInteractionSignals = signals
         interactionSignalSettled = true
@@ -959,6 +998,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     const narration = await callLLMStreamWithFallback(
       {
         model: modelId,
+        purpose: 'narration',
         messages: prompt.messages,
         temperature: narrationTemperature(modelId),
         maxTokens: lengthMaxTokens(session.message_length),
@@ -1183,14 +1223,30 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const persistedDeceasedKeys = new Set(packet.deceasedCharacterNames.map((name) => normalizeEntityName(name)))
   // Known places so a RETURN reuses a location's canonical name instead of
   // minting a near-duplicate entity (which would split the Places journal).
-  const knownPlaces = await entityGraphService
+  //
+  // Filtered through the same hygiene gate that decides what may be minted
+  // today, because minting is self-justifying: `knownPlaces` is a short-circuit
+  // meaning "this is definitely a place", so a node written before the gate
+  // existed hands its own mistake back as authority — to the witness as a
+  // location to anchor on, and to the gate as proof that a name is a place.
+  // A live world carries "Cedric Take care of stuff here when I am gone okay"
+  // and "the war room where Father is already waiting" as locations; the
+  // witness duly reported the war room for a scene at a dinner table, on turn
+  // two, before the player had gone anywhere. The graph is not repaired here —
+  // that is `repair:duplicate-places` and `merge:location` — but nothing the
+  // gate would refuse today gets to speak as canon.
+  const allKnownPlaces = await entityGraphService
     .listKnownLocations(instanceId, 30)
     .catch(() => [] as { name: string; aliases: string[] }[])
+  const knownPlaces = allKnownPlaces.filter((place) => isSafeWitnessLocationCandidate(place.name))
   // Places are a separate graph type from people. Keep their names available to
   // every downstream presence seam so a capitalized city/landmark cannot become
   // a participant merely because the narrator personifies it.
+  // Built from the UNFILTERED list on purpose. This set stops a city or a
+  // landmark being read as a person; a node too malformed to be canon is still
+  // not a person, so nothing is gained by letting it through here.
   const knownPlacePresenceKeys = new Set<string>()
-  for (const place of knownPlaces) {
+  for (const place of allKnownPlaces) {
     const canonical = normalizeEntityName(place.name || '')
     if (canonical) knownPlacePresenceKeys.add(canonical)
     for (const alias of place.aliases || []) {
@@ -1219,6 +1275,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     knownCast: priorCardNamesForPresence,
     knownPlaces: knownPlaces.map((place) => place.name),
     worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
+    onRaw: extractorRaw.capture('entity_adjudication'),
   })
   const metaPromise = extractSceneMetadata(
     rawNarrative,
@@ -1241,6 +1298,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       // into a "ask her about the ghost" choice.
       worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
       choiceContext: choiceDecisionContext,
+      onRaw: (stage, raw) => extractorRaw.capture(stage)(raw),
     },
   )
   // Do not wait for the broad metadata pass just to build a candidate set. The
@@ -1256,11 +1314,13 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       ...choiceRoster.flatMap((card) => [card.name, ...(card.aliases || [])]),
       ...entityCandidates.map((candidate) => candidate.display),
     ],
+    onRaw: extractorRaw.capture('scene_endpoint'),
   })
   const deathExtractionPromise = extractCharacterDeaths({
     prose: rawNarrative,
     candidates: characterCodex as any[],
     sequence: nextSequence,
+    onRaw: extractorRaw.capture('character_deaths'),
   })
   // All post-stream checks run together. None is allowed to alter visible prose
   // or delay the narrator's first token.
@@ -1270,6 +1330,33 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     deathExtractionPromise,
     endpointAdjudicationPromise,
   ])
+  if (endpointAdjudication.citationVerdicts.length > 0) {
+    log.info('presence.citation_advisory', {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      verdicts: endpointAdjudication.citationVerdicts.slice(0, 12).map((v) => ({
+        name: v.name,
+        a: v.a,
+        b: v.b,
+        c: v.c,
+        rejected: v.rejected,
+      })),
+    })
+    // (a) still admits on scene break. An excerpt that does not name the
+    // candidate would rewrite the cast if present[] were consumed — the
+    // Vesperkeep steward ← "He stays perfectly still" class. Advisory until
+    // a deeper sample says (b) is safe to enforce.
+    const nameMismatch = endpointAdjudication.citationVerdicts
+      .filter((v) => v.a && !v.b)
+      .map((v) => v.name)
+    if (nameMismatch.length > 0) {
+      log.info('presence.citation_name_mismatch', {
+        instanceId: idString(instanceId),
+        sequence: nextSequence,
+        labels: nameMismatch.slice(0, 12),
+      })
+    }
+  }
   const finalNarrative = rawNarrative
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta }
   const independentlyCorroboratedPeople = adjudicatedPersonKeys(entityCandidates, entityAdjudication)
@@ -1413,80 +1500,59 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     knownPlaces: [...knownPlaces.map((place) => place.name), currentLocation?.name || ''],
   }
   const validWitnessLocation = isSafeWitnessLocationCandidate(parsed.current_location, locationCandidateOptions)
-  const validWitnessDestination = isSafeWitnessLocationCandidate(parsed.player_destination, locationCandidateOptions)
-  const evidenceSourceText = parsed.location_evidence_source === 'player'
-    ? parsedPlayerInput.raw
-    : parsed.location_evidence_source === 'narrative'
-      ? rawNarrative
-      : ''
-  const hasValidWitnessEvidence =
-    (parsed.location_evidence_source === 'player' || parsed.location_evidence_source === 'narrative') &&
-    hasGroundedWitnessLocationEvidence(parsed.location_evidence, evidenceSourceText)
 
-  // A typed travel command is an explicit product action and may proceed on its
-  // own. Every free-form player turn, however, requires the LLM witness to say
-  // both "this is travel" and "this is the exact player excerpt that proves it".
-  const actionDestination = confirmedWorldAction?.kind === 'travel' &&
-    isSafeWitnessLocationCandidate(confirmedWorldAction.destination, locationCandidateOptions)
-      ? confirmedWorldAction.destination
-      : null
-  const witnessedDestination =
-    !confirmedWorldAction &&
-    !isContinuation &&
-    parsed.player_travel_confirmed === true &&
-    parsed.viewpoint_moved === true &&
-    parsed.location_evidence_source === 'player' &&
-    hasValidWitnessEvidence &&
-    validWitnessDestination
-      ? parsed.player_destination
-      : null
-  const witnessedMovementDetected =
-    !isContinuation && parsed.player_travel_confirmed === true && parsed.viewpoint_moved === true
+  // The whole decision now lives in worker/lib/location-decision.ts as a pure
+  // function of this turn's evidence, with the pre-citation stack beside it, so
+  // `corpus:location-ab` can replay both over identical extractor output and
+  // attribute a difference to the logic rather than to model noise. It used to
+  // be ~120 lines inline here, which meant the only way to ask whether a change
+  // helped was to play turns and squint.
+  const locationDecision = decideLocation({
+    isContinuation,
+    playerInput: parsedPlayerInput.raw,
+    narrative: rawNarrative,
+    cursorName: currentLocation?.name || null,
+    knownPeople: priorCardNamesForPresence,
+    knownPlaceNames: knownPlaces.map((place) => place.name),
+    witness: {
+      current_location: parsed.current_location ?? null,
+      player_destination: parsed.player_destination ?? null,
+      player_travel_confirmed: parsed.player_travel_confirmed === true,
+      viewpoint_moved: parsed.viewpoint_moved === true,
+      location_evidence: parsed.location_evidence ?? null,
+      location_evidence_source: parsed.location_evidence_source ?? null,
+    },
+    actionDestination: confirmedWorldAction?.kind === 'travel' ? confirmedWorldAction.destination : null,
+    endpoint: {
+      available: endpointAdjudication.available,
+      sceneTransition: endpointAdjudication.sceneTransition,
+      location: endpointAdjudication.location,
+    },
+    priorDrift: (session as { location_drift?: DriftState | null }).location_drift ?? null,
+    sequence: nextSequence,
+  })
+  const placeName = locationDecision.placeName
+  const viewpointMoved = locationDecision.viewpointMoved
+  const sceneAnchor = locationDecision.sceneAnchor
+  const { next: nextDrift, repair: driftRepair, count: driftCount } = locationDecision.drift
+  if (sceneAnchor && !locationNamesCompatible(sceneAnchor, currentLocation?.name || null)) {
+    log.info('location.drift', {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      cursor: currentLocation?.name || null,
+      anchor: sceneAnchor,
+      count: driftCount,
+      repaired: !!driftRepair,
+    })
+  }
+  if (locationDecision.judgedRejectedAsNotAPlace) {
+    log.info('location.judged_name_not_a_place', {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      name: locationDecision.judgedRejectedAsNotAPlace,
+    })
+  }
 
-  // NARRATED ARRIVAL. The witness names the place the player has arrived AT
-  // ("gatehouse of Blackstone Keep") far more reliably than it fills in a
-  // separate `player_destination`, and it sources the evidence to the NARRATIVE
-  // because the arrival is what the narrator describes. The old gate demanded a
-  // player-sourced destination for every move after the first, so in practice
-  // the cursor anchored once and then never moved again for the rest of a
-  // playthrough — the player rides for days and the map still says "the road".
-  //
-  // Reopening it needs a second, independent witness or we are back to phantom
-  // travel from a merely-mentioned venue. That witness already existed and was
-  // wired to nothing: detectNarratedMovement reads the PLAYER'S OWN action,
-  // which is the one thing a mentioned-but-not-visited place can never have.
-  // Both must agree — the model says "they moved and this is where", the
-  // player's text says "I went somewhere" — before the cursor follows.
-  //
-  // The two witnesses this path requires are the model's SUBSTANTIVE claim (it
-  // names a different current place AND cites the sentence of narration that
-  // establishes it) and the player's own text ("I went somewhere"). It used to
-  // additionally require the model's `player_travel_confirmed` / `viewpoint_moved`
-  // BOOLEANS, and those are the unreliable part: on a logged run the witness set
-  // both to false while correctly reporting current_location "village square"
-  // (the player had just dismounted in it) and "great hall" (the player had just
-  // ridden home into it), with valid cited evidence for each. The cursor sat on
-  // "low road to Marrow Ford" for the rest of the session. Dropping the flags
-  // does not weaken the guarantee — a merely-MENTIONED venue can never both be
-  // cited as the established setting of this passage and coincide with the
-  // player narrating their own movement.
-  const narratedArrival =
-    !isContinuation &&
-    !actionDestination &&
-    !witnessedDestination &&
-    parsed.location_evidence_source === 'narrative' &&
-    hasValidWitnessEvidence &&
-    validWitnessLocation &&
-    detectNarratedMovement(parsedPlayerInput.raw) &&
-    !locationNamesCompatible(parsed.current_location, currentLocation?.name || null)
-      ? parsed.current_location
-      : null
-
-  const placeName = actionDestination || witnessedDestination || narratedArrival ||
-    (!currentLocation && parsed.location_evidence_source === 'narrative' && hasValidWitnessEvidence && validWitnessLocation
-      ? parsed.current_location
-      : null)
-  const viewpointMoved = !!actionDestination || !!witnessedDestination || !!narratedArrival
   // The witness is a semantic observer, not a world-authority. Its containment
   // claim reaches the graph only after it corroborates the player-selected
   // destination and names an already-known parent (normally the current cursor).
@@ -1512,13 +1578,89 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // word-pattern scan. A mentioned/anticipated place cannot pass this gate
   // because the witness must cite the exact sentence that physically establishes
   // the current setting.
-  const sceneEstablishedLocation =
-    !currentLocation && !viewpointMoved && !!placeName &&
-    parsed.location_evidence_source === 'narrative' && hasValidWitnessEvidence
+  const sceneEstablishedLocation = locationDecision.sceneEstablished
   const locationSource: WorldFactSource = viewpointMoved ? moveSource : 'narrator'
   const locationConfidence = viewpointMoved ? moveConfidence : 0.98
+  // ── PROMOTION GATE ──────────────────────────────────────────────────────
+  //
+  // A name the cursor lands on is a SCENE ANCHOR. It becomes a MAP NODE only
+  // once the world has watched the viewpoint enter and leave it, or seen it
+  // contain something, or the author named it. Until then nothing is minted, so
+  // it never reaches `knownPlaces` — which is what let one furniture write
+  // permanently disable the hygiene gate that would have refused it.
+  //
+  // A provisional anchor still drives the cursor and the narrator for this turn.
+  // Being wrong about it costs one turn instead of the rest of the run.
+  const promotionCandidate = placeName ? String(placeName).trim() : ''
+  let placePromoted = !promotionCandidate
+  let promotionReason = 'none'
+  if (promotionCandidate) {
+    const candidateKey = normalizeEntityName(promotionCandidate)
+    const priorAccrual = candidateKey
+      ? await mongoColl
+          .placeCandidates()
+          .findOne({ instance_id: instanceOid, name_normalized: candidateKey })
+          .catch(() => null)
+      : null
+    const decision = decidePlacePromotion({
+      candidate: promotionCandidate,
+      sequence: nextSequence,
+      relation: classifyPlaceRelation(promotionCandidate, rawNarrative, { people: priorCardNamesForPresence }),
+      // The cursor moving here IS the arrival, decided by the citation stack.
+      arrived: viewpointMoved,
+      containment: !!approvedContainmentHint,
+      // An authored place is the world's own canon: a typed travel destination
+      // the player chose in the product, or a place the template already knows.
+      authored:
+        confirmedWorldAction?.kind === 'travel' ||
+        knownPlaces.some((place) => locationNamesCompatible(place.name, promotionCandidate)),
+      prior: priorAccrual as any,
+    })
+    placePromoted = decision.promote
+    promotionReason = decision.reason
+    if (candidateKey) {
+      await mongoColl
+        .placeCandidates()
+        .updateOne(
+          { instance_id: instanceOid, name_normalized: candidateKey },
+          { $set: { ...decision.next, instance_id: instanceOid, name_normalized: candidateKey, promoted: decision.promote } },
+          { upsert: true },
+        )
+        .catch(() => null)
+    }
+    // The place being LEFT accrues the exit. A departure is the other half of
+    // "entered and left", and the processor is the only thing that knows it:
+    // the passage describes arriving somewhere, not leaving the room whose name
+    // it no longer mentions. Without this a place could be entered a dozen times
+    // and never earn the map, because `exits` stayed at zero forever.
+    const departedName = viewpointMoved ? currentLocation?.name || null : null
+    if (departedName && !locationNamesCompatible(departedName, promotionCandidate)) {
+      const departedKey = normalizeEntityName(departedName)
+      if (departedKey) {
+        await mongoColl
+          .placeCandidates()
+          .updateOne(
+            { instance_id: instanceOid, name_normalized: departedKey },
+            { $inc: { exits: 1 }, $setOnInsert: { instance_id: instanceOid, name_normalized: departedKey, name: departedName } },
+            { upsert: true },
+          )
+          .catch(() => null)
+      }
+    }
+    log.info('location.promotion', {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      candidate: promotionCandidate,
+      promote: decision.promote,
+      reason: decision.reason,
+      entries: decision.next.entries,
+      exits: decision.next.exits,
+      sightings: decision.next.sightings,
+    })
+  }
+
   const resolvedLocation =
-    (viewpointMoved || sceneEstablishedLocation) && placeName
+    (viewpointMoved || sceneEstablishedLocation) && placeName && placePromoted
       ? await entityGraphService
           .placeLocation({
             instanceId,
@@ -1535,7 +1677,13 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
             return null
           })
       : null
-  const locationAnchor = resolvedLocation || currentLocation || null
+  // A provisional anchor has no entity_id: it is a name the narrator and the
+  // cursor can use, and nothing downstream may treat as a durable place.
+  const provisionalAnchor =
+    !placePromoted && placeName && (viewpointMoved || sceneEstablishedLocation)
+      ? { entity_id: null, name: String(placeName), name_normalized: normalizeEntityName(String(placeName)) }
+      : null
+  const locationAnchor = resolvedLocation || provisionalAnchor || currentLocation || null
   // The location cursor had NO logging of any kind, which is why "the cursor is
   // stuck" survived several playtests as folklore: every gate input is a witness
   // field that is never persisted, so a stuck cursor was indistinguishable from a
@@ -1553,10 +1701,17 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     w_dest: parsed.player_destination,
     w_evsrc: parsed.location_evidence_source,
     w_ev: String(parsed.location_evidence || '').slice(0, 80),
-    validEv: hasValidWitnessEvidence,
     validLoc: validWitnessLocation,
-    validDest: validWitnessDestination,
-    narratedMove: detectNarratedMovement(parsedPlayerInput.raw),
+    path: locationDecision.path,
+    corroborated: locationDecision.transitionCorroborated,
+    cite: locationDecision.citation,
+    judged: locationDecision.judgedLocation,
+    j_place: endpointAdjudication.location?.name || null,
+    anchor: sceneAnchor,
+    drift: driftCount,
+    driftRepair,
+    promoted: placePromoted,
+    promotion: promotionReason,
     compatible: locationNamesCompatible(parsed.current_location, currentLocation?.name || null),
   })
 
@@ -1577,7 +1732,33 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // a model-only guess.
   const witnessTimeLabel = !isContinuation ? parsed.time_elapsed || undefined : undefined
   const playerTimeLabel = !isContinuation ? detectNarratedTimeSkip(parsedPlayerInput.raw) || undefined : undefined
-  const narratedTimeLabel = !isContinuation ? playerTimeLabel : undefined
+  // The witness may now move the calendar, but only by quoting the sentence
+  // that says the time passed. Until this, `time_elapsed` reached the signal
+  // ledger and nothing else — the calendar was 100% regex over the PLAYER'S
+  // text, so a skip only the narrator wrote ("Two days later, the rain finally
+  // stopped") left the date untouched for the rest of the run. The player's own
+  // label still wins: their text is authored canon, the witness is a reader.
+  const timeCitation = witnessTimeLabel
+    ? evaluateTimeCitation({
+        label: witnessTimeLabel,
+        evidence: parsed.time_evidence || '',
+        source: rawNarrative,
+      })
+    : null
+  const citedWitnessTimeLabel =
+    timeCitation && citationAdmitsTimeSkip(timeCitation) ? witnessTimeLabel : undefined
+  const narratedTimeLabel = !isContinuation ? playerTimeLabel || citedWitnessTimeLabel : undefined
+  if (witnessTimeLabel && !playerTimeLabel) {
+    log.info('time.witness_citation', {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      label: witnessTimeLabel,
+      evidence: String(parsed.time_evidence || '').slice(0, 80),
+      a: timeCitation?.a ?? null,
+      b: timeCitation?.b ?? null,
+      accepted: !!citedWitnessTimeLabel,
+    })
+  }
   const effectiveTimeAdvance = timeAdvanceLabel || actionTimeAdvanceLabel || narratedTimeLabel
   // Provenance of the time advance (world-authority), for the rebuildable time_delta:
   // continuation ticks and accepted player-narrated skips are player-authored.
@@ -1587,6 +1768,10 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     if (timeAdvanceLabel || actionTimeAdvanceLabel || playerTimeLabel) {
       timeSource = 'player_narration'
       timeConfidence = confidenceFor('player_narration')
+    } else if (citedWitnessTimeLabel) {
+      // A cited skip is the narrator's own statement about the world.
+      timeSource = 'narrator'
+      timeConfidence = confidenceFor('narrator')
     }
   }
 
@@ -1691,17 +1876,19 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     ? endpointAdjudication.present.map((entry) => entry.name)
     : []
   const endpointPresenceKeys = new Set(endpointPresenceNames.map((name) => presenceKeyOf(name)).filter(Boolean))
-  if (sceneBroke && endpointAdjudication.available) {
+  if (endpointAdjudication.available) {
     const witnessOnlyNames = (parsed.present_characters || []).filter((name) => !endpointPresenceKeys.has(presenceKeyOf(name)))
-    if (witnessOnlyNames.length || !endpointAdjudication.playerViewpointAtEnd) {
-      // Operational signal, not player-visible state. This makes future witness
-      // drift diagnosable from one turn rather than requiring a screenshot and
-      // manual reconstruction of which cast carried across a boundary.
+    const endpointOnlyNames = endpointPresenceNames.filter((name) =>
+      !(parsed.present_characters || []).some((witness) => presenceKeyOf(witness) === presenceKeyOf(name)),
+    )
+    if (witnessOnlyNames.length || endpointOnlyNames.length || !endpointAdjudication.playerViewpointAtEnd || sceneBroke) {
       log.info('scene.endpoint.reconciled', {
         instanceId: idString(instanceId),
         sequence: nextSequence,
+        sceneBroke,
         playerViewpointAtEnd: endpointAdjudication.playerViewpointAtEnd,
         primaryOnly: witnessOnlyNames.slice(0, 12),
+        endpointOnly: endpointOnlyNames.slice(0, 12),
         endpointPresent: endpointPresenceNames.slice(0, 12),
       })
     }
@@ -1844,13 +2031,29 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // Ledger accounting (FP/FN measurement): fresh joins committed this turn carry
   // their confidence; carry-forward and source-upgrades are not fresh detections.
   const freshPartyJoinConfidences: number[] = []
-  const addJoins = (names: string[], source: WorldFactSource) => {
+  const uncorroboratedPartyJoins: string[] = []
+  // A companion enrols for the WHOLE RUN, so a fresh join is the most expensive
+  // false positive in the presence system: until this turn a phrase match on the
+  // player's own text was enough, and the enrolled person then rode along
+  // through every later scene. A free-form join must now be corroborated by the
+  // same evidence everyone else answers to — the endpoint judge citing them at
+  // this turn's endpoint, or the entity judge showing them acting in the prose.
+  // The structured travel control is exempt: that is the player operating the
+  // product, not a model reading their prose.
+  const endpointPresentKeys = new Set(endpointPresenceNames.map((n) => presenceKeyOf(n)).filter(Boolean))
+  const joinCorroborated = (k: string, name: string): boolean =>
+    endpointPresentKeys.has(k) || independentlyCorroboratedPeople.has(normalizeEntityName(name))
+  const addJoins = (names: string[], source: WorldFactSource, requireCorroboration: boolean) => {
     for (const n of names) {
       const k = presenceKeyOf(n)
       if (!k || partyDepartedKeys.has(k)) continue
       if (playerPresenceKey && k === playerPresenceKey) continue
       if (partyProtagKey && k === partyProtagKey) continue
       if (!partyRosterKeys.has(k) && !partyPresentKeys.has(k)) continue
+      if (requireCorroboration && !partyByKey.has(k) && !joinCorroborated(k, n)) {
+        uncorroboratedPartyJoins.push(n)
+        continue
+      }
       const prev = partyByKey.get(k)
       if (prev && SOURCE_RANK[prev.source] <= SOURCE_RANK[source]) continue
       const confidence = confidenceFor(source)
@@ -1863,8 +2066,51 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       ? confirmedWorldAction.companions
       : detectCompanionJoins(parsedPlayerInput.raw)
   const partyJoinsDetected = new Set(playerJoinNames.map(presenceKeyOf).filter(Boolean)).size
-  addJoins(playerJoinNames, 'player_narration')
+  addJoins(playerJoinNames, 'player_narration', confirmedWorldAction?.kind !== 'travel')
+  if (uncorroboratedPartyJoins.length > 0) {
+    log.info('party.uncorroborated_join_refused', {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      names: uncorroboratedPartyJoins,
+    })
+  }
   if (partyProtagKey) partyByKey.delete(partyProtagKey)
+  // ── PARTY DECAY ─────────────────────────────────────────────────────────
+  //
+  // A companion used to be enrolled until an explicit parting phrase fired. If
+  // that phrase never came — and in free prose it usually does not — they rode
+  // along for the rest of the run no matter what the narration said. Scoping the
+  // privilege to the scene break (above) stopped them overriding the prose; it
+  // did not give them a way to LEAVE.
+  //
+  // So absence decays membership. On a scene break, a companion the endpoint
+  // judge does not place with the player and the prose does not show acting has
+  // missed this scene. Two consecutive misses and they are no longer travelling
+  // with you. Any single appearance resets it, so a quiet companion is safe.
+  const priorPartyMisses = new Map(
+    ((session.travelling_with || []) as Array<{ name?: string; misses?: number }>)
+      .map((m) => [presenceKeyOf(String(m.name || '')), Number(m.misses) || 0] as const)
+      .filter(([key]) => key),
+  )
+  const partyMisses = new Map<string, number>()
+  if (sceneBroke && endpointAdjudication.available) {
+    for (const [key, member] of partyByKey) {
+      const seen = endpointPresentKeys.has(key) || independentlyCorroboratedPeople.has(normalizeEntityName(member.name))
+      const { misses, drop } = decidePartyDecay({ seenThisScene: seen, priorMisses: priorPartyMisses.get(key) || 0 })
+      partyMisses.set(key, misses)
+      if (drop) {
+        partyByKey.delete(key)
+        log.info('party.decayed', {
+          instanceId: idString(instanceId),
+          sequence: nextSequence,
+          name: member.name,
+          misses,
+        })
+      }
+    }
+  } else {
+    for (const key of partyByKey.keys()) partyMisses.set(key, priorPartyMisses.get(key) || 0)
+  }
   const partyMembers = [...partyByKey.values()].slice(0, 6)
   const partyNames = partyMembers.map((m) => m.name)
   const partyProvByName = new Map(partyMembers.map((m) => [normalizeEntityName(m.name), m]))
@@ -1872,17 +2118,18 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const blockedUngroundedPresence: string[] = []
   const heldUncorroboratedPresence: string[] = []
   parsed.present_characters = (() => {
-    // On a boundary the endpoint judge becomes the authoritative cast when it
-    // is available. A known old name cannot survive just because the first
-    // witness saw it earlier in the prose or an NPC-only cutaway. If the judge
-    // is temporarily unavailable, retain the existing witness-only fallback so
-    // an auxiliary model outage never erases a valid live scene.
-    const candidates = sceneBroke
-      ? [
-          ...(endpointAdjudication.available ? endpointPresenceNames : (parsed.present_characters || [])),
-          ...partyNames,
-        ]
-      : [...priorPresent, ...(parsed.present_characters || [])]
+    // Phase 1: on a continuation, new admits come from the endpoint judge we
+    // already pay for. Prior cast still carries (quiet people stay). Scene-break
+    // is still the endpoint cast. Witness present_characters is the outage
+    // fallback only — mixing it in on the happy path was the Isolde/Lyra class.
+    const candidates = mergePresenceCandidates({
+      sceneBroke,
+      endpointAvailable: endpointAdjudication.available,
+      endpointPresent: endpointPresenceNames,
+      priorPresent,
+      witnessPresent: parsed.present_characters || [],
+      partyNames,
+    })
     const departed = new Set((parsed.characters_departed || []).map((n) => presenceKeyOf(n)).filter(Boolean))
     const out: string[] = []
     const seen = new Set<string>()
@@ -1970,6 +2217,28 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     const text = ` ${rawNarrative.toLowerCase().replace(/[^a-z0-9\s'-]+/g, ' ').replace(/\s+/g, ' ')} `
     const corroborated = new Set<string>(independentlyCorroboratedPeople)
     for (const name of independentlyCorroboratedPeople) corroborated.add(sceneIdentityKey(name))
+    // Endpoint (a)∧(b)∧(c) is the corroboration for anyone the judge admitted.
+    // Scene-break seq 38 paid for `Tomas hasn't moved` and the verb-list then
+    // recorded `uncorroborated_arrival`. Continuations now use the same seed so
+    // a verified arrival is not asked to also beat ACTION_VERBS adjacency.
+    if (endpointAdjudication.available && endpointAdjudication.playerViewpointAtEnd) {
+      const seeded: string[] = []
+      for (const verdict of endpointAdjudication.citationVerdicts) {
+        if (!verdict.a || !verdict.b || !verdict.c) continue
+        const presenceKey = normalizeEntityName(verdict.name)
+        const identityKey = sceneIdentityKey(verdict.name)
+        if (presenceKey) corroborated.add(presenceKey)
+        if (identityKey) corroborated.add(identityKey)
+        seeded.push(verdict.name)
+      }
+      if (seeded.length > 0) {
+        log.info('presence.endpoint_corroborated', {
+          instanceId: idString(instanceId),
+          sequence: nextSequence,
+          labels: seeded.slice(0, 12),
+        })
+      }
+    }
     // Being NAMED is not being PRESENT. An earlier version accepted any
     // occurrence of the name, and a passing reference to something a character
     // had said a day's ride away ("the rations Bram had noted") put him at the
@@ -1980,14 +2249,23 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     const mentioned = (surface: string): boolean => {
       const phrase = String(surface || '').trim()
       if (normalizeEntityName(phrase).length < 3) return false
-      if (hasSceneParticipationGrammar(phrase, rawNarrative)) return true
+      // Structural shape first (any sentence where this person is the subject),
+      // then the ACTION half of the pattern list. The IDENTITY half is not
+      // consulted here: an appositive, a title-name or a possessive kinship
+      // phrase proves who somebody is, never that they are in the room, and
+      // running it over a whole passage is how "Mara, my sister, had been gone
+      // for years" corroborated Mara's arrival. openingCast keeps the full
+      // grammar — the authored seed has no judge to delegate identity to.
+      if (showsParticipationInPassage(phrase, rawNarrative)) return true
+      if (hasSceneParticipationGrammar(phrase, rawNarrative, { evidence: 'action' })) return true
       // Prose names a titled cast member bare ("Ardren" for Lord Ardren), so
       // test the distinctive tokens too — still against scene-participation
       // grammar, never against a bare occurrence.
       for (const token of phrase.split(/\s+/)) {
         const normalized = normalizeEntityName(token)
         if (normalized.length < 3 || PRESENCE_TITLE_WORDS.has(normalized)) continue
-        if (hasSceneParticipationGrammar(token, rawNarrative)) return true
+        if (showsParticipationInPassage(token, rawNarrative)) return true
+        if (hasSceneParticipationGrammar(token, rawNarrative, { evidence: 'action' })) return true
       }
       return false
     }
@@ -2583,7 +2861,9 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // entity (mutable state + enduring canon, both event-sourced for rewind/edit
   // pruning). Fire-and-forget — it feeds FUTURE turns, not this response.
   if (
-    locationAnchor &&
+    // A provisional anchor is not a map node, so it has no place to hang canon
+    // facts on. They are simply not recorded until the place is promoted.
+    locationAnchor?.entity_id &&
     ((parsed.location_state_changes?.length || 0) > 0 || (parsed.location_permanent_facts?.length || 0) > 0)
   ) {
     entityGraphService
@@ -2617,6 +2897,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       metadata_model: AI_MODELS.metadata,
       tokens_in: event.data.tokens_in,
       tokens_out: event.data.tokens_out,
+      llm_calls: snapshotLLMUsage(),
       prose_hygiene_issues: proseHygieneIssues,
       latency_ms: latencyMs,
       ttft_ms: ttftMs,
@@ -2626,6 +2907,22 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       created_at: new Date(),
     })
     .catch((err) => console.warn('generation_log insert failed:', (err as Error).message))
+
+  mongoColl
+    .extractorRaw()
+    .insertOne({
+      _id: new ObjectId(),
+      instance_id: instanceOid,
+      player_id: playerOid,
+      event_id: event._id,
+      sequence: nextSequence,
+      stages: extractorRaw.stages,
+      ...(endpointAdjudication.citationVerdicts.length
+        ? { citation_verdicts: endpointAdjudication.citationVerdicts }
+        : {}),
+      created_at: new Date(),
+    })
+    .catch((err) => console.warn('extractor_raw insert failed:', (err as Error).message))
 
   const sceneTag = parsed.scene_tag
   const currentScene = session.current_scene
@@ -2647,6 +2944,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     name: string
     source: WorldFactSource
     confidence: number
+    misses: number
   }> = []
   if (partyNames.length) {
     const partyNorms = partyNames.map((n) => normalizeEntityName(n))
@@ -2677,6 +2975,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           name: e.canonical_name || n,
           source,
           confidence: prov?.confidence ?? confidenceFor(source),
+          misses: partyMisses.get(presenceKeyOf(n)) || 0,
         })
       }
     }
@@ -2765,11 +3064,15 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           entity_id: idString(locationAnchor.entity_id),
         }
       : null,
+    // Cleared by a repair or by any turn the anchor agrees with the cursor, so a
+    // one-off bad read can never accumulate toward a repair on its own.
+    location_drift: driftRepair ? null : nextDrift,
     // JSON-safe (entity_id as string) — the party read only uses the name, but keep
     // the id so a future consumer can resolve without a lookup.
     travelling_with: travellingWith.map((m) => ({
       entity_id: idString(m.entity_id),
       name: m.name,
+      misses: m.misses,
       source: m.source,
       confidence: m.confidence,
     })),
@@ -3380,15 +3683,31 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         // plus the recall (miss_candidates) + precision (player_corrected) ground
         // truths. Fire-and-forget; aggregations tune enrichment against this data.
         try {
-          const presenceTiers = { confirmed: 0, probable: 0, mentioned: 0 }
-          for (const m of trackableMentions) {
-            if (m.tier === 'confirmed') presenceTiers.confirmed++
-            else if (m.tier === 'probable') presenceTiers.probable++
-            else presenceTiers.mentioned++
+          const verdicts = endpointAdjudication.citationVerdicts
+          const castKeys = new Set((parsed.present_characters || []).map((n) => presenceKeyOf(n)).filter(Boolean))
+          let canon = 0
+          let hint = 0
+          let hidden = 0
+          let endpointCommitted = 0
+          for (const verdict of verdicts) {
+            if (verdict.a && verdict.b && verdict.c) canon++
+            else if (verdict.a) hint++
+            else hidden++
+            if (citationAdmitsToPresent(verdict) && castKeys.has(presenceKeyOf(verdict.name))) endpointCommitted++
           }
           const ledger = buildSignalLedger({
             movement: {
-              detected: witnessedMovementDetected || !!actionDestination,
+              // `detected` is every CLAIM that the viewpoint moved this turn,
+              // from any of the four arbiters — not just the structured travel
+              // control and the witness's booleans. Instrumenting only two of
+              // them made the channel unreadable: a cursor move admitted by the
+              // citation stack committed with nothing recorded as detected.
+              detected:
+                confirmedWorldAction?.kind === 'travel' ||
+                parsed.player_travel_confirmed === true ||
+                parsed.viewpoint_moved === true ||
+                locationDecision.transitionCorroborated ||
+                !!locationDecision.sceneAnchor,
               committed: !!locationAnchor?.name && viewpointMoved,
               source: moveSource,
               confidence: moveConfidence,
@@ -3407,7 +3726,13 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
               detected: relationAssertions.length,
               committed: kinWritten,
             },
-            presence: presenceTiers,
+            presence: {
+              detected: verdicts.length,
+              committed: endpointCommitted,
+              ...(verdicts.length
+                ? { by_tier: { canon, hint, hidden } }
+                : {}),
+            },
             playerCorrected: parsedPlayerInput.corrections.length > 0,
             missCandidates,
           })

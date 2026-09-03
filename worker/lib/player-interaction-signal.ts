@@ -107,7 +107,7 @@ export async function extractPlayerInteractionSignals(params: {
   const playerInput = String(params.playerInput || '').trim()
   const target = candidateTargetsForPlayerInput(playerInput, params.candidates)[0]
   try {
-    const raw = await callLLM(request)
+    const raw = await callLLM({ ...request, purpose: 'player_interaction' })
     params.onRaw?.(raw)
     const parsed = JSON.parse(raw) as { signals?: Array<{ target_character_id?: unknown; kind?: unknown; evidence?: unknown; confidence?: unknown }> }
     const signal = parsed.signals?.[0]

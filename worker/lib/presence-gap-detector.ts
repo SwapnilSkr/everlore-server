@@ -255,6 +255,11 @@ const PERSON_POSSESSIONS =
   // physically here — a place cannot have a collar or a chair scrape back.
   'arm|arms|wrist|wrists|throat|chest|knuckles|knees|knee|boots|cloak|coat|sleeve|sleeves|collar|hood|belt|blade|sword|knife|reins|chair|seat'
 
+/** Closed enum used by citation-scoped (c) to allow one modifier between `'s`
+ *  and the body-part (`Tomas's weary gaze`). Do not grow this list to paper
+ *  over remote mentions — `Bram's numbers` must stay out. */
+export const PERSON_POSSESSION_TOKENS = new Set(PERSON_POSSESSIONS.split('|'))
+
 /**
  * A thing the person OWNS doing something physical: "Halvard's chair scrapes
  * back and topples", "Mara's cup rattles against the saucer".
@@ -324,7 +329,21 @@ function hasIndependentPersonSignal(display: string, prose: string): boolean {
   )
 }
 
-/** Decide the tier for one candidate display name within `prose`. */
+const TITLE_SET = new Set(TITLE_WORDS.split('|'))
+
+/** Action-family evidence: the person is shown doing or speaking, not merely
+ *  introduced. Identity patterns (appositive / title-name / possessive kinship)
+ *  admit a dead or long-absent person from a passing mention; they are not
+ *  presence evidence. */
+const ACTION_EVIDENCE = new Set([
+  'dialogue attribution',
+  'action in scene',
+  'person possessive',
+  'possession in motion',
+])
+
+export type ParticipationEvidence = 'all' | 'action'
+
 /**
  * Does the prose show this person PARTICIPATING in the scene, as opposed to
  * merely naming them?
@@ -337,9 +356,20 @@ function hasIndependentPersonSignal(display: string, prose: string): boolean {
  *
  * Deliberately the same patterns as {@link tierFor} so the admission gate and
  * the trackable-mention gate can never drift apart.
+ *
+ * `opts.evidence` defaults to `'all'` (today's behaviour) so the opening-cast
+ * seeder, which reads authored seed prose no judge ever sees, stays untouched.
+ * Pass `'action'` to ignore identity patterns.
  */
-export function hasSceneParticipationGrammar(display: string, prose: string): boolean {
-  return tierFor(display, String(prose || '')).tier === 'confirmed'
+export function hasSceneParticipationGrammar(
+  display: string,
+  prose: string,
+  opts?: { evidence?: ParticipationEvidence },
+): boolean {
+  const { tier, evidence } = tierFor(display, String(prose || ''))
+  if (tier !== 'confirmed') return false
+  if ((opts?.evidence ?? 'all') === 'action') return ACTION_EVIDENCE.has(evidence)
+  return true
 }
 
 function tierFor(display: string, prose: string): { tier: MentionTier; evidence: string; count: number } {
@@ -386,8 +416,6 @@ function tierFor(display: string, prose: string): { tier: MentionTier; evidence:
  * of trackable mentions (it no longer decides canon gaps itself). Pure + cheap →
  * off TTFT; the audit imports it so live + audit cannot drift.
  */
-const TITLE_SET = new Set(TITLE_WORDS.split('|'))
-
 export function classifyPresenceCodexGaps(prose: string, tracked: TrackedNames): MentionCandidate[] {
   const text = String(prose || '')
   return detectPresenceCodexGapsDetailed(text, tracked)

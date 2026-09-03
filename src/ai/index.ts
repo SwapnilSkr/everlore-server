@@ -9,6 +9,7 @@
  */
 export { AI_MODELS, type AiModelKey } from './models'
 export { callLLM, callLLMStream, callLLMWithFallback, callLLMStreamWithFallback } from './client'
+export { runWithLLMUsage, snapshotLLMUsage, isLLMUsageActive, type LLMCallUsage } from './usage'
 export { narrationTemperature } from './narration-profile'
 export { embed, embedBatch } from './embedding'
 export { generateImage } from './image'

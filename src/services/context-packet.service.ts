@@ -91,10 +91,28 @@ interface PacketSession {
 }
 
 function normalizeLocationAnchor(raw: any): LocationAnchorDoc | null {
-  if (!raw?.entity_id || !raw.name) return null
+  // A PROVISIONAL anchor has no `entity_id` — that is the whole point of the
+  // nullable field, and requiring one here silently threw the cursor away.
+  //
+  // The effect was total on any world created after the promotion gate landed.
+  // Nothing had been minted yet, so every anchor was provisional, so the packet
+  // reported NO CURRENT LOCATION on every turn — and `cursorName` is what the
+  // whole location stack arbitrates against. Drift repair cannot fire without a
+  // cursor to contradict, `locationNamesCompatible(x, cursorName)` cannot refuse
+  // a move to where you already are, and the "a new name on a still turn is a
+  // re-description" rule is bypassed entirely, because with no cursor every turn
+  // takes the FIRST-ANCHOR path. Live, that let a turn where the HARBOURMASTER
+  // walked back to the Counting House move the player there while he stood on
+  // the pier. The narrator also lost its `Current place:` line, which is the
+  // upstream half of the retcon loop this branch fixed downstream.
+  if (!raw?.name) return null
   try {
     return {
-      entity_id: typeof raw.entity_id === 'string' ? parseObjectId(raw.entity_id) : raw.entity_id,
+      entity_id: raw.entity_id
+        ? typeof raw.entity_id === 'string'
+          ? parseObjectId(raw.entity_id)
+          : raw.entity_id
+        : null,
       name: raw.name,
       name_normalized: raw.name_normalized || entityGraphService.normalizeEntityName(raw.name),
     }
@@ -166,9 +184,14 @@ export async function buildContextPacket(params: {
   // Enriched with the containment ANCESTRY (owner-scoped identity, so "Marcus's
   // penthouse, within Downtown" can't be confused with another penthouse) and the
   // place's canon facts + current condition.
+  // A PROVISIONAL anchor has no entity_id: the place is not on the map yet, so
+  // there is no ancestry or canon to enrich it with. The name still reaches the
+  // narrator.
   const locationContextPromise: Promise<string | null> = !currentLocation
     ? Promise.resolve(null)
-    : Promise.all([
+    : !currentLocation.entity_id
+      ? Promise.resolve(`Current place: ${currentLocation.name}.`)
+      : Promise.all([
         entityGraphService
           .placeAncestry(instanceId, idString(currentLocation.entity_id))
           .catch(() => [] as string[]),

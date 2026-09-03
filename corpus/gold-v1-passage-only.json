@@ -1,0 +1,499 @@
+{
+  "6a8a1892bcbfb358694a2e94:3": {
+    "id": "6a8a1892bcbfb358694a2e94:3",
+    "place": "these halls",
+    "placeIsSpace": true,
+    "cast": [
+      "Queen Isolde"
+    ],
+    "moved": false,
+    "quote": "\"A title earned in mud and blood, far from these halls. You may command fear on a battlefield, Aurelius. But here, you are still the king's mistake.\""
+  },
+  "6a9838c242bd67e3f97250da:2": {
+    "id": "6a9838c242bd67e3f97250da:2",
+    "place": "hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "moved": false,
+    "quote": "The hall’s empty."
+  },
+  "6a97d9c046932234f6c6ed48:2": {
+    "id": "6a97d9c046932234f6c6ed48:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "Isolde",
+      "Cedric",
+      "Lyra"
+    ],
+    "moved": true,
+    "quote": "The silence stretches as he settles into the chair opposite the queen."
+  },
+  "6a94b67f6c8f20797d00dac1:3": {
+    "id": "6a94b67f6c8f20797d00dac1:3",
+    "place": "terminal",
+    "placeIsSpace": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The synthetic voice pauses for a beat, data streams flickering in the terminal's holo-display."
+  },
+  "6a9838c442bd67e3f97250e1:2": {
+    "id": "6a9838c442bd67e3f97250e1:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c742bd67e3f97250e8:2": {
+    "id": "6a9838c742bd67e3f97250e8:2",
+    "place": "house",
+    "placeIsSpace": true,
+    "cast": [
+      "I"
+    ],
+    "moved": true,
+    "quote": "The silence here is a different kind of loud—the kind that comes after the amps are off and the house is empty."
+  },
+  "6a953c8e6c8f20797d00db24:2": {
+    "id": "6a953c8e6c8f20797d00db24:2",
+    "place": "room",
+    "placeIsSpace": true,
+    "cast": [],
+    "moved": false,
+    "quote": "The screen flickers, its glow cutting through the dim light of the room."
+  },
+  "6a964a7e1f86703402a29a50:2": {
+    "id": "6a964a7e1f86703402a29a50:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a91a8e53f3f89ab48328d56:2": {
+    "id": "6a91a8e53f3f89ab48328d56:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "Isolde",
+      "Cedric",
+      "Lyra"
+    ],
+    "moved": false,
+    "quote": ""
+  },
+  "6a965d5f1f86703402a29a69:2": {
+    "id": "6a965d5f1f86703402a29a69:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "She"
+    ],
+    "moved": false,
+    "quote": ""
+  },
+  "6a2307c509566cfc77b42904:3": {
+    "id": "6a2307c509566cfc77b42904:3",
+    "place": "table",
+    "placeIsSpace": false,
+    "cast": [
+      "Maya Chen"
+    ],
+    "moved": false,
+    "quote": "Maya Chen jolts upright, her phone clattering to the table as she stares at you in disbelief."
+  },
+  "6a8a9bacde28f1fb9d6ea1bb:2": {
+    "id": "6a8a9bacde28f1fb9d6ea1bb:2",
+    "place": "the room",
+    "placeIsSpace": true,
+    "cast": [
+      "Queen Isolde",
+      "Cedric",
+      "Lyra"
+    ],
+    "moved": false,
+    "quote": "The tension in the room thickens as all eyes remain fixed on him, waiting for whatever comes next."
+  },
+  "6a945bd218c48d994f296483:2": {
+    "id": "6a945bd218c48d994f296483:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a96f49e46932234f6c6ecfb:3": {
+    "id": "6a96f49e46932234f6c6ecfb:3",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "she"
+    ],
+    "moved": false,
+    "quote": ""
+  },
+  "6a9542976c8f20797d00db97:2": {
+    "id": "6a9542976c8f20797d00db97:2",
+    "place": "street",
+    "placeIsSpace": true,
+    "cast": [
+      "she"
+    ],
+    "moved": false,
+    "quote": "The saxophone down the street falters for a bar, then slides into a deeper, more mournful key."
+  },
+  "6a2b93d490e6a5283a667ed6:2": {
+    "id": "6a2b93d490e6a5283a667ed6:2",
+    "place": "a cramped hole-in-the-wall",
+    "placeIsSpace": true,
+    "cast": [
+      "a few salarymen",
+      "the stranger"
+    ],
+    "moved": true,
+    "quote": "It is a cramped hole-in-the-wall, the kind of place where the lighting is intentionally dim to hide the rust on the chrome."
+  },
+  "6a2b93ff90e6a5283a667ee6:2": {
+    "id": "6a2b93ff90e6a5283a667ee6:2",
+    "place": "the studio",
+    "placeIsSpace": true,
+    "cast": [
+      "she"
+    ],
+    "moved": false,
+    "quote": "The studio is a shoebox of dim red lights and stale coffee, smelling of ozone and old paper."
+  },
+  "6a2b944e90e6a5283a667eec:2": {
+    "id": "6a2b944e90e6a5283a667eec:2",
+    "place": "kitchen",
+    "placeIsSpace": true,
+    "cast": [],
+    "moved": false,
+    "quote": "I slide the kitchen blinds open with a soft, mechanical whirr, letting the morning light hit the counter."
+  },
+  "6a93f18a18c48d994f29643f:2": {
+    "id": "6a93f18a18c48d994f29643f:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "She"
+    ],
+    "moved": true,
+    "quote": ""
+  },
+  "6a947fa96c8f20797d00da92:3": {
+    "id": "6a947fa96c8f20797d00da92:3",
+    "place": "a road between two fires",
+    "placeIsSpace": true,
+    "cast": [
+      "the rider"
+    ],
+    "moved": false,
+    "quote": "You’re standing on a road between two fires."
+  },
+  "6a97224a46932234f6c6ed12:3": {
+    "id": "6a97224a46932234f6c6ed12:3",
+    "place": "counter",
+    "placeIsSpace": false,
+    "cast": [
+      "Dev"
+    ],
+    "moved": false,
+    "quote": "He pushed off the counter, his voice low."
+  },
+  "6a8a1892bcbfb358694a2e94:4": {
+    "id": "6a8a1892bcbfb358694a2e94:4",
+    "place": "royal dining hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Isolde",
+      "Cedric",
+      "Lyra"
+    ],
+    "moved": false,
+    "quote": "The air in the royal dining hall thickened, heavy with tension."
+  },
+  "6a9838c242bd67e3f97250da:3": {
+    "id": "6a9838c242bd67e3f97250da:3",
+    "place": "hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "moved": false,
+    "quote": "The hall felt colder now, the silence waiting to be filled."
+  },
+  "6a97d9c046932234f6c6ed48:3": {
+    "id": "6a97d9c046932234f6c6ed48:3",
+    "place": "table",
+    "placeIsSpace": false,
+    "cast": [
+      "Isolde",
+      "Cedric",
+      "Lyra"
+    ],
+    "moved": false,
+    "quote": "Across the table, Cedric’s knuckles went white on the arm of his chair."
+  },
+  "6a94b67f6c8f20797d00dac1:4": {
+    "id": "6a94b67f6c8f20797d00dac1:4",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c442bd67e3f97250e1:3": {
+    "id": "6a9838c442bd67e3f97250e1:3",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "cast": [
+      "Soren"
+    ],
+    "moved": true,
+    "quote": "Inside, the Split Lamp is all low light and polished wood."
+  },
+  "6a9838c742bd67e3f97250e8:3": {
+    "id": "6a9838c742bd67e3f97250e8:3",
+    "place": "room",
+    "placeIsSpace": true,
+    "cast": [
+      "I"
+    ],
+    "moved": false,
+    "quote": "I glance up from the notebook in my hand, my eyes scanning the dim, empty room before settling back on you."
+  },
+  "6a953c8e6c8f20797d00db24:3": {
+    "id": "6a953c8e6c8f20797d00db24:3",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a964a7e1f86703402a29a50:3": {
+    "id": "6a964a7e1f86703402a29a50:3",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "you"
+    ],
+    "moved": false,
+    "quote": ""
+  },
+  "6a91a8e53f3f89ab48328d56:3": {
+    "id": "6a91a8e53f3f89ab48328d56:3",
+    "place": "room",
+    "placeIsSpace": true,
+    "cast": [
+      "Isolde",
+      "Cedric",
+      "Lyra",
+      "Aurelius"
+    ],
+    "moved": true,
+    "quote": "The room seems to hold its breath, the tension thickening like fog."
+  },
+  "6a965d5f1f86703402a29a69:3": {
+    "id": "6a965d5f1f86703402a29a69:3",
+    "place": "bar",
+    "placeIsSpace": true,
+    "cast": [
+      "the woman from the bar"
+    ],
+    "moved": false,
+    "quote": "It's the woman from the bar."
+  },
+  "6a2307c509566cfc77b42904:4": {
+    "id": "6a2307c509566cfc77b42904:4",
+    "place": "the table",
+    "placeIsSpace": false,
+    "cast": [
+      "her"
+    ],
+    "moved": false,
+    "quote": "She slams her phone face-down on the table, shoulders tense, but her blush betrays her."
+  },
+  "6a8a9bacde28f1fb9d6ea1bb:3": {
+    "id": "6a8a9bacde28f1fb9d6ea1bb:3",
+    "place": "room",
+    "placeIsSpace": true,
+    "cast": [
+      "Queen Isolde",
+      "Crown Prince Cedric",
+      "Princess Lyra"
+    ],
+    "moved": false,
+    "quote": "The room's atmosphere had shifted from hostile to something more volatile, a charged silence waiting for the next spark."
+  },
+  "6a945bd218c48d994f296483:3": {
+    "id": "6a945bd218c48d994f296483:3",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a96f49e46932234f6c6ecfb:4": {
+    "id": "6a96f49e46932234f6c6ecfb:4",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "she"
+    ],
+    "moved": false,
+    "quote": ""
+  },
+  "6a9542976c8f20797d00db97:3": {
+    "id": "6a9542976c8f20797d00db97:3",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "she"
+    ],
+    "moved": false,
+    "quote": ""
+  },
+  "6a8a1892bcbfb358694a2e94:5": {
+    "id": "6a8a1892bcbfb358694a2e94:5",
+    "place": "court",
+    "placeIsSpace": true,
+    "cast": [
+      "Isolde",
+      "Cedric"
+    ],
+    "moved": false,
+    "quote": "But here, in this court, you will learn it."
+  },
+  "6a9838c242bd67e3f97250da:4": {
+    "id": "6a9838c242bd67e3f97250da:4",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "moved": true,
+    "quote": "He looks from the hand on his arm to the unlit hearth across the hall, his expression flat."
+  },
+  "6a97d9c046932234f6c6ed48:4": {
+    "id": "6a97d9c046932234f6c6ed48:4",
+    "place": "hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Isolde",
+      "Cedric",
+      "Lyra"
+    ],
+    "moved": false,
+    "quote": "The silence in the hall felt heavy, like the air before a storm breaks."
+  },
+  "6a94b67f6c8f20797d00dac1:5": {
+    "id": "6a94b67f6c8f20797d00dac1:5",
+    "place": "room",
+    "placeIsSpace": true,
+    "cast": [],
+    "moved": false,
+    "quote": "Then it goes dark, plunging the room into the hum of old cooling fans and the distant, wet sigh of the city outside."
+  },
+  "6a9838c442bd67e3f97250e1:4": {
+    "id": "6a9838c442bd67e3f97250e1:4",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "Soren"
+    ],
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c742bd67e3f97250e8:4": {
+    "id": "6a9838c742bd67e3f97250e8:4",
+    "place": "room",
+    "placeIsSpace": true,
+    "cast": [
+      "Jax"
+    ],
+    "moved": false,
+    "quote": "The air in the room gets heavier, like the quiet before a storm."
+  },
+  "6a953c8e6c8f20797d00db24:4": {
+    "id": "6a953c8e6c8f20797d00db24:4",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a964a7e1f86703402a29a50:4": {
+    "id": "6a964a7e1f86703402a29a50:4",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a91a8e53f3f89ab48328d56:4": {
+    "id": "6a91a8e53f3f89ab48328d56:4",
+    "place": "dining room",
+    "placeIsSpace": true,
+    "cast": [
+      "Isolde",
+      "Cedric",
+      "Lyra"
+    ],
+    "moved": false,
+    "quote": "The dining room feels smaller, the tension thickening like fog."
+  },
+  "6a965d5f1f86703402a29a69:4": {
+    "id": "6a965d5f1f86703402a29a69:4",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "she"
+    ],
+    "moved": false,
+    "quote": ""
+  },
+  "6a2307c509566cfc77b42904:6": {
+    "id": "6a2307c509566cfc77b42904:6",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "her"
+    ],
+    "moved": false,
+    "quote": ""
+  },
+  "6a8a9bacde28f1fb9d6ea1bb:4": {
+    "id": "6a8a9bacde28f1fb9d6ea1bb:4",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "Queen Isolde",
+      "Cedric",
+      "Princess Lyra"
+    ],
+    "moved": false,
+    "quote": ""
+  },
+  "6a945bd218c48d994f296483:4": {
+    "id": "6a945bd218c48d994f296483:4",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a96f49e46932234f6c6ecfb:5": {
+    "id": "6a96f49e46932234f6c6ecfb:5",
+    "place": "room",
+    "placeIsSpace": true,
+    "cast": [
+      "She"
+    ],
+    "moved": false,
+    "quote": "The cigarette smoke in the room suddenly felt less like a wall and more like a thread connecting them."
+  }
+}

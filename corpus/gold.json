@@ -1,0 +1,597 @@
+{
+  "6a8a1892bcbfb358694a2e94:3": {
+    "id": "6a8a1892bcbfb358694a2e94:3",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Queen Isolde"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": "A long, brittle silence fell over the table. The fire in the hearth seemed to crackle louder."
+  },
+  "6a8a1892bcbfb358694a2e94:8": {
+    "id": "6a8a1892bcbfb358694a2e94:8",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "Queen Isolde",
+      "Crown Prince Cedric",
+      "Princess Lyra"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": ""
+  },
+  "6a8a1892bcbfb358694a2e94:13": {
+    "id": "6a8a1892bcbfb358694a2e94:13",
+    "place": "the dinner table",
+    "placeIsSpace": false,
+    "cast": [
+      "King Aldric",
+      "Queen Isolde"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": "The crown is not won by declarations at the dinner table."
+  },
+  "6a8a1892bcbfb358694a2e94:18": {
+    "id": "6a8a1892bcbfb358694a2e94:18",
+    "place": "the dining hall",
+    "placeIsSpace": true,
+    "cast": [
+      "King Aldric",
+      "Queen Isolde",
+      "Crown Prince Cedric",
+      "Princess Lyra"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": "The dining hall is not a battlefield, and I will not be made to feel like a prisoner in my own court."
+  },
+  "6a8a1892bcbfb358694a2e94:23": {
+    "id": "6a8a1892bcbfb358694a2e94:23",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "Queen Isolde",
+      "King Aldric"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": ""
+  },
+  "6a8a1892bcbfb358694a2e94:29": {
+    "id": "6a8a1892bcbfb358694a2e94:29",
+    "place": "War Room",
+    "placeIsSpace": true,
+    "cast": [
+      "King Aldric",
+      "Crown Prince Cedric"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": "The war room was a long, stone-walled chamber, maps unrolled across a heavy oak table."
+  },
+  "6a8a1892bcbfb358694a2e94:34": {
+    "id": "6a8a1892bcbfb358694a2e94:34",
+    "place": "War Room",
+    "placeIsSpace": true,
+    "cast": [
+      "King Aldric",
+      "Crown Prince Cedric"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": "He stands, pacing the length of the war table, his fingers drumming on maps of the northern border."
+  },
+  "6a8a1892bcbfb358694a2e94:39": {
+    "id": "6a8a1892bcbfb358694a2e94:39",
+    "place": "the war room",
+    "placeIsSpace": true,
+    "cast": [
+      "messenger",
+      "King Aldric"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": "A messenger darts into the war room, his breath coming in ragged gasps."
+  },
+  "6a8a1892bcbfb358694a2e94:44": {
+    "id": "6a8a1892bcbfb358694a2e94:44",
+    "place": "War Room",
+    "placeIsSpace": true,
+    "cast": [
+      "Crown Prince Cedric"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a8a1892bcbfb358694a2e94:49": {
+    "id": "6a8a1892bcbfb358694a2e94:49",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "cast": [
+      "a few servants"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": true,
+    "quote": "The hall outside is quiet, the torchlight flickering over stone."
+  },
+  "6a8a1892bcbfb358694a2e94:54": {
+    "id": "6a8a1892bcbfb358694a2e94:54",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "moved": true,
+    "quote": "Cedric watched him go, his expression tight."
+  },
+  "6a9838c242bd67e3f97250da:2": {
+    "id": "6a9838c242bd67e3f97250da:2",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": "“The hall’s empty."
+  },
+  "6a9838c242bd67e3f97250da:7": {
+    "id": "6a9838c242bd67e3f97250da:7",
+    "place": "north wall",
+    "placeIsSpace": false,
+    "cast": [],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": "He doesn't move from the wall, the rough stone biting into his palms as he leans forward."
+  },
+  "6a9838c242bd67e3f97250da:12": {
+    "id": "6a9838c242bd67e3f97250da:12",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c242bd67e3f97250da:18": {
+    "id": "6a9838c242bd67e3f97250da:18",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c242bd67e3f97250da:23": {
+    "id": "6a9838c242bd67e3f97250da:23",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c242bd67e3f97250da:28": {
+    "id": "6a9838c242bd67e3f97250da:28",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c242bd67e3f97250da:33": {
+    "id": "6a9838c242bd67e3f97250da:33",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "cast": [],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": true,
+    "quote": "Kael turns his back on the hall and the silent steward, descending the worn steps into the damp dark beneath the kitchen."
+  },
+  "6a9838c242bd67e3f97250da:38": {
+    "id": "6a9838c242bd67e3f97250da:38",
+    "place": "the great hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": true,
+    "quote": "When he pushes the heavy door open, the great hall greets him with a deeper silence than the one he left."
+  },
+  "6a9838c242bd67e3f97250da:43": {
+    "id": "6a9838c242bd67e3f97250da:43",
+    "place": "the great hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": true,
+    "quote": "He doesn’t look up as Kael enters"
+  },
+  "6a9838c242bd67e3f97250da:48": {
+    "id": "6a9838c242bd67e3f97250da:48",
+    "place": "north wall",
+    "placeIsSpace": false,
+    "cast": [
+      "Tomas"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c242bd67e3f97250da:53": {
+    "id": "6a9838c242bd67e3f97250da:53",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Tomas"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a97d9c046932234f6c6ed48:2": {
+    "id": "6a97d9c046932234f6c6ed48:2",
+    "place": "the chair",
+    "placeIsSpace": false,
+    "cast": [
+      "Isolde",
+      "Cedric",
+      "Lyra"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": true,
+    "quote": "The silence stretches as he settles into the chair opposite the queen."
+  },
+  "6a97d9c046932234f6c6ed48:8": {
+    "id": "6a97d9c046932234f6c6ed48:8",
+    "place": "the royal dining hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Isolde",
+      "Lyra",
+      "Cedric"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a97d9c046932234f6c6ed48:14": {
+    "id": "6a97d9c046932234f6c6ed48:14",
+    "place": "the royal dining hall",
+    "placeIsSpace": true,
+    "cast": [
+      "Cedric",
+      "Isolde",
+      "Lyra"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a97d9c046932234f6c6ed48:20": {
+    "id": "6a97d9c046932234f6c6ed48:20",
+    "place": "council room",
+    "placeIsSpace": true,
+    "cast": [
+      "Cedric",
+      "two guards"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a97d9c046932234f6c6ed48:26": {
+    "id": "6a97d9c046932234f6c6ed48:26",
+    "place": "council room",
+    "placeIsSpace": true,
+    "cast": [],
+    "establishedHere": true,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": "The heavy oak door swung shut with a hollow thud, leaving the council room silent except for the crackle of the hearth."
+  },
+  "6a94b67f6c8f20797d00dac1:3": {
+    "id": "6a94b67f6c8f20797d00dac1:3",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": ""
+  },
+  "6a94b67f6c8f20797d00dac1:9": {
+    "id": "6a94b67f6c8f20797d00dac1:9",
+    "place": "the corridor",
+    "placeIsSpace": true,
+    "cast": [],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": true,
+    "quote": "Mike moves into the corridor, a low hum of ventilation and distant machinery filling the space."
+  },
+  "6a94b67f6c8f20797d00dac1:15": {
+    "id": "6a94b67f6c8f20797d00dac1:15",
+    "place": "the bar",
+    "placeIsSpace": true,
+    "cast": [
+      "Kaelen"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": "Kaelen's eyes narrow, the red circuit pattern on his sleeve flickering faintly under the dim bar lights."
+  },
+  "6a94b67f6c8f20797d00dac1:21": {
+    "id": "6a94b67f6c8f20797d00dac1:21",
+    "place": "terminal room",
+    "placeIsSpace": true,
+    "cast": [
+      "Kaelen"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c442bd67e3f97250e1:2": {
+    "id": "6a9838c442bd67e3f97250e1:2",
+    "place": "Canal Street",
+    "placeIsSpace": true,
+    "cast": [],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": "Rain beads on the sign above the Split Lamp, its neon buzzing a low blue against the wet brick."
+  },
+  "6a9838c442bd67e3f97250e1:7": {
+    "id": "6a9838c442bd67e3f97250e1:7",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "cast": [
+      "Soren"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c442bd67e3f97250e1:13": {
+    "id": "6a9838c442bd67e3f97250e1:13",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "cast": [
+      "Soren"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c442bd67e3f97250e1:18": {
+    "id": "6a9838c442bd67e3f97250e1:18",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "cast": [
+      "Soren"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c742bd67e3f97250e8:2": {
+    "id": "6a9838c742bd67e3f97250e8:2",
+    "place": "the house",
+    "placeIsSpace": true,
+    "cast": [
+      "Jax"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": "The silence here is a different kind of loud—the kind that comes after the amps are off and the house is empty."
+  },
+  "6a9838c742bd67e3f97250e8:8": {
+    "id": "6a9838c742bd67e3f97250e8:8",
+    "place": "green room",
+    "placeIsSpace": true,
+    "cast": [
+      "Jax"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": "I glance around the green room, the question hanging between us like a chord that hasn't resolved."
+  },
+  "6a9838c742bd67e3f97250e8:15": {
+    "id": "6a9838c742bd67e3f97250e8:15",
+    "place": "the green room",
+    "placeIsSpace": true,
+    "cast": [],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a953c8e6c8f20797d00db24:2": {
+    "id": "6a953c8e6c8f20797d00db24:2",
+    "place": "the room",
+    "placeIsSpace": true,
+    "cast": [],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": "The screen flickers, its glow cutting through the dim light of the room."
+  },
+  "6a953c8e6c8f20797d00db24:9": {
+    "id": "6a953c8e6c8f20797d00db24:9",
+    "place": "dimly lit room",
+    "placeIsSpace": true,
+    "cast": [],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a953c8e6c8f20797d00db24:14": {
+    "id": "6a953c8e6c8f20797d00db24:14",
+    "place": "dimly lit room",
+    "placeIsSpace": true,
+    "cast": [],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a964a7e1f86703402a29a50:2": {
+    "id": "6a964a7e1f86703402a29a50:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": ""
+  },
+  "6a91a8e53f3f89ab48328d56:2": {
+    "id": "6a91a8e53f3f89ab48328d56:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "Queen Isolde",
+      "Crown Prince Cedric",
+      "Princess Lyra"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": ""
+  },
+  "6a965d5f1f86703402a29a69:2": {
+    "id": "6a965d5f1f86703402a29a69:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "she"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": ""
+  },
+  "6a2307c509566cfc77b42904:3": {
+    "id": "6a2307c509566cfc77b42904:3",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [
+      "Maya Chen"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": ""
+  },
+  "6a8a9bacde28f1fb9d6ea1bb:2": {
+    "id": "6a8a9bacde28f1fb9d6ea1bb:2",
+    "place": "the room",
+    "placeIsSpace": true,
+    "cast": [
+      "Queen Isolde",
+      "Crown Prince Cedric",
+      "Princess Lyra"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": "The tension in the room thickens as all eyes remain fixed on him, waiting for whatever comes next."
+  },
+  "6a945bd218c48d994f296483:2": {
+    "id": "6a945bd218c48d994f296483:2",
+    "place": null,
+    "placeIsSpace": false,
+    "cast": [],
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": ""
+  },
+  "6a96f49e46932234f6c6ecfb:3": {
+    "id": "6a96f49e46932234f6c6ecfb:3",
+    "place": "radio station",
+    "placeIsSpace": true,
+    "cast": [
+      "the woman"
+    ],
+    "establishedHere": false,
+    "sameAsPrior": true,
+    "moved": false,
+    "quote": ""
+  },
+  "6a9542976c8f20797d00db97:2": {
+    "id": "6a9542976c8f20797d00db97:2",
+    "place": "the street",
+    "placeIsSpace": true,
+    "cast": [
+      "she"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": false,
+    "quote": "A low chuckle vibrates up through the wet pavement under your feet."
+  },
+  "6a2b93d490e6a5283a667ed6:2": {
+    "id": "6a2b93d490e6a5283a667ed6:2",
+    "place": "the noodle bar",
+    "placeIsSpace": true,
+    "cast": [
+      "the stranger"
+    ],
+    "establishedHere": true,
+    "sameAsPrior": false,
+    "moved": true,
+    "quote": "It is a cramped hole-in-the-wall, the kind of place where the lighting is intentionally dim to hide the rust on the chrome."
+  }
+}

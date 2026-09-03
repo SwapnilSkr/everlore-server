@@ -426,6 +426,13 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     options: { name: "idx_signal_ledger_instance_seq" },
   },
 
+  // extractor_raw (per-turn witness/judge JSON for corpus replay; by instance)
+  {
+    collection: COLLECTIONS.extractor_raw,
+    key: { instance_id: 1, sequence: -1 },
+    options: { name: "idx_extractor_raw_instance_seq" },
+  },
+
   // projection_checkpoints (chunked world projection snapshots for scalable
   // replay/rewind repair: restore latest checkpoint, then replay only the suffix).
   {
@@ -449,6 +456,13 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     options: { name: "idx_projection_checkpoint_chunks_instance_sequence" },
   },
 
+  // place_candidates — accrued structural evidence for a place NOT yet promoted
+  // to a map node. One row per instance per candidate name.
+  {
+    collection: COLLECTIONS.place_candidates,
+    key: { instance_id: 1, name_normalized: 1 },
+    options: { unique: true, name: "uniq_place_candidate_instance_name" },
+  },
   // location_stats (materialized Places projection: one row per place per
   // instance, maintained incrementally so the Places tab never re-aggregates the
   // whole world). Natural key + the most-recently-seen-first read.

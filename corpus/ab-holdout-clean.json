@@ -1,0 +1,4230 @@
+{
+  "6a8a1892bcbfb358694a2e94:2": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "we have business to discuss before you're needed",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the table",
+        "evidence": "The tension at the table thickens as all eyes remain on you"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:3": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the fire in the hearth seemed to crackle louder",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the table",
+        "evidence": "A long, brittle silence fell over the table."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:4": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "royal dining hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The air in the royal dining hall thickened",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "royal dining hall",
+        "evidence": "The air in the royal dining hall thickened, heavy with tension."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:5": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "in this court, you will learn it",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the court",
+        "evidence": "But here, in this court, you will learn it."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:6": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the crystal groaning under her grip",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:7": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the weight of the queen's words hanging heavy in the air",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "The tension in the hall thickens, the weight of the queen's words hanging heavy in the air."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:8": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the war room",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the throne room",
+        "evidence": "Queen Isolde's eyes narrow, her knuckles white around her goblet."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:9": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Father will not be summoned like a common servant by his mistake.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the court",
+        "evidence": "You will wait for an audience, bastard."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:10": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "dining hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The door to the dining hall swings open.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "dining hall",
+        "evidence": "The door to the dining hall swings open."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:11": {
+    "witness": {
+      "present_characters": [
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "dining hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "in front of your family, without prior notice",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the castle",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "dining hall",
+        "evidence": "bring them to my dining hall, in front of your family"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:12": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Crown Prince Cedric",
+        "Princess Lyra"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "his presence commanding the room despite his smaller frame",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the room",
+        "evidence": "Cedric shifts uncomfortably, his gaze darting between his father and brother."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:13": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Queen Isolde"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "This conversation is over.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the dinner table",
+        "evidence": "The crown is not won by declarations at the dinner table."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:14": {
+    "witness": {
+      "present_characters": [
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the king fully present now",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the throne room",
+        "evidence": "The throne does not bow to demands, even from its commander general."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:15": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Crown Prince Cedric",
+        "Queen Isolde",
+        "Princess Lyra"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "dining hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the dining hall falls silent",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "dining hall",
+        "evidence": "The dining hall falls silent, the clash of cutlery and murmur of conversation replaced by a heavy tension"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:16": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "dining hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the dining hall falls silent",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:17": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the challenge in his son's voice",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the throne",
+        "evidence": "Aldric finally says, his voice a low growl that barely contains his fury."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:18": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the heavy brocade of his robes whispering against the stone floor",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the dining hall",
+        "evidence": "The dining hall is not a battlefield"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:19": {
+    "witness": {
+      "present_characters": [
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the king finally nodded, a sharp, curt movement",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:20": {
+    "witness": {
+      "present_characters": [
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "dining hall",
+      "player_destination": "war room",
+      "player_travel_confirmed": false,
+      "location_evidence": "the conversation shifts from personal conflict to matters of state",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": "until dawn",
+      "time_evidence": "Meet me in the war room at dawn",
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the dining hall",
+        "evidence": "gestures to the dining hall around them"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:21": {
+    "witness": {
+      "present_characters": [
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": "War Room",
+      "player_travel_confirmed": true,
+      "location_evidence": "We'll discuss Falkreath and the northern borders.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "war room",
+        "evidence": "We'll discuss Falkreath and the northern borders."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:22": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "her voice a low, controlled murmur",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:23": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the northern borders are the concern of the crown",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:24": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "I don’t grant favors to shadows.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:25": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Whatever you're planning, I'll accompany you",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:26": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "Queen Isolde"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "dining hall",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the air in the dining hall grows heavier",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "dining hall",
+        "evidence": "the air in the dining hall grows heavier"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:27": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the war room table",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "war room",
+        "evidence": "his fingers drumming a restless rhythm on the war room table."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:28": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": "War Room",
+      "player_travel_confirmed": true,
+      "location_evidence": "He finally stepped toward the exit",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the war room",
+        "evidence": "Father must be waiting for us in the war room"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:29": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the scouts from the northern pass returned last night",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the war room",
+        "evidence": "The war room was a long, stone-walled chamber"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:30": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the air in the war room is thick with unspoken tension",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "war room",
+        "evidence": "the air in the war room is thick with unspoken tension"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:31": {
+    "witness": {
+      "present_characters": [
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the edge of the war room table",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "war room",
+        "evidence": "the edge of the war room table."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:32": {
+    "witness": {
+      "present_characters": [
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the edge of the war table",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the war room",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "war table",
+        "evidence": "his knuckles white where he grips the edge of the war table."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:33": {
+    "witness": {
+      "present_characters": [
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "King Aldric's face reddens, his fingers tightening into fists on the armrests of his throne",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the throne",
+        "evidence": "his fingers tightening into fists on the armrests of his throne."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:34": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the length of the war table",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the war table",
+        "evidence": "pacing the length of the war table"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:35": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the sound dry in the tense room",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the throne room",
+        "evidence": "Aldric stared at him, the king’s knuckles whitening on the throne’s armrests."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:36": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the map-strewn table",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the map-strewn table",
+        "evidence": "he leaned forward, his knuckles white on the map-strewn table."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:37": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "in the war room, the air is tense",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:38": {
+    "witness": {
+      "present_characters": [
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the order hangs in the air, final and unyielding",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the throne room",
+        "evidence": "Aldric leans forward, his knuckles white on the armrests of his throne."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:39": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "the messenger"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "he drops to one knee before Aldric",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "war room",
+        "evidence": "A messenger darts into the war room, his breath coming in ragged gasps."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:40": {
+    "witness": {
+      "present_characters": [
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the edge of the war room table",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "war room",
+        "evidence": "grips the edge of the war room table."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:41": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Turning to a map spread across the table",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the room",
+        "evidence": "a reminder of the fragile balance of power in the room."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:42": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the first light of dawn is beginning to filter through",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:43": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the heavy oak door",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:44": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the surface covered in maps and reports",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the large oak table",
+        "evidence": "Cedric leaned over the large oak table, its surface covered in maps and reports."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:45": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the worn map between them",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the war room",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:46": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "*Cedric's brow furrows slightly, but he nods thoughtfully.*",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:47": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The clap of your hand on his shoulder hangs in the air between you.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:48": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "contact",
+          "statement": "Cedric places a hand on Aurelius's shoulder",
+          "actors": [
+            "Crown Prince Cedric",
+            "Aurelius Valemont"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the tense silence of the war room",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the war room",
+        "evidence": "in the tense silence of the war room."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:49": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": "Aurelius's room",
+      "player_travel_confirmed": true,
+      "location_evidence": "The war room door closes behind Aurelius with a heavy finality.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:50": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Aurelius's room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He moves to the window, looking out over the palace grounds",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:51": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the weight of his brother's impending mission settles heavily in the war room",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "war room",
+        "evidence": "the weight of his brother's impending mission settles heavily in the war room."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:52": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [
+        "Crown Prince Cedric"
+      ],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "leaving Aurelius alone",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:53": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Aurelius's room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "he made it back to his quarters",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": "dawn would come soon enough",
+      "time_evidence": "the only sound the distant call of the night watch",
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:54": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "he turned back toward the war room’s heavy oak door",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:55": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [
+        "Crown Prince Cedric"
+      ],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He strides out without a backward glance",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:56": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the war maps unfurled across the table",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:57": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He stands and paces to the large war map on the wall",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the large war map on the wall",
+        "evidence": "He stands and paces to the large war map on the wall"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:58": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the king had not taken it well",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": "a day",
+      "time_evidence": "A day passed in a blur of preparation and tension",
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:59": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "King Aldric"
+      ],
+      "characters_departed": [
+        "Aurelius Valemont"
+      ],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the war room feels suddenly hollow",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:60": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "throne room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Aldric stared at the empty space where his son had stood",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the castle",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:61": {
+    "witness": {
+      "present_characters": [
+        "King Aldric",
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "War Room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "he's gone",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the throne",
+        "evidence": "King Aldric stares at the empty space where Aurelius Valemont should be standing"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:62": {
+    "witness": {
+      "present_characters": [
+        "the sergeant"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The guards at Falkreath's gate are sharp-eyed",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:63": {
+    "witness": {
+      "present_characters": [
+        "guard sergeant"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The gates to Falkreath remain firmly shut",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:64": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Falkreath needs swords, not statues.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:65": {
+    "witness": {
+      "present_characters": [
+        "guard sergeant"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Falkreath hasn't room for beggars and drifters",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:66": {
+    "witness": {
+      "present_characters": [
+        "guard sergeant"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the guard sergeant's eyes narrow, sizing Aurelius up",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:67": {
+    "witness": {
+      "present_characters": [
+        "guard sergeant"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": "stables",
+      "player_travel_confirmed": true,
+      "location_evidence": "He leads you through the heavy gate into Falkreath proper.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "deeper",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "Falkreath",
+        "evidence": "The air inside is thick with the smell of damp stone, horse dung, and woodsmoke."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:68": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "we're a long way from anywhere that sells it",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:69": {
+    "witness": {
+      "present_characters": [
+        "the speaker",
+        "she"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The hearth crackled between you.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hearth",
+        "evidence": "The hearth crackled between you."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:70": {
+    "witness": {
+      "present_characters": [
+        "Aurelius Valemont",
+        "stable boy"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the scent of hay and horse mixed with the damp earth of Falkreath fills the space",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:71": {
+    "witness": {
+      "present_characters": [
+        "the stable boy"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "held",
+          "statement": "Aurelius Valemont has a discarded knife tucked behind a hay bale",
+          "actors": [
+            "Aurelius Valemont"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "His fingers brush against the handle of a discarded knife tucked behind a hay bale",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the stable",
+        "evidence": "Aurelius Valemont's eyes move methodically over the stable."
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:72": {
+    "witness": {
+      "present_characters": [
+        "the stable boy"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Aurelius pockets the knife.",
+      "location_evidence_source": "player",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:73": {
+    "witness": {
+      "present_characters": [
+        "the stable boy",
+        "the scarred guard",
+        "off-duty guards"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Outside, the yard was a wide, packed-dirt space",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Falkreath",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the yard",
+        "evidence": "Outside, the yard was a wide, packed-dirt space"
+      }
+    }
+  },
+  "6a8a1892bcbfb358694a2e94:74": {
+    "witness": {
+      "present_characters": [
+        "the guard"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": "main yard",
+      "player_travel_confirmed": true,
+      "location_evidence": "He watches Aurelius carefully, not quite convinced but willing to give the benefit of the doubt.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": null
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:2": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": "Whisper's Edge",
+      "player_travel_confirmed": false,
+      "location_evidence": "the terminal blinks again",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": null
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:3": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": "Whisper's Edge",
+      "player_travel_confirmed": false,
+      "location_evidence": "Last confirmed location is the Whisper's Edge, booth three.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "Whisper's Edge",
+        "evidence": "Last confirmed location is the Whisper's Edge, booth three."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:4": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The file decrypts with a soft chime, its contents spilling across the screen.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": "three days",
+      "time_evidence": "Payment missed three days ago.",
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:5": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "held",
+          "statement": "Mike holds a compact pistol against his ribs",
+          "actors": [
+            "Mike"
+          ]
+        },
+        {
+          "kind": "held",
+          "statement": "Mike has a knife secured",
+          "actors": [
+            "Mike"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the terminal’s screen flickers one last time",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the room",
+        "evidence": "plunging the room into the hum of old cooling fans"
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:6": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "corridor",
+      "player_destination": "exit",
+      "player_travel_confirmed": true,
+      "location_evidence": "He heads for the exit",
+      "location_evidence_source": "narrative",
+      "containment_hint": "terminal room",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the old quarter",
+        "evidence": "The old quarter waits, a maze of wet asphalt and analog shadows."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:7": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": "old quarter",
+      "player_travel_confirmed": true,
+      "location_evidence": "Transit to the old quarter will take eighteen.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:8": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "corridor",
+      "player_destination": "Whisper's Edge",
+      "player_travel_confirmed": true,
+      "location_evidence": "The corridor is narrow, lit by the dull glow of emergency strips along the floor.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "terminal room",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": "twenty-three minutes",
+      "time_evidence": "He’s got twenty-three minutes to get across the Divide",
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the corridor",
+        "evidence": "The corridor is narrow, lit by the dull glow of emergency strips along the floor."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:9": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "corridor",
+      "player_destination": "Whisper's Edge",
+      "player_travel_confirmed": true,
+      "location_evidence": "Mike moves into the corridor",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the Divide",
+      "movement": "lateral",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the Whisper's Edge",
+        "evidence": "Kaelen won’t wait forever, and neither will Rook."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:10": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "alley behind the Whisper's Edge",
+      "player_destination": "alley behind the Whisper's Edge",
+      "player_travel_confirmed": true,
+      "location_evidence": "The door swings open onto a narrow alley behind the Whisper's Edge.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Whisper's Edge",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "narrow alley behind the Whisper's Edge",
+        "evidence": "The door swings open onto a narrow alley behind the Whisper's Edge."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:11": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The man in the gray synth-leather jacket looks up from his half-empty glass.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the bar",
+        "evidence": "The man in the gray synth-leather jacket looks up from his half-empty glass."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:12": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the bar’s dim corners",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the bar",
+        "evidence": "the bar’s dim corners"
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:13": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the bar's dim corners",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the bar",
+        "evidence": "He scans the bar's dim corners"
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:14": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the dim light of the booth",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the terminal room",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the booth",
+        "evidence": "the dim light of the booth"
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:15": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the dim bar lights",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the bar",
+        "evidence": "the red circuit pattern on his sleeve flickering faintly under the dim bar lights"
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:16": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the rain-streaked window behind him",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the city",
+        "evidence": "Safe doesn’t exist in this city."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:17": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The terminal's low hum fills the silence",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the worn tabletop",
+        "evidence": "His fingers tap a quick, nervous rhythm against the worn tabletop."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:18": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "posture",
+          "statement": "Kaelen's posture is rigid as he waits.",
+          "actors": [
+            "Kaelen"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the flickering overhead light catches the sweat on his temple",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the terminal",
+        "evidence": "his knuckles tightening around the edge of the terminal table."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:19": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "his tense perch on the edge of the terminal bench",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the terminal bench",
+        "evidence": "He doesn’t move from his tense perch on the edge of the terminal bench."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:20": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the flickering terminal screen",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the synth-leather booth",
+        "evidence": "He leans back against the synth-leather booth, a short, sharp exhale escaping him."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:21": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "his knuckles pale where they grip the edge of the terminal table",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:22": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the room is tense with silence",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:23": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "posture",
+          "statement": "Kaelen leans forward, elbows on the terminal table.",
+          "actors": [
+            "Kaelen"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "I walk. I'm not your social lubricant.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "terminal table",
+        "evidence": "He leans forward, elbows on the terminal table."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:24": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "posture",
+          "statement": "Kaelen leans forward, elbows on the table",
+          "actors": [
+            "Kaelen"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the red circuit pattern on his sleeve catching the terminal's glow",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the table",
+        "evidence": "He leans forward, elbows on the table, the red circuit pattern on his sleeve catching the terminal's glow."
+      }
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:25": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the rigid tension in his shoulders eases a fraction",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:26": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": "Sapphire Tower",
+      "player_travel_confirmed": false,
+      "location_evidence": "His shoulders finally relax, the rigid tension bleeding out of him.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a94b67f6c8f20797d00dac1:27": {
+    "witness": {
+      "present_characters": [
+        "Kaelen"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "terminal room",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He doesn't sit back down, but he doesn't leave either",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the terminal",
+        "evidence": "His eyes flick toward the terminal's door"
+      }
+    }
+  }
+}

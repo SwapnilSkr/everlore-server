@@ -1,5 +1,6 @@
 import { getOpenAI, getOpenRouter } from '../config/openai'
 import { env } from '../config/env'
+import { recordLLMUsage, usageFromProvider, isLLMUsageActive } from './usage'
 
 /**
  * Model ids served by the OpenAI API directly. Anything NOT in this set is
@@ -87,6 +88,8 @@ interface LLMRequest {
   /** Stable OpenRouter conversation key. It keeps a story on the provider that
    * has its prompt/KV cache warm; ignored for direct OpenAI models. */
   sessionId?: string
+  /** Label for per-call token accounting. Optional; omitted on unlabeled paths. */
+  purpose?: string
 }
 
 export interface LLMStreamResult {
@@ -160,6 +163,12 @@ export async function callLLM(req: LLMRequest): Promise<string> {
   const content = response.choices[0]?.message?.content
 
   if (!content) throw new Error('Empty LLM response')
+  recordLLMUsage({
+    purpose: req.purpose,
+    model: req.model,
+    streamed: false,
+    ...usageFromProvider((response as { usage?: unknown }).usage),
+  })
   return content
 }
 
@@ -196,16 +205,22 @@ export async function callLLMStream(
     stream: true,
     ...routingParamsFor(req),
   }
+  if (isLLMUsageActive()) params.stream_options = { include_usage: true }
 
   let full = ''
+  let streamUsage: unknown
   try {
     const stream = await client.chat.completions.create(params, {
       signal: controller.signal,
       timeout: req.timeoutMs ?? 180000,
-    }) as unknown as AsyncIterable<{ choices: Array<{ delta?: { content?: string } }> }>
+    }) as unknown as AsyncIterable<{
+      choices?: Array<{ delta?: { content?: string } }>
+      usage?: unknown
+    }>
     armIdleTimer()
     for await (const part of stream) {
-      const delta = part.choices[0]?.delta?.content ?? ''
+      if (part.usage) streamUsage = part.usage
+      const delta = part.choices?.[0]?.delta?.content ?? ''
       if (delta) {
         if (firstTokenTimer) {
           clearTimeout(firstTokenTimer)
@@ -222,6 +237,12 @@ export async function callLLMStream(
   }
 
   if (!full) throw new Error('Empty LLM response')
+  recordLLMUsage({
+    purpose: req.purpose ?? 'narration',
+    model: req.model,
+    streamed: true,
+    ...usageFromProvider(streamUsage),
+  })
   return full
 }
 

@@ -10,3 +10,6 @@ python_modules
 venv
 *.pyc
 scripts/tts-output/
+# Tier-experiment output (regenerate with corpus:tier). The frozen corpus
+# itself IS committed — that is the point of freezing it.
+corpus/tier-result.json

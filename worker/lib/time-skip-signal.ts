@@ -7,13 +7,20 @@
  * comes back null and the calendar never advances — the time-analog of the
  * `viewpoint_moved` loss P2.6 fixed. The player's own input is the reliable signal;
  * this reads it deterministically and returns a label the calendar's `advanceDays`
- * already understands ("weeks", "three days", "the next morning"). Used only as a
- * fallback: a model-reported `time_elapsed` always wins.
+ * already understands ("weeks", "three days", "the next morning").
  *
- * Conservative by design — a spurious skip mutates the story date, so it fires only
- * on an explicit duration in a passage context or a first-person deliberate span.
- * Relative/future markers such as "tomorrow" and "the next morning" are plans or
- * topics often enough that they deliberately do not advance the calendar.
+ * Live authority: the player's own text wins, and this reads it. The witness
+ * may also advance the calendar, but only through the citation stack in
+ * `time-citation.ts` — it must quote the narration sentence that states the
+ * span, and the unit must match. `generation.processor` assigns
+ * `narratedTimeLabel = playerTimeLabel || citedWitnessTimeLabel`.
+ *
+ * A false skip mutates story dates, so this stays conservative — it fires only
+ * on an explicit duration in a passage context or a first-person deliberate
+ * span. Relative/future markers such as "tomorrow" and "the next morning" are
+ * plans or topics often enough that they deliberately do not advance the
+ * calendar from the PLAYER's side; a narrator who actually writes the skip can
+ * now carry it with a citation instead.
  */
 
 function clean(text: string): string {

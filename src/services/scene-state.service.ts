@@ -169,7 +169,8 @@ export function deriveNextSceneState(params: {
   departed: string[]
   /** Names the prose independently corroborates as acting/speaking this turn. */
   corroborated: Set<string>
-  /** Confirmed travelling companions — present by canon, no corroboration needed. */
+  /** Confirmed travelling companions. Present by canon ONLY on the turn the
+   *  scene actually breaks — see the privilege note at step 2b. */
   travelParty?: string[]
   /** Physical facts the extractor opened this turn. */
   physicalOpened?: PhysicalFact[]
@@ -205,7 +206,20 @@ export function deriveNextSceneState(params: {
   const priorCast = sceneBroke ? [] : prior?.cast || []
   const priorByKey = new Map(priorCast.map((m) => [key(m.name), m]))
   const departedKeys = new Set(departed.map(key).filter(Boolean))
-  const travelKeys = new Set(travelParty.map(key).filter(Boolean))
+  // TRAVEL PRIVILEGE IS SCOPED TO THE BREAK.
+  //
+  // Party membership used to be an unconditional bypass of the corroboration
+  // gate on EVERY turn: a companion detected once was force-added to the cast
+  // for the rest of the run, could never be dropped by the prose, and needed an
+  // explicit parting phrase to leave. That is the privilege inversion — the one
+  // path into the scene that answers to nothing the narration says.
+  //
+  // The privilege exists for exactly one moment: a scene break wipes the prior
+  // cast, so a companion the player just rode in with has nothing to carry
+  // forward from and the witness may not list them. On a CONTINUATION the prior
+  // cast carries anyway, so the bypass buys nothing and only suppresses the
+  // evidence. Outside the break a party member is an ordinary cast member.
+  const travelKeys = new Set(sceneBroke ? travelParty.map(key).filter(Boolean) : [])
 
   // A departure for someone who was never here is a claim about a fiction the
   // system does not share. Record it rather than acting on it.
@@ -266,7 +280,7 @@ export function deriveNextSceneState(params: {
   //     down the low road to Marrow Ford", the scene broke on arrival, the
   //     witness returned an empty cast, and the companion the player had just
   //     named vanished from the room she had ridden into.
-  for (const name of travelParty) {
+  for (const name of sceneBroke ? travelParty : []) {
     const k = key(name)
     if (!k || seen.has(k) || departedKeys.has(k)) continue
     if (isBareTitle(name)) continue

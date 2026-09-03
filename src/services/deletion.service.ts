@@ -101,7 +101,9 @@ export const deletionService = {
         mongoColl.storyCalendars().deleteMany({ instance_id: { $in: instanceIds } }),
         mongoColl.timelineBranches().deleteMany({ instance_id: { $in: instanceIds } }),
         mongoColl.generationLogs().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.extractorRaw().deleteMany({ instance_id: { $in: instanceIds } }),
         mongoColl.locationStats().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.placeCandidates().deleteMany({ instance_id: { $in: instanceIds } }),
         // Diagnostics are per-instance too. Left behind they are orphans that
         // accumulate forever and re-attach to nothing — the same shape as the
         // entity-graph rows that used to survive a delete and bleed into a
@@ -191,9 +193,11 @@ export const deletionService = {
     // The Places atlas is a materialized location-graph projection. It must be
     // removed with its source entities so a reset cannot show stale places.
     await mongoColl.locationStats().deleteMany({ instance_id: iid })
+    await mongoColl.placeCandidates().deleteMany({ instance_id: iid })
     await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
     await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
     await mongoColl.generationLogs().deleteMany({ instance_id: iid })
+    await mongoColl.extractorRaw().deleteMany({ instance_id: iid })
     await mongoColl.projectionAnomalies().deleteMany({ instance_id: iid })
     await mongoColl.signalLedger().deleteMany({ instance_id: iid })
     await mongoColl.relationCandidates().deleteMany({ instance_id: iid })
@@ -383,9 +387,11 @@ export const deletionService = {
     // Reset and template-delete both purged this; deleting a single save did
     // not, so every deleted instance left its place statistics behind.
     await mongoColl.locationStats().deleteMany({ instance_id: iid })
+    await mongoColl.placeCandidates().deleteMany({ instance_id: iid })
 
     // Delete observability logs for this instance
     await mongoColl.generationLogs().deleteMany({ instance_id: iid })
+    await mongoColl.extractorRaw().deleteMany({ instance_id: iid })
     await mongoColl.projectionAnomalies().deleteMany({ instance_id: iid })
     await mongoColl.signalLedger().deleteMany({ instance_id: iid })
     await mongoColl.relationCandidates().deleteMany({ instance_id: iid })

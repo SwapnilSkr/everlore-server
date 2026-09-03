@@ -1,0 +1,742 @@
+{
+  "6a9838c242bd67e3f97250da:14": {
+    "id": "6a9838c242bd67e3f97250da:14",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The hall stays cold."
+  },
+  "6a9838c242bd67e3f97250da:15": {
+    "id": "6a9838c242bd67e3f97250da:15",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The hall is otherwise empty; no one else has entered since the steward agreed to walk to the gatehouse and the quartermaster remained below."
+  },
+  "6a9838c242bd67e3f97250da:16": {
+    "id": "6a9838c242bd67e3f97250da:16",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Tomas hasn't moved."
+  },
+  "6a9838c242bd67e3f97250da:17": {
+    "id": "6a9838c242bd67e3f97250da:17",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "No. His numbers are down in the cellars, where the ledgers are kept."
+  },
+  "6a9838c242bd67e3f97250da:18": {
+    "id": "6a9838c242bd67e3f97250da:18",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "He doesn’t move toward the kitchen or the scullery."
+  },
+  "6a9838c242bd67e3f97250da:19": {
+    "id": "6a9838c242bd67e3f97250da:19",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "*Tomas’s weary gaze doesn’t leave the cold hearth.*"
+  },
+  "6a9838c242bd67e3f97250da:20": {
+    "id": "6a9838c242bd67e3f97250da:20",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Staying here changes nothing. But it’s your choice."
+  },
+  "6a9838c242bd67e3f97250da:21": {
+    "id": "6a9838c242bd67e3f97250da:21",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Kael’s hand closed on the worn wool of Tomas’s sleeve, halting him before he could take a step."
+  },
+  "6a9838c242bd67e3f97250da:22": {
+    "id": "6a9838c242bd67e3f97250da:22",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "He gestures with his chin toward the hall's entrance, the archway leading down to the kitchens and the cellars beyond."
+  },
+  "6a9838c242bd67e3f97250da:23": {
+    "id": "6a9838c242bd67e3f97250da:23",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "They don't open doors here. Not anymore."
+  },
+  "6a9838c242bd67e3f97250da:24": {
+    "id": "6a9838c242bd67e3f97250da:24",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Silence stretches between them, the kind that settles into the stones."
+  },
+  "6a9838c242bd67e3f97250da:25": {
+    "id": "6a9838c242bd67e3f97250da:25",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Tomas doesn't move."
+  },
+  "6a9838c242bd67e3f97250da:26": {
+    "id": "6a9838c242bd67e3f97250da:26",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "You can't see him from here. You know that. All you can see is this hall, and me, and the cold settling in deeper."
+  },
+  "6a9838c242bd67e3f97250da:27": {
+    "id": "6a9838c242bd67e3f97250da:27",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Kael’s gaze moves across the hall: the cold hearth, the empty benches, the worn stone floor."
+  },
+  "6a9838c242bd67e3f97250da:28": {
+    "id": "6a9838c242bd67e3f97250da:28",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "It comes for everyone in this hall."
+  },
+  "6a9838c242bd67e3f97250da:29": {
+    "id": "6a9838c242bd67e3f97250da:29",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "He watches you settle against the stone, his own posture not shifting."
+  },
+  "6a9838c242bd67e3f97250da:30": {
+    "id": "6a9838c242bd67e3f97250da:30",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The steward looks down at his sleeve, then back at Kael on the stone floor."
+  },
+  "6a9838c242bd67e3f97250da:31": {
+    "id": "6a9838c242bd67e3f97250da:31",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The cold's up here, where we are."
+  },
+  "6a9838c242bd67e3f97250da:32": {
+    "id": "6a9838c242bd67e3f97250da:32",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Tomas watches him from across the hearth, a shadow against the stone."
+  },
+  "6a9838c242bd67e3f97250da:33": {
+    "id": "6a9838c242bd67e3f97250da:33",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Kael turns his back on the hall and the silent steward, descending the worn steps into the damp dark beneath the kitchen."
+  },
+  "6a9838c242bd67e3f97250da:34": {
+    "id": "6a9838c242bd67e3f97250da:34",
+    "place": "root cellar",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The root cellar is empty."
+  },
+  "6a9838c242bd67e3f97250da:35": {
+    "id": "6a9838c242bd67e3f97250da:35",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The cellars are empty except for the shelves and the ledgers, their pages open on a rough wooden table."
+  },
+  "6a9838c242bd67e3f97250da:36": {
+    "id": "6a9838c242bd67e3f97250da:36",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The silence down here is thick, broken only by the faint creak of the shelves settling under the weight of their own emptiness."
+  },
+  "6a9838c242bd67e3f97250da:37": {
+    "id": "6a9838c242bd67e3f97250da:37",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "There’s a faint, rhythmic scratching from somewhere deeper in the cellars—not footsteps, but the sound of a quill on parchment, steady and pointless."
+  },
+  "6a9838c242bd67e3f97250da:38": {
+    "id": "6a9838c242bd67e3f97250da:38",
+    "place": "great hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "When he pushes the heavy door open, the great hall greets him with a deeper silence than the one he left."
+  },
+  "6a9838c242bd67e3f97250da:39": {
+    "id": "6a9838c242bd67e3f97250da:39",
+    "place": "great hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Only one other person is in the great hall now."
+  },
+  "6a9838c242bd67e3f97250da:40": {
+    "id": "6a9838c242bd67e3f97250da:40",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Kael settles onto the stone beside the hearth, the chill of the floor seeping through his clothes."
+  },
+  "6a9838c242bd67e3f97250da:41": {
+    "id": "6a9838c242bd67e3f97250da:41",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The hall is quiet."
+  },
+  "6a9838c242bd67e3f97250da:42": {
+    "id": "6a9838c242bd67e3f97250da:42",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "In the cellars, the air is still and smells of damp earth and old potatoes."
+  },
+  "6a9838c242bd67e3f97250da:43": {
+    "id": "6a9838c242bd67e3f97250da:43",
+    "place": "great hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "He doesn’t look up as Kael enters, but his shoulders tighten slightly."
+  },
+  "6a9838c242bd67e3f97250da:44": {
+    "id": "6a9838c242bd67e3f97250da:44",
+    "place": "great hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The cold of the hall hits him like a wall after the cellar's damp chill."
+  },
+  "6a9838c242bd67e3f97250da:45": {
+    "id": "6a9838c242bd67e3f97250da:45",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The north wall faces the mist road, a sheer drop of ancient, sweating stone."
+  },
+  "6a9838c242bd67e3f97250da:46": {
+    "id": "6a9838c242bd67e3f97250da:46",
+    "place": "north wall",
+    "placeIsSpace": false,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "He doesn’t move from his spot by the hearth, but his gaze lifts to the high, narrow windows set in the north wall."
+  },
+  "6a9838c242bd67e3f97250da:47": {
+    "id": "6a9838c242bd67e3f97250da:47",
+    "place": "north wall",
+    "placeIsSpace": false,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Tomas doesn’t turn from the north wall."
+  },
+  "6a9838c242bd67e3f97250da:48": {
+    "id": "6a9838c242bd67e3f97250da:48",
+    "place": "north wall",
+    "placeIsSpace": false,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "I stay at the window and wait, watching the fog for a long while."
+  },
+  "6a9838c242bd67e3f97250da:49": {
+    "id": "6a9838c242bd67e3f97250da:49",
+    "place": "hearth",
+    "placeIsSpace": false,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "When Kael settles beside him, Tomas lets out a slow breath, his gaze fixed on the empty hearth."
+  },
+  "6a9838c242bd67e3f97250da:50": {
+    "id": "6a9838c242bd67e3f97250da:50",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "He watches Kael's still form, the rise and fall of his breath the only movement in the hall."
+  },
+  "6a9838c242bd67e3f97250da:51": {
+    "id": "6a9838c242bd67e3f97250da:51",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "You walked past him."
+  },
+  "6a9838c242bd67e3f97250da:52": {
+    "id": "6a9838c242bd67e3f97250da:52",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Tomas doesn't move, but his shoulders tighten under the worn wool of his tunic."
+  },
+  "6a9838c242bd67e3f97250da:53": {
+    "id": "6a9838c242bd67e3f97250da:53",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Tomas doesn’t move."
+  },
+  "6a9838c242bd67e3f97250da:54": {
+    "id": "6a9838c242bd67e3f97250da:54",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The cellar air is a solid, damp cold that smells of earth and rot."
+  },
+  "6a9838c242bd67e3f97250da:55": {
+    "id": "6a9838c242bd67e3f97250da:55",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The count’s already done,"
+  },
+  "6a9838c242bd67e3f97250da:56": {
+    "id": "6a9838c242bd67e3f97250da:56",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The ladder creaks under his weight, the cellar door groaning open to spill cold stone light into the hall above."
+  },
+  "6a9838c242bd67e3f97250da:57": {
+    "id": "6a9838c242bd67e3f97250da:57",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Tomas watches him from across the cold stones."
+  },
+  "6a9838c242bd67e3f97250da:58": {
+    "id": "6a9838c242bd67e3f97250da:58",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c242bd67e3f97250da:59": {
+    "id": "6a9838c242bd67e3f97250da:59",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Tomas doesn't move."
+  },
+  "6a9838c242bd67e3f97250da:60": {
+    "id": "6a9838c242bd67e3f97250da:60",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The cold has seeped into the flagstones, radiating up through their boots."
+  },
+  "6a9838c242bd67e3f97250da:61": {
+    "id": "6a9838c242bd67e3f97250da:61",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Tomas doesn’t look away from the dead hearth."
+  },
+  "6a9838c242bd67e3f97250da:62": {
+    "id": "6a9838c242bd67e3f97250da:62",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c242bd67e3f97250da:63": {
+    "id": "6a9838c242bd67e3f97250da:63",
+    "place": "the hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c242bd67e3f97250da:64": {
+    "id": "6a9838c242bd67e3f97250da:64",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Kael pulls the wool tight around his shoulders, the fabric offering little more than a thin barrier against the deep cold of the stone floor."
+  },
+  "6a9838c242bd67e3f97250da:65": {
+    "id": "6a9838c242bd67e3f97250da:65",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The hall is a bowl of deep blue shadow, the air so cold it bites the inside of his nose."
+  },
+  "6a9838c242bd67e3f97250da:66": {
+    "id": "6a9838c242bd67e3f97250da:66",
+    "place": "hall",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Tomas doesn't open his eyes."
+  },
+  "6a9838c242bd67e3f97250da:67": {
+    "id": "6a9838c242bd67e3f97250da:67",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "In the root cellars, the darkness is absolute, a solid weight that presses against his skin."
+  },
+  "6a9838c242bd67e3f97250da:68": {
+    "id": "6a9838c242bd67e3f97250da:68",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The shelves stretch along the stone wall, their boards bare and dusty."
+  },
+  "6a9838c242bd67e3f97250da:69": {
+    "id": "6a9838c242bd67e3f97250da:69",
+    "place": "root cellars",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "His fingers brush the dusty bench in the dark."
+  },
+  "6a9838c442bd67e3f97250e1:14": {
+    "id": "6a9838c442bd67e3f97250e1:14",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "You're still here. So am I."
+  },
+  "6a9838c442bd67e3f97250e1:15": {
+    "id": "6a9838c442bd67e3f97250e1:15",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "I don't name anyone. I just sit with the glass and wait."
+  },
+  "6a9838c442bd67e3f97250e1:16": {
+    "id": "6a9838c442bd67e3f97250e1:16",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "He sets the glass down on the bar."
+  },
+  "6a9838c442bd67e3f97250e1:17": {
+    "id": "6a9838c442bd67e3f97250e1:17",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "\"You’re still here.\""
+  },
+  "6a9838c442bd67e3f97250e1:18": {
+    "id": "6a9838c442bd67e3f97250e1:18",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "He doesn't move from behind the bar, but his gaze holds yours, weighing the request."
+  },
+  "6a9838c442bd67e3f97250e1:19": {
+    "id": "6a9838c442bd67e3f97250e1:19",
+    "place": "under the bridge",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The rain hasn't started yet, but the air under the bridge is heavy with the promise of it."
+  },
+  "6a9838c442bd67e3f97250e1:20": {
+    "id": "6a9838c442bd67e3f97250e1:20",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "He's still behind the bar, but the glass is finally down."
+  },
+  "6a9838c442bd67e3f97250e1:21": {
+    "id": "6a9838c442bd67e3f97250e1:21",
+    "place": "Split Lamp",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "He doesn't move from behind the bar, but his gaze holds yours, steady in the dim light."
+  },
+  "6a9838c442bd67e3f97250e1:22": {
+    "id": "6a9838c442bd67e3f97250e1:22",
+    "place": "bridge",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Soren leans his forearms on the cold iron railing, looking at the water instead of you."
+  },
+  "6a9838c442bd67e3f97250e1:23": {
+    "id": "6a9838c442bd67e3f97250e1:23",
+    "place": "canal-side",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "She lets the silence stretch, the only sound the rain hissing on the canal's black surface."
+  },
+  "6a9838c442bd67e3f97250e1:24": {
+    "id": "6a9838c442bd67e3f97250e1:24",
+    "place": "Bridge",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "Soren watches the barge slide through the oily water below, its running lights smearing on the surface."
+  },
+  "6a9838c742bd67e3f97250e8:14": {
+    "id": "6a9838c742bd67e3f97250e8:14",
+    "place": "green room",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "\"And I’m still here.\""
+  },
+  "6a9838c742bd67e3f97250e8:15": {
+    "id": "6a9838c742bd67e3f97250e8:15",
+    "place": "green room",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The dock's just out back. Past the stage."
+  },
+  "6a9838c742bd67e3f97250e8:16": {
+    "id": "6a9838c742bd67e3f97250e8:16",
+    "place": "dock",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "I stay leaning against the brick wall beside the open dock door, watching you."
+  },
+  "6a9838c742bd67e3f97250e8:17": {
+    "id": "6a9838c742bd67e3f97250e8:17",
+    "place": "green room",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": ""
+  },
+  "6a9838c742bd67e3f97250e8:18": {
+    "id": "6a9838c742bd67e3f97250e8:18",
+    "place": "loading dock",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "I take a drag, the ember flaring briefly in the dim light of the loading dock."
+  },
+  "6a9838c742bd67e3f97250e8:19": {
+    "id": "6a9838c742bd67e3f97250e8:19",
+    "place": "green room",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "The alley’s better than the front door."
+  },
+  "6a9838c742bd67e3f97250e8:20": {
+    "id": "6a9838c742bd67e3f97250e8:20",
+    "place": "alley",
+    "placeIsSpace": true,
+    "establishedHere": false,
+    "sameAsPrior": false,
+    "cast": [],
+    "moved": false,
+    "quote": "I don't look toward the stage. Instead, I follow you out the side door, the cool air of the alley hitting me like a reset."
+  }
+}

@@ -19,6 +19,7 @@ import type { StoryCalendarDoc, TimelineBranchDoc } from '../models/time.model'
 import type { PersonaDoc } from '../models/persona.model'
 import type { DeadLetterJobDoc } from '../models/dead-letter-job.model'
 import type { GenerationLogDoc } from '../models/generation-log.model'
+import type { ExtractorRawDoc } from '../models/extractor-raw.model'
 import type { NsfwTermDoc } from '../models/nsfw-term.model'
 import type { ProjectionAnomalyDoc } from '../models/projection-anomaly.model'
 import type { SignalLedgerDoc } from '../models/signal-ledger.model'
@@ -64,12 +65,14 @@ export const mongoColl = {
   personas: () => coll<WithoutId<PersonaDoc>>(COLLECTIONS.personas),
   deadLetterJobs: () => coll<WithoutId<DeadLetterJobDoc>>(COLLECTIONS.dead_letter_jobs),
   generationLogs: () => coll<WithoutId<GenerationLogDoc>>(COLLECTIONS.generation_logs),
+  extractorRaw: () => coll<WithoutId<ExtractorRawDoc>>(COLLECTIONS.extractor_raw),
   nsfwLexicon: () => coll<WithoutId<NsfwTermDoc>>(COLLECTIONS.nsfw_lexicon),
   projectionAnomalies: () => coll<WithoutId<ProjectionAnomalyDoc>>(COLLECTIONS.projection_anomalies),
   signalLedger: () => coll<WithoutId<SignalLedgerDoc>>(COLLECTIONS.signal_ledger),
   projectionCheckpoints: () => coll<WithoutId<ProjectionCheckpointDoc>>(COLLECTIONS.projection_checkpoints),
   projectionCheckpointChunks: () => coll<WithoutId<ProjectionCheckpointChunkDoc>>(COLLECTIONS.projection_checkpoint_chunks),
   locationStats: () => coll<WithoutId<LocationStatsDoc>>(COLLECTIONS.location_stats),
+  placeCandidates: () => coll<any>(COLLECTIONS.place_candidates),
   relationCandidates: () => coll<WithoutId<RelationCandidateDoc>>(COLLECTIONS.relation_candidates),
   inkLedger: () => coll<WithoutId<InkLedgerDoc>>(COLLECTIONS.ink_ledger),
   webEvents: () => coll<WithoutId<WebEventDoc>>(COLLECTIONS.web_events),

@@ -25,8 +25,15 @@ export interface SignalLedgerInput {
   party: { detected: number; committedConfidences: number[] }
   /** Kinship: assertions detected vs edges written, with written-edge confidences. */
   kinship: { detected: number; committed: number; committedConfidences?: number[] }
-  /** Presence tiers surfaced this turn (confirmed/probable auto-enter the scene). */
-  presence: { confirmed: number; probable: number; mentioned: number }
+  /** Presence arbitration: endpoint citations detected vs how many of those
+   *  names landed in the final scene cast. `by_tier` is the citation stack
+   *  (canon = a∧b∧c, hint = verbatim but not name-acting, hidden = (a) fail),
+   *  not the mention-classifier ladder. */
+  presence: {
+    detected: number
+    committed: number
+    by_tier?: { canon: number; hint: number; hidden: number }
+  }
   /** This turn carried a player correction/retcon (precision ground-truth). */
   playerCorrected: boolean
   /** Count of projection-anomaly "miss" findings this turn (recall ground-truth). */
@@ -75,16 +82,13 @@ export function buildSignalLedger(input: SignalLedgerInput): SignalLedgerEntry {
         ? { by_tier: tierRollup(input.kinship.committedConfidences) }
         : {}),
     },
-    // Presence's three tiers map straight onto the tier vocabulary: confirmed→canon,
-    // probable→hint, mentioned_only→hidden. confirmed+probable enter the scene.
+    // Presence arbitration: citations the endpoint judge emitted vs names from
+    // those citations that actually landed in the scene cast. by_tier is the
+    // (a)/(b)/(c) stack, not the mention-classifier ladder.
     presence: {
-      detected: input.presence.confirmed + input.presence.probable + input.presence.mentioned,
-      committed: input.presence.confirmed + input.presence.probable,
-      by_tier: {
-        canon: input.presence.confirmed,
-        hint: input.presence.probable,
-        hidden: input.presence.mentioned,
-      },
+      detected: Math.max(0, input.presence.detected),
+      committed: Math.max(0, input.presence.committed),
+      ...(input.presence.by_tier ? { by_tier: input.presence.by_tier } : {}),
     },
   }
 

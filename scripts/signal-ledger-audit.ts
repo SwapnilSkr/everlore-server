@@ -17,7 +17,7 @@ const base: SignalLedgerInput = {
   time: { detected: false, committed: false },
   party: { detected: 0, committedConfidences: [] },
   kinship: { detected: 0, committed: 0 },
-  presence: { confirmed: 0, probable: 0, mentioned: 0 },
+  presence: { detected: 0, committed: 0 },
   playerCorrected: false,
   missCandidates: 0,
 }
@@ -56,14 +56,19 @@ check('4 detected, 2 committed, tiers from edge confidences', kin, {
   detected: 4, committed: 2, by_tier: { canon: 1, hint: 1, hidden: 0 },
 })
 
-console.log('presence — confirmed→canon, probable→hint, mentioned→hidden:')
+console.log('presence — endpoint citations vs names that landed in the scene cast:')
 const pres = buildSignalLedger({
   ...base,
-  presence: { confirmed: 2, probable: 1, mentioned: 3 },
+  presence: { detected: 4, committed: 2, by_tier: { canon: 2, hint: 1, hidden: 1 } },
 }).signals.presence
-check('committed = confirmed+probable; by_tier maps the three tiers', pres, {
-  detected: 6, committed: 3, by_tier: { canon: 2, hint: 1, hidden: 3 },
+check('arbitration: detected citations, committed landing, citation-stack tiers', pres, {
+  detected: 4, committed: 2, by_tier: { canon: 2, hint: 1, hidden: 1 },
 })
+const presBare = buildSignalLedger({
+  ...base,
+  presence: { detected: 3, committed: 0 },
+}).signals.presence
+check('no by_tier when the stack was not recorded', presBare, { detected: 3, committed: 0 })
 
 console.log('ground-truth flags — player_corrected (precision) + miss_candidates (recall):')
 const flags = buildSignalLedger({ ...base, playerCorrected: true, missCandidates: 2 })

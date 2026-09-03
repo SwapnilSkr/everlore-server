@@ -545,6 +545,51 @@ console.log('opening scene canon:')
   check('...but a narrated departure still removes them', names(state), [])
 }
 
+// ── TRAVEL PRIVILEGE IS SCOPED TO THE BREAK ─────────────────────────────────
+// Party membership was an unconditional bypass of the corroboration gate on
+// every turn. A companion detected once was force-added into every subsequent
+// scene, immune to what the prose said, until an explicit parting phrase fired.
+{
+  const { state, contradictions } = deriveNextSceneState({
+    prior: scene(['Tomas']),
+    sequence: 6,
+    sceneBroke: false,
+    place: { name: 'the hall' },
+    reportedPresent: [{ name: 'Mara' }],
+    departed: [],
+    corroborated: new Set(),
+    travelParty: ['Mara'],
+  })
+  check('a continuation does not force a companion in unproven', names(state), ['Tomas'])
+  check('...it is recorded as uncorroborated', contradictions[0]?.kind, 'uncorroborated_arrival')
+}
+{
+  const { state } = deriveNextSceneState({
+    prior: scene(['Tomas', 'Mara']),
+    sequence: 6,
+    sceneBroke: false,
+    place: { name: 'the hall' },
+    reportedPresent: [],
+    departed: [],
+    corroborated: new Set(),
+    travelParty: ['Mara'],
+  })
+  check('a companion already in the room still carries', names(state), ['Tomas', 'Mara'])
+}
+{
+  const { state } = deriveNextSceneState({
+    prior: scene(['Tomas']),
+    sequence: 6,
+    sceneBroke: false,
+    place: { name: 'the hall' },
+    reportedPresent: [{ name: 'Mara' }],
+    departed: [],
+    corroborated: new Set(['mara']),
+    travelParty: ['Mara'],
+  })
+  check('a companion the prose shows acting is admitted like anyone else', names(state), ['Tomas', 'Mara'])
+}
+
 // ── THE EVIDENCE BAR MUST COVER ORDINARY ACTIONS ───────────────────────────
 // The action-verb list was built from a few examples and missed most of them,
 // so a brother who "gave a slow nod" and "lets out a low chuckle" was refused

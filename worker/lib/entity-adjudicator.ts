@@ -86,6 +86,7 @@ CANDIDATES: ${JSON.stringify(payload)}`
   try {
     const raw = await callLLM({
       model: AI_MODELS.metadata,
+      purpose: 'entity_adjudication',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0,
       maxTokens: 300,
