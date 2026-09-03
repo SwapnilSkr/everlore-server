@@ -20,6 +20,14 @@ async function main() {
   const raws: any[] = await coll('extractor_raw').find({ instance_id: iid }).toArray()
   const rawBySeq = new Map(raws.map((r) => [r.sequence, r]))
   const cards: any[] = await coll('characters').find({ instance_id: iid }).toArray()
+  // One card, one seat: mirror the processor's identity collapse.
+  const identityOf = (label: string): string | null => {
+    const key = normalizeEntityName(label)
+    const card = cards.find(
+      (c) => normalizeEntityName(c.canonical_name) === key || (c.aliases || []).some((a: string) => normalizeEntityName(a) === key),
+    )
+    return card ? String(card.canonical_name) : null
+  }
   const surfacesFor = (label: string): string[] => {
     const key = normalizeEntityName(label)
     const card = cards.find(
@@ -66,7 +74,8 @@ async function main() {
     const next = new Set<string>()
     const notes: string[] = []
     for (const name of shipped) {
-      const key = normalizeEntityName(name)
+      const key = normalizeEntityName(identityOf(name) || name)
+      if (next.has(key)) continue
       const carried = cast.has(key)
       if (carried) { next.add(key); continue }
       if (refused.has(key)) { notes.push(`REFUSED ${name} (judge rejected its own citation)`); continue }

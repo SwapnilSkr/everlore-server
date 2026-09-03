@@ -667,16 +667,49 @@ export const entityGraphService = {
             entity.name_normalized !== card.name_normalized ||
             (entity.identity_scope ?? null) !== (card.identity_scope ?? null)
           if (keyChanging) {
-            const occupant = (await entities().findOne({
-              instance_id: iid,
-              type: { $in: ['protagonist', 'character'] },
-              name_normalized: card.name_normalized,
-              // Mongo's unique index treats a MISSING field as null, so the
-              // occupant lookup must match both spellings — that null/undefined
-              // split is precisely what made this collision invisible.
-              identity_scope: (card.identity_scope ?? null) as never,
-              _id: { $ne: entity._id },
-            })) as EntityDoc | null
+            // BOTH SLOTS, not just this card's.
+            //
+            // The occupant lookup used to ask for the card's own scope. A stub
+            // minted by the witness path carries NO scope, and the unique index
+            // treats missing as null — so a scoped card renaming onto a name an
+            // unscoped stub already held collided with nothing, and both rows
+            // survived under the same name.
+            //
+            // That is the whole duplicate-row class. A live save had TWO Roland
+            // rows: the card's, scoped, minted at turn 45 while he was still
+            // "the second guard"; and a stub minted at turn 56 when the prose
+            // first said "Roland". His 33 mentions split 10/2 across them, so
+            // recall saw two men where the codex showed one card.
+            const scopes = [...new Set([(card.identity_scope ?? null) as string | null, null])]
+            const occupants = (await entities()
+              .find({
+                instance_id: iid,
+                type: { $in: ['protagonist', 'character'] },
+                name_normalized: card.name_normalized,
+                identity_scope: { $in: scopes as never[] },
+                _id: { $ne: entity._id },
+              })
+              .toArray()) as EntityDoc[]
+            // A row owned by ANOTHER card blocks the rename; unowned rows are
+            // witness sightings of this same person and are absorbed. Order so
+            // a real conflict is seen before any absorbing happens.
+            const occupant =
+              occupants.find((row) => !!row.character_id && !row.character_id.equals(card._id)) ||
+              occupants[0] ||
+              null
+            for (const extra of occupants) {
+              if (extra === occupant) continue
+              if (extra.character_id && !extra.character_id.equals(card._id)) continue
+              await absorbEntityInto(iid, extra, entity)
+              // The stub-merge pass below walks the `existing` SNAPSHOT, so a row
+              // deleted here is still in its list. Without this it re-merges a
+              // row that is already gone and throws, taking the whole turn's
+              // projection down — the same shape as the collision this fixes.
+              mergedStubIds.add(idString(extra._id))
+              for (const [key, value] of byName) {
+                if (value._id.equals(extra._id)) byName.delete(key)
+              }
+            }
             if (occupant) {
               // A stub/unlinked row is a witness sighting of this same person:
               // absorb it. A row owned by a DIFFERENT card is a real identity
@@ -697,6 +730,7 @@ export const entityGraphService = {
                 continue
               }
               await absorbEntityInto(iid, occupant, entity)
+              mergedStubIds.add(idString(occupant._id))
               for (const [key, value] of byName) {
                 if (value._id.equals(occupant._id)) byName.delete(key)
               }

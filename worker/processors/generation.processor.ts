@@ -1297,6 +1297,29 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       // overlooked person in a grounded drama) instead of reifying the metaphor
       // into a "ask her about the ghost" choice.
       worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
+      // WHAT HAS ALREADY BEEN SUGGESTED AND PASSED OVER.
+      //
+      // The choice half had no memory of its own output, so a standing
+      // situation kept producing the same obvious move. Measured over one live
+      // 83-turn save: 323 choices, 242 distinct, and "Challenge Isolde's
+      // authority" offered SIXTEEN times across the scene it belonged to. The
+      // player declined it every time; the set never moved on.
+      //
+      // A label the player actually SENT is dropped from the list — they took
+      // that path, so it is no longer an unanswered suggestion, and repeating
+      // a variant of it may well be the right next move.
+      recentChoiceLabels: (() => {
+        const taken = new Set(
+          (packet.recentEvents || [])
+            .map((event: any) => normalizeEntityName(String(event?.data?.player_input || '')))
+            .filter(Boolean),
+        )
+        return (packet.recentEvents || [])
+          .slice(-6)
+          .flatMap((event: any) => (event?.data?.choices || []) as any[])
+          .map((choice: any) => String(choice?.label || '').trim())
+          .filter((label: string) => label && !taken.has(normalizeEntityName(label)))
+      })(),
       choiceContext: choiceDecisionContext,
       onRaw: (stage, raw) => extractorRaw.capture(stage)(raw),
     },
@@ -2148,6 +2171,19 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const partyNames = partyMembers.map((m) => m.name)
   const partyProvByName = new Map(partyMembers.map((m) => [normalizeEntityName(m.name), m]))
 
+  // Every surface the codex knows for a card, pointing at that card's canonical
+  // name. Built from the instance's OWN cards, so it needs no global list of
+  // honorifics and works for whatever titles a world invents.
+  const codexIdentityBySurface = new Map<string, string>()
+  for (const card of characterCodex as any[]) {
+    const canonical = String(card?.canonical_name || '').trim()
+    if (!canonical) continue
+    for (const surface of [canonical, ...((card?.aliases as string[]) || [])]) {
+      const k = normalizeEntityName(String(surface || ''))
+      if (k) codexIdentityBySurface.set(k, canonical)
+    }
+  }
+
   const blockedUngroundedPresence: string[] = []
   const heldUncorroboratedPresence: string[] = []
   /**
@@ -2188,11 +2224,26 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       witnessPresent: parsed.present_characters || [],
       partyNames,
     })
-    const departed = new Set((parsed.characters_departed || []).map((n) => presenceKeyOf(n)).filter(Boolean))
+    // ONE CARD, ONE SEAT.
+    //
+    // The scene-state layer already collapses a card's surfaces; this list --
+    // the one written to the event, rendered in the app, and read by the travel
+    // and relationship pickers -- did not. So a live save seated "King" and
+    // "King Aldric" side by side for twelve turns, and the narrator was told
+    // there were two men at the table.
+    //
+    // The card's own aliases are the authority, so no global list of honorifics
+    // is needed and a world's invented titles work the same way.
+    const identityOf = (name: string): string | null =>
+      codexIdentityBySurface.get(normalizeEntityName(name)) || null
+    const departed = new Set(
+      (parsed.characters_departed || []).map((n) => presenceKeyOf(identityOf(n) || n)).filter(Boolean),
+    )
     const out: string[] = []
     const seen = new Set<string>()
     for (const name of candidates) {
-      const key = presenceKeyOf(name)
+      const identity = identityOf(name)
+      const key = presenceKeyOf(identity || name)
       if (!key || seen.has(key) || departed.has(key)) continue
       if (playerPresenceKey && key === playerPresenceKey) continue
       // A player-authored transition (free-form or the travel control) is
@@ -2251,7 +2302,9 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
         continue
       }
       seen.add(key)
-      out.push(familyLabel || presenceDisplayOf(name))
+      // A carded person is shown under their card's canonical name, never
+      // whichever surface this passage happened to reach for.
+      out.push(identity || familyLabel || presenceDisplayOf(name))
       if (out.length >= 12) break
     }
     return out
@@ -2474,19 +2527,6 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     }
     return out
   })()
-
-  // Every surface the codex knows for a card, pointing at that card's canonical
-  // name. Built from the instance's OWN cards, so it needs no global list of
-  // honorifics and works for whatever titles a world invents.
-  const codexIdentityBySurface = new Map<string, string>()
-  for (const card of characterCodex as any[]) {
-    const canonical = String(card?.canonical_name || '').trim()
-    if (!canonical) continue
-    for (const surface of [canonical, ...((card?.aliases as string[]) || [])]) {
-      const k = normalizeEntityName(String(surface || ''))
-      if (k) codexIdentityBySurface.set(k, canonical)
-    }
-  }
 
   const sceneDerivation = deriveNextSceneState({
     prior: packet.sceneState,
