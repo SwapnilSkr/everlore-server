@@ -135,6 +135,38 @@ console.log('\nwhat still moves on a still turn:')
   })
   check('agreement about a place nobody went to does not move the cursor', d.viewpointMoved, false)
 }
+{
+  // Live Aurelius Valemont — both namers said solar, the noun list did not
+  // contain that word (it contains "table"), and the council cast followed
+  // through the door. Agreement is placehood. The player walked. The cursor moves.
+  const d = decide({
+    cursorName: 'the table',
+    playerInput: '*I push open the heavy oak door and step inside.*',
+    narrative:
+      "The solar is dim and smells of old books and woodsmoke. King Aldric stands by a high window, his back to the door, silhouetted against the grey light. He doesn't turn.",
+    witness: {
+      current_location: 'solar',
+      location_evidence: "He doesn't turn.",
+      viewpoint_moved: false,
+    },
+    endpoint: judge('the solar', 'The solar is dim and smells of old books and woodsmoke.', false),
+  })
+  check('two namers agreeing on a new room the player entered moves the cursor', d.placeName, 'the solar')
+  check('...and it counts as a move, even when both flags said stay', d.viewpointMoved, true)
+  check('...the noun list does not get to reject it', d.judgedRejectedAsNotAPlace, null)
+}
+{
+  // The hearth finding this must not undo: both namers can agree on furniture
+  // in the room they are already in. That is not a move.
+  const d = decide({
+    cursorName: 'the hall',
+    playerInput: 'I wait by the fire.',
+    narrative: 'The hearth has gone cold and the benches are empty.',
+    witness: { current_location: 'the hearth', location_evidence: 'The hearth has gone cold' },
+    endpoint: judge('the hearth', 'The hearth has gone cold and the benches are empty.', false),
+  })
+  check('two namers agreeing on furniture in the same room does not move', d.viewpointMoved, false)
+}
 
 // ── The witness ANCHORS. Its held place needs a namer, not just an excerpt. ──
 console.log('\nthe witness holding the prior place is not evidence of it:')

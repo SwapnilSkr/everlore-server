@@ -281,8 +281,17 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
     const head = /^(?:the|a|an)$/i.test(words[0] || '') ? words.slice(1) : words
     return head.some((word) => /^[\p{Lu}]/u.test(word))
   })()
+  // TWO NAMERS AGREEING IS PLACEHOOD.
+  //
+  // The noun list is a muzzle for a single uncited guess. It may not veto a
+  // place both independent readers named. Live: both said "the solar", the
+  // list did not contain that word (it contains "table"), the name was
+  // thrown away, and the council cast was carried into a private room.
+  // Agreement does not by itself MOVE the cursor — `movedOrNamedByPlayer`
+  // still has to fire — it only means the name is allowed to be a place.
   const judgedIsPlace =
     isSafeWitnessLocationCandidate(judgedName, options) ||
+    judgedAgreed ||
     (judgedVerified &&
       judgedNameHasProperNoun &&
       isSafeWitnessLocationCandidate(judgedName, { ...options, proseCited: true }))
@@ -375,11 +384,22 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
   // not allowed to do. The judge's own transition verdict and the player's own
   // locative are both about the turn rather than about a vocabulary.
   const turnTransitioned = judgeTransition === true
+  // Agreement names the place. It does not, by itself, mean the player moved.
+  // Both namers can agree on furniture in the room they are already in ("the
+  // hearth" while the cursor is "the hall"). That used to count as a move the
+  // moment we stopped asking the noun list for permission. A still turn stays
+  // put unless the player said they are at this place, or the judge called a
+  // scene change, or the player actually walked and both namers named the
+  // same NEW place.
   const movedOrNamedByPlayer = (place: string | null): boolean =>
     !!place &&
     (turnTransitioned ||
       playerTextSituatesViewpoint(place, input.playerInput, { people: input.knownPeople }) ||
-      (!!witness.current_location && !!judgedName && sameLocationLabel(judgedName, witness.current_location)))
+      (!!witness.current_location &&
+        !!judgedName &&
+        sameLocationLabel(judgedName, witness.current_location) &&
+        detectNarratedMovement(input.playerInput) &&
+        !locationNamesCompatible(place, cursorName)))
 
   //
   // TRIED AND REVERTED: treating the witness ABANDONING its prior as evidence.

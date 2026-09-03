@@ -1816,9 +1816,17 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // skip, treat ANY change of the resolved location ENTITY as a break — if the
   // cursor genuinely moved to a different place, whoever was in the old room does
   // NOT carry into the new one (the "parents followed me into my bedroom" class).
+  // A first visit and a furniture-named cursor often have no entity id. Comparing
+  // two nulls used to say "same place" even when the names were "the table" and
+  // "the solar". Names are enough: if the decided place is not the cursor, the
+  // old room's people do not come along.
+  const placeNameChanged =
+    !!placeName &&
+    !!currentLocation?.name &&
+    !locationNamesCompatible(placeName, currentLocation.name)
   const placeEntityChanged =
-    !!resolvedLocation &&
-    !!currentLocation &&
+    !!resolvedLocation?.entity_id &&
+    !!currentLocation?.entity_id &&
     idString(resolvedLocation.entity_id) !== idString(currentLocation.entity_id)
   // An explicit physical exit proves the old room's cast is no longer with the
   // player even when the next room has not been named. Likewise, establishing
@@ -1830,6 +1838,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     playerExitedScene ||
     sceneEstablishedLocation ||
     !!narratedTimeLabel ||
+    placeNameChanged ||
     placeEntityChanged ||
     (endpointAdjudication.available && endpointAdjudication.playerViewpointAtEnd && endpointAdjudication.sceneTransition)
   // Resolve every presence name to a CANONICAL identity before set ops, using the

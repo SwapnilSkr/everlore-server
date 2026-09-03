@@ -136,6 +136,21 @@ console.log('phantom presence (the Isolde/Lyra class):')
   check('a scene break does not drag the old room along', names(state), [])
 }
 {
+  // Live: Lyra / Isolde / Cedric were at the table. The player stepped into
+  // the solar. Both extractors named only Aldric. A scene break must start
+  // from who this passage shows, not from last turn's guest list.
+  const { state } = deriveNextSceneState({
+    prior: scene(['Lyra', 'Queen Isolde', 'Cedric']),
+    sequence: 13,
+    sceneBroke: true,
+    place: { name: 'the solar' },
+    reportedPresent: [{ name: 'King Aldric' }],
+    departed: [],
+    corroborated: new Set(['king aldric', 'aldric']),
+  })
+  check('a new room starts from who is actually there', names(state), ['King Aldric'])
+}
+{
   const { contradictions } = deriveNextSceneState({
     prior: scene(['Cedric']),
     sequence: 22,
