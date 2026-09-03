@@ -2,6 +2,7 @@ import {
   detectNarratedMovement,
   hasGroundedWitnessLocationEvidence,
   isSafeWitnessLocationCandidate,
+  labelsAgreeOnPlace,
   locationNamesCompatible,
   sameLocationLabel,
 } from './movement-signal'
@@ -10,6 +11,7 @@ import {
   citationAdmitsLocation,
   passageSituatesViewpoint,
   playerTextSituatesViewpoint,
+  type ViewpointOptions,
 } from './location-citation'
 import { decideCursorDrift, type DriftDecision, type DriftState } from './cursor-drift'
 
@@ -48,6 +50,12 @@ export interface LocationDecisionInput {
   } | null
   priorDrift: DriftState | null
   sequence: number
+  /**
+   * Who the narration calls the player. Most saves narrate in the third
+   * person, where every sentence about the player's own position reads as
+   * somebody else's clause unless this is supplied.
+   */
+  viewpoint?: ViewpointOptions
 }
 
 export type LocationPath =
@@ -168,6 +176,7 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
     evidence: witness.location_evidence || '',
     source: evidenceSource,
     people: input.knownPeople,
+    viewpoint: input.viewpoint,
   })
   const citedVerified = !!witness.current_location && citationAdmitsLocation(citation)
   const validLocationCited = isSafeWitnessLocationCandidate(witness.current_location, {
@@ -215,9 +224,10 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
         evidence: input.endpoint.location.evidence,
         source: input.narrative,
         people: input.knownPeople,
+        viewpoint: input.viewpoint,
       }),
     ) ||
-      passageSituatesViewpoint(judgedName, input.narrative, { people: input.knownPeople }) ||
+      passageSituatesViewpoint(judgedName, input.narrative, { people: input.knownPeople, viewpoint: input.viewpoint }) ||
       playerTextSituatesViewpoint(judgedName, input.playerInput, { people: input.knownPeople }))
   // Two INDEPENDENT namers landing on the same place. The witness extractor and
   // the endpoint judge are separate calls with separate prompts, and the judge
@@ -234,8 +244,11 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
   // piece of furniture into a corroborated second namer and held a whole world
   // at it for five turns. Two models agreeing is only evidence when they said
   // the same thing.
+  // Containment rather than identity — see `labelsAgreeOnPlace`. The
+  // terminal-table finding that tightened this is preserved: overlap still is
+  // not agreement, only one label wholly containing the other is.
   const judgedAgreed =
-    !!judgedName && !!witness.current_location && sameLocationLabel(judgedName, witness.current_location)
+    !!judgedName && !!witness.current_location && labelsAgreeOnPlace(judgedName, witness.current_location)
   //
   // MEASURED, do not drop the transition requirement here. Letting strict
   // agreement admit on its own recovers one turn — a move into a war room whose
@@ -244,13 +257,62 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
   // map follows the player to an appointment they will keep at dawn. Held-out
   // 94.9% → 90.9%. One turn of lag is the right side of that trade.
   const judgedProven = judgedVerified || (judgedAgreed && transitionCorroborated)
-  const judgedIsPlace = isSafeWitnessLocationCandidate(judgedName, options)
+  // A PROVED LABEL CARRYING A PROPER NOUN IS A PLACE.
+  //
+  // The judge's verified claims were being thrown away for the SHAPE of their
+  // name: "Falkreath's borderlands" is the sentence the arrival is written in,
+  // and the noun list refused it because "borderlands" is not in the list and
+  // the proper-name test wants every word capitalised. The player then spent
+  // eleven turns with the cursor in a council chamber three days' ride away.
+  //
+  // Handing the judge the witness's full `proseCited` exemption is too much:
+  // measured, it admitted "the hearth" as a move out of the hall it stands in
+  // and cost five turns on the keeper corpus. Furniture passes a room's
+  // grammar, and a citation cannot tell them apart — placehood is not
+  // structural, which this stack has now been told from six directions.
+  //
+  // A capitalised token is the narrow thing that separates them. It is
+  // orthography, not a vocabulary of which nouns count as places, and it is the
+  // same test the authored-opening path already ships. "Falkreath's
+  // borderlands" and "the Whisper's Edge" carry one; "the hearth", "the room"
+  // and "his own chambers" do not, and those keep answering to the noun list.
+  const judgedNameHasProperNoun = (() => {
+    const words = String(judgedName || '').trim().split(/\s+/).filter(Boolean)
+    const head = /^(?:the|a|an)$/i.test(words[0] || '') ? words.slice(1) : words
+    return head.some((word) => /^[\p{Lu}]/u.test(word))
+  })()
+  const judgedIsPlace =
+    isSafeWitnessLocationCandidate(judgedName, options) ||
+    (judgedVerified &&
+      judgedNameHasProperNoun &&
+      isSafeWitnessLocationCandidate(judgedName, { ...options, proseCited: true }))
   const judgedLocation = judgedProven && judgedIsPlace ? judgedName : null
 
   const actionDestination =
     input.actionDestination && isSafeWitnessLocationCandidate(input.actionDestination, options)
       ? input.actionDestination
       : null
+  // A DESTINATION IS NOT AN ARRIVAL.
+  //
+  // This path used to ask only that the cited sentence really occur in what the
+  // player typed — check (a), which proves the sentence exists and nothing
+  // about what it says. `player_travel_confirmed` is one boolean from one
+  // model, and setting it bypassed the entire citation stack that every other
+  // route through this function has to pass.
+  //
+  // Live, on turn 41 of a court campaign: "I gather my things and prepare to
+  // leave for Falkreath." The witness read the cursor correctly — it reported
+  // the player still in the palace — and set the destination flag anyway, and
+  // the map put him in an enemy kingdom while he was standing in his father's
+  // study packing a satchel. He arrived two turns later.
+  //
+  // The path already asserts the PLAYER'S OWN WORDS established this, so those
+  // words are what it must be held to: the same viewpoint-locative test the
+  // rest of the stack uses. "I continue toward the docks" passes it; "prepare
+  // to leave for Falkreath" does not, and neither does any appointment.
+  const destinationReached =
+    !!witness.player_destination &&
+    playerTextSituatesViewpoint(witness.player_destination, input.playerInput, { people: input.knownPeople })
   const witnessedDestination =
     !input.actionDestination &&
     !input.isContinuation &&
@@ -258,7 +320,8 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
     witness.viewpoint_moved &&
     witness.location_evidence_source === 'player' &&
     validEvidence &&
-    validDestination
+    validDestination &&
+    destinationReached
       ? witness.player_destination
       : null
   // The witness is instructed to HOLD the prior place unless the viewpoint
@@ -278,7 +341,7 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
   // follows it describes the descent without ever naming the room.
   const witnessSecondNamer =
     !!witness.current_location &&
-    (passageSituatesViewpoint(witness.current_location, input.narrative, { people: input.knownPeople }) ||
+    (passageSituatesViewpoint(witness.current_location, input.narrative, { people: input.knownPeople, viewpoint: input.viewpoint }) ||
       playerTextSituatesViewpoint(witness.current_location, input.playerInput, { people: input.knownPeople }))
   //
   // A MOVE on a turn where nothing transitioned needs the player's own words.
@@ -298,9 +361,23 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
   // dock", "I stop under the bridge" — which is the player operating the
   // product, and the two namers independently returning the SAME label, which
   // is a coincidence a re-description does not produce.
+  // A DEPARTURE VERB IS NOT A DESTINATION.
+  //
+  // This used to accept `transitionCorroborated`, which folds in a scan of the
+  // player's text for locomotion verbs. "*I nod and leave*" trips it, and the
+  // only place named on that turn was the judge RE-DESCRIBING the room being
+  // left ("the quiet room" for the study); the cursor moved into a synonym of
+  // where it already was. "I can always head to Eryndor instead" trips it too,
+  // and Eryndor is a place the player is threatening to visit.
+  //
+  // The verb scan says something happened; it never says WHERE, and it is an
+  // open list of verbs deciding an outcome, which is the thing this stack is
+  // not allowed to do. The judge's own transition verdict and the player's own
+  // locative are both about the turn rather than about a vocabulary.
+  const turnTransitioned = judgeTransition === true
   const movedOrNamedByPlayer = (place: string | null): boolean =>
     !!place &&
-    (transitionCorroborated ||
+    (turnTransitioned ||
       playerTextSituatesViewpoint(place, input.playerInput, { people: input.knownPeople }) ||
       (!!witness.current_location && !!judgedName && sameLocationLabel(judgedName, witness.current_location)))
 

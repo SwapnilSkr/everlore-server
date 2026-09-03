@@ -241,5 +241,108 @@ console.log('\nthe first anchor prefers a VERIFIED claim over a real excerpt:')
   check('...and it is an established scene, not a move', [d.viewpointMoved, d.sceneEstablished], [false, true])
 }
 
+// ─── Aurelius Valemont, live save 6a993adf — the four rules added 2026-09-03 ───
+// Every case below is a real turn from that playthrough. Its numbers are in
+// `corpus/gold-valemont.json`; the save scored 77.4% before these and 92.9%
+// after, with the keeper (98.6%) and held-out (94.9%) corpora unchanged.
+{
+  // #41. The witness read the cursor CORRECTLY — it reported the player still
+  // in the palace — and set the travel flag anyway, on a sentence that says the
+  // player is packing. The map put him in an enemy kingdom for three days.
+  const d = decide({
+    cursorName: 'Royal Council Chamber',
+    playerInput: '*I gather my things and prepare to leave for Falkreath.*',
+    narrative: 'Aldric watches him gather the map case and the small travel satchel.',
+    witness: {
+      current_location: 'Royal Council Chamber',
+      player_destination: 'Falkreath',
+      player_travel_confirmed: true,
+      viewpoint_moved: true,
+      location_evidence: 'I gather my things and prepare to leave for Falkreath.',
+      location_evidence_source: 'player',
+    },
+  })
+  check('preparing to leave for a place is not arriving at it', [d.placeName, d.viewpointMoved], [null, false])
+}
+{
+  // #72, the same path on the turn the player really does arrive.
+  const d = decide({
+    cursorName: 'the city',
+    playerInput: '*I continue toward the docks, staying alert.*',
+    narrative: 'The dockside air was thick with salt, rot, and the low murmur of a dozen deals.',
+    witness: {
+      current_location: 'docks',
+      player_destination: 'docks',
+      player_travel_confirmed: true,
+      viewpoint_moved: true,
+      location_evidence: 'I continue toward the docks, staying alert.',
+      location_evidence_source: 'player',
+    },
+  })
+  check('...but continuing toward them is', [d.placeName, d.viewpointMoved], ['docks', true])
+}
+{
+  // #66. A line of dialogue GRANTING passage carries every structural mark of
+  // a locative claim. The player was still in the gatehouse, and stayed there
+  // for five more turns while the cursor sat in the city.
+  const d = decide({
+    cursorName: 'gatehouse',
+    playerInput: '*I finally get cleared*',
+    narrative: 'He nodded to the guard at the door. "You can proceed into the city."',
+    witness: { current_location: 'gatehouse', location_evidence: 'You can proceed into the city.' },
+    endpoint: judge('the city', 'You can proceed into the city.', true),
+  })
+  check('permission to go somewhere does not put the viewpoint there', d.viewpointMoved, false)
+}
+{
+  // #43. Third-person narration: the player is "he", which the viewpoint test
+  // classified as a competitor stealing the clause. Most saves narrate this way.
+  const arrival = {
+    cursorName: 'Royal Council Chamber',
+    playerInput: '*I set out on my journey*',
+    narrative: 'By the second evening, he crossed into Falkreath\u2019s borderlands.',
+    witness: { current_location: 'Falkreath', location_evidence: 'he crossed into Falkreath\u2019s borderlands' },
+    endpoint: judge('Falkreath\u2019s borderlands', 'By the second evening, he crossed into Falkreath\u2019s borderlands.', true),
+  }
+  check('a third-person arrival is refused without the viewpoint', decide(arrival).viewpointMoved, false)
+  const d = decide({ ...arrival, viewpoint: { surfaces: ['Aurelius Valemont'], thirdPerson: true } })
+  check('...and lands once the narration POV is known', [d.placeName, d.viewpointMoved], ['Falkreath\u2019s borderlands', true])
+}
+{
+  // #34. Two independent namers, one more specific than the other. Identity
+  // said they disagreed and the cursor stayed in the council chamber for nine
+  // turns while the scene played out in the study.
+  const d = decide({
+    cursorName: 'Royal Council Chamber',
+    playerInput: '*I nod to the guard and make my way to the king\u2019s study.*',
+    narrative: 'Inside, the study is dim, lit by a single tallow candle on the desk.',
+    witness: { current_location: "king\u2019s study", location_evidence: 'the door closes', location_evidence_source: 'player' },
+    endpoint: judge("the king\u2019s private study", 'Inside, the study is dim, lit by a single tallow candle on the desk.', true),
+  })
+  check('a more specific label from the second namer is agreement', d.placeName, "the king\u2019s private study")
+}
+{
+  // The terminal-table finding this must not undo: overlap is not containment.
+  const d = decide({
+    cursorName: 'the hall',
+    narrative: 'He leans forward, elbows on the terminal table.',
+    witness: { current_location: 'terminal room', location_evidence: 'elbows on the terminal table' },
+    endpoint: judge('terminal table', 'He leans forward, elbows on the terminal table', true),
+  })
+  check('two labels merely sharing a word still disagree', d.viewpointMoved, false)
+}
+{
+  // #40. "*I nod and leave*" trips the locomotion-verb scan, and the only place
+  // named was the judge re-describing the room being left.
+  const d = decide({
+    cursorName: "the king\u2019s study",
+    playerInput: '*I nod and leave*',
+    narrative: 'The weight of their conversation still hanging in the quiet room.',
+    witness: { current_location: 'Royal Council Chamber', location_evidence: 'the quiet room' },
+    endpoint: judge('the quiet room', 'the weight of their conversation still hanging in the quiet room.', false),
+  })
+  check('a departure verb does not make a re-description a destination', d.viewpointMoved, false)
+}
+
 console.log(`\nlocation decision audit: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

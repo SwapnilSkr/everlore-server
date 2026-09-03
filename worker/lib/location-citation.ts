@@ -53,6 +53,30 @@ const VIEWPOINT_TOKEN = new Set([
   'you', "you're", "you've", "you'll", "you'd", 'your', 'yours', 'yourself',
 ])
 
+/**
+ * WHO THE VIEWPOINT IS, which is not a constant.
+ *
+ * `VIEWPOINT_TOKEN` is first and second person, because every world the
+ * citation stack was built and measured on narrated the player as "you" or
+ * "I". Most saves in production narrate in the THIRD person, where the player
+ * is "he"/"she"/"they" and their own name — both of which this file classifies
+ * as a competitor stealing the clause. So on those worlds check (c) refused
+ * sentences that describe the player's own position: "he crossed into
+ * Falkreath's borderlands" is the arrival, and it was read as somebody else's.
+ *
+ * The protagonist's surfaces are the caller's real cast data, and the pronoun
+ * set is closed, so this stays a structural test. A bare "he" is only the
+ * viewpoint when the narration is third person AND no other named person owns
+ * the clause ahead of it — "Aldric leaned back in his chair" still belongs to
+ * Aldric, because he is named in front of the pronoun.
+ */
+export interface ViewpointOptions {
+  /** Names the protagonist answers to, from their card. */
+  surfaces?: string[]
+  /** True when the narration refers to the player in the third person. */
+  thirdPerson?: boolean
+}
+
 /** A third party owning the clause. A closed pronoun class. */
 const THIRD_PERSON_TOKEN = new Set([
   'he', "he's", 'him', 'his', 'himself',
@@ -129,7 +153,7 @@ function findPlaceStart(tokens: string[], place: string): number {
 export function excerptSituatesViewpoint(
   place: string,
   evidence: string,
-  options: { people?: string[] } = {},
+  options: { people?: string[]; viewpoint?: ViewpointOptions } = {},
 ): boolean {
   // Clause splitting can DECAPITATE a clause: "He leans forward, elbows on the
   // terminal table" becomes "elbows on the terminal table", a bare locative
@@ -169,8 +193,22 @@ function splitClauses(evidence: string): string[] {
 function clauseSituatesViewpoint(
   place: string,
   evidence: string,
-  options: { people?: string[]; prefix?: string } = {},
+  options: { people?: string[]; prefix?: string; viewpoint?: ViewpointOptions } = {},
 ): boolean {
+  // A SENTENCE IN THE IRREALIS MOOD DESCRIBES NO POSITION.
+  //
+  // "You can proceed into the city" names a place and puts a viewpoint at it
+  // with every structural mark check (c) looks for, and it is a permission —
+  // the man saying it is standing in the gatehouse and so is the player. Live,
+  // that one line moved the cursor into the city and held it there for five
+  // turns while the scene carried on at the gate. The same shape refused a
+  // player's "prepare to leave for Falkreath" three days before he rode.
+  //
+  // Modals and volitionals are closed grammatical classes, so this asks what a
+  // word IS, never what it means. It is deliberately applied to BOTH namers'
+  // citations and to the passage scan, because the mood of a sentence does not
+  // depend on which model happened to quote it.
+  if (IRREALIS_MARKER.test(evidence) || INTENT_MARKER.test(evidence)) return false
   const tokens = tokenize(evidence)
   if (!tokens.length) return false
   const core = placeCore(place)
@@ -187,10 +225,22 @@ function clauseSituatesViewpoint(
   const placeTokens = new Set(tokenize(core))
   for (const token of placeTokens) otherPeople.delete(token)
 
-  const viewpointAt = head.findIndex((token) => VIEWPOINT_TOKEN.has(token))
-  const competitorAt = head.findIndex(
-    (token) => THIRD_PERSON_TOKEN.has(token) || otherPeople.has(token.replace(/'s$/, '')),
+  // The protagonist is never their own competitor, whatever the prose calls them.
+  const viewpointSurfaces = new Set(
+    (options.viewpoint?.surfaces || []).flatMap((name) => tokenize(name)).filter((token) => token.length >= 3),
   )
+  for (const token of viewpointSurfaces) otherPeople.delete(token)
+  const thirdPersonViewpoint = options.viewpoint?.thirdPerson === true
+
+  const isViewpoint = (token: string): boolean =>
+    VIEWPOINT_TOKEN.has(token) ||
+    viewpointSurfaces.has(token.replace(/'s$/, '')) ||
+    (thirdPersonViewpoint && THIRD_PERSON_TOKEN.has(token))
+  const isCompetitor = (token: string): boolean =>
+    otherPeople.has(token.replace(/'s$/, '')) || (!thirdPersonViewpoint && THIRD_PERSON_TOKEN.has(token))
+
+  const viewpointAt = head.findIndex(isViewpoint)
+  const competitorAt = head.findIndex(isCompetitor)
   // A competitor that appears AFTER the viewpoint does not steal the clause
   // ("I follow her into the hall"); one before it does ("Bram's down in the
   // cellars while I wait").
@@ -212,10 +262,8 @@ function clauseSituatesViewpoint(
   const governor = cursor >= 0 ? head[cursor] : ''
   if (LOCATIVE_PREPOSITION.has(governor)) {
     const carried = tokenize(options.prefix || '')
-    const carriedViewpoint = carried.findIndex((token) => VIEWPOINT_TOKEN.has(token))
-    const carriedCompetitor = carried.findIndex(
-      (token) => THIRD_PERSON_TOKEN.has(token) || otherPeople.has(token.replace(/'s$/, '')),
-    )
+    const carriedViewpoint = carried.findIndex(isViewpoint)
+    const carriedCompetitor = carried.findIndex(isCompetitor)
     const carriedOwns =
       viewpointAt < 0 && carriedCompetitor >= 0 && (carriedViewpoint < 0 || carriedCompetitor < carriedViewpoint)
     if (!competitorOwnsClause && !carriedOwns) return true
@@ -244,10 +292,12 @@ export function evaluateLocationCitation(params: {
   evidence: string
   source: string
   people?: string[]
+  viewpoint?: ViewpointOptions
 }): LocationCitationVerdict {
   const a = hasExactEvidence(params.evidence, params.source)
   const b = excerptNamesPlace(params.place, params.evidence)
-  const c = b && excerptSituatesViewpoint(params.place, params.evidence, { people: params.people })
+  const c =
+    b && excerptSituatesViewpoint(params.place, params.evidence, { people: params.people, viewpoint: params.viewpoint })
   const rejected: CitationCheck[] = []
   if (!a) rejected.push('a')
   if (!b) rejected.push('b')
@@ -280,7 +330,7 @@ export function citationAdmitsLocation(verdict: LocationCitationVerdict): boolea
 export function passageSituatesViewpoint(
   place: string,
   prose: string,
-  options: { people?: string[] } = {},
+  options: { people?: string[]; viewpoint?: ViewpointOptions } = {},
 ): boolean {
   const text = String(prose || '')
   if (!text.trim() || !String(place || '').trim()) return false

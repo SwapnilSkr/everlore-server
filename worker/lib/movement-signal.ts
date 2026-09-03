@@ -498,3 +498,30 @@ export function sameLocationLabel(a: string | null | undefined, b: string | null
   const [x, y] = [strip(String(a || '')), strip(String(b || ''))]
   return !!x && x === y
 }
+
+/**
+ * Did two INDEPENDENT namers name the same place, allowing for one of them
+ * being more specific?
+ *
+ * `sameLocationLabel` demands the labels be identical after stripping
+ * determiners, which is right for deciding whether two names are one node in
+ * the graph and too strict for deciding whether two models agree. The witness
+ * said "king's study" and the judge said "the king's private study" about the
+ * same room in the same passage, the agreement test said no, and the cursor sat
+ * in a council chamber for nine turns while the scene played out in the study.
+ *
+ * Containment, not overlap. Overlap is what let "terminal table" corroborate
+ * "terminal room" and hold a whole world at a piece of furniture — those two
+ * share a token and neither contains the other, so they still disagree here.
+ * One label being a subset of the other is a much rarer coincidence: it means
+ * one namer wrote everything the other did, plus a modifier.
+ */
+export function labelsAgreeOnPlace(a: string | null | undefined, b: string | null | undefined): boolean {
+  const words = (value: string): Set<string> =>
+    new Set(locationCandidateKey(value).split(' ').filter(Boolean))
+  const [x, y] = [words(String(a || '')), words(String(b || ''))]
+  if (!x.size || !y.size) return false
+  const [small, large] = x.size <= y.size ? [x, y] : [y, x]
+  for (const token of small) if (!large.has(token)) return false
+  return true
+}
