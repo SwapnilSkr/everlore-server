@@ -22,7 +22,7 @@ import type { DriftState } from '../worker/lib/cursor-drift'
 
 const instances = new Set((process.argv[2] || '').split(',').filter(Boolean))
 const minSeq = Number(process.argv[3] || 0)
-const turns: CorpusTurn[] = JSON.parse(readFileSync('corpus/turns.json', 'utf8'))
+const turns: CorpusTurn[] = JSON.parse(readFileSync(process.env.CORPUS_TURNS || 'corpus/turns.json', 'utf8'))
 /**
  * Ground truth. `gold-hand.json` is hand-labelled: every one of these 74 turns
  * was read and labelled by a person, with an ACCEPTED SET rather than a single
@@ -146,6 +146,10 @@ function replay(label: string, decide: (input: LocationDecisionInput) => ReturnT
       endpoint: entry.endpoint,
       priorDrift: drift,
       sequence: turn.sequence,
+      viewpoint: {
+        surfaces: [turn.context.protagonist?.name || '', ...(turn.context.protagonist?.aliases || [])].filter(Boolean),
+        thirdPerson: turn.context.pov === 'third',
+      },
     })
     drift = decision.drift.next
     if (decision.placeName && (decision.viewpointMoved || !cursor)) {

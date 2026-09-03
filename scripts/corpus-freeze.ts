@@ -32,6 +32,8 @@ export interface CorpusTurn {
     knownPlaces: { name: string; aliases?: string[] }[]
     roster: { name: string; aliases?: string[] }[]
     protagonist: { name?: string | null; aliases?: string[] } | null
+    /** How the narration refers to the player. Third person on most saves. */
+    pov?: 'first' | 'third'
   }
   /** What production actually returned for this turn, when it was captured. */
   observed: {

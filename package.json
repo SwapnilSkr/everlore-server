@@ -36,6 +36,8 @@
     "report:signal-ledger": "bun run scripts/signal-ledger-report.ts",
     "report:corpus-census": "bun run scripts/corpus-census.ts",
     "corpus:freeze": "bun run scripts/corpus-freeze.ts",
+    "corpus:freeze-instance": "bun run scripts/corpus-freeze-instance.ts",
+    "presence:replay": "bun run scripts/presence-replay.ts",
     "corpus:replay": "bun run scripts/corpus-replay.ts",
     "corpus:tier": "bun run scripts/corpus-tier.ts",
     "corpus:rescore": "bun run scripts/corpus-rescore.ts",

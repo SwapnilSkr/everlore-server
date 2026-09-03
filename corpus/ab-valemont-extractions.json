@@ -1,0 +1,4030 @@
+{
+  "6a993adf07249aac25948bc0:2": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Queen Isolde",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "posture",
+          "statement": "Aurelius is seated in the chair",
+          "actors": [
+            "Aurelius Valemont"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Aurelius settled into the chair",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Cedric",
+            "intent": "defend Aurelius",
+            "reaction": "low and controlled voice"
+          },
+          {
+            "character": "Lyra",
+            "intent": "mock Aurelius",
+            "reaction": "smirk sharpens"
+          },
+          {
+            "character": "Isolde",
+            "intent": "redirect focus to business",
+            "reaction": "gaze fixed, fingers tighten"
+          }
+        ],
+        "emotional_shift": "tension rises among the royal family",
+        "setting": "in the Royal Council Chamber",
+        "consequence": "discussion of border reports begins",
+        "unresolved_hook": "how the family dynamics will affect the meeting"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": null,
+        "evidence": null
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:3": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Queen Isolde",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the council has not yet convened",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Queen Isolde",
+            "intent": "challenges Aurelius's authority",
+            "reaction": "gaze sharp, fingers tightening"
+          },
+          {
+            "character": "Crown Prince Cedric",
+            "intent": "supports Aurelius",
+            "reaction": "expression guarded"
+          },
+          {
+            "character": "Princess Lyra",
+            "intent": "teases Aurelius",
+            "reaction": "smile spreading"
+          }
+        ],
+        "emotional_shift": "tension escalates over authority",
+        "setting": "in the Royal Council Chamber",
+        "consequence": "Aurelius's actions are questioned",
+        "unresolved_hook": "whether Aurelius will defend his actions"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the council chamber",
+        "evidence": "Queen Isolde’s gaze snapped to him, her fingers tightening around the goblet."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:4": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the silence",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Queen Isolde",
+          "intent": "demands an explanation",
+          "reaction": "visibly tense and confrontational"
+        },
+        {
+          "character": "Crown Prince Cedric",
+          "intent": "reacts to Isolde's challenge",
+          "reaction": "expression goes still"
+        },
+        {
+          "character": "Aurelius Valemont",
+          "intent": "responds to Isolde",
+          "reaction": "calm but aware of tension"
+        }
+      ],
+      "emotional_shift": "tension escalates in the council",
+      "setting": "in the Royal Council Chamber",
+      "consequence": "Isolde's challenge puts Aurelius under pressure",
+      "unresolved_hook": "how will Aurelius respond to Isolde's demand?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the hall",
+        "evidence": "The hall is quiet"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:5": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Aurelius Valemont",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the council chamber is tense with silence",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Queen Isolde",
+            "intent": "confront Aurelius about his actions",
+            "reaction": "visibly tense and accusatory"
+          },
+          {
+            "character": "Crown Prince Cedric",
+            "intent": "seek clarity on the situation",
+            "reaction": "curious but silent"
+          }
+        ],
+        "emotional_shift": "the power dynamic shifts as Isolde challenges Aurelius",
+        "setting": "in the Royal Council Chamber",
+        "consequence": "Aurelius must explain his actions to the council",
+        "unresolved_hook": "whether Aurelius will justify his mission"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the council",
+        "evidence": "one that should have been brought before this council before you rode out."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:6": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Queen Isolde",
+        "Aurelius Valemont",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the council would have been informed",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Queen Isolde",
+          "intent": "assert authority over the council",
+          "reaction": "tense and confrontational"
+        },
+        {
+          "character": "Crown Prince Cedric",
+          "intent": "avoid confrontation",
+          "reaction": "shifted in his seat, gaze fixed on the table"
+        },
+        {
+          "character": "Princess Lyra",
+          "intent": "observe the tension",
+          "reaction": "smirk vanished, replaced by stillness"
+        }
+      ],
+      "emotional_shift": "tension escalates in the council",
+      "setting": "Royal Council Chamber",
+      "consequence": "Isolde challenges Aurelius's authority",
+      "unresolved_hook": "how will Aurelius respond to Isolde's challenge?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the council",
+        "evidence": "the council would have been informed."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:7": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Queen Isolde",
+        "Aurelius Valemont",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the king confirms this order before us all",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Queen Isolde",
+            "intent": "assert control over the situation",
+            "reaction": "cold and precise"
+          },
+          {
+            "character": "Crown Prince Cedric",
+            "intent": "obey his mother's command",
+            "reaction": "expression unreadable"
+          },
+          {
+            "character": "Princess Lyra",
+            "intent": "observe the conflict",
+            "reaction": "faint, hungry smile"
+          }
+        ],
+        "emotional_shift": "the tension escalates between family members",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aurelius is further isolated from the royal family",
+        "unresolved_hook": "whether Cedric will return with the king's confirmation"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the city",
+        "evidence": "You will not leave this city until the king confirms this order"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:8": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Aurelius Valemont",
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "you are not leaving this palace",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Queen Isolde",
+            "intent": "assert authority over Aurelius",
+            "reaction": "accusatory and unyielding"
+          }
+        ],
+        "emotional_shift": "the power dynamic shifts as Isolde asserts control",
+        "setting": "in the Royal Council Chamber",
+        "consequence": "Aurelius is effectively trapped in the palace",
+        "unresolved_hook": "how will Aurelius respond to Isolde's command?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a993adf07249aac25948bc0:9": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Queen Isolde",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the council’s role is to ensure the crown’s command",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Queen Isolde",
+            "intent": "asserts authority over council",
+            "reaction": "determined and confrontational"
+          },
+          {
+            "character": "Crown Prince Cedric",
+            "intent": "defend the king's authority",
+            "reaction": "tense and defensive"
+          }
+        ],
+        "emotional_shift": "the power struggle intensifies",
+        "setting": "in the Royal Council Chamber",
+        "consequence": "Aurelius is trapped in a standoff",
+        "unresolved_hook": "whether King Aldric will appear to clarify orders"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the palace",
+        "evidence": "You will not leave this palace until your father stands in this room"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:10": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Queen Isolde",
+        "Aurelius Valemont",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the council is adjourned",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "King Aldric",
+            "intent": "assert authority over the council",
+            "reaction": "commanding and weary"
+          },
+          {
+            "character": "Queen Isolde",
+            "intent": "maintain control",
+            "reaction": "tense and silent"
+          },
+          {
+            "character": "Crown Prince Cedric",
+            "intent": "defend his position",
+            "reaction": "silent standoff"
+          },
+          {
+            "character": "Aurelius Valemont",
+            "intent": "remain composed",
+            "reaction": "seated with an air of defiance"
+          }
+        ],
+        "emotional_shift": "the power dynamic shifts with Aldric's command",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aurelius is ordered to leave",
+        "unresolved_hook": "what will happen to Aurelius now?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the council",
+        "evidence": "The council is adjourned."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:11": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "King Aldric",
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the stone room",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Royal Council Chamber",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Queen Isolde",
+            "intent": "accuse Aldric of treason",
+            "reaction": "voice quiet but cutting"
+          },
+          {
+            "character": "King Aldric",
+            "intent": "defend his authority",
+            "reaction": "face tightening, caught off guard"
+          },
+          {
+            "character": "Crown Prince Cedric",
+            "intent": "observe the tension",
+            "reaction": "shifted uncomfortably"
+          },
+          {
+            "character": "Princess Lyra",
+            "intent": "assess the situation",
+            "reaction": "smile replaced by cold stillness"
+          }
+        ],
+        "emotional_shift": "the power dynamic shifts as accusations fly",
+        "setting": "in the Royal Council Chamber",
+        "consequence": "Isolde's challenge puts Aldric on the spot",
+        "unresolved_hook": "whether Aldric will admit to the order or deny it"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the stone room",
+        "evidence": "her voice was quiet, but it cut through the stone room."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:12": {
+    "witness": {
+      "present_characters": [
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Queen Isolde",
+        "Aurelius Valemont",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the council does not move on whispers",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Cedric",
+          "intent": "asserts authority of the king",
+          "reaction": "steady and neutral"
+        },
+        {
+          "character": "Lyra",
+          "intent": "challenges the king's decision",
+          "reaction": "smile sharpens"
+        },
+        {
+          "character": "Isolde",
+          "intent": "maintains control of the council",
+          "reaction": "cold and clipped"
+        }
+      ],
+      "emotional_shift": "tension rises as authority is questioned",
+      "setting": "in the Royal Council Chamber",
+      "consequence": "the council remains in a state of uncertainty",
+      "unresolved_hook": "what will Aldric decide upon his return?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a993adf07249aac25948bc0:13": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "King Aldric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the council is adjourned",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "emotional_tone": "tense",
+      "scene_tag": "mundane",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "King Aldric",
+            "intent": "issues a command",
+            "reaction": "firm and authoritative"
+          },
+          {
+            "character": "Queen Isolde",
+            "intent": "maintains composure",
+            "reaction": "tense and silent"
+          }
+        ],
+        "emotional_shift": "the tension in the room escalates",
+        "setting": "in the Royal Council Chamber",
+        "consequence": "Aurelius is ordered to leave for Falkreath",
+        "unresolved_hook": "how Aurelius will respond to the order"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the chamber",
+        "evidence": "the silence in the chamber tightened like a wire."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:14": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "King Aldric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "posture",
+          "statement": "Aurelius is standing",
+          "actors": [
+            "Aurelius Valemont"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the air in the chamber tightened",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Queen Isolde",
+            "intent": "assert control over the situation",
+            "reaction": "demanding and unyielding"
+          },
+          {
+            "character": "King Aldric",
+            "intent": "navigate the conflict",
+            "reaction": "frozen and conflicted"
+          },
+          {
+            "character": "Crown Prince Cedric",
+            "intent": "maintain neutrality",
+            "reaction": "careful and observant"
+          }
+        ],
+        "emotional_shift": "the power dynamic shifts as Isolde challenges Aurelius",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aldric must publicly confirm his command",
+        "unresolved_hook": "whether Aldric will support Aurelius or yield to Isolde"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the chamber",
+        "evidence": "The air in the chamber tightened."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:15": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "King Aldric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the weight of the room shifted toward him",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "King Aldric",
+          "intent": "asserts authority",
+          "reaction": "voice low and final"
+        },
+        {
+          "character": "Queen Isolde",
+          "intent": "maintain composure",
+          "reaction": "face went still, knuckles white"
+        },
+        {
+          "character": "Crown Prince Cedric",
+          "intent": "relieve tension",
+          "reaction": "shoulders relaxing just a fraction"
+        },
+        {
+          "character": "Princess Lyra",
+          "intent": "observe dynamics",
+          "reaction": "sharp, curious light in her eyes"
+        }
+      ],
+      "emotional_shift": "tension escalates as authority is asserted",
+      "setting": "Royal Council Chamber",
+      "consequence": "Aldric's command creates a rift in the room",
+      "unresolved_hook": "how Isolde will respond to Aldric's decision"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the room",
+        "evidence": "the weight of the room shifted toward him"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:16": {
+    "witness": {
+      "present_characters": [
+        "Aldric",
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the room felt colder, the air thick with the unspoken threat",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "existential",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Aldric",
+            "intent": "assert authority over the council",
+            "reaction": "determined and commanding"
+          },
+          {
+            "character": "Queen Isolde",
+            "intent": "maintain pressure on Aurelius",
+            "reaction": "tense and focused"
+          },
+          {
+            "character": "Crown Prince Cedric",
+            "intent": "observe the conflict",
+            "reaction": "uneasy"
+          },
+          {
+            "character": "Princess Lyra",
+            "intent": "support her brother",
+            "reaction": "concerned"
+          }
+        ],
+        "emotional_shift": "the power dynamic shifts as tension escalates",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aurelius faces increased pressure from both parents",
+        "unresolved_hook": "how will Aurelius respond to the command?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the room",
+        "evidence": "The room felt colder, the air thick with the unspoken threat."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:17": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Aldric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "You will present your report. Now.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Queen Isolde",
+            "intent": "enforce authority",
+            "reaction": "cold and commanding"
+          },
+          {
+            "character": "Aldric",
+            "intent": "support Isolde",
+            "reaction": "silent and attentive"
+          },
+          {
+            "character": "Aurelius Valemont",
+            "intent": "respond to Isolde",
+            "reaction": "unsettled but resolute"
+          }
+        ],
+        "emotional_shift": "the power dynamic shifts towards Isolde",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aurelius is compelled to present his report",
+        "unresolved_hook": "how Aurelius will respond to Isolde's command"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a993adf07249aac25948bc0:18": {
+    "witness": {
+      "present_characters": [
+        "Aldric",
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "You will leave when I give the order to this council, not before.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Aldric",
+          "intent": "assert authority over Aurelius",
+          "reaction": "jaw tightened"
+        },
+        {
+          "character": "Queen Isolde",
+          "intent": "enforce protocol and control",
+          "reaction": "gaze fixed on the platter, voice cutting"
+        }
+      ],
+      "emotional_shift": "tension escalates between authority and defiance",
+      "setting": "in the Royal Council Chamber",
+      "consequence": "Aurelius is compelled to stay and deliver the report",
+      "unresolved_hook": "whether Aurelius will comply with the king's order"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the chamber",
+        "evidence": "the eastern border report is still sealed, and you will deliver it to the chamber"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:19": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Aurelius Valemont",
+        "King Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the council has not convened",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Queen Isolde",
+            "intent": "assert authority over the report",
+            "reaction": "cold and dismissive"
+          },
+          {
+            "character": "Crown Prince Cedric",
+            "intent": "support Aurelius's compliance",
+            "reaction": "shifts in his chair"
+          }
+        ],
+        "emotional_shift": "tension rises as authority is challenged",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aurelius's report is delayed until the council convenes",
+        "unresolved_hook": "whether Aurelius will insist on presenting the report"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the chamber",
+        "evidence": "You will deliver your findings when the chamber is seated, not before."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:20": {
+    "witness": {
+      "present_characters": [
+        "Aldric",
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the silence in the chamber stretched for a beat too long",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Aldric",
+          "intent": "assert authority",
+          "reaction": "voice low and controlled"
+        },
+        {
+          "character": "Queen Isolde",
+          "intent": "remain detached",
+          "reaction": "gaze fixed on the parchment"
+        },
+        {
+          "character": "Crown Prince Cedric",
+          "intent": "show tension",
+          "reaction": "shifted in his seat"
+        }
+      ],
+      "emotional_shift": "tension escalates in the council",
+      "setting": "Royal Council Chamber",
+      "consequence": "Aldric's command leaves no room for debate",
+      "unresolved_hook": "how will Aurelius respond to the order?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the chamber",
+        "evidence": "The silence in the chamber stretched for a beat too long."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:21": {
+    "witness": {
+      "present_characters": [
+        "Aldric",
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the silent room",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Aldric",
+            "intent": "demand compliance",
+            "reaction": "voice low and controlled"
+          },
+          {
+            "character": "Queen Isolde",
+            "intent": "assert authority",
+            "reaction": "gaze fixed on the document"
+          }
+        ],
+        "emotional_shift": "tension escalates in the council",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aurelius must confront the sealed parchment",
+        "unresolved_hook": "what is in the sealed parchment?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the silent room",
+        "evidence": "his voice low and controlled, but carrying across the silent room."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:22": {
+    "witness": {
+      "present_characters": [
+        "Aldric",
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the council chamber was silent enough",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Aldric",
+          "intent": "seeks confirmation of the report",
+          "reaction": "leans back, expression unreadable"
+        },
+        {
+          "character": "Queen Isolde",
+          "intent": "presses for details on the report",
+          "reaction": "eyes narrowed, voice brittle"
+        }
+      ],
+      "emotional_shift": "tension rises as questions remain",
+      "setting": "in the Royal Council Chamber",
+      "consequence": "Isolde demands clarity on Aurelius's methods",
+      "unresolved_hook": "who did Aurelius pay for the assurances?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "council chamber",
+        "evidence": "the council chamber was silent enough to hear the distant echo"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:23": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Aldric",
+        "Crown Prince Cedric",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the table, unmoving",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Isolde",
+          "intent": "demands clarity on assurances",
+          "reaction": "gaze sharpens, voice low and precise"
+        },
+        {
+          "character": "Aldric",
+          "intent": "observes the exchange",
+          "reaction": "leans back in his chair, watching"
+        },
+        {
+          "character": "Cedric",
+          "intent": "listens intently",
+          "reaction": "shifts slightly, expression unreadable"
+        }
+      ],
+      "emotional_shift": "tension rises in the room",
+      "setting": "Royal Council Chamber",
+      "consequence": "Isolde presses for details on the assurances",
+      "unresolved_hook": "what assurances Aurelius will reveal"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the table",
+        "evidence": "Aldric leans back in his chair, watching."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:24": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the sealed report in front of her",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Royal Council Chamber",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Queen Isolde",
+          "intent": "assert authority",
+          "reaction": "demanding compliance"
+        }
+      ],
+      "emotional_shift": "tension escalates",
+      "setting": "in the Royal Council Chamber",
+      "consequence": "Isolde's command puts pressure on Aurelius",
+      "unresolved_hook": "whether Aurelius will comply with Isolde's demand"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a993adf07249aac25948bc0:25": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Aldric",
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the silence felt heavier than before",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Queen Isolde",
+          "intent": "challenges Aurelius's methods",
+          "reaction": "leaned forward slightly, voice low and precise"
+        }
+      ],
+      "emotional_shift": "tension rises as Isolde questions authority",
+      "setting": "Royal Council Chamber",
+      "consequence": "Isolde's scrutiny intensifies the atmosphere",
+      "unresolved_hook": "how Aurelius secured the loyalty of the lords"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": null,
+        "evidence": null
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:26": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the table",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Royal Council Chamber",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Queen Isolde",
+          "intent": "press for details on promises",
+          "reaction": "demanding and critical"
+        }
+      ],
+      "emotional_shift": "tension escalates as Isolde challenges Aurelius",
+      "setting": "in the Royal Council Chamber",
+      "consequence": "Isolde's skepticism puts pressure on Aurelius",
+      "unresolved_hook": "how will I clarify my promises?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the table",
+        "evidence": "Her fingers tapped once on the table."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:27": {
+    "witness": {
+      "present_characters": [
+        "Isolde",
+        "Aldric",
+        "Cedric",
+        "Lyra",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the silence stretched, sharp enough to cut",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Isolde",
+          "intent": "pressures Aurelius for answers",
+          "reaction": "expression remains stern, grip loosens slightly"
+        }
+      ],
+      "emotional_shift": "tension rises as loyalty is questioned",
+      "setting": "in the Royal Council Chamber",
+      "consequence": "Isolde's skepticism deepens the conflict",
+      "unresolved_hook": "what exactly did Aurelius promise them?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": null,
+        "evidence": null
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:28": {
+    "witness": {
+      "present_characters": [
+        "Isolde",
+        "Aldric",
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "You are dismissed to your duty.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Isolde",
+          "intent": "asserts her authority",
+          "reaction": "cold and calculating"
+        },
+        {
+          "character": "Aldric",
+          "intent": "observes the exchange",
+          "reaction": "silent and watchful"
+        }
+      ],
+      "emotional_shift": "tension lingers in the air",
+      "setting": "in the Royal Council Chamber",
+      "consequence": "Aurelius is tasked with a significant duty",
+      "unresolved_hook": "what will be the price of defiance?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": null,
+        "evidence": null
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:29": {
+    "witness": {
+      "present_characters": [
+        "Isolde",
+        "Aldric",
+        "Crown Prince Cedric",
+        "Princess Lyra"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The room held its breath",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Isolde",
+          "intent": "assert control over the council",
+          "reaction": "cool and final"
+        },
+        {
+          "character": "Aldric",
+          "intent": "remain neutral",
+          "reaction": "expression unreadable"
+        }
+      ],
+      "emotional_shift": "tension rises as authority is challenged",
+      "setting": "in the Royal Council Chamber",
+      "consequence": "Aurelius must respond to Isolde's demand",
+      "unresolved_hook": "whether Aurelius will comply or resist"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a993adf07249aac25948bc0:30": {
+    "witness": {
+      "present_characters": [
+        "Isolde",
+        "Aldric",
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the quiet chamber",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Isolde",
+          "intent": "challenges the council's understanding of the peace",
+          "reaction": "demanding clarity and accountability from Aldric"
+        }
+      ],
+      "emotional_shift": "tension escalates as Isolde confronts Aldric",
+      "setting": "Royal Council Chamber",
+      "consequence": "the council is left questioning Aldric's decisions",
+      "unresolved_hook": "what will Aldric reveal about his negotiations?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the quiet chamber",
+        "evidence": "her voice cutting through the quiet chamber."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:31": {
+    "witness": {
+      "present_characters": [
+        "Isolde",
+        "Aldric",
+        "Crown Prince Cedric",
+        "Princess Lyra",
+        "Aurelius Valemont"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Your journey is approved.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Isolde",
+            "intent": "challenge Aurelius's authority",
+            "reaction": "maintains a cold demeanor"
+          },
+          {
+            "character": "Aldric",
+            "intent": "remain neutral",
+            "reaction": "silent in his chair"
+          }
+        ],
+        "emotional_shift": "the tension in the room escalates",
+        "setting": "in the Royal Council Chamber",
+        "consequence": "Aurelius's authority is questioned",
+        "unresolved_hook": "what price will Aurelius pay for peace?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the council",
+        "evidence": "The council still doesn’t know what you did do."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:32": {
+    "witness": {
+      "present_characters": [
+        "Isolde"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Aurelius's room",
+      "player_destination": "Aurelius's room",
+      "player_travel_confirmed": true,
+      "location_evidence": "His own chambers were at the end of the west wing",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "mundane",
+      "emotional_tone": "calm",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Isolde",
+            "intent": "calculates Aurelius's departure",
+            "reaction": "cold and unyielding"
+          }
+        ],
+        "emotional_shift": "Aurelius's departure signifies a growing distance",
+        "setting": "in the corridor",
+        "consequence": "Aurelius prepares for his journey",
+        "unresolved_hook": "what plans Isolde has for him"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "his own chambers",
+        "evidence": "His own chambers were at the end of the west wing"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:33": {
+    "witness": {
+      "present_characters": [
+        "Aurelius Valemont",
+        "the guard"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": "King's private study",
+      "player_travel_confirmed": false,
+      "location_evidence": "The council chamber’s heavy oak doors shut behind him",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": "three days",
+      "time_evidence": "The journey would take three days if he pushed hard",
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the council chamber",
+        "evidence": "The council chamber’s heavy oak doors shut behind him"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:34": {
+    "witness": {
+      "present_characters": [
+        "Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "king's study",
+      "player_destination": "king's study",
+      "player_travel_confirmed": true,
+      "location_evidence": "the door closes",
+      "location_evidence_source": "player",
+      "containment_hint": "Royal Council Chamber",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the king's private study",
+        "evidence": "Inside, the study is dim, lit by a single tallow candle on the desk."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:35": {
+    "witness": {
+      "present_characters": [
+        "Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "posture",
+          "statement": "Aldric is seated at the council table",
+          "actors": [
+            "Aldric"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the weight of the room settling between them",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Aldric",
+            "intent": "to discuss sensitive matters",
+            "reaction": "serious and cautious"
+          }
+        ],
+        "emotional_shift": "tension rises as secrets are hinted at",
+        "setting": "Royal Council Chamber",
+        "consequence": "the door is closed to ensure privacy",
+        "unresolved_hook": "what urgent matters does Aldric wish to discuss?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the room",
+        "evidence": "the weight of the room settling between them."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:36": {
+    "witness": {
+      "present_characters": [
+        "Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the door... sealing them in",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Aldric",
+            "intent": "convey concern about Aurelius's strategy",
+            "reaction": "serious and contemplative"
+          }
+        ],
+        "emotional_shift": "the tension in their relationship deepens",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aldric questions Aurelius's approach to the border lords",
+        "unresolved_hook": "how will Aurelius respond to Aldric's concerns?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": null,
+        "evidence": null
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:37": {
+    "witness": {
+      "present_characters": [
+        "Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the window that overlooked the courtyard",
+      "location_evidence_source": "narrative",
+      "containment_hint": "Royal Council Chamber",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Aldric",
+            "intent": "express concern over Aurelius's methods",
+            "reaction": "serious and contemplative"
+          }
+        ],
+        "emotional_shift": "tension rises over the implications of Aurelius's actions",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aldric warns of the dangers in Falkreath",
+        "unresolved_hook": "how will Aurelius respond to Aldric's warning?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the courtyard",
+        "evidence": "the window that overlooked the courtyard where the escort was assembling"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:38": {
+    "witness": {
+      "present_characters": [
+        "Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": "Falkreath",
+      "player_travel_confirmed": true,
+      "location_evidence": "You're creating a problem I might not be able to solve.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "existential",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Aldric",
+            "intent": "express concern for Aurelius's safety",
+            "reaction": "worried and serious"
+          }
+        ],
+        "emotional_shift": "the stakes of the mission deepen",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aldric's warning adds pressure to the mission",
+        "unresolved_hook": "how will I navigate the dangers in Falkreath?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": null,
+        "evidence": null
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:39": {
+    "witness": {
+      "present_characters": [
+        "Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the old wood of the table creaking under his elbows",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Aldric",
+            "intent": "warns Aurelius about Falkreath",
+            "reaction": "concerned and heavy-hearted"
+          }
+        ],
+        "emotional_shift": "the tension of impending conflict grows",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aldric advises urgency in dealing with Falkreath",
+        "unresolved_hook": "how will I handle the debts of mercy?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the table",
+        "evidence": "the old wood of the table creaking under his elbows"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:40": {
+    "witness": {
+      "present_characters": [
+        "Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": "Royal Council Chamber",
+      "player_travel_confirmed": false,
+      "location_evidence": "the weight of their conversation still hanging in the quiet room",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Aldric",
+            "intent": "reminds Aurelius of his identity",
+            "reaction": "serious and contemplative"
+          }
+        ],
+        "emotional_shift": "the tension in the room deepens",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aurelius is reminded of his dual identity",
+        "unresolved_hook": "how Aurelius will navigate his roles"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the quiet room",
+        "evidence": "the weight of their conversation still hanging in the quiet room."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:41": {
+    "witness": {
+      "present_characters": [
+        "Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": "Falkreath",
+      "player_travel_confirmed": true,
+      "location_evidence": "I gather my things and prepare to leave for Falkreath.",
+      "location_evidence_source": "player",
+      "containment_hint": "the palace",
+      "movement": "none",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Aldric",
+            "intent": "warns Aurelius about his identity",
+            "reaction": "serious and concerned"
+          }
+        ],
+        "emotional_shift": "the tension of impending departure grows",
+        "setting": "Royal Council Chamber",
+        "consequence": "Aurelius prepares to face challenges in Falkreath",
+        "unresolved_hook": "how will Aurelius navigate his identity there?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a993adf07249aac25948bc0:42": {
+    "witness": {
+      "present_characters": [
+        "Aldric"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He looked like a man watching a storm gather",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Aldric",
+            "intent": "caution Aurelius about his identity",
+            "reaction": "serious and concerned"
+          }
+        ],
+        "emotional_shift": "the tension of impending conflict grows",
+        "setting": "Falkreath",
+        "consequence": "Aurelius is reminded of his dual identity",
+        "unresolved_hook": "how Aurelius will navigate his identity in the court"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a993adf07249aac25948bc0:43": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": "Falkreath",
+      "player_travel_confirmed": true,
+      "location_evidence": "he crossed into Falkreath’s borderlands",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the kingdom",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": "three days",
+      "time_evidence": "the road to Falkreath was a three-day ride",
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "exploration",
+      "emotional_tone": "determined",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": "Aurelius's journey begins with purpose",
+        "setting": "in Falkreath's borderlands",
+        "consequence": "Aurelius enters the kingdom undetected",
+        "unresolved_hook": "what awaits him in Falkreath"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "Falkreath’s borderlands",
+        "evidence": "By the second evening, he crossed into Falkreath’s borderlands."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:44": {
+    "witness": {
+      "present_characters": [
+        "the guard"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the city’s narrow streets climbed into a haze of smoke and noise",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "the guard",
+            "intent": "demand identification",
+            "reaction": "assertive and flat"
+          }
+        ],
+        "emotional_shift": "tension rises as scrutiny increases",
+        "setting": "at the outer gate of Falkreath",
+        "consequence": "Aurelius is under watchful eyes",
+        "unresolved_hook": "whether Aurelius will present his papers or respond differently"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "Falkreath’s outer gate",
+        "evidence": "Falkreath’s outer gate was built of dark, weathered stone"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:45": {
+    "witness": {
+      "present_characters": [
+        "the first guard",
+        "the second guard"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "He runs a thick thumb over the wax seal",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "the first guard",
+            "intent": "assess Aurelius's purpose",
+            "reaction": "maintains steady eye contact"
+          },
+          {
+            "character": "the second guard",
+            "intent": "observe Aurelius's reaction",
+            "reaction": "leans in closer"
+          }
+        ],
+        "emotional_shift": "tension builds as scrutiny increases",
+        "setting": "at the entrance of Falkreath",
+        "consequence": "Aurelius faces a routine but tense inquiry",
+        "unresolved_hook": "how will I respond to the guard's question?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the guard station",
+        "evidence": "The guard takes the merchant's envoy papers without breaking eye contact."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:46": {
+    "witness": {
+      "present_characters": [
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the empty road behind him",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Partner",
+          "intent": "observes the guard's scrutiny",
+          "reaction": "remains tense and alert"
+        }
+      ],
+      "emotional_shift": "tension rises as suspicion grows",
+      "setting": "on the road outside Falkreath",
+      "consequence": "the guard questions the legitimacy of the convoy",
+      "unresolved_hook": "how will I respond to the guard's suspicion?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a993adf07249aac25948bc0:47": {
+    "witness": {
+      "present_characters": [
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Falkreath's gates aren't a courtesy.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "guard",
+          "intent": "question Aurelius's presence",
+          "reaction": "suspicious and unyielding"
+        }
+      ],
+      "emotional_shift": "tension rises as suspicion mounts",
+      "setting": "at the gates of Falkreath",
+      "consequence": "Aurelius must clarify his intentions to enter",
+      "unresolved_hook": "what specific business will I declare?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "Falkreath's gates",
+        "evidence": "Falkreath's gates aren't a courtesy."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:48": {
+    "witness": {
+      "present_characters": [
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the skepticism plain",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "second guard",
+            "intent": "question Aurelius's legitimacy",
+            "reaction": "skeptical and probing"
+          },
+          {
+            "character": "first guard",
+            "intent": "verify Aurelius's claims",
+            "reaction": "doubtful and scrutinizing"
+          }
+        ],
+        "emotional_shift": "tension rises as suspicion mounts",
+        "setting": "in the marketplace",
+        "consequence": "Aurelius faces scrutiny about his identity",
+        "unresolved_hook": "how will Aurelius respond to their doubts?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": null,
+        "evidence": null
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:49": {
+    "witness": {
+      "present_characters": [
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the air fills with the sharp, complex scents",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Partner",
+          "intent": "assesses the situation",
+          "reaction": "eyes narrow but hand eases off sword"
+        },
+        {
+          "character": "Second man",
+          "intent": "questions the merchant's convoy",
+          "reaction": "steps closer, inspects the red powder"
+        }
+      ],
+      "emotional_shift": "tension rises as suspicion grows",
+      "setting": "in the marketplace",
+      "consequence": "the guard's suspicion is piqued",
+      "unresolved_hook": "where is the rest of the Silver Crescent?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the wall",
+        "evidence": "the one who’d been watching from the wall"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:50": {
+    "witness": {
+      "present_characters": [
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "You’re carrying quality.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "cautious",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Partner",
+            "intent": "assess Aurelius's character",
+            "reaction": "curious and cautious"
+          }
+        ],
+        "emotional_shift": "the tension shifts to cautious curiosity",
+        "setting": "in the market square",
+        "consequence": "Aurelius is recognized for his quality goods",
+        "unresolved_hook": "whether Aurelius will reveal his true identity"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": null,
+        "evidence": null
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:51": {
+    "witness": {
+      "present_characters": [
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "You’re here to trade.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Partner",
+          "intent": "challenges Aurelius's purpose",
+          "reaction": "skeptical and confrontational"
+        }
+      ],
+      "emotional_shift": "tension rises as trust is questioned",
+      "setting": "at the gate of Falkreath",
+      "consequence": "Aurelius must clarify his intentions",
+      "unresolved_hook": "what will I say to convince them?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the gate",
+        "evidence": "Names aren’t for giving out at a gate"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:52": {
+    "witness": {
+      "present_characters": [
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the word hanging like a challenge",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Partner",
+            "intent": "intimidate Aurelius",
+            "reaction": "gaze sharpened, hand shifted toward sword hilt"
+          }
+        ],
+        "emotional_shift": "the tension escalates",
+        "setting": "Falkreath",
+        "consequence": "Aurelius's intentions are questioned",
+        "unresolved_hook": "how will I respond to the challenge?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": null,
+        "evidence": null
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:53": {
+    "witness": {
+      "present_characters": [
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "restraint",
+          "statement": "the guard blocks the direct path to the city",
+          "actors": [
+            "guard",
+            "Aurelius Valemont"
+          ]
+        },
+        {
+          "kind": "contact",
+          "statement": "the guard gestures for the other man to move closer",
+          "actors": [
+            "guard",
+            "second man"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "Falkreath",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the guard said, his voice low and testing",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the city",
+        "evidence": "But we’re not turning away trade. Not yet."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:54": {
+    "witness": {
+      "present_characters": [
+        "Partner",
+        "Captain"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": "gatehouse",
+      "player_travel_confirmed": true,
+      "location_evidence": "Inside, a man in a captain’s tabard looks up from a map",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the gate",
+      "movement": "deeper",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Captain",
+          "intent": "intimidate and assess Aurelius",
+          "reaction": "cautious and scrutinizing"
+        }
+      ],
+      "emotional_shift": "tension rises as Aurelius faces scrutiny",
+      "setting": "inside the gatehouse",
+      "consequence": "Aurelius must defend his presence and intentions",
+      "unresolved_hook": "how will Aurelius respond to the captain's challenge?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "gatehouse",
+        "evidence": "They stop before a weathered wooden door set into the stone wall of the gatehouse."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:55": {
+    "witness": {
+      "present_characters": [
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "restraint",
+          "statement": "Aurelius is being watched by the guard",
+          "actors": [
+            "Aurelius",
+            "Partner"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "You'll wait in the gatehouse until your convoy arrives",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Partner",
+            "intent": "ensures Aurelius's comfort and security",
+            "reaction": "watchful and alert"
+          }
+        ],
+        "emotional_shift": "tension rises as trust is questioned",
+        "setting": "in the gatehouse",
+        "consequence": "Aurelius is confined to the gatehouse",
+        "unresolved_hook": "how will Aurelius prove his identity?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "gatehouse",
+        "evidence": "You'll wait in the gatehouse until your convoy arrives"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:56": {
+    "witness": {
+      "present_characters": [
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "His eyes held a glint of something",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Captain Roland",
+          "intent": "questions Aurelius's intentions",
+          "reaction": "amused yet cautious"
+        }
+      ],
+      "emotional_shift": "the tension between authority and intrigue deepens",
+      "setting": "in the gatehouse",
+      "consequence": "Aurelius must convince the captain to let him pass",
+      "unresolved_hook": "how will I persuade him to allow entry?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "my city",
+        "evidence": "why should I let you walk into my city instead of sitting you in a cell"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:57": {
+    "witness": {
+      "present_characters": [
+        "Roland",
+        "Partner"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the guard will see you have water",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the gatehouse",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Roland",
+            "intent": "assert authority and caution",
+            "reaction": "weariness followed by hardness in expression"
+          }
+        ],
+        "emotional_shift": "tension rises as threats are implied",
+        "setting": "at the gatehouse",
+        "consequence": "Roland's warning adds pressure to Aurelius's situation",
+        "unresolved_hook": "how will Aurelius respond to Roland's warning?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the gate",
+        "evidence": "Good men don't survive long at this gate, Valemont."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:58": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the smell of dust and spice rolled into the gatehouse",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "suspicious",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Roland",
+            "intent": "assess Aurelius's situation",
+            "reaction": "suspicious and deliberate"
+          }
+        ],
+        "emotional_shift": "tension rises as suspicion grows",
+        "setting": "in the gatehouse",
+        "consequence": "the arrival of the convoy raises questions",
+        "unresolved_hook": "what is the true nature of the cargo?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "gatehouse",
+        "evidence": "The creak of wagon wheels and the smell of dust and spice rolled into the gatehouse"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:59": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "his expression unmoved by the reassurance",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Roland",
+            "intent": "doubt Aurelius's intentions",
+            "reaction": "unmoved and steady"
+          }
+        ],
+        "emotional_shift": "tension rises as trust is questioned",
+        "setting": "at the gatehouse",
+        "consequence": "Aurelius must prove his identity",
+        "unresolved_hook": "how will I convince Roland of my intentions?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "gatehouse",
+        "evidence": "He gestures to the simple bench against the stone wall"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:60": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "restraint",
+          "statement": "Aurelius is blocked from exiting by the guard at the door",
+          "actors": [
+            "Roland",
+            "guard"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the guard at the door, who moved to block the exit",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the door",
+        "evidence": "the guard at the door, who moved to block the exit."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:61": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The scent of saffron and pepper hung heavy in the gatehouse air",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "gatehouse",
+        "evidence": "The scent of saffron and pepper hung heavy in the gatehouse air"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:62": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the guard still blocks the doorway",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Roland",
+            "intent": "warns Aurelius about the inspection",
+            "reaction": "maintains a steady gaze"
+          }
+        ],
+        "emotional_shift": "tension rises as stakes are outlined",
+        "setting": "in the gatehouse",
+        "consequence": "Aurelius must ensure his papers are in order",
+        "unresolved_hook": "whether Aurelius's honor will hold up"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the bench",
+        "evidence": "I take a seat on the bench, keeping my composure."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:63": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "where the guard still stood blocking the exit",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "npc_beats": [
+        {
+          "character": "Roland",
+          "intent": "inquire about Aurelius's motives",
+          "reaction": "curious yet suspicious"
+        }
+      ],
+      "emotional_shift": "tension lingers as curiosity surfaces",
+      "setting": "at the gatehouse",
+      "consequence": "Roland's probing questions deepen the intrigue",
+      "unresolved_hook": "what is Aurelius's true purpose for being here?"
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a993adf07249aac25948bc0:64": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the sealed casks outside",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the table",
+        "evidence": "Roland’s expression doesn’t soften, but he leans forward, elbows on the table."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:65": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "gatehouse",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "His gaze stayed on Aurelius, not the guard at the door",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Roland",
+            "intent": "advises Aurelius on the situation",
+            "reaction": "grim and serious"
+          }
+        ],
+        "emotional_shift": "the stakes of proving identity rise",
+        "setting": "in the gatehouse",
+        "consequence": "Aurelius must prepare for scrutiny",
+        "unresolved_hook": "how will I prove my identity?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the guard at the door",
+        "evidence": "his gaze stayed on Aurelius, not the guard at the door."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:66": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [
+        {
+          "statement": "Aurelius is being watched by the guard",
+          "evidence": "the guard at the door, who stepped aside, unblocking the exit"
+        }
+      ],
+      "current_location": "gatehouse",
+      "player_destination": "city",
+      "player_travel_confirmed": true,
+      "location_evidence": "You can proceed into the city.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the gatehouse",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the city",
+        "evidence": "You can proceed into the city."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:67": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the city",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the taverns near the docks pour vinegar",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the gate",
+        "evidence": "He leans back against the stone wall, keeping an eye on the gate"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:68": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the city",
+      "player_destination": "Rowan's Rest",
+      "player_travel_confirmed": false,
+      "location_evidence": "the good wine's up the hill, near the old bell tower",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "lighthearted",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Roland",
+            "intent": "maintain watch",
+            "reaction": "amused and relaxed"
+          }
+        ],
+        "emotional_shift": "tension eases into camaraderie",
+        "setting": "the city",
+        "consequence": "Roland shares a location for good wine",
+        "unresolved_hook": "whether I will go to Rowan's Rest"
+      },
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the old bell tower",
+        "evidence": "the good wine's up the hill, near the old bell tower."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:69": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the city",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "Go enjoy the city.",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Roland",
+            "intent": "enforce boundaries",
+            "reaction": "expression flat and professional"
+          }
+        ],
+        "emotional_shift": "tension rises as boundaries are enforced",
+        "setting": "the city",
+        "consequence": "Aurelius's invitation is rejected",
+        "unresolved_hook": "how will Aurelius respond to the warning?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": null,
+        "evidence": null
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:70": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the city",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The city of Falkreath lay open before Aurelius now",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "calm",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Roland",
+            "intent": "remind Aurelius of his role",
+            "reaction": "watchful and serious"
+          }
+        ],
+        "emotional_shift": "tension eases as duty resumes",
+        "setting": "the city",
+        "consequence": "Aurelius is reminded of his role and surroundings",
+        "unresolved_hook": "what will Aurelius do next in the city?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "Falkreath",
+        "evidence": "The city of Falkreath lay open before Aurelius now"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:71": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the city",
+      "player_destination": "docks",
+      "player_travel_confirmed": true,
+      "location_evidence": "the city’s main street sloped gently toward the water",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {
+        "heat": {
+          "op": "add",
+          "value": 5
+        }
+      },
+      "flag_mutations": {},
+      "scene_tag": "exploration",
+      "emotional_tone": "observant",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "Roland",
+            "intent": "maintain vigilance",
+            "reaction": "quietly shakes his head"
+          }
+        ],
+        "emotional_shift": "the atmosphere is charged with attention",
+        "setting": "on the main street",
+        "consequence": "Aurelius is noted by the dockworkers and merchants",
+        "unresolved_hook": "how the attention will affect Aurelius's journey"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the docks",
+        "evidence": "the city’s main street sloped gently toward the water"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:72": {
+    "witness": {
+      "present_characters": [
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "docks",
+      "player_destination": "docks",
+      "player_travel_confirmed": true,
+      "location_evidence": "The dockside air was thick with salt, rot, and the low murmur of a dozen deals being struck in the shadows.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "exploration",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "tall man",
+            "intent": "offers work",
+            "reaction": "smiling knowingly"
+          }
+        ],
+        "emotional_shift": "tension rises as potential danger looms",
+        "setting": "at the docks",
+        "consequence": "Aurelius is approached by potential allies or threats",
+        "unresolved_hook": "whether to engage with the men or move on"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the docks",
+        "evidence": "The dockside air was thick with salt, rot, and the low murmur of a dozen deals"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:73": {
+    "witness": {
+      "present_characters": [],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the sounds of the busy docks felt suddenly distant",
+      "location_evidence_source": "narrative",
+      "containment_hint": null,
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "suspicious",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "tall man",
+            "intent": "entice Aurelius to a tavern",
+            "reaction": "smiling conspiratorially"
+          },
+          {
+            "character": "shorter man",
+            "intent": "intimidate and block the path",
+            "reaction": "casually resting hand on knife"
+          }
+        ],
+        "emotional_shift": "tension rises as options are presented",
+        "setting": "at the alley mouth near the docks",
+        "consequence": "Aurelius faces a choice between danger and opportunity",
+        "unresolved_hook": "whether to accept the offer or confront them"
+      },
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the alley mouth",
+        "evidence": "He didn't move from the alley mouth, but his companion"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:74": {
+    "witness": {
+      "present_characters": [
+        "taller man",
+        "his companion"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the docks",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "taller man",
+            "intent": "gauge my knowledge",
+            "reaction": "smile sharpened, eyes narrowed"
+          },
+          {
+            "character": "his companion",
+            "intent": "intimidate",
+            "reaction": "hand on knife hilt tightened"
+          }
+        ],
+        "emotional_shift": "tension rises as interest piques",
+        "setting": "at the docks",
+        "consequence": "the conversation hints at danger",
+        "unresolved_hook": "who revealed the Crow's Nest to me?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "The Crow's Nest",
+        "evidence": "The Crow's Nest, that's a private place."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:75": {
+    "witness": {
+      "present_characters": [
+        "shorter, thicker man with a scarred scalp",
+        "tall one"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": "the Crow's Nest",
+      "player_travel_confirmed": false,
+      "location_evidence": "a man like you doesn’t just wander the docks",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "tall one",
+            "intent": "entice Aurelius to the Crow's Nest",
+            "reaction": "smile turning predatory"
+          }
+        ],
+        "emotional_shift": "tension rises with the suggestion",
+        "setting": "the docks",
+        "consequence": "Aurelius is presented with a choice of venues",
+        "unresolved_hook": "whether to accept the invitation to the Crow's Nest"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "Rowan Rest",
+        "evidence": "mention of the Rowan Rest"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:76": {
+    "witness": {
+      "present_characters": [
+        "shorter, thicker man with a scarred scalp"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the Nest isn't the Rowan Rest",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "taller man",
+            "intent": "negotiate a fee",
+            "reaction": "smile widened, predatory"
+          },
+          {
+            "character": "shorter man",
+            "intent": "intimidate",
+            "reaction": "knuckles still white on his knife hilt"
+          }
+        ],
+        "emotional_shift": "tension escalates in the negotiation",
+        "setting": "at the docks",
+        "consequence": "the cost of information is revealed",
+        "unresolved_hook": "whether I will pay or reveal my source"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  },
+  "6a993adf07249aac25948bc0:77": {
+    "witness": {
+      "present_characters": [
+        "Roland",
+        "shorter, thicker man with a scarred scalp"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The Crow's Nest is still the place for that.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "shorter, thicker man with a scarred scalp",
+            "intent": "reassess Aurelius's worth",
+            "reaction": "eyes scanning for a lie"
+          }
+        ],
+        "emotional_shift": "the negotiation becomes more serious",
+        "setting": "at the docks",
+        "consequence": "the price for information is set at five silvers",
+        "unresolved_hook": "whether Aurelius will agree to the price"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the Crow's Nest",
+        "evidence": "He needs a quiet table and no questions. The Crow's Nest is still the place for that."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:78": {
+    "witness": {
+      "present_characters": [
+        "Roland",
+        "shorter, thicker man with a scarred scalp"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The air on the docks felt heavier",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "taller man",
+            "intent": "demand payment",
+            "reaction": "smiling predatory"
+          },
+          {
+            "character": "shorter man with a scarred scalp",
+            "intent": "assess Aurelius's commitment",
+            "reaction": "watchful and tense"
+          }
+        ],
+        "emotional_shift": "tension rises as the deal is made",
+        "setting": "at the docks",
+        "consequence": "the agreement hangs in the air, awaiting payment",
+        "unresolved_hook": "whether Aurelius will pay the fee"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the docks",
+        "evidence": "The air on the docks felt heavier, the scent of salt and old fish"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:79": {
+    "witness": {
+      "present_characters": [
+        "Roland",
+        "shorter, thicker man with a scarred scalp"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": "the Crow's Nest",
+      "player_travel_confirmed": true,
+      "location_evidence": "Follow me. Quietly.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "out",
+      "viewpoint_moved": true,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "exploration",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "shorter, thicker man with a scarred scalp",
+            "intent": "intimidate Aurelius",
+            "reaction": "falls into step closely behind"
+          }
+        ],
+        "emotional_shift": "the atmosphere grows more dangerous",
+        "setting": "in a narrow alley",
+        "consequence": "Aurelius is led to a secretive location",
+        "unresolved_hook": "what awaits at the Crow's Nest?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "narrow alley",
+        "evidence": "as they turned into a narrow alley that smelled of brine and wet stone."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:80": {
+    "witness": {
+      "present_characters": [
+        "the taller man",
+        "Roland"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the air thick with the smell of fish guts and tar",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "dead-end lane",
+        "evidence": "They turned a sharp corner into a dead-end lane"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:81": {
+    "witness": {
+      "present_characters": [
+        "Roland",
+        "taller man",
+        "scarred man"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the city",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the room was thick with shadow and candlelight",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": []
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": true,
+      "location": {
+        "name": "the room",
+        "evidence": "Inside, the room was thick with shadow and candlelight"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:82": {
+    "witness": {
+      "present_characters": [
+        "taller man",
+        "older man with a weathered face"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "The room behind the heavy door was small, low-ceilinged, and smelled of damp timber and old smoke.",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the docks",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "taller man",
+            "intent": "welcomes Aurelius to the table",
+            "reaction": "gestures to an empty stool"
+          },
+          {
+            "character": "older man",
+            "intent": "assesses Aurelius",
+            "reaction": "gives a slight nod"
+          }
+        ],
+        "emotional_shift": "the atmosphere shifts to cautious interest",
+        "setting": "in a small, low-ceilinged room",
+        "consequence": "Aurelius is now part of a more serious conversation",
+        "unresolved_hook": "what the men want from Aurelius"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "the room",
+        "evidence": "The room behind the heavy door was small, low-ceilinged, and smelled of damp timber"
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:83": {
+    "witness": {
+      "present_characters": [
+        "taller man",
+        "scarred man"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [
+        {
+          "kind": "restraint",
+          "statement": "the scarred man blocks the path back to the door",
+          "actors": [
+            "scarred man"
+          ]
+        }
+      ],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "the master of the watch will want to know",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "taller man",
+            "intent": "assess Aurelius's identity",
+            "reaction": "leans forward, voice conspiratorial"
+          },
+          {
+            "character": "scarred man",
+            "intent": "intimidate Aurelius",
+            "reaction": "tightens grip on his knife"
+          }
+        ],
+        "emotional_shift": "tension escalates as threats are implied",
+        "setting": "at the table in the docks",
+        "consequence": "Aurelius must prove his identity or face dire consequences",
+        "unresolved_hook": "whether Aurelius will reveal the seal"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "Falkreath",
+        "evidence": "you won't be leaving Falkreath."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:84": {
+    "witness": {
+      "present_characters": [
+        "taller man",
+        "lean man",
+        "shorter, thicker man with a scarred scalp"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "the docks",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "revealing a candlelit room with a table",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the city",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "mundane",
+      "emotional_tone": "tense",
+      "beat_ledger": {
+        "npc_beats": [
+          {
+            "character": "lean man",
+            "intent": "assess Aurelius's possession",
+            "reaction": "watchful and demanding"
+          }
+        ],
+        "emotional_shift": "tension builds over the seal",
+        "setting": "in a candlelit room",
+        "consequence": "Aurelius is expected to reveal more about the seal",
+        "unresolved_hook": "what will Aurelius do with the seal?"
+      }
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": {
+        "name": "candlelit room",
+        "evidence": "revealing a candlelit room with a table and three men already seated."
+      }
+    }
+  },
+  "6a993adf07249aac25948bc0:1": {
+    "witness": {
+      "present_characters": [
+        "Queen Isolde",
+        "Crown Prince Cedric",
+        "Princess Lyra"
+      ],
+      "characters_departed": [],
+      "physical_state_opened": [],
+      "physical_state_closed": [],
+      "current_location": "Royal Council Chamber",
+      "player_destination": null,
+      "player_travel_confirmed": false,
+      "location_evidence": "you across the royal table",
+      "location_evidence_source": "narrative",
+      "containment_hint": "the castle",
+      "movement": "none",
+      "viewpoint_moved": false,
+      "time_elapsed": null,
+      "time_evidence": null,
+      "location_state_changes": [],
+      "location_permanent_facts": [],
+      "state_mutations": {},
+      "flag_mutations": {},
+      "scene_tag": "dialogue",
+      "emotional_tone": "neutral",
+      "beat_ledger": {
+        "npc_beats": [],
+        "emotional_shift": null,
+        "setting": null,
+        "consequence": null,
+        "unresolved_hook": null
+      },
+      "choices": [],
+      "milestone": null
+    },
+    "endpoint": {
+      "available": true,
+      "sceneTransition": false,
+      "location": null
+    }
+  }
+}
