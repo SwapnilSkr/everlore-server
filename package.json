@@ -64,6 +64,8 @@
     "audit:replay-edit": "bun run scripts/replay-edit-audit.ts",
     "audit:memory-links": "bun run scripts/memory-links-audit.ts",
     "audit:thread-closure": "bun run scripts/thread-closure-audit.ts",
+    "audit:choice-repetition": "bun run scripts/choice-repetition-audit.ts",
+    "check:identity-split": "bun run scripts/identity-split-check.ts",
     "audit:carding-routing": "bun run scripts/carding-routing-audit.ts",
     "audit:entity-adjudication": "bun run scripts/entity-adjudication-audit.ts",
     "merge:character": "bun run scripts/merge-character-cards.ts",

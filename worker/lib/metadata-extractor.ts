@@ -323,6 +323,16 @@ type MetadataOpts = {
    * historical prose into a second request.
    */
   choiceContext?: string | null
+  /**
+   * Choice labels already offered and not taken.
+   *
+   * MEASURED, and it is NOT used to steer the model. Listing them in the prompt
+   * as "do not repeat these" made repetition WORSE on a controlled replay of 20
+   * real turns -- 5 repeats blind, 13 informed -- which is ordinary anchoring:
+   * naming the labels raised their salience. The list is applied
+   * DETERMINISTICALLY after generation instead, by `dropRepeatedChoices`.
+   */
+  recentChoiceLabels?: string[]
 }
 
 /** Build the STATIC rules + dynamic CONTEXT system prompt shared by both halves.
@@ -420,6 +430,7 @@ function buildMetadataSystem(opts: MetadataOpts | undefined, stats: StatDescript
 
   const playerTurn = (opts?.playerInput || '').replace(/\s+/g, ' ').trim().slice(0, 900)
 
+
   const places = (opts?.knownPlaces || [])
     .map((p) => {
       const name = (p.name || '').trim()
@@ -465,6 +476,50 @@ ONGOING PHYSICAL STATE (still true entering this passage — list any that ENDED
 Tracked stats (only these names may appear in state_mutations): ${stats.length ? stats.map((s) => `${s.name} [${s.min}–${s.max}]: ${s.description}`).join('; ') : '(none)'}
 Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length ? flagKeys.join(', ') : '(none)'}${rosterClause}${knownPlacesClause}`
   return METADATA_RULES + context
+}
+
+/**
+ * DROP CHOICES THE PLAYER HAS ALREADY BEEN OFFERED AND PASSED OVER.
+ *
+ * Over one live 83-turn save the choice half offered 323 suggestions of which
+ * 242 were distinct, and "Challenge Isolde's authority" came up SIXTEEN times
+ * across the scene it belonged to. Turn-to-turn duplication was rare (5 of 82
+ * consecutive pairs shared two labels), so this is not a stuck loop: it is a
+ * generator with no memory of its own output re-deriving the same obvious move
+ * from the same standing situation.
+ *
+ * Telling the model about it in the prompt was tried and measured and made
+ * things worse (5 repeats blind, 13 informed, over the same 20 turns) — naming
+ * the labels anchors on them. So the rule is applied here, where it is
+ * arithmetic rather than persuasion.
+ *
+ * A floor of two keeps a turn from collapsing to a single option: the set may
+ * shrink, never disappear. The comparison is on the normalized label, so
+ * punctuation and casing drift do not smuggle a repeat back in.
+ */
+export function dropRepeatedChoices<T extends { label?: string }>(
+  choices: T[],
+  recentLabels: string[],
+  floor = 2,
+): T[] {
+  const norm = (value: string): string =>
+    String(value || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim()
+  const recent = new Set(recentLabels.map(norm).filter(Boolean))
+  // Within-turn duplicates are dropped whether or not there is any history —
+  // two identical chips in one set are never right.
+  const kept: T[] = []
+  const dropped: T[] = []
+  const seen = new Set<string>()
+  for (const choice of choices) {
+    const key = norm(choice?.label || '')
+    // A duplicate WITHIN this turn's own set is always dropped.
+    if (key && seen.has(key)) { dropped.push(choice); continue }
+    if (key) seen.add(key)
+    if (key && recent.has(key)) dropped.push(choice)
+    else kept.push(choice)
+  }
+  while (kept.length < floor && dropped.length) kept.push(dropped.shift()!)
+  return kept
 }
 
 /** Reuse enforceSchema's field validation on a raw half-response by injecting a
@@ -574,7 +629,7 @@ export async function extractChoiceMetadata(
       scene_tag: v.scene_tag,
       emotional_tone: v.emotional_tone,
       beat_ledger: v.beat_ledger,
-      choices: v.choices,
+      choices: dropRepeatedChoices(v.choices || [], opts?.recentChoiceLabels || []),
       milestone: v.milestone,
     }
   } catch {
