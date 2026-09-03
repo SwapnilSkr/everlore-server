@@ -131,5 +131,107 @@ check(
   true,
 )
 
+// A death is narrated by naming the person ONCE and then pronouncing them, so
+// the sentence that names them is rarely the one the excerpt opens on. Testing
+// the excerpt whole anchored the subject-predicate check to its head and
+// refused a beam-crushing death the model reported at confidence 1.0 — found
+// live, on a turn written to be as unambiguous as a death can be.
+check(
+  'the naming sentence need not be the first one in the excerpt',
+  verifyDeathCitation({
+    name: 'Marn',
+    aliases: ['mudlark'],
+    evidence:
+      'He didn\u2019t cry out; he just went still. Wick knelt in the settling dust, his hands already slick with something warm and dark. Marn\u2019s sharp eyes were open, fixed on nothing.',
+    prose:
+      'It struck Marn squarely across the shoulders, driving him into the granary floor. He didn\u2019t cry out; he just went still. Wick knelt in the settling dust, his hands already slick with something warm and dark. Marn\u2019s sharp eyes were open, fixed on nothing.',
+  }),
+  true,
+)
+// …and widening the excerpt must not widen what qualifies: the name and the
+// predicate have to land in the SAME sentence, or "Marn stood by the door"
+// beside any dying thing at all would bury him.
+check(
+  'a paragraph of pronouns that never names them is still refused',
+  verifyDeathCitation({
+    name: 'Marn',
+    aliases: [],
+    evidence: 'He didn\u2019t cry out; he just went still. The dust settled over him.',
+    prose: 'He didn\u2019t cry out; he just went still. The dust settled over him.',
+  }),
+  false,
+)
+
+// Asked for a contiguous span, the model returns the death's sentences with the
+// scene-setting between them dropped — real sentences joined by a seam that was
+// never in the prose. Requiring the whole excerpt to be verbatim recorded ZERO
+// of two unambiguous live deaths. Per sentence, the fabricated join is the only
+// thing discarded.
+check(
+  'a stitched excerpt still counts through the sentences that are real',
+  verifyDeathCitation({
+    name: 'Deshi',
+    aliases: [],
+    evidence:
+      'Deshi\u2019s footing was already gone. The surface closed over him without a ripple. Deshi did not come up.',
+    prose:
+      'Wick turned toward him, but Deshi\u2019s footing was already gone. He didn\u2019t shout. The surface closed over him without a ripple. Wick stood alone on the stair. Deshi did not come up.',
+  }),
+  true,
+)
+// …but a sentence the narrator never wrote cannot bury anyone, however real the
+// rest of the excerpt is.
+check(
+  'a fabricated sentence in the excerpt buries nobody on its own',
+  verifyDeathCitation({
+    name: 'Ollen',
+    aliases: [],
+    evidence: 'The tide was out. Ollen was dead by morning.',
+    prose: 'The tide was out. Wick counted the seals alone.',
+  }),
+  false,
+)
+
+// Asked for one sentence, the model returns a clause with a period stuck on the
+// end. The span must still be the narrator's own words.
+check(
+  'a trailing period the model added does not break the excerpt',
+  verifyDeathCitation({
+    name: 'Marn',
+    aliases: [],
+    evidence: 'Marn did not come up.',
+    prose: 'Wick stood alone on the stair. Marn did not come up, and the tide went on ebbing.',
+  }),
+  true,
+)
+// Where the narrator only shows someone ELSE looking at the body, this abstains
+// — the subject of "Bryn's body slumped against the crates" is the body, and
+// Maker is the one doing the seeing. Reaching that death would mean teaching the
+// predicate check which nouns are parts of a person, which is the content-list
+// judgement this whole stack exists to avoid, and it is the same reach that let
+// a DEAD HEARTH bury a living steward. The codex still carries the death in
+// prose; the ledger abstains. Deaths cannot be undone by a later turn, so the
+// ledger's default is to say nothing.
+check(
+  'a body observed by someone else is not a citation',
+  verifyDeathCitation({
+    name: 'Bryn',
+    aliases: [],
+    evidence: 'Bryn\u2019s body slumped against the crates.',
+    prose: 'Maker froze, his eyes locked on Bryn\u2019s body slumped against the crates.',
+  }),
+  false,
+)
+check(
+  'trimming punctuation does not let a rewritten span through',
+  verifyDeathCitation({
+    name: 'Bryn',
+    aliases: [],
+    evidence: 'Bryn\u2019s body lay against the crates.',
+    prose: 'Maker froze, his eyes locked on Bryn\u2019s body slumped against the crates.',
+  }),
+  false,
+)
+
 console.log(`\ncharacter lifecycle audit: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
