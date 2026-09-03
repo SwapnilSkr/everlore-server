@@ -2392,6 +2392,19 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     return out
   })()
 
+  // Every surface the codex knows for a card, pointing at that card's canonical
+  // name. Built from the instance's OWN cards, so it needs no global list of
+  // honorifics and works for whatever titles a world invents.
+  const codexIdentityBySurface = new Map<string, string>()
+  for (const card of characterCodex as any[]) {
+    const canonical = String(card?.canonical_name || '').trim()
+    if (!canonical) continue
+    for (const surface of [canonical, ...((card?.aliases as string[]) || [])]) {
+      const k = normalizeEntityName(String(surface || ''))
+      if (k) codexIdentityBySurface.set(k, canonical)
+    }
+  }
+
   const sceneDerivation = deriveNextSceneState({
     prior: packet.sceneState,
     sequence: nextSequence,
@@ -2423,6 +2436,9 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     protagonistNames: [...sceneExcludedKeys],
     // The authored opening furnishes the room; nothing else has yet.
     openingScene,
+    // One person, one seat. The codex already knows "Harbourmaster Ollen" and
+    // "Ollen" are the same man — the cast just had no way to ask.
+    resolveIdentity: (name: string) => codexIdentityBySurface.get(normalizeEntityName(name)) || null,
   })
   const sceneState = sceneDerivation.state
   log.info('scene_state.derived', {

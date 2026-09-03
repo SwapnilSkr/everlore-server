@@ -56,7 +56,6 @@ export function sceneIdentityKey(name: string): string {
   return distinctive.length > 0 ? distinctive.join(' ') : normalized
 }
 
-const key = sceneIdentityKey
 
 /** True when a label is a bare honorific with no identity of its own ("Prince",
  *  "Captain"). The prose uses these as shorthand for someone already in the
@@ -186,6 +185,24 @@ export function deriveNextSceneState(params: {
    *  is almost always theirs. Without this the cast check rejects every fact the
    *  player is party to, which is very nearly all of them. */
   protagonistNames?: string[]
+  /**
+   * Alias -> canonical name, from the instance's OWN codex cards.
+   *
+   * Without it the cast dedups on the shape of the label, and two surfaces for
+   * one person become two people:
+   *
+   *   "Physically here with the player right now: Ollen (since turn 2),
+   *    Harbourmaster Ollen (since turn 2), Deshi (since turn 2)."
+   *
+   * That line goes into the NARRATOR's prompt, so the story is told there are
+   * three people in the room, and it reaches the travel and relationship
+   * pickers, where the player sees Ollen listed twice. `sceneIdentityKey`
+   * already strips honorifics, but only ones on a hardcoded global list —
+   * which is why "Harbourmaster" slipped through and why the next world's
+   * invented title will too. The card's own aliases are per-world truth and
+   * need no list.
+   */
+  resolveIdentity?: (name: string) => string | null
 }): { state: SceneStateDoc; contradictions: SceneContradiction[] } {
   const {
     prior,
@@ -201,6 +218,10 @@ export function deriveNextSceneState(params: {
     protagonistNames = [],
     openingScene = false,
   } = params
+
+  const resolveIdentity = params.resolveIdentity
+  /** The cast's identity key: the CARD this label belongs to, when one is known. */
+  const key = (name: string) => sceneIdentityKey(resolveIdentity?.(name) || name)
 
   const contradictions: SceneContradiction[] = []
   const priorCast = sceneBroke ? [] : prior?.cast || []
@@ -266,7 +287,9 @@ export function deriveNextSceneState(params: {
     seen.add(k)
     cast.push({
       entity_id: person.entityId ?? null,
-      name: person.name,
+      // Show the card's canonical name, not whichever surface this passage
+      // happened to use — the roster is what the narrator and the pickers read.
+      name: resolveIdentity?.(person.name) || person.name,
       since_sequence: sequence,
       source: travelKeys.has(k) ? 'travel_party' : openingScene ? 'opening' : sceneBroke ? 'opening' : 'arrival',
     })

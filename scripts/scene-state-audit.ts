@@ -608,5 +608,48 @@ console.log('opening scene canon:')
   check('being reported elsewhere is not presence', acts('Ilse', 'Ilse is somewhere on the passes.'), false)
 }
 
+// TWO SURFACES, ONE SEAT.
+//
+// `sceneIdentityKey` strips honorifics, but only ones on a hardcoded global
+// list, so "Harbourmaster Ollen" and "Ollen" keyed apart and both were admitted.
+// The rendered cast then told the NARRATOR three people were in a room holding
+// two, and the travel picker showed Ollen twice. The instance's own codex cards
+// already knew they were one man.
+{
+  const cards = new Map([
+    ['harbourmaster ollen', 'Ollen'],
+    ['ollen', 'Ollen'],
+  ])
+  const derived = deriveNextSceneState({
+    prior: null,
+    sequence: 2,
+    sceneBroke: true,
+    place: { entity_id: null, name: 'The Counting House' },
+    reportedPresent: [{ name: 'Harbourmaster Ollen' }, { name: 'Ollen' }, { name: 'Deshi' }],
+    departed: [],
+    corroborated: new Set(['harbourmaster ollen', 'ollen', 'deshi']),
+    openingScene: true,
+    resolveIdentity: (name: string) => cards.get(name.trim().toLowerCase()) || null,
+  })
+  check(
+    'two surfaces of one card take one seat',
+    derived.state.cast.map((m) => m.name).sort(),
+    ['Deshi', 'Ollen'],
+  )
+  // …and without the resolver the old behaviour is unchanged, so this is an
+  // added capability rather than a silent change to every other caller.
+  const naive = deriveNextSceneState({
+    prior: null,
+    sequence: 2,
+    sceneBroke: true,
+    place: { entity_id: null, name: 'The Counting House' },
+    reportedPresent: [{ name: 'Sela' }, { name: 'Bryn' }],
+    departed: [],
+    corroborated: new Set(['sela', 'bryn']),
+    openingScene: true,
+  })
+  check('two different people keep two seats', naive.state.cast.length, 2)
+}
+
 console.log(`\nscene-state audit: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)
