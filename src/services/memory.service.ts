@@ -39,6 +39,7 @@ import {
   isSafeWitnessLocationCandidate,
   validatedContainmentHint,
 } from '../../worker/lib/movement-signal'
+import { decideTravelIntent, lastPlacesFromPresence, mergePersonPlaces, mergeSceneHistoryIntoPlaces, viewpointOwnerName } from '../../worker/lib/travel-intent'
 
 const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
@@ -284,9 +285,75 @@ async function projectLatestReplayTurn(params: {
       name: c.canonical_name as string,
       aliases: (c.aliases || []) as string[],
     }))
-  const knownPlaces = await entityGraphService
-    .listKnownLocations(instanceId, 30)
-    .catch(() => [] as { name: string; aliases: string[] }[])
+  const knownPlaces = mergeSceneHistoryIntoPlaces(
+    (await entityGraphService.listKnownLocations(instanceId, 30).catch(() => [] as { name: string; aliases: string[]; entityId?: string }[])).map((place) => ({
+      name: place.name,
+      aliases: place.aliases,
+      entityId: place.entityId || null,
+      lastSeenSequence: (place as { lastSeenSequence?: number }).lastSeenSequence,
+      parentId: (place as { parentId?: string | null }).parentId ?? null,
+      placeKind: (place as { placeKind?: string | null }).placeKind ?? null,
+    })),
+    priorEvents.map((ev: any) => ({
+      name: ev.location_anchor?.name || null,
+      entityId: ev.location_anchor?.entity_id ? idString(ev.location_anchor.entity_id) : null,
+      sequence: Number(ev.sequence || 0),
+      playerInput: String(ev.data?.player_input || ev.userMessage || ''),
+    })),
+  )
+  const graphPeople = await entityGraphService.listCharacterLastPlaces(instanceId).catch(() => [])
+  const scenePresence = priorEvents.map((ev: any) => ({
+    locationName: ev.location_anchor?.name || null,
+    locationEntityId: ev.location_anchor?.entity_id ? idString(ev.location_anchor.entity_id) : null,
+    present: (Array.isArray(ev.data?.present_characters) ? ev.data.present_characters : []).map((entry: any) =>
+      typeof entry === 'string' ? entry : String(entry?.name || ''),
+    ).filter(Boolean),
+  }))
+  const rosterPeople = [
+    ...graphPeople,
+    ...((codex as any[]) || []).map((card) => ({
+      name: String(card.canonical_name || ''),
+      aliases: (card.aliases || []) as string[],
+    })),
+    ...scenePresence.flatMap((scene) => scene.present.map((name: string) => ({ name, aliases: [] as string[] }))),
+  ].filter((person) => person.name)
+  const personPlaces = mergePersonPlaces(graphPeople, lastPlacesFromPresence(rosterPeople, scenePresence))
+  const replayInput = String(event.data?.player_input || event.userMessage || '')
+  const replayAction = event.data?.world_action
+  const replayPending = instance?.pending_destination?.name
+    ? {
+        name: String(instance.pending_destination.name),
+        entityId: instance.pending_destination.entity_id
+          ? idString(instance.pending_destination.entity_id)
+          : null,
+        aliases: Array.isArray(instance.pending_destination.aliases)
+          ? instance.pending_destination.aliases.map(String)
+          : [],
+      }
+    : null
+  const replayTravel = decideTravelIntent({
+    playerInput: replayInput,
+    isContinuation: !replayInput.trim(),
+    cursorName: priorLocation?.name || null,
+    cursorEntityId: priorLocation?.entity_id ? idString(priorLocation.entity_id) : null,
+    knownPlaces: knownPlaces.map((place) => ({
+      name: place.name,
+      aliases: place.aliases,
+      entityId: place.entityId || null,
+      lastSeenSequence: place.lastSeenSequence,
+      mentionCount: place.mentionCount,
+      parentId: place.parentId ?? null,
+      placeKind: place.placeKind ?? null,
+    })),
+    personPlaces,
+    pending: replayPending,
+    playerName: viewpointOwnerName({
+      isSentient: !!template.is_sentient,
+      protagonistCardName: protagonistCard?.canonical_name,
+      personaName: instance.persona_snapshot?.name,
+      templateProtagonistName: template.protagonist?.name,
+    }),
+  })
 
   const knownNames = (codex as any[]).flatMap((card) => [
     card?.canonical_name,
@@ -301,8 +368,6 @@ async function projectLatestReplayTurn(params: {
       ...(choiceProtagonist?.aliases || []),
     ],
   })
-  const replayInput = String(event.data?.player_input || event.userMessage || '')
-  const replayAction = event.data?.world_action
 
   const endpointPromise = adjudicateSceneEndpoint({
     prose: narrative,
@@ -362,7 +427,14 @@ async function projectLatestReplayTurn(params: {
   const replayActionDestination = replayAction?.kind === 'travel' &&
     isSafeWitnessLocationCandidate(replayAction.destination, locationCandidateOptions)
       ? String(replayAction.destination).trim()
-      : null
+      : (replayTravel.kind === 'arrival' || replayTravel.kind === 'owned_leave') &&
+          replayTravel.destination?.name &&
+          isSafeWitnessLocationCandidate(replayTravel.destination.name, {
+            ...locationCandidateOptions,
+            knownPlaces: [...locationCandidateOptions.knownPlaces, replayTravel.destination.name],
+          })
+        ? replayTravel.destination.name
+        : null
   const replayWitnessDestination =
     !replayAction &&
     meta.player_travel_confirmed === true &&
@@ -1300,7 +1372,6 @@ export const memoryService = {
           instance_id: iid,
           player_id: pid,
           resolved_at: { $ne: null },
-          is_archived: false,
           ...mainVisibleMemory,
         })
         .sort({ resolved_at: -1 })

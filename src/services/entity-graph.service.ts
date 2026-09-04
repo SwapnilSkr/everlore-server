@@ -6,25 +6,31 @@ import { characterCodexService } from './character-codex.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { type WorldFactSource, confidenceFor } from '../utils/world-authority'
 import { log } from '../utils/logger'
+import {
+  belongsAtAnotherLocation,
+  isVagueLocationLabel,
+  LOCATION_FUZZY_MIN_SCORE,
+  normalizeEntityName,
+  normalizeLocationName,
+  scoreLocationNameMatch,
+  significantLocationTokens,
+} from '../utils/location-identity'
+
+export {
+  belongsAtAnotherLocation,
+  isBareGenericPlaceLabel,
+  isVagueLocationLabel,
+  normalizeEntityName,
+  placesAreTheSameLocation,
+  scoreLocationNameMatch,
+  significantLocationTokens,
+} from '../utils/location-identity'
 
 const entities = () => mongoColl.entities()
 const entityEdges = () => mongoColl.entityEdges()
 const memories = () => mongoColl.memories()
 const characters = () => mongoColl.characters()
 const relationCandidates = () => mongoColl.relationCandidates()
-
-/** Same normalization as the codex so the two registries resolve identically. */
-export function normalizeEntityName(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9\s'-]+/g, '')
-    .replace(/\s+/g, ' ')
-}
-
-function normalizeLocationName(name: string): string {
-  return normalizeEntityName(name).replace(/^(?:the|a|an)\s+/, '')
-}
 
 /** Min token length that participates in indexed mention matching — mirrors the
  *  ≥3-char whole-word rule in findEntitiesMentioned ("Vex" hits, "of"/"an" don't). */
@@ -60,41 +66,6 @@ function inputCandidateTokens(text: string): string[] {
   return [...out]
 }
 
-/**
- * Generic / relative place labels that must NEVER become a canonical location of
- * their own ("the room", "here", "outside", …). On a turn with no narrated
- * movement these mean "still where we were" — i.e. the current cursor, not a new
- * place. Matched as the WHOLE normalized label, so a QUALIFIED name stays
- * specific ("dining room" / "great room" / "throne hall" are NOT vague — only a
- * bare "room" / "the hall" is). This is the location analog of "a bare descriptor
- * is never a new character". See LOCATION_GRAPH.md (P0).
- */
-const VAGUE_LOCATION_LABELS = new Set<string>([
-  'here', 'there', 'this place', 'that place', 'the place', 'a place', 'someplace',
-  'some place', 'somewhere', 'elsewhere', 'nearby', 'around', 'this area', 'the area',
-  'the vicinity', 'this spot', 'the spot',
-  'outside', 'inside', 'indoors', 'outdoors', 'out',
-  'room', 'the room', 'a room', 'this room', 'that room', 'the hall', 'a hall',
-  'the chamber', 'a chamber', 'the building', 'a building', 'the space', 'this space',
-])
-
-/** A possessive-pronoun + bare room/dwelling noun ("his room", "my chamber",
- *  "her quarters", "their house") is just as RELATIVE as "the room" — it names no
- *  specific place until the owner is resolved, so it must never become a canonical
- *  location of its own. A qualified possessive ("his throne room", "her war study")
- *  keeps its distinctive word and is NOT matched. The owner-scoped form a memory
- *  should actually carry ("Swapnil Sarkar's room") starts with a name, not a
- *  pronoun, so it stays specific. */
-const POSSESSIVE_VAGUE_ROOM =
-  /^(?:my|his|her|their|its|our|your)\s+(?:own\s+)?(?:room|bedroom|chamber|chambers|hall|study|quarters|den|cabin|cell|office|loft|suite|dorm|place|area|space|building|house|home|apartment|flat|cottage|hut|tent)$/
-
-/** True when a place label is generic/relative (see {@link VAGUE_LOCATION_LABELS}
- *  and {@link POSSESSIVE_VAGUE_ROOM}). */
-export function isVagueLocationLabel(name: string | null | undefined): boolean {
-  const n = normalizeEntityName(String(name || ''))
-  return VAGUE_LOCATION_LABELS.has(n) || POSSESSIVE_VAGUE_ROOM.test(n)
-}
-
 function uniqNames(values: string[], max = 20): string[] {
   const out: string[] = []
   const seen = new Set<string>()
@@ -110,30 +81,11 @@ function uniqNames(values: string[], max = 20): string[] {
   return out
 }
 
-const LOCATION_TOKEN_STOP = new Set(['the', 'a', 'an', 'of', 'in', 'at', 'to', 'and'])
-/** Generic place nouns that are NOT distinctive on their own — "room", "hall",
- *  etc. A name made up only of these ("the room") must not fuzzy-match a specific
- *  place that merely shares the noun ("dining room", "great room"): a bedroom is
- *  not the dining room. The distinctive qualifier ("dining") has to match too. */
-const GENERIC_PLACE_NOUNS = new Set([
-  'room', 'rooms', 'hall', 'halls', 'chamber', 'chambers', 'place', 'area', 'areas',
-  'spot', 'space', 'building', 'house', 'home', 'grounds', 'yard', 'quarters',
-])
-/** Minimum Jaccard score for a conservative fuzzy location match. */
-const LOCATION_FUZZY_MIN_SCORE = 0.45
 /** A close runner-up means the short name is ambiguous; never merge on a guess. */
 const LOCATION_FUZZY_MIN_MARGIN = 0.2
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-/** Significant tokens for location similarity — strips articles/prepositions. */
-export function significantLocationTokens(normalized: string): string[] {
-  return normalized
-    .split(' ')
-    .map((t) => t.trim())
-    .filter((t) => t.length >= 2 && !LOCATION_TOKEN_STOP.has(t))
 }
 
 /** Normalized canonical + alias forms for one location entity. */
@@ -147,35 +99,6 @@ function normalizedLocationNames(entity: Pick<EntityDoc, 'canonical_name' | 'nam
     out.push(n)
   }
   return out
-}
-
-/**
- * Conservative token-containment score between two normalized location names.
- * Returns 0 when names should not merge; 1 for identical strings.
- */
-export function scoreLocationNameMatch(queryNorm: string, candidateNorm: string): number {
-  if (!queryNorm || !candidateNorm) return 0
-  if (queryNorm === candidateNorm) return 1
-
-  const qt = significantLocationTokens(queryNorm)
-  const ct = significantLocationTokens(candidateNorm)
-  if (!qt.length || !ct.length) return 0
-
-  const shorter = qt.length <= ct.length ? qt : ct
-  const longer = qt.length <= ct.length ? ct : qt
-  const longerSet = new Set(longer)
-  if (!shorter.every((t) => longerSet.has(t))) return 0
-
-  // A name made only of generic place-nouns ("the room", "the hall") is not a
-  // confident match for a specific place that just shares the noun — the
-  // distinctive qualifier is missing. "dining room" ≠ "the room".
-  if (shorter.every((t) => GENERIC_PLACE_NOUNS.has(t))) return 0
-
-  // Single-token shorthand ("garden" → "night garden") needs a strong token.
-  if (shorter.length === 1 && shorter[0].length < 4) return 0
-
-  const union = new Set([...qt, ...ct])
-  return shorter.length / union.size
 }
 
 /** Pick the best fuzzy location match from candidates, or null if none pass threshold. */
@@ -285,6 +208,30 @@ async function resolveAreaId(
   }
   cache?.set(key, area)
   return area
+}
+
+/** Self plus ancestors, nearest-first, for nested-place tests (bar ⊂ inn). */
+async function locationIdChain(
+  iid: ObjectId,
+  locationId: string | null | undefined,
+  cache: Map<string, string[]>,
+): Promise<string[]> {
+  if (!locationId) return []
+  if (cache.has(locationId)) return cache.get(locationId) || []
+  const out: string[] = []
+  let current: ObjectId | null = parseObjectId(locationId)
+  for (let i = 0; i < AREA_WALK_CAP && current; i++) {
+    const key = idString(current)
+    if (out.includes(key)) break
+    out.push(key)
+    const node = (await entities().findOne(
+      { _id: current, instance_id: iid, type: 'location' },
+      { projection: { parent_id: 1 } },
+    )) as EntityDoc | null
+    current = node?.parent_id ?? null
+  }
+  cache.set(locationId, out)
+  return out
 }
 
 /** Provenance cap per edge: enough to survive partial rewinds without growing unbounded. */
@@ -1288,6 +1235,61 @@ export const entityGraphService = {
   },
 
   /**
+   * Presence teleport lock. Characters whose last minted place is a different
+   * building than the current cursor — not a room inside it — belong there, not
+   * here. Uncapped: the prompt brief only shows six, but the admit gate must
+   * see Elara even when six more recent people fill that list.
+   */
+  async charactersLastSeenAwayFrom(params: {
+    instanceId: string
+    entityIds: string[]
+    currentLocationId: string | null
+    currentLocationName?: string | null
+  }): Promise<Array<{ name: string; place: string }>> {
+    const { instanceId, entityIds, currentLocationId, currentLocationName } = params
+    const ids = [...new Set((entityIds || []).filter(Boolean))]
+    if (!ids.length) return []
+    if (!currentLocationId && !currentLocationName) return []
+    const iid = parseObjectId(instanceId)
+    const rows = (await entities()
+      .find(
+        {
+          instance_id: iid,
+          _id: { $in: ids.map(parseObjectId) },
+          type: { $in: ['character', 'protagonist'] },
+          last_location_entity_id: { $ne: null },
+        },
+        { projection: { canonical_name: 1, last_location_entity_id: 1 } },
+      )
+      .toArray()) as Array<{ canonical_name?: string; last_location_entity_id?: ObjectId | null }>
+    if (!rows.length) return []
+    const placeIds = [...new Set(rows.map((r) => idString(r.last_location_entity_id!)).filter(Boolean))]
+    const places = (await entities()
+      .find({ _id: { $in: placeIds.map(parseObjectId) }, instance_id: iid }, { projection: { canonical_name: 1 } })
+      .toArray()) as Array<{ _id: ObjectId; canonical_name?: string }>
+    const placeName = new Map(places.map((p) => [idString(p._id), p.canonical_name || '']))
+    const chainCache = new Map<string, string[]>()
+    const currentChain = await locationIdChain(iid, currentLocationId, chainCache)
+    const out: Array<{ name: string; place: string }> = []
+    for (const r of rows) {
+      if (!r.canonical_name || !r.last_location_entity_id) continue
+      const lastId = idString(r.last_location_entity_id)
+      const lastName = placeName.get(lastId) || ''
+      const lastChain = await locationIdChain(iid, lastId, chainCache)
+      if (!belongsAtAnotherLocation({
+        lastPlaceId: lastId,
+        lastPlaceName: lastName,
+        currentPlaceId: currentLocationId,
+        currentPlaceName: currentLocationName,
+        lastAncestorIds: lastChain,
+        currentAncestorIds: currentChain,
+      })) continue
+      out.push({ name: r.canonical_name, place: lastName })
+    }
+    return out
+  },
+
+  /**
    * Promote the scene's witnessed-but-uncarded participants to stub entities
    * (the WITNESS → ENTITY-STUB tier). For every name in `presentNames` that is
    * NOT already a known codex card, ensure a stub entity exists with this turn's
@@ -2097,11 +2099,28 @@ export const entityGraphService = {
 
     const areaScope = parentId ? { areaId: await resolveAreaId(iid, parentId) } : undefined
 
-    return this.resolveLocationAnchor({
+    const placed = await this.resolveLocationAnchor({
       instanceId: params.instanceId, playerId: params.playerId, sequence: params.sequence,
       name, viewpointMoved: moved, scope: { rootId: activeRoot }, areaScope,
       create: { parentId, worldRootId: activeRoot },
     })
+    // Stepping out of a parentless room: the outside is now that room's
+    // container, so a later walk back is on the containment spine instead of
+    // two unrelated roots.
+    if (
+      placed &&
+      moved &&
+      movement === 'out' &&
+      cursor &&
+      cursor.parent_id == null &&
+      idString(placed.entity_id) !== idString(cursor._id)
+    ) {
+      await entities().updateOne(
+        { _id: cursor._id },
+        { $set: { parent_id: placed.entity_id, updated_at: new Date() } },
+      )
+    }
+    return placed
   },
 
   /**
@@ -2181,19 +2200,78 @@ export const entityGraphService = {
   async listKnownLocations(
     instanceId: string,
     limit = 30,
-  ): Promise<{ name: string; aliases: string[] }[]> {
+  ): Promise<{
+    name: string
+    aliases: string[]
+    entityId: string
+    lastSeenSequence: number
+    parentId: string | null
+    placeKind: string | null
+  }[]> {
     const iid = parseObjectId(instanceId)
     const docs = await entities()
       .find(
         { instance_id: iid, type: 'location', status: { $ne: 'archived' } },
-        { projection: { canonical_name: 1, aliases: 1 } },
+        { projection: { canonical_name: 1, aliases: 1, last_seen_sequence: 1, parent_id: 1, place_kind: 1 } },
       )
       .sort({ last_seen_sequence: -1, mention_count: -1 })
       .limit(limit)
       .toArray()
     return (docs as any[])
       .filter((d) => d.canonical_name)
-      .map((d) => ({ name: d.canonical_name as string, aliases: (d.aliases || []) as string[] }))
+      .map((d) => ({
+        name: d.canonical_name as string,
+        aliases: (d.aliases || []) as string[],
+        entityId: idString(d._id),
+        lastSeenSequence: Number(d.last_seen_sequence || 0),
+        parentId: d.parent_id ? idString(d.parent_id) : null,
+        placeKind: (d.place_kind as string) || null,
+      }))
+  },
+
+  /**
+   * Last minted place per character — used to resolve "the tavern where Elara
+   * works" to a map node without guessing among same-named venues.
+   */
+  async listCharacterLastPlaces(
+    instanceId: string,
+  ): Promise<Array<{ name: string; aliases: string[]; placeName: string; placeEntityId: string }>> {
+    const iid = parseObjectId(instanceId)
+    const rows = (await entities()
+      .find(
+        {
+          instance_id: iid,
+          type: { $in: ['character', 'protagonist'] },
+          last_location_entity_id: { $ne: null },
+        },
+        { projection: { canonical_name: 1, aliases: 1, last_location_entity_id: 1 } },
+      )
+      .limit(80)
+      .toArray()) as Array<{
+        canonical_name?: string
+        aliases?: string[]
+        last_location_entity_id?: ObjectId | null
+      }>
+    const placeIds = [...new Set(rows.map((r) => idString(r.last_location_entity_id!)).filter(Boolean))]
+    if (!placeIds.length) return []
+    const places = (await entities()
+      .find({ _id: { $in: placeIds.map(parseObjectId) }, instance_id: iid }, { projection: { canonical_name: 1 } })
+      .toArray()) as Array<{ _id: ObjectId; canonical_name?: string }>
+    const placeName = new Map(places.map((p) => [idString(p._id), p.canonical_name || '']))
+    const out: Array<{ name: string; aliases: string[]; placeName: string; placeEntityId: string }> = []
+    for (const r of rows) {
+      if (!r.canonical_name || !r.last_location_entity_id) continue
+      const placeEntityId = idString(r.last_location_entity_id)
+      const place = placeName.get(placeEntityId) || ''
+      if (!place) continue
+      out.push({
+        name: r.canonical_name,
+        aliases: (r.aliases || []) as string[],
+        placeName: place,
+        placeEntityId,
+      })
+    }
+    return out
   },
 
   /**

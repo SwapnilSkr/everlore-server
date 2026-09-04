@@ -10,12 +10,25 @@
  * order before the council — which he had already done twice. One turn later he
  * reversed his own order.
  *
- * Replaying that save with the threads listed closes 37 of the 48. This pins
- * the routing, which is the half that has to be exact.
+ * A later save showed the other half: appointments stored as ordinary
+ * observations were never flagged as threads, so they never entered this list.
+ * RAG kept retrieving "meet at the yard at first light" and "burn the note"
+ * after both had already happened. Related live facts are now shown first,
+ * promises are threads even without the flag, and a closed fact leaves retrieval.
+ *
+ * Replaying that first save with the threads listed closes 37 of the 48. This
+ * pins the routing, which is the half that has to be exact.
  *
  *   bun run audit:thread-closure
  */
-import { routeThreadClosures } from '../worker/processors/memory.processor'
+import { ObjectId } from 'mongodb'
+import {
+  closedMemorySetFields,
+  forceUnresolvedThread,
+  mergeCloseableCandidates,
+  relatedMemoryQueries,
+  routeThreadClosures,
+} from '../worker/processors/memory.processor'
 
 let pass = 0
 let fail = 0
@@ -69,6 +82,49 @@ console.log('\nnothing is a valid answer:')
 check('empty', routeThreadClosures({}, OFFERED), { ids: [], prose: [] })
 check('nulls and junk', routeThreadClosures({ closed_thread_ids: [null, '', 'none'] as any }, OFFERED).ids, [])
 check('no threads were offered', routeThreadClosures({ closed_thread_ids: ['T1'] }, []).ids, [])
+
+console.log('\na promise is a thread even when the flag is forgotten:')
+check('flag true stays true', forceUnresolvedThread('observation', true), true)
+check('promise without flag is still a thread', forceUnresolvedThread('promise', false), true)
+check('promise with flag is a thread', forceUnresolvedThread('promise', true), true)
+check('observation without flag is not a thread', forceUnresolvedThread('observation', false), false)
+check('emotion without flag is not a thread', forceUnresolvedThread('emotion', undefined), false)
+
+console.log('\nrelated facts this turn can close are shown first:')
+const openId = new ObjectId()
+const relatedId = new ObjectId()
+const merged = mergeCloseableCandidates(
+  [{ _id: relatedId, text: 'Meet the steward at the yard at first light.' }],
+  [{ _id: openId, text: 'Protect Elara.' }],
+)
+check('related appointment is T1', merged[0]?.key, 'T1')
+check('related appointment is the first shown', merged[0]?.text, 'Meet the steward at the yard at first light.')
+check('open thread still appears', merged[1]?.text, 'Protect Elara.')
+check('duplicate ids appear once', mergeCloseableCandidates(
+  [{ _id: openId, text: 'Meet at first light.' }],
+  [{ _id: openId, text: 'Meet at first light.' }],
+).length, 1)
+check('empty text is dropped', mergeCloseableCandidates([{ _id: new ObjectId(), text: '   ' }], []).length, 0)
+
+console.log('\nclosing a paid fact takes it out of retrieval:')
+const closed = closedMemorySetFields(new Date('2026-09-04T00:00:00Z'))
+check('closed facts are archived', closed.is_archived, true)
+check('closed facts are superseded', closed.status, 'superseded')
+check('closed facts are no longer threads', closed.unresolved_thread, false)
+check('closed facts keep a resolved timestamp', String(closed.resolved_at), String(new Date('2026-09-04T00:00:00Z')))
+
+console.log('\nthe related-memory search query stays short enough to match:')
+check(
+  'player input is used when present',
+  relatedMemoryQueries('*I pull out the parchment and set it alight.*', 'The parchment caught fire.')[0],
+  '*I pull out the parchment and set it alight.*',
+)
+check(
+  'opening narration is a second query',
+  relatedMemoryQueries('I will see you soon', 'The steward gave a slow nod. "First light," he repeated. "The south gate."').length,
+  2,
+)
+check('blank turns produce no query', relatedMemoryQueries('', ''), [])
 
 console.log(`\nthread closure audit: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

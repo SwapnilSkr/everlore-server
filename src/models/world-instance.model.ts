@@ -75,6 +75,11 @@ export interface WorldInstanceDoc {
   default_calendar_id?: ObjectId
   /** Current known place at the end of the latest turn. */
   current_location?: LocationAnchorDoc | null
+  /**
+   * Destination the player has named but not arrived at ("let's head to the
+   * tavern"). Cursor stays put; arrival of that map node clears this.
+   */
+  pending_destination?: (LocationAnchorDoc & { aliases?: string[] }) | null
   /** TRAVELLING-WITH party — characters who explicitly joined the player and persist
    *  across scene breaks (a move or a time skip), unlike co-located locals which
    *  reset. Opt-in only: grows on explicit join signals, cleared on explicit

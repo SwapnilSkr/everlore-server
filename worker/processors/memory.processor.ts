@@ -23,7 +23,7 @@ Rules for memory atoms:
 - subjects = who acts/feels in the atom; objects = who/what is affected. Use canonical roster names where possible; use "player" for the player.
 - RESOLVE BACK-REFERENCES using the "Preceding narration" below: when the player's input points at something just said ("stuff like that", "what you said", "things like that", "that", "such things"), resolve it to the ACTUAL content from the preceding narration before writing the atom — never store the vague pointer. Worked example: preceding narration said "Never trust your enemies." and the player says "my father used to say stuff like that" → atom: 'The player's father used to say things like "never trust your enemies."' with subject "father" (or his name if known). ATTRIBUTE a quote, saying, belief, or trait to the PERSON it belongs to (here the father), so it becomes a memory ABOUT that person — list them in subjects so it attaches to their card/entity. Only do this when the player actually attributes it to someone; otherwise treat it as a normal observation.
 - NEVER invent, extend, or merge a name. Use each person's name EXACTLY as it appears in the text or roster. Do not attach a surname, title, or epithet from one character to another who lacks one (if the player is "Kade" and a different character is "Mara Chen", never write "Kade Chen"). Keep distinct people distinct — never fuse two characters because their names share a fragment, and never give one character another's codename/alias unless the text explicitly equates them.
-- Set unresolved_thread true ONLY for genuinely open hooks: an unkept promise, an unanswered question, an unresolved conflict, a debt, a threat still looming. Mundane ongoing states are not threads.
+- Set unresolved_thread true for genuinely open hooks: an unkept promise, an unanswered question, an unresolved conflict, a debt, a threat still looming, an appointment or instruction that has not yet been carried out (meet at a place, go at first light, deliver or burn a note, wait for someone). Mundane ongoing states are not threads. A type of "promise" is always a thread until a later turn pays it off.
 - Top-level "entities": classify EVERY name used in any atom's subjects/objects with its kind: character, location, faction, item, quest, or other. Use "character" for people (including "player").
 - Flag is_nsfw if explicit content is referenced.
 - retrieval_terms: 3-6 short, lowercase alternate ways a LATER turn might refer to this fact — synonyms, the roles/objects/places involved, and the gist in different words — so the memory is still found when the future turn is worded differently from the atom. Example: atom "Mira forgave the player after the ash-bridge betrayal" → ["forgiveness", "betrayal at the ash bridge", "mira's trust", "making amends", "broken promise"]. Keep each a short phrase, not a sentence. Return [] only if truly none apply.
@@ -31,10 +31,10 @@ Rules for memory atoms:
 - Treat "Player canonical narration facts" as events that DEFINITELY happened.
 
 Rules for resolved threads:
-- You will be shown the story's currently OPEN THREADS, each with an id (T1, T2, ...). These are debts the world still owes: an unkept promise, an unanswered demand, an unresolved conflict.
-- For EACH open thread, decide whether THIS exchange settles it. A thread is settled when the thing it was waiting for actually happens in this turn: the order is given, the question is answered, the demand is met, the promise is kept or broken, the confrontation is decided. Put those ids in "closed_thread_ids".
+- You will be shown LIVE RELATED FACTS, each with an id (T1, T2, ...). These include flagged open threads AND earlier facts this turn is talking about (appointments, warnings, notes, meetings, instructions). They are still retrieved as if they were current.
+- For EACH listed fact, decide whether THIS exchange settles, completes, or contradicts it. Settled means the thing it was waiting for actually happens: the meeting occurs, the note is burned, the appointment is kept, the order is given, the demand is met, the promise is kept or broken. Put those ids in "closed_thread_ids".
 - Settling is about the EVENT, not the mood. A character who is still angry, suspicious, or unsatisfied AFTER getting what they demanded has still had the demand met — close it. If a new demand replaces it, that is a NEW thread, which you record as a memory atom with unresolved_thread true.
-- Be decisive. A thread you leave open is presented to the storyteller on every future turn as a debt the story still owes, so a demand that was met and not closed makes the story ask for it again.
+- Be decisive. A fact you leave open is handed to the storyteller on every future turn as live plot, so a meeting already held or a note already burned will be restaged as if it had not happened.
 - "resolved_threads" is for a payoff you can describe but that matches no listed id — use the explicit names involved (e.g. "the player's promise to return Mira's locket"). Otherwise return an empty array.
 
 Respond ONLY with valid JSON matching this schema:
@@ -225,12 +225,73 @@ export function routeThreadClosures(
   return { ids: [...ids], prose }
 }
 
-/** Close the open threads the curator named by id. Exact, no matching. */
-async function closeThreadsById(ids: ObjectId[]): Promise<number> {
+/** A promise is a thread even when the curator forgets the flag. */
+export function forceUnresolvedThread(type: unknown, flagged: unknown): boolean {
+  if (flagged === true) return true
+  return String(type || '').trim().toLowerCase() === 'promise'
+}
+
+export type CloseableMemory = { _id: ObjectId; text: string }
+
+/**
+ * Related-to-this-turn facts first, then flagged open threads. The curator can
+ * only close what it is shown; appointments stored as ordinary observations
+ * never appeared in the open-thread list, so they stayed retrievable forever.
+ */
+export function mergeCloseableCandidates(
+  related: CloseableMemory[],
+  openThreads: CloseableMemory[],
+  limit = 16,
+): Array<{ key: string; id: ObjectId; text: string }> {
+  const seen = new Set<string>()
+  const out: Array<{ key: string; id: ObjectId; text: string }> = []
+  for (const row of [...related, ...openThreads]) {
+    const id = String(row?._id || '')
+    if (!id || seen.has(id)) continue
+    const text = String(row?.text || '').replace(/\s+/g, ' ').trim()
+    if (!text) continue
+    seen.add(id)
+    out.push({ key: `T${out.length + 1}`, id: row._id, text })
+    if (out.length >= limit) break
+  }
+  return out
+}
+
+export function closedMemorySetFields(at = new Date()) {
+  return {
+    unresolved_thread: false,
+    resolved_at: at,
+    is_archived: true,
+    status: 'superseded' as const,
+    updated_at: at,
+  }
+}
+
+async function evictClosedVectors(docs: Array<{ pinecone_id?: string | null }>, namespaceName: string) {
+  if (!docs.length) return
+  const namespace = getPineconeIndex().namespace(namespaceName)
+  for (const doc of docs) {
+    if (!doc.pinecone_id) continue
+    try {
+      await namespace.deleteOne({ id: doc.pinecone_id })
+    } catch (err) {
+      console.warn('Closed-memory vector delete skipped:', (err as Error).message)
+    }
+  }
+}
+
+/** Close listed facts and take them out of RAG so they cannot be restaged. */
+async function closeThreadsById(ids: ObjectId[], namespaceName: string): Promise<number> {
   if (!ids.length) return 0
+  const docs = await mongoColl
+    .memories()
+    .find({ _id: { $in: ids }, is_archived: false }, { projection: { pinecone_id: 1 } })
+    .toArray()
+  if (!docs.length) return 0
+  await evictClosedVectors(docs, namespaceName)
   const result = await mongoColl.memories().updateMany(
-    { _id: { $in: ids }, unresolved_thread: true },
-    { $set: { unresolved_thread: false, resolved_at: new Date(), updated_at: new Date() } },
+    { _id: { $in: docs.map((doc) => doc._id) } },
+    { $set: closedMemorySetFields() },
   )
   return result.modifiedCount || 0
 }
@@ -270,17 +331,10 @@ async function resolveOpenThreads(
         (row) => (row.score ?? 0) >= 1.0,
       )
       if (!paid.length) continue
-      const closed = await mongoColl.memories().updateMany(
-        { _id: { $in: paid.map((row) => row._id) } },
-        {
-          $set: {
-            unresolved_thread: false,
-            resolved_at: new Date(),
-            updated_at: new Date(),
-          },
-        },
+      resolved += await closeThreadsById(
+        paid.map((row) => row._id),
+        `mem_${idString(instanceOid)}`,
       )
-      resolved += closed.modifiedCount || 0
     } catch (err) {
       // Text index may not exist yet on older deployments — never fail the job.
       console.warn('Open-thread resolution skipped:', (err as Error).message)
@@ -288,6 +342,52 @@ async function resolveOpenThreads(
     }
   }
   return resolved
+}
+
+export function relatedMemoryQueries(playerInput: string, aiResponse: string): string[] {
+  const input = String(playerInput || '').replace(/\s+/g, ' ').trim().slice(0, 400)
+  const opening = String(aiResponse || '').replace(/\s+/g, ' ').trim().slice(0, 240)
+  return [...new Set([input, opening].filter((query) => query.length >= 12))]
+}
+
+async function findRelatedLiveMemories(
+  instanceOid: ObjectId,
+  playerInput: string,
+  aiResponse: string,
+  limit = 8,
+): Promise<CloseableMemory[]> {
+  const queries = relatedMemoryQueries(playerInput, aiResponse)
+  if (!queries.length) return []
+  const found = new Map<string, CloseableMemory>()
+  for (const query of queries) {
+    try {
+      const rows = await mongoColl
+        .memories()
+        .find(
+          {
+            instance_id: instanceOid,
+            is_archived: false,
+            $text: { $search: query },
+          },
+          { projection: { text: 1, score: { $meta: 'textScore' } } },
+        )
+        .sort({ score: { $meta: 'textScore' } })
+        .limit(limit * 2)
+        .toArray()
+      for (const row of rows as Array<(typeof rows)[0] & { score?: number }>) {
+        if ((row.score ?? 0) < 1.0) continue
+        const text = String(row.text || '').trim()
+        if (!text) continue
+        const id = String(row._id)
+        if (!found.has(id)) found.set(id, { _id: row._id, text })
+        if (found.size >= limit) return [...found.values()]
+      }
+    } catch (err) {
+      console.warn('Related-memory search skipped:', (err as Error).message)
+      break
+    }
+  }
+  return [...found.values()]
 }
 
 /** Shared request builder lets the no-write replay harness exercise precisely
@@ -314,7 +414,7 @@ export function buildMemoryCurationRequest(params: {
     responseFormat: { type: 'json_object' },
     messages: [
       { role: 'system' as const, content: EXTRACTION_PROMPT },
-      { role: 'user' as const, content: `Scene type: ${params.sceneTag}\n\nCharacter roster (canonical names for resolution):\n${rosterLines}\n${identityContext}\n${params.precedingAiResponse ? `Preceding narration (the line(s) just before this turn — use ONLY to resolve back-references like "stuff like that"; do not re-extract its events as new memories):\n${String(params.precedingAiResponse).slice(0, 700)}\n` : ''}\nPlayer (raw input): ${params.playerInput}\nPlayer spoken dialogue: ${params.playerSpokenInput || '(none)'}\nPlayer canonical narration facts:\n${Array.isArray(params.playerNarrationFacts) && params.playerNarrationFacts.length ? params.playerNarrationFacts.map((f) => `- ${f}`).join('\n') : '- (none)'}\n\nOPEN THREADS (debts the world still owes \u2014 decide which, if any, THIS exchange settles):\n${params.openThreads && params.openThreads.length ? params.openThreads.map((t) => `${t.id}: ${t.text}`).join('\n') : '(none)'}\n\nWorld: ${params.aiResponse}` },
+      { role: 'user' as const, content: `Scene type: ${params.sceneTag}\n\nCharacter roster (canonical names for resolution):\n${rosterLines}\n${identityContext}\n${params.precedingAiResponse ? `Preceding narration (the line(s) just before this turn — use ONLY to resolve back-references like "stuff like that"; do not re-extract its events as new memories):\n${String(params.precedingAiResponse).slice(0, 700)}\n` : ''}\nPlayer (raw input): ${params.playerInput}\nPlayer spoken dialogue: ${params.playerSpokenInput || '(none)'}\nPlayer canonical narration facts:\n${Array.isArray(params.playerNarrationFacts) && params.playerNarrationFacts.length ? params.playerNarrationFacts.map((f) => `- ${f}`).join('\n') : '- (none)'}\n\nLIVE RELATED FACTS (still retrieved as current — decide which, if any, THIS exchange settles):\n${params.openThreads && params.openThreads.length ? params.openThreads.map((t) => `${t.id}: ${t.text}`).join('\n') : '(none)'}\n\nWorld: ${params.aiResponse}` },
     ],
   }
 }
@@ -384,26 +484,32 @@ export async function memoryProcessor(job: Job) {
   // it was being asked to recall a debt it had no access to. On a live 84-turn
   // save it named a payoff ONCE: 48 threads open, 1 ever closed.
   //
-  // Those 48 are then presented to the narrator every turn as "live continuity
-  // debts the story still owes a payoff for", with instructions to honour one
-  // when the player engages it. At turn 16 of that save all five slots were the
-  // same demand -- the king must confirm the departure order before the council
-  // -- which the king had already done, twice, at turns 13 and 15. One turn
-  // later he reversed his own order, and the goalposts moved for fifteen turns.
+  // A later save showed the other half: appointments stored as ordinary
+  // observations ("meet at the yard at first light", "burn the note") were
+  // never flagged as threads, so they never entered this list. RAG kept
+  // retrieving them as live plot and the narrator restaged them.
   //
-  // The ids make closure exact: the curator returns T3, and T3 closes. No text
-  // matching, no threshold, no chance of closing a neighbour.
-  const openThreadDocs = await mongoColl
-    .memories()
-    .find(
-      { instance_id: instanceOid, unresolved_thread: true, is_archived: false },
-      { projection: { text: 1, importance: 1, updated_at: 1 } },
-    )
-    .sort({ updated_at: -1 })
-    .limit(12)
-    .toArray()
-  const openThreadById = new Map(openThreadDocs.map((doc, i) => [`T${i + 1}`, doc._id]))
-  const openThreads = openThreadDocs.map((doc, i) => ({ id: `T${i + 1}`, text: String(doc.text || '') }))
+  // Related live facts for THIS turn are shown first. The ids make closure
+  // exact: the curator returns T3, and T3 closes and leaves retrieval.
+  const namespaceName = `mem_${instanceId}`
+  const [openThreadDocs, relatedLive] = await Promise.all([
+    mongoColl
+      .memories()
+      .find(
+        { instance_id: instanceOid, unresolved_thread: true, is_archived: false },
+        { projection: { text: 1, importance: 1, updated_at: 1 } },
+      )
+      .sort({ updated_at: -1 })
+      .limit(12)
+      .toArray(),
+    findRelatedLiveMemories(instanceOid, playerInput, aiResponse),
+  ])
+  const closeable = mergeCloseableCandidates(
+    relatedLive,
+    openThreadDocs.map((doc) => ({ _id: doc._id, text: String(doc.text || '') })),
+  )
+  const openThreadById = new Map(closeable.map((row) => [row.key, row.id]))
+  const openThreads = closeable.map((row) => ({ id: row.key, text: row.text }))
 
   const result = await callLLM(buildMemoryCurationRequest({
     sceneTag, roster, isSentient, protagonistName, playerPersonaName,
@@ -420,13 +526,14 @@ export async function memoryProcessor(job: Job) {
   }
   normalizePlayerFactAttribution({ extracted, isSentient, playerInput, protagonistName })
 
-  // Close earlier open threads this turn paid off — even when no new atom was
-  // worth storing (a quiet fulfillment is still a resolution).
+  // Close earlier facts this turn paid off — even when no new atom was worth
+  // storing (a quiet fulfillment is still a resolution). Closed facts leave
+  // retrieval so they cannot be restaged as current plot.
   const routed = routeThreadClosures(extracted, [...openThreadById.keys()])
   const closedIds = routed.ids.map((id) => openThreadById.get(id)).filter((id): id is ObjectId => !!id)
   const resolvedThreads = routed.prose.slice(0, 3)
   const threadsResolved =
-    (await closeThreadsById(closedIds)) +
+    (await closeThreadsById(closedIds, namespaceName)) +
     (resolvedThreads.length ? await resolveOpenThreads(instanceOid, resolvedThreads) : 0)
   if (threadsResolved > 0) {
     console.log(`[memory] closed ${threadsResolved} open thread(s) on event ${idString(eventOid)}`)
@@ -519,7 +626,6 @@ export async function memoryProcessor(job: Job) {
   }
 
   const index = getPineconeIndex()
-  const namespaceName = `mem_${instanceId}`
   const namespace = index.namespace(namespaceName)
   const newMemories: any[] = []
 
@@ -534,7 +640,7 @@ export async function memoryProcessor(job: Job) {
     const objects = cleanNameList(mem.objects)
     const subjectEntityIds = entityIdsFor(subjects)
     const objectEntityIds = entityIdsFor(objects)
-    const unresolvedThread = mem.unresolved_thread === true
+    const unresolvedThread = forceUnresolvedThread(mem.type, mem.unresolved_thread)
 
     // Alternate phrasings the curator emitted: embed them WITH the atom so a future
     // turn worded differently still lands close in vector space, and store them as

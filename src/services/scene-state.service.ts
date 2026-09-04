@@ -414,10 +414,10 @@ export function renderSceneStateForPrompt(state: SceneStateDoc | null): string {
       `- These people are ALREADY in this space. Do not have them arrive, enter, walk in, appear in the doorway, or be announced again — they are already here.`,
     )
   } else {
-    lines.push(`- The player is alone in this space. Anyone else must arrive on-screen to be here.`)
+    lines.push(`- The player is alone in this space. Anyone not listed is elsewhere; do not summon them here.`)
   }
   lines.push(
-    `- Nobody else is present. A character not listed above is elsewhere; bringing one into this scene requires narrating their arrival.`,
+    `- Nobody else is present. A character not listed above is at their last known place, not here. Do not bring them here to satisfy a request to go to them — if the player is going to someone, the player travels; that person stays put until the player arrives.`,
   )
   for (const fact of state.physical) {
     lines.push(`- Ongoing physical state (still true unless this turn ends it): ${fact.statement}.`)

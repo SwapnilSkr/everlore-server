@@ -38,7 +38,7 @@ import {
 } from '../lib/scene-endpoint-adjudicator'
 import { characterCodexService, type RelationAssertion } from '../../src/services/character-codex.service'
 import { kinshipGraphService } from '../../src/services/kinship-graph.service'
-import { entityGraphService, normalizeEntityName } from '../../src/services/entity-graph.service'
+import { entityGraphService, normalizeEntityName, placesAreTheSameLocation, isVagueLocationLabel, isBareGenericPlaceLabel } from '../../src/services/entity-graph.service'
 import { locationService } from '../../src/services/location.service'
 import {
   extractExplicitPhysicalDestination,
@@ -48,7 +48,7 @@ import {
   isSafeWitnessLocationCandidate,
   validatedContainmentHint,
   detectNarratedMovement,
-  locationNamesCompatible, locationCandidateKey} from '../lib/movement-signal'
+  locationCandidateKey} from '../lib/movement-signal'
 import {
   evaluateLocationCitation,
   citationAdmitsLocation,
@@ -58,6 +58,18 @@ import {
 import { evaluateTimeCitation, citationAdmitsTimeSkip } from '../lib/time-citation'
 import { decidePartyDecay, type DriftState } from '../lib/cursor-drift'
 import { decideLocation } from '../lib/location-decision'
+import {
+  classifyPlayerTravel,
+  decideTravelIntent,
+  lastPlacesFromPresence,
+  mergePersonPlaces,
+  mergeSceneHistoryIntoPlaces,
+  occupancyVenueAliases,
+  aliasesToBindOnArrival,
+  travelPromptDirective,
+  viewpointOwnerName,
+  type PendingDestination,
+} from '../lib/travel-intent'
 import { decidePlacePromotion, classifyPlaceRelation } from '../lib/place-promotion'
 import { auditChoices } from '../lib/choice-grounding-audit'
 import { classifyChoiceGrounding, computeGroundingContext } from '../lib/choice-grounding'
@@ -98,6 +110,16 @@ function travelPresenceKey(value: string): string {
   return normalizeEntityName(String(value || ''))
     .replace(/^(?:the|a|an)\s+/, '')
     .trim()
+}
+
+function pendingFromSession(session: { pending_destination?: any }): PendingDestination | null {
+  const raw = session?.pending_destination
+  if (!raw?.name) return null
+  return {
+    name: String(raw.name),
+    entityId: raw.entity_id ? idString(raw.entity_id) : raw.entityId || null,
+    aliases: Array.isArray(raw.aliases) ? raw.aliases.map(String) : [],
+  }
 }
 
 function openingCharacterName(events: any[], names: string[]): string | null {
@@ -234,7 +256,7 @@ function buildChoiceDecisionContext(input: {
   if (input.openThreads.length) sections.push(`OPEN THREADS\n${input.openThreads.slice(0, 5).map((item) => `- ${String(item).slice(0, 260)}`).join('\n')}`)
   if (input.relevantSummaries.length) sections.push(`RELEVANT PAST CHAPTERS\n${input.relevantSummaries.slice(0, 3).map((item) => `- ${String(item).slice(0, 360)}`).join('\n')}`)
   if (input.loreTexts.length) sections.push(`RETRIEVED LORE\n${input.loreTexts.slice(0, 4).map((item) => `- ${String(item).slice(0, 420)}`).join('\n')}`)
-  if (input.memoryTexts.length) sections.push(`RETRIEVED MEMORIES\n${input.memoryTexts.slice(0, 5).map((item) => `- ${String(item).slice(0, 360)}`).join('\n')}`)
+  if (input.memoryTexts.length) sections.push(`RETRIEVED MEMORIES (past facts — do not restage completed meetings, notes, or appointments)\n${input.memoryTexts.slice(0, 5).map((item) => `- ${String(item).slice(0, 360)}`).join('\n')}`)
 
   const out: string[] = []
   let used = 0
@@ -637,37 +659,40 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
   const explicitPhysicalDestination = confirmedWorldAction
     ? null
     : extractExplicitPhysicalDestination(parsedPlayerInput.raw)
-  // THE LOOP THIS BREAKS. The narrator is told `CURRENT PLACE: <cursor>` every
-  // turn. When the cursor is stale and the player writes their own movement, the
-  // narrator follows the cursor and writes them back where they were — and that
-  // prose then re-confirms the stale cursor to every post-stream extractor. No
-  // extractor improvement can break it: by the time they run, the fiction has
-  // already been written the wrong way.
-  //
-  // The existing guard required the destination to match PHYSICAL_DESTINATION_WORD,
-  // a place vocabulary that — unlike the other place vocabulary in the same file —
-  // does not contain "bridge". So "I walk to the canal bridge" produced nothing,
-  // and a world's map sat in a bar for a dozen turns because of a missing word in
-  // one of two lists that disagree. This quotes the player instead of resolving a
-  // place: no vocabulary, nothing minted, nothing validated.
+  const playerTravel = confirmedWorldAction || isContinuation
+    ? { kind: 'none' as const, label: null }
+    : classifyPlayerTravel(parsedPlayerInput.raw)
+  const priorPending = pendingFromSession(session)
+  const travelDirective = confirmedWorldAction
+    ? null
+    : travelPromptDirective({
+        kind: playerTravel.kind,
+        label: playerTravel.label,
+        resolvedName:
+          playerTravel.kind === 'arrival' && priorPending?.name ? priorPending.name : playerTravel.label,
+        cursorName: (session as { current_location?: { name?: string } }).current_location?.name || null,
+        playerInput: parsedPlayerInput.raw,
+      })
   const statedPosition = confirmedWorldAction || isContinuation
     ? null
     : extractStatedPosition(parsedPlayerInput.raw)
-  // This only governs narrator viewpoint and presence folding. Location graph
-  // changes remain witness-evidence gated below, so a natural-language exit
-  // cannot mint a place from a stray phrase.
-  const playerSceneTransition =
+  // Intent ("let's head to the tavern") is not a scene break — the player is
+  // still here. Arrival and owned-room leave are. extractExplicitPhysicalDestination
+  // used to treat "let's head to X" as a transition and emptied the room.
+  let playerSceneTransition =
     !confirmedWorldAction &&
     !isContinuation &&
-    isExplicitPlayerSceneTransition(parsedPlayerInput.raw)
-  // The explicit travel control is the same boundary in stronger form: its
-  // selected companions are the complete travelling party, so locals from the
-  // place left behind may never reappear at the destination by metadata drift.
-  const playerForcesFreshCast =
+    playerTravel.kind !== 'intent' &&
+    (playerTravel.kind === 'owned_leave' ||
+      playerTravel.kind === 'arrival' ||
+      isExplicitPlayerSceneTransition(parsedPlayerInput.raw))
+  let playerForcesFreshCast =
     playerSceneTransition || confirmedWorldAction?.kind === 'travel'
 
-  const promptUserMessage = confirmedWorldAction
+  let promptUserMessage = confirmedWorldAction
     ? worldActionDirective(confirmedWorldAction)
+    : travelDirective
+      ? travelDirective
     : statedPosition && !explicitPhysicalDestination
       ? `[PLAYER POSITION: The player has placed themselves "${statedPosition}". That is where this scene happens. Narrate from there. Do not return them to the previous place, and do not contradict their own statement of where they are.]`
     : explicitPhysicalDestination
@@ -752,8 +777,90 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     currentTimeAnchor,
     timeContext,
     currentLocation,
-    locationContext,
+    locationContext: packetLocationContext,
   } = packet
+  const allKnownPlaces = await entityGraphService
+    .listKnownLocations(instanceId, 30)
+    .catch(() => [] as { name: string; aliases: string[]; entityId?: string; lastSeenSequence?: number; parentId?: string | null; placeKind?: string | null }[])
+  const knownPlaces = mergeSceneHistoryIntoPlaces(
+    allKnownPlaces.filter((place) => isSafeWitnessLocationCandidate(place.name)),
+    recentEvents.map((event: any) => ({
+      name: event.location_anchor?.name || event.data?.location_anchor?.name || null,
+      entityId: event.location_anchor?.entity_id
+        ? idString(event.location_anchor.entity_id)
+        : event.data?.location_anchor?.entity_id
+          ? idString(event.data.location_anchor.entity_id)
+          : null,
+      sequence: Number(event.sequence || 0),
+      playerInput: String(event.data?.player_input || event.userMessage || ''),
+    })),
+  )
+  const graphPeople = await entityGraphService.listCharacterLastPlaces(instanceId).catch(() => [])
+  const scenePresence = recentEvents.map((event: any) => ({
+    locationName: event.location_anchor?.name || event.data?.location_anchor?.name || null,
+    locationEntityId: event.location_anchor?.entity_id
+      ? idString(event.location_anchor.entity_id)
+      : event.data?.location_anchor?.entity_id
+        ? idString(event.data.location_anchor.entity_id)
+        : null,
+    present: (Array.isArray(event.data?.present_characters) ? event.data.present_characters : []).map((entry: any) =>
+      typeof entry === 'string' ? entry : String(entry?.name || ''),
+    ).filter(Boolean),
+  }))
+  const rosterPeople = [
+    ...graphPeople,
+    ...((characterCodex as any[]) || []).map((card) => ({
+      name: String(card.canonical_name || ''),
+      aliases: (card.aliases || []) as string[],
+    })),
+    ...scenePresence.flatMap((scene) => scene.present.map((name: string) => ({ name, aliases: [] as string[] }))),
+  ].filter((person) => person.name)
+  const personPlaces = mergePersonPlaces(graphPeople, lastPlacesFromPresence(rosterPeople, scenePresence))
+  const playerName = viewpointOwnerName({
+    isSentient: !!session.is_sentient,
+    protagonistCardName: (characterCodex as any[]).find((c) => c.is_protagonist)?.canonical_name,
+    personaName: session.persona_snapshot?.name,
+    templateProtagonistName: session.protagonist?.name,
+  })
+  const travel = decideTravelIntent({
+    playerInput: parsedPlayerInput.raw,
+    isContinuation,
+    cursorName: currentLocation?.name || null,
+    cursorEntityId: currentLocation?.entity_id ? idString(currentLocation.entity_id) : null,
+    knownPlaces: knownPlaces.map((place) => ({
+      name: place.name,
+      aliases: place.aliases,
+      entityId: place.entityId || null,
+      lastSeenSequence: place.lastSeenSequence,
+      mentionCount: place.mentionCount,
+      parentId: place.parentId ?? null,
+      placeKind: place.placeKind ?? null,
+    })),
+    personPlaces,
+    pending: priorPending,
+    playerName,
+  })
+  const mapTravelDirective = travelPromptDirective({
+    kind: travel.kind,
+    label: travel.label,
+    resolvedName: travel.destination?.name || travel.label,
+    cursorName: currentLocation?.name || null,
+    playerInput: parsedPlayerInput.raw,
+  })
+  if (travel.kind === 'arrival' || travel.kind === 'owned_leave') {
+    playerSceneTransition = true
+    playerForcesFreshCast = true
+    if (mapTravelDirective) promptUserMessage = mapTravelDirective
+  } else if (travel.kind === 'intent' && mapTravelDirective) {
+    playerSceneTransition = false
+    playerForcesFreshCast = confirmedWorldAction?.kind === 'travel'
+    promptUserMessage = mapTravelDirective
+  }
+  const locationContext =
+    priorPending?.name && travel.kind !== 'arrival' && travel.kind !== 'owned_leave'
+      ? `${packetLocationContext || ''}
+The player intends to go to ${priorPending.name} but has not arrived. Stay at the current place. Do not narrate arrival there. Do not bring people from that destination into this scene.`.trim()
+      : packetLocationContext
   const activeSummary = packet.sceneSummary
   const nextSequence = packet.currentSequence + 1
 
@@ -1221,24 +1328,6 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     return []
   })()
   const persistedDeceasedKeys = new Set(packet.deceasedCharacterNames.map((name) => normalizeEntityName(name)))
-  // Known places so a RETURN reuses a location's canonical name instead of
-  // minting a near-duplicate entity (which would split the Places journal).
-  //
-  // Filtered through the same hygiene gate that decides what may be minted
-  // today, because minting is self-justifying: `knownPlaces` is a short-circuit
-  // meaning "this is definitely a place", so a node written before the gate
-  // existed hands its own mistake back as authority — to the witness as a
-  // location to anchor on, and to the gate as proof that a name is a place.
-  // A live world carries "Cedric Take care of stuff here when I am gone okay"
-  // and "the war room where Father is already waiting" as locations; the
-  // witness duly reported the war room for a scene at a dinner table, on turn
-  // two, before the player had gone anywhere. The graph is not repaired here —
-  // that is `repair:duplicate-places` and `merge:location` — but nothing the
-  // gate would refuse today gets to speak as canon.
-  const allKnownPlaces = await entityGraphService
-    .listKnownLocations(instanceId, 30)
-    .catch(() => [] as { name: string; aliases: string[] }[])
-  const knownPlaces = allKnownPlaces.filter((place) => isSafeWitnessLocationCandidate(place.name))
   // Places are a separate graph type from people. Keep their names available to
   // every downstream presence seam so a capitalized city/landmark cannot become
   // a participant merely because the narrator personifies it.
@@ -1544,7 +1633,10 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     narrative: rawNarrative,
     cursorName: currentLocation?.name || null,
     knownPeople: priorCardNamesForPresence,
-    knownPlaceNames: knownPlaces.map((place) => place.name),
+    knownPlaceNames: [
+      ...knownPlaces.map((place) => place.name),
+      ...(travel.destination?.name ? [travel.destination.name] : []),
+    ],
     witness: {
       current_location: parsed.current_location ?? null,
       player_destination: parsed.player_destination ?? null,
@@ -1554,6 +1646,18 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       location_evidence_source: parsed.location_evidence_source ?? null,
     },
     actionDestination: confirmedWorldAction?.kind === 'travel' ? confirmedWorldAction.destination : null,
+    mapResolvedDestination:
+      travel.kind === 'arrival' || travel.kind === 'owned_leave' ? travel.destination?.name || null : null,
+    holdCursor: travel.kind === 'intent',
+    cursorAliases: (() => {
+      const cursorId = currentLocation?.entity_id ? idString(currentLocation.entity_id) : null
+      const cursorPlace = knownPlaces.find(
+        (place) =>
+          (cursorId && place.entityId === cursorId) ||
+          placesAreTheSameLocation(place.name, currentLocation?.name || ''),
+      )
+      return [...(cursorPlace?.aliases || []), ...(currentLocation?.name ? [currentLocation.name] : [])]
+    })(),
     endpoint: {
       available: endpointAdjudication.available,
       sceneTransition: endpointAdjudication.sceneTransition,
@@ -1566,7 +1670,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const viewpointMoved = locationDecision.viewpointMoved
   const sceneAnchor = locationDecision.sceneAnchor
   const { next: nextDrift, repair: driftRepair, count: driftCount } = locationDecision.drift
-  if (sceneAnchor && !locationNamesCompatible(sceneAnchor, currentLocation?.name || null)) {
+  if (sceneAnchor && !placesAreTheSameLocation(sceneAnchor, currentLocation?.name || null)) {
     log.info('location.drift', {
       instanceId: idString(instanceId),
       sequence: nextSequence,
@@ -1644,7 +1748,9 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       // the player chose in the product, or a place the template already knows.
       authored:
         confirmedWorldAction?.kind === 'travel' ||
-        knownPlaces.some((place) => locationNamesCompatible(place.name, promotionCandidate)),
+        travel.kind === 'arrival' ||
+        travel.kind === 'owned_leave' ||
+        knownPlaces.some((place) => placesAreTheSameLocation(place.name, promotionCandidate)),
       prior: priorAccrual as any,
     })
     placePromoted = decision.promote
@@ -1665,7 +1771,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     // it no longer mentions. Without this a place could be entered a dozen times
     // and never earn the map, because `exits` stayed at zero forever.
     const departedName = viewpointMoved ? currentLocation?.name || null : null
-    if (departedName && !locationNamesCompatible(departedName, promotionCandidate)) {
+    if (departedName && !placesAreTheSameLocation(departedName, promotionCandidate)) {
       const departedKey = locationCandidateKey(departedName)
       if (departedKey) {
         await mongoColl
@@ -1743,8 +1849,47 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     driftRepair,
     promoted: placePromoted,
     promotion: promotionReason,
-    compatible: locationNamesCompatible(parsed.current_location, currentLocation?.name || null),
+    compatible: placesAreTheSameLocation(parsed.current_location, currentLocation?.name || null),
+    travel: travel.kind,
+    pending: travel.pendingNext?.name || null,
   })
+
+  const pendingToStore: PendingDestination | null = viewpointMoved
+    ? null
+    : travel.kind === 'arrival' && travel.destination
+      ? travel.destination
+      : travel.pendingNext
+  // Stamp venue labels onto the place the cursor actually landed — including
+  // citation-stack arrivals that completed a pending "the inn"/"a bar". Never
+  // write those labels onto the current cursor during intent.
+  const stampTargetId =
+    viewpointMoved && resolvedLocation?.entity_id
+      ? resolvedLocation.entity_id
+      : !viewpointMoved && currentLocation?.entity_id
+        ? currentLocation.entity_id
+        : null
+  const stampTargetName = viewpointMoved
+    ? resolvedLocation?.name || locationAnchor?.name || ''
+    : currentLocation?.name || ''
+  const labelsToStamp = stampTargetId
+    ? viewpointMoved
+      ? aliasesToBindOnArrival({
+          destName: stampTargetName,
+          playerInput: parsedPlayerInput.raw,
+          playerLabel: travel.label,
+          pending: priorPending,
+        })
+      : occupancyVenueAliases(parsedPlayerInput.raw, stampTargetName)
+    : []
+  if (stampTargetId && labelsToStamp.length > 0) {
+    void mongoColl
+      .entities()
+      .updateOne(
+        { _id: stampTargetId, instance_id: instanceOid, type: 'location' },
+        { $addToSet: { aliases: { $each: labelsToStamp } } },
+      )
+      .catch(() => null)
+  }
 
   // A travel marker now follows the same high-precision player destination gate.
   const isTravel =
@@ -1823,7 +1968,8 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const placeNameChanged =
     !!placeName &&
     !!currentLocation?.name &&
-    !locationNamesCompatible(placeName, currentLocation.name)
+    !placesAreTheSameLocation(placeName, currentLocation.name) &&
+    !isVagueLocationLabel(placeName)
   const placeEntityChanged =
     !!resolvedLocation?.entity_id &&
     !!currentLocation?.entity_id &&
@@ -2195,6 +2341,33 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
 
   const blockedUngroundedPresence: string[] = []
   const heldUncorroboratedPresence: string[] = []
+  const heldElsewherePresence: string[] = []
+  const elsewherePresenceKeys = new Set<string>()
+  {
+    const hereId = locationAnchor?.entity_id
+      ? idString(locationAnchor.entity_id)
+      : currentLocation?.entity_id
+        ? idString(currentLocation.entity_id)
+        : null
+    const hereName = locationAnchor?.name || currentLocation?.name || null
+    const entityIds = (characterCodex as any[])
+      .map((c: { entity_id?: unknown }) => (c.entity_id ? idString(c.entity_id) : ''))
+      .filter(Boolean)
+    if (entityIds.length && (hereId || hereName)) {
+      const away = await entityGraphService
+        .charactersLastSeenAwayFrom({
+          instanceId: idString(instanceId),
+          entityIds,
+          currentLocationId: hereId,
+          currentLocationName: hereName,
+        })
+        .catch(() => [] as Array<{ name: string; place: string }>)
+      for (const row of away) {
+        const key = presenceKeyOf(row.name)
+        if (key) elsewherePresenceKeys.add(key)
+      }
+    }
+  }
   /**
    * Does the NARRATION show this person taking part in this passage?
    *
@@ -2283,6 +2456,10 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       // flicker out. Only ARRIVING needs a reason, and it is the same reason
       // for the palace guard and for the king.
       const carried = priorPresenceKeys.has(key) || partyByKey.has(key)
+      if (!carried && elsewherePresenceKeys.has(key)) {
+        heldElsewherePresence.push(name)
+        continue
+      }
       if (!carried && endpointRefusedKeys.has(key)) {
         heldUncorroboratedPresence.push(name)
         continue
@@ -2330,6 +2507,13 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       instanceId: idString(instanceId),
       sequence: nextSequence,
       labels: heldUncorroboratedPresence,
+    })
+  }
+  if (heldElsewherePresence.length > 0) {
+    log.info('presence.held_elsewhere', {
+      instanceId: idString(instanceId),
+      sequence: nextSequence,
+      labels: heldElsewherePresence,
     })
   }
   if (session.is_sentient) {
@@ -3171,6 +3355,14 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       active_timeline_id: timeAnchor.timeline_id,
       default_calendar_id: timeAnchor.story_calendar?.calendar_id,
       current_location: locationAnchor,
+      pending_destination: pendingToStore
+        ? {
+            entity_id: pendingToStore.entityId ? parseObjectId(pendingToStore.entityId) : null,
+            name: pendingToStore.name,
+            name_normalized: normalizeEntityName(pendingToStore.name),
+            aliases: pendingToStore.aliases || [],
+          }
+        : null,
       travelling_with: travellingWith,
       'meta.last_active_at': new Date(),
       updated_at: new Date(),
@@ -3214,6 +3406,14 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     // Cleared by a repair or by any turn the anchor agrees with the cursor, so a
     // one-off bad read can never accumulate toward a repair on its own.
     location_drift: driftRepair ? null : nextDrift,
+    pending_destination: pendingToStore
+      ? {
+          entity_id: pendingToStore.entityId || null,
+          name: pendingToStore.name,
+          name_normalized: normalizeEntityName(pendingToStore.name),
+          aliases: pendingToStore.aliases || [],
+        }
+      : null,
     // JSON-safe (entity_id as string) — the party read only uses the name, but keep
     // the id so a future consumer can resolve without a lookup.
     travelling_with: travellingWith.map((m) => ({

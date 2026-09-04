@@ -375,6 +375,148 @@ console.log('\nthe first anchor prefers a VERIFIED claim over a real excerpt:')
   })
   check('a departure verb does not make a re-description a destination', d.viewpointMoved, false)
 }
+{
+  // Live Aurelius: "*I reach the yard*" while the cursor is the hunting lodge.
+  // Token overlap used to treat this as (or later merge it with) the steward's
+  // yard. A bare "yard" is a facet of the current building, not a new map node.
+  const d = decide({
+    cursorName: 'hunting lodge',
+    knownPlaceNames: ['hunting lodge', "keep's outer yard", "the steward's yard"],
+    playerInput: '*I reach the yard*',
+    narrative:
+      'The yard was a pocket of deep shadow between the hunting lodge and the stable.',
+    witness: {
+      current_location: 'yard',
+      location_evidence: 'The yard was a pocket of deep shadow between the hunting lodge and the stable',
+      location_evidence_source: 'narrative',
+    },
+    endpoint: judge(
+      'the yard',
+      'The yard was a pocket of deep shadow between the hunting lodge and the stable',
+      false,
+    ),
+  })
+  check('bare yard next to the lodge does not move the cursor', d.viewpointMoved, false)
+  check('bare yard is not minted as the destination', d.placeName, null)
+}
+{
+  // Both namers said "the lodge" and the judge called a transition. Overlap
+  // used to rename the hunting lodge; identity says they are already there.
+  const d = decide({
+    cursorName: 'hunting lodge',
+    playerInput: '*I walk back inside*',
+    narrative: "The hunting lodge's main room is as we left it.",
+    witness: {
+      current_location: 'the lodge',
+      location_evidence: "The hunting lodge's main room is as we left it",
+    },
+    endpoint: judge('the lodge', "The hunting lodge's main room is as we left it", true),
+  })
+  check('shorthand "the lodge" does not mint a second lodge', d.placeName, null)
+  check('...and does not move the cursor', d.viewpointMoved, false)
+}
+{
+  const d = decide({
+    cursorName: 'hunting lodge',
+    knownPlaceNames: ['hunting lodge', 'the inn'],
+    playerInput: '*We return to the inn*',
+    narrative: 'The heavy oak door swung open, releasing a wall of warmth and the low murmur of voices.',
+    actionDestination: 'the inn',
+    witness: {
+      current_location: 'the bar',
+      player_travel_confirmed: true,
+      viewpoint_moved: true,
+      location_evidence: 'the heavy oak door swung open',
+      location_evidence_source: 'narrative',
+    },
+    endpoint: judge('the tavern', 'the heavy oak door swung open, releasing a wall of warmth', true),
+  })
+  check('returning to the inn is not overridden by the lodge', [d.placeName, d.viewpointMoved], ['the inn', true])
+}
+{
+  const d = decide({
+    cursorName: 'hunting lodge',
+    knownPlaceNames: ['hunting lodge', 'the inn'],
+    playerInput: '*We return to the inn*',
+    narrative: 'The heavy oak door swung open, releasing a wall of warmth and the low murmur of voices.',
+    witness: {
+      current_location: 'the inn',
+      location_evidence: 'the heavy oak door swung open',
+      location_evidence_source: 'narrative',
+    },
+    endpoint: judge('the inn', 'the heavy oak door swung open, releasing a wall of warmth', true),
+  })
+  check('free-text return to the inn still leaves the lodge', [d.placeName, d.viewpointMoved], ['the inn', true])
+}
+{
+  // The live failure: namers HOLD the yard. The player named a known inn.
+  const d = decide({
+    cursorName: 'the muddy yard',
+    knownPlaceNames: ['the muddy yard', 'Stumbling Boar', 'the inn'],
+    playerInput: '*We return to the inn*',
+    narrative: 'Mud sucked at his boots. A window across the lane still glowed.',
+    mapResolvedDestination: 'Stumbling Boar',
+    witness: {
+      current_location: 'the muddy yard',
+      location_evidence: 'Mud sucked at his boots',
+      location_evidence_source: 'narrative',
+    },
+    endpoint: judge('the muddy yard', 'Mud sucked at his boots', false),
+  })
+  check('map-resolved return moves even when namers hold', [d.placeName, d.viewpointMoved, d.path], ['Stumbling Boar', true, 'map_resolved'])
+}
+{
+  const d = decide({
+    cursorName: 'Royal Council Chamber',
+    knownPlaceNames: ['Royal Council Chamber', "Aurelius Valemont's room"],
+    playerInput: '*I leave for my room*',
+    narrative: 'The chamber doors close on the argument.',
+    mapResolvedDestination: "Aurelius Valemont's room",
+    witness: {
+      current_location: 'Royal Council Chamber',
+      location_evidence: 'The chamber doors close',
+    },
+    endpoint: judge('Royal Council Chamber', 'The chamber doors close', false),
+  })
+  check('owned-room leave moves off the council', [d.placeName, d.viewpointMoved], ["Aurelius Valemont's room", true])
+}
+{
+  const d = decide({
+    cursorName: 'Royal Council Chamber',
+    knownPlaceNames: ['Royal Council Chamber', "The Player's room"],
+    playerInput: '*I leave for my room in order to be prepared*',
+    narrative: 'The chamber doors close on the argument.',
+    mapResolvedDestination: "The Player's room",
+    witness: {
+      current_location: 'Royal Council Chamber',
+      location_evidence: 'The chamber doors close',
+    },
+    endpoint: judge('Royal Council Chamber', 'The chamber doors close', false),
+  })
+  check('unnamed owned-room leave still moves off the council', [d.placeName, d.viewpointMoved], ["The Player's room", true])
+}
+{
+  const d = decide({
+    cursorName: "Aurelius's room",
+    knownPlaceNames: ["Aurelius's room", 'Falkreath', 'Stumbling Boar'],
+    playerInput: "Let's head to the tavern in Falkreath for now....we will discuss everything later",
+    narrative: 'Roland names Falkreath as a week’s ride and refuses to abandon the pass.',
+    holdCursor: true,
+    endpoint: judge('Falkreath', 'Falkreath is a week’s ride from these passes', true),
+  })
+  check('intent hold blocks judged arrival at the named town', [d.viewpointMoved, d.path], [false, 'none'])
+}
+{
+  const d = decide({
+    cursorName: 'the Stumbling Boar',
+    knownPlaceNames: ['the Stumbling Boar', 'the inn'],
+    cursorAliases: ['the inn', 'the tavern', 'inn'],
+    playerInput: '*We return to the inn*',
+    narrative: 'Aurelius turned back inside, the heavy door thudding shut behind him.',
+    endpoint: judge('the inn', 'the heavy door thudding shut behind him', true),
+  })
+  check('the inn is not a new place when it is the occupied cursor', [d.viewpointMoved, d.placeName], [false, null])
+}
 
 console.log(`\nlocation decision audit: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

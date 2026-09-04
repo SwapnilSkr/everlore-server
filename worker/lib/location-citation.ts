@@ -468,6 +468,15 @@ export function extractStatedPosition(
 const IRREALIS_MARKER =
   /\b(?:will|'ll|shall|would|'d|should|could|might|may|must|can|cannot|can't|won't|let's|gonna|about\s+to)\b/
 
+/** True when the player's own words are a plan, appointment, or "let's" — not
+ *  an arrival. Shared with travel-intent so the narrator prompt and the map
+ *  classify the same clause. */
+export function playerTextMarksIntent(text: string): boolean {
+  const t = String(text || '').toLocaleLowerCase()
+  if (!t.trim()) return false
+  return INTENT_MARKER.test(t) || IRREALIS_MARKER.test(t)
+}
+
 /** Goal/source markers. Locative on their own proves nothing ("the road TO
  *  Marrow Ford"), but a viewpoint that owns the predicate makes them a move. */
 const DIRECTIONAL_PREPOSITION = new Set(['to', 'into', 'onto', 'toward', 'towards', 'for', 'from'])

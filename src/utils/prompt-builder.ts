@@ -938,7 +938,7 @@ ${input.locationContext.trim()}
   // CANON BRIEF (positions) — where off-screen characters were last seen, so a
   // "go find X" / "where is X" turn is grounded instead of teleporting them in.
   if (input.positionFacts && input.positionFacts.length > 0) {
-    dynamicContent += `WHERE OTHERS ARE (last known positions — canon; a character is only present here if the scene says so, otherwise they are where this says):\n`
+    dynamicContent += `WHERE OTHERS ARE (last known positions — hard canon. These people are NOT in this scene. Do not have them walk in, appear in a doorway, or be waiting here. If the player is going to them, write the player's travel; they stay where this says until the player arrives):\n`
     for (const fact of input.positionFacts) {
       dynamicContent += `- ${fact}\n`
     }
@@ -995,7 +995,8 @@ ${personaLine}
   }
 
   if (input.retrievedMemories.length > 0) {
-    dynamicContent += `THINGS YOU REMEMBER ABOUT THIS PLAYER (reference only — use for continuity, not as a reason to change topic or summon unrelated events):\n`
+    dynamicContent += `THINGS YOU REMEMBER ABOUT THIS PLAYER (PAST facts for continuity — never restage them as current events. An appointment already kept, a note already burned, a meeting already held, or a warning already delivered is history, not a scene to play again):
+`
     for (const mem of withinTokenBudget(input.retrievedMemories, sectionBudget.memories)) {
       dynamicContent += `- ${mem}\n`
     }

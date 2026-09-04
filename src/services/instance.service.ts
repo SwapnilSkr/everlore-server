@@ -676,6 +676,14 @@ export const instanceService = {
               : null,
           }
         : null,
+      pending_destination: instance.pending_destination?.name
+        ? {
+            ...instance.pending_destination,
+            entity_id: instance.pending_destination.entity_id
+              ? idString(instance.pending_destination.entity_id)
+              : null,
+          }
+        : null,
       seed_prompt: template.seed_prompt,
       global_lore: template.global_lore,
       is_sentient: template.is_sentient,

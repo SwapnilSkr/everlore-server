@@ -14,6 +14,7 @@ import {
   type ViewpointOptions,
 } from './location-citation'
 import { decideCursorDrift, type DriftDecision, type DriftState } from './cursor-drift'
+import { isVagueLocationLabel, placesAreTheSameLocation } from '../../src/utils/location-identity'
 
 /**
  * The location decision, as a pure function of this turn's evidence.
@@ -43,6 +44,20 @@ export interface LocationDecisionInput {
   witness: WitnessLocationClaim
   /** A typed travel command's destination — an explicit product action. */
   actionDestination: string | null
+  /**
+   * A free-text destination already resolved against the map (pending arrival
+   * or owned-room leave). Same authority as a typed travel action: the player
+   * named a known place. Null keeps the citation stack in charge.
+   */
+  mapResolvedDestination?: string | null
+  /**
+   * Player travel is stored as intent, not arrival. Citation-stack namers must
+   * not complete that journey this turn — they are told to hold, and when they
+   * fail they name the destination anyway (Falkreath, "the inn").
+   */
+  holdCursor?: boolean
+  /** Occupancy aliases on the current cursor ("the inn" while at the Boar). */
+  cursorAliases?: string[]
   endpoint: {
     available: boolean
     sceneTransition: boolean
@@ -60,6 +75,7 @@ export interface LocationDecisionInput {
 
 export type LocationPath =
   | 'action'
+  | 'map_resolved'
   | 'witnessed_destination'
   | 'narrated_arrival'
   | 'judged_arrival'
@@ -81,6 +97,31 @@ export interface LocationDecision {
 }
 
 const NO_DRIFT: DriftDecision = { next: null, repair: null, count: 0 }
+
+/**
+ * Did this label leave the current cursor? Token overlap is the wrong test:
+ * "the yard" shares a word with "the steward's yard" and is not that place.
+ *
+ * A bare generic ("the yard", "the hall") is a local facet, not a new map node
+ * — unless that exact place is already on the map. Returning to a known "the
+ * hall" from "north wall" is a real move; minting a new "yard" beside the
+ * hunting lodge is not.
+ */
+function isNewPlaceFromCursor(
+  place: string | null | undefined,
+  cursor: string | null | undefined,
+  knownPlaceNames: string[] = [],
+  cursorAliases: string[] = [],
+): boolean {
+  if (!place) return false
+  if (!cursor) return true
+  if (placesAreTheSameLocation(place, cursor)) return false
+  if (cursorAliases.some((alias) => placesAreTheSameLocation(place, alias))) return false
+  if (isVagueLocationLabel(place)) {
+    return knownPlaceNames.some((name) => placesAreTheSameLocation(name, place))
+  }
+  return true
+}
 
 /**
  * The stack as it stood before the citation work: (a)-only evidence, a
@@ -159,6 +200,8 @@ export function decideLocationLegacy(input: LocationDecisionInput): LocationDeci
 /** The current stack: citation stack, second namer, placehood gate, drift repair. */
 export function decideLocation(input: LocationDecisionInput): LocationDecision {
   const { witness, cursorName } = input
+  const cursorAliases = input.cursorAliases || []
+  const holdCursor = input.holdCursor === true
   const options = { knownPeople: input.knownPeople, knownPlaces: [...input.knownPlaceNames, cursorName || ''] }
   const evidenceSource =
     witness.location_evidence_source === 'player'
@@ -297,10 +340,17 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
       isSafeWitnessLocationCandidate(judgedName, { ...options, proseCited: true }))
   const judgedLocation = judgedProven && judgedIsPlace ? judgedName : null
 
-  const actionDestination =
+  const typedDestination =
     input.actionDestination && isSafeWitnessLocationCandidate(input.actionDestination, options)
       ? input.actionDestination
       : null
+  const mapResolvedDestination =
+    !typedDestination &&
+    input.mapResolvedDestination &&
+    isSafeWitnessLocationCandidate(input.mapResolvedDestination, options)
+      ? input.mapResolvedDestination
+      : null
+  const actionDestination = typedDestination || mapResolvedDestination
   // A DESTINATION IS NOT AN ARRIVAL.
   //
   // This path used to ask only that the cited sentence really occur in what the
@@ -323,6 +373,7 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
     !!witness.player_destination &&
     playerTextSituatesViewpoint(witness.player_destination, input.playerInput, { people: input.knownPeople })
   const witnessedDestination =
+    !holdCursor &&
     !input.actionDestination &&
     !input.isContinuation &&
     witness.player_travel_confirmed &&
@@ -399,7 +450,7 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
         !!judgedName &&
         sameLocationLabel(judgedName, witness.current_location) &&
         detectNarratedMovement(input.playerInput) &&
-        !locationNamesCompatible(place, cursorName)))
+        isNewPlaceFromCursor(place, cursorName, input.knownPlaceNames, cursorAliases)))
 
   //
   // TRIED AND REVERTED: treating the witness ABANDONING its prior as evidence.
@@ -412,23 +463,25 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
   // 89.9%, and it cost a keeper turn as well. The bias is real; it is not
   // separable from a hallucination.
   const narratedArrival =
+    !holdCursor &&
     !input.isContinuation &&
     !actionDestination &&
     !witnessedDestination &&
     validLocationCited &&
     (citedVerified || (witnessSecondNamer && transitionCorroborated)) &&
     movedOrNamedByPlayer(witness.current_location) &&
-    !locationNamesCompatible(witness.current_location, cursorName)
+    isNewPlaceFromCursor(witness.current_location, cursorName, input.knownPlaceNames, cursorAliases)
       ? witness.current_location
       : null
   const judgedArrival =
+    !holdCursor &&
     !input.isContinuation &&
     !actionDestination &&
     !witnessedDestination &&
     !narratedArrival &&
     !!judgedLocation &&
     movedOrNamedByPlayer(judgedLocation) &&
-    !locationNamesCompatible(judgedLocation, cursorName)
+    isNewPlaceFromCursor(judgedLocation, cursorName, input.knownPlaceNames, cursorAliases)
       ? judgedLocation
       : null
 
@@ -439,7 +492,9 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
     cursorName,
     prior: input.priorDrift,
     sequence: input.sequence,
-    compatible: locationNamesCompatible,
+    compatible: (a, b) =>
+      placesAreTheSameLocation(a, b) ||
+      cursorAliases.some((alias) => placesAreTheSameLocation(a, alias) || placesAreTheSameLocation(b, alias)),
   })
 
   // The FIRST anchor stays permissive on purpose. It was tightened to the same
@@ -465,6 +520,7 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
   // The map took the war room. A verified claim now goes first, from either
   // namer, and the unverified witness claim is only the last resort that keeps
   // the cursor from being unset.
+  const driftMove = holdCursor ? null : drift.repair
   const firstAnchor = !cursorName
     ? (citedVerified && validLocationCited ? witness.current_location : null) ||
       judgedLocation ||
@@ -473,12 +529,17 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
         : null)
     : null
   const placeName =
-    actionDestination || witnessedDestination || narratedArrival || judgedArrival || drift.repair || firstAnchor
+    actionDestination || witnessedDestination || narratedArrival || judgedArrival || driftMove || firstAnchor
   const viewpointMoved =
-    !!actionDestination || !!witnessedDestination || !!narratedArrival || !!judgedArrival || !!drift.repair
+    !!actionDestination || !!witnessedDestination || !!narratedArrival || !!judgedArrival || !!driftMove
+  const stayedOnCursor =
+    !!cursorName &&
+    !!placeName &&
+    !actionDestination &&
+    !isNewPlaceFromCursor(placeName, cursorName, input.knownPlaceNames, cursorAliases)
   return {
-    placeName: placeName || null,
-    viewpointMoved,
+    placeName: stayedOnCursor ? null : placeName || null,
+    viewpointMoved: stayedOnCursor ? false : viewpointMoved,
     sceneEstablished:
       !cursorName &&
       !viewpointMoved &&
@@ -486,19 +547,23 @@ export function decideLocation(input: LocationDecisionInput): LocationDecision {
       ((witness.location_evidence_source === 'narrative' && validEvidence) || citedVerified || !!judgedLocation),
     sceneAnchor,
     drift,
-    path: actionDestination
-      ? 'action'
-      : witnessedDestination
-        ? 'witnessed_destination'
-        : narratedArrival
-          ? 'narrated_arrival'
-          : judgedArrival
-            ? 'judged_arrival'
-            : drift.repair
-              ? 'drift_repair'
-              : firstAnchor
-                ? 'first_anchor'
-                : 'none',
+    path: stayedOnCursor
+      ? 'none'
+      : typedDestination
+        ? 'action'
+        : mapResolvedDestination
+          ? 'map_resolved'
+          : witnessedDestination
+          ? 'witnessed_destination'
+          : narratedArrival
+            ? 'narrated_arrival'
+            : judgedArrival
+              ? 'judged_arrival'
+              : driftMove
+                ? 'drift_repair'
+                : firstAnchor
+                  ? 'first_anchor'
+                  : 'none',
     citation: { a: citation.a, b: citation.b, c: citation.c },
     judgedLocation,
     judgedRejectedAsNotAPlace: judgedProven && !judgedIsPlace ? judgedName : null,

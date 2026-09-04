@@ -73,6 +73,17 @@ check('injects cumulative bond state', systemContext.includes('trust 63/100, aff
 check('injects only bounded bond trajectory', systemContext.includes('trust +3 at turn 12; affection +2 at turn 12'))
 check('keeps bond numbers out of story prose', systemContext.includes('never mention numbers in-story'))
 check('injects nuanced bond context', systemContext.includes('Professional but increasingly curious after the player treated her with care.'))
+const memoryPrompt = buildPrompt({
+  seedPrompt: 'A contemporary story in Milan.',
+  isSentient: false,
+  worldState: {}, activeFlags: {}, globalLore: '', retrievedLore: [],
+  retrievedMemories: ['Meet the steward at the yard at first light.'],
+  sceneSummary: null, recentEvents: [], userMessage: '*I sit down.*',
+  maxTokens: 7000, proseOnly: true,
+})
+const memoryContext = memoryPrompt.messages.filter((message) => message.role === 'system').map((message) => message.content).join('\n')
+check('retrieved memories are labeled as past facts', memoryContext.includes('PAST facts for continuity'))
+check('retrieved memories must not be restaged', memoryContext.includes('never restage them as current events'))
 const placeholderPrompt = buildPrompt({
   seedPrompt: 'A family drama.',
   isSentient: false,

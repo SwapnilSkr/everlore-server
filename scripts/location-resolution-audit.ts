@@ -12,6 +12,7 @@ import {
   entityGraphService,
   isVagueLocationLabel,
   normalizeEntityName,
+  placesAreTheSameLocation,
   pickBestLocationMatch,
   scoreLocationNameMatch,
 } from '../src/services/entity-graph.service'
@@ -72,6 +73,18 @@ async function main() {
   ok('the room ↮ great room (generic noun)', scoreLocationNameMatch('the room', 'great room') === 0)
   ok('the hall ↮ dining hall (generic noun)', scoreLocationNameMatch('the hall', 'dining hall') === 0)
   ok('entrance hall ↔ mansion entrance hall (still matches)', scoreLocationNameMatch('entrance hall', 'mansion entrance hall') >= 0.45)
+  ok('yard ↮ steward\'s yard (generic noun)', scoreLocationNameMatch('yard', "steward's yard") === 0)
+  ok('the yard ↮ keep outer yard', scoreLocationNameMatch('the yard', "keep's outer yard") === 0)
+
+  // Shorthand containment — same rule as "garden" → "night garden". "lodge" is
+  // not a generic-only noun, so this is identity, not a new dictionary word.
+  ok('placesAreTheSame: hunting lodge ↔ the lodge', placesAreTheSameLocation('hunting lodge', 'the lodge') === true)
+  ok('placesAreTheSame: yard is not steward\'s yard', placesAreTheSameLocation('the yard', "the steward's yard") === false)
+  ok('placesAreTheSame: hunting lodge is not the inn', placesAreTheSameLocation('hunting lodge', 'the inn') === false)
+  ok('placesAreTheSame: hunting lodge is not the yard', placesAreTheSameLocation('hunting lodge', 'the yard') === false)
+  ok('bare "the yard" is vague', isVagueLocationLabel('the yard') === true)
+  ok('bare "yard" is vague', isVagueLocationLabel('yard') === true)
+  ok("steward's yard is specific", isVagueLocationLabel("the steward's yard") === false)
 
   const fakeNightGarden = mkLocation(new ObjectId(), new ObjectId(), 'Night Garden', 1, ['the garden'])
   ok(
@@ -92,6 +105,8 @@ async function main() {
     'the room', 'room', 'here', 'outside', 'inside', 'this place', 'the area',
     // possessive-pronoun + bare room/dwelling noun is just as relative as "the room"
     'his room', 'her room', 'my room', 'their chamber', 'his quarters', 'her study', 'my own room', 'their house',
+    // a label made only of generic place-nouns is the same class ("the yard" is not a map node)
+    'the yard', 'yard', 'the grounds', 'grounds',
   ]) {
     ok(`"${v}" is vague`, isVagueLocationLabel(v) === true)
   }
@@ -99,6 +114,7 @@ async function main() {
     'dining room', 'great room', 'Night Garden', 'mansion', 'throne hall', 'the foyer',
     // a qualified possessive keeps its distinctive word; an owner-NAMED room is specific
     'his throne room', 'her war study', "Swapnil Sarkar's room",
+    "the steward's yard", 'hunting lodge', 'the inn',
   ]) {
     ok(`"${s}" is specific (NOT vague)`, isVagueLocationLabel(s) === false)
   }
@@ -289,6 +305,17 @@ async function main() {
   ok('moved vague "the room" minted NOTHING', vagueRoomAfter === vagueRoomBefore,
     `count ${vagueRoomBefore} → ${vagueRoomAfter}`)
 
+  const vagueYardBefore = await entities().countDocuments({ instance_id: cg, type: 'location' })
+  const movedYard = await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 11.3,
+    name: 'the yard', movement: 'deeper', viewpointMoved: true, cursorEntityId: diningRoom._id,
+    containmentHint: 'mansion',
+  })
+  const vagueYardAfter = await entities().countDocuments({ instance_id: cg, type: 'location' })
+  ok('moved bare "the yard" returns null (not a child of the mansion)', movedYard === null, `${JSON.stringify(movedYard)}`)
+  ok('moved bare "the yard" minted NOTHING', vagueYardAfter === vagueYardBefore,
+    `count ${vagueYardBefore} → ${vagueYardAfter}`)
+
   // lateral: dining room → study (same level) → study.parent = mansion.
   await entityGraphService.placeLocation({
     instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 12,
@@ -350,6 +377,19 @@ async function main() {
   ok('cross-world: two "manor" entities coexist (one per realm)', manors.length === 2, `count=${manors.length}`)
   ok('cross-world: the two manors have different world roots',
     manors.length === 2 && idString((manors[0] as any).world_root_id ?? 'main') !== idString((manors[1] as any).world_root_id ?? 'main'))
+
+  const inn = mkLocation(cg, cgPlayer, 'Stumbling Boar', 20)
+  await entities().insertOne(inn)
+  await entityGraphService.placeLocation({
+    instanceId: idString(cg), playerId: idString(cgPlayer), sequence: 21,
+    name: 'the muddy yard', movement: 'out', viewpointMoved: true, cursorEntityId: inn._id,
+  })
+  const yard = await place('the muddy yard')
+  const innAfter = await entities().findOne({ _id: inn._id }) as EntityDoc | null
+  ok('out from a parentless inn: yard is minted', !!yard)
+  ok('out from a parentless inn: inn is re-parented under the yard',
+    !!innAfter && !!yard && idString(innAfter.parent_id) === idString(yard!._id),
+    `inn.parent=${innAfter?.parent_id} yard=${yard?._id}`)
 
   await entities().deleteMany({ instance_id: cg })
 

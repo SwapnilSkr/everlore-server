@@ -10,6 +10,7 @@ import {
   renderSceneStateForPrompt,
 } from '../src/services/scene-state.service'
 import { hasSceneParticipationGrammar } from '../worker/lib/presence-gap-detector'
+import { belongsAtAnotherLocation } from '../src/utils/location-identity'
 import type { SceneStateDoc } from '../src/models/scene-state.model'
 
 let pass = 0
@@ -248,12 +249,56 @@ console.log('prompt rendering:')
   check('forbids a second entrance', text.includes('Do not have them arrive'), true)
   check('states the ongoing physical fact', text.includes('by the collar'), true)
   check('closes the room', text.includes('Nobody else is present'), true)
+  check('does not invite a summon to close travel', text.includes('the player travels'), true)
 }
 {
   const text = renderSceneStateForPrompt(scene([]))
   check('an empty room says so', text.includes('alone in this space'), true)
+  check('an empty room does not invite a doorway appearance', text.includes('do not summon them here'), true)
 }
 check('no state renders nothing', renderSceneStateForPrompt(null), '')
+
+console.log('elsewhere characters do not teleport in:')
+check(
+  'Elara at the inn is not at the hunting lodge',
+  belongsAtAnotherLocation({
+    lastPlaceName: 'the inn',
+    lastPlaceId: 'inn1',
+    currentPlaceName: 'hunting lodge',
+    currentPlaceId: 'lodge1',
+  }),
+  true,
+)
+check(
+  'Elara at the inn IS at the inn when the player arrives',
+  belongsAtAnotherLocation({
+    lastPlaceName: 'the inn',
+    lastPlaceId: 'inn1',
+    currentPlaceName: 'the inn',
+    currentPlaceId: 'inn1',
+  }),
+  false,
+)
+check(
+  'Elara at the inn is in the bar inside it',
+  belongsAtAnotherLocation({
+    lastPlaceName: 'the inn',
+    lastPlaceId: 'inn1',
+    currentPlaceName: 'the bar',
+    currentPlaceId: 'bar1',
+    lastAncestorIds: ['inn1', 'town1'],
+    currentAncestorIds: ['bar1', 'inn1', 'town1'],
+  }),
+  false,
+)
+check(
+  'no last place is not a teleport gate',
+  belongsAtAnotherLocation({
+    currentPlaceName: 'hunting lodge',
+    currentPlaceId: 'lodge1',
+  }),
+  false,
+)
 
 // ── IDENTITY: title-insensitive keys ────────────────────────────────────────
 // Found by a live playthrough, not by reasoning: the extractor returns the
