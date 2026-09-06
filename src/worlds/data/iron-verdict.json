@@ -1,0 +1,1026 @@
+{
+  "key": "iron-verdict",
+  "title": "The Iron Verdict",
+  "chapter_title": "Chapter I · The Bloodless Crown",
+  "revision": 9,
+  "start_location_id": "verdict_ring",
+  "map_style": {
+    "renderer": "terrain_plate_scene_graph",
+    "skin": "medieval_atlas",
+    "plates": [
+      {
+        "asset_id": "plate_vaskir",
+        "order": 0
+      },
+      {
+        "asset_id": "plate_north",
+        "order": 1
+      },
+      {
+        "asset_id": "plate_central",
+        "order": 2
+      },
+      {
+        "asset_id": "plate_south",
+        "order": 3
+      },
+      {
+        "asset_id": "plate_serevane",
+        "order": 4
+      }
+    ],
+    "map_aspect": {
+      "width": 1120,
+      "height": 5134
+    },
+    "fog_asset_id": "texture_fog"
+  },
+  "realms": [
+    {
+      "id": "vaskir",
+      "title": "The Cold Marches",
+      "y_from": 0,
+      "y_to": 0.218
+    },
+    {
+      "id": "aldermere",
+      "title": "Aldermere",
+      "y_from": 0.218,
+      "y_to": 0.782
+    },
+    {
+      "id": "serevane",
+      "title": "The Thousand Coins",
+      "y_from": 0.782,
+      "y_to": 1
+    }
+  ],
+  "assets": [
+    {
+      "id": "plate_vaskir",
+      "role": "plate"
+    },
+    {
+      "id": "plate_north",
+      "role": "plate"
+    },
+    {
+      "id": "plate_central",
+      "role": "plate"
+    },
+    {
+      "id": "plate_south",
+      "role": "plate"
+    },
+    {
+      "id": "plate_serevane",
+      "role": "plate"
+    },
+    {
+      "id": "texture_fog",
+      "role": "texture"
+    },
+    {
+      "id": "scene_vaskhold",
+      "role": "scene"
+    },
+    {
+      "id": "scene_hjarnmoot",
+      "role": "scene"
+    },
+    {
+      "id": "scene_skarrow_longhall",
+      "role": "scene"
+    },
+    {
+      "id": "scene_rimegate",
+      "role": "scene"
+    },
+    {
+      "id": "scene_thornhollow",
+      "role": "scene"
+    },
+    {
+      "id": "scene_ravensgate_bridge",
+      "role": "scene"
+    },
+    {
+      "id": "scene_greywither_abbey",
+      "role": "scene"
+    },
+    {
+      "id": "scene_sable_court",
+      "role": "scene"
+    },
+    {
+      "id": "scene_sundial_market",
+      "role": "scene"
+    },
+    {
+      "id": "scene_chainhouse",
+      "role": "scene"
+    },
+    {
+      "id": "scene_verdict_ring",
+      "role": "scene"
+    },
+    {
+      "id": "scene_drowned_stair",
+      "role": "scene"
+    },
+    {
+      "id": "scene_iron_fane",
+      "role": "scene"
+    },
+    {
+      "id": "scene_hollowforge",
+      "role": "scene"
+    },
+    {
+      "id": "scene_marblegate",
+      "role": "scene"
+    },
+    {
+      "id": "scene_blackreach_hold",
+      "role": "scene"
+    },
+    {
+      "id": "scene_hundred_docks",
+      "role": "scene"
+    },
+    {
+      "id": "scene_gilt_exchange",
+      "role": "scene"
+    },
+    {
+      "id": "scene_casa_verrine",
+      "role": "scene"
+    },
+    {
+      "id": "scene_whisper_baths",
+      "role": "scene"
+    }
+  ],
+  "locations": [
+    {
+      "id": "vaskhold",
+      "title": "Vaskhold",
+      "description": "Seat of the Thane-moot.",
+      "realm": "vaskir",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_keep",
+        "x": 0.213,
+        "y": 0.0425,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 425
+      },
+      "scene_asset_id": "scene_vaskhold",
+      "scene_headline": "The moot does not seat strangers.",
+      "scene_body": "Thanes argue in a language of precedent older than the Ring itself.",
+      "routes": [
+        "hjarnmoot",
+        "skarrow_longhall",
+        "fetterstone"
+      ],
+      "unlock_flag": "moot_admitted",
+      "sealed_reason": "The moot does not seat strangers.",
+      "reveal_flag": "vaskir_named"
+    },
+    {
+      "id": "fetterstone",
+      "title": "Fetterstone",
+      "description": "Holds prisoners Aldermere wants returned.",
+      "realm": "vaskir",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_keep",
+        "x": 0.372,
+        "y": 0.0932,
+        "scale": 0.8,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 932
+      },
+      "routes": [
+        "vaskhold"
+      ],
+      "reveal_flag": "vaskir_named"
+    },
+    {
+      "id": "bone_orchard",
+      "title": "The Bone Orchard",
+      "description": "Where oathbreakers hang, and are mourned.",
+      "realm": "vaskir",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_ruined_chapel",
+        "x": 0.128,
+        "y": 0.125,
+        "scale": 0.75,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 1250
+      },
+      "routes": [
+        "hjarnmoot"
+      ],
+      "reveal_flag": "vaskir_named"
+    },
+    {
+      "id": "hjarnmoot",
+      "title": "Hjarnmoot",
+      "description": "The oath circle. Nobody fights in it.",
+      "realm": "vaskir",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_hjarnmoot",
+        "x": 0.829,
+        "y": 0.0799,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 799
+      },
+      "scene_asset_id": "scene_hjarnmoot",
+      "scene_headline": "Nobody fights in this circle.",
+      "scene_body": "An oath spoken on the flat stone is as binding here as blood on the sand is at home.",
+      "routes": [
+        "vaskhold",
+        "bone_orchard",
+        "skarrow_longhall"
+      ],
+      "unlock_flag": "moot_admitted",
+      "sealed_reason": "An oath must be spoken for you first.",
+      "reveal_flag": "vaskir_named"
+    },
+    {
+      "id": "skarrow_longhall",
+      "title": "Skarrow Longhall",
+      "description": "Hospitality is law under this roof.",
+      "realm": "vaskir",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_longhall",
+        "x": 0.689,
+        "y": 0.1276,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 1276
+      },
+      "scene_asset_id": "scene_skarrow_longhall",
+      "scene_headline": "The door stands open.",
+      "scene_body": "Under this roof hospitality is law, which means Hjalvar Skarrow cannot harm you and cannot let you leave.",
+      "routes": [
+        "hjarnmoot",
+        "rimegate",
+        "vaskhold"
+      ],
+      "unlock_flag": "skarrow_welcomed",
+      "sealed_reason": "You have not been invited in.",
+      "reveal_flag": "vaskir_named"
+    },
+    {
+      "id": "grimsdal_mine",
+      "title": "Grimsdal Mine",
+      "description": "Iron. Sold south without much asking.",
+      "realm": "vaskir",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_mine_head",
+        "x": 0.799,
+        "y": 0.0347,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 347
+      },
+      "routes": [
+        "rimegate"
+      ],
+      "reveal_flag": "vaskir_named"
+    },
+    {
+      "id": "rimegate",
+      "title": "The Rimegate",
+      "description": "The pass. Everything north begins here.",
+      "realm": "vaskir",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_keep",
+        "x": 0.524,
+        "y": 0.1903,
+        "scale": 0.9,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 1903
+      },
+      "scene_asset_id": "scene_rimegate",
+      "scene_headline": "The pass is watched from both sides.",
+      "scene_body": "Beyond it, no one settles anything with a sword, and they find your country obscene for doing so.",
+      "routes": [
+        "skarrow_longhall",
+        "grimsdal_mine",
+        "ravensgate_bridge"
+      ],
+      "unlock_flag": "gate_passed",
+      "sealed_reason": "The road north is watched.",
+      "reveal_flag": "writ_read"
+    },
+    {
+      "id": "coldwatch_tower",
+      "title": "Coldwatch Tower",
+      "description": "Watches the northern road. Undermanned.",
+      "realm": "aldermere",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_watchtower",
+        "x": 0.232,
+        "y": 0.241,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 2410
+      },
+      "routes": [
+        "ravensgate_bridge"
+      ],
+      "reveal_flag": "gate_passed"
+    },
+    {
+      "id": "weeping_quarry",
+      "title": "The Weeping Quarry",
+      "description": "The Ring’s marble, cut by the sentenced.",
+      "realm": "aldermere",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_quarry",
+        "x": 0.777,
+        "y": 0.2589,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 2589
+      },
+      "routes": [
+        "thornhollow"
+      ],
+      "reveal_flag": "thornhollow_pact"
+    },
+    {
+      "id": "thornhollow",
+      "title": "Thornhollow",
+      "description": "Not bandits. Plaintiffs, with a court of their own.",
+      "realm": "aldermere",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_thornhollow",
+        "x": 0.223,
+        "y": 0.2797,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 2797
+      },
+      "scene_asset_id": "scene_thornhollow",
+      "scene_headline": "They are not bandits.",
+      "scene_body": "A court sits under the thorn palisade, and it has been waiting nine years for someone to bring them a seal.",
+      "routes": [
+        "ravensgate_bridge",
+        "harrowfield",
+        "weeping_quarry"
+      ],
+      "unlock_flag": "gate_passed",
+      "sealed_reason": "You would have to be brought there.",
+      "reveal_flag": "writ_read"
+    },
+    {
+      "id": "ravensgate_bridge",
+      "title": "Ravensgate Bridge",
+      "description": "A toll the Court pretends not to know about.",
+      "realm": "aldermere",
+      "visibility": "sealed",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_bridge",
+        "x": 0.536,
+        "y": 0.3135,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 3135
+      },
+      "scene_asset_id": "scene_ravensgate_bridge",
+      "scene_headline": "The toll bar is down.",
+      "scene_body": "Thornhollow taxes this crossing, and the Court has decided not to notice.",
+      "routes": [
+        "marblegate",
+        "thornhollow",
+        "rimegate",
+        "coldwatch_tower",
+        "greywither_abbey"
+      ],
+      "unlock_flag": "gate_passed",
+      "sealed_reason": "Nothing leaves Corvane unread."
+    },
+    {
+      "id": "harrowfield",
+      "title": "Harrowfield",
+      "description": "A village a rigged Verdict emptied.",
+      "realm": "aldermere",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_village",
+        "x": 0.768,
+        "y": 0.2966,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 2966
+      },
+      "routes": [
+        "thornhollow"
+      ],
+      "reveal_flag": "thornhollow_pact"
+    },
+    {
+      "id": "greywither_abbey",
+      "title": "Greywither Abbey",
+      "description": "Its cellar holds the Verdict rolls.",
+      "realm": "aldermere",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_ruined_chapel",
+        "x": 0.205,
+        "y": 0.3224,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 3224
+      },
+      "scene_asset_id": "scene_greywither_abbey",
+      "scene_headline": "The roof is gone. The cellar is not.",
+      "scene_body": "Sister Mave has kept the Verdict rolls dry through two winters and one fire.",
+      "routes": [
+        "ravensgate_bridge"
+      ],
+      "unlock_flag": "abbey_opened",
+      "sealed_reason": "Sister Mave opens for no one unannounced.",
+      "reveal_flag": "rolls_named"
+    },
+    {
+      "id": "sable_court",
+      "title": "The Sable Court",
+      "description": "No weapons. Worse dangers.",
+      "realm": "aldermere",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_sable_court",
+        "x": 0.674,
+        "y": 0.4076,
+        "scale": 0.62,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 4076
+      },
+      "scene_asset_id": "scene_sable_court",
+      "scene_headline": "Marble, and no weapons at all.",
+      "scene_body": "Every person here is measuring what your arrival costs them.",
+      "routes": [
+        "sundial_market",
+        "iron_fane"
+      ],
+      "unlock_flag": "court_summoned",
+      "sealed_reason": "You have no name the Court must answer.",
+      "reveal_flag": "writ_read"
+    },
+    {
+      "id": "sundial_market",
+      "title": "The Sundial Market",
+      "description": "A new lead waits among the lantern stalls.",
+      "realm": "aldermere",
+      "visibility": "sealed",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_sundial_market",
+        "x": 0.563,
+        "y": 0.4768,
+        "scale": 0.62,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 4768
+      },
+      "scene_asset_id": "scene_sundial_market",
+      "scene_headline": "Lanterns sway over wet stone.",
+      "scene_body": "Nara Voss is already holding out her hand for the writ you have not shown her.",
+      "routes": [
+        "verdict_ring",
+        "chainhouse",
+        "sable_court",
+        "hollowforge"
+      ],
+      "unlock_flag": "verdict_witnessed",
+      "sealed_reason": "You have no reason to go there yet."
+    },
+    {
+      "id": "chainhouse",
+      "title": "The Chainhouse",
+      "description": "Cassian is not a prisoner, and cannot leave.",
+      "realm": "aldermere",
+      "visibility": "sealed",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_chainhouse",
+        "x": 0.787,
+        "y": 0.4515,
+        "scale": 0.66,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 4515
+      },
+      "scene_asset_id": "scene_chainhouse",
+      "scene_headline": "The door locks from the outside.",
+      "scene_body": "Cassian is not a prisoner. He simply cannot leave, and the difference has stopped mattering to him.",
+      "routes": [
+        "verdict_ring",
+        "sundial_market"
+      ],
+      "unlock_flag": "cassian_trust",
+      "sealed_reason": "Cassian’s trust will open this door."
+    },
+    {
+      "id": "verdict_ring",
+      "title": "The Verdict Ring",
+      "description": "Law is made here, and it cannot be appealed.",
+      "realm": "aldermere",
+      "visibility": "open",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_verdict_ring",
+        "x": 0.283,
+        "y": 0.4133,
+        "scale": 0.62,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 4133
+      },
+      "scene_asset_id": "scene_verdict_ring",
+      "scene_headline": "The crowd holds its breath.",
+      "scene_body": "Two champions stand on the raked sand. Whatever is decided here becomes law, and cannot be appealed.",
+      "routes": [
+        "sundial_market",
+        "chainhouse",
+        "drowned_stair",
+        "iron_fane"
+      ]
+    },
+    {
+      "id": "drowned_stair",
+      "title": "The Drowned Stair",
+      "description": "The one road out that cannot be searched.",
+      "realm": "aldermere",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_drowned_stair",
+        "x": 0.244,
+        "y": 0.5259,
+        "scale": 0.62,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 5259
+      },
+      "scene_asset_id": "scene_drowned_stair",
+      "scene_headline": "The water has not moved in years.",
+      "scene_body": "This is where the losers go. It is also the only road out that Marblegate cannot search.",
+      "routes": [
+        "verdict_ring",
+        "marblegate"
+      ],
+      "unlock_flag": "stair_open",
+      "sealed_reason": "The grate is chained from the inside.",
+      "reveal_flag": "verdict_witnessed"
+    },
+    {
+      "id": "iron_fane",
+      "title": "The Iron Fane",
+      "description": "It certifies every Verdict. It certified this one.",
+      "realm": "aldermere",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_iron_fane",
+        "x": 0.201,
+        "y": 0.4528,
+        "scale": 0.55,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 4528
+      },
+      "scene_asset_id": "scene_iron_fane",
+      "scene_headline": "The doors open for judgements.",
+      "scene_body": "An iron ring hangs above the altar. Every Verdict for a century was certified beneath it.",
+      "routes": [
+        "verdict_ring",
+        "sable_court"
+      ],
+      "unlock_flag": "fane_entered",
+      "sealed_reason": "The doors open for judgements, not for you.",
+      "reveal_flag": "writ_read"
+    },
+    {
+      "id": "hollowforge",
+      "title": "Hollowforge",
+      "description": "The smith arms the Ring, and quietly arms its enemies.",
+      "realm": "aldermere",
+      "visibility": "sealed",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_hollowforge",
+        "x": 0.732,
+        "y": 0.5166,
+        "scale": 0.68,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 5166
+      },
+      "scene_asset_id": "scene_hollowforge",
+      "scene_headline": "The forge has not gone cold in forty years.",
+      "scene_body": "Hob Cardew arms the Ring. He also arms the people the Ring made homeless, and knows exactly what that makes him.",
+      "routes": [
+        "sundial_market",
+        "marblegate"
+      ],
+      "unlock_flag": "cassian_trust",
+      "sealed_reason": "Hob Cardew works for the Ring, not for strangers."
+    },
+    {
+      "id": "marblegate",
+      "title": "Marblegate",
+      "description": "Nothing leaves the city unread.",
+      "realm": "aldermere",
+      "visibility": "sealed",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_marblegate",
+        "x": 0.527,
+        "y": 0.5619,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 5619
+      },
+      "scene_asset_id": "scene_marblegate",
+      "scene_headline": "Nothing leaves Corvane unread.",
+      "scene_body": "A clerk turns every page of every ledger that passes under the arch. Yours is in your coat.",
+      "routes": [
+        "hollowforge",
+        "drowned_stair",
+        "ravensgate_bridge",
+        "ferrymans_post"
+      ],
+      "unlock_flag": "writ_read",
+      "sealed_reason": "You are carrying nothing worth the search."
+    },
+    {
+      "id": "ferrymans_post",
+      "title": "The Ferryman’s Post",
+      "description": "He carries every faction and judges none.",
+      "realm": "aldermere",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_wharf",
+        "x": 0.205,
+        "y": 0.7361,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 7361
+      },
+      "routes": [
+        "marblegate",
+        "blackreach_hold"
+      ],
+      "reveal_flag": "gate_passed"
+    },
+    {
+      "id": "blackreach_hold",
+      "title": "Blackreach Hold",
+      "description": "The keep of whoever signed the writ.",
+      "realm": "aldermere",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_blackreach_hold",
+        "x": 0.752,
+        "y": 0.6581,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 6581
+      },
+      "scene_asset_id": "scene_blackreach_hold",
+      "scene_headline": "It has never been taken.",
+      "scene_body": "Somewhere behind that wall is the hand that signed a Verdict before the fight.",
+      "routes": [
+        "ferrymans_post",
+        "hundred_docks"
+      ],
+      "unlock_flag": "hold_breached",
+      "sealed_reason": "It has never been taken.",
+      "reveal_flag": "signature_named"
+    },
+    {
+      "id": "hundred_docks",
+      "title": "The Hundred Docks",
+      "description": "Everything arrives here, and everything is priced.",
+      "realm": "serevane",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_wharf",
+        "x": 0.239,
+        "y": 0.928,
+        "scale": 1.1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 9280
+      },
+      "scene_asset_id": "scene_hundred_docks",
+      "scene_headline": "Everything arrives, and everything is priced.",
+      "scene_body": "Including, it turns out, a succession.",
+      "routes": [
+        "blackreach_hold",
+        "gilt_exchange",
+        "debtors_terrace"
+      ],
+      "unlock_flag": "landfall",
+      "sealed_reason": "You need a hull willing to carry you.",
+      "reveal_flag": "serevane_named"
+    },
+    {
+      "id": "debtors_terrace",
+      "title": "The Debtors’ Terrace",
+      "description": "Where people who lost are displayed.",
+      "realm": "serevane",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_manor",
+        "x": 0.17,
+        "y": 0.8686,
+        "scale": 0.8,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 8686
+      },
+      "routes": [
+        "hundred_docks"
+      ],
+      "reveal_flag": "landfall"
+    },
+    {
+      "id": "gilt_exchange",
+      "title": "The Gilt Exchange",
+      "description": "Judgements are listed here like cargo.",
+      "realm": "serevane",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_gilt_exchange",
+        "x": 0.5,
+        "y": 0.871,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 8710
+      },
+      "scene_asset_id": "scene_gilt_exchange",
+      "scene_headline": "Judgements are listed like cargo.",
+      "scene_body": "Somewhere on this floor, the verdict that will decide Aldermere has a number beside it.",
+      "routes": [
+        "hundred_docks",
+        "casa_verrine",
+        "spice_vaults"
+      ],
+      "unlock_flag": "landfall",
+      "sealed_reason": "The floor is closed to those without standing.",
+      "reveal_flag": "serevane_named"
+    },
+    {
+      "id": "spice_vaults",
+      "title": "The Spice Vaults",
+      "description": "Bonded warehouses, and a way under them.",
+      "realm": "serevane",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_wharf",
+        "x": 0.29,
+        "y": 0.8252,
+        "scale": 0.85,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 8252
+      },
+      "routes": [
+        "gilt_exchange"
+      ],
+      "reveal_flag": "landfall"
+    },
+    {
+      "id": "casa_verrine",
+      "title": "Casa Verrine",
+      "description": "The house that bought the succession.",
+      "realm": "serevane",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_manor",
+        "x": 0.813,
+        "y": 0.8252,
+        "scale": 1,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 8252
+      },
+      "scene_asset_id": "scene_casa_verrine",
+      "scene_headline": "Lemon trees, and a strongroom door.",
+      "scene_body": "Aurel Verrine does not consider what he did a crime. He considers it an entry.",
+      "routes": [
+        "gilt_exchange",
+        "whisper_baths"
+      ],
+      "unlock_flag": "verrine_received",
+      "sealed_reason": "Aurel Verrine receives by appointment.",
+      "reveal_flag": "verrine_named"
+    },
+    {
+      "id": "whisper_baths",
+      "title": "The Whisper Baths",
+      "description": "The real deals, unclothed and unarmed.",
+      "realm": "serevane",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_manor",
+        "x": 0.818,
+        "y": 0.897,
+        "scale": 0.9,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 8970
+      },
+      "scene_asset_id": "scene_whisper_baths",
+      "scene_headline": "Unclothed and unarmed.",
+      "scene_body": "No one here carries a weapon, which is why the real deals are made in the water.",
+      "routes": [
+        "casa_verrine",
+        "cheira_isle"
+      ],
+      "unlock_flag": "baths_invited",
+      "sealed_reason": "You are not yet worth talking to.",
+      "reveal_flag": "verrine_named"
+    },
+    {
+      "id": "cheira_isle",
+      "title": "Cheira Isle",
+      "description": "Quarantine. Nobody checks who is on it.",
+      "realm": "serevane",
+      "visibility": "rumoured",
+      "map_render": "marker",
+      "sprite": {
+        "asset_id": "sprite_arch_village",
+        "x": 0.705,
+        "y": 0.9603,
+        "scale": 0.8,
+        "rotation": 0,
+        "anchor": "center",
+        "z": 9603
+      },
+      "routes": [
+        "whisper_baths"
+      ],
+      "reveal_flag": "baths_invited"
+    }
+  ],
+  "choices": [
+    {
+      "id": "witness_verdict",
+      "label": "Watch the Verdict",
+      "at": "verdict_ring",
+      "sets": "verdict_witnessed",
+      "summary": "Witnessed a Verdict in the Ring. The loser was carried down the stair.",
+      "memory": {
+        "text": "The player witnessed a Verdict in the Ring. Cassian Vale won, and the loser was carried down toward the Drowned Stair. The Sundial Market opened as the next lead.",
+        "subjects": [
+          "Cassian Vale"
+        ],
+        "objects": [
+          "The Verdict Ring",
+          "The Sundial Market"
+        ],
+        "terms": "Verdict, Ring, Cassian, sealed writ, market",
+        "valence": "foreboding"
+      }
+    },
+    {
+      "id": "trust_cassian",
+      "label": "Go to Cassian",
+      "at": "verdict_ring",
+      "requires": "verdict_witnessed",
+      "sets": "cassian_trust",
+      "summary": "Cassian trusted the player and opened the Chainhouse and the forge.",
+      "memory": {
+        "text": "Cassian Vale trusted the player after the Verdict and showed a way into the Chainhouse. He is not a prisoner and cannot leave.",
+        "subjects": [
+          "Cassian Vale"
+        ],
+        "objects": [
+          "The Chainhouse",
+          "Hollowforge"
+        ],
+        "terms": "Cassian trust, Chainhouse, contract, forge",
+        "valence": "tentative"
+      }
+    },
+    {
+      "id": "read_writ",
+      "label": "Show Nara the writ",
+      "at": "sundial_market",
+      "requires": "cassian_trust",
+      "sets": "writ_read",
+      "summary": "Nara read the sealed writ. The succession Verdict was dated before the fight.",
+      "memory": {
+        "text": "Nara Voss read the sealed writ in the Sundial Market. The succession Verdict is dated before the fight it decides, which means the outcome was bought.",
+        "subjects": [
+          "Nara Voss"
+        ],
+        "objects": [
+          "the sealed writ",
+          "Marblegate"
+        ],
+        "terms": "writ, succession, forged date, Nara, Marblegate",
+        "valence": "alarmed"
+      }
+    },
+    {
+      "id": "pass_gate",
+      "label": "Carry it through the gate",
+      "at": "marblegate",
+      "requires": "writ_read",
+      "sets": "gate_passed",
+      "summary": "The writ left Corvane. The northern road opened.",
+      "memory": {
+        "text": "The player carried the sealed writ out through Marblegate. Nothing leaves Corvane unread, so someone now knows it is gone.",
+        "subjects": [
+          "Marblegate"
+        ],
+        "objects": [
+          "the sealed writ",
+          "Ravensgate Bridge"
+        ],
+        "terms": "Marblegate, customs, writ, road north",
+        "valence": "urgent"
+      }
+    },
+    {
+      "id": "thornhollow_pact",
+      "label": "Put the seal before their court",
+      "at": "thornhollow",
+      "requires": "gate_passed",
+      "sets": "thornhollow_pact",
+      "summary": "Thornhollow recognised the seal. It took their land nine years ago.",
+      "memory": {
+        "text": "Thornhollow’s court recognised the seal on the writ: it is the same one that took Harrowfield nine years ago. They are not bandits but plaintiffs, and they want the writ made public.",
+        "subjects": [
+          "Iselle of Harrowfield"
+        ],
+        "objects": [
+          "Thornhollow",
+          "Harrowfield",
+          "the sealed writ"
+        ],
+        "terms": "Thornhollow, Iselle, Harrowfield, rigged Verdict, seal",
+        "valence": "resolute"
+      }
+    }
+  ]
+}

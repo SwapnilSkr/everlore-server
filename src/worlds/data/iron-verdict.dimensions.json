@@ -1,0 +1,26 @@
+{
+  "plate_central": {
+    "width": 1120,
+    "height": 1400
+  },
+  "plate_north": {
+    "width": 1120,
+    "height": 747
+  },
+  "plate_serevane": {
+    "width": 1120,
+    "height": 1120
+  },
+  "plate_south": {
+    "width": 1120,
+    "height": 747
+  },
+  "plate_vaskir": {
+    "width": 1120,
+    "height": 1120
+  },
+  "texture_fog": {
+    "width": 512,
+    "height": 512
+  }
+}

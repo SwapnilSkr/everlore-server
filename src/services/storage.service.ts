@@ -3,6 +3,7 @@ import {
   PutObjectCommand,
   DeleteObjectCommand,
   CopyObjectCommand,
+  HeadObjectCommand,
 } from '@aws-sdk/client-s3'
 import { randomUUID } from 'crypto'
 import { env } from '../config/env'
@@ -34,6 +35,26 @@ const EXT: Record<string, string> = {
 }
 
 export const storageService = {
+  /** Resolve a manifest key through CloudFront; never return a bucket URL. */
+  urlForKey(key: string): string | null {
+    if (!isStorageConfigured() || !key) return null
+    return `${env.CDN_BASE_URL.replace(/\/+$/, '')}/${key.replace(/^\/+/, '')}`
+  },
+  /** Checks a durable key before an authoring upload. */
+  async exists(key: string): Promise<boolean> {
+    if (!isStorageConfigured() || !key) return false
+    try {
+      await client().send(new HeadObjectCommand({ Bucket: env.S3_BUCKET, Key: key }))
+      return true
+    } catch (error: any) {
+      const status = error?.$metadata?.httpStatusCode
+      // S3 returns 403 rather than 404 for an absent exact key when this role
+      // lacks ListBucket. A present key still returns success, so this keeps
+      // revisioned authoring uploads possible without granting bucket listing.
+      if (status === 403 || status === 404 || error?.name === 'NotFound') return false
+      throw error
+    }
+  },
   /**
    * Upload bytes under a key prefix and return the public CDN URL.
    * `previews/` objects auto-expire via the bucket lifecycle rule; promote a

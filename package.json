@@ -75,6 +75,7 @@
     "gen:splash-avatars": "bun run scripts/gen-splash-avatars.ts",
     "gen:player-avatars": "bun run scripts/gen-player-avatars.ts",
     "seed:default-cover": "bun run scripts/seed-default-cover.ts",
+    "retire:interactive-prototype-assets": "bun run scripts/retire-interactive-world-prototype-assets.ts",
     "clean:queue-jobs": "bun run scripts/clean-redis-jobs.ts",
     "report:redis-hygiene": "bun run scripts/clean-redis-jobs.ts",
     "prune:redis-completed-jobs": "bun run scripts/clean-redis-jobs.ts --execute",
@@ -90,7 +91,10 @@
     "corpus:cast-extract": "bun run scripts/corpus-cast-extract.ts",
     "audit:opening-place": "bun run scripts/opening-place-audit.ts",
     "audit:character-lifecycle": "bun run scripts/character-lifecycle-audit.ts",
-    "repair:false-deaths": "bun run scripts/repair-false-deaths.ts"
+    "repair:false-deaths": "bun run scripts/repair-false-deaths.ts",
+    "assets:process": "bun run scripts/process-interactive-assets.ts",
+    "audit:iron-verdict": "bun run scripts/iron-verdict-audit.ts",
+    "audit:plate": "bun run scripts/check-interactive-plate.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",

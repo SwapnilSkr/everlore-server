@@ -34,6 +34,7 @@ import type {
 } from '../models/billing.model'
 import type { PostProcessOutboxDoc } from '../models/post-process-outbox.model'
 import type { ContentReportDoc } from '../models/content-report.model'
+import type { InteractiveWorldDoc, InteractiveWorldStateDoc } from '../models/interactive-world.model'
 
 let client: MongoClient | null = null
 let database: Db | null = null
@@ -82,6 +83,8 @@ export const mongoColl = {
   storePurchases: () => coll<WithoutId<StorePurchaseDoc>>(COLLECTIONS.store_purchases),
   postProcessOutbox: () => coll<WithoutId<PostProcessOutboxDoc>>(COLLECTIONS.post_process_outbox),
   contentReports: () => coll<WithoutId<ContentReportDoc>>(COLLECTIONS.content_reports),
+  interactiveWorlds: () => coll<WithoutId<InteractiveWorldDoc>>(COLLECTIONS.interactive_worlds),
+  interactiveWorldStates: () => coll<WithoutId<InteractiveWorldStateDoc>>(COLLECTIONS.interactive_world_states),
 } as const
 
 export async function connectMongo(): Promise<Db> {

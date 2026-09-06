@@ -36,6 +36,8 @@ export const COLLECTIONS = {
   content_reports: 'content_reports',
   web_events: 'web_events',
   web_traffic_daily: 'web_traffic_daily',
+  interactive_worlds: 'interactive_worlds',
+  interactive_world_states: 'interactive_world_states',
 } as const
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS]

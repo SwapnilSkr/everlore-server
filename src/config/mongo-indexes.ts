@@ -39,6 +39,16 @@ export type EverloreIndexDef = {
 
 export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   {
+    collection: COLLECTIONS.interactive_worlds,
+    key: { key: 1 },
+    options: { unique: true, name: 'idx_interactive_worlds_key' },
+  },
+  {
+    collection: COLLECTIONS.interactive_world_states,
+    key: { instance_id: 1, world_key: 1 },
+    options: { unique: true, name: 'idx_interactive_world_states_instance_world' },
+  },
+  {
     collection: COLLECTIONS.post_process_outbox,
     key: { event_id: 1, kind: 1 },
     options: { unique: true, name: 'idx_post_process_outbox_event_kind' },
