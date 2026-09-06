@@ -84,7 +84,10 @@
             "fane": 0,
             "thornhollow": -2,
             "ring": 0
-          }
+          },
+          "made_whole": "Wenna Fell",
+          "made_to_pay": "Denny Ostler",
+          "principle": "Possession on the ground beats a written claim."
         },
         {
           "id": "restore_the_line",
@@ -96,7 +99,10 @@
             "thornhollow": 2,
             "ring": -1
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Denny Ostler",
+          "made_to_pay": "the Ring's account",
+          "principle": "A just answer is paid for out of the judge's own purse."
         },
         {
           "id": "split_the_strip",
@@ -107,7 +113,10 @@
             "fane": 0,
             "thornhollow": 1,
             "ring": 0
-          }
+          },
+          "made_whole": "both parties, by halves",
+          "made_to_pay": "both parties, by halves",
+          "principle": "A quarrel with no liar in it is divided down the middle."
         }
       ]
     },
@@ -138,7 +147,10 @@
             "thornhollow": 3,
             "ring": -3
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Anse Tolliver",
+          "made_to_pay": "the Ring's marble account",
+          "principle": "Time served past sentence is a debt, and it is paid at rate."
         },
         {
           "id": "free_them_unpaid",
@@ -149,7 +161,10 @@
             "fane": 0,
             "thornhollow": 1,
             "ring": -1
-          }
+          },
+          "made_whole": "Corbin Rask",
+          "made_to_pay": "Anse Tolliver",
+          "principle": "A wrong may be ended without being paid for."
         },
         {
           "id": "burn_the_sticks",
@@ -160,7 +175,10 @@
             "fane": 0,
             "thornhollow": -3,
             "ring": 2
-          }
+          },
+          "made_whole": "Corbin Rask",
+          "made_to_pay": "Anse Tolliver",
+          "principle": "A tally nobody produces is a tally that does not exist."
         }
       ]
     },
@@ -190,7 +208,10 @@
             "fane": 0,
             "thornhollow": -1,
             "ring": 0
-          }
+          },
+          "made_whole": "Garrick Oath",
+          "made_to_pay": "Thornhollow's court",
+          "principle": "A life taken in error has a price, and the post that took it pays."
         },
         {
           "id": "try_the_boy",
@@ -202,7 +223,10 @@
             "thornhollow": -4,
             "ring": 3
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Garrick Oath",
+          "made_to_pay": "Piel Marrin",
+          "principle": "A killing goes to the sand, whatever the killer's age."
         },
         {
           "id": "close_the_deck",
@@ -213,7 +237,10 @@
             "fane": 0,
             "thornhollow": -3,
             "ring": 0
-          }
+          },
+          "made_whole": "Garrick Oath",
+          "made_to_pay": "Hesta Marrin",
+          "principle": "A toll that cannot be kept without blood is not lawful."
         }
       ]
     },
@@ -243,7 +270,10 @@
             "fane": 0,
             "thornhollow": -1,
             "ring": 2
-          }
+          },
+          "made_whole": "Tobin Sark",
+          "made_to_pay": "Ilma Cardew",
+          "principle": "A trade passes to the hands that work it."
         },
         {
           "id": "to_the_daughter",
@@ -254,7 +284,10 @@
             "fane": 0,
             "thornhollow": 2,
             "ring": -2
-          }
+          },
+          "made_whole": "Ilma Cardew",
+          "made_to_pay": "Tobin Sark",
+          "principle": "A shop passes by blood, and service is paid in wages."
         },
         {
           "id": "joint_mark",
@@ -266,7 +299,10 @@
             "thornhollow": 1,
             "ring": 1
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Ilma Cardew and Tobin Sark, jointly",
+          "made_to_pay": "the judge, in every quarrel that follows",
+          "principle": "What cannot be divided is held in common, and the judge keeps the balance."
         }
       ]
     },
@@ -296,7 +332,10 @@
             "fane": 0,
             "thornhollow": 0,
             "ring": 1
-          }
+          },
+          "made_whole": "Cassia Lowe",
+          "made_to_pay": "Nara Voss",
+          "principle": "A broker answers for what she sells, whoever forged it."
         },
         {
           "id": "follow_the_matrix",
@@ -308,7 +347,10 @@
             "thornhollow": 2,
             "ring": 1
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Cassia Lowe",
+          "made_to_pay": "the Iron Fane",
+          "principle": "An institution answers for the instruments of law it has lost."
         },
         {
           "id": "void_and_quiet",
@@ -319,7 +361,10 @@
             "fane": 2,
             "thornhollow": -2,
             "ring": 0
-          }
+          },
+          "made_whole": "Nara Voss",
+          "made_to_pay": "Cassia Lowe",
+          "principle": "A bad instrument is voided and nobody is compensated."
         }
       ]
     },
@@ -350,7 +395,10 @@
             "thornhollow": 2,
             "ring": 0
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Sister Mave",
+          "made_to_pay": "Aldis Renn",
+          "principle": "An accusation is enough to open a Court man's door."
         },
         {
           "id": "blame_the_damp",
@@ -361,7 +409,10 @@
             "fane": 1,
             "thornhollow": -2,
             "ring": 0
-          }
+          },
+          "made_whole": "Aldis Renn",
+          "made_to_pay": "Sister Mave",
+          "principle": "What cannot be proved taken is treated as lost."
         },
         {
           "id": "copy_the_rolls",
@@ -372,7 +423,10 @@
             "fane": -1,
             "thornhollow": 0,
             "ring": 1
-          }
+          },
+          "made_whole": "the rolls themselves",
+          "made_to_pay": "both parties, in delay",
+          "principle": "A record in doubt is copied before anything is decided on it."
         }
       ]
     },
@@ -403,7 +457,10 @@
             "thornhollow": 2,
             "ring": -2
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Perrin Aske",
+          "made_to_pay": "every house holding a champion's contract",
+          "principle": "A contract with no term is read to have one."
         },
         {
           "id": "buy_him_out",
@@ -414,7 +471,10 @@
             "fane": 0,
             "thornhollow": 0,
             "ring": 1
-          }
+          },
+          "made_whole": "Perrin Aske",
+          "made_to_pay": "the Ring's account",
+          "principle": "A man may be bought out of a contract, and the judge is who pays."
         },
         {
           "id": "contract_stands",
@@ -425,7 +485,10 @@
             "fane": 0,
             "thornhollow": -2,
             "ring": 2
-          }
+          },
+          "made_whole": "House Ferrand",
+          "made_to_pay": "Perrin Aske",
+          "principle": "A contract stands exactly as written."
         }
       ]
     },
@@ -455,7 +518,10 @@
             "fane": 3,
             "thornhollow": -2,
             "ring": 0
-          }
+          },
+          "made_whole": "the Iron Fane",
+          "made_to_pay": "Widow Ferrand",
+          "principle": "A defect of form is cured and the judgement stands."
         },
         {
           "id": "call_it_killing",
@@ -467,7 +533,10 @@
             "thornhollow": 3,
             "ring": -1
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Widow Ferrand",
+          "made_to_pay": "the Iron Fane",
+          "principle": "An unsworn fight is not a Verdict."
         },
         {
           "id": "name_the_certifier",
@@ -478,7 +547,10 @@
             "fane": -1,
             "thornhollow": 0,
             "ring": 1
-          }
+          },
+          "made_whole": "Widow Ferrand",
+          "made_to_pay": "the certifier who waved it through",
+          "principle": "A man carries the fault so that the institution does not."
         }
       ]
     },
@@ -509,7 +581,10 @@
             "thornhollow": 0,
             "ring": 1
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Odd Lanyer, in reputation only",
+          "made_to_pay": "Factor Hesp",
+          "principle": "A disputed thing is opened where everyone can see it."
         },
         {
           "id": "river_law",
@@ -520,7 +595,10 @@
             "fane": 0,
             "thornhollow": 1,
             "ring": 0
-          }
+          },
+          "made_whole": "Odd Lanyer",
+          "made_to_pay": "Factor Hesp",
+          "principle": "Local custom governs where the crossing has always governed itself."
         },
         {
           "id": "return_sealed",
@@ -531,7 +609,10 @@
             "fane": 0,
             "thornhollow": 0,
             "ring": 0
-          }
+          },
+          "made_whole": "Factor Hesp",
+          "made_to_pay": "Odd Lanyer, in everything but the fee",
+          "principle": "Property returns to its mark and the finder is paid a fee."
         }
       ]
     },
@@ -565,7 +646,10 @@
             "fane": 0,
             "thornhollow": 0,
             "ring": -1
-          }
+          },
+          "made_whole": "Bel Ashgrave",
+          "made_to_pay": "the Ring's account",
+          "principle": "Testimony may be bought, and the judge is who buys it."
         },
         {
           "id": "cry_the_debt",
@@ -576,7 +660,10 @@
             "fane": 0,
             "thornhollow": -1,
             "ring": 1
-          }
+          },
+          "made_whole": "Bel Ashgrave",
+          "made_to_pay": "Sennet Corry",
+          "principle": "A debt follows the name, and the name descends."
         },
         {
           "id": "take_the_grate",
@@ -588,7 +675,10 @@
             "thornhollow": -2,
             "ring": -2
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "the Stair, put under open count",
+          "made_to_pay": "Warden Tibb",
+          "principle": "A gate that sells silence is put under open count."
         }
       ]
     },
@@ -618,7 +708,10 @@
             "fane": 0,
             "thornhollow": -2,
             "ring": 1
-          }
+          },
+          "made_whole": "Serjeant Halloway",
+          "made_to_pay": "Ewart Snell",
+          "principle": "A post is held whether it is supplied or not."
         },
         {
           "id": "pardon_and_supply",
@@ -630,7 +723,10 @@
             "thornhollow": 2,
             "ring": -1
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Ewart Snell and the six",
+          "made_to_pay": "the Ring's account",
+          "principle": "A garrison that is not fed is not garrisoned."
         },
         {
           "id": "abandon_the_post",
@@ -641,7 +737,10 @@
             "fane": 0,
             "thornhollow": 0,
             "ring": -1
-          }
+          },
+          "made_whole": "nobody",
+          "made_to_pay": "Serjeant Halloway",
+          "principle": "A post that cannot be held is struck from the rolls."
         }
       ]
     },
@@ -675,7 +774,10 @@
             "fane": 0,
             "thornhollow": 3,
             "ring": 0
-          }
+          },
+          "made_whole": "Gerd Cardell",
+          "made_to_pay": "Ruth Bray",
+          "principle": "A void Verdict returns land to the names on the old roll."
         },
         {
           "id": "tenancy",
@@ -687,7 +789,10 @@
             "thornhollow": -1,
             "ring": 1
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Gerd Cardell in title, Ruth Bray in tenancy",
+          "made_to_pay": "Thornhollow's court",
+          "principle": "Title returns to the roll, but work done on the ground is not undone."
         },
         {
           "id": "buy_bray_out",
@@ -698,7 +803,10 @@
             "fane": 0,
             "thornhollow": 2,
             "ring": -2
-          }
+          },
+          "made_whole": "Ruth Bray",
+          "made_to_pay": "the Ring's account",
+          "principle": "A void Verdict is bought out at a price, and the price is now known."
         }
       ]
     },
@@ -733,7 +841,10 @@
             "thornhollow": 2,
             "ring": 2
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Doria Quill",
+          "made_to_pay": "all forty-one listed names",
+          "principle": "A ledger of speculation is read entire or not at all."
         },
         {
           "id": "take_the_two",
@@ -744,7 +855,10 @@
             "fane": 0,
             "thornhollow": 0,
             "ring": 1
-          }
+          },
+          "made_whole": "the Master of the Floor",
+          "made_to_pay": "Doria Quill",
+          "principle": "Only what touches the Court is taken; the floor keeps its trade."
         },
         {
           "id": "list_your_own",
@@ -755,7 +869,10 @@
             "fane": 0,
             "thornhollow": -3,
             "ring": -2
-          }
+          },
+          "made_whole": "the Master of the Floor",
+          "made_to_pay": "every party who comes before this judge afterwards",
+          "principle": "A Verdict may be listed and traded before it is heard."
         }
       ],
       "requires": "landfall"
@@ -790,7 +907,10 @@
             "fane": -1,
             "thornhollow": 0,
             "ring": 1
-          }
+          },
+          "made_whole": "Ferrand of Coldwatch and the four families",
+          "made_to_pay": "Brother Anselm",
+          "principle": "Four lives outweigh one, and an oath is enforced where it was sworn."
         },
         {
           "id": "argue_the_precedent",
@@ -802,7 +922,10 @@
             "thornhollow": 1,
             "ring": 0
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Brother Anselm",
+          "made_to_pay": "the four at Fetterstone and their families",
+          "principle": "A precedent is argued in the hall that made it, however long it takes."
         },
         {
           "id": "refuse_the_trade",
@@ -813,7 +936,10 @@
             "fane": 0,
             "thornhollow": -1,
             "ring": 0
-          }
+          },
+          "made_whole": "Brother Anselm",
+          "made_to_pay": "Ferrand of Coldwatch",
+          "principle": "No man is handed over to a killing with a ceremony, whatever is offered for him."
         }
       ],
       "requires": "vaskir_named"
@@ -849,7 +975,10 @@
             "thornhollow": 1,
             "ring": 0
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "Physic Ordell Wace",
+          "made_to_pay": "the Court proctor",
+          "principle": "A confidence is not evidence, however it was found."
         },
         {
           "id": "read_the_two",
@@ -860,7 +989,10 @@
             "fane": -2,
             "thornhollow": 0,
             "ring": 1
-          }
+          },
+          "made_whole": "the Court proctor",
+          "made_to_pay": "Physic Ordell Wace",
+          "principle": "A confidence becomes Court property when it is interesting enough."
         },
         {
           "id": "hunt_the_informer",
@@ -871,7 +1003,10 @@
             "fane": 0,
             "thornhollow": 0,
             "ring": 1
-          }
+          },
+          "made_whole": "neither party",
+          "made_to_pay": "the informer who described the cart",
+          "principle": "The search stands; the hand that aimed it answers."
         }
       ]
     },
@@ -901,7 +1036,10 @@
             "fane": 0,
             "thornhollow": 3,
             "ring": -3
-          }
+          },
+          "made_whole": "Halvard Sitt",
+          "made_to_pay": "the Ledger itself",
+          "principle": "A name may be struck from the Ledger for a price."
         },
         {
           "id": "take_it_unbought",
@@ -913,7 +1051,10 @@
             "thornhollow": 2,
             "ring": 1
           },
-          "costly_but_defensible": true
+          "costly_but_defensible": true,
+          "made_whole": "the record, as truth",
+          "made_to_pay": "Halvard Sitt",
+          "principle": "Testimony is taken with its flaws in it and tested in the open."
         },
         {
           "id": "keep_the_appointment",
@@ -924,7 +1065,10 @@
             "fane": 0,
             "thornhollow": -3,
             "ring": 0
-          }
+          },
+          "made_whole": "Aurel Verrine",
+          "made_to_pay": "Halvard Sitt",
+          "principle": "Where the law does not reach, the appointment is kept."
         }
       ],
       "requires": "verrine_received"

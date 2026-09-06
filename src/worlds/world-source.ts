@@ -127,18 +127,53 @@ export interface WorldProgression {
   ledger?: unknown
 }
 
+/** One side of a petition. Both are stated as the party would state them. */
+export interface WorldPetitionParty {
+  name: string
+  claim: string
+}
+
+/**
+ * A way of ruling, and what ruling that way costs.
+ *
+ * The last three fields are the seeds the escalation rule turns: the party made
+ * whole becomes an owner and owners get petitioned, the party made to pay
+ * carries a dated grievance that ripens, and the principle is quoted back by
+ * whoever comes next. The principle is the one that compounds, because it is
+ * the only one that travels off the petition it came from.
+ */
+export interface WorldPetitionResolution {
+  id: string
+  label: string
+  consequence: string
+  standing_shift?: Record<string, number>
+  costly_but_defensible?: boolean
+  made_whole: string
+  made_to_pay: string
+  principle: string
+}
+
 /** Open-ended play after an ending. Petitions are the renewable unit of it. */
 export interface WorldPetition {
   id: string
   at: string
   kind: string
   requires?: string
-  title?: string
-  summary?: string
+  title: string
+  parties: WorldPetitionParty[]
+  /**
+   * What is actually the case, which is usually not what either party says.
+   *
+   * NEVER sent to the client. It is the brief for narration and the reason a
+   * petition can be judged rather than merely picked; shipping it would spoil
+   * every one of them on arrival.
+   */
+  the_truth: string
+  resolutions: WorldPetitionResolution[]
 }
 
 export interface WorldReign {
-  reign?: Record<string, { verb: string; premise: string; what_changes?: string[] }>
+  reign?: Record<string, { verb: string; premise: string; what_changes?: string[]; opening_beat?: string }>
   petitions?: WorldPetition[]
   escalation?: unknown
 }
@@ -234,6 +269,74 @@ export function loadWorld(key: string): LoadedWorld | null {
   }
   cache.set(key, world)
   return world
+}
+
+/**
+ * Every flag this world actually gates something on.
+ *
+ * Derived from the authored data, never listed by hand — a new gate is in the
+ * vocabulary the moment it is authored, and a retired one leaves it. This is
+ * the guard on narrated flags: the story loop lets the narrator mint any flag
+ * name it likes, and without a vocabulary an invented one could open a road by
+ * coincidence. A flag the world does not gate on cannot move the map.
+ */
+export function worldVocabulary(world: LoadedWorld): Set<string> {
+  const vocabulary = new Set<string>()
+  for (const location of world.locations) {
+    if (location.unlock_flag) vocabulary.add(location.unlock_flag)
+    if (location.reveal_flag) vocabulary.add(location.reveal_flag)
+  }
+  for (const choice of world.choices) {
+    for (const flag of [...asList(choice.requires), ...asList(choice.forbids), ...asList(choice.sets)]) {
+      vocabulary.add(flag)
+    }
+  }
+  for (const ending of world.progression?.endings ?? []) {
+    for (const flag of [
+      ...(ending.trigger.all_of ?? []),
+      ...(ending.trigger.any_of ?? []),
+      ...(ending.trigger.none_of ?? []),
+    ]) vocabulary.add(flag)
+  }
+  for (const mark of world.progression?.marks ?? []) if (mark.awarded_when.flag) vocabulary.add(mark.awarded_when.flag)
+  for (const petition of world.reign?.petitions ?? []) if (petition.requires) vocabulary.add(petition.requires)
+  return vocabulary
+}
+
+/**
+ * The flags the map should be read against.
+ *
+ * The story loop and the map keep separate flags, and until now they only met
+ * in one direction: taking a map choice wrote into the event stream, so the
+ * narrator learned about it, but nothing the narrator said could move the map.
+ * A character could promise a way through a sealed door, in their own voice,
+ * and the door stayed shut until the player found the authored button. That is
+ * the whole reason the map read as a menu bolted onto a story.
+ *
+ * Narration is ADDITIVE here and never subtractive. It can open a place; it
+ * cannot re-seal one, and it cannot clear a flag an authored choice set. So the
+ * authored spine stays guaranteed — no amount of talking gets a player onto a
+ * road the author did not build — while everything the fiction actually does is
+ * allowed to count.
+ *
+ * Narrated flags are deliberately NOT persisted into world state. They are
+ * recomputed from the instance every read, so an edited or replayed turn takes
+ * its consequences back with it, exactly as it does everywhere else.
+ */
+export function effectiveFlags(
+  world: LoadedWorld,
+  stateFlags: Record<string, boolean>,
+  narratedFlags: Record<string, unknown> | undefined,
+): Record<string, boolean> {
+  const merged: Record<string, boolean> = { ...stateFlags }
+  if (!narratedFlags) return merged
+  const vocabulary = worldVocabulary(world)
+  for (const [flag, value] of Object.entries(narratedFlags)) {
+    // Only a literal `true` counts. The story loop also increments counters
+    // through this same field, and a tally of three is not an open gate.
+    if (value === true && vocabulary.has(flag)) merged[flag] = true
+  }
+  return merged
 }
 
 /** Load or fail loudly. For callers that cannot continue without the world. */

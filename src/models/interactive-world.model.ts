@@ -149,6 +149,18 @@ export interface InteractiveWorldDoc {
   updated_at: Date
 }
 
+/** One ruling, kept because the ruling is what the next petitioner argues against. */
+export interface WorldLedgerEntryDoc {
+  petition_id: string
+  resolution_id: string
+  /** Where it was ruled. Principles travel one route from here. */
+  at: string
+  made_whole: string
+  made_to_pay: string
+  principle: string
+  ruled_at: Date
+}
+
 /** Per-instance state is the canonical source for unlocked routes and choices. */
 export interface InteractiveWorldStateDoc {
   _id: ObjectId
@@ -171,6 +183,15 @@ export interface InteractiveWorldStateDoc {
    * defensively.
    */
   taken_choice_ids: string[]
+  /**
+   * Every petition ruled on, in order.
+   *
+   * This is the player's own record and the input to the next petition: a
+   * ruling establishes a principle, and the next petitioner at that place — or
+   * one route from it — arrives quoting it, having shaped their claim to win
+   * under it. Empty until an ending opens the petition pool.
+   */
+  ledger: WorldLedgerEntryDoc[]
   sequence: number
   created_at: Date
   updated_at: Date

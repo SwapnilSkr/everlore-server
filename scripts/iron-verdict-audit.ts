@@ -10,12 +10,14 @@
  */
 import {
   asList,
+  effectiveFlags,
+  worldVocabulary,
   choicePredicate,
   requireWorld,
   satisfies,
   type WorldEnding,
 } from '../src/worlds/world-source'
-import { endingFor } from '../src/worlds/progression'
+import { endingFor, PETITIONS_OPEN, progressionFor } from '../src/worlds/progression'
 
 const world = requireWorld('iron-verdict')
 const IRON_VERDICT_ASSETS = world.assets
@@ -112,12 +114,34 @@ for (const person of cast) {
 // renders empty at the moment the player first meets them.
 const portraitIds = new Set(cast.flatMap((p) => Object.values(p.portraits ?? {})))
 
-const reign = world.reign as { petitions?: { id: string; at: string; requires?: string }[] } | null
+const reign = world.reign
+const trackIds = new Set((world.progression?.standing ?? []).map((t) => t.id))
+const petitionIds = new Set<string>()
 for (const petition of reign?.petitions ?? []) {
   const at = `petition ${petition.id}:`
+  if (petitionIds.has(petition.id)) fail.push(`${at} duplicate id`)
+  petitionIds.add(petition.id)
   if (!byId.has(petition.at)) fail.push(`${at} happens at unknown place ${petition.at}`)
   if (petition.requires && !flagsInPlay.has(petition.requires)) {
     fail.push(`${at} requires flag '${petition.requires}' that the world does not use`)
+  }
+  if (!petition.the_truth) fail.push(`${at} has no truth behind it, so there is nothing to judge against`)
+  if ((petition.parties ?? []).length < 2) fail.push(`${at} has fewer than two parties`)
+  if ((petition.resolutions ?? []).length < 2) fail.push(`${at} offers fewer than two ways to rule`)
+  const resolutionIds = new Set<string>()
+  for (const resolution of petition.resolutions ?? []) {
+    const rat = `${at} ${resolution.id}:`
+    if (resolutionIds.has(resolution.id)) fail.push(`${rat} duplicate resolution id`)
+    resolutionIds.add(resolution.id)
+    // These three are what the escalation rule turns. A resolution missing any
+    // of them rules on the day and seeds nothing, which is the difference
+    // between a reign and a list of one-off scenes.
+    for (const field of ['made_whole', 'made_to_pay', 'principle'] as const) {
+      if (!resolution[field]) fail.push(`${rat} has no ${field.replace(/_/g, ' ')}, so it seeds nothing`)
+    }
+    for (const track of Object.keys(resolution.standing_shift ?? {})) {
+      if (!trackIds.has(track)) fail.push(`${rat} shifts unknown standing track '${track}'`)
+    }
   }
 }
 
@@ -253,6 +277,55 @@ console.log(
 )
 for (const { label, run } of roads) {
   console.log(`  ${label.padEnd(42)} ${run.reached.size} places, ${run.taken.size} choices → ${endingFor(endings, run.flags)?.id ?? 'nowhere'}`)
+}
+
+// ── The narration seam ────────────────────────────────────────────────────
+// The story loop can open the map. Prove both halves of that: a flag the world
+// gates on gets through, and one it does not is ignored. The second half is the
+// one worth guarding — the narrator mints flag names freely, and without the
+// vocabulary check an invented name could unseal a place by coincidence.
+const vocabulary = worldVocabulary(world)
+for (const flag of allSettable) {
+  if (!vocabulary.has(flag)) fail.push(`flag '${flag}' is set by a choice but is not in the world vocabulary`)
+}
+
+const sealedByNarration = IRON_VERDICT_LOCATIONS.find((l) => l.unlock_flag && l.visibility === 'sealed')
+if (!sealedByNarration) warn.push('no sealed location to test the narration seam against')
+else {
+  const opened = effectiveFlags(world, {}, { [sealedByNarration.unlock_flag!]: true })
+  if (visibilityFor(sealedByNarration, opened) !== 'open') {
+    fail.push(`narration cannot open ${sealedByNarration.id}: the story loop and the map are not connected`)
+  }
+  const invented = effectiveFlags(world, {}, { a_flag_the_narrator_made_up: true })
+  if (Object.keys(invented).length) fail.push('a flag outside the world vocabulary reached the map')
+  const counted = effectiveFlags(world, {}, { [sealedByNarration.unlock_flag!]: 3 })
+  if (Object.keys(counted).length) fail.push('a counter reached the map as though it were an open gate')
+}
+
+// A petition is only judgeable while the player does not know the answer. Two
+// fields would give it away — what is actually the case, and what each ruling
+// costs — and both live on the authored petition right next to what is sent.
+// This asserts on the real payload rather than trusting the mapping to stay
+// right, because the failure is invisible: the scene still works, it is just
+// no longer a judgement.
+const anyPetition = (reign?.petitions ?? [])[0]
+if (anyPetition) {
+  const openFlags = { [PETITIONS_OPEN]: true, ...(anyPetition.requires ? { [anyPetition.requires]: true } : {}) }
+  const sent = progressionFor(world.progression, world.reign, IRON_VERDICT_LOCATIONS, {
+    flags: openFlags,
+    taken_choice_ids: [],
+    revealed_location_ids: [],
+    current_location_id: anyPetition.at,
+    ledger: [],
+  }).petitions
+  const wire = JSON.stringify(sent)
+  if (!sent.length) fail.push(`petition ${anyPetition.id} is not offered at its own location`)
+  if (wire.includes(anyPetition.the_truth.slice(0, 60))) fail.push(`petition ${anyPetition.id}: the truth is sent to the client, which spoils it`)
+  for (const resolution of anyPetition.resolutions) {
+    if (wire.includes(resolution.consequence.slice(0, 60))) {
+      fail.push(`petition ${anyPetition.id}: ruling consequences are sent to the client, making it a menu with the answers on it`)
+    }
+  }
 }
 
 for (const plate of IRON_VERDICT_MAP_STYLE.plates) {

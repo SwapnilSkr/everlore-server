@@ -15,8 +15,10 @@ export const interactiveWorldRoutes = new Elysia({ prefix: '/interactive-worlds'
     return interactiveWorldService.act(params.worldKey, params.instanceId, user.id, body)
   }, {
     body: t.Object({
-      type: t.Union([t.Literal('move'), t.Literal('choose')]),
+      type: t.Union([t.Literal('move'), t.Literal('choose'), t.Literal('rule')]),
       location_id: t.Optional(t.String({ minLength: 1, maxLength: 80 })),
       choice_id: t.Optional(t.String({ minLength: 1, maxLength: 80 })),
+      petition_id: t.Optional(t.String({ minLength: 1, maxLength: 80 })),
+      resolution_id: t.Optional(t.String({ minLength: 1, maxLength: 80 })),
     }),
   })
