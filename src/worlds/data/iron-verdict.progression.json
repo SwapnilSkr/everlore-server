@@ -34,7 +34,7 @@
       "title": "Nothing Leaves Corvane Unread",
       "description": "You left the city carrying a judgement, and no clerk ever turned the page.",
       "awarded_when": {
-        "flag": "stair_open"
+        "flag": "stair_taken"
       },
       "hidden": false
     },
@@ -115,6 +115,62 @@
         {
           "choice_id": "thornhollow_pact",
           "delta": -2
+        },
+        {
+          "choice_id": "ask_the_stair",
+          "delta": -1
+        },
+        {
+          "choice_id": "take_the_stair",
+          "delta": -2
+        },
+        {
+          "choice_id": "swear_challenge",
+          "delta": -2
+        },
+        {
+          "choice_id": "name_the_date",
+          "delta": -3
+        },
+        {
+          "choice_id": "court_order",
+          "delta": 1
+        },
+        {
+          "choice_id": "read_the_rolls",
+          "delta": -2
+        },
+        {
+          "choice_id": "hire_the_ferry",
+          "delta": -1
+        },
+        {
+          "choice_id": "read_the_ledgers",
+          "delta": -2
+        },
+        {
+          "choice_id": "sell_the_writ",
+          "delta": 3
+        },
+        {
+          "choice_id": "burn_the_writ",
+          "delta": 2
+        },
+        {
+          "choice_id": "give_writ_court",
+          "delta": 2
+        },
+        {
+          "choice_id": "give_writ_thornhollow",
+          "delta": -4
+        },
+        {
+          "choice_id": "let_cassian_throw",
+          "delta": 1
+        },
+        {
+          "choice_id": "fight_succession",
+          "delta": -1
         }
       ]
     },
@@ -139,6 +195,42 @@
         {
           "choice_id": "thornhollow_pact",
           "delta": -2
+        },
+        {
+          "choice_id": "swear_challenge",
+          "delta": 2
+        },
+        {
+          "choice_id": "ask_the_rolls",
+          "delta": 1
+        },
+        {
+          "choice_id": "name_the_date",
+          "delta": -1
+        },
+        {
+          "choice_id": "read_the_rolls",
+          "delta": -1
+        },
+        {
+          "choice_id": "sell_the_writ",
+          "delta": -2
+        },
+        {
+          "choice_id": "burn_the_writ",
+          "delta": 2
+        },
+        {
+          "choice_id": "give_writ_court",
+          "delta": -1
+        },
+        {
+          "choice_id": "give_writ_thornhollow",
+          "delta": -3
+        },
+        {
+          "choice_id": "fight_succession",
+          "delta": 2
         }
       ]
     },
@@ -163,6 +255,42 @@
         {
           "choice_id": "thornhollow_pact",
           "delta": 3
+        },
+        {
+          "choice_id": "take_the_stair",
+          "delta": 1
+        },
+        {
+          "choice_id": "read_the_rolls",
+          "delta": 2
+        },
+        {
+          "choice_id": "read_the_ledgers",
+          "delta": 1
+        },
+        {
+          "choice_id": "sell_the_writ",
+          "delta": -3
+        },
+        {
+          "choice_id": "burn_the_writ",
+          "delta": -3
+        },
+        {
+          "choice_id": "give_writ_court",
+          "delta": -3
+        },
+        {
+          "choice_id": "give_writ_thornhollow",
+          "delta": 4
+        },
+        {
+          "choice_id": "let_cassian_throw",
+          "delta": -2
+        },
+        {
+          "choice_id": "fight_succession",
+          "delta": 1
         }
       ]
     },
@@ -187,6 +315,30 @@
         {
           "choice_id": "thornhollow_pact",
           "delta": -1
+        },
+        {
+          "choice_id": "ask_the_stair",
+          "delta": 1
+        },
+        {
+          "choice_id": "swear_challenge",
+          "delta": 1
+        },
+        {
+          "choice_id": "sell_the_writ",
+          "delta": -2
+        },
+        {
+          "choice_id": "give_writ_court",
+          "delta": 1
+        },
+        {
+          "choice_id": "let_cassian_throw",
+          "delta": -3
+        },
+        {
+          "choice_id": "fight_succession",
+          "delta": 4
         }
       ]
     }
@@ -197,7 +349,8 @@
       "title": "The Verdict Upheld",
       "trigger": {
         "all_of": [
-          "writ_read"
+          "writ_read",
+          "succession_passed"
         ],
         "any_of": [
           "writ_sold",
@@ -218,7 +371,8 @@
         "all_of": [
           "writ_read",
           "court_summoned",
-          "writ_given_court"
+          "writ_given_court",
+          "succession_passed"
         ]
       },
       "cost": "The succession passes with no fight and the Ring is reformed. Thornhollow get nothing, and they know it.",
@@ -231,7 +385,8 @@
       "trigger": {
         "all_of": [
           "thornhollow_pact",
-          "writ_given_thornhollow"
+          "writ_given_thornhollow",
+          "succession_passed"
         ]
       },
       "cost": "A century of Verdicts is void. The land goes back to the people it was taken from, and so does open war between the houses.",
@@ -245,7 +400,8 @@
         "all_of": [
           "writ_read",
           "writ_burned",
-          "succession_fought"
+          "succession_fought",
+          "succession_passed"
         ]
       },
       "cost": "The system stands, unbroken and unquestioned, and it is now yours to abuse.",
@@ -349,41 +505,5 @@
       "description": "In three of the four endings the Ledger leaves your hands, and what it says is what those endings are built out of. If you die after the succession Verdict it passes to whoever was standing nearest you, and the story carries on from their side of it."
     }
   },
-  "needs_new_flags": [
-    {
-      "flag": "writ_sold",
-      "gates": "The Verdict Upheld ending, sale route. Set when the player trades the sealed writ for coin or protection rather than spending it politically.",
-      "note": "No existing choice disposes of the writ; the authored choices only read it and move it."
-    },
-    {
-      "flag": "writ_burned",
-      "gates": "The Verdict Upheld ending (destruction route) and, together with succession_fought, The Iron Verdict ending. Set when the writ is destroyed.",
-      "note": "The bible treats burning and destroying as the same act; the two endings are told apart by whether the player then fights the succession Verdict, not by how the writ died."
-    },
-    {
-      "flag": "writ_given_court",
-      "gates": "The Bloodless Crown ending. Set when the writ is put into the Sable Court's hands.",
-      "note": "court_summoned already exists as the Court's unlock flag, but it only means the Court will receive you, not that you handed anything over."
-    },
-    {
-      "flag": "writ_given_thornhollow",
-      "gates": "The Broken Ring ending. Set when the writ is surrendered to Thornhollow's court to be made public.",
-      "note": "thornhollow_pact only records that their court recognised the seal. The bible's beat 5 explicitly lets the player ally, sell them out, or walk away after that recognition, so the pact cannot by itself be the ending."
-    },
-    {
-      "flag": "succession_fought",
-      "gates": "The Iron Verdict ending, and the endgame generally. Set when the player fights the succession Verdict in person rather than letting Cassian throw it.",
-      "note": "The succession Verdict is an authored calendar date with no flag at all yet; this is the single biggest gap between the authored world and the ending table."
-    },
-    {
-      "flag": "stair_taken",
-      "gates": "The Mark 'Nothing Leaves Corvane Unread' — walking out of Corvane unsearched.",
-      "note": "Awarded on stair_open for now, which is the nearest existing flag but is not the same claim: stair_open means the grate is unchained, not that the player used it. stair_open is also currently orphaned, declared as the Drowned Stair's unlock_flag but set by no authored choice. A stair_taken flag set on arriving beyond Marblegate by way of the Drowned Stair would make the Mark honest."
-    },
-    {
-      "flag": "house_named",
-      "gates": "A cleaner source for the Mark 'A House Remembers You'.",
-      "note": "Awarded on thornhollow_pact for now. That choice does make an enemy of the signing house, but only implicitly; signature_named already exists as Blackreach Hold's reveal flag and would be the exact fact if some authored choice ever set it."
-    }
-  ]
+  "needs_new_flags": []
 }

@@ -161,6 +161,16 @@ export interface InteractiveWorldStateDoc {
   revealed_location_ids: string[]
   flags: Record<string, boolean>
   seen_scene_ids: string[]
+  /**
+   * Every choice the player has taken, in order.
+   *
+   * Flags alone cannot carry this. Standing is summed per CHOICE, and two
+   * choices may set the same flag by different roads with opposite standing
+   * consequences — knowing the flag is true says nothing about who resents you
+   * for it. Absent on states written before standing existed, so read it
+   * defensively.
+   */
+  taken_choice_ids: string[]
   sequence: number
   created_at: Date
   updated_at: Date

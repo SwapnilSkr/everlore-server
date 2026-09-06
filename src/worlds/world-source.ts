@@ -24,16 +24,61 @@ import type {
   InteractiveRealmDoc,
 } from '../models/interactive-world.model'
 
+/**
+ * A condition over the player's flags.
+ *
+ * The three clauses are what the authored endings were already written against,
+ * so the shape is taken from the content rather than imposed on it. `none_of`
+ * is the one that cannot be simulated by the other two, and it is what makes
+ * branches mutually exclusive: The Verdict Upheld is not "you sold the writ",
+ * it is "you sold the writ AND did not fight for it".
+ */
+export interface FlagPredicate {
+  all_of?: string[]
+  any_of?: string[]
+  none_of?: string[]
+}
+
+const on = (flags: Record<string, boolean>, flag: string) => flags[flag] === true
+
+/** An empty predicate is satisfied. "No conditions" means "always", not "never". */
+export function satisfies(predicate: FlagPredicate | undefined, flags: Record<string, boolean>): boolean {
+  if (!predicate) return true
+  if (predicate.all_of?.some((f) => !on(flags, f))) return false
+  if (predicate.any_of?.length && !predicate.any_of.some((f) => on(flags, f))) return false
+  if (predicate.none_of?.some((f) => on(flags, f))) return false
+  return true
+}
+
+/** Normalise the one-or-many fields authored data is allowed to use. */
+export const asList = (value: string | string[] | undefined): string[] =>
+  value === undefined ? [] : Array.isArray(value) ? value : [value]
+
 /** An authored choice. The client submits an id; the server decides meaning. */
 export interface WorldChoice {
   id: string
   at: string
-  requires?: string
-  sets: string
+  /** Every flag named must be set. A bare string is the common single-gate case. */
+  requires?: string | string[]
+  /**
+   * Any flag named here withdraws the choice.
+   *
+   * Needed because the endgame roads are exclusive: once the writ has been
+   * given to the Court it cannot also be burned. Without this the player can
+   * take every road and satisfy several ending triggers at once.
+   */
+  forbids?: string | string[]
+  sets: string | string[]
   label: string
   summary: string
   memory?: { text: string; subjects: string[]; objects: string[]; terms: string; valence: string }
 }
+
+/** The condition a choice is offered under, in the same shape as everything else. */
+export const choicePredicate = (choice: WorldChoice): FlagPredicate => ({
+  all_of: asList(choice.requires),
+  none_of: asList(choice.forbids),
+})
 
 /** Exactly the shape of a `data/<key>.json` file. */
 interface AuthoredWorld {
@@ -49,6 +94,55 @@ interface AuthoredWorld {
   choices: WorldChoice[]
 }
 
+/** A permanent record of something the player did. Awarded once, never lost. */
+export interface WorldMark {
+  id: string
+  title: string
+  description: string
+  hidden?: boolean
+  awarded_when: { flag?: string; ending?: string; places_revealed?: number }
+}
+
+/** How one faction reads the player, summed from the choices they have taken. */
+export interface WorldStanding {
+  id: string
+  title: string
+  shifts?: { choice_id: string; delta: number }[]
+}
+
+/** A road out of the story. Triggers are evaluated in authored order. */
+export interface WorldEnding {
+  id: string
+  title: string
+  trigger: FlagPredicate
+  cost: string
+  reign_verb: string
+  reign_description: string
+}
+
+export interface WorldProgression {
+  marks?: WorldMark[]
+  standing?: WorldStanding[]
+  endings?: WorldEnding[]
+  ledger?: unknown
+}
+
+/** Open-ended play after an ending. Petitions are the renewable unit of it. */
+export interface WorldPetition {
+  id: string
+  at: string
+  kind: string
+  requires?: string
+  title?: string
+  summary?: string
+}
+
+export interface WorldReign {
+  reign?: Record<string, { verb: string; premise: string; what_changes?: string[] }>
+  petitions?: WorldPetition[]
+  escalation?: unknown
+}
+
 /**
  * Content that is authored ALONGSIDE the world rather than inside it.
  *
@@ -60,8 +154,8 @@ interface AuthoredWorld {
  */
 export interface WorldSidecars {
   cast: unknown[]
-  progression: Record<string, unknown> | null
-  reign: Record<string, unknown> | null
+  progression: WorldProgression | null
+  reign: WorldReign | null
 }
 
 export interface LoadedWorld extends Omit<AuthoredWorld, 'assets'>, WorldSidecars {
@@ -122,8 +216,8 @@ export function loadWorld(key: string): LoadedWorld | null {
   // Sidecars are keyed off the same world key, so adding one is dropping a
   // file next to the world rather than registering it anywhere.
   const cast = readJson<{ cast: unknown[] }>(join(DATA, `${key}.cast.json`))
-  const progression = readJson<Record<string, unknown>>(join(DATA, `${key}.progression.json`))
-  const reign = readJson<Record<string, unknown>>(join(DATA, `${key}.reign.json`))
+  const progression = readJson<WorldProgression>(join(DATA, `${key}.progression.json`))
+  const reign = readJson<WorldReign>(join(DATA, `${key}.reign.json`))
 
   const world: LoadedWorld = {
     ...authored,

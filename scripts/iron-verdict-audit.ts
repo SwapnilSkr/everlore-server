@@ -8,7 +8,14 @@
  *
  *   bun run audit:iron-verdict
  */
-import { requireWorld } from '../src/worlds/world-source'
+import {
+  asList,
+  choicePredicate,
+  requireWorld,
+  satisfies,
+  type WorldEnding,
+} from '../src/worlds/world-source'
+import { endingFor } from '../src/worlds/progression'
 
 const world = requireWorld('iron-verdict')
 const IRON_VERDICT_ASSETS = world.assets
@@ -18,6 +25,9 @@ const IRON_VERDICT_MAP_STYLE = world.map_style
 const IRON_VERDICT_REALMS = world.realms
 const IRON_VERDICT_START_LOCATION = world.start_location_id
 import { visibilityFor } from '../src/services/interactive-world.service'
+
+/** The four exclusive dispositions of the writ. One road may hold only one. */
+const DISPOSALS = new Set(['writ_sold', 'writ_burned', 'writ_given_court', 'writ_given_thornhollow'])
 
 const fail: string[] = []
 const warn: string[] = []
@@ -70,7 +80,7 @@ for (const l of IRON_VERDICT_LOCATIONS) {
   if (l.unlock_flag) flagsInPlay.add(l.unlock_flag)
   if (l.reveal_flag) flagsInPlay.add(l.reveal_flag)
 }
-for (const c of IRON_VERDICT_CHOICES) flagsInPlay.add(c.sets)
+for (const c of IRON_VERDICT_CHOICES) for (const f of asList(c.sets)) flagsInPlay.add(f)
 
 const cast = world.cast as {
   id: string; name: string; home_location_id: string; portraits: Record<string, string>
@@ -126,43 +136,123 @@ console.log(
   `${reign?.petitions?.length ?? 0} petitions, ${progression?.standing?.length ?? 0} standing tracks`,
 )
 
-// Every flag the graph gates on must be settable by an authored choice, or it
-// is a wall with no key. Later-chapter flags are expected and only warned about.
-const settable = new Set(IRON_VERDICT_CHOICES.map((c) => c.sets))
-const chapterOne = new Set(['verdict_witnessed', 'cassian_trust', 'writ_read', 'gate_passed', 'thornhollow_pact'])
-for (const location of IRON_VERDICT_LOCATIONS) {
-  for (const flag of [location.unlock_flag, location.reveal_flag].filter(Boolean) as string[]) {
-    if (!settable.has(flag)) warn.push(`${location.id}: gated on '${flag}', which no Chapter I choice sets`)
-  }
-}
-for (const choice of IRON_VERDICT_CHOICES) {
-  if (!byId.has(choice.at)) fail.push(`choice ${choice.id} happens at unknown location ${choice.at}`)
-  if (choice.requires && !settable.has(choice.requires)) fail.push(`choice ${choice.id} requires unsettable '${choice.requires}'`)
-}
+// ── Can the world actually be played? ─────────────────────────────────────
+// The old check walked one authored corridor and reported how far it got. That
+// passed for months while eighteen of thirty locations were gated on flags no
+// choice set — it only ever measured the road it was told about. This walks the
+// graph instead: every choice, every road, and it fails on what cannot be
+// reached rather than reporting where it stopped.
 
-// Walk Chapter I exactly as a player would: only routes out of places that are
-// open, gaining only the flags the authored choices actually grant in order.
-const flags: Record<string, boolean> = {}
-const reached = new Set([IRON_VERDICT_START_LOCATION])
-for (let pass = 0; pass < 12; pass++) {
-  for (const choice of IRON_VERDICT_CHOICES) {
-    if (!reached.has(choice.at)) continue
-    if (choice.requires && flags[choice.requires] !== true) continue
-    flags[choice.sets] = true
-  }
-  for (const id of [...reached]) {
-    for (const route of byId.get(id)!.routes) {
-      if (visibilityFor(byId.get(route)!, flags) === 'open') reached.add(route)
+/** Every flag any authored choice can set. A gate on anything else is a wall with no key. */
+const allSettable = new Set(IRON_VERDICT_CHOICES.flatMap((c) => asList(c.sets)))
+
+/** Play greedily to exhaustion, taking every choice that is open. */
+function closure(banned: Set<string>) {
+  const flags: Record<string, boolean> = {}
+  const reached = new Set([IRON_VERDICT_START_LOCATION])
+  const taken = new Set<string>()
+  for (let pass = 0; pass < IRON_VERDICT_CHOICES.length + IRON_VERDICT_LOCATIONS.length; pass++) {
+    for (const choice of IRON_VERDICT_CHOICES) {
+      if (taken.has(choice.id) || banned.has(choice.id) || !reached.has(choice.at)) continue
+      if (!satisfies(choicePredicate(choice), flags)) continue
+      taken.add(choice.id)
+      for (const flag of asList(choice.sets)) flags[flag] = true
+    }
+    for (const id of [...reached]) {
+      for (const route of byId.get(id)!.routes) {
+        if (visibilityFor(byId.get(route)!, flags) === 'open') reached.add(route)
+      }
     }
   }
+  return { flags, reached, taken }
 }
-const unreachable = IRON_VERDICT_LOCATIONS.filter((l) => !reached.has(l.id))
-const chapterOneOnly = unreachable.filter((l) => {
-  const gates = [l.unlock_flag, l.reveal_flag].filter(Boolean) as string[]
-  return gates.every((g) => chapterOne.has(g))
-})
-for (const l of chapterOneOnly) {
-  fail.push(`${l.id}: gated only on Chapter I flags but is still unreachable after a full Chapter I playthrough`)
+
+// The roads out are mutually exclusive, so no single playthrough sees the whole
+// world. A road is one DISPOSAL of the writ paired with one way of closing the
+// succession; enumerating the compatible pairs is what makes each ending
+// reachable in the simulation. Testing one road per ending is not enough — two
+// roads land on The Verdict Upheld and only one of them ever visits Serevane.
+const endings = (world.progression?.endings ?? []) as WorldEnding[]
+const disposals = IRON_VERDICT_CHOICES.filter((c) => asList(c.sets).some((f) => DISPOSALS.has(f)))
+const terminals = IRON_VERDICT_CHOICES.filter((c) => asList(c.sets).includes('succession_passed'))
+
+const roads: { label: string; run: ReturnType<typeof closure> }[] = []
+for (const disposal of disposals) {
+  for (const terminal of terminals) {
+    // A terminal that disposes of the writ some other way is a different road.
+    if (terminal !== disposal && asList(terminal.sets).some((f) => DISPOSALS.has(f))) continue
+    const banned = new Set(
+      [...disposals, ...terminals].filter((c) => c !== disposal && c !== terminal).map((c) => c.id),
+    )
+    const run = closure(banned)
+    if (run.taken.has(terminal.id)) roads.push({ label: `${disposal.id} → ${terminal.id}`, run })
+  }
+}
+if (!roads.length) fail.push('no playable road closes the succession at all')
+
+const anywhere = new Set<string>()
+for (const road of roads) for (const id of road.run.reached) anywhere.add(id)
+
+for (const location of IRON_VERDICT_LOCATIONS) {
+  if (!anywhere.has(location.id)) {
+    const gates = [location.unlock_flag, location.reveal_flag].filter(Boolean).join(' + ')
+    fail.push(`${location.id}: no playthrough can reach it (gated on ${gates || 'nothing — check its routes'})`)
+  }
+}
+
+// Every ending must be the ending its own road arrives at. A road that lands on
+// a DIFFERENT ending is the failure that matters: it means an earlier trigger
+// latched first and the later one is unreachable in play, which no reachability
+// check would catch.
+const landedOn = new Map<string, string>()
+for (const { label, run } of roads) {
+  const landed = endingFor(endings, run.flags)
+  if (!landed) fail.push(`road ${label} reaches no ending at all — the player is left standing in a finished world`)
+  else landedOn.set(landed.id, label)
+}
+for (const ending of endings) {
+  if (!landedOn.has(ending.id)) fail.push(`ending ${ending.id} is unreachable: no road's flags satisfy it, or an earlier trigger latches first`)
+}
+
+// A choice nothing can ever offer is authored content the player never sees.
+const everTaken = new Set(roads.flatMap((r) => [...r.run.taken]))
+for (const choice of IRON_VERDICT_CHOICES) {
+  if (!byId.has(choice.at)) fail.push(`choice ${choice.id} happens at unknown location ${choice.at}`)
+  else if (!everTaken.has(choice.id)) fail.push(`choice ${choice.id} can never be offered on any road`)
+  for (const flag of asList(choice.requires)) {
+    if (!allSettable.has(flag)) fail.push(`choice ${choice.id} requires '${flag}', which nothing sets`)
+  }
+}
+
+// A Mark whose condition nothing satisfies is a locked trophy.
+const marks = (world.progression?.marks ?? []) as { id: string; awarded_when: Record<string, unknown> }[]
+for (const mark of marks) {
+  const when = mark.awarded_when as { flag?: string; ending?: string; places_revealed?: number }
+  if (when.flag && !allSettable.has(when.flag)) fail.push(`mark ${mark.id}: awarded on '${when.flag}', which nothing sets`)
+  else if (when.ending && !endings.some((e) => e.id === when.ending)) fail.push(`mark ${mark.id}: awards on unknown ending '${when.ending}'`)
+  else if (when.places_revealed !== undefined) {
+    const most = Math.max(...roads.map((r) => IRON_VERDICT_LOCATIONS.filter((l) => visibilityFor(l, r.run.flags) !== 'rumoured').length))
+    if (most < when.places_revealed) fail.push(`mark ${mark.id}: needs ${when.places_revealed} places revealed; the best road reveals ${most}`)
+  } else if (!when.flag && !when.ending && when.places_revealed === undefined) {
+    fail.push(`mark ${mark.id}: has no award condition, so it can never be earned`)
+  }
+}
+
+// Petitions are the post-ending loop. One sited where no road ever goes is a
+// piece of the endgame the player cannot be handed.
+for (const petition of reign?.petitions ?? []) {
+  if (byId.has(petition.at) && !anywhere.has(petition.at)) {
+    fail.push(`petition ${petition.id}: sited at ${petition.at}, which no playthrough reaches`)
+  }
+}
+
+console.log(
+  `playable: ${anywhere.size}/${IRON_VERDICT_LOCATIONS.length} locations, ` +
+  `${everTaken.size}/${IRON_VERDICT_CHOICES.length} choices, ` +
+  `${landedOn.size}/${endings.length} endings over ${roads.length} roads`,
+)
+for (const { label, run } of roads) {
+  console.log(`  ${label.padEnd(42)} ${run.reached.size} places, ${run.taken.size} choices → ${endingFor(endings, run.flags)?.id ?? 'nowhere'}`)
 }
 
 for (const plate of IRON_VERDICT_MAP_STYLE.plates) {
@@ -179,7 +269,6 @@ for (const id of [IRON_VERDICT_MAP_STYLE.fog_asset_id, IRON_VERDICT_MAP_STYLE.se
 
 const enterable = IRON_VERDICT_LOCATIONS.filter((l) => l.scene_asset_id).length
 console.log(`Iron Verdict — ${IRON_VERDICT_LOCATIONS.length} locations, ${enterable} enterable, ${IRON_VERDICT_LOCATIONS.length - enterable} map-presence`)
-console.log(`Chapter I reaches ${reached.size}: ${[...reached].join(', ')}`)
 console.log(`${IRON_VERDICT_ASSETS.length} assets referenced`)
 for (const w of warn) console.log(`⚠ ${w}`)
 for (const f of fail) console.log(`✗ ${f}`)

@@ -1021,6 +1021,508 @@
         "terms": "Thornhollow, Iselle, Harrowfield, rigged Verdict, seal",
         "valence": "resolute"
       }
+    },
+    {
+      "id": "ask_the_stair",
+      "label": "Ask how a thing leaves Corvane",
+      "at": "chainhouse",
+      "requires": "cassian_trust",
+      "sets": "stair_open",
+      "summary": "Cassian described the flooded stair beneath the Ring, and the door at the far end of it.",
+      "memory": {
+        "text": "Cassian Vale described a flooded stair under the Verdict Ring that comes out past the wall. Nothing carried down it is ever read by a clerk.",
+        "subjects": [
+          "Cassian Vale"
+        ],
+        "objects": [
+          "The Drowned Stair",
+          "Corvane"
+        ],
+        "terms": "drowned stair, flooded, under the wall, unsearched",
+        "valence": "conspiratorial"
+      }
+    },
+    {
+      "id": "take_the_stair",
+      "label": "Go down and under the wall",
+      "at": "drowned_stair",
+      "requires": "stair_open",
+      "sets": "stair_taken",
+      "summary": "The player left Corvane by the drowned stair, carrying a sealed judgement no clerk ever turned.",
+      "memory": {
+        "text": "The player walked out of Corvane under the wall with the sealed writ, and no gate clerk ever saw it.",
+        "subjects": [
+          "the player"
+        ],
+        "objects": [
+          "The Drowned Stair",
+          "the sealed writ"
+        ],
+        "terms": "unsearched, under the wall, carried out",
+        "valence": "furtive"
+      }
+    },
+    {
+      "id": "swear_challenge",
+      "label": "Swear a challenge on the sand",
+      "at": "verdict_ring",
+      "requires": "writ_read",
+      "sets": "fane_entered",
+      "summary": "The player swore a challenge to a sealed Verdict, which only the Iron Fane may hear.",
+      "memory": {
+        "text": "The player swore a formal challenge to a Verdict in the Ring. Only the Iron Fane can hear such a thing, and it now must.",
+        "subjects": [
+          "the player",
+          "Arbiter Vell"
+        ],
+        "objects": [
+          "The Iron Fane",
+          "the Verdict Ring"
+        ],
+        "terms": "challenge, sworn, Fane, sealed verdict",
+        "valence": "defiant"
+      }
+    },
+    {
+      "id": "ask_the_rolls",
+      "label": "Ask who keeps the rolls",
+      "at": "iron_fane",
+      "requires": "fane_entered",
+      "sets": "rolls_named",
+      "summary": "Vell named Greywither Abbey as the house that has kept every Verdict roll for a century.",
+      "memory": {
+        "text": "Arbiter Vell said Greywither Abbey holds the Verdict rolls, and has for a hundred years.",
+        "subjects": [
+          "Arbiter Vell"
+        ],
+        "objects": [
+          "Greywither Abbey",
+          "the Verdict rolls"
+        ],
+        "terms": "rolls, abbey, records, century",
+        "valence": "guarded"
+      }
+    },
+    {
+      "id": "name_the_date",
+      "label": "Say the date aloud before the Arbiter",
+      "at": "iron_fane",
+      "requires": "fane_entered",
+      "sets": "court_summoned",
+      "summary": "The player read the writ’s date into the Fane, and the Sable Court sent for them the same day.",
+      "memory": {
+        "text": "The player said the writ’s date aloud inside the Iron Fane. The Sable Court sent for them before the day was out.",
+        "subjects": [
+          "the player",
+          "Arbiter Vell"
+        ],
+        "objects": [
+          "The Sable Court",
+          "the sealed writ"
+        ],
+        "terms": "date, spoken, summoned, court",
+        "valence": "exposed"
+      }
+    },
+    {
+      "id": "court_order",
+      "label": "Ask the Court for leave to read",
+      "at": "sable_court",
+      "requires": "court_summoned",
+      "sets": "abbey_opened",
+      "summary": "The Sable Court granted leave to open the Greywither rolls, expecting the player to find nothing.",
+      "memory": {
+        "text": "The Sable Court gave the player leave to read the Greywither rolls. They granted it easily, which was itself worth noticing.",
+        "subjects": [
+          "the player"
+        ],
+        "objects": [
+          "The Sable Court",
+          "Greywither Abbey"
+        ],
+        "terms": "leave to read, rolls, court order",
+        "valence": "wary"
+      }
+    },
+    {
+      "id": "read_the_rolls",
+      "label": "Find whose hand set the seal",
+      "at": "greywither_abbey",
+      "requires": "abbey_opened",
+      "sets": "signature_named",
+      "summary": "The rolls named the hand behind the seal, and named where that hand keeps its accounts.",
+      "memory": {
+        "text": "The Greywither rolls named the hand that set the seal on the writ, and pointed at Blackreach Hold where its accounts are kept.",
+        "subjects": [
+          "the player"
+        ],
+        "objects": [
+          "Greywither Abbey",
+          "Blackreach Hold",
+          "the sealed writ"
+        ],
+        "terms": "signature, seal, rolls, blackreach",
+        "valence": "vindicated"
+      }
+    },
+    {
+      "id": "hire_the_ferry",
+      "label": "Pay for a night crossing",
+      "at": "ferrymans_post",
+      "requires": "signature_named",
+      "sets": "hold_breached",
+      "summary": "The ferryman put the player across to Blackreach Hold in the dark, and did not wait.",
+      "memory": {
+        "text": "A ferryman crossed the player to Blackreach Hold at night for coin, and refused to wait on the far bank.",
+        "subjects": [
+          "the player"
+        ],
+        "objects": [
+          "Blackreach Hold",
+          "the Ferryman’s Post"
+        ],
+        "terms": "ferry, night crossing, blackreach",
+        "valence": "tense"
+      }
+    },
+    {
+      "id": "name_the_north",
+      "label": "Ask what lies past the gate",
+      "at": "rimegate",
+      "requires": "gate_passed",
+      "sets": "vaskir_named",
+      "summary": "The gate wardens named Vaskir and its thane-moot, and what the moot thinks of Aldermere seals.",
+      "memory": {
+        "text": "Past the Rimegate lies Vaskir, ruled by a thane-moot that does not recognise an Aldermere seal.",
+        "subjects": [
+          "the player"
+        ],
+        "objects": [
+          "Vaskir",
+          "The Rimegate"
+        ],
+        "terms": "vaskir, thane-moot, north, gate",
+        "valence": "curious"
+      }
+    },
+    {
+      "id": "mine_oath",
+      "label": "Stand a shift with Brynn’s people",
+      "at": "grimsdal_mine",
+      "requires": "vaskir_named",
+      "sets": "skarrow_welcomed",
+      "summary": "The player worked a shift underground, and Skarrow’s hall opened to them because of it.",
+      "memory": {
+        "text": "The player stood a full shift in the Grimsdal mine alongside Brynn Skarrow’s people. In Vaskir that is how a stranger becomes a guest.",
+        "subjects": [
+          "Brynn Skarrow",
+          "the player"
+        ],
+        "objects": [
+          "Grimsdal Mine",
+          "Skarrow Longhall"
+        ],
+        "terms": "shift, mine, welcomed, skarrow",
+        "valence": "earned"
+      }
+    },
+    {
+      "id": "skarrow_sponsor",
+      "label": "Ask Hjalvar to speak for you",
+      "at": "skarrow_longhall",
+      "requires": "skarrow_welcomed",
+      "sets": "moot_admitted",
+      "summary": "Hjalvar Skarrow agreed to stand sponsor, which is the only way a stranger is seated at the moot.",
+      "memory": {
+        "text": "Hjalvar Skarrow agreed to sponsor the player before the thane-moot. His daughter Brynn vouched for them first.",
+        "subjects": [
+          "Hjalvar Skarrow",
+          "Brynn Skarrow"
+        ],
+        "objects": [
+          "Skarrow Longhall",
+          "The Hjarnmoot"
+        ],
+        "terms": "sponsor, moot, seated, skarrow",
+        "valence": "indebted"
+      }
+    },
+    {
+      "id": "read_the_ledgers",
+      "label": "Read what the Hold was paid",
+      "at": "blackreach_hold",
+      "requires": "hold_breached",
+      "sets": "serevane_named",
+      "summary": "Blackreach’s ledgers were settled in Serevane coin, from a house across the water.",
+      "memory": {
+        "text": "Blackreach Hold’s ledgers were paid in Serevane coin. The money behind the fixed Verdict came from across the water.",
+        "subjects": [
+          "the player"
+        ],
+        "objects": [
+          "Blackreach Hold",
+          "Serevane"
+        ],
+        "terms": "ledgers, serevane, coin, paid",
+        "valence": "cold"
+      }
+    },
+    {
+      "id": "take_ship",
+      "label": "Take ship across the water",
+      "at": "blackreach_hold",
+      "requires": "serevane_named",
+      "sets": "landfall",
+      "summary": "The player crossed to Serevane, where the money that bought the Verdict actually lives.",
+      "memory": {
+        "text": "The player took ship from Blackreach to Serevane, following the money that paid for the Verdict.",
+        "subjects": [
+          "the player"
+        ],
+        "objects": [
+          "Serevane",
+          "The Hundred Docks"
+        ],
+        "terms": "ship, crossing, serevane, landfall",
+        "valence": "committed"
+      }
+    },
+    {
+      "id": "ask_the_exchange",
+      "label": "Ask whose paper this is",
+      "at": "gilt_exchange",
+      "requires": "landfall",
+      "sets": "verrine_named",
+      "summary": "The Exchange named House Verrine without hesitation, and charged for saying it.",
+      "memory": {
+        "text": "The Gilt Exchange named House Verrine as the paper behind the Blackreach ledgers, and took a fee for the answer.",
+        "subjects": [
+          "the player",
+          "Aurel Verrine"
+        ],
+        "objects": [
+          "The Gilt Exchange",
+          "Casa Verrine"
+        ],
+        "terms": "verrine, paper, exchange, named",
+        "valence": "mercenary"
+      }
+    },
+    {
+      "id": "buy_introduction",
+      "label": "Buy an introduction",
+      "at": "spice_vaults",
+      "requires": "verrine_named",
+      "sets": "verrine_received",
+      "summary": "A vault factor sold the player an hour of Aurel Verrine’s afternoon.",
+      "memory": {
+        "text": "The player bought an introduction to Aurel Verrine from a factor in the spice vaults. In Serevane an audience is a commodity like any other.",
+        "subjects": [
+          "Aurel Verrine"
+        ],
+        "objects": [
+          "The Spice Vaults",
+          "Casa Verrine"
+        ],
+        "terms": "introduction, bought, audience, verrine",
+        "valence": "transactional"
+      }
+    },
+    {
+      "id": "verrine_invitation",
+      "label": "Accept the invitation to the baths",
+      "at": "casa_verrine",
+      "requires": "verrine_received",
+      "sets": "baths_invited",
+      "summary": "Verrine moved the conversation to the Whisper Baths, where nothing said is ever written down.",
+      "memory": {
+        "text": "Aurel Verrine invited the player to the Whisper Baths. Nothing said there is written down, which is why business is done there.",
+        "subjects": [
+          "Aurel Verrine"
+        ],
+        "objects": [
+          "The Whisper Baths",
+          "Cheira Isle"
+        ],
+        "terms": "baths, invitation, unwritten, verrine",
+        "valence": "intimate"
+      }
+    },
+    {
+      "id": "sell_the_writ",
+      "label": "Sell the writ to Verrine",
+      "at": "casa_verrine",
+      "requires": "writ_read",
+      "forbids": [
+        "writ_burned",
+        "writ_given_court",
+        "writ_given_thornhollow"
+      ],
+      "sets": [
+        "writ_sold",
+        "succession_passed",
+        "cassian_dead"
+      ],
+      "summary": "The player sold the sealed writ to House Verrine. The succession passed as written, and Cassian Vale died on the sand keeping the date honest.",
+      "memory": {
+        "text": "The player sold the sealed writ to Aurel Verrine for coin and protection. The fixed succession stood, and Cassian Vale threw the Verdict and died for it.",
+        "subjects": [
+          "Aurel Verrine",
+          "Cassian Vale",
+          "the player"
+        ],
+        "objects": [
+          "the sealed writ",
+          "Casa Verrine"
+        ],
+        "terms": "sold, writ, paid, cassian died",
+        "valence": "complicit"
+      }
+    },
+    {
+      "id": "burn_the_writ",
+      "label": "Burn the writ on the Fane’s iron",
+      "at": "iron_fane",
+      "requires": "writ_read",
+      "forbids": [
+        "writ_sold",
+        "writ_given_court",
+        "writ_given_thornhollow"
+      ],
+      "sets": [
+        "writ_burned"
+      ],
+      "summary": "The player destroyed the only proof the succession was fixed, and left the sand to settle it.",
+      "memory": {
+        "text": "The player burned the sealed writ on the iron of the Fane. The only proof the succession was arranged no longer exists.",
+        "subjects": [
+          "the player",
+          "Arbiter Vell"
+        ],
+        "objects": [
+          "the sealed writ",
+          "The Iron Fane"
+        ],
+        "terms": "burned, destroyed, proof, fane",
+        "valence": "irrevocable"
+      }
+    },
+    {
+      "id": "give_writ_court",
+      "label": "Put the writ in the Court’s hands",
+      "at": "sable_court",
+      "requires": [
+        "writ_read",
+        "court_summoned"
+      ],
+      "forbids": [
+        "writ_sold",
+        "writ_burned",
+        "writ_given_thornhollow"
+      ],
+      "sets": [
+        "writ_given_court",
+        "succession_passed"
+      ],
+      "summary": "The Sable Court took the writ, reformed the Ring by charter, and let the succession pass without a fight.",
+      "memory": {
+        "text": "The player handed the sealed writ to the Sable Court. The Court reformed the Ring under a new charter rather than be caught holding it, and the succession passed bloodlessly.",
+        "subjects": [
+          "the player"
+        ],
+        "objects": [
+          "The Sable Court",
+          "the sealed writ",
+          "The Verdict Ring"
+        ],
+        "terms": "given, court, charter, reformed",
+        "valence": "calculating"
+      }
+    },
+    {
+      "id": "give_writ_thornhollow",
+      "label": "Give the writ to Thornhollow",
+      "at": "thornhollow",
+      "requires": [
+        "writ_read",
+        "thornhollow_pact"
+      ],
+      "forbids": [
+        "writ_sold",
+        "writ_burned",
+        "writ_given_court"
+      ],
+      "sets": [
+        "writ_given_thornhollow",
+        "succession_passed"
+      ],
+      "summary": "Thornhollow made the writ public. A century of Verdicts is void, and the houses have gone to arms over it.",
+      "memory": {
+        "text": "The player gave the sealed writ to Thornhollow’s court, which read it in the open. Every Verdict of the last century is void and the houses are arming.",
+        "subjects": [
+          "Iselle Harrowfield",
+          "the player"
+        ],
+        "objects": [
+          "Thornhollow",
+          "the sealed writ"
+        ],
+        "terms": "public, void, thornhollow, war",
+        "valence": "incendiary"
+      }
+    },
+    {
+      "id": "let_cassian_throw",
+      "label": "Let Cassian throw the Verdict",
+      "at": "verdict_ring",
+      "requires": "writ_burned",
+      "forbids": [
+        "succession_fought",
+        "succession_passed"
+      ],
+      "sets": [
+        "succession_passed",
+        "cassian_dead"
+      ],
+      "summary": "The player stood in the crowd. Cassian Vale lost the succession Verdict on purpose and bled out on the sand.",
+      "memory": {
+        "text": "The player watched from the crowd while Cassian Vale threw the succession Verdict and died on the sand, exactly as he had been paid to.",
+        "subjects": [
+          "Cassian Vale",
+          "the player"
+        ],
+        "objects": [
+          "The Verdict Ring"
+        ],
+        "terms": "thrown, succession, cassian died, watched",
+        "valence": "hollow"
+      }
+    },
+    {
+      "id": "fight_succession",
+      "label": "Fight the succession Verdict yourself",
+      "at": "verdict_ring",
+      "requires": "writ_burned",
+      "sets": [
+        "succession_fought",
+        "succession_passed"
+      ],
+      "summary": "The player took Cassian’s place on the sand and won the succession honestly, inheriting everything it decides.",
+      "memory": {
+        "text": "The player fought the succession Verdict in Cassian Vale’s place and won it on the sand. The Ring stands unquestioned, and it now answers to them.",
+        "subjects": [
+          "the player",
+          "Cassian Vale"
+        ],
+        "objects": [
+          "The Verdict Ring"
+        ],
+        "terms": "fought, won, succession, sand, iron verdict",
+        "valence": "triumphant"
+      },
+      "forbids": [
+        "succession_passed"
+      ]
     }
   ]
 }

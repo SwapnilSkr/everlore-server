@@ -953,32 +953,8 @@
   },
   "needs_new_flags": [
     {
-      "flag": "ending_verdict_upheld",
-      "why": "iron-verdict.json carries no ending state at all — the authored choices stop at thornhollow_pact and there is no flag that records which of the four endings was reached. The four reign entries in this file are keyed by ending id (verdict_upheld, bloodless_crown, broken_ring, iron_verdict); those ids exist only in the world bible, not in the data. One flag per ending is the smallest thing that makes a reign selectable."
-    },
-    {
-      "flag": "ending_bloodless_crown",
-      "why": "As above — records that the succession passed to the Sable Court with the Ring reformed under a charter."
-    },
-    {
-      "flag": "ending_broken_ring",
-      "why": "As above — records that the writ went to Thornhollow, a century of Verdicts is void, and Aldermere is contested ground."
-    },
-    {
-      "flag": "ending_iron_verdict",
-      "why": "As above — records that the writ was destroyed and the succession Verdict was fought and won honestly, leaving the Ring intact and in the player's hands."
-    },
-    {
       "flag": "reign_begun",
       "why": "The reign opening_beat must fire exactly once, on the first return to the map after an ending. Without a flag that the beat sets, it either replays on every arrival or has to be inferred from turn history, which is the kind of thing that quietly stops working."
-    },
-    {
-      "flag": "petitions_open",
-      "why": "Petitions are post-ending content and must not be offerable during Chapter I. The existing flag vocabulary has nothing that means 'the authored script has run out'. Gating the whole petition pool behind one flag is cheaper and safer than repeating four ending checks on every entry."
-    },
-    {
-      "flag": "cassian_dead",
-      "why": "The Verdict Upheld reign and the Cassian romance both turn on his death, and the two-way death model means it can be narrated either way afterwards. Nothing in iron-verdict.json records it. Referenced nowhere in this file's requires clauses for that reason — flagged here rather than used."
     }
   ],
   "the_honest_limit": {

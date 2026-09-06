@@ -8,13 +8,14 @@ import type {
 } from '../models/interactive-world.model'
 import type { WorldEventDoc } from '../models/world-event.model'
 import type { MemoryDoc } from '../models/memory.model'
-import { loadWorld, requireWorld, type WorldChoice } from '../worlds/world-source'
+import { asList, choicePredicate, loadWorld, requireWorld, satisfies, type WorldChoice } from '../worlds/world-source'
+import { endingFlag, endingFor, PETITIONS_OPEN, progressionFor } from '../worlds/progression'
 import { storageService } from './storage.service'
 import { HttpError } from '../utils/http-error'
 import { parseObjectId } from '../utils/mongo-id'
 
 const WORLD_KEY = 'iron-verdict'
-const WORLD_VERSION = 27
+const WORLD_VERSION = 28
 
 /**
  * What the player currently knows about a place.
@@ -71,7 +72,7 @@ export const interactiveWorldService = {
       ...world,
       // Choices ship with the definition so the client renders authored copy
       // instead of carrying a switch statement per location.
-      choices: authored.choices.map(({ id, at, requires, label }) => ({ id, at, requires, label })),
+      choices: authored.choices.map(({ id, at, requires, forbids, label }) => ({ id, at, requires, forbids, label })),
       assets: world.assets.map((asset) => ({ ...asset, url: storageService.urlForKey(asset.key) })),
     }
   },
@@ -98,6 +99,7 @@ export const interactiveWorldService = {
           revealed_location_ids: world.locations.filter((l) => l.visibility !== 'rumoured').map((l) => l.id),
           flags: {},
           seen_scene_ids: [],
+          taken_choice_ids: [],
           sequence: 0,
           created_at: now,
           updated_at: now,
@@ -105,9 +107,12 @@ export const interactiveWorldService = {
       },
       { upsert: true },
     )
-    const state = await states.findOne({ instance_id: instanceOid, world_key: worldKey })
-    if (!state) throw new Error('Could not initialise interactive world state')
-    return { world, state: state as InteractiveWorldStateDoc }
+    const found = await states.findOne({ instance_id: instanceOid, world_key: worldKey })
+    if (!found) throw new Error('Could not initialise interactive world state')
+    // States written before standing existed have no choice list. Default it
+    // here rather than at every read site.
+    const state = { ...found, taken_choice_ids: found.taken_choice_ids ?? [] } as InteractiveWorldStateDoc
+    return { world, state, progression: progressionFor(authored.progression, authored.reign, state) }
   },
 
   async act(
@@ -125,9 +130,10 @@ export const interactiveWorldService = {
       unlocked_location_ids: [...state.unlocked_location_ids],
       revealed_location_ids: [...state.revealed_location_ids],
       seen_scene_ids: [...state.seen_scene_ids],
+      taken_choice_ids: [...state.taken_choice_ids],
     }
     let summary: string
-    let flagSet: string | null = null
+    let flagsSet: string[] = []
     let memory: WorldChoice['memory'] | undefined
     let isFirst = false
 
@@ -149,14 +155,31 @@ export const interactiveWorldService = {
       const choice = authored.choices.find((c) => c.id === action.choice_id)
       if (!choice) throw new HttpError(400, 'Unknown world action')
       if (state.current_location_id !== choice.at) throw new HttpError(400, 'That choice is not available here')
-      if (choice.requires && state.flags[choice.requires] !== true) {
+      if (!satisfies(choicePredicate(choice), state.flags)) {
+        // A forbidden choice and an ungated one are the same refusal to the
+        // player: the road is closed, and saying which flag closed it would be
+        // naming a mechanic at them.
         throw new HttpError(400, 'That is not open to you yet')
       }
-      isFirst = state.flags[choice.sets] !== true
-      next.flags[choice.sets] = true
-      flagSet = choice.sets
+      flagsSet = asList(choice.sets)
+      isFirst = !state.taken_choice_ids.includes(choice.id)
+      for (const flag of flagsSet) next.flags[flag] = true
+      if (isFirst) next.taken_choice_ids.push(choice.id)
       summary = choice.summary
       if (isFirst) memory = choice.memory
+    }
+
+    // An ending is latched the moment its trigger first fires, and opens the
+    // petition pool with it. Both are recorded as flags rather than recomputed,
+    // because reaching an ending is a historical event: a later flag that
+    // falsifies the trigger must not retract a succession that already
+    // happened. Only fired while no ending is latched, so the first road out
+    // is the one the player keeps.
+    const reached = endingFor(authored.progression?.endings ?? [], next.flags)
+    if (reached && next.flags[endingFlag(reached.id)] !== true) {
+      next.flags[endingFlag(reached.id)] = true
+      next.flags[PETITIONS_OPEN] = true
+      flagsSet = [...flagsSet, endingFlag(reached.id), PETITIONS_OPEN]
     }
 
     // One rule promotes everything: a flag can unseal a place and can lift fog.
@@ -189,7 +212,7 @@ export const interactiveWorldService = {
         player_input: action.type === 'move' ? `Travel: ${action.location_id}` : `Choice: ${action.choice_id}`,
         ai_response: summary,
         state_mutations: {},
-        flag_mutations: flagSet ? { [flagSet]: { op: 'set', value: true } } : {},
+        flag_mutations: Object.fromEntries(flagsSet.map((f) => [f, { op: 'set', value: true }])),
         model_used: 'interactive-world-resolver',
         tokens_in: 0,
         tokens_out: 0,
@@ -231,6 +254,11 @@ export const interactiveWorldService = {
       { _id: state.instance_id },
       { $set: { 'meta.last_active_at': now }, $inc: { 'meta.total_events': 1, ...(memory ? { 'meta.total_memories': 1 } : {}) } },
     )
-    return { world, state: next, event: { sequence: next.sequence, action, summary, at: now } }
+    return {
+      world,
+      state: next,
+      progression: progressionFor(authored.progression, authored.reign, next),
+      event: { sequence: next.sequence, action, summary, at: now },
+    }
   },
 }
