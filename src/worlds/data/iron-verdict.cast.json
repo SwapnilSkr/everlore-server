@@ -63,13 +63,19 @@
         "He never named a champion for the succession Verdict.",
         "A house across the water has been paying his court's debts for two years.",
         "Barran Coyle asked him three times for a claim, and was refused three times.",
-        "The Iron Fane has certified judgements he knows to be false, and he let it happen.",
         "He has weeks, not seasons."
       ],
       "first_met": "The whispering in the marble hall stops, and an old man leaning on a wolf-headed cane asks you, very quietly, what you are carrying.",
       "disposition_start": -1,
       "reveals_flag": "verrine_named",
-      "gated_by_flag": "court_summoned"
+      "gated_by_flag": "court_summoned",
+      "knows_guarded": [
+        {
+          "fact": "The Iron Fane has certified judgements he knows to be false, and he let it happen.",
+          "requires": "writ_read",
+          "note": "Only once the player can put the dated writ in front of him. His complicity is the story’s answer, not its opening line."
+        }
+      ]
     },
     {
       "id": "sereth_morrow",

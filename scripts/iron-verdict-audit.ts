@@ -72,7 +72,11 @@ for (const l of IRON_VERDICT_LOCATIONS) {
 }
 for (const c of IRON_VERDICT_CHOICES) flagsInPlay.add(c.sets)
 
-const cast = world.cast as { id: string; name: string; home_location_id: string; portraits: Record<string, string>; gated_by_flag?: string; reveals_flag?: string }[]
+const cast = world.cast as {
+  id: string; name: string; home_location_id: string; portraits: Record<string, string>
+  gated_by_flag?: string; reveals_flag?: string
+  knows_guarded?: { fact: string; requires?: string }[]
+}[]
 const castIds = new Set<string>()
 for (const person of cast) {
   const at = `cast ${person.id}:`
@@ -82,6 +86,15 @@ for (const person of cast) {
   if (!person.portraits?.default) fail.push(`${at} has no default portrait`)
   for (const flag of [person.gated_by_flag, person.reveals_flag].filter(Boolean) as string[]) {
     if (!flagsInPlay.has(flag)) fail.push(`${at} references flag '${flag}' that the world does not use`)
+  }
+  // Guarded knowledge is the difference between a secret the player earns and
+  // one a character can volunteer in their first scene. An ungated entry here
+  // is silently just `knows`, so the gate is checked rather than trusted.
+  for (const guarded of person.knows_guarded ?? []) {
+    if (!guarded.requires) fail.push(`${at} has guarded knowledge with no gate — it would leak like open knowledge`)
+    else if (!flagsInPlay.has(guarded.requires)) {
+      fail.push(`${at} guards knowledge behind flag '${guarded.requires}' that the world does not use`)
+    }
   }
 }
 
