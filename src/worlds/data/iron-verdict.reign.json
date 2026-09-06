@@ -1095,12 +1095,7 @@
       }
     ]
   },
-  "needs_new_flags": [
-    {
-      "flag": "reign_begun",
-      "why": "The reign opening_beat must fire exactly once, on the first return to the map after an ending. Without a flag that the beat sets, it either replays on every arrival or has to be inferred from turn history, which is the kind of thing that quietly stops working."
-    }
-  ],
+  "needs_new_flags": [],
   "the_honest_limit": {
     "restates": "Sixteen painted places, unbounded life inside them. A Petition may name a new room, cellar, farmstead or camp and make it a real remembered location — it borrows the nearest kindred scene as its backdrop and appears under the shared sealed-marker sprite. What it never gets is its own painting.",
     "how_this_design_stays_inside_it": "Every one of the sixteen petitions is sited at a location id that already exists in iron-verdict.json and already has a scene. The named sub-places inside them — Mill Acre, the blackthorn strip, the false floor of a physician's cart, the grate under the Stair, the quarry face — are all spoken of from inside a painted place the player is standing in. None of them is a destination, none needs a marker, and none needs art. The two examples that come closest to the edge are Mill Acre in pet_two_returns and Fetterstone in pet_fetterstone_exchange: Mill Acre is argued about at Thornhollow and never entered, and Fetterstone is an existing rumoured location whose petition is heard at the Rimegate rather than there, so neither requires a painting that does not exist."

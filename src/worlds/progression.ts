@@ -70,6 +70,14 @@ export interface ProgressionView {
   petitions: OfferedPetition[]
   /** What has already been ruled, newest first. The player's own record. */
   ledger: WorldLedgerEntryDoc[]
+  /**
+   * How the world stands after the ending, once there is one.
+   *
+   * The four reigns are not epilogue text — each one says what the map is now
+   * for, which places have shut and which have become the working road. It is
+   * carried alongside the ending so the player can read what they are holding.
+   */
+  reign: { verb: string; premise: string; what_changes: string[] } | null
 }
 
 const earned = (
@@ -205,5 +213,12 @@ export function progressionFor(
       : null,
     petitions,
     ledger: [...ledger].reverse(),
+    reign: ending && reign?.reign?.[ending.id]
+      ? {
+          verb: reign.reign[ending.id]!.verb,
+          premise: reign.reign[ending.id]!.premise,
+          what_changes: reign.reign[ending.id]!.what_changes ?? [],
+        }
+      : null,
   }
 }

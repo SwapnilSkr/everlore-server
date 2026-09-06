@@ -23,7 +23,7 @@ import { HttpError } from '../utils/http-error'
 import { parseObjectId } from '../utils/mongo-id'
 
 const WORLD_KEY = 'iron-verdict'
-const WORLD_VERSION = 30
+const WORLD_VERSION = 31
 
 /**
  * What the player currently knows about a place.
@@ -240,10 +240,17 @@ export const interactiveWorldService = {
     // is the one the player keeps.
     const outcome = { ...known, ...next.flags }
     const reached = endingFor(authored.progression?.endings ?? [], outcome)
+    // The reign's opening beat must fire exactly once. It is returned on the
+    // turn the ending latches and never again, which needs no flag to track —
+    // latching is already a one-time event, so anchoring the beat to it is
+    // both simpler and impossible to replay.
+    let reignOpened: { title: string; opening_beat: string } | null = null
     if (reached && outcome[endingFlag(reached.id)] !== true) {
       next.flags[endingFlag(reached.id)] = true
       next.flags[PETITIONS_OPEN] = true
       flagsSet = [...flagsSet, endingFlag(reached.id), PETITIONS_OPEN]
+      const beat = authored.reign?.reign?.[reached.id]?.opening_beat
+      if (beat) reignOpened = { title: reached.title, opening_beat: beat }
     }
 
     // One rule promotes everything: a flag can unseal a place and can lift fog.
@@ -327,6 +334,7 @@ export const interactiveWorldService = {
       world,
       state: next,
       progression: progressionFor(authored.progression, authored.reign, world.locations, { ...next, flags: { ...outcome, ...next.flags } }),
+      reign_opened: reignOpened,
       event: { sequence: next.sequence, action, summary, at: now },
     }
   },
