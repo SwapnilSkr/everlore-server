@@ -49,7 +49,22 @@ interface AuthoredWorld {
   choices: WorldChoice[]
 }
 
-export interface LoadedWorld extends Omit<AuthoredWorld, 'assets'> {
+/**
+ * Content that is authored ALONGSIDE the world rather than inside it.
+ *
+ * These live in their own files because they are edited independently and by
+ * different hands — the cast grows, progression is tuned, the post-ending
+ * material is written last — and merging them into one file would mean every
+ * edit touches the thing the renderer depends on. Each is optional: a world
+ * with no cast file is a world with no cast, not a broken world.
+ */
+export interface WorldSidecars {
+  cast: unknown[]
+  progression: Record<string, unknown> | null
+  reign: Record<string, unknown> | null
+}
+
+export interface LoadedWorld extends Omit<AuthoredWorld, 'assets'>, WorldSidecars {
   assets: InteractiveAssetDoc[]
 }
 
@@ -104,8 +119,17 @@ export function loadWorld(key: string): LoadedWorld | null {
     join(DATA, `${key}.dimensions.json`),
   ) ?? {}
 
+  // Sidecars are keyed off the same world key, so adding one is dropping a
+  // file next to the world rather than registering it anywhere.
+  const cast = readJson<{ cast: unknown[] }>(join(DATA, `${key}.cast.json`))
+  const progression = readJson<Record<string, unknown>>(join(DATA, `${key}.progression.json`))
+  const reign = readJson<Record<string, unknown>>(join(DATA, `${key}.reign.json`))
+
   const world: LoadedWorld = {
     ...authored,
+    cast: cast?.cast ?? [],
+    progression,
+    reign,
     assets: authored.assets.map(({ id, role }) => ({
       id,
       role,

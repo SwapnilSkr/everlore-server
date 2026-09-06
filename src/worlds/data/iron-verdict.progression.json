@@ -1,0 +1,389 @@
+{
+  "key": "iron-verdict",
+  "revision": 1,
+  "marks": [
+    {
+      "id": "mark_first_verdict",
+      "title": "Sand and Silence",
+      "description": "You stood in the Ring while law was made, and heard the crowd stop breathing.",
+      "awarded_when": {
+        "flag": "verdict_witnessed"
+      },
+      "hidden": false
+    },
+    {
+      "id": "mark_champions_trust",
+      "title": "A Champion's Word",
+      "description": "Cassian Vale told you a thing he had told no one, and unlocked a door to prove it.",
+      "awarded_when": {
+        "flag": "cassian_trust"
+      },
+      "hidden": false
+    },
+    {
+      "id": "mark_writ_read",
+      "title": "Dated Before the Blood",
+      "description": "The seal came open in the lantern light, and the date on it came before the fight it decided.",
+      "awarded_when": {
+        "flag": "writ_read"
+      },
+      "hidden": false
+    },
+    {
+      "id": "mark_unsearched",
+      "title": "Nothing Leaves Corvane Unread",
+      "description": "You left the city carrying a judgement, and no clerk ever turned the page.",
+      "awarded_when": {
+        "flag": "stair_open"
+      },
+      "hidden": false
+    },
+    {
+      "id": "mark_seven_places",
+      "title": "Seven Names on the Road",
+      "description": "Seven places have stopped being rumour to you.",
+      "awarded_when": {
+        "places_revealed": 7
+      },
+      "hidden": false
+    },
+    {
+      "id": "mark_house_enemy",
+      "title": "A House Remembers You",
+      "description": "You named a seal aloud in front of the people it ruined, and the hand behind it heard.",
+      "awarded_when": {
+        "flag": "thornhollow_pact"
+      },
+      "hidden": false
+    },
+    {
+      "id": "mark_ending_upheld",
+      "title": "Paid in Full",
+      "description": "The fix stood, the sand drank a champion, and your purse was heavy walking away from it.",
+      "awarded_when": {
+        "ending": "verdict_upheld"
+      },
+      "hidden": true
+    },
+    {
+      "id": "mark_ending_crown",
+      "title": "A Crown Without a Wound",
+      "description": "Aldermere changed hands and nobody bled for it, except the ones who were owed.",
+      "awarded_when": {
+        "ending": "bloodless_crown"
+      },
+      "hidden": true
+    },
+    {
+      "id": "mark_ending_broken",
+      "title": "A Century Undone",
+      "description": "Every judgement carved into that wall is now only carving, and the houses have taken up arms over it.",
+      "awarded_when": {
+        "ending": "broken_ring"
+      },
+      "hidden": true
+    },
+    {
+      "id": "mark_ending_iron",
+      "title": "Won on the Sand",
+      "description": "You burned the proof and settled it the old way, honestly, and inherited every rotten thing you were fighting.",
+      "awarded_when": {
+        "ending": "iron_verdict"
+      },
+      "hidden": true
+    }
+  ],
+  "standing": [
+    {
+      "id": "court",
+      "title": "The Sable Court",
+      "description": "The houses want the succession quiet. A whisper against you here becomes a warrant somewhere else.",
+      "starts_at": 0,
+      "shifts": [
+        {
+          "choice_id": "trust_cassian",
+          "delta": -1
+        },
+        {
+          "choice_id": "read_writ",
+          "delta": -1
+        },
+        {
+          "choice_id": "pass_gate",
+          "delta": -2
+        },
+        {
+          "choice_id": "thornhollow_pact",
+          "delta": -2
+        }
+      ]
+    },
+    {
+      "id": "fane",
+      "title": "The Iron Fane",
+      "description": "The temple certifies every Verdict. If judgements are known to be bought, a century of its work is void, and it knows that better than you do.",
+      "starts_at": 0,
+      "shifts": [
+        {
+          "choice_id": "witness_verdict",
+          "delta": 1
+        },
+        {
+          "choice_id": "read_writ",
+          "delta": -2
+        },
+        {
+          "choice_id": "pass_gate",
+          "delta": -1
+        },
+        {
+          "choice_id": "thornhollow_pact",
+          "delta": -2
+        }
+      ]
+    },
+    {
+      "id": "thornhollow",
+      "title": "Thornhollow",
+      "description": "Nine years of plaintiffs behind a thorn palisade. They have been waiting for someone to bring them a seal, and they can tell who enjoyed the Ring.",
+      "starts_at": -1,
+      "shifts": [
+        {
+          "choice_id": "witness_verdict",
+          "delta": -1
+        },
+        {
+          "choice_id": "read_writ",
+          "delta": 1
+        },
+        {
+          "choice_id": "pass_gate",
+          "delta": 2
+        },
+        {
+          "choice_id": "thornhollow_pact",
+          "delta": 3
+        }
+      ]
+    },
+    {
+      "id": "ring",
+      "title": "The Verdict Ring",
+      "description": "The Ring is a faction of its own: champions, keepers and the crowd. It rewards those who honour the sand and never forgives smuggling.",
+      "starts_at": 0,
+      "shifts": [
+        {
+          "choice_id": "witness_verdict",
+          "delta": 1
+        },
+        {
+          "choice_id": "trust_cassian",
+          "delta": 2
+        },
+        {
+          "choice_id": "pass_gate",
+          "delta": -1
+        },
+        {
+          "choice_id": "thornhollow_pact",
+          "delta": -1
+        }
+      ]
+    }
+  ],
+  "endings": [
+    {
+      "id": "verdict_upheld",
+      "title": "The Verdict Upheld",
+      "trigger": {
+        "all_of": [
+          "writ_read"
+        ],
+        "any_of": [
+          "writ_sold",
+          "writ_burned"
+        ],
+        "none_of": [
+          "succession_fought"
+        ]
+      },
+      "cost": "The fix stands and you are paid for it. Cassian Vale throws the succession Verdict and dies on the sand.",
+      "reign_verb": "Spend",
+      "reign_description": "You are rich and you are complicit. The Court owns your calendar and sends for you, and the sending is never a request."
+    },
+    {
+      "id": "bloodless_crown",
+      "title": "The Bloodless Crown",
+      "trigger": {
+        "all_of": [
+          "writ_read",
+          "court_summoned",
+          "writ_given_court"
+        ]
+      },
+      "cost": "The succession passes with no fight and the Ring is reformed. Thornhollow get nothing, and they know it.",
+      "reign_verb": "Reform",
+      "reign_description": "The Ring answers to a new charter you helped write. Every house you embarrassed to write it remembers your part exactly."
+    },
+    {
+      "id": "broken_ring",
+      "title": "The Broken Ring",
+      "trigger": {
+        "all_of": [
+          "thornhollow_pact",
+          "writ_given_thornhollow"
+        ]
+      },
+      "cost": "A century of Verdicts is void. The land goes back to the people it was taken from, and so does open war between the houses.",
+      "reign_verb": "Hold",
+      "reign_description": "Aldermere is contested ground. Places change hands while your back is turned, roads close, and what you keep is only what you can hold."
+    },
+    {
+      "id": "iron_verdict",
+      "title": "The Iron Verdict",
+      "trigger": {
+        "all_of": [
+          "writ_read",
+          "writ_burned",
+          "succession_fought"
+        ]
+      },
+      "cost": "The system stands, unbroken and unquestioned, and it is now yours to abuse.",
+      "reign_verb": "Summon",
+      "reign_description": "You own the Ring. You schedule Verdicts, which means you decide what Aldermere is permitted to argue about next."
+    }
+  ],
+  "ledger": {
+    "id": "verdict_ledger",
+    "title": "The Ledger",
+    "description": "Your own record of every Verdict you have stood at. Three of the four roads out of this end with you handing it to someone.",
+    "entry_fields": [
+      {
+        "id": "sequence",
+        "label": "Entry",
+        "description": "Its number in your hand, counted from the first Verdict you ever saw."
+      },
+      {
+        "id": "date",
+        "label": "Dated",
+        "description": "The day it was settled, as the calendar of Aldermere reckons it."
+      },
+      {
+        "id": "place",
+        "label": "Where",
+        "description": "The location it was settled in.",
+        "value_source": "location_id"
+      },
+      {
+        "id": "dispute",
+        "label": "The matter",
+        "description": "What was actually being argued over, in one line."
+      },
+      {
+        "id": "claimants",
+        "label": "Claimants",
+        "description": "The parties whose quarrel it was, named."
+      },
+      {
+        "id": "champions",
+        "label": "On the sand",
+        "description": "Who fought, and for which claimant."
+      },
+      {
+        "id": "role",
+        "label": "Your part",
+        "description": "Whether you watched it, fought it, judged it, or had it written against you.",
+        "values": [
+          "witnessed",
+          "fought",
+          "judged",
+          "written_against_you"
+        ]
+      },
+      {
+        "id": "outcome",
+        "label": "Decided",
+        "description": "What the Ring made law, and who it made poorer."
+      },
+      {
+        "id": "certified_by",
+        "label": "Certified",
+        "description": "The hand and seal that put the judgement beyond appeal."
+      },
+      {
+        "id": "doubt",
+        "label": "What you saw",
+        "description": "Anything you noticed that the carving on the wall does not say. Blank on an honest Verdict; this is the column that makes the Ledger evidence."
+      },
+      {
+        "id": "consequence",
+        "label": "Since",
+        "description": "What the world did afterwards, filled in as you learn it."
+      }
+    ],
+    "written_when": [
+      {
+        "id": "on_witness",
+        "condition": "The player is present when a Verdict is settled, in the Ring or anywhere a Verdict is held.",
+        "note": "Includes the opening Verdict, which is the first entry every Ledger carries."
+      },
+      {
+        "id": "on_fight",
+        "condition": "The player fights a Verdict themselves and it resolves either way."
+      },
+      {
+        "id": "on_judgment_against",
+        "condition": "The player loses a Verdict and a judgement is written against them, which they then carry where anyone may read it."
+      },
+      {
+        "id": "on_petition_resolved",
+        "condition": "After the ending, a Petition brought to the player is judged, fought, refused or sold.",
+        "note": "The same entry shape, so the Ledger keeps growing once the authored story is spent."
+      },
+      {
+        "id": "on_consequence_learned",
+        "condition": "An existing entry is amended, never replaced, when the world reveals what a past Verdict actually cost."
+      }
+    ],
+    "handover": {
+      "description": "In three of the four endings the Ledger leaves your hands, and what it says is what those endings are built out of. If you die after the succession Verdict it passes to whoever was standing nearest you, and the story carries on from their side of it."
+    }
+  },
+  "needs_new_flags": [
+    {
+      "flag": "writ_sold",
+      "gates": "The Verdict Upheld ending, sale route. Set when the player trades the sealed writ for coin or protection rather than spending it politically.",
+      "note": "No existing choice disposes of the writ; the authored choices only read it and move it."
+    },
+    {
+      "flag": "writ_burned",
+      "gates": "The Verdict Upheld ending (destruction route) and, together with succession_fought, The Iron Verdict ending. Set when the writ is destroyed.",
+      "note": "The bible treats burning and destroying as the same act; the two endings are told apart by whether the player then fights the succession Verdict, not by how the writ died."
+    },
+    {
+      "flag": "writ_given_court",
+      "gates": "The Bloodless Crown ending. Set when the writ is put into the Sable Court's hands.",
+      "note": "court_summoned already exists as the Court's unlock flag, but it only means the Court will receive you, not that you handed anything over."
+    },
+    {
+      "flag": "writ_given_thornhollow",
+      "gates": "The Broken Ring ending. Set when the writ is surrendered to Thornhollow's court to be made public.",
+      "note": "thornhollow_pact only records that their court recognised the seal. The bible's beat 5 explicitly lets the player ally, sell them out, or walk away after that recognition, so the pact cannot by itself be the ending."
+    },
+    {
+      "flag": "succession_fought",
+      "gates": "The Iron Verdict ending, and the endgame generally. Set when the player fights the succession Verdict in person rather than letting Cassian throw it.",
+      "note": "The succession Verdict is an authored calendar date with no flag at all yet; this is the single biggest gap between the authored world and the ending table."
+    },
+    {
+      "flag": "stair_taken",
+      "gates": "The Mark 'Nothing Leaves Corvane Unread' — walking out of Corvane unsearched.",
+      "note": "Awarded on stair_open for now, which is the nearest existing flag but is not the same claim: stair_open means the grate is unchained, not that the player used it. stair_open is also currently orphaned, declared as the Drowned Stair's unlock_flag but set by no authored choice. A stair_taken flag set on arriving beyond Marblegate by way of the Drowned Stair would make the Mark honest."
+    },
+    {
+      "flag": "house_named",
+      "gates": "A cleaner source for the Mark 'A House Remembers You'.",
+      "note": "Awarded on thornhollow_pact for now. That choice does make an enemy of the signing house, but only implicitly; signature_named already exists as Blackreach Hold's reveal flag and would be the exact fact if some authored choice ever set it."
+    }
+  ]
+}

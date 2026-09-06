@@ -1,0 +1,988 @@
+{
+  "key": "iron-verdict",
+  "for_revision": 9,
+  "title": "The Iron Verdict — The Reign",
+  "note_to_authors": "Post-ending content. The reign entries are keyed by ending id as used in the world bible, section 10. Every location id and every flag named in a `requires` clause exists in iron-verdict.json at revision 9; anything this design would need and does not have is listed in needs_new_flags rather than used inline. Nothing here modifies iron-verdict.json.",
+  "reign": {
+    "verdict_upheld": {
+      "verb": "Spend",
+      "premise": "The succession passed exactly as the writ said it would, and Cassian Vale bled out on the sand keeping the date honest. Nothing was proved, so nothing has to be forgiven. You walk Corvane with money that arrives before you ask for it and a name that opens doors you never knocked on — and the same houses that paid for your silence now treat your hours as an item they have already purchased. You are not hunted. You are booked. Everywhere you go, someone is glad to see you and someone else steps out of the room.",
+      "what_changes": [
+        "The Sable Court receives you without a name being spoken for you first — a Court runner meets you at the Sundial Market instead, and the appointment is not a request.",
+        "The Chainhouse cell that was Cassian's is filled within the month by a younger champion who will not meet your eye, and the Ring's crowd has learned a new chant about the fight nobody watched properly.",
+        "Thornhollow will not bring you in. Anyone you send north over Ravensgate Bridge is turned back at the toll with their hands still full, and Harrowfield stays empty grass.",
+        "The Weeping Quarry takes on the men who talked. The overseers there greet you by name, which is the worst thing in Aldermere.",
+        "Casa Verrine begins to write to you directly, and the Gilt Exchange lists your favour as a thing with a price.",
+        "The Drowned Stair now carries people away from you rather than out of the city, and Hollowforge quietly stops taking your repairs."
+      ],
+      "opening_beat": "A boy in Court livery is waiting where you sleep, and has been for some hours. He does not hand you a summons. He hands you a calendar with three of your own days already inked in another man's hand, and asks, politely, whether the fourth is free."
+    },
+    "bloodless_crown": {
+      "verb": "Reform",
+      "premise": "The succession passed without a blade drawn, and the Ring survived by being rewritten. There is a charter now, with your fingerprints on the parts that matter: a Verdict must be sworn before it is fought, its date read aloud, and its roll kept where anyone may go and look. Aldermere is calmer than it has been in a century and quietly furious about it. Every house you embarrassed into signing remembers the hour it signed, and the people who were owed the most got nothing at all, because that was the price of nobody dying.",
+      "what_changes": [
+        "The Verdict Ring keeps its crowd but loses its secrecy: every scheduled Verdict is cried at Marblegate and the Sundial Market days in advance, so nothing you plan is private.",
+        "The Iron Fane still certifies, but no longer alone — the Fane's seal must now sit beside a reader's mark, and the Fane has not forgiven that and does not intend to.",
+        "Greywither Abbey's cellar becomes a reading room. Sister Mave keeps the key and keeps the hours short, and the rolls in it start going missing one page at a time.",
+        "The Chainhouse contracts are void. Freed champions with no trade drift to Hollowforge and the Weeping Quarry, and some of them come to you for work.",
+        "Thornhollow refuses every envoy you send. The Ravensgate toll doubles for anyone wearing Corvane cloth, and Harrowfield is still not theirs.",
+        "The Sable Court's older houses stop inviting you and start writing about you."
+      ],
+      "opening_beat": "The first Verdict under the new charter is cried in the Ring and the crowd goes quiet at the wrong moment — because the roll is read aloud, and the name of the house that swore it is one that signed your charter. Two of its men are already walking up the steps toward where you are sitting."
+    },
+    "broken_ring": {
+      "verb": "Hold",
+      "premise": "A hundred years of Verdicts came apart in a single afternoon. Every judgement the Ring ever wrote is void, which means every field, mill, title and grudge in Aldermere is open again, and the houses have gone to the only argument left. Thornhollow has Harrowfield back and cannot farm it because the roads are full of armed men. Nothing is settled and everything is held — by whoever is standing on it this week. You are not a ruler here. You are a garrison with opinions, and the map is a list of things you are currently able to keep.",
+      "what_changes": [
+        "The Verdict Ring stands empty and stripped, its inner wall chiselled blank. The Sable Court is barricaded and answers nobody, whatever your standing.",
+        "Marblegate shuts at dusk and does not open for anyone, so the Drowned Stair becomes the working road in and out of Corvane rather than the clever one.",
+        "Ravensgate Bridge is held openly by Thornhollow, and Harrowfield is resettled and hungry — the Weeping Quarry's sentenced simply walked out and some of them went home and some of them did not.",
+        "Coldwatch Tower is abandoned and the Rimegate is unwatched, so what comes down the northern road is nobody's writ to stop.",
+        "Blackreach Hold is garrisoned by whichever house reached it first, and it changes hands again while you are elsewhere.",
+        "The Ferryman's Post is the one neutral thing left standing, and everyone knows it, and everyone is testing it."
+      ],
+      "opening_beat": "You wake to a horn on the wrong side of the river. Two riders come in at first light with the same news from two different houses: a place you thought was yours changed hands in the night, and both of them want to be the one who tells you which."
+    },
+    "iron_verdict": {
+      "verb": "Summon",
+      "premise": "You burned the writ, walked onto the sand, and won the succession honestly in front of a full Ring — which means the fraud is dead and the machine that made it is intact and yours. The law of Aldermere is still whatever the Ring says, and the Ring's schedule is now written in your hand. You do not settle arguments. You choose which arguments the duchy is permitted to have, and in what order, and on what day. Every house understands this perfectly. So does Thornhollow, which is why they come to the same steps that took their land nine years ago and ask, correctly, to be heard.",
+      "what_changes": [
+        "You schedule Verdicts. A dispute brought to you gets a date on the Ring's calendar or it gets nothing, and everyone in Aldermere plans around the dates you set.",
+        "The Iron Fane certifies what you schedule and has stopped pretending otherwise — the Fane's people are courteous, constant, and taking notes.",
+        "The Chainhouse is yours: contracts, cells, and the men in them. Hollowforge arms your champions first and Hob Cardew charges you nothing, which is its own kind of message.",
+        "The Sable Court must attend Verdicts it did not call, and the houses have begun proposing marriages, debts and quarrels purely to occupy your calendar.",
+        "Thornhollow petitions the Ring instead of taxing Ravensgate Bridge, and Iselle of Harrowfield will come to Corvane herself if the date is good enough.",
+        "The Drowned Stair still carries the losers out. You now know exactly how many, because the count is brought to you every month."
+      ],
+      "opening_beat": "The Ring's calendar is set in front of you for the first time — a wax tablet with the coming season on it, entirely blank but for one line at the top that reads *the succession, settled*. Four separate parties are waiting outside the Chainhouse to argue about who gets the second line."
+    }
+  },
+  "petitions": [
+    {
+      "id": "pet_hedge_that_moved",
+      "title": "The Hedge That Moved",
+      "at": "harrowfield",
+      "kind": "boundary",
+      "parties": [
+        {
+          "name": "Denny Ostler",
+          "claim": "The blackthorn hedge is the boundary and always was. His neighbour's beasts have been eating a strip of his barley two paces wide for three seasons, and he wants it back with the yield."
+        },
+        {
+          "name": "Wenna Fell",
+          "claim": "She ploughs to the hedge because the hedge is where the land ends. Ostler is a returned man with a grievance shopping for a second one, and she stayed and kept the ground alive while it was empty."
+        }
+      ],
+      "the_truth": "Neither of them moved anything. A wet winter shifted the brook that the hedge was planted along, and the blackthorn followed the water because blackthorn does. The two paces were Ostler's under the old Verdict and are physically Fell's now. There is no liar in this petition, which is exactly why it will not settle itself.",
+      "resolutions": [
+        {
+          "id": "hold_the_hedge",
+          "label": "The hedge is the boundary, wherever it stands",
+          "consequence": "Fell keeps the ground and Ostler keeps a grudge with a witness list. Every returned Thornhollow family within a day's walk hears that a moved hedge beats a written claim, and three of them go out that night to look at their own.",
+          "standing_shift": {
+            "court": 1,
+            "fane": 0,
+            "thornhollow": -2,
+            "ring": 0
+          }
+        },
+        {
+          "id": "restore_the_line",
+          "label": "Restore the old line and pay Fell for the standing crop",
+          "consequence": "Defensible and expensive. You pay out of your own purse to make a just answer survive contact with a hungry village; Ostler gets his barley, Fell is made whole, and the cost is real enough that the next twelve claimants hear you can be made to pay for peace.",
+          "standing_shift": {
+            "court": 0,
+            "fane": 0,
+            "thornhollow": 2,
+            "ring": -1
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "split_the_strip",
+          "label": "Split the strip and move the brook back",
+          "consequence": "Both walk away half-satisfied and jointly responsible for a ditch neither wants to dig. It holds for two seasons. The ditch silts, the brook wanders again, and they return with the same argument and less patience.",
+          "standing_shift": {
+            "court": -1,
+            "fane": 0,
+            "thornhollow": 1,
+            "ring": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_term_served",
+      "title": "Term Served",
+      "at": "weeping_quarry",
+      "kind": "debt",
+      "parties": [
+        {
+          "name": "Corbin Rask",
+          "claim": "Quarry overseer. The sentenced are fed, housed and worked; the marble is owed to the Ring, not to them. Wages were never part of any Verdict and he cannot pay what was never written."
+        },
+        {
+          "name": "Anse Tolliver",
+          "claim": "Cut stone for eleven years on a seven-year sentence because nobody in Corvane kept the count. He wants the four years paid at a free cutter's rate, and he is not the only one holding up his hands."
+        }
+      ],
+      "the_truth": "The count was kept. Rask has the tally sticks in his own chest and has had them for four years. He did not steal the time to be cruel — the Ring's marble order never slackened and men who leave are not replaced, so he simply stopped reading the sticks. Sixty-one men at the Quarry are over their term. Rask knows the number to the man.",
+      "resolutions": [
+        {
+          "id": "pay_the_four_years",
+          "label": "Order the four years paid, at rate, from the Ring's marble account",
+          "consequence": "Tolliver is paid and walks. So do sixty of his fellows once the tally is read out, and the Ring's next season of building stops dead for want of hands. You have made a just and enormously inconvenient law, and the masons' houses will remember which.",
+          "standing_shift": {
+            "court": -1,
+            "fane": 0,
+            "thornhollow": 3,
+            "ring": -3
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "free_them_unpaid",
+          "label": "Free the over-term men, pay nothing",
+          "consequence": "The cheapest honest answer. Sixty-one men go home with nothing after eleven years and tell everyone how generous you were. Rask keeps his post and his sticks, and starts a new set.",
+          "standing_shift": {
+            "court": 0,
+            "fane": 0,
+            "thornhollow": 1,
+            "ring": -1
+          }
+        },
+        {
+          "id": "burn_the_sticks",
+          "label": "Rule the tally unproven and let the Quarry keep working",
+          "consequence": "Rask is grateful in a way that will cost you later. The marble arrives on time all year. Tolliver goes back down the face and is dead inside eighteen months, and someone writes his name where you will eventually read it.",
+          "standing_shift": {
+            "court": 1,
+            "fane": 0,
+            "thornhollow": -3,
+            "ring": 2
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_toll_blood",
+      "title": "Blood on the Toll",
+      "at": "ravensgate_bridge",
+      "kind": "killing",
+      "parties": [
+        {
+          "name": "Hesta Marrin",
+          "claim": "Toll-keeper for Thornhollow. Her son Piel put a bill through a merchant's outrider on the bridge deck. She says the rider drew first and that a toll-post that cannot defend itself is a road, not a toll."
+        },
+        {
+          "name": "Garrick Oath",
+          "claim": "Caravan master. His outrider was nineteen and unarmed above the waist because it was raining and his coat was strapped down. He wants Piel Marrin's life or its price, and he can afford to wait for either."
+        }
+      ],
+      "the_truth": "The rider did reach — for the strap on his coat. Piel is seventeen, was alone on the deck in poor light, and had been told twice that week that the next caravan would try to run the toll. He was wrong and he was not reckless. Both mothers on this bridge are telling the truth as they saw it, and there is no version of the afternoon in which the boy on the deck is a murderer.",
+      "resolutions": [
+        {
+          "id": "blood_price",
+          "label": "Set a blood-price and make Thornhollow pay it",
+          "consequence": "Oath is paid and quietly disgusted, Piel lives, and Thornhollow's court is handed a bill it cannot meet without raising the toll — which is how the next caravan gets stopped. You have bought a life with next year's argument.",
+          "standing_shift": {
+            "court": 1,
+            "fane": 0,
+            "thornhollow": -1,
+            "ring": 0
+          }
+        },
+        {
+          "id": "try_the_boy",
+          "label": "Give the boy to the Ring and let a Verdict decide it",
+          "consequence": "Legally immaculate and morally expensive. Piel is a seventeen-year-old with no champion; someone must stand for him, and if nobody does he loses on the sand in front of his mother. Thornhollow will never again hand you one of theirs.",
+          "standing_shift": {
+            "court": 2,
+            "fane": 0,
+            "thornhollow": -4,
+            "ring": 3
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "close_the_deck",
+          "label": "Rule the toll unlawful and take the post off the bridge",
+          "consequence": "No post, no killing, no toll. Thornhollow loses the income that feeds Harrowfield's resettlement, Oath's caravans run free, and within a season the bridge is taken by someone with fewer scruples than Hesta Marrin.",
+          "standing_shift": {
+            "court": 2,
+            "fane": 0,
+            "thornhollow": -3,
+            "ring": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_second_hammer",
+      "title": "The Second Hammer",
+      "at": "hollowforge",
+      "kind": "inheritance",
+      "parties": [
+        {
+          "name": "Ilma Cardew",
+          "claim": "Hob Cardew's daughter. She has kept the forge's books, its debts and its quieter customers for nine years and expects the shop when he sets down the hammer."
+        },
+        {
+          "name": "Tobin Sark",
+          "claim": "Hob's journeyman of eleven years. He can actually forge, which Ilma cannot, and says a smithy passes to the hands that work it or it is not a smithy, it is a warehouse."
+        }
+      ],
+      "the_truth": "Hob Cardew has not decided and will not, because whichever way he rules he loses the half of the trade the other one holds. Ilma alone keeps the arrangement that arms Thornhollow; Tobin alone keeps the Ring's contracts. Split the shop and one of those two lines of work stops within the year, and Hob has known this for three years and has been ill for two.",
+      "resolutions": [
+        {
+          "id": "to_the_hands",
+          "label": "The forge to Tobin Sark, the books to Ilma",
+          "consequence": "The Ring's blades keep coming. Ilma takes the ledgers and the northern customers and sets up two streets away, and Hollowforge's quiet second trade goes with her — out of anyone's sight, including yours.",
+          "standing_shift": {
+            "court": 0,
+            "fane": 0,
+            "thornhollow": -1,
+            "ring": 2
+          }
+        },
+        {
+          "id": "to_the_daughter",
+          "label": "The whole shop to Ilma; Sark keeps a wage and no name",
+          "consequence": "Clean inheritance, kept treason. Sark works out his year in silence and leaves for the Weeping Quarry, and Hollowforge cannot fill a Ring contract by winter. You have preserved a family and gutted an armoury.",
+          "standing_shift": {
+            "court": 0,
+            "fane": 0,
+            "thornhollow": 2,
+            "ring": -2
+          }
+        },
+        {
+          "id": "joint_mark",
+          "label": "Order one mark, two names, and neither may sell without the other",
+          "consequence": "The defensible answer, and it costs you the rest of your reign in small pieces — they will be back before you about a wheel, a debt, a rooftree and a marriage, and you will have to hear every one of them because you built the arrangement that makes them come.",
+          "standing_shift": {
+            "court": -1,
+            "fane": 0,
+            "thornhollow": 1,
+            "ring": 1
+          },
+          "costly_but_defensible": true
+        }
+      ]
+    },
+    {
+      "id": "pet_seal_that_reads_true",
+      "title": "The Seal That Reads True",
+      "at": "sundial_market",
+      "kind": "accusation",
+      "parties": [
+        {
+          "name": "Nara Voss",
+          "claim": "Sold a sealed judgement in good faith and has the chain of hands to prove where it came from. If a broker is answerable for every forger upstream of her, the Sundial Market closes tomorrow."
+        },
+        {
+          "name": "Cassia Lowe",
+          "claim": "Bought that judgement for a widow's whole inheritance. The seal reads true, the wax is right, the date is right — and the man it names has been dead since before it was written. She wants Voss named a forger."
+        }
+      ],
+      "the_truth": "The wax is genuine and the seal is genuine, because it was pressed from a real matrix stolen out of Greywither Abbey years ago and never reported missing. Nara did not forge it and did know the provenance was bad. She sold it anyway, at a price that told her exactly how bad. The forger is a Fane clerk who has since been promoted.",
+      "resolutions": [
+        {
+          "id": "name_the_broker",
+          "label": "Name Voss and make her repay the widow",
+          "consequence": "The widow is made whole and the Market learns that a broker carries what she sells. Nara pays, and does not forgive, and the next thing she knows and does not tell you will be considerably larger than a seal.",
+          "standing_shift": {
+            "court": 1,
+            "fane": 0,
+            "thornhollow": 0,
+            "ring": 1
+          }
+        },
+        {
+          "id": "follow_the_matrix",
+          "label": "Trace the matrix and take the accusation to the Fane",
+          "consequence": "The right answer and the one with teeth in it. You are accusing the institution that certifies law of having lost the tool that makes it, in public, on the Fane's own doorstep — and the clerk who pressed it now has a rank worth defending.",
+          "standing_shift": {
+            "court": 0,
+            "fane": -4,
+            "thornhollow": 2,
+            "ring": 1
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "void_and_quiet",
+          "label": "Void the judgement, compensate nobody, seal the record",
+          "consequence": "The cheapest end. Lowe loses the inheritance and the argument, Voss keeps the fee, the matrix stays loose, and the same seal turns up on something far worse within the year.",
+          "standing_shift": {
+            "court": 1,
+            "fane": 2,
+            "thornhollow": -2,
+            "ring": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_missing_page",
+      "title": "The Missing Page",
+      "at": "greywither_abbey",
+      "kind": "accusation",
+      "parties": [
+        {
+          "name": "Sister Mave",
+          "claim": "The rolls are in her keeping and one is short a leaf. She names the reader who was alone in the cellar the day it went: a Court archivist with a lamp and a satchel."
+        },
+        {
+          "name": "Aldis Renn",
+          "claim": "Court archivist. Says the leaf was gone before he came, that Mave's cellar has been damp for forty years, and that a nun who has lost a page will always prefer a thief to a leak."
+        }
+      ],
+      "the_truth": "Renn took it. Not for the Court — for himself, because the leaf carries the Verdict that made his own family's title, and he has spent his life afraid of the day someone read it properly. The leaf is behind a stone in his rooms and has not been destroyed, because he could not bring himself to burn the only proof he is who he says.",
+      "resolutions": [
+        {
+          "id": "search_the_archivist",
+          "label": "Have Renn's rooms searched on a nun's word",
+          "consequence": "You find it, and you have established that a Court man's rooms can be turned out on an accusation without a Verdict. Every house in the Sable Court now understands what your standing lets you do to a locked door.",
+          "standing_shift": {
+            "court": -3,
+            "fane": 1,
+            "thornhollow": 2,
+            "ring": 0
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "blame_the_damp",
+          "label": "Rule the leaf lost to damp and order the cellar re-roofed",
+          "consequence": "Nobody is shamed, the rolls get a roof, and Renn is so grateful he becomes useful to you for years. The Verdict on that leaf stays unread, and the family it dispossessed never learns their case existed.",
+          "standing_shift": {
+            "court": 2,
+            "fane": 1,
+            "thornhollow": -2,
+            "ring": 0
+          }
+        },
+        {
+          "id": "copy_the_rolls",
+          "label": "Order the whole cellar copied before anything else is decided",
+          "consequence": "Slow, expensive, and it answers nothing today. Mave is affronted at the implication her keeping needs doubling, Renn has months to act, and in nine years the copies will be worth more than the duchy.",
+          "standing_shift": {
+            "court": 0,
+            "fane": -1,
+            "thornhollow": 0,
+            "ring": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_who_owns_a_champion",
+      "title": "Who Owns a Champion",
+      "at": "chainhouse",
+      "kind": "contract",
+      "parties": [
+        {
+          "name": "Perrin Aske",
+          "claim": "Champion of the Ring, four Verdicts unbeaten. His contract was written when he was fourteen and sold twice since. He wants to know what he must do to be finished, and nobody will tell him a number."
+        },
+        {
+          "name": "House Ferrand's steward",
+          "claim": "Bought the contract fairly and at a price that assumed a career. A champion who can talk his way out of a contract is not a champion, he is a rumour, and every contract in the Chainhouse is worth nothing the moment one of them walks."
+        }
+      ],
+      "the_truth": "The contract has no term in it at all. Not hidden, not obscured — the clause was never written, because when it was drafted for a fourteen-year-old nobody expected him to survive long enough for it to matter. Every other contract in the Chainhouse was copied from this one.",
+      "resolutions": [
+        {
+          "id": "set_a_term",
+          "label": "Read a term into the contract and apply it to every contract in the Chainhouse",
+          "consequence": "Aske gets an end date and so do forty other men, and the value of every champion's contract in Aldermere falls in a single afternoon. The houses that hold them come to you together, which they have not done since the succession.",
+          "standing_shift": {
+            "court": -3,
+            "fane": 0,
+            "thornhollow": 2,
+            "ring": -2
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "buy_him_out",
+          "label": "Buy the contract yourself and free him",
+          "consequence": "One man saved, at your own cost, and every remaining champion now knows there is a price and who pays it. You will be asked again next month, and the asking price will have gone up.",
+          "standing_shift": {
+            "court": -1,
+            "fane": 0,
+            "thornhollow": 0,
+            "ring": 1
+          }
+        },
+        {
+          "id": "contract_stands",
+          "label": "The contract stands as written",
+          "consequence": "The Chainhouse holds and the houses breathe out. Aske fights his fifth Verdict without a term, and either dies in it or becomes the most dangerous unfinished man in the duchy.",
+          "standing_shift": {
+            "court": 2,
+            "fane": 0,
+            "thornhollow": -2,
+            "ring": 2
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_unsworn_verdict",
+      "title": "The Unsworn Verdict",
+      "at": "iron_fane",
+      "kind": "accusation",
+      "parties": [
+        {
+          "name": "Canon Orrek",
+          "claim": "Of the Iron Fane. A Verdict fought last spring was certified before its oath was properly sworn — a clerk's slip. He wants it quietly re-sealed and the matter closed inside the Fane."
+        },
+        {
+          "name": "Widow Ferrand",
+          "claim": "Lost her husband in that Verdict. If the oath was not sworn, the fight was not a Verdict, and what happened to her husband on that sand was not law. It was a killing, and she wants it called one."
+        }
+      ],
+      "the_truth": "The oath was not sworn. It was not a clerk's slip either — the swearing was skipped because the Fane's own certifier arrived late and drunk, and three people watched him wave it through. The Verdict's outcome was correct on every other count. Calling it a killing is true, and it makes the twenty other Verdicts that man certified into open questions.",
+      "resolutions": [
+        {
+          "id": "reseal_quietly",
+          "label": "Let the Fane re-seal it and say nothing",
+          "consequence": "The law holds, the Fane owes you, and a widow is told her husband died lawfully by someone who knows better. She will not stop, and next time she will not come to you first.",
+          "standing_shift": {
+            "court": 1,
+            "fane": 3,
+            "thornhollow": -2,
+            "ring": 0
+          }
+        },
+        {
+          "id": "call_it_killing",
+          "label": "Rule that an unsworn fight is not a Verdict",
+          "consequence": "The honest ruling, and it opens every judgement that certifier ever touched — twenty of them, some of them yours, one of them the reason a family on the low road still has its land. You will spend two seasons on the consequences of one afternoon's mercy.",
+          "standing_shift": {
+            "court": 0,
+            "fane": -4,
+            "thornhollow": 3,
+            "ring": -1
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "name_the_certifier",
+          "label": "Take the certifier and leave the Verdict standing",
+          "consequence": "One man carries it. The judgement holds, the widow gets a name and a punishment instead of an answer, and the Fane learns you will trade an institution's shame for an individual's — which is a rate they can afford to keep paying.",
+          "standing_shift": {
+            "court": 1,
+            "fane": -1,
+            "thornhollow": 0,
+            "ring": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_river_salvage",
+      "title": "What the River Gave Back",
+      "at": "ferrymans_post",
+      "kind": "salvage",
+      "parties": [
+        {
+          "name": "Odd Lanyer",
+          "claim": "The ferryman's boy. Pulled a strongbox off a snag mid-channel after the spring flood and says the river gives to whoever goes in after it, which is the only law the crossing has ever had."
+        },
+        {
+          "name": "Factor Hesp",
+          "claim": "Serevane's man on the river. The box carries his house's mark and half a year of tolls, and a boy diving for it is not salvage, it is theft with wet boots."
+        }
+      ],
+      "the_truth": "The box went into the water because Hesp's own boatman put it there deliberately, to explain a shortfall he had already spent. It holds less than half what Hesp is claiming, and Hesp does not know that yet. Odd has not opened it, because he cannot read the mark and did not want to be told what he had.",
+      "resolutions": [
+        {
+          "id": "open_it_publicly",
+          "label": "Open the box on the landing in front of both of them",
+          "consequence": "The shortfall is exposed, Hesp's boatman is finished, and Hesp is humiliated in front of a river that talks. He pays nothing to the boy, blames the crossing, and Serevane's factors start routing around the Ferryman's Post.",
+          "standing_shift": {
+            "court": -1,
+            "fane": 0,
+            "thornhollow": 0,
+            "ring": 1
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "river_law",
+          "label": "Uphold river law — the boy keeps it",
+          "consequence": "The crossing's own custom survives, which matters more than the money. Hesp's house treats the Post as hostile ground from that day, and the ferryman who judged no faction for thirty years is now on a side.",
+          "standing_shift": {
+            "court": -2,
+            "fane": 0,
+            "thornhollow": 1,
+            "ring": 0
+          }
+        },
+        {
+          "id": "return_sealed",
+          "label": "Return the box sealed and unopened, and pay the boy a diver's fee",
+          "consequence": "Everyone is satisfied and nobody learns anything. Hesp discovers the shortfall in private and hangs his boatman for it, and Odd Lanyer spends the rest of his life not knowing what he found.",
+          "standing_shift": {
+            "court": 1,
+            "fane": 0,
+            "thornhollow": 0,
+            "ring": 0
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_no_body_debt",
+      "title": "A Debt With No Body",
+      "at": "drowned_stair",
+      "kind": "killing",
+      "parties": [
+        {
+          "name": "Bel Ashgrave",
+          "claim": "Runs the lifts under the Ring. Says the smuggler Vann Corry took her float of thirty marks and never came back up the Stair, and a man who does not come back has run, not drowned. She wants the debt cried against his name."
+        },
+        {
+          "name": "Sennet Corry",
+          "claim": "Vann's sister. Says her brother went down on Ashgrave's own errand and never came up because the water took him, and that crying a debt on a drowned man is how the undercity steals from widows."
+        },
+        {
+          "name": "Warden Tibb",
+          "claim": "Keeps the grate. Confirms Vann went down. Will not say whether he came up, and wants a great deal of money not to be asked again."
+        }
+      ],
+      "the_truth": "Vann Corry came up. He came up through the grate Tibb keeps, paid Tibb for the silence with most of Ashgrave's thirty marks, and is alive somewhere down past the Ferryman's Post under another name. Sennet does not know. Tibb knows exactly, and the price he is quoting is the price of not being asked in front of his sister.",
+      "resolutions": [
+        {
+          "id": "pay_the_warden",
+          "label": "Pay Tibb and get the truth",
+          "consequence": "You learn Vann lives, and you have paid a gate-warden for testimony in front of the whole undercity. Every warden on the Stair now has something to sell you, and the price of everything under the Ring goes up.",
+          "standing_shift": {
+            "court": 0,
+            "fane": 0,
+            "thornhollow": 0,
+            "ring": -1
+          }
+        },
+        {
+          "id": "cry_the_debt",
+          "label": "Cry the debt against Corry's name",
+          "consequence": "Ashgrave is satisfied. Sennet is left carrying a dead brother's dishonour, and the debt follows the name — so when Vann surfaces in ten years it is his children who are chased for it.",
+          "standing_shift": {
+            "court": 0,
+            "fane": 0,
+            "thornhollow": -1,
+            "ring": 1
+          }
+        },
+        {
+          "id": "take_the_grate",
+          "label": "Take the grate off Tibb and put the Stair under open count",
+          "consequence": "You answer the wrong question honestly: no truth about Vann, but no warden ever sells a silence there again. The smugglers who kept the Stair open in Chapter I stop using it, and the one road out of Corvane that could not be searched becomes one that can.",
+          "standing_shift": {
+            "court": 2,
+            "fane": 0,
+            "thornhollow": -2,
+            "ring": -2
+          },
+          "costly_but_defensible": true
+        }
+      ]
+    },
+    {
+      "id": "pet_unrelieved_watch",
+      "title": "The Unrelieved Watch",
+      "at": "coldwatch_tower",
+      "kind": "desertion",
+      "parties": [
+        {
+          "name": "Serjeant Halloway",
+          "claim": "Nine men held Coldwatch through a winter on rations for four. Six walked. She wants them found, and she wants to know who stopped sending the carts, because she wrote about it eleven times."
+        },
+        {
+          "name": "Ewart Snell",
+          "claim": "One of the six, taken at Rimegate. Says a man who is not fed is not garrisoned, he is abandoned, and that walking away from a post nobody supplies is not desertion, it is arithmetic."
+        }
+      ],
+      "the_truth": "The carts were stopped by a Court clerk balancing a ledger after the succession, and the eleven letters all reached Corvane and were all filed correctly. Halloway is right about the fact and wrong about the enemy. The clerk who did it has been dead since midwinter, of something quite ordinary, and there is no one left to punish who deserves it.",
+      "resolutions": [
+        {
+          "id": "hang_snell",
+          "label": "Uphold the desertion and make an example of Snell",
+          "consequence": "The northern road gets its discipline back for a season. Halloway, who asked for this, cannot look at you afterwards, and the remaining five never come in — they go over the Rimegate and are useful to the Cold Marches for years.",
+          "standing_shift": {
+            "court": 2,
+            "fane": 0,
+            "thornhollow": -2,
+            "ring": 1
+          }
+        },
+        {
+          "id": "pardon_and_supply",
+          "label": "Pardon all six and supply the tower properly out of your own account",
+          "consequence": "You buy back the northern road with your own money and you name no culprit, so the Court reads it as an admission that its clerks starved a garrison. The next three posts that want carts learn to walk off first and ask after.",
+          "standing_shift": {
+            "court": -3,
+            "fane": 0,
+            "thornhollow": 2,
+            "ring": -1
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "abandon_the_post",
+          "label": "Rule Coldwatch unholdable and strike it from the rolls",
+          "consequence": "Honest about the arithmetic and terrible about the map. Halloway is reassigned and resigns instead, and nothing watches the Rimegate at all.",
+          "standing_shift": {
+            "court": -1,
+            "fane": 0,
+            "thornhollow": 0,
+            "ring": -1
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_two_returns",
+      "title": "Two Returns to One Farm",
+      "at": "thornhollow",
+      "kind": "inheritance",
+      "parties": [
+        {
+          "name": "Iselle of Harrowfield",
+          "claim": "Speaks for Thornhollow's court. The Verdict that emptied Harrowfield is void, so the land returns to the families named on the old roll — and the roll names the Cardells at Mill Acre."
+        },
+        {
+          "name": "Gerd Cardell",
+          "claim": "Named on the roll and twelve years old when they walked. He wants the mill and the acre and does not know how to work either."
+        },
+        {
+          "name": "Ruth Bray",
+          "claim": "Bought Mill Acre from the Court six years ago in good faith, drained it, rebuilt the mill with her own hands, and has fed Harrowfield's returning families all this season from it."
+        }
+      ],
+      "the_truth": "Both titles are good. Bray's purchase was lawful under a Verdict that is now void, which makes her a trespasser retroactively; Cardell's claim is unimpeachable and he cannot run a mill. Iselle knows Bray is the only reason the resettlement has not starved, and has said nothing, because Thornhollow's whole case is that a void Verdict returns land to its names.",
+      "resolutions": [
+        {
+          "id": "roll_stands",
+          "label": "The roll stands — Mill Acre to Cardell",
+          "consequence": "Thornhollow's principle survives intact, which is what Thornhollow needs above everything. Bray walks off six years of work, the mill stops within the month, and Harrowfield goes into winter on what Bray already ground.",
+          "standing_shift": {
+            "court": -2,
+            "fane": 0,
+            "thornhollow": 3,
+            "ring": 0
+          }
+        },
+        {
+          "id": "tenancy",
+          "label": "Title to Cardell, tenancy for life to Bray, rent fixed by you",
+          "consequence": "The answer that feeds people, and it costs Thornhollow its principle in the one case everyone will cite. Iselle accepts it in public and it is used against her in her own court for years; you are now the arbiter of a rent, forever.",
+          "standing_shift": {
+            "court": 1,
+            "fane": 0,
+            "thornhollow": -1,
+            "ring": 1
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "buy_bray_out",
+          "label": "Compensate Bray from the Ring's account and give Cardell the acre",
+          "consequence": "Clean, principled and it sets the price of a void Verdict at whatever you just paid. Within a season there are forty claims at that rate, and the Ring's account does not hold forty.",
+          "standing_shift": {
+            "court": 0,
+            "fane": 0,
+            "thornhollow": 2,
+            "ring": -2
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_listed_as_cargo",
+      "title": "Listed As Cargo",
+      "at": "gilt_exchange",
+      "kind": "contract",
+      "parties": [
+        {
+          "name": "Aurel Verrine",
+          "claim": "Holds a certified Aldermere judgement bought openly on the Exchange floor, and holds it as property. Whatever Corvane has decided about its own past does not unwrite a Serevane contract."
+        },
+        {
+          "name": "Doria Quill",
+          "claim": "Exchange clerk turned informer. Says forty-one Aldermere judgements were listed, traded and shorted here in the weeks before the succession by people who knew what the outcome would be, and she has the listing book."
+        },
+        {
+          "name": "Master of the Floor",
+          "claim": "Wants the book back and the matter heard anywhere but here. Offers, in the same breath, to list your own future Verdicts on favourable terms."
+        }
+      ],
+      "the_truth": "Quill's book is real and she is not an informer out of conscience — she was cut out of the trade and wants back in. Thirty-nine of the forty-one listings are ordinary speculation. Two are not: they were placed by a Sable Court name that has spent the year publicly on your side.",
+      "resolutions": [
+        {
+          "id": "seize_the_book",
+          "label": "Seize the listing book and read all forty-one names",
+          "consequence": "You get the two names you needed and thirty-nine you did not, every one of them now an enemy with a ledger. Serevane closes its floor to Aldermere paper and the Hundred Docks start asking what your standing is worth in coin.",
+          "standing_shift": {
+            "court": -3,
+            "fane": 0,
+            "thornhollow": 2,
+            "ring": 2
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "take_the_two",
+          "label": "Take only the two Court names and let the floor keep the rest",
+          "consequence": "Surgical, and it makes you a partner rather than a judge. The Master of the Floor considers the debt settled, the Exchange keeps trading judgements, and Quill — who is now useless to them — is found in the harbour in the spring.",
+          "standing_shift": {
+            "court": -1,
+            "fane": 0,
+            "thornhollow": 0,
+            "ring": 1
+          }
+        },
+        {
+          "id": "list_your_own",
+          "label": "Refuse the matter and take the Floor's offer",
+          "consequence": "Money, and a great deal of it, and from that day the odds on your Verdicts are posted in Serevane before the parties are told the date. People begin arranging disputes to move the listing.",
+          "standing_shift": {
+            "court": 1,
+            "fane": 0,
+            "thornhollow": -3,
+            "ring": -2
+          }
+        }
+      ],
+      "requires": "landfall"
+    },
+    {
+      "id": "pet_fetterstone_exchange",
+      "title": "The Fetterstone Exchange",
+      "at": "rimegate",
+      "kind": "hostage",
+      "parties": [
+        {
+          "name": "Thane's-woman Sigrid Hallr",
+          "claim": "Vaskir holds four Aldermere men at Fetterstone and will trade them for one — an oathbreaker who fled south and whose absence has kept the Bone Orchard empty for two years. Four for one is generosity, and the moot's patience is not infinite."
+        },
+        {
+          "name": "Ferrand of Coldwatch",
+          "claim": "Brother to one of the four. Wants the trade made yesterday and does not care what the north does with the man they want."
+        },
+        {
+          "name": "Brother Anselm",
+          "claim": "The man Vaskir wants. Has lived nine quiet years in Aldermere under a borrowed name. Admits the oath and admits breaking it, and says the Orchard is not a punishment, it is a killing with a ceremony."
+        }
+      ],
+      "the_truth": "Anselm's oath was sworn under a Vaskir hospitality that had already been broken against him, which by the moot's own precedent voids it — and the moot knows, and has argued about it, and decided that the argument is less important than the Orchard being empty. Sigrid is not lying to you. She is enforcing a decision she voted against.",
+      "resolutions": [
+        {
+          "id": "make_the_trade",
+          "label": "Send Anselm north and bring four men home",
+          "consequence": "Four families in Aldermere get their people back and one man is hanged for an oath he had grounds to break. Vaskir deals with you afterwards as someone who counts, which is worth more on the northern road than you would like to admit.",
+          "standing_shift": {
+            "court": 2,
+            "fane": -1,
+            "thornhollow": 0,
+            "ring": 1
+          }
+        },
+        {
+          "id": "argue_the_precedent",
+          "label": "Argue the voided oath before the moot yourself",
+          "consequence": "You go north to argue a Vaskir precedent as an outsider, which means the four stay at Fetterstone for however long it takes, and their families watch you spend their winter on a point of law. If you are right, you are right in a hall with no seat for you.",
+          "standing_shift": {
+            "court": -2,
+            "fane": 1,
+            "thornhollow": 1,
+            "ring": 0
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "refuse_the_trade",
+          "label": "Refuse and close the Rimegate to the moot's envoys",
+          "consequence": "Anselm lives in Aldermere for the rest of his life without leaving it. The four are not killed — Vaskir does not do that — but they are not returned either, and the road north is shut to trade for as long as anyone can remember afterwards.",
+          "standing_shift": {
+            "court": -2,
+            "fane": 0,
+            "thornhollow": -1,
+            "ring": 0
+          }
+        }
+      ],
+      "requires": "vaskir_named"
+    },
+    {
+      "id": "pet_searched_at_the_gate",
+      "title": "Searched at the Gate",
+      "at": "marblegate",
+      "kind": "accusation",
+      "parties": [
+        {
+          "name": "Customs-serjeant Pell",
+          "claim": "Stopped a physician's cart on a described hand and found sealed papers in the false floor. Nothing leaves Corvane unread — that is the whole of his instruction and he has followed it for nineteen years."
+        },
+        {
+          "name": "Physic Ordell Wace",
+          "claim": "The papers are the confidences of dying patients, which he is sworn never to open, and which Pell has now opened. He wants the search called unlawful and the papers burned unread by anyone else."
+        },
+        {
+          "name": "Court proctor",
+          "claim": "Has read enough of the papers to want the rest, and points out that two of them concern a house that owes you nothing and fears you a great deal."
+        }
+      ],
+      "the_truth": "The false floor was Wace's own idea and the confidences are exactly what he says they are — he has never traded on one and never will. The description Pell was working from was planted by a man who wanted a rival's confession found, and it worked; that confession is in the pile, and it is the only paper in it worth anything to anybody.",
+      "resolutions": [
+        {
+          "id": "burn_unread",
+          "label": "Order the papers burned unread and the search called unlawful",
+          "consequence": "You destroy the only evidence of a crime to protect a principle, and you do it in front of the proctor who wanted it. Marblegate's searches get narrower, which is how the next writ walks out of Corvane — possibly yours.",
+          "standing_shift": {
+            "court": -2,
+            "fane": 1,
+            "thornhollow": 1,
+            "ring": 0
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "read_the_two",
+          "label": "Let the proctor keep the two that concern the Court",
+          "consequence": "You get leverage on a frightened house and you have ruled that a dying man's confidence is Court property when it is interesting enough. No physician in Aldermere writes anything down again, which costs more than it sounds.",
+          "standing_shift": {
+            "court": 2,
+            "fane": -2,
+            "thornhollow": 0,
+            "ring": 1
+          }
+        },
+        {
+          "id": "hunt_the_informer",
+          "label": "Leave the papers sealed and hunt whoever described the cart",
+          "consequence": "You answer a question nobody asked and leave both parties standing at the gate. The informer is found and is somebody's cousin, the confession stays sealed, and Pell keeps searching carts on descriptions exactly as before.",
+          "standing_shift": {
+            "court": 0,
+            "fane": 0,
+            "thornhollow": 0,
+            "ring": 1
+          }
+        }
+      ]
+    },
+    {
+      "id": "pet_appointment_at_casa_verrine",
+      "title": "The Appointment",
+      "at": "casa_verrine",
+      "kind": "accusation",
+      "parties": [
+        {
+          "name": "Aurel Verrine",
+          "claim": "Receives you graciously. Says his house financed a succession, which is a lawful business anywhere the succession is lawful, and asks what exactly he is accused of and under whose law."
+        },
+        {
+          "name": "Halvard Sitt",
+          "claim": "Was Verrine's man in Corvane for eleven years and carried the money that bought the writ. Will testify to all of it, in Aldermere, for a price he names openly: his own name struck from the Ledger."
+        }
+      ],
+      "the_truth": "Sitt carried the money and also took a fifth of it. His testimony is true in every particular and would collapse under any competent question about the shortfall — and Verrine has known about the fifth since the second year and kept him precisely so that his testimony would always be destructible.",
+      "resolutions": [
+        {
+          "id": "strike_the_name",
+          "label": "Strike Sitt from the Ledger and take the testimony",
+          "consequence": "You get the money's whole route into Corvane, and you have sold a page of the Ledger — the one object in Aldermere whose value is that it cannot be edited. Everyone who ever reads it afterwards knows a name can be bought out.",
+          "standing_shift": {
+            "court": -2,
+            "fane": 0,
+            "thornhollow": 3,
+            "ring": -3
+          }
+        },
+        {
+          "id": "take_it_unbought",
+          "label": "Take the testimony with the shortfall in it, and let it be attacked",
+          "consequence": "You bring an honest witness with a hole in him and let the hole be found in the open. The account survives as truth and fails as proof; Verrine walks, and the whole duchy has now heard the route the money took.",
+          "standing_shift": {
+            "court": -1,
+            "fane": 0,
+            "thornhollow": 2,
+            "ring": 1
+          },
+          "costly_but_defensible": true
+        },
+        {
+          "id": "keep_the_appointment",
+          "label": "Leave it, and keep the appointment",
+          "consequence": "You take Verrine's hospitality and his terms, and Serevane money keeps arriving in Aldermere on schedule. Sitt understands perfectly and is gone within the week, along with everything he could carry and everything he could remember.",
+          "standing_shift": {
+            "court": 1,
+            "fane": 0,
+            "thornhollow": -3,
+            "ring": 0
+          }
+        }
+      ],
+      "requires": "verrine_received"
+    }
+  ],
+  "escalation": {
+    "rule": "A Petition never ends; it is only converted. Every resolution writes three things into the Ledger — the party who was made whole, the party who was made to pay, and the principle the ruling established — and each of those three is a seed. The party made whole acquires something someone else wanted, and is petitioned for it. The party made to pay acquires a grievance with a date on it, and comes back with a stronger case or a worse method. And the principle is quoted: the next petitioner at that place, or at any place along its routes, arrives already knowing how you ruled and arranges their claim to fit it. That third seed is the one that compounds, because it is the only one that travels. A ruling is cheap the first time it is cited and expensive the fortieth, and the players who are worst to judge are the ones who read the Ledger before they came.",
+    "mechanics": [
+      "Whichever party was made to pay carries a standing grievance keyed to the resolution id. It ripens rather than expires: a season later it returns as a petition of a harder kind at the same location or one route away — boundary becomes killing, debt becomes desertion, accusation becomes inheritance.",
+      "Whichever party was made whole becomes an owner, and owners are petitioned. A recurring petitioner who appears in three resolved petitions is promoted to a full character with bonds, at which point they stop being a party and start being a claimant.",
+      "The established principle is a citation. Later petitioners at that place, or reachable from it by one route, open by quoting your own earlier ruling back to you — and they will have shaped their claim to win under it.",
+      "Standing decides which of the ripened threads is offered first. A faction you have driven low sends the petitions you will find hardest to refuse, because that is what a faction with nothing left does."
+    ],
+    "worked_examples": [
+      {
+        "seed": "pet_hedge_that_moved → hold_the_hedge",
+        "chain": "You rule that the hedge is the boundary wherever it stands. Ostler is the party made to pay and his grievance ripens over a season into pet_two_returns at Thornhollow, one route up from Harrowfield — he appears at Iselle's court as a supporting voice for Gerd Cardell, arguing loudly that written rolls are worth nothing in your Aldermere because you said so yourself. The principle travels ahead of him: Ruth Bray has heard how you ruled at Harrowfield and has re-pleaded Mill Acre entirely as possession — drained ground, rebuilt mill, six years of standing crop — and never once mentions her deed of purchase, because under your own hedge ruling the deed is the weaker half of her case. You are now being argued at with your own words by a woman who was not in the room when you said them.",
+        "and_then": "If you then rule tenancy at Mill Acre, Wenna Fell — made whole at Harrowfield and now an owner — is petitioned within the year by her own cottars for a tenancy on exactly the terms you just wrote, and she will bring you the ruling to read."
+      },
+      {
+        "seed": "pet_unsworn_verdict → call_it_killing",
+        "chain": "You rule that an unsworn fight is not a Verdict. The Iron Fane is the party made to pay and does not come back as a petitioner — institutions do not petition, they sponsor. Canon Orrek's grievance ripens into pet_seal_that_reads_true at the Sundial Market: the Fane, needing a forger who is not one of its own, produces Cassia Lowe's complaint against Nara Voss itself, funded and lawyered, three months before Lowe would otherwise have found the money. The principle travels the other way at the same time — Sennet Corry hears in the undercity that you will call a thing a killing when the form was not kept, and pet_no_body_debt arrives at the Drowned Stair with her brother's disappearance pleaded not as a debt at all but as an unwitnessed killing under Warden Tibb's grate, which is a far better case and is also, as it happens, false.",
+        "and_then": "Widow Ferrand, made whole, becomes an owner of something: the twenty reopened judgements are now hers to press or to sell, and she is petitioned for the list by both the Gilt Exchange and Greywither Abbey within the same season."
+      }
+    ]
+  },
+  "needs_new_flags": [
+    {
+      "flag": "ending_verdict_upheld",
+      "why": "iron-verdict.json carries no ending state at all — the authored choices stop at thornhollow_pact and there is no flag that records which of the four endings was reached. The four reign entries in this file are keyed by ending id (verdict_upheld, bloodless_crown, broken_ring, iron_verdict); those ids exist only in the world bible, not in the data. One flag per ending is the smallest thing that makes a reign selectable."
+    },
+    {
+      "flag": "ending_bloodless_crown",
+      "why": "As above — records that the succession passed to the Sable Court with the Ring reformed under a charter."
+    },
+    {
+      "flag": "ending_broken_ring",
+      "why": "As above — records that the writ went to Thornhollow, a century of Verdicts is void, and Aldermere is contested ground."
+    },
+    {
+      "flag": "ending_iron_verdict",
+      "why": "As above — records that the writ was destroyed and the succession Verdict was fought and won honestly, leaving the Ring intact and in the player's hands."
+    },
+    {
+      "flag": "reign_begun",
+      "why": "The reign opening_beat must fire exactly once, on the first return to the map after an ending. Without a flag that the beat sets, it either replays on every arrival or has to be inferred from turn history, which is the kind of thing that quietly stops working."
+    },
+    {
+      "flag": "petitions_open",
+      "why": "Petitions are post-ending content and must not be offerable during Chapter I. The existing flag vocabulary has nothing that means 'the authored script has run out'. Gating the whole petition pool behind one flag is cheaper and safer than repeating four ending checks on every entry."
+    },
+    {
+      "flag": "cassian_dead",
+      "why": "The Verdict Upheld reign and the Cassian romance both turn on his death, and the two-way death model means it can be narrated either way afterwards. Nothing in iron-verdict.json records it. Referenced nowhere in this file's requires clauses for that reason — flagged here rather than used."
+    }
+  ],
+  "the_honest_limit": {
+    "restates": "Sixteen painted places, unbounded life inside them. A Petition may name a new room, cellar, farmstead or camp and make it a real remembered location — it borrows the nearest kindred scene as its backdrop and appears under the shared sealed-marker sprite. What it never gets is its own painting.",
+    "how_this_design_stays_inside_it": "Every one of the sixteen petitions is sited at a location id that already exists in iron-verdict.json and already has a scene. The named sub-places inside them — Mill Acre, the blackthorn strip, the false floor of a physician's cart, the grate under the Stair, the quarry face — are all spoken of from inside a painted place the player is standing in. None of them is a destination, none needs a marker, and none needs art. The two examples that come closest to the edge are Mill Acre in pet_two_returns and Fetterstone in pet_fetterstone_exchange: Mill Acre is argued about at Thornhollow and never entered, and Fetterstone is an existing rumoured location whose petition is heard at the Rimegate rather than there, so neither requires a painting that does not exist."
+  }
+}

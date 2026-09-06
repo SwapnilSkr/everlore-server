@@ -60,6 +60,59 @@ for (const location of IRON_VERDICT_LOCATIONS) {
   }
 }
 
+// ── Sidecars ──────────────────────────────────────────────────────────────
+// The cast, progression and post-ending files are authored separately and are
+// the easiest thing in the world to let drift: nothing renders them yet, so a
+// dangling location id or a flag that stopped existing fails silently and is
+// found months later. Check them here, where the world data is already loaded.
+const flagsInPlay = new Set<string>()
+for (const l of IRON_VERDICT_LOCATIONS) {
+  if (l.unlock_flag) flagsInPlay.add(l.unlock_flag)
+  if (l.reveal_flag) flagsInPlay.add(l.reveal_flag)
+}
+for (const c of IRON_VERDICT_CHOICES) flagsInPlay.add(c.sets)
+
+const cast = world.cast as { id: string; name: string; home_location_id: string; portraits: Record<string, string>; gated_by_flag?: string; reveals_flag?: string }[]
+const castIds = new Set<string>()
+for (const person of cast) {
+  const at = `cast ${person.id}:`
+  if (castIds.has(person.id)) fail.push(`${at} duplicate id`)
+  castIds.add(person.id)
+  if (!byId.has(person.home_location_id)) fail.push(`${at} lives at unknown place ${person.home_location_id}`)
+  if (!person.portraits?.default) fail.push(`${at} has no default portrait`)
+  for (const flag of [person.gated_by_flag, person.reveals_flag].filter(Boolean) as string[]) {
+    if (!flagsInPlay.has(flag)) fail.push(`${at} references flag '${flag}' that the world does not use`)
+  }
+}
+
+// Every portrait a character can show must be a real asset id, or the card
+// renders empty at the moment the player first meets them.
+const portraitIds = new Set(cast.flatMap((p) => Object.values(p.portraits ?? {})))
+
+const reign = world.reign as { petitions?: { id: string; at: string; requires?: string }[] } | null
+for (const petition of reign?.petitions ?? []) {
+  const at = `petition ${petition.id}:`
+  if (!byId.has(petition.at)) fail.push(`${at} happens at unknown place ${petition.at}`)
+  if (petition.requires && !flagsInPlay.has(petition.requires)) {
+    fail.push(`${at} requires flag '${petition.requires}' that the world does not use`)
+  }
+}
+
+const progression = world.progression as { standing?: { id: string; shifts?: { choice_id: string }[] }[] } | null
+const choiceIds = new Set(IRON_VERDICT_CHOICES.map((c) => c.id))
+for (const track of progression?.standing ?? []) {
+  for (const shift of track.shifts ?? []) {
+    if (!choiceIds.has(shift.choice_id)) {
+      fail.push(`standing ${track.id}: shifts on unknown choice '${shift.choice_id}'`)
+    }
+  }
+}
+
+console.log(
+  `sidecars: ${cast.length} characters, ${portraitIds.size} portraits, ` +
+  `${reign?.petitions?.length ?? 0} petitions, ${progression?.standing?.length ?? 0} standing tracks`,
+)
+
 // Every flag the graph gates on must be settable by an authored choice, or it
 // is a wall with no key. Later-chapter flags are expected and only warned about.
 const settable = new Set(IRON_VERDICT_CHOICES.map((c) => c.sets))

@@ -1,0 +1,464 @@
+{
+  "cast": [
+    {
+      "id": "cassian_vale",
+      "name": "Cassian Vale",
+      "role": "Reigning champion of the Verdict Ring",
+      "faction": "ring",
+      "home_location_id": "chainhouse",
+      "portraits": {
+        "default": "portrait_cassian_vale",
+        "resolute": "portrait_cassian_resolute",
+        "broken": "portrait_cassian_broken"
+      },
+      "wants": "To find out whose hand is on his contract before the day it kills him.",
+      "fears": "That the succession Verdict is already written and he is only the pen.",
+      "knows": [
+        "He has been instructed to lose the succession Verdict.",
+        "He does not know who gave the instruction, only that it came through the Chainhouse.",
+        "He is not a prisoner and cannot leave; the difference stopped mattering years ago.",
+        "Every champion in the Chainhouse is held by paper, not by chains.",
+        "The loser of a Verdict is carried down the Drowned Stair, and not all of them are dead."
+      ],
+      "first_met": "He is still on the sand when the crowd starts leaving, bronze dulled with dust, looking up at the tier where you are standing as though he expected someone.",
+      "disposition_start": 0,
+      "reveals_flag": "cassian_trust"
+    },
+    {
+      "id": "nara_voss",
+      "name": "Nara Voss",
+      "role": "Writ-broker of the Sundial Market",
+      "faction": "none",
+      "home_location_id": "sundial_market",
+      "portraits": {
+        "default": "portrait_nara_voss",
+        "wary": "portrait_nara_wary",
+        "warm": "portrait_nara_warm"
+      },
+      "wants": "To hold, briefly, whatever paper the whole duchy is about to want.",
+      "fears": "Being caught holding it when the buyers turn out to be the same house.",
+      "knows": [
+        "She can read a sealed judgement without breaking its seal.",
+        "The succession writ is dated before the fight it decides.",
+        "Which clerks at Marblegate turn every page, and which ones only pretend to.",
+        "The seal on the writ has been used before, on a judgement that emptied a village.",
+        "She has sold three people to the Sable Court this year and would sell you at the right figure."
+      ],
+      "first_met": "A lantern comes up under the bronze sundial and she is already reaching for the inside of your coat, smiling, as if you had made an appointment.",
+      "disposition_start": 1,
+      "reveals_flag": "writ_read"
+    },
+    {
+      "id": "aldric_morrow",
+      "name": "Duke Aldric Morrow",
+      "role": "Dying Duke of Aldermere",
+      "faction": "court",
+      "home_location_id": "sable_court",
+      "portraits": {
+        "default": "portrait_aldric_morrow"
+      },
+      "wants": "To hand over a duchy that is still worth holding, to someone he has actually chosen.",
+      "fears": "That the succession was settled without him while he was too ill to sit the hall.",
+      "knows": [
+        "He never named a champion for the succession Verdict.",
+        "A house across the water has been paying his court's debts for two years.",
+        "Barran Coyle asked him three times for a claim, and was refused three times.",
+        "The Iron Fane has certified judgements he knows to be false, and he let it happen.",
+        "He has weeks, not seasons."
+      ],
+      "first_met": "The whispering in the marble hall stops, and an old man leaning on a wolf-headed cane asks you, very quietly, what you are carrying.",
+      "disposition_start": -1,
+      "reveals_flag": "verrine_named",
+      "gated_by_flag": "court_summoned"
+    },
+    {
+      "id": "sereth_morrow",
+      "name": "Lady Sereth Morrow",
+      "role": "The Duke's niece and the Court's quietest claimant",
+      "faction": "court",
+      "home_location_id": "sable_court",
+      "portraits": {
+        "default": "portrait_sereth_morrow",
+        "pleading": "portrait_sereth_pleading",
+        "cold": "portrait_sereth_cold"
+      },
+      "wants": "The succession settled without a fight, and settled on her.",
+      "fears": "That a scandal in open daylight turns the houses on each other and leaves her nothing to inherit.",
+      "knows": [
+        "Her uncle's seal has been used on documents he never saw.",
+        "Which of the great houses would take the field within a week of a public scandal.",
+        "There is a copy of every Verdict of the last century, and it is not in the city.",
+        "She keeps a document case she never puts down.",
+        "She can have a name spoken at Court, which is the only place a name becomes a warrant."
+      ],
+      "first_met": "She is waiting at the foot of the tier steps, out of the lamplight, and she knows what you saw before you say it.",
+      "disposition_start": 0,
+      "reveals_flag": "court_summoned"
+    },
+    {
+      "id": "barran_coyle",
+      "name": "Barran Coyle",
+      "role": "Claimant of the Sable Court",
+      "faction": "court",
+      "home_location_id": "sable_court",
+      "portraits": {
+        "default": "portrait_barran_coyle"
+      },
+      "wants": "To be sitting in the ducal chair before anyone thinks to ask how he got there.",
+      "fears": "The bill for it arriving in public.",
+      "knows": [
+        "The succession Verdict already has a date on the calendar.",
+        "Where the money behind his claim came from, and in whose coat it arrived.",
+        "He pays the Chainhouse for the schedule of every champion in it.",
+        "He has never held a sword he did not wear as jewellery.",
+        "There is a house of merchants overseas who consider Aldermere an entry in a ledger."
+      ],
+      "first_met": "A heavy man in crimson brocade buys the wine you did not order and asks, pleasantly, what a person of your sort would want for a quiet evening.",
+      "disposition_start": -1,
+      "reveals_flag": "serevane_named",
+      "gated_by_flag": "court_summoned"
+    },
+    {
+      "id": "arbiter_vell",
+      "name": "Arbiter Vell",
+      "role": "Certifier of Verdicts for the Iron Fane",
+      "faction": "fane",
+      "home_location_id": "iron_fane",
+      "portraits": {
+        "default": "portrait_arbiter_vell"
+      },
+      "wants": "The writ in the brazier, and a century of law left standing.",
+      "fears": "That every judgement he ever stamped is discovered to be worth nothing.",
+      "knows": [
+        "He put the iron on the succession writ himself.",
+        "If a bought Verdict is proved, every Verdict for a hundred years becomes void.",
+        "The Fane keeps no copy of what it certifies, deliberately.",
+        "The old rolls were supposed to have burned, and he has never been sure they did.",
+        "He believes he is preventing a war, and he may be right."
+      ],
+      "first_met": "Beneath the hanging iron ring, a shaven-headed man in undyed wool tells you the doors open for judgements, not for visitors, and then does not send you away.",
+      "disposition_start": -2,
+      "reveals_flag": "fane_entered"
+    },
+    {
+      "id": "iselle_harrowfield",
+      "name": "Iselle of Harrowfield",
+      "role": "Speaker of Thornhollow's court in exile",
+      "faction": "thornhollow",
+      "home_location_id": "thornhollow",
+      "portraits": {
+        "default": "portrait_iselle_harrowfield",
+        "furious": "portrait_iselle_furious",
+        "grieving": "portrait_iselle_grieving"
+      },
+      "wants": "The seal that took Harrowfield read aloud where the whole duchy can hear it.",
+      "fears": "That her people become the bandits everyone already calls them.",
+      "knows": [
+        "The judgement that emptied Harrowfield nine years ago, word for word.",
+        "The same seal appears on it as on the succession writ.",
+        "Thornhollow is not a camp but a village with a court and a roll of plaintiffs.",
+        "Who cuts marble in the Weeping Quarry, and what each of them was sentenced for.",
+        "The toll at Ravensgate is the only tax her people have ever collected."
+      ],
+      "first_met": "Past the thorn palisade a woman sets a billhook butt-down in the mud, looks at the paper in your hand, and asks to see the seal before she asks your name.",
+      "disposition_start": -1,
+      "reveals_flag": "thornhollow_pact",
+      "gated_by_flag": "gate_passed"
+    },
+    {
+      "id": "hob_cardew",
+      "name": "Hob Cardew",
+      "role": "Master smith of Hollowforge",
+      "faction": "ring",
+      "home_location_id": "hollowforge",
+      "portraits": {
+        "default": "portrait_hob_cardew"
+      },
+      "wants": "To keep arming both sides long enough that neither one wins outright.",
+      "fears": "Being made to choose, in daylight, in front of the Ring.",
+      "knows": [
+        "Every blade in the Ring passed through his hands, and so did a good many in Thornhollow.",
+        "Cassian's sword has been reforged twice, and never at the Ring's expense.",
+        "A seal can be cut in wax by a patient man with the right iron.",
+        "The champions' contracts are stored in the Chainhouse, not the Court.",
+        "He has been waiting forty years for someone to make his treason worth something."
+      ],
+      "first_met": "The forge door is open and a soot-creased man goes on hammering while he tells you he works for the Ring, not for strangers, and keeps hammering while he listens.",
+      "disposition_start": 0,
+      "gated_by_flag": "cassian_trust"
+    },
+    {
+      "id": "gaunt",
+      "name": "Gaunt",
+      "role": "Keeper of the Chainhouse",
+      "faction": "ring",
+      "home_location_id": "chainhouse",
+      "portraits": {
+        "default": "portrait_gaunt"
+      },
+      "wants": "Every champion accounted for in his ledger at the end of every day.",
+      "fears": "Being blamed for a fighter he was told to lose track of.",
+      "knows": [
+        "The fight schedule for the whole season, including one date left blank.",
+        "Which champions are held by debt and which by threat.",
+        "He was told to keep Cassian rested and not to ask what for.",
+        "Nobody signs a champion out of the Chainhouse without a name in his ledger.",
+        "The keys on his belt include one for a door he has never used."
+      ],
+      "first_met": "A ring of iron keys rattles across a doorway and a lean man with a broken nose asks whose business you are here on, already writing.",
+      "disposition_start": -2,
+      "gated_by_flag": "verdict_witnessed"
+    },
+    {
+      "id": "wren",
+      "name": "Wren",
+      "role": "Records clerk at Marblegate",
+      "faction": "none",
+      "home_location_id": "marblegate",
+      "portraits": {
+        "default": "portrait_wren"
+      },
+      "wants": "To be the one who kept the true copy when everyone else burned theirs.",
+      "fears": "Being searched with the wrong page in their sleeve.",
+      "knows": [
+        "Nothing leaves Corvane unread, but a great deal leaves it miscopied.",
+        "The Verdict rolls of the last century were never destroyed, only moved.",
+        "Which clerk stands the night watch under the arch, and what he drinks.",
+        "The Fane's certifications arrive at the gate a day before the fights they certify.",
+        "There is a route out of the city no ledger ever records."
+      ],
+      "first_met": "A young clerk drops an armful of rolls at your feet under the gate arch, and while you help gather them, whispers a question about what you are carrying.",
+      "disposition_start": 1,
+      "reveals_flag": "rolls_named",
+      "gated_by_flag": "writ_read"
+    },
+    {
+      "id": "sister_mave",
+      "name": "Sister Mave",
+      "role": "Keeper of the cellar at Greywither Abbey",
+      "faction": "none",
+      "home_location_id": "greywither_abbey",
+      "portraits": {
+        "default": "portrait_sister_mave"
+      },
+      "wants": "The rolls dry, complete, and read by someone at last.",
+      "fears": "Dying with the cellar still locked and the key still on her neck.",
+      "knows": [
+        "Every Verdict of the last century is written down beneath her feet.",
+        "She has kept them through two winters and one fire.",
+        "The judgement that emptied Harrowfield is in the third case, and it is a forgery.",
+        "Men in undyed wool came once to count the cases and left satisfied.",
+        "She opens for no one unannounced, and has broken that rule twice."
+      ],
+      "first_met": "A tiny old woman with a lantern held low steps out of a roofless nave and says she has been expecting someone for nine years, and asks if it is you.",
+      "disposition_start": 2,
+      "reveals_flag": "abbey_opened",
+      "gated_by_flag": "gate_passed"
+    },
+    {
+      "id": "the_ferryman",
+      "name": "The Ferryman",
+      "role": "Keeper of the river crossing",
+      "faction": "none",
+      "home_location_id": "ferrymans_post",
+      "portraits": {
+        "default": "portrait_the_ferryman"
+      },
+      "wants": "The fare, and no conversation about it.",
+      "fears": "A crossing he cannot come back from.",
+      "knows": [
+        "He has carried every faction in this country and judged none of them.",
+        "Who crossed south the night the succession writ was sealed.",
+        "The current under Blackreach's wall runs the wrong way twice a day.",
+        "Ships out of the south put in below the Hold, not at the docks.",
+        "He remembers faces for exactly as long as the crossing takes."
+      ],
+      "first_met": "A pole comes down in the shallows, a hand comes out for the fare, and no question follows it.",
+      "disposition_start": 0,
+      "gated_by_flag": "gate_passed"
+    },
+    {
+      "id": "hjalvar_skarrow",
+      "name": "Hjalvar Skarrow",
+      "role": "Thane of the Skarrow longhall",
+      "faction": "vaskir",
+      "home_location_id": "skarrow_longhall",
+      "portraits": {
+        "default": "portrait_hjalvar_skarrow"
+      },
+      "wants": "To be owed something by whoever wins Aldermere.",
+      "fears": "Breaking his own hospitality, which is the only law his hall has.",
+      "knows": [
+        "Under his roof he cannot harm you, and cannot let you leave.",
+        "Aldermere's prisoners at Fetterstone are the price of the last peace.",
+        "The moot will not seat a stranger without an oath spoken for them.",
+        "He finds a country that settles disputes with swords obscene, and says so.",
+        "Iron out of Grimsdal has been going south in quantities no forge should need."
+      ],
+      "first_met": "The longhall door stands open in the snow and a white-bearded giant with a ruined eye calls you in by a name he has clearly been told.",
+      "disposition_start": 0,
+      "reveals_flag": "skarrow_welcomed"
+    },
+    {
+      "id": "brynn_skarrow",
+      "name": "Brynn Skarrow",
+      "role": "The thane's daughter, sworn to no one yet",
+      "faction": "vaskir",
+      "home_location_id": "skarrow_longhall",
+      "portraits": {
+        "default": "portrait_brynn_skarrow",
+        "challenging": "portrait_brynn_challenging",
+        "sworn": "portrait_brynn_sworn"
+      },
+      "wants": "A cause worth swearing to, since her father's hall will never give her one.",
+      "fears": "Swearing to someone who turns out to be for sale.",
+      "knows": [
+        "The pass is watched from both sides, and by whom.",
+        "An oath spoken on the flat stone at the circle binds harder than any seal.",
+        "She has been south as far as the bridge and knows the toll-takers by name.",
+        "Her father intends to trade her oath for a treaty.",
+        "Nobody in her country believes a fight can decide what is true."
+      ],
+      "first_met": "A spear butt planted in the snow blocks the path, and a grinning woman with a shaved braid asks whether southerners can do anything but hire other people to bleed.",
+      "disposition_start": 0,
+      "reveals_flag": "vaskir_named"
+    },
+    {
+      "id": "oathspeaker_ranneke",
+      "name": "Oathspeaker Ranneke",
+      "role": "Keeper of the oath circle",
+      "faction": "vaskir",
+      "home_location_id": "hjarnmoot",
+      "portraits": {
+        "default": "portrait_oathspeaker_ranneke"
+      },
+      "wants": "That an oath spoken in the circle still means what it meant a hundred years ago.",
+      "fears": "Speaking for someone who breaks it, which would put the circle itself on trial.",
+      "knows": [
+        "Nobody fights inside the circle, and nobody ever has.",
+        "The moot will seat you the moment someone speaks an oath for you.",
+        "An oath sworn here is recognised at Aldermere's own Court, grudgingly.",
+        "They have refused to speak for three thanes and can name all three.",
+        "There is a hanging orchard for those who break what they swore."
+      ],
+      "first_met": "On trodden snow inside a ring of standing stones, a grey figure with an unmarked staff asks who would speak for you, and waits without any expression at all.",
+      "disposition_start": 0,
+      "reveals_flag": "moot_admitted"
+    },
+    {
+      "id": "aurel_verrine",
+      "name": "Aurel Verrine",
+      "role": "Head of the house that bought a succession",
+      "faction": "serevane",
+      "home_location_id": "casa_verrine",
+      "portraits": {
+        "default": "portrait_aurel_verrine"
+      },
+      "wants": "Aldermere entered cleanly in his ledger, with the ink dry before anyone objects.",
+      "fears": "Not exposure — a bad price.",
+      "knows": [
+        "He paid for the succession Verdict, and considers it a purchase, not a crime.",
+        "The hand that signed the writ, because he watched it sign.",
+        "What Barran Coyle's claim cost, to the coin.",
+        "He receives by appointment, and appointments can be bought.",
+        "There is a number beside Aldermere on the floor of the Exchange."
+      ],
+      "first_met": "Under lemon trees a silver-haired man in plum silk apologises for the heat, offers you a chair, and asks what figure would end your interest in his family.",
+      "disposition_start": -1,
+      "reveals_flag": "verrine_received",
+      "gated_by_flag": "landfall"
+    },
+    {
+      "id": "ysolde_verrine",
+      "name": "Ysolde Verrine",
+      "role": "Auditor of her own house's books",
+      "faction": "serevane",
+      "home_location_id": "casa_verrine",
+      "portraits": {
+        "default": "portrait_ysolde_verrine",
+        "alarmed": "portrait_ysolde_alarmed",
+        "resolved": "portrait_ysolde_resolved"
+      },
+      "wants": "The entry corrected, whatever correcting it costs her name.",
+      "fears": "That she is the only person in her family who thinks a ledger should be true.",
+      "knows": [
+        "There is a payment in her house's books with a duchy written against it.",
+        "The countersignature on the succession writ, and whose hand it is.",
+        "The money moved through the Exchange in four parts to keep it small on the page.",
+        "Her uncle keeps the originals behind a strongroom door she has the count of.",
+        "She has already made one copy she should not have made."
+      ],
+      "first_met": "A young woman with ink on her cuff stops you between the counting tables and asks, without preamble, whether you have seen the seal on the paper you carry.",
+      "disposition_start": 1,
+      "reveals_flag": "signature_named",
+      "gated_by_flag": "landfall"
+    },
+    {
+      "id": "sabra_idre",
+      "name": "Sabra Idre",
+      "role": "Captain of a hull that asks no questions",
+      "faction": "serevane",
+      "home_location_id": "hundred_docks",
+      "portraits": {
+        "default": "portrait_sabra_idre"
+      },
+      "wants": "A cargo worth the risk of the crossing, and a berth at both ends.",
+      "fears": "Carrying something that makes both shores close to her.",
+      "knows": [
+        "Which hulls are willing to carry a person nobody has papers for.",
+        "The house that has been shipping coin north in sealed crates for two years.",
+        "The tide under Blackreach, and the one night a month it can be run.",
+        "Everything arrives at the Hundred Docks, and everything is priced there.",
+        "She has carried a man in a temple's grey wool south twice this year."
+      ],
+      "first_met": "A sun-dark captain in a faded red headwrap looks you over on the wharf, names a price for a crossing you had not admitted wanting, and laughs when you flinch.",
+      "disposition_start": 1,
+      "reveals_flag": "landfall",
+      "gated_by_flag": "gate_passed"
+    },
+    {
+      "id": "the_herald",
+      "name": "The Herald",
+      "role": "Voice of the Verdict Ring",
+      "faction": "ring",
+      "home_location_id": "verdict_ring",
+      "portraits": {
+        "default": "portrait_the_herald"
+      },
+      "wants": "Every Verdict read out exactly as it is written, and nothing more said.",
+      "fears": "Being handed a judgement to read that the crowd already knows is false.",
+      "knows": [
+        "A Verdict is law from the moment it is cut into the inner wall, and cannot be appealed.",
+        "The succession Verdict has a date, and the date does not move.",
+        "The wording of every judgement read this season.",
+        "Certifications come from the Fane sealed, and are never opened at the Ring.",
+        "They wear no house's device, and have refused three offers to."
+      ],
+      "first_met": "A figure in a crimson-and-indigo tabard lowers a brass trumpet, and reads out a judgement that has already been carved.",
+      "disposition_start": 0
+    },
+    {
+      "id": "marek_sain",
+      "name": "Marek Sain",
+      "role": "A champion who lost, and lived",
+      "faction": "none",
+      "home_location_id": "drowned_stair",
+      "portraits": {
+        "default": "portrait_marek_sain"
+      },
+      "wants": "To get one more person out through the water before his legs give up.",
+      "fears": "That Cassian ends the same way and never learns why.",
+      "knows": [
+        "Losers are carried down the Drowned Stair, and some of them are still breathing.",
+        "The grate at the bottom is chained from the inside, and he knows the hand that chains it.",
+        "The Stair is the one road out of Corvane that Marblegate cannot search.",
+        "He was told to lose a Verdict once, and refused.",
+        "There is a judgement written against his name that anyone may read."
+      ],
+      "first_met": "A scarred man leaning on a stick sits on the wet steps below the arena and says, without looking up, that you took the long way down.",
+      "disposition_start": 1,
+      "reveals_flag": "stair_open",
+      "gated_by_flag": "verdict_witnessed"
+    }
+  ]
+}
