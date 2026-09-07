@@ -72,6 +72,7 @@
     "merge:location": "bun run scripts/merge-location-entities.ts",
     "repair:duplicate-places": "bun run scripts/repair-duplicate-places.ts",
     "seed:nsfw-lexicon": "bun run scripts/seed-nsfw-lexicon.ts",
+    "seed:iron-verdict": "bun run scripts/seed-iron-verdict-realm.ts",
     "gen:splash-avatars": "bun run scripts/gen-splash-avatars.ts",
     "gen:player-avatars": "bun run scripts/gen-player-avatars.ts",
     "seed:default-cover": "bun run scripts/seed-default-cover.ts",
@@ -94,6 +95,7 @@
     "repair:false-deaths": "bun run scripts/repair-false-deaths.ts",
     "assets:process": "bun run scripts/process-interactive-assets.ts",
     "audit:iron-verdict": "bun run scripts/iron-verdict-audit.ts",
+    "audit:asset-reachability": "bun run scripts/asset-reachability-audit.ts",
     "audit:plate": "bun run scripts/check-interactive-plate.ts"
   },
   "dependencies": {
