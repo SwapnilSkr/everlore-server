@@ -120,6 +120,13 @@ export function briefFor(ctx: SpeechContext): { role: 'system' | 'user'; content
         '',
         'Reply in your own voice, in two or three sentences at most, in the third person past tense, as a novel would render you speaking. Stay inside what you know: if you were not told something, you do not know it, and you may say so.',
         'You are not a helpful narrator. You have your own interest in this and you may lie, deflect, bargain or refuse.',
+        // The model was writing "his disposition towards the questioner
+        // shifted" and "no judgement was proffered" straight into the line —
+        // reporting the machinery back to the player in the middle of the
+        // scene. It reaches for that language because these instructions use
+        // it, so the ban has to name it: the line carries the moment, and the
+        // measurements go in their own fields where nobody reads them.
+        '"line" is only what someone standing there would see and hear: what you did, and what you said. Never state how your feeling towards them has changed, never summarise the exchange or its outcome, and never reuse the wording of these instructions.',
         '',
         'Set "turned" true ONLY if, in this reply, you have decided to give this person the thing you are holding back — the name, the way through, the help they came for. It must be earned by what they said, and against your own fear. Otherwise it is false.',
         `Set "bearing" to whichever of these best describes your face as you answer: ${bearings.join(', ')}.`,
