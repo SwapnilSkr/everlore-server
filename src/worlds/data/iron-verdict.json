@@ -159,6 +159,134 @@
     {
       "id": "scene_whisper_baths",
       "role": "scene"
+    },
+    {
+      "id": "portrait_cassian_vale",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_cassian_resolute",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_cassian_broken",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_nara_voss",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_nara_wary",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_nara_warm",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_aldric_morrow",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_sereth_morrow",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_sereth_pleading",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_sereth_cold",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_barran_coyle",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_arbiter_vell",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_iselle_harrowfield",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_iselle_furious",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_iselle_grieving",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_hob_cardew",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_gaunt",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_wren",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_sister_mave",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_the_ferryman",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_hjalvar_skarrow",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_brynn_skarrow",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_brynn_challenging",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_brynn_sworn",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_oathspeaker_ranneke",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_aurel_verrine",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_ysolde_verrine",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_ysolde_alarmed",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_ysolde_resolved",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_sabra_idre",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_the_herald",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_marek_sain",
+      "role": "portrait"
     }
   ],
   "locations": [

@@ -19,6 +19,134 @@
     "width": 1120,
     "height": 1120
   },
+  "portrait_aldric_morrow": {
+    "width": 764,
+    "height": 1514
+  },
+  "portrait_arbiter_vell": {
+    "width": 519,
+    "height": 1475
+  },
+  "portrait_aurel_verrine": {
+    "width": 654,
+    "height": 1514
+  },
+  "portrait_barran_coyle": {
+    "width": 752,
+    "height": 1453
+  },
+  "portrait_brynn_challenging": {
+    "width": 679,
+    "height": 1497
+  },
+  "portrait_brynn_skarrow": {
+    "width": 765,
+    "height": 1526
+  },
+  "portrait_brynn_sworn": {
+    "width": 909,
+    "height": 1520
+  },
+  "portrait_cassian_broken": {
+    "width": 598,
+    "height": 1444
+  },
+  "portrait_cassian_resolute": {
+    "width": 818,
+    "height": 1493
+  },
+  "portrait_cassian_vale": {
+    "width": 744,
+    "height": 1471
+  },
+  "portrait_gaunt": {
+    "width": 578,
+    "height": 1476
+  },
+  "portrait_hjalvar_skarrow": {
+    "width": 879,
+    "height": 1507
+  },
+  "portrait_hob_cardew": {
+    "width": 583,
+    "height": 1454
+  },
+  "portrait_iselle_furious": {
+    "width": 780,
+    "height": 1475
+  },
+  "portrait_iselle_grieving": {
+    "width": 495,
+    "height": 1448
+  },
+  "portrait_iselle_harrowfield": {
+    "width": 706,
+    "height": 1518
+  },
+  "portrait_marek_sain": {
+    "width": 725,
+    "height": 1486
+  },
+  "portrait_nara_voss": {
+    "width": 607,
+    "height": 1466
+  },
+  "portrait_nara_warm": {
+    "width": 697,
+    "height": 1484
+  },
+  "portrait_nara_wary": {
+    "width": 551,
+    "height": 1485
+  },
+  "portrait_oathspeaker_ranneke": {
+    "width": 693,
+    "height": 1479
+  },
+  "portrait_sabra_idre": {
+    "width": 682,
+    "height": 1488
+  },
+  "portrait_sereth_cold": {
+    "width": 582,
+    "height": 1496
+  },
+  "portrait_sereth_morrow": {
+    "width": 662,
+    "height": 1505
+  },
+  "portrait_sereth_pleading": {
+    "width": 675,
+    "height": 1475
+  },
+  "portrait_sister_mave": {
+    "width": 662,
+    "height": 1515
+  },
+  "portrait_the_ferryman": {
+    "width": 596,
+    "height": 1525
+  },
+  "portrait_the_herald": {
+    "width": 595,
+    "height": 1513
+  },
+  "portrait_wren": {
+    "width": 482,
+    "height": 1474
+  },
+  "portrait_ysolde_alarmed": {
+    "width": 524,
+    "height": 1438
+  },
+  "portrait_ysolde_resolved": {
+    "width": 575,
+    "height": 1513
+  },
+  "portrait_ysolde_verrine": {
+    "width": 513,
+    "height": 1493
+  },
   "texture_fog": {
     "width": 512,
     "height": 512

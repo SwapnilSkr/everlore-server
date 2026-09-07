@@ -23,7 +23,7 @@ import { HttpError } from '../utils/http-error'
 import { parseObjectId } from '../utils/mongo-id'
 
 const WORLD_KEY = 'iron-verdict'
-const WORLD_VERSION = 31
+const WORLD_VERSION = 32
 
 /**
  * What the player currently knows about a place.
