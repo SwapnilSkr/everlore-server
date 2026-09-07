@@ -2,6 +2,7 @@
   "key": "iron-verdict",
   "title": "The Iron Verdict",
   "chapter_title": "Chapter I · The Bloodless Crown",
+  "blurb": "A duchy where a fight makes law and a written roll outlives the man who signed it. Walk it, and what you decide is carved into the wall.",
   "revision": 9,
   "start_location_id": "verdict_ring",
   "map_style": {

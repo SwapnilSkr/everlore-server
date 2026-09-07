@@ -6,6 +6,12 @@ import { HttpError } from '../utils/http-error'
 
 export const interactiveWorldRoutes = new Elysia({ prefix: '/interactive-worlds' })
   .use(authPlugin)
+  // The walkable worlds this player may enter. Listed BEFORE the keyed routes
+  // so '/interactive-worlds' is not read as a world called nothing.
+  .get('/', ({ user }) => {
+    if (!user) throw new HttpError(401, 'Sign in to walk these worlds.')
+    return interactiveWorldService.listPlayable(user.id)
+  })
   .get('/:worldKey', ({ params }) => interactiveWorldService.definition(params.worldKey))
   // Find-or-mint the player's save. Missing this is how the map opened as
   // a preview that could not persist.

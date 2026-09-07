@@ -85,6 +85,8 @@ interface AuthoredWorld {
   key: string
   title: string
   chapter_title: string
+  /** One line of invitation, in the world's own voice. Read on its entrance. */
+  blurb?: string
   revision: number
   start_location_id: string
   map_style: InteractiveMapStyleDoc

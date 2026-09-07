@@ -32,6 +32,7 @@ import {
 import { ripenGrievance } from './grievance-ripening.service'
 import { duelForChoice, offerDuel, stageDuel, type OfferedDuel } from './duel.service'
 import { storageService } from './storage.service'
+import { reasonCannotStart } from './instance.service'
 import { HttpError } from '../utils/http-error'
 import { parseObjectId } from '../utils/mongo-id'
 
@@ -51,6 +52,21 @@ export function visibilityFor(location: InteractiveLocationDoc, flags: Record<st
   }
   if (location.unlock_flag && flags[location.unlock_flag] !== true) return 'sealed'
   return 'open'
+}
+
+/**
+ * The one painting that stands for a whole world.
+ *
+ * The place the player opens on, because that is the world as they will first
+ * see it. A world whose opening was never painted falls back to its terrain,
+ * and one with neither is drawn as a world with no face rather than as a
+ * broken frame.
+ */
+function coverFor(authored: ReturnType<typeof requireWorld>, world: InteractiveWorldDoc): string | null {
+  const opening = authored.locations.find((l) => l.id === authored.start_location_id)?.scene_asset_id
+  const id = opening ?? world.map_style?.plates?.[0]?.asset_id
+  const asset = id ? world.assets.find((a) => a.id === id) : undefined
+  return asset ? storageService.urlForKey(asset.key) : null
 }
 
 export const interactiveWorldService = {
@@ -80,6 +96,53 @@ export const interactiveWorldService = {
     const world = await worlds.findOne({ key: worldKey })
     if (!world) throw new Error(`Could not initialise the world "${worldKey}"`)
     return world as InteractiveWorldDoc
+  },
+
+  /**
+   * The walkable worlds this player may enter, as an entrance is drawn.
+   *
+   * Driven by the TEMPLATES that carry an interactive key, not by the data
+   * files: a world can exist as data with nobody having seeded a template for
+   * it, and an entrance offered for one refuses the moment it is taken. The
+   * same gate the start path uses decides what is listed here, so what is
+   * offered and what opens cannot drift apart.
+   *
+   * This is what the client used to hardcode. One world was named in the
+   * client by hand, with its title, its blurb and its key written into a
+   * widget, so a second walkable world would have been invisible until
+   * somebody remembered to add another card.
+   */
+  async listPlayable(playerId: string) {
+    const templates = await mongoColl
+      .worldTemplates()
+      .find({ interactive_world_key: { $exists: true } })
+      .sort({ created_at: 1 })
+      .toArray()
+
+    const seen = new Set<string>()
+    const offered = []
+    for (const template of templates) {
+      const key = String(template.interactive_world_key ?? '').trim()
+      if (!key || seen.has(key)) continue
+      if (reasonCannotStart(template, playerId)) continue
+      const authored = loadWorld(key)
+      // A template pointing at a world whose data is gone is not an entrance.
+      // Listing it would put a card on the screen that 404s when tapped.
+      if (!authored) continue
+      seen.add(key)
+      const world = await this.ensureWorld(key)
+      offered.push({
+        world_key: key,
+        title: authored.title,
+        chapter_title: authored.chapter_title,
+        blurb: authored.blurb ?? null,
+        // The world's own painting, never an icon standing in for one. The
+        // place the player opens on is the honest face of the world; the
+        // terrain is what is left if it was never painted.
+        cover_url: coverFor(authored, world),
+      })
+    }
+    return offered
   },
 
   async definition(worldKey: string) {

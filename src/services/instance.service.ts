@@ -43,6 +43,28 @@ export type InstanceListRow = WorldInstanceDoc & {
   template: WorldTemplateSummaryDoc | null
 }
 
+/**
+ * Why this player cannot begin this world, or null where they can.
+ *
+ * Stated once because two callers need the same answer: the call that starts a
+ * playthrough, and the list of worlds a player is offered. When the offer and
+ * the gate disagree the player is shown an entrance that refuses them the
+ * moment they take it — which is exactly what a card built from world data
+ * alone did.
+ */
+export function reasonCannotStart(template: WorldTemplateDoc, playerId: string): string | null {
+  const mine = idString(template.creator_id) === playerId
+  // A creator may walk their OWN unpublished world to playtest it before
+  // publishing; anyone else gets a clear reason rather than an opaque 404.
+  if (!template.is_published && !mine) return 'This world has not been published yet'
+  // A world hidden by moderation takes no new playthroughs. Existing ones are
+  // deliberately left alone — removing a story someone is in the middle of is
+  // a heavier action than a report warrants, and deletion covers the cases
+  // where the content genuinely has to go.
+  if (template.moderation_status === 'hidden' && !mine) return 'This world is unavailable while it is under review'
+  return null
+}
+
 export const instanceService = {
   async create(
     playerId: string,
@@ -57,21 +79,8 @@ export const instanceService = {
     // from "exists but not published" — the latter was an opaque 404 footgun.
     const template = await worldTemplates().findOne({ _id: templateOid })
     if (!template) throw new HttpError(404, 'Template not found')
-    if (!template.is_published) {
-      // A creator can start a playthrough on their OWN unpublished world to
-      // playtest it before publishing; anyone else gets a clear reason.
-      if (idString(template.creator_id) !== playerId) {
-        throw new HttpError(403, 'This world has not been published yet')
-      }
-    }
-
-    // A world hidden by moderation takes no new playthroughs. Existing ones are
-    // deliberately left alone — removing a story someone is in the middle of is
-    // a heavier action than a report warrants, and deletion covers the cases
-    // where the content genuinely has to go.
-    if (template.moderation_status === 'hidden' && idString(template.creator_id) !== playerId) {
-      throw new HttpError(403, 'This world is unavailable while it is under review')
-    }
+    const closed = reasonCannotStart(template, playerId)
+    if (closed) throw new HttpError(403, closed)
 
     const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
     const instanceCount = await worldInstances().countDocuments({
