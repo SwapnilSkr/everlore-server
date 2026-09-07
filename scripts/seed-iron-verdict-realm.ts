@@ -76,6 +76,15 @@ async function ensureTemplate(playerId: ObjectId, authored: ReturnType<typeof re
 
   if (existing) {
     const template = existing as WorldTemplateDoc
+    if (!template.interactive_world_key) {
+      // A reused template from before the key existed is still a map world.
+      // Leaving the field unset is how that save kept appearing in "Your Realms".
+      await templates.updateOne(
+        { _id: template._id },
+        { $set: { interactive_world_key: authored.key, updated_at: new Date() } },
+      )
+      template.interactive_world_key = authored.key
+    }
     console.log(`Reused existing template ${idString(template._id)} titled "${template.title}".`)
     return { template, created: false }
   }
@@ -90,6 +99,9 @@ async function ensureTemplate(playerId: ObjectId, authored: ReturnType<typeof re
     // synopsis written here would be lore the file does not contain.
     description: authored.chapter_title,
     kind: 'world',
+    // Same key the map route loads. Without it this save is an ordinary
+    // instance, and listRealms cannot tell it from a chat playthrough.
+    interactive_world_key: authored.key,
     // DELIBERATELY UNPUBLISHED. `is_published` is what `listPublished` filters
     // discovery on, so setting it here would push this world into the Explore
     // feed of every account on the cluster this script is pointed at — and the

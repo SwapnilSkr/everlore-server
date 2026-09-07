@@ -147,6 +147,90 @@
     "width": 513,
     "height": 1493
   },
+  "scene_blackreach_hold": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_blackreach_hold_v2": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_casa_verrine": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_chainhouse": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_drowned_stair": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_gilt_exchange": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_greywither_abbey": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_hjarnmoot": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_hollowforge": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_hundred_docks": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_iron_fane": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_marblegate": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_ravensgate_bridge": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_rimegate": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_sable_court": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_skarrow_longhall": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_sundial_market": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_thornhollow": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_vaskhold": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_verdict_ring": {
+    "width": 941,
+    "height": 1672
+  },
+  "scene_whisper_baths": {
+    "width": 941,
+    "height": 1672
+  },
   "texture_fog": {
     "width": 512,
     "height": 512

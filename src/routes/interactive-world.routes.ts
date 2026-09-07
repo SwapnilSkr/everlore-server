@@ -1,11 +1,18 @@
 import { Elysia, t } from 'elysia'
 import { authPlugin } from '../middleware/auth'
 import { interactiveWorldService } from '../services/interactive-world.service'
+import { instanceService } from '../services/instance.service'
 import { HttpError } from '../utils/http-error'
 
 export const interactiveWorldRoutes = new Elysia({ prefix: '/interactive-worlds' })
   .use(authPlugin)
   .get('/:worldKey', ({ params }) => interactiveWorldService.definition(params.worldKey))
+  // Find-or-mint the player's save. Missing this is how the map opened as
+  // a preview that could not persist.
+  .get('/:worldKey/instance', ({ user, params }) => {
+    if (!user) throw new HttpError(401, 'Sign in to walk this world.')
+    return instanceService.resolveInteractiveWorld(params.worldKey, user.id, user.tier)
+  })
   .get('/:worldKey/instances/:instanceId', ({ user, params }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return interactiveWorldService.state(params.worldKey, params.instanceId, user.id)

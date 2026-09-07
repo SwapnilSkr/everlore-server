@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { COLLECTIONS } from '../models/collections'
 import type { WorldInstanceDoc } from '../models/world-instance.model'
-import type { WorldTemplateDoc, WorldTemplateSummaryDoc } from '../models/world-template.model'
+import { isInteractiveWorldTemplate, type WorldTemplateDoc, type WorldTemplateSummaryDoc } from '../models/world-template.model'
 import type { WorldEventDoc } from '../models/world-event.model'
 import { getRedisClient } from '../config/redis'
 import { HttpError } from '../utils/http-error'
@@ -28,6 +28,16 @@ const worldInstances = () => mongoColl.worldInstances()
 const characters = () => mongoColl.characters()
 const personas = () => mongoColl.personas()
 const events = () => mongoColl.events()
+
+const templateSummaryProject = {
+  _id: 1,
+  title: 1,
+  is_sentient: 1,
+  description: 1,
+  kind: 1,
+  image_url: 1,
+  interactive_world_key: 1,
+} as const
 
 export type InstanceListRow = WorldInstanceDoc & {
   template: WorldTemplateSummaryDoc | null
@@ -286,6 +296,73 @@ export const instanceService = {
   },
 
   /**
+   * The player's one save for a walkable world, created on first entry.
+   *
+   * Interactive worlds were taken off the realms list, and the remaining
+   * entrance opened a preview with no save — every action refused, nothing
+   * persisted. Finding by the world key (never the title) and minting through
+   * the ordinary create path is what makes "open this world" mean play it,
+   * without a second insert that would drift from chat instances.
+   */
+  async resolveInteractiveWorld(
+    worldKey: string,
+    playerId: string,
+    tier: string,
+  ): Promise<{ instance_id: string }> {
+    const key = worldKey.trim()
+    if (!key) {
+      throw new HttpError(404, 'This world is not yet open to play.')
+    }
+
+    const templates = (await worldTemplates()
+      .find({ interactive_world_key: key })
+      .sort({ created_at: 1 })
+      .toArray()) as WorldTemplateDoc[]
+
+    // The data file can exist without a template. That used to 200 a
+    // preview that could not persist — the player thought they were playing.
+    if (templates.length === 0) {
+      throw new HttpError(404, 'This world is not yet open to play.')
+    }
+
+    const playerOid = parseObjectId(playerId)
+    // Archived is still this player's save. Skipping it and minting a new
+    // one is how a second walk of the same world appeared on the account.
+    const existing = await worldInstances().findOne(
+      {
+        player_id: playerOid,
+        template_id: { $in: templates.map((t) => t._id) },
+      },
+      { sort: { created_at: 1 } },
+    )
+    if (existing) {
+      return { instance_id: idString(existing._id) }
+    }
+
+    // Prefer the published world so a first-time player is not bound to
+    // someone else's unpublished seed. The owner still reaches their own
+    // draft when nothing published exists — that is how playtest works.
+    const published = templates.find(
+      (t) => t.is_published && t.moderation_status !== 'hidden',
+    )
+    const owned = templates.find((t) => idString(t.creator_id) === playerId)
+    const template = published ?? owned ?? templates[0]
+
+    try {
+      const { instance } = await this.create(playerId, idString(template._id), tier)
+      return { instance_id: idString(instance._id) }
+    } catch (err) {
+      if (err instanceof HttpError && /instance limit/i.test(err.message)) {
+        throw new HttpError(403, 'You already walk as many worlds as your membership allows.')
+      }
+      if (err instanceof HttpError && err.statusCode === 404) {
+        throw new HttpError(404, 'This world is not yet open to play.')
+      }
+      throw err
+    }
+  },
+
+  /**
    * All active playthroughs for one world, with a one-line story preview from
    * the latest turn. Used on "Your Realms" when a world has multiple stories.
    */
@@ -316,14 +393,7 @@ export const instanceService = {
     if (instances.length === 0) {
       const template = (await worldTemplates()
         .find({ _id: templateOid })
-        .project({
-          _id: 1,
-          title: 1,
-          is_sentient: 1,
-          description: 1,
-          kind: 1,
-          image_url: 1,
-        })
+        .project(templateSummaryProject)
         .limit(1)
         .toArray()) as WorldTemplateSummaryDoc[]
       return { template: template[0] || null, stories: [] }
@@ -372,14 +442,7 @@ export const instanceService = {
 
     const templateRows = (await worldTemplates()
       .find({ _id: templateOid })
-      .project({
-        _id: 1,
-        title: 1,
-        is_sentient: 1,
-        description: 1,
-        kind: 1,
-        image_url: 1,
-      })
+      .project(templateSummaryProject)
       .limit(1)
       .toArray()) as WorldTemplateSummaryDoc[]
     const template = templateRows[0] || null
@@ -414,22 +477,20 @@ export const instanceService = {
     const templateIds = [...new Set(instances.map((i) => i.template_id))]
     const templates = (await worldTemplates()
       .find({ _id: { $in: templateIds } })
-      .project({
-        _id: 1,
-        title: 1,
-        is_sentient: 1,
-        description: 1,
-        kind: 1,
-        image_url: 1,
-      })
+      .project(templateSummaryProject)
       .toArray()) as WorldTemplateSummaryDoc[]
 
     const templateMap = new Map(templates.map((t) => [idString(t._id), t]))
 
-    return instances.map((inst) => ({
-      ...inst,
-      template: templateMap.get(idString(inst.template_id)) || null,
-    }))
+    // A map save has no chat turns to summarise. Leaving it on this list is
+    // how a walkable world sat next to playthroughs with "0 events" as if the
+    // story had never started.
+    return instances
+      .filter((inst) => !isInteractiveWorldTemplate(templateMap.get(idString(inst.template_id))))
+      .map((inst) => ({
+        ...inst,
+        template: templateMap.get(idString(inst.template_id)) || null,
+      }))
   },
 
   /** One row per world, not per story. This keeps the home feed compact and
@@ -462,11 +523,20 @@ export const instanceService = {
           from: COLLECTIONS.world_templates,
           localField: '_id',
           foreignField: '_id',
-          pipeline: [{ $project: { _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1, image_url: 1 } }],
+          pipeline: [{ $project: templateSummaryProject }],
           as: 'template',
         },
       },
       { $unwind: { path: '$template', preserveNullAndEmptyArrays: true } },
+      // The tell lives on the template, not the instance. Filtering inside the
+      // lookup would drop the template and leave the instance behind as an
+      // untitled row — unwind keeps empties — which is how a map save would
+      // still appear in "Your Realms".
+      {
+        $match: {
+          $expr: { $eq: [{ $ifNull: ['$template.interactive_world_key', ''] }, ''] },
+        },
+      },
     ]
     if (term) {
       pipeline.push({

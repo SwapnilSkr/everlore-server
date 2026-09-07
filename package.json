@@ -58,6 +58,7 @@
     "backfill:relationship-baselines": "bun run scripts/backfill-relationship-baselines.ts",
     "backfill:relationship-facts": "bun run scripts/backfill-relationship-facts.ts",
     "backfill:identity-kinds": "bun run scripts/backfill-identity-kinds.ts",
+    "backfill:interactive-world-keys": "bun run scripts/backfill-interactive-world-keys.ts",
     "repair:template-cast-projections": "bun run scripts/repair-template-cast-projections.ts",
     "repair:alias-hygiene": "bun run scripts/repair-alias-hygiene.ts",
     "repair:split-identities": "bun run scripts/repair-split-identities.ts",

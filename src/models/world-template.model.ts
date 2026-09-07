@@ -62,6 +62,15 @@ export interface WorldTemplateDoc {
   /** 'world' = RPG experience (stats, GM or sentient). 'character' = lightweight
    *  chat-with-a-character (always sentient, stats optional). Defaults to 'world'. */
   kind?: 'world' | 'character'
+  /**
+   * Authored key of a walkable map world (`iron-verdict`, …).
+   *
+   * Matching on the title is how a map save landed in "Your Realms" with turn
+   * counts the map never produces, and a rename (or a second map) would silently
+   * break that guess. The key is the durable tell: present means walked, not
+   * chatted.
+   */
+  interactive_world_key?: string
   is_published: boolean
   /**
    * Moderation state, set only by an admin acting on a report.
@@ -109,5 +118,12 @@ export interface WorldTemplateDoc {
 /** Projected fields when listing instances with template titles. */
 export type WorldTemplateSummaryDoc = Pick<
   WorldTemplateDoc,
-  '_id' | 'title' | 'is_sentient' | 'description' | 'kind' | 'image_url'
+  '_id' | 'title' | 'is_sentient' | 'description' | 'kind' | 'image_url' | 'interactive_world_key'
 >
+
+/** A non-empty key is a map world. Empty or absent is a chat playthrough. */
+export function isInteractiveWorldTemplate(
+  template: { interactive_world_key?: string | null } | null | undefined,
+): boolean {
+  return typeof template?.interactive_world_key === 'string' && template.interactive_world_key.length > 0
+}
