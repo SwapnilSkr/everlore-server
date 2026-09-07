@@ -450,7 +450,15 @@ export const interactiveWorldService = {
         importance: 7,
         is_nsfw: false,
         source_event_ids: [eventId],
-        pinecone_id: null,
+        // The field is LEFT OUT, not set to null. `idx_memories_pinecone_id` is
+        // unique and sparse, and sparse skips a document only when the field is
+        // ABSENT — an explicit null is a value, and a second one collides with
+        // the first. Writing null here meant every memory this world tried to
+        // keep was rejected by the index, and the throw landed after the state
+        // had already been written: the choice took effect, the player was
+        // shown a refusal, and taking it again "worked" because a repeat is not
+        // a first and writes no memory. Nothing in the chat path sets this
+        // field either, which is why only this world was affected.
         access_count: 0,
         last_accessed_at: now,
         is_archived: false,
