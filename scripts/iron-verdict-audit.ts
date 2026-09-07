@@ -21,6 +21,7 @@ import { endingFor, PETITIONS_OPEN, progressionFor, ripensTo, seasonLength } fro
 import { composeRipenedPetition, siteForGrievance, verifyRipenedPetition } from '../src/services/grievance-ripening.service'
 import { knowledgeFor, offerCast, presentCast } from '../src/worlds/cast'
 import { briefFor, composeSpokenReply, verifySpokenReply } from '../src/services/character-speech.service'
+import { briefForDuel, composeDuel, duelForChoice, offerDuel, verifyDuelProse } from '../src/services/duel.service'
 
 const world = requireWorld('iron-verdict')
 const IRON_VERDICT_ASSETS = world.assets
@@ -477,6 +478,156 @@ console.log(
   `${cast.filter((p) => p.gated_by_flag).length} gated, ${cast.filter((p) => p.reveals_flag).length} can open a road, ` +
   `${cast.reduce((n, p) => n + (p.knows_guarded?.length ?? 0), 0)} guarded secrets`,
 )
+
+// A VERDICT FOUGHT ON THE SAND.
+//
+// The whole seam rests on one agreement: the fight the player watches and the
+// story that follows it are settled by the SAME authored choice. Nothing here
+// is rolled, so the only way the two can disagree is by drifting apart in the
+// files — which presents as a fight the player watched themselves lose and a
+// duchy that carries on as though they had won, with nothing on screen saying
+// so and no error anywhere.
+const duelIds = new Set<string>()
+for (const duel of world.duels) {
+  const at = `duel ${duel.id}:`
+  if (duelIds.has(duel.id)) fail.push(`${at} duplicate id`)
+  duelIds.add(duel.id)
+
+  const trigger = IRON_VERDICT_CHOICES.find((c) => c.id === duel.choice_id)
+  if (!trigger) {
+    fail.push(`${at} is fought over '${duel.choice_id}', which no choice in this world offers`)
+    continue
+  }
+  if (duelForChoice(world, trigger.id)?.id !== duel.id) {
+    fail.push(`${at} a second duel answers to '${trigger.id}', so which fight is staged depends on file order`)
+  }
+  // THE AGREEMENT. The choice writes the flags at runtime, exactly as it always
+  // has; the duel restates them so this check can prove the staging is
+  // dramatising the outcome the rest of the world was written against.
+  const decided = asList(trigger.sets)
+  const staged = duel.outcome.sets
+  const disagree = [
+    ...decided.filter((f) => !staged.includes(f)),
+    ...staged.filter((f) => !decided.includes(f)),
+  ]
+  if (disagree.length) {
+    fail.push(`${at} the fight and the choice disagree on ${disagree.join(', ')} — the player would watch one outcome and live in another`)
+  }
+  if (duel.at !== trigger.at) fail.push(`${at} is fought at ${duel.at} but taken at ${trigger.at}`)
+  if (!byId.has(duel.at)) fail.push(`${at} is fought in a place that does not exist`)
+
+  for (const [side, combatant] of [['challenger', duel.challenger], ['defender', duel.defender]] as const) {
+    if (combatant.cast_id) {
+      const member = cast.find((c) => c.id === combatant.cast_id)
+      if (!member) fail.push(`${at} the ${side} is ${combatant.cast_id}, who is in nobody's cast`)
+    } else if (!combatant.is_player && !combatant.name) {
+      fail.push(`${at} the ${side} is neither the player, nor in the cast, nor named — they would fight anonymously`)
+    }
+  }
+
+  if (!duel.beats.length) fail.push(`${at} has no exchanges, so the fight is a title card`)
+  for (const [index, beat] of duel.beats.entries()) {
+    if (!beat.line.trim()) fail.push(`${at} exchange ${index + 1} has no authored words, so it is blank whenever the flavour pass is down`)
+    if (beat.toll < 0) fail.push(`${at} exchange ${index + 1} costs less than nothing`)
+    const combatant = beat.actor === 'challenger' ? duel.challenger : duel.defender
+    const member = combatant.cast_id ? cast.find((c) => c.id === combatant.cast_id) : undefined
+    // A bearing nobody painted falls back to the default face rather than to an
+    // id the manifest has never heard of — but an author who meant a face and
+    // mistyped it gets the wrong one silently, so it is caught here instead.
+    if (beat.bearing && member && !member.portraits[beat.bearing]) {
+      fail.push(`${at} exchange ${index + 1} wears '${beat.bearing}', which was never painted for ${member.id}`)
+    }
+  }
+
+  // DEGRADED MODE IS THE BASELINE, not a fallback: this is the duel with no
+  // model call at all, and it has to be a whole fight.
+  const bare = composeDuel(duel, null, world)
+  const loser = duel.outcome.winner === 'challenger' ? 'defender' : 'challenger'
+  const last = bare.beats[bare.beats.length - 1]!
+  if ((last[`${duel.outcome.winner}_vigour`] as number) <= 0) {
+    fail.push(`${at} the fight ends with ${bare.outcome.victor_name} down as well, which is not a Verdict`)
+  }
+  // The staging puts the loser on the sand whatever the tolls add up to, so
+  // this can never fail the fight — but a loser whose authored exchanges do not
+  // actually cost them everything drops from whatever they had left straight to
+  // nothing on the decisive blow, and the bar tells the player a different
+  // story than the words did.
+  const spent = duel.beats.filter((b) => b.actor !== loser).reduce((n, b) => n + b.toll, 0)
+  if (spent < bare.vigour) {
+    warn.push(`${at} the exchanges only take ${spent} of ${bare.vigour} from ${bare.outcome.fallen_name}, so they fall from ${bare.vigour - spent} in one blow`)
+  }
+  if (bare.beats.filter((b) => b.decisive).length !== 1) fail.push(`${at} the exchange the Verdict turns on is not exactly one`)
+  if (!bare.outcome.victor_name || !bare.outcome.fallen_name) fail.push(`${at} someone in this fight has no name`)
+  for (const beat of bare.beats) {
+    if (!beat.action.trim()) fail.push(`${at} exchange ${beat.index + 1} renders nothing with no model call`)
+    if (beat.portrait_asset_id && !assetIds.has(beat.portrait_asset_id)) {
+      fail.push(`${at} exchange ${beat.index + 1} wears an unpublished face, which renders an empty frame mid-fight`)
+    }
+  }
+
+  // A beat authored silent stays silent. Whether someone speaks in the middle
+  // of a Verdict is staging, and a flavour pass that can add a line where the
+  // author wrote none is staging the fight.
+  const written = duel.beats.map(() => ({ action: 'He moved.', said: 'Something the author never wrote.' }))
+  const loud = composeDuel(duel, written, world)
+  for (const [index, beat] of duel.beats.entries()) {
+    if (!beat.said && loud.beats[index]!.said) fail.push(`${at} exchange ${index + 1} was authored silent and speaks anyway`)
+  }
+
+  // NOTHING STRUCTURAL REACHES THE MODEL. It is given a plan and asked for the
+  // same exchanges in better words; an id, a flag or a place key in the brief
+  // is something it can echo back, and the one thing it is never trusted with.
+  // Matched as a whole word rather than as a substring: an authored id may
+  // legitimately be NAMED after the flag its fight decides, and `includes`
+  // reads that as a leak of the flag itself.
+  const names = (haystack: string, needle: string) => new RegExp(`\\b${needle}\\b`).test(haystack)
+  const brief = JSON.stringify(briefForDuel(duel, world))
+  for (const flag of vocabulary) {
+    if (names(brief, flag)) fail.push(`${at} the flag '${flag}' is in the brief the model writes against`)
+  }
+  for (const asset of assetIds) if (brief.includes(asset)) fail.push(`${at} the asset id '${asset}' is in the brief`)
+  for (const location of IRON_VERDICT_LOCATIONS) {
+    if (brief.includes(`"${location.id}"`) || brief.includes(` ${location.id} `)) fail.push(`${at} the place key '${location.id}' is in the brief`)
+  }
+  // The bite: the brief has to actually carry the fight, or the checks above
+  // are passing on an empty prompt.
+  if (!brief.includes(duel.beats[0]!.line.slice(0, 40))) fail.push(`${at} the brief does not contain the fight it is meant to describe`)
+
+  // WHAT THE PLAYER'S DEVICE RECEIVES. The flags are the answer to the whole
+  // chapter; a duel that carries them has put the ending in the payload of the
+  // turn before it, and the scene still plays perfectly.
+  const wire = JSON.stringify(offerDuel(bare, IRON_VERDICT_ASSETS))
+  for (const flag of staged) {
+    if (names(wire, flag)) fail.push(`${at} '${flag}' is sent to the client with the fight`)
+  }
+  for (const asset of assetIds) if (wire.includes(`"${asset}"`)) fail.push(`${at} the asset id '${asset}' is sent instead of a URL`)
+}
+
+// The count is checked against the plan rather than merely bounded, because
+// beats are matched to it BY INDEX: a response one short shifts every exchange
+// onto the wrong actor, the wrong toll and the wrong face, and plays perfectly
+// smoothly while describing the loser winning.
+const PLAN = 4
+const MALFORMED_DUEL: Record<string, unknown> = {
+  'an empty response': {},
+  'the schema echoed back': { type: 'object', properties: { beats: { type: 'array' } } },
+  'one exchange short': { beats: [1, 2, 3].map(() => ({ action: 'He moved.' })) },
+  'one exchange too many': { beats: [1, 2, 3, 4, 5].map(() => ({ action: 'He moved.' })) },
+  'an exchange with nothing in it': { beats: [1, 2, 3, 4].map((n) => ({ action: n === 2 ? '  ' : 'He moved.' })) },
+}
+for (const [what, payload] of Object.entries(MALFORMED_DUEL)) {
+  if (verifyDuelProse(payload, PLAN)) fail.push(`the fight accepts ${what}, which lands the exchanges on the wrong fighters`)
+}
+if (!verifyDuelProse({ beats: [1, 2, 3, 4].map(() => ({ action: 'He moved.' })) }, PLAN)) {
+  fail.push('the fight refuses a well-formed staging, so no duel could ever be written')
+}
+
+if (world.duels.length) {
+  console.log(
+    `duels: ${world.duels.length} fought Verdicts over ${world.duels.reduce((n, d) => n + d.beats.length, 0)} exchanges, ` +
+    `${world.duels.filter((d) => d.outcome.fatal).length} fatal`,
+  )
+}
 
 // A petition is only judgeable while the player does not know the answer. Two
 // fields would give it away — what is actually the case, and what each ruling

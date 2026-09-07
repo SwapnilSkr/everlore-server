@@ -1,0 +1,171 @@
+{
+  "duels": [
+    {
+      "id": "duel_quarry_debt",
+      "choice_id": "witness_verdict",
+      "at": "verdict_ring",
+      "question": "Whether a debt owed to the Weeping Quarry dies with the man who owed it, or passes to the house that buried him.",
+      "herald": "The Herald lowered the trumpet, read the matter out in the flat voice they keep for it, and stepped back off the sand. The carvers were already waiting at the inner wall with their chisels, because whatever happened next was going to be law.",
+      "vigour": 100,
+      "challenger": { "cast_id": "cassian_vale", "style": "Economical to the point of rudeness. He does not perform for the tiers." },
+      "defender": {
+        "name": "Dovin Kell",
+        "role": "A champion held to the Chainhouse by debt",
+        "style": "All reach and shoulder, fighting the way a man fights when the fight is the only thing he owns."
+      },
+      "beats": [
+        {
+          "actor": "defender",
+          "toll": 0,
+          "line": "Kell came out fast and wide, took the whole width of the sand, and found nothing there to hit."
+        },
+        {
+          "actor": "challenger",
+          "toll": 20,
+          "bearing": "resolute",
+          "line": "Vale let him spend it, then stepped inside the swing and put the flat of the blade into Kell's ribs with no more ceremony than a man closing a door."
+        },
+        {
+          "actor": "defender",
+          "toll": 25,
+          "line": "Kell caught him with an elbow he had no business landing, and the tiers came up off the benches for the first time all afternoon."
+        },
+        {
+          "actor": "challenger",
+          "toll": 30,
+          "bearing": "resolute",
+          "line": "Vale went with it instead of against it, turned under the arm, and opened Kell's thigh from the hip.",
+          "said": "Stay down, and the quarry keeps you."
+        },
+        {
+          "actor": "defender",
+          "toll": 15,
+          "line": "Kell did not stay down. He came off the sand on the ruined leg and drove Vale back three paces into his own shadow."
+        },
+        {
+          "actor": "challenger",
+          "toll": 50,
+          "bearing": "default",
+          "line": "The fourth pace never came. Vale took his wrist, took the blade out of it, and set him down on the sand almost gently, and the chisels started up against the wall before Kell had finished falling."
+        }
+      ],
+      "outcome": {
+        "winner": "challenger",
+        "verdict": "The debt stands, and it passes with the body to the house that buried him. It is cut into the inner wall in letters a hand deep, and there is nowhere in the duchy it can be argued with.",
+        "cost": "Kell went down the Drowned Stair on a board, breathing, and the crowd began filing out before he was through the arch.",
+        "fatal": false,
+        "sets": ["verdict_witnessed"]
+      }
+    },
+    {
+      "id": "duel_succession_thrown",
+      "choice_id": "let_cassian_throw",
+      "at": "verdict_ring",
+      "question": "Who holds Aldermere when the Duke is dead, and by whose claim.",
+      "herald": "The Herald read the succession out to a Ring packed to the top tier, and did not look up from the page once. The date on it was older than the quarrel it settled, and every clerk in the front row knew it.",
+      "vigour": 100,
+      "challenger": { "cast_id": "cassian_vale", "style": "Economical to the point of rudeness. He does not perform for the tiers." },
+      "defender": {
+        "name": "Rell Halloran",
+        "role": "Champion bought for the Sable Court claim",
+        "style": "Patient, expensive, and entirely aware of how little he is being asked to do."
+      },
+      "beats": [
+        {
+          "actor": "challenger",
+          "toll": 20,
+          "bearing": "resolute",
+          "line": "Vale opened as though none of it had been arranged, and for a moment it was not. He put Halloran on his heels inside four strokes and the tiers began to shout."
+        },
+        {
+          "actor": "defender",
+          "toll": 15,
+          "line": "Halloran gave ground without spending anything, waited out the second flurry, and answered it once, across the shoulder, to see whether he would be allowed to."
+        },
+        {
+          "actor": "challenger",
+          "toll": 10,
+          "bearing": "resolute",
+          "line": "He was allowed to. Vale came back at him anyway, harder than the arrangement wanted, and cut the brocade off Halloran's guard arm."
+        },
+        {
+          "actor": "defender",
+          "toll": 35,
+          "line": "Halloran stopped being patient. The next three came in a line and the last of them turned Vale halfway round and left him standing wrong-footed in front of the whole duchy."
+        },
+        {
+          "actor": "challenger",
+          "toll": 0,
+          "bearing": "broken",
+          "line": "Vale straightened, looked up at the tier where you were standing, and let the guard fall open. It was not a mistake. It was slow enough that anybody who had ever held a sword could see it was not a mistake.",
+          "said": "Somebody wrote this down before either of us woke up."
+        },
+        {
+          "actor": "defender",
+          "toll": 50,
+          "line": "Halloran took what he had been paid to take, in one stroke, and had the decency to look away while he did it. The chisels started before Vale reached the sand."
+        }
+      ],
+      "outcome": {
+        "winner": "defender",
+        "verdict": "The succession passes by the Court's claim, unappealed and unappealable, cut into the inner wall while the sand was still being raked.",
+        "cost": "Cassian Vale bled out in front of nine thousand people who had come to watch it happen, and the writ that arranged it was dated before the fight.",
+        "fatal": true,
+        "sets": ["succession_passed", "cassian_dead"]
+      }
+    },
+    {
+      "id": "duel_succession_fought",
+      "choice_id": "fight_succession",
+      "at": "verdict_ring",
+      "question": "Who holds Aldermere when the Duke is dead, and by whose claim.",
+      "herald": "The Herald read your name off a slip that had been handed up three minutes earlier, mispronounced none of it, and stepped back. There was no rule against it. That was the entire trouble with the Ring.",
+      "vigour": 100,
+      "challenger": { "is_player": true, "name": "You", "role": "Standing in a champion's place, on a champion's sand", "style": "Whatever you brought with you, and no second chance to have brought something else." },
+      "defender": {
+        "name": "Rell Halloran",
+        "role": "Champion bought for the Sable Court claim",
+        "style": "Patient, expensive, and entirely aware of how little he is being asked to do."
+      },
+      "beats": [
+        {
+          "actor": "defender",
+          "toll": 25,
+          "line": "Halloran did not bother to test you. He came straight down the middle to end it inside a minute, and very nearly did."
+        },
+        {
+          "actor": "challenger",
+          "toll": 15,
+          "line": "You got the blade up late and wrong, and it worked anyway, and the shock of it went up your arm and into the crowd at the same moment."
+        },
+        {
+          "actor": "defender",
+          "toll": 30,
+          "line": "He corrected. The next exchange put you on the sand on one knee with the tiers roaring for a finish he was too careful to give them."
+        },
+        {
+          "actor": "challenger",
+          "toll": 35,
+          "line": "You came up under the guard instead of out from under it, which no champion would have done, and opened him along the ribs before he had finished being surprised."
+        },
+        {
+          "actor": "defender",
+          "toll": 0,
+          "line": "Halloran backed off two paces, bleeding, and looked at the Court's box for something that did not arrive."
+        },
+        {
+          "actor": "challenger",
+          "toll": 50,
+          "line": "You did not wait to see what he was looking for. He went down on his side with his hand still open, and the Ring made a noise you will hear again in rooms where nobody is shouting."
+        }
+      ],
+      "outcome": {
+        "winner": "challenger",
+        "verdict": "The succession passes to the hand that held the sand, unappealed and unappealable, and the carvers cut it into the inner wall before anybody at Court could be woken to object.",
+        "cost": "Halloran was carried off breathing, and every claim, debt and quarrel he was standing in for now belongs to you.",
+        "fatal": false,
+        "sets": ["succession_fought", "succession_passed"]
+      }
+    }
+  ]
+}

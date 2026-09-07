@@ -221,6 +221,89 @@ export interface WorldEscalation {
   ripens_after_rulings?: number
 }
 
+/**
+ * One side of a Verdict fought on the sand.
+ *
+ * A combatant is named by `cast_id` when they are someone the player can also
+ * meet, talk to and look at — Cassian on the sand and Cassian in the Chainhouse
+ * have to be the same person, and duplicating his name and face here is how the
+ * two quietly drift apart. `is_player` is the other case the world needs: the
+ * player has no card in the cast and no painted face, and a duel they are in is
+ * still a duel. Everyone else is a fighter authored for this one Verdict.
+ */
+export interface WorldDuelCombatant {
+  cast_id?: string
+  is_player?: boolean
+  /** Required for a fighter who is neither the player nor in the cast. */
+  name?: string
+  role?: string
+  /** How they fight, for narration only. Never read as a strength. */
+  style?: string
+}
+
+/**
+ * One exchange, authored in full.
+ *
+ * `line` is the beat as written, and it is what the player reads whenever the
+ * flavour pass is unavailable — so a duel is playable with no model at all.
+ * `toll` is what this beat costs the OTHER side, which is what drives the bars;
+ * it is authored rather than rolled because the loser of a Verdict is decided
+ * before the first blow (see `WorldDuel`).
+ *
+ * `said` is opt-in per beat. A beat authored silent stays silent even if the
+ * flavour pass writes a line for it: whether someone speaks in the middle of a
+ * fight is staging, and staging is authored.
+ */
+export interface WorldDuelBeat {
+  actor: 'challenger' | 'defender'
+  toll: number
+  /** Which of the actor's own authored portraits they wear here. Never a model's string. */
+  bearing?: string
+  line: string
+  said?: string
+}
+
+/**
+ * How the Verdict ends. AUTHORED, and the reason this whole file exists.
+ *
+ * A Verdict is law the moment it is cut into the wall, and the story after it
+ * is written against the flags the triggering choice sets — who inherits, who
+ * is dead, which endings are still reachable. A duel that decided its own
+ * winner would contradict all of it while looking, on screen, like a perfectly
+ * good fight. So the outcome is read off the authored choice and dramatised;
+ * nothing here is derived, rolled or asked for.
+ *
+ * `sets` restates the triggering choice's flags so the audit can prove the two
+ * agree. It is NOT what writes them — the choice does, exactly as it always
+ * has, so there is one place flags are set at runtime.
+ */
+export interface WorldDuelOutcome {
+  winner: 'challenger' | 'defender'
+  /** What the Ring now holds to be true. Read out when the fight ends. */
+  verdict: string
+  /** What winning it cost, in the same voice an ending's cost is written in. */
+  cost: string
+  fatal: boolean
+  sets: string[]
+}
+
+/** A fight that makes law, keyed to the authored choice that calls for it. */
+export interface WorldDuel {
+  id: string
+  choice_id: string
+  at: string
+  /** The legal question on the sand. Read to the crowd before the first blow. */
+  question: string
+  /** The opening, in the Ring's own voice. */
+  herald: string
+  /** How much punishment a side can take before it is over. Mechanism, not content. */
+  vigour: number
+  challenger: WorldDuelCombatant
+  defender: WorldDuelCombatant
+  beats: WorldDuelBeat[]
+  outcome: WorldDuelOutcome
+}
+
 export interface WorldReign {
   reign?: Record<string, { verb: string; premise: string; what_changes?: string[]; opening_beat?: string }>
   petitions?: WorldPetition[]
@@ -249,6 +332,15 @@ export interface WorldSidecars {
   cast_unanswered: string | null
   progression: WorldProgression | null
   reign: WorldReign | null
+  /**
+   * The Verdicts that are fought rather than chosen.
+   *
+   * Its own file because a duel is staging — beats, tolls, who wears which face
+   * — and it is retuned by whoever is tuning the fight, not by whoever is
+   * tuning the map. A world with no duel file is a world where every choice
+   * resolves in a line of summary, which is what this world was before.
+   */
+  duels: WorldDuel[]
 }
 
 export interface LoadedWorld extends Omit<AuthoredWorld, 'assets'>, WorldSidecars {
@@ -311,6 +403,7 @@ export function loadWorld(key: string): LoadedWorld | null {
   const cast = readJson<{ cast: WorldCastMember[]; unanswered?: string }>(join(DATA, `${key}.cast.json`))
   const progression = readJson<WorldProgression>(join(DATA, `${key}.progression.json`))
   const reign = readJson<WorldReign>(join(DATA, `${key}.reign.json`))
+  const duels = readJson<{ duels: WorldDuel[] }>(join(DATA, `${key}.duels.json`))
 
   const world: LoadedWorld = {
     ...authored,
@@ -318,6 +411,7 @@ export function loadWorld(key: string): LoadedWorld | null {
     cast_unanswered: cast?.unanswered ?? null,
     progression,
     reign,
+    duels: duels?.duels ?? [],
     assets: authored.assets.map(({ id, role }) => ({
       id,
       role,

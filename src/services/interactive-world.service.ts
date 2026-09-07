@@ -30,6 +30,7 @@ import {
   seasonLength,
 } from '../worlds/progression'
 import { ripenGrievance } from './grievance-ripening.service'
+import { duelForChoice, offerDuel, stageDuel, type OfferedDuel } from './duel.service'
 import { storageService } from './storage.service'
 import { HttpError } from '../utils/http-error'
 import { parseObjectId } from '../utils/mongo-id'
@@ -200,6 +201,7 @@ export const interactiveWorldService = {
     let memory: WorldChoice['memory'] | undefined
     let isFirst = false
     let spoken: { character_id: string; name: string; line: string; portrait_url: string | null } | null = null
+    let fought: ReturnType<typeof duelForChoice> = null
 
     if (action.type === 'move') {
       const destination = world.locations.find((l) => l.id === action.location_id)
@@ -231,6 +233,10 @@ export const interactiveWorldService = {
       if (isFirst) next.taken_choice_ids.push(choice.id)
       summary = choice.summary
       if (isFirst) memory = choice.memory
+      // A choice that is settled on the sand. The flags above are still what
+      // writes the outcome — this only decides whether the player watches it
+      // happen or reads one line saying it did.
+      fought = duelForChoice(authored, choice.id)
     }
 
     if (action.type === 'talk') {
@@ -478,10 +484,22 @@ export const interactiveWorldService = {
       { _id: state.instance_id },
       { $set: { 'meta.last_active_at': now }, $inc: { 'meta.total_events': 1, ...(memory ? { 'meta.total_memories': 1 } : {}) } },
     )
+    // Staged AFTER everything is written down. The Verdict is already law by
+    // the time the first blow is described, so a provider that is slow or down
+    // can only cost the player the prose — never the flags, the ledger or the
+    // place the choice opened. `stageDuel` degrades to the authored beats
+    // rather than throwing, so this cannot fail the turn either.
+    const duel: OfferedDuel | null = fought
+      ? offerDuel(await stageDuel(fought, authored, String(state.instance_id)), world.assets)
+      : null
+
     const flags = { ...outcome, ...next.flags }
     return {
       world,
       state: next,
+      // Present only on the turn the fight happens. A client that has never
+      // heard of a duel renders the summary it always did.
+      duel,
       // Recomputed AFTER the turn, because a conversation can summon the rest
       // of the room: winning Lady Sereth over opens the Court, and the two
       // people that puts in front of the player have to be in this response or
