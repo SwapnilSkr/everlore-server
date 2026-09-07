@@ -19,6 +19,8 @@ import {
 } from '../src/worlds/world-source'
 import { endingFor, PETITIONS_OPEN, progressionFor, ripensTo, seasonLength } from '../src/worlds/progression'
 import { composeRipenedPetition, siteForGrievance, verifyRipenedPetition } from '../src/services/grievance-ripening.service'
+import { knowledgeFor, offerCast, presentCast } from '../src/worlds/cast'
+import { briefFor, composeSpokenReply, verifySpokenReply } from '../src/services/character-speech.service'
 
 const world = requireWorld('iron-verdict')
 const IRON_VERDICT_ASSETS = world.assets
@@ -85,11 +87,7 @@ for (const l of IRON_VERDICT_LOCATIONS) {
 }
 for (const c of IRON_VERDICT_CHOICES) for (const f of asList(c.sets)) flagsInPlay.add(f)
 
-const cast = world.cast as {
-  id: string; name: string; home_location_id: string; portraits: Record<string, string>
-  gated_by_flag?: string; reveals_flag?: string
-  knows_guarded?: { fact: string; requires?: string }[]
-}[]
+const cast = world.cast
 const castIds = new Set<string>()
 for (const person of cast) {
   const at = `cast ${person.id}:`
@@ -302,6 +300,183 @@ else {
   const counted = effectiveFlags(world, {}, { [sealedByNarration.unlock_flag!]: 3 })
   if (Object.keys(counted).length) fail.push('a counter reached the map as though it were an open gate')
 }
+
+// ── The cast ──────────────────────────────────────────────────────────────
+// Presence and conversation are the newest surface and the one with the most
+// ways to fail silently. A character standing in an empty frame, a secret
+// volunteered on turn one, a road opened by a flag nobody authored: all three
+// render a scene that looks entirely correct.
+
+// A portrait id with no published asset behind it is an empty card at the exact
+// moment the player first meets someone.
+for (const person of cast) {
+  for (const [bearing, id] of Object.entries(person.portraits ?? {})) {
+    if (!assetIds.has(id)) fail.push(`cast ${person.id}: portrait '${bearing}' (${id}) is not in the manifest`)
+  }
+}
+
+// A character is only worth authoring if some playthrough can stand in front of
+// them. Both halves: the place has to be reachable, and the gate has to be a
+// flag something can actually set.
+for (const person of cast) {
+  if (byId.has(person.home_location_id) && !anywhere.has(person.home_location_id)) {
+    fail.push(`cast ${person.id}: lives at ${person.home_location_id}, which no playthrough reaches`)
+  }
+  if (person.gated_by_flag && !allSettable.has(person.gated_by_flag)) {
+    fail.push(`cast ${person.id}: gated on '${person.gated_by_flag}', which nothing sets — they can never be met`)
+  }
+  // What a character can grant has to be a flag the world reads. Otherwise the
+  // conversation seam is decoration: they hand over the name and no door opens.
+  if (person.reveals_flag && !vocabulary.has(person.reveals_flag)) {
+    fail.push(`cast ${person.id}: reveals '${person.reveals_flag}', which the world does not gate anything on`)
+  }
+}
+
+// PRESENCE IS DERIVED. Proved rather than asserted: with the gate off the
+// character is not in the room, with the gate on they are, and the ONLY thing
+// that changed is the flag. A hardcoded roster would pass the second check and
+// fail the first.
+const gatedPerson = cast.find((p) => p.gated_by_flag)
+if (!gatedPerson) warn.push('no gated character to test presence against')
+else {
+  const shut = presentCast(world, gatedPerson.home_location_id, {})
+  if (shut.some((p) => p.id === gatedPerson.id)) {
+    fail.push(`cast ${gatedPerson.id}: present before '${gatedPerson.gated_by_flag}' has landed`)
+  }
+  const open = presentCast(world, gatedPerson.home_location_id, { [gatedPerson.gated_by_flag!]: true })
+  if (!open.some((p) => p.id === gatedPerson.id)) {
+    fail.push(`cast ${gatedPerson.id}: never appears even once '${gatedPerson.gated_by_flag}' has landed`)
+  }
+}
+
+// The other half of the exposure rule, and the one that would cost a place on
+// the map: `reveals_flag` is what a character GRANTS, not a gate. Reading it as
+// one makes them unreachable — you would need the flag only they can give — and
+// nothing errors, the room is simply always empty.
+for (const person of cast) {
+  if (!person.reveals_flag || person.gated_by_flag) continue
+  if (!presentCast(world, person.home_location_id, {}).some((p) => p.id === person.id)) {
+    fail.push(`cast ${person.id}: ungated, but absent with no flags set — reveals_flag is being read as a gate`)
+  }
+}
+
+// GUARDED KNOWLEDGE, asserted on the REAL payload and the REAL prompt.
+//
+// This is the same class of invariant as `the_truth` on a petition and it fails
+// the same invisible way: the Duke confessing his complicity in his first
+// sentence is a perfectly good scene, and nothing on the screen says the
+// chapter's answer was just given away. Each check is followed by proof that it
+// BITES — the same needle found where it is supposed to be — because an
+// assertion that can never fail is worse than none.
+const guardian = cast.find((p) => (p.knows_guarded ?? []).length)
+if (!guardian) warn.push('no guarded knowledge authored, so nothing tests the guard')
+else {
+  const secret = guardian.knows_guarded![0]!
+  const needle = secret.fact.slice(0, 40)
+  const somewhere = byId.get(guardian.home_location_id)!
+
+  // 1. The client payload. Nothing a character knows, wants or fears is on it
+  //    at all, guarded or not — the client renders a face and a name.
+  const onTheWire = JSON.stringify(offerCast([guardian], IRON_VERDICT_ASSETS, () => false))
+  // The entrance is authored for the player and is the one thing here that is
+  // meant to be read. It goes out before the meeting and never after it.
+  if (!onTheWire.includes(guardian.first_met.slice(0, 40))) {
+    fail.push(`cast ${guardian.id}: their first meeting is never sent, so an unmet character is a card with a face on it`)
+  }
+  if (JSON.stringify(offerCast([guardian], IRON_VERDICT_ASSETS, () => true)).includes(guardian.first_met.slice(0, 40))) {
+    fail.push(`cast ${guardian.id}: their arrival is sent again after they have been met`)
+  }
+  if (onTheWire.includes(needle)) fail.push(`cast ${guardian.id}: guarded knowledge is sent to the client`)
+  for (const open of guardian.knows) {
+    if (onTheWire.includes(open.slice(0, 40))) fail.push(`cast ${guardian.id}: what they know is sent to the client`)
+  }
+  for (const field of [guardian.wants, guardian.fears]) {
+    if (onTheWire.includes(field.slice(0, 40))) fail.push(`cast ${guardian.id}: their motives are sent to the client`)
+  }
+  // The needle itself must be findable, or the three checks above prove nothing.
+  if (!JSON.stringify(guardian).includes(needle)) fail.push('the guarded-knowledge check cannot detect a leak it is looking at')
+
+  // 2. The prompt. Assembled by the same function the service calls, with the
+  //    same filter, so this is what would actually be sent.
+  const asked = (flags: Record<string, boolean>) =>
+    JSON.stringify(
+      briefFor({
+        member: guardian,
+        knowledge: knowledgeFor(guardian, flags),
+        where: somewhere,
+        disposition: guardian.disposition_start,
+        met: false,
+        history: [],
+        said: 'What do you know about the writ?',
+      }),
+    )
+  if (asked({}).includes(needle)) fail.push(`cast ${guardian.id}: guarded knowledge reaches the model before '${secret.requires}'`)
+  // The bite: the identical assertion against the earned state must FIND it.
+  // Without this, a filter that dropped guarded knowledge entirely would pass
+  // and the secret would simply never exist.
+  if (!asked({ [secret.requires]: true }).includes(needle)) {
+    fail.push(`cast ${guardian.id}: guarded knowledge never reaches the model even once '${secret.requires}' has landed`)
+  }
+  // Open knowledge is in from the first word, or the character has nothing to
+  // say and the whole seam is a stranger refusing to talk.
+  if (!asked({}).includes(guardian.knows[0]!.slice(0, 40))) {
+    fail.push(`cast ${guardian.id}: what they openly know never reaches the model`)
+  }
+}
+
+// A MODEL IS NEVER TRUSTED WITH STRUCTURE. The reply carries words and two
+// judgements; the portrait, the flag and the bounds are minted here. Each of
+// these would be silent: an unpublished portrait id renders an empty frame, and
+// an invented flag is a door in the map with no author behind it.
+const speaker = cast.find((p) => p.reveals_flag)
+if (!speaker) warn.push('no character can reveal anything, so conversation cannot move the map')
+else {
+  const WRITTEN = { line: 'He looked at the paper a long time before he answered.', bearing: 'default', turned: true, disposition_delta: 1 }
+  const invented = composeSpokenReply(
+    { ...WRITTEN, bearing: 'a face nobody painted' },
+    { member: speaker, disposition: 0, canSet: () => true },
+  )
+  if (!assetIds.has(invented.portrait_asset_id)) {
+    fail.push(`cast ${speaker.id}: a bearing the model invented resolves to an unpublished portrait`)
+  }
+  const refused = composeSpokenReply(WRITTEN, { member: speaker, disposition: 0, canSet: () => false })
+  if (refused.sets_flag) fail.push(`cast ${speaker.id}: opens a road on a flag the world does not gate anything on`)
+  const granted = composeSpokenReply(WRITTEN, { member: speaker, disposition: 0, canSet: (f) => vocabulary.has(f) })
+  if (granted.sets_flag !== speaker.reveals_flag) {
+    fail.push(`cast ${speaker.id}: being won over grants '${granted.sets_flag}' rather than the authored flag`)
+  }
+  // The flag a conversation mints has to be readable by the map, or something
+  // learned in conversation opens nothing.
+  const opened = effectiveFlags(world, { [granted.sets_flag!]: true }, undefined)
+  if (opened[speaker.reveals_flag!] !== true) fail.push(`cast ${speaker.id}: what they grant does not survive the flag union`)
+  const shoved = composeSpokenReply({ ...WRITTEN, disposition_delta: 99 }, { member: speaker, disposition: 0, canSet: () => true })
+  if (Math.abs(shoved.disposition) > 3) fail.push(`cast ${speaker.id}: one sentence can move a character to ${shoved.disposition}`)
+  const held = verifySpokenReply({ ...WRITTEN, disposition_delta: 99 })
+  if (!held || Math.abs(held.disposition_delta) > 1) fail.push('a single exchange can move a character by more than a step')
+}
+
+// DEGRADED MODE. A refused or failed call returns null and the caller narrates
+// the authored line — so the player gets a beat of fiction and can say
+// something else. Without the authored line they would get an empty string,
+// which is a character standing there having said nothing at all.
+if (!world.cast_unanswered) fail.push('no authored line for a character who does not answer — a failed call would render nothing')
+const MALFORMED_REPLY: Record<string, unknown> = {
+  'an empty response': {},
+  'the schema echoed back': { type: 'object', properties: { line: { type: 'string' } } },
+  'a reply with no words in it': { line: '   ', bearing: 'default', turned: true, disposition_delta: 0 },
+}
+for (const [what, payload] of Object.entries(MALFORMED_REPLY)) {
+  if (verifySpokenReply(payload)) fail.push(`speech accepts ${what}, which would render a character saying nothing`)
+}
+if (!verifySpokenReply({ line: 'He said nothing for a moment.', bearing: '', turned: false, disposition_delta: 0 })) {
+  fail.push('speech refuses a well-formed reply, so nobody could ever answer')
+}
+
+console.log(
+  `cast: ${cast.length} characters across ${new Set(cast.map((p) => p.home_location_id)).size} places, ` +
+  `${cast.filter((p) => p.gated_by_flag).length} gated, ${cast.filter((p) => p.reveals_flag).length} can open a road, ` +
+  `${cast.reduce((n, p) => n + (p.knows_guarded?.length ?? 0), 0)} guarded secrets`,
+)
 
 // A petition is only judgeable while the player does not know the answer. Two
 // fields would give it away — what is actually the case, and what each ruling

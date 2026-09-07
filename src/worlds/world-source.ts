@@ -127,6 +127,40 @@ export interface WorldProgression {
   ledger?: unknown
 }
 
+/**
+ * A fact a character has and will NOT volunteer.
+ *
+ * The gate is what makes it a secret rather than an opening line. Without one
+ * the entry is silently just `knows` — see `knowledgeFor`, which is the only
+ * place this is ever read.
+ */
+export interface WorldGuardedKnowledge {
+  fact: string
+  requires: string
+  note?: string
+}
+
+/** An authored character. Everything below `portraits` is for narration only. */
+export interface WorldCastMember {
+  id: string
+  name: string
+  role: string
+  faction: string
+  home_location_id: string
+  /** Keyed by bearing. `default` is required; the rest are moods of the same face. */
+  portraits: Record<string, string>
+  wants: string
+  fears: string
+  knows: string[]
+  knows_guarded?: WorldGuardedKnowledge[]
+  first_met: string
+  disposition_start: number
+  /** What this character can tell the player that opens a road. NOT a gate. */
+  reveals_flag?: string
+  /** The flag that must be true before the player can see them at all. */
+  gated_by_flag?: string
+}
+
 /** One side of a petition. Both are stated as the party would state them. */
 export interface WorldPetitionParty {
   name: string
@@ -203,7 +237,16 @@ export interface WorldReign {
  * with no cast file is a world with no cast, not a broken world.
  */
 export interface WorldSidecars {
-  cast: unknown[]
+  cast: WorldCastMember[]
+  /**
+   * What is narrated when a character does not answer.
+   *
+   * Authored rather than written in code, because it is prose a player reads
+   * and the only alternative to it is an error message or a scene that goes
+   * nowhere. It is the degraded path for every conversation in the world, so
+   * it lives beside the cast where it can be rewritten without a deploy.
+   */
+  cast_unanswered: string | null
   progression: WorldProgression | null
   reign: WorldReign | null
 }
@@ -265,13 +308,14 @@ export function loadWorld(key: string): LoadedWorld | null {
 
   // Sidecars are keyed off the same world key, so adding one is dropping a
   // file next to the world rather than registering it anywhere.
-  const cast = readJson<{ cast: unknown[] }>(join(DATA, `${key}.cast.json`))
+  const cast = readJson<{ cast: WorldCastMember[]; unanswered?: string }>(join(DATA, `${key}.cast.json`))
   const progression = readJson<WorldProgression>(join(DATA, `${key}.progression.json`))
   const reign = readJson<WorldReign>(join(DATA, `${key}.reign.json`))
 
   const world: LoadedWorld = {
     ...authored,
     cast: cast?.cast ?? [],
+    cast_unanswered: cast?.unanswered ?? null,
     progression,
     reign,
     assets: authored.assets.map(({ id, role }) => ({

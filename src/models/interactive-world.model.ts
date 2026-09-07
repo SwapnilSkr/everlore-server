@@ -206,6 +206,22 @@ export interface RipenedPetitionDoc {
   generated_at: Date
 }
 
+/**
+ * One running conversation with one character.
+ *
+ * Stored rather than derived, because it is the only part of a conversation
+ * that cannot be recomputed: what was actually said is gone the moment it is
+ * not written down, and a character who forgets the last thing the player told
+ * them is a character the player stops talking to. Disposition rides here for
+ * the same reason — it is a sum of exchanges, and the exchanges beyond the last
+ * few are deliberately not kept.
+ */
+export interface WorldConversationDoc {
+  disposition: number
+  /** Newest last. Bounded, so the brief cannot grow without end. */
+  exchanges: { said: string; replied: string }[]
+}
+
 /** Per-instance state is the canonical source for unlocked routes and choices. */
 export interface InteractiveWorldStateDoc {
   _id: ObjectId
@@ -242,6 +258,12 @@ export interface InteractiveWorldStateDoc {
    * written before ripening existed, so read it defensively.
    */
   ripened_petitions?: RipenedPetitionDoc[]
+  /**
+   * Keyed by character id. A character with no entry has never been spoken to,
+   * which is what `met` is read from. Absent on states written before anyone
+   * could be spoken to, so read it defensively.
+   */
+  conversations?: Record<string, WorldConversationDoc>
   sequence: number
   created_at: Date
   updated_at: Date

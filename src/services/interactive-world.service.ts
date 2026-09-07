@@ -15,8 +15,11 @@ import {
   loadWorld,
   requireWorld,
   satisfies,
+  worldVocabulary,
   type WorldChoice,
 } from '../worlds/world-source'
+import { knowledgeFor, offerCast, presentCast } from '../worlds/cast'
+import { RECALLED_EXCHANGES, speakAs } from './character-speech.service'
 import {
   endingFlag,
   endingFor,
@@ -143,6 +146,14 @@ export const interactiveWorldService = {
       world,
       state,
       flags,
+      // Who is standing here is derived from the same flags as everything else,
+      // so a character the story loop unlocked is present the moment the map
+      // agrees they are — see `presentCast` for which field is the gate.
+      cast: offerCast(
+        presentCast(authored, state.current_location_id, flags),
+        world.assets,
+        (id) => state.conversations?.[id] !== undefined,
+      ),
       progression: progressionFor(authored.progression, authored.reign, world.locations, { ...state, flags }),
     }
   },
@@ -152,11 +163,14 @@ export const interactiveWorldService = {
     instanceId: string,
     playerId: string,
     action: {
-      type: 'move' | 'choose' | 'rule'
+      type: 'move' | 'choose' | 'rule' | 'talk'
       location_id?: string
       choice_id?: string
       petition_id?: string
       resolution_id?: string
+      character_id?: string
+      /** Free-form player speech. Bounded at the route; never interpreted as a command. */
+      said?: string
     },
   ) {
     const authored = requireWorld(worldKey)
@@ -173,6 +187,7 @@ export const interactiveWorldService = {
       taken_choice_ids: [...state.taken_choice_ids],
       ledger: [...state.ledger],
       ripened_petitions: [...(state.ripened_petitions ?? [])],
+      conversations: { ...(state.conversations ?? {}) },
     }
     // A ripened grievance is only before the player once a season of further
     // rulings has passed. The same gate the offer is made under has to hold on
@@ -184,6 +199,7 @@ export const interactiveWorldService = {
     let seeding: Parameters<typeof ripenGrievance>[0] | null = null
     let memory: WorldChoice['memory'] | undefined
     let isFirst = false
+    let spoken: { character_id: string; name: string; line: string; portrait_url: string | null } | null = null
 
     if (action.type === 'move') {
       const destination = world.locations.find((l) => l.id === action.location_id)
@@ -215,6 +231,61 @@ export const interactiveWorldService = {
       if (isFirst) next.taken_choice_ids.push(choice.id)
       summary = choice.summary
       if (isFirst) memory = choice.memory
+    }
+
+    if (action.type === 'talk') {
+      const said = (action.said ?? '').replace(/\s+/g, ' ').trim()
+      const here = world.locations.find((l) => l.id === state.current_location_id)
+      const member = presentCast(authored, state.current_location_id, known).find((c) => c.id === action.character_id)
+      // Presence is checked on the way IN as well as on the way out. Otherwise
+      // a client could name a character it was never shown and hold a
+      // conversation with someone who is not in the room, or worse, someone the
+      // player has not earned the right to have met.
+      if (!said || !here || !member) throw new HttpError(400, 'There is no one here to say that to')
+      const prior = state.conversations?.[member.id]
+      // The vocabulary is the same guard narration is held to: a character can
+      // open a road the world already gates on, and nothing else.
+      const vocabulary = worldVocabulary(authored)
+      const reply = await speakAs(
+        {
+          member,
+          // Filtered against the LIVE flags. A guarded fact the player has not
+          // earned never reaches the model, so it cannot reach the player.
+          knowledge: knowledgeFor(member, known),
+          where: here,
+          disposition: prior?.disposition ?? member.disposition_start,
+          met: prior !== undefined,
+          history: prior?.exchanges ?? [],
+          said,
+        },
+        (flag) => vocabulary.has(flag),
+        String(state.instance_id),
+      )
+      if (reply) {
+        next.conversations = {
+          ...next.conversations,
+          [member.id]: {
+            disposition: reply.disposition,
+            exchanges: [...(prior?.exchanges ?? []), { said, replied: reply.line }].slice(-RECALLED_EXCHANGES),
+          },
+        }
+        if (reply.sets_flag) {
+          next.flags[reply.sets_flag] = true
+          flagsSet = [reply.sets_flag]
+        }
+      }
+      // A character who could not be made to answer is narrated, not errored,
+      // and nothing about them is written down — so the player can say
+      // something else and the exchange has cost them nothing.
+      const line = reply?.line ?? authored.cast_unanswered ?? ''
+      const portraitId = reply?.portrait_asset_id ?? member.portraits.default!
+      spoken = {
+        character_id: member.id,
+        name: member.name,
+        line,
+        portrait_url: world.assets.find((a) => a.id === portraitId)?.url ?? null,
+      }
+      summary = line
     }
 
     if (action.type === 'rule') {
@@ -350,7 +421,11 @@ export const interactiveWorldService = {
             ? `Travel: ${action.location_id}`
             : action.type === 'rule'
               ? `Ruling: ${action.petition_id} → ${action.resolution_id}`
-              : `Choice: ${action.choice_id}`,
+              : action.type === 'talk'
+                // The player's own words, so the story loop reads what was said
+                // rather than that something was said.
+                ? `Said to ${spoken?.name ?? action.character_id}: ${action.said ?? ''}`
+                : `Choice: ${action.choice_id}`,
         ai_response: summary,
         state_mutations: {},
         flag_mutations: Object.fromEntries(flagsSet.map((f) => [f, { op: 'set', value: true }])),
@@ -395,11 +470,22 @@ export const interactiveWorldService = {
       { _id: state.instance_id },
       { $set: { 'meta.last_active_at': now }, $inc: { 'meta.total_events': 1, ...(memory ? { 'meta.total_memories': 1 } : {}) } },
     )
+    const flags = { ...outcome, ...next.flags }
     return {
       world,
       state: next,
-      progression: progressionFor(authored.progression, authored.reign, world.locations, { ...next, flags: { ...outcome, ...next.flags } }),
+      // Recomputed AFTER the turn, because a conversation can summon the rest
+      // of the room: winning Lady Sereth over opens the Court, and the two
+      // people that puts in front of the player have to be in this response or
+      // the client shows an empty hall until it asks again.
+      cast: offerCast(
+        presentCast(authored, next.current_location_id, flags),
+        world.assets,
+        (id) => next.conversations?.[id] !== undefined,
+      ),
+      progression: progressionFor(authored.progression, authored.reign, world.locations, { ...next, flags }),
       reign_opened: reignOpened,
+      spoken,
       event: { sequence: next.sequence, action, summary, at: now },
     }
   },
