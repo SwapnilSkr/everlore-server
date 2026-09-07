@@ -17,7 +17,16 @@ import {
   satisfies,
   type WorldChoice,
 } from '../worlds/world-source'
-import { endingFlag, endingFor, PETITIONS_OPEN, progressionFor, resolutionOf } from '../worlds/progression'
+import {
+  endingFlag,
+  endingFor,
+  PETITIONS_OPEN,
+  progressionFor,
+  resolutionOf,
+  ripensTo,
+  seasonLength,
+} from '../worlds/progression'
+import { ripenGrievance } from './grievance-ripening.service'
 import { storageService } from './storage.service'
 import { HttpError } from '../utils/http-error'
 import { parseObjectId } from '../utils/mongo-id'
@@ -124,6 +133,7 @@ export const interactiveWorldService = {
       ...found,
       taken_choice_ids: found.taken_choice_ids ?? [],
       ledger: found.ledger ?? [],
+      ripened_petitions: found.ripened_petitions ?? [],
     } as InteractiveWorldStateDoc
     // What the story has done counts too. Everything downstream — visibility,
     // which choices are offered, standing, the ending — reads this and never
@@ -162,9 +172,16 @@ export const interactiveWorldService = {
       seen_scene_ids: [...state.seen_scene_ids],
       taken_choice_ids: [...state.taken_choice_ids],
       ledger: [...state.ledger],
+      ripened_petitions: [...(state.ripened_petitions ?? [])],
     }
+    // A ripened grievance is only before the player once a season of further
+    // rulings has passed. The same gate the offer is made under has to hold on
+    // the way in as well, or a client could rule on a petition it was never
+    // shown by naming its id.
+    const ripe = (state.ripened_petitions ?? []).filter((p) => state.ledger.length >= p.ripe_at_ledger_length)
     let summary = ''
     let flagsSet: string[] = []
+    let seeding: Parameters<typeof ripenGrievance>[0] | null = null
     let memory: WorldChoice['memory'] | undefined
     let isFirst = false
 
@@ -202,7 +219,7 @@ export const interactiveWorldService = {
 
     if (action.type === 'rule') {
       if (known[PETITIONS_OPEN] !== true) throw new HttpError(400, 'No one brings you their quarrels yet')
-      const found = resolutionOf(authored.reign, action.petition_id ?? '', action.resolution_id ?? '')
+      const found = resolutionOf(authored.reign, action.petition_id ?? '', action.resolution_id ?? '', ripe)
       if (!found) throw new HttpError(400, 'Unknown petition')
       const { petition, resolution } = found
       if (state.current_location_id !== petition.at) throw new HttpError(400, 'That petition is not before you here')
@@ -229,6 +246,32 @@ export const interactiveWorldService = {
         objects: [petition.title],
         terms: `${petition.kind}, ruling, ${petition.title}, ledger`,
         valence: 'weighty',
+      }
+
+      // The party made to pay carries the grievance, and this is where it is
+      // seeded. Two conditions, and both of them are terminations:
+      //
+      //   — the petition must be AUTHORED. Ruling on a grievance that already
+      //     came back is ledgered and cited like anything else and seeds
+      //     nothing further, so one ruling can never open an endless chain.
+      //   — its kind must have a successor in the authored ladder. A quarrel
+      //     that is already a killing has nowhere worse to go.
+      //
+      // Written now, read a season from now: generating it here costs the
+      // player nothing because nothing awaits it, and by the time it is ripe it
+      // has either been stored or it never will be.
+      const authoredSeed = (authored.reign?.petitions ?? []).some((p) => p.id === petition.id)
+      const harder = authoredSeed ? ripensTo(authored.reign, petition.kind) : null
+      const alreadySeeded = (state.ripened_petitions ?? []).some((p) => p.seeded_by.resolution_id === resolution.id)
+      if (harder && !alreadySeeded) {
+        seeding = {
+          seed: { petition, resolution },
+          ripensToKind: harder,
+          locations: world.locations,
+          openLocationIds: next.unlocked_location_ids,
+          ripeAtLedgerLength: next.ledger.length + seasonLength(authored.reign),
+          instanceId: String(state.instance_id),
+        }
       }
     }
 
@@ -268,8 +311,30 @@ export const interactiveWorldService = {
 
     next.sequence += 1
     next.updated_at = now
-    const { _id: _stateId, ...persisted } = next
+    // Ripened petitions are deliberately NOT part of this write. They are the
+    // one piece of reign state that is stored rather than derived, they are
+    // appended by a background pass that can land at any moment, and a turn
+    // that wrote the whole document back would silently drop one that arrived
+    // mid-turn. They are only ever appended, by `$push`, below.
+    const { _id: _stateId, ripened_petitions: _ripened, ...persisted } = next
     await mongoColl.interactiveWorldStates().updateOne({ _id: state._id }, { $set: persisted })
+
+    // Off the player's path entirely: the response does not wait for it, and a
+    // provider that is slow, rate-limited or down costs a ruling nothing. A
+    // failure stores no petition and the reign continues on authored ones.
+    if (seeding) {
+      void ripenGrievance(seeding)
+        .then((ripened) => {
+          if (!ripened) return
+          // Guarded on the seed rather than the id so a retry, a replayed turn
+          // or two overlapping fires cannot seat the same grievance twice.
+          return mongoColl.interactiveWorldStates().updateOne(
+            { _id: state._id, 'ripened_petitions.seeded_by.resolution_id': { $ne: ripened.seeded_by.resolution_id } },
+            { $push: { ripened_petitions: ripened } },
+          )
+        })
+        .catch(() => {})
+    }
 
     const lastEvent = await mongoColl.events().findOne({ instance_id: state.instance_id }, { sort: { sequence: -1 } })
     const eventId = new ObjectId()

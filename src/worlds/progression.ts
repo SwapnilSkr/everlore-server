@@ -11,7 +11,11 @@
  * The one thing that IS persisted is the ending flag, because an ending is a
  * historical fact rather than a derivation — see `endingFlag` below.
  */
-import type { InteractiveLocationDoc, WorldLedgerEntryDoc } from '../models/interactive-world.model'
+import type {
+  InteractiveLocationDoc,
+  RipenedPetitionDoc,
+  WorldLedgerEntryDoc,
+} from '../models/interactive-world.model'
 import {
   satisfies,
   type WorldEnding,
@@ -112,15 +116,58 @@ export function endingFor(
   return endings.find((e) => satisfies(e.trigger, flags)) ?? null
 }
 
+/**
+ * Every petition that can be before the player: the authored ones, plus the
+ * grievances their own rulings have brought back.
+ *
+ * They are pooled deliberately. A ripened petition is judged, ruled, ledgered
+ * and summed by exactly the code that handles an authored one — the moment
+ * there are two paths, one of them stops leaking the truth and the other keeps
+ * doing it, and nothing about the scene looks wrong either way.
+ */
+export function petitionPool(
+  reign: WorldReign | null,
+  ripened: RipenedPetitionDoc[] | undefined,
+): WorldPetition[] {
+  return [...(reign?.petitions ?? []), ...((ripened ?? []) as unknown as WorldPetition[])]
+}
+
 /** Find a petition and one of its resolutions, or null if either is unknown. */
 export function resolutionOf(
   reign: WorldReign | null,
   petitionId: string,
   resolutionId: string,
+  ripened?: RipenedPetitionDoc[],
 ): { petition: WorldPetition; resolution: WorldPetitionResolution } | null {
-  const petition = (reign?.petitions ?? []).find((p) => p.id === petitionId)
+  const petition = petitionPool(reign, ripened).find((p) => p.id === petitionId)
   const resolution = petition?.resolutions.find((r) => r.id === resolutionId)
   return petition && resolution ? { petition, resolution } : null
+}
+
+/**
+ * The kind a grievance of this kind comes back as, or null if it is the end of
+ * the ladder.
+ *
+ * Null is the outer half of the termination rule and it is authored: a kind
+ * with no successor in the file cannot ripen, so no chain can run forever no
+ * matter how the ladder is retuned. The inner half is in the service — only a
+ * ruling on an AUTHORED petition seeds anything, so a chain is one hop long
+ * even where the ladder would allow more.
+ */
+export function ripensTo(reign: WorldReign | null, kind: string): string | null {
+  return reign?.escalation?.ripens_to?.[kind] ?? null
+}
+
+/**
+ * How many further rulings make a season. Authored; 3 if the file is silent.
+ *
+ * A grievance with no wait at all would arrive in the same breath as the ruling
+ * that caused it, which reads as the world arguing back rather than as
+ * consequence catching up, so a positive floor is enforced here.
+ */
+export function seasonLength(reign: WorldReign | null): number {
+  const authored = reign?.escalation?.ripens_after_rulings
+  return typeof authored === 'number' && authored >= 1 ? Math.floor(authored) : 3
 }
 
 export function progressionFor(
@@ -133,6 +180,7 @@ export function progressionFor(
     revealed_location_ids: string[]
     current_location_id: string
     ledger?: WorldLedgerEntryDoc[]
+    ripened_petitions?: RipenedPetitionDoc[]
   },
 ): ProgressionView {
   const { flags } = state
@@ -146,7 +194,7 @@ export function progressionFor(
   // story earned, which is the point of having one.
   const ruledShift = (trackId: string) =>
     ledger.reduce((sum, entry) => {
-      const found = resolutionOf(reign, entry.petition_id, entry.resolution_id)
+      const found = resolutionOf(reign, entry.petition_id, entry.resolution_id, state.ripened_petitions)
       return sum + (found?.resolution.standing_shift?.[trackId] ?? 0)
     }, 0)
 
@@ -179,24 +227,33 @@ export function progressionFor(
     .filter((entry) => withinEarshot.has(entry.at))
     .map((entry) => ({ principle: entry.principle, petition_id: entry.petition_id }))
 
+  // A grievance is ripe once the player has judged a season's worth of other
+  // quarrels since the ruling that made it. Counted off the ledger the player
+  // is holding, so it is the same number they can see for themselves.
+  const ripe = (state.ripened_petitions ?? []).filter((p) => ledger.length >= p.ripe_at_ledger_length)
+
+  // One mapping for both, so a field that must never be sent cannot be sent by
+  // whichever branch was written second.
+  const offer = (p: WorldPetition): OfferedPetition => ({
+    id: p.id,
+    title: p.title,
+    at: p.at,
+    kind: p.kind,
+    parties: p.parties,
+    resolutions: p.resolutions.map(({ id, label }) => ({ id, label })),
+    cites,
+  })
+
   const petitions: OfferedPetition[] =
     flags[PETITIONS_OPEN] === true
-      ? (reign?.petitions ?? [])
+      ? petitionPool(reign, ripe)
           .filter(
             (p) =>
               p.at === state.current_location_id &&
               !ruled.has(p.id) &&
               (!p.requires || flags[p.requires] === true),
           )
-          .map((p) => ({
-            id: p.id,
-            title: p.title,
-            at: p.at,
-            kind: p.kind,
-            parties: p.parties,
-            resolutions: p.resolutions.map(({ id, label }) => ({ id, label })),
-            cites,
-          }))
+          .map(offer)
       : []
 
   return {

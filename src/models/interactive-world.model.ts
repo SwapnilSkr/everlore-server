@@ -161,6 +161,51 @@ export interface WorldLedgerEntryDoc {
   ruled_at: Date
 }
 
+/**
+ * A grievance that came back, written out in full and kept.
+ *
+ * Everything else about a reign is recomputed — standing, marks, which
+ * petitions are on offer — because derived state that is also stored drifts the
+ * moment the authored file is retuned. This one cannot be. A ripened petition
+ * is model output: its parties, its truth and its three ways of ruling were
+ * written once, in response to a ruling this player handed down, and asking for
+ * them again would produce a different quarrel between different people. A
+ * player who reloads must find the same two farmers standing in front of them
+ * with the same claims, so the text is persisted and never regenerated.
+ *
+ * It carries the authored petition shape so that everything downstream —
+ * offering it, ruling on it, summing its standing — treats it exactly as it
+ * treats an authored one, and there is no second code path to keep honest.
+ */
+export interface RipenedPetitionDoc {
+  id: string
+  at: string
+  kind: string
+  title: string
+  parties: { name: string; claim: string }[]
+  the_truth: string
+  resolutions: {
+    id: string
+    label: string
+    consequence: string
+    made_whole: string
+    made_to_pay: string
+    principle: string
+  }[]
+  /** The ruling that made the grievance. One ruling ripens at most once. */
+  seeded_by: { petition_id: string; resolution_id: string }
+  /**
+   * The ledger length at which the grievance is ripe.
+   *
+   * "A season later" has no calendar to hang on, so it is counted in rulings
+   * handed down: the petition is written the moment it is seeded, and waits in
+   * the state until the player has judged the authored number of further
+   * quarrels. Writing it early keeps generation off the ruling's own latency.
+   */
+  ripe_at_ledger_length: number
+  generated_at: Date
+}
+
 /** Per-instance state is the canonical source for unlocked routes and choices. */
 export interface InteractiveWorldStateDoc {
   _id: ObjectId
@@ -192,6 +237,11 @@ export interface InteractiveWorldStateDoc {
    * under it. Empty until an ending opens the petition pool.
    */
   ledger: WorldLedgerEntryDoc[]
+  /**
+   * Grievances that ripened out of the player's own rulings. Absent on states
+   * written before ripening existed, so read it defensively.
+   */
+  ripened_petitions?: RipenedPetitionDoc[]
   sequence: number
   created_at: Date
   updated_at: Date

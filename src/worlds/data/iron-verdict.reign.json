@@ -1093,7 +1093,18 @@
         "chain": "You rule that an unsworn fight is not a Verdict. The Iron Fane is the party made to pay and does not come back as a petitioner — institutions do not petition, they sponsor. Canon Orrek's grievance ripens into pet_seal_that_reads_true at the Sundial Market: the Fane, needing a forger who is not one of its own, produces Cassia Lowe's complaint against Nara Voss itself, funded and lawyered, three months before Lowe would otherwise have found the money. The principle travels the other way at the same time — Sennet Corry hears in the undercity that you will call a thing a killing when the form was not kept, and pet_no_body_debt arrives at the Drowned Stair with her brother's disappearance pleaded not as a debt at all but as an unwitnessed killing under Warden Tibb's grate, which is a far better case and is also, as it happens, false.",
         "and_then": "Widow Ferrand, made whole, becomes an owner of something: the twenty reopened judgements are now hers to press or to sell, and she is petitioned for the list by both the Gilt Exchange and Greywither Abbey within the same season."
       }
-    ]
+    ],
+    "ripens_to": {
+      "boundary": "killing",
+      "debt": "desertion",
+      "accusation": "inheritance",
+      "contract": "desertion",
+      "salvage": "killing",
+      "hostage": "killing"
+    },
+    "ripens_to_note": "The kind ladder, authored rather than coded. A kind with no entry here is the end of its ladder — killing, desertion and inheritance are deliberately absent, because a grievance that has already become a killing has nowhere worse to go. This is the outer half of the termination rule; the inner half is that only a ruling on an AUTHORED petition seeds a grievance at all.",
+    "ripens_after_rulings": 3,
+    "ripens_after_rulings_note": "A season, counted in the only clock this engine has: rulings handed down. The grievance the player made when they ruled comes back once three further petitions have been heard, which is far enough that the reign has moved on and near enough that the player still remembers the face."
   },
   "needs_new_flags": [],
   "the_honest_limit": {

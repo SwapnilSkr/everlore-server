@@ -172,10 +172,25 @@ export interface WorldPetition {
   resolutions: WorldPetitionResolution[]
 }
 
+/**
+ * How a ruling turns into the next petition. Authored, not coded.
+ *
+ * `ripens_to` is the kind ladder — which harder quarrel a grievance of each
+ * kind comes back as. It lives in the file because it is content: which kinds
+ * exist and what each one escalates into is a judgement about this world, and a
+ * literal map in TypeScript would mean a designer cannot retune the reign
+ * without a deploy. A kind ABSENT from the ladder is the end of it.
+ */
+export interface WorldEscalation {
+  ripens_to?: Record<string, string>
+  /** Rulings that must pass before a grievance is ripe. A season, in this engine's clock. */
+  ripens_after_rulings?: number
+}
+
 export interface WorldReign {
   reign?: Record<string, { verb: string; premise: string; what_changes?: string[]; opening_beat?: string }>
   petitions?: WorldPetition[]
-  escalation?: unknown
+  escalation?: WorldEscalation
 }
 
 /**

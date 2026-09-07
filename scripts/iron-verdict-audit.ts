@@ -17,7 +17,8 @@ import {
   satisfies,
   type WorldEnding,
 } from '../src/worlds/world-source'
-import { endingFor, PETITIONS_OPEN, progressionFor } from '../src/worlds/progression'
+import { endingFor, PETITIONS_OPEN, progressionFor, ripensTo, seasonLength } from '../src/worlds/progression'
+import { composeRipenedPetition, siteForGrievance, verifyRipenedPetition } from '../src/services/grievance-ripening.service'
 
 const world = requireWorld('iron-verdict')
 const IRON_VERDICT_ASSETS = world.assets
@@ -327,6 +328,155 @@ if (anyPetition) {
     }
   }
 }
+
+// ── Grievance ripening ───────────────────────────────────────────────────
+// The party made to pay comes back a season later with a worse quarrel. Three
+// things about that are load-bearing and none of them are visible at runtime:
+// the chain has to stop, the petition has to be sited somewhere that exists,
+// and the generated text has to be as blind as the authored text is. A ripened
+// petition that leaks its own truth still renders a perfectly good scene — it
+// simply is not a judgement any more, and nothing about the screen says so.
+
+const ladder = (reign?.escalation?.ripens_to ?? {}) as Record<string, string>
+const authoredKinds = new Set((reign?.petitions ?? []).map((p) => p.kind))
+if (!Object.keys(ladder).length) fail.push('escalation: no kind ladder is authored, so no grievance can ever ripen')
+for (const [from, to] of Object.entries(ladder)) {
+  if (!authoredKinds.has(from)) warn.push(`escalation: '${from}' ripens, but no authored petition is of that kind`)
+  if (!to) fail.push(`escalation: '${from}' ripens into nothing`)
+  // The ladder terminating is the whole safety argument for generating content
+  // from a player's own ruling. A target that is itself a rung is a cycle, and
+  // a cycle is an unbounded chain of model calls seeded by one decision.
+  if (ladder[to]) fail.push(`escalation: '${from}' → '${to}' → '${ladder[to]}' — the ladder does not terminate`)
+}
+if (seasonLength(reign) < 1) fail.push('escalation: a season of no rulings would fire the grievance in the same breath as the ruling')
+
+// Where a grievance comes back to stand. Sited in code rather than by the
+// model precisely so this can be proved: at the ruling's own place, or one
+// route from it, and never anywhere that is not on the map.
+for (const petition of reign?.petitions ?? []) {
+  const here = byId.get(petition.at)
+  if (!here) continue
+  const open = IRON_VERDICT_LOCATIONS.map((l) => l.id)
+  for (const resolution of petition.resolutions ?? []) {
+    const at = siteForGrievance(petition.at, IRON_VERDICT_LOCATIONS, open, resolution.id)
+    if (!at || !byId.has(at)) {
+      fail.push(`petition ${petition.id}: a grievance from ${resolution.id} would be sited at '${at}', which is not a place`)
+    } else if (at !== petition.at && !here.routes.includes(at)) {
+      fail.push(`petition ${petition.id}: a grievance from ${resolution.id} lands at ${at}, which is more than one route from ${petition.at}`)
+    }
+  }
+}
+
+// Malformed model output must be REFUSED, not repaired into half a petition.
+// Every one of these degrades to the same thing: no petition is stored and the
+// reign carries on with the authored sixteen.
+const WELL_FORMED = {
+  title: 'The Second Hedge',
+  the_truth: 'The brook moved again and nobody has looked.',
+  parties: [
+    { name: 'Denny Ostler', claim: 'He was made to pay once and will not be made to pay twice.' },
+    { name: 'Wenna Fell', claim: 'The ground is hers by the judge\'s own word.' },
+  ],
+  resolutions: [
+    { label: 'Hold the line', consequence: 'It costs.', made_whole: 'Fell', made_to_pay: 'Ostler', principle: 'A ruling stands.' },
+    { label: 'Reopen it', consequence: 'It costs more.', made_whole: 'Ostler', made_to_pay: 'the Ring', principle: 'A ruling may be re-read.' },
+  ],
+}
+const MALFORMED: Record<string, unknown> = {
+  'an empty response': {},
+  'the schema echoed back': { type: 'object', properties: { title: { type: 'string' } } },
+  'no truth behind it': { ...WELL_FORMED, the_truth: '   ' },
+  'one party': { ...WELL_FORMED, parties: [WELL_FORMED.parties[0]] },
+  'one way to rule': { ...WELL_FORMED, resolutions: [WELL_FORMED.resolutions[0]] },
+  'a resolution that seeds nothing': {
+    ...WELL_FORMED,
+    resolutions: WELL_FORMED.resolutions.map((r) => ({ ...r, principle: '' })),
+  },
+}
+for (const [what, payload] of Object.entries(MALFORMED)) {
+  if (verifyRipenedPetition(payload)) fail.push(`ripening accepts ${what}, which would put an unjudgeable petition before the player`)
+}
+if (!verifyRipenedPetition(WELL_FORMED)) fail.push('ripening refuses a well-formed petition, so no grievance could ever return')
+
+// The kind must actually escalate, and it must escalate to what the FILE says.
+// The model is never asked for the kind; if it were, the ladder would be
+// decoration.
+const seedPetition = (reign?.petitions ?? []).find((p) => ripensTo(reign, p.kind))
+if (!seedPetition) fail.push('no authored petition has a kind that ripens, so the mechanic is unreachable')
+else {
+  const seedResolution = seedPetition.resolutions[0]!
+  const written = verifyRipenedPetition(WELL_FORMED)!
+  const at = siteForGrievance(seedPetition.at, IRON_VERDICT_LOCATIONS, IRON_VERDICT_LOCATIONS.map((l) => l.id), seedResolution.id)!
+  const ripened = composeRipenedPetition(written, {
+    seed: { petition: seedPetition, resolution: seedResolution },
+    ripensToKind: ripensTo(reign, seedPetition.kind)!,
+    at,
+    ripeAtLedgerLength: 1 + seasonLength(reign),
+  })
+  if (ripened.kind === seedPetition.kind) fail.push(`ripening ${seedPetition.id} returns the same kind, so nothing escalated`)
+  if (ripened.kind !== ladder[seedPetition.kind]) fail.push(`ripening ${seedPetition.id} ignores the authored ladder`)
+  // The end of the ladder is where the chain stops. If the harder kind could
+  // itself ripen, one ruling would seed an unbounded run of model calls.
+  if (ripensTo(reign, ripened.kind)) fail.push(`a ripened '${ripened.kind}' can ripen again — the chain does not terminate`)
+  if (petitionIds.has(ripened.id)) fail.push(`ripened id ${ripened.id} collides with an authored petition`)
+  if (ripened.resolutions.some((r, i) => ripened.resolutions.findIndex((o) => o.id === r.id) !== i)) {
+    fail.push(`ripened ${ripened.id} has duplicate resolution ids, so a ruling would be ambiguous`)
+  }
+
+  // The same assertion the authored petitions get, on the REAL payload. A
+  // generated petition goes through the same offer as an authored one for
+  // exactly this reason — a second mapping is a second place to leak from.
+  const ledgerLength = ripened.ripe_at_ledger_length
+  const wire = JSON.stringify(
+    progressionFor(world.progression, world.reign, IRON_VERDICT_LOCATIONS, {
+      flags: { [PETITIONS_OPEN]: true },
+      taken_choice_ids: [],
+      revealed_location_ids: [],
+      current_location_id: ripened.at,
+      ledger: Array.from({ length: ledgerLength }, () => ({
+        petition_id: 'ruled', resolution_id: 'r', at: ripened.at,
+        made_whole: 'x', made_to_pay: 'y', principle: 'z', ruled_at: new Date(),
+      })),
+      ripened_petitions: [ripened],
+    }).petitions,
+  )
+  if (!wire.includes(ripened.id)) fail.push(`ripened ${ripened.id} is not offered at ${ripened.at} once it is ripe`)
+  if (wire.includes(ripened.the_truth.slice(0, 40))) fail.push(`ripened ${ripened.id}: the truth is sent to the client, which spoils it`)
+  for (const resolution of ripened.resolutions) {
+    if (wire.includes(resolution.consequence.slice(0, 20))) {
+      fail.push(`ripened ${ripened.id}: ruling consequences are sent to the client, making it a menu with the answers on it`)
+    }
+  }
+
+  // Not yet a season old. A grievance that arrives with the ruling reads as the
+  // world arguing back rather than as consequence catching up.
+  const early = progressionFor(world.progression, world.reign, IRON_VERDICT_LOCATIONS, {
+    flags: { [PETITIONS_OPEN]: true },
+    taken_choice_ids: [],
+    revealed_location_ids: [],
+    current_location_id: ripened.at,
+    ledger: [],
+    ripened_petitions: [ripened],
+  }).petitions
+  if (early.some((p) => p.id === ripened.id)) fail.push(`ripened ${ripened.id} is offered before its season has passed`)
+}
+
+// Degraded mode: generation unavailable. Nothing was stored, and the reign is
+// exactly the authored one — no empty slot, no error, no missing petition.
+const degraded = progressionFor(world.progression, world.reign, IRON_VERDICT_LOCATIONS, {
+  flags: { [PETITIONS_OPEN]: true },
+  taken_choice_ids: [],
+  revealed_location_ids: [],
+  current_location_id: (reign?.petitions ?? [])[0]?.at ?? IRON_VERDICT_START_LOCATION,
+  ledger: [],
+  ripened_petitions: [],
+}).petitions
+if (!degraded.length) fail.push('with no ripened petitions stored, the reign offers nothing at all')
+
+console.log(
+  `ripening: ${Object.keys(ladder).length} rungs, a season is ${seasonLength(reign)} rulings, ` +
+  `${(reign?.petitions ?? []).filter((p) => ripensTo(reign, p.kind)).length}/${reign?.petitions?.length ?? 0} petitions seed one`,
+)
 
 for (const plate of IRON_VERDICT_MAP_STYLE.plates) {
   if (!assetIds.has(plate.asset_id)) fail.push(`plate ${plate.asset_id} is not in the manifest`)
