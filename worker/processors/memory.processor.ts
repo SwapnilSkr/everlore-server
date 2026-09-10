@@ -6,6 +6,7 @@ import { embed, callLLM, AI_MODELS } from '../../src/ai'
 import { randomUUID } from 'crypto'
 import { getRedisClient } from '../../src/config/redis'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
+import { liveInstanceExists } from '../../src/utils/live-instance'
 import { entityGraphService, normalizeEntityName } from '../../src/services/entity-graph.service'
 import { locationService } from '../../src/services/location.service'
 import type { EntityDoc, EntityType } from '../../src/models/entity.model'
@@ -453,6 +454,9 @@ export async function memoryProcessor(job: Job) {
   const instanceOid = parseObjectId(instanceId)
   const playerOid = parseObjectId(playerId)
   const eventOid = parseObjectId(eventId)
+  if (!(await liveInstanceExists(instanceOid))) {
+    return { skipped: 'instance_deleted' }
+  }
 
   // Character roster grounds pronoun/entity resolution so atoms are
   // self-contained ("Mira", not "she") and subjects/objects use canonical names.

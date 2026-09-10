@@ -3,14 +3,17 @@
     {
       "id": "duel_quarry_debt",
       "choice_id": "witness_verdict",
+      "choice_ids": ["stand_the_verdict"],
       "at": "verdict_ring",
       "question": "Whether a debt owed to the Weeping Quarry dies with the man who owed it, or passes to the house that buried him.",
       "herald": "The Herald lowered the trumpet, read the matter out in the flat voice they keep for it, and stepped back off the sand. The carvers were already waiting at the inner wall with their chisels, because whatever happened next was going to be law.",
       "vigour": 100,
-      "challenger": { "cast_id": "cassian_vale", "style": "Economical to the point of rudeness. He does not perform for the tiers." },
+      "challenger": { "cast_id": "cassian_vale", "strength": 7, "style": "Economical to the point of rudeness. He does not perform for the tiers." },
       "defender": {
         "name": "Dovin Kell",
         "role": "A champion held to the Chainhouse by debt",
+        "portrait_asset_id": "portrait_dovin_kell",
+        "strength": 5,
         "style": "All reach and shoulder, fighting the way a man fights when the fight is the only thing he owns."
       },
       "beats": [
@@ -60,14 +63,17 @@
     {
       "id": "duel_succession_thrown",
       "choice_id": "let_cassian_throw",
+      "choice_ids": ["throw_the_verdict"],
       "at": "verdict_ring",
       "question": "Who holds Aldermere when the Duke is dead, and by whose claim.",
       "herald": "The Herald read the succession out to a Ring packed to the top tier, and did not look up from the page once. The date on it was older than the quarrel it settled, and every clerk in the front row knew it.",
       "vigour": 100,
-      "challenger": { "cast_id": "cassian_vale", "style": "Economical to the point of rudeness. He does not perform for the tiers." },
+      "challenger": { "cast_id": "cassian_vale", "strength": 7, "style": "Economical to the point of rudeness. He does not perform for the tiers." },
       "defender": {
         "name": "Rell Halloran",
         "role": "Champion bought for the Sable Court claim",
+        "portrait_asset_id": "portrait_rell_halloran",
+        "strength": 6,
         "style": "Patient, expensive, and entirely aware of how little he is being asked to do."
       },
       "beats": [
@@ -117,6 +123,7 @@
     {
       "id": "duel_succession_fought",
       "choice_id": "fight_succession",
+      "contested": true,
       "at": "verdict_ring",
       "question": "Who holds Aldermere when the Duke is dead, and by whose claim.",
       "herald": "The Herald read your name off a slip that had been handed up three minutes earlier, mispronounced none of it, and stepped back. There was no rule against it. That was the entire trouble with the Ring.",
@@ -125,6 +132,8 @@
       "defender": {
         "name": "Rell Halloran",
         "role": "Champion bought for the Sable Court claim",
+        "portrait_asset_id": "portrait_rell_halloran",
+        "strength": 9,
         "style": "Patient, expensive, and entirely aware of how little he is being asked to do."
       },
       "beats": [
@@ -165,6 +174,43 @@
         "cost": "Halloran was carried off breathing, and every claim, debt and quarrel he was standing in for now belongs to you.",
         "fatal": false,
         "sets": ["succession_fought", "succession_passed"]
+      },
+      "loss": {
+        "winner": "defender",
+        "verdict": "The succession passes by the Court's claim, unappealed and unappealable, cut into the inner wall while the sand was still being raked.",
+        "cost": "Halloran finished it as he had been paid to, and the Ring did not ask whose name had been on the slip.",
+        "fatal": true,
+        "sets": ["succession_passed", "player_fallen"],
+        "sets_if_lead": {
+          "cassian_vale": ["succession_passed", "cassian_dead"]
+        },
+        "beats": [
+          {
+            "actor": "defender",
+            "toll": 30,
+            "line": "Halloran did not bother to test you. He came straight down the middle to end it inside a minute."
+          },
+          {
+            "actor": "challenger",
+            "toll": 15,
+            "line": "You got the blade up, and it was not enough, and the shock of that went through the tiers before it went through you."
+          },
+          {
+            "actor": "defender",
+            "toll": 40,
+            "line": "He corrected once, put you on the sand, and waited to see whether you would get up."
+          },
+          {
+            "actor": "challenger",
+            "toll": 0,
+            "line": "You did. It cost you the last of whatever you had brought."
+          },
+          {
+            "actor": "defender",
+            "toll": 50,
+            "line": "He took the opening he had been paid to take. The chisels started before you finished falling."
+          }
+        ]
       }
     }
   ]

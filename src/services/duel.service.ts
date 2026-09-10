@@ -71,6 +71,9 @@ function unwrapSchemaEcho(parsed: any): Record<string, unknown> {
 
 const text = (value: unknown): string => (typeof value === 'string' ? value.trim() : '')
 
+/** Prose that already has someone speaking inside it. Apostrophes are not quotes. */
+const SPEAKS = /["\u201c\u201d]/
+
 export type DuelSide = 'challenger' | 'defender'
 
 const other = (side: DuelSide): DuelSide => (side === 'challenger' ? 'defender' : 'challenger')
@@ -130,7 +133,7 @@ export type OfferedDuel = Omit<StagedDuel, 'challenger' | 'defender' | 'beats'> 
 
 /** The duel a choice calls for, or null where taking it is not a fight. */
 export function duelForChoice(world: LoadedWorld, choiceId: string): WorldDuel | null {
-  return world.duels.find((duel) => duel.choice_id === choiceId) ?? null
+  return world.duels.find((duel) => duel.choice_id === choiceId || duel.choice_ids?.includes(choiceId)) ?? null
 }
 
 /**
@@ -140,17 +143,22 @@ export function duelForChoice(world: LoadedWorld, choiceId: string): WorldDuel |
  * throwing: a duel with a mistyped id would otherwise take down the whole turn
  * the player was taking, and a fighter with no face is still a fight.
  */
-function resolveFighter(combatant: WorldDuelCombatant, side: DuelSide, world: LoadedWorld): StagedFighter {
-  const member = combatant.cast_id ? world.cast.find((c) => c.id === combatant.cast_id) : undefined
+function resolveFighter(
+  combatant: WorldDuelCombatant,
+  side: DuelSide,
+  world: LoadedWorld,
+  protagonistId?: string,
+): StagedFighter {
+  const asPlayer = combatant.is_player === true || (Boolean(protagonistId) && combatant.cast_id === protagonistId)
+  const member = (asPlayer && protagonistId ? world.cast.find((c) => c.id === protagonistId) : undefined)
+    ?? (combatant.cast_id ? world.cast.find((c) => c.id === combatant.cast_id) : undefined)
   return {
     side,
     character_id: member?.id ?? null,
     name: member?.name ?? combatant.name ?? '',
     role: member?.role ?? combatant.role ?? '',
-    is_player: combatant.is_player === true,
-    // The player has no painted face, and neither does a fighter authored for
-    // one Verdict. Null renders a blank standard rather than a broken frame.
-    portrait_asset_id: member ? portraitAssetId(member, undefined) : null,
+    is_player: asPlayer,
+    portrait_asset_id: member ? portraitAssetId(member, undefined) : (combatant.portrait_asset_id ?? null),
     vigour: 0,
   }
 }
@@ -166,7 +174,10 @@ function resolveFighter(combatant: WorldDuelCombatant, side: DuelSide, world: Lo
  */
 function bearingFor(fighter: StagedFighter, bearing: string | undefined, world: LoadedWorld): string | null {
   const member = fighter.character_id ? world.cast.find((c) => c.id === fighter.character_id) : undefined
-  if (!member) return null
+  // Duel-local combatants have one authored face rather than a cast bearing.
+  // Keep it through every exchange so the figure does not vanish after the
+  // opening frame.
+  if (!member) return fighter.portrait_asset_id
   return portraitAssetId(member, bearing && member.portraits[bearing] ? bearing : undefined)
 }
 
@@ -204,9 +215,14 @@ export function verifyDuelProse(raw: unknown, expected: number): WrittenBeat[] |
  * model must not be trusted with. `written` is null in degraded mode and the
  * authored lines are used, which is a complete duel rather than a fallback.
  */
-export function composeDuel(duel: WorldDuel, written: WrittenBeat[] | null, world: LoadedWorld): StagedDuel {
-  const challenger = resolveFighter(duel.challenger, 'challenger', world)
-  const defender = resolveFighter(duel.defender, 'defender', world)
+export function composeDuel(
+  duel: WorldDuel,
+  written: WrittenBeat[] | null,
+  world: LoadedWorld,
+  protagonistId?: string,
+): StagedDuel {
+  const challenger = resolveFighter(duel.challenger, 'challenger', world, protagonistId)
+  const defender = resolveFighter(duel.defender, 'defender', world, protagonistId)
   const vigour = duel.vigour > 0 ? duel.vigour : 100
   challenger.vigour = vigour
   defender.vigour = vigour
@@ -241,7 +257,15 @@ export function composeDuel(duel: WorldDuel, written: WrittenBeat[] | null, worl
       // A beat authored silent stays silent. Whether someone speaks in the
       // middle of a Verdict is staging, and letting the flavour pass add a line
       // where the author wrote none is letting it stage the fight.
-      said: beat.said ? (written?.[index]?.said ?? beat.said) : null,
+      //
+      // The second condition is the one that bit in play: asked to rewrite an
+      // exchange whose actor speaks, the flavour pass folds the speech into the
+      // prose — `...his voice cold and unyielding: "Stay down."` — and the
+      // words then appear twice on screen, once in the panel and once in the
+      // bubble over his head. Quotation marks are the only reliable sign of
+      // that, and they are grammar rather than a list of anything, so a beat
+      // whose prose already speaks does not also get a bubble.
+      said: beat.said && !SPEAKS.test(written?.[index]?.action ?? beat.line) ? (written?.[index]?.said ?? beat.said) : null,
       toll,
       portrait_asset_id: bearingFor(actor, beat.bearing, world),
       challenger_vigour: bars.challenger,
@@ -302,9 +326,13 @@ export function offerDuel(staged: StagedDuel, assets: (InteractiveAssetDoc & { u
  * lands on the wrong person. It is given the plan and asked for the same
  * exchanges in better words, which is the only job it has here.
  */
-export function briefForDuel(duel: WorldDuel, world: LoadedWorld): { role: 'system' | 'user'; content: string }[] {
-  const challenger = resolveFighter(duel.challenger, 'challenger', world)
-  const defender = resolveFighter(duel.defender, 'defender', world)
+export function briefForDuel(
+  duel: WorldDuel,
+  world: LoadedWorld,
+  protagonistId?: string,
+): { role: 'system' | 'user'; content: string }[] {
+  const challenger = resolveFighter(duel.challenger, 'challenger', world, protagonistId)
+  const defender = resolveFighter(duel.defender, 'defender', world, protagonistId)
   const named: Record<DuelSide, StagedFighter> = { challenger, defender }
   const describe = (f: StagedFighter, c: WorldDuelCombatant) =>
     `${f.is_player ? `${f.name} — the person reading this, ${f.role}` : `${f.name}, ${f.role}`}. ${c.style ?? ''}`.trim()
@@ -317,6 +345,7 @@ export function briefForDuel(duel: WorldDuel, world: LoadedWorld): { role: 'syst
         'Keep every exchange to the same event, in the same order, done by the same person. Do not add exchanges, remove them, reorder them, or change who lands what. Do not change the ending or hint at a different one.',
         'Write what someone in the tiers would see and hear. No numbers, no scores, no talk of strength or damage or how much is left in anyone.',
         'Where an exchange is given words spoken aloud, you may rewrite those words in the same voice; where it is not, nobody speaks.',
+        'Write only what was done. Never put the spoken words inside the exchange itself — they are read out separately, and an exchange that quotes them says everything twice.',
         'Return exactly one beat for each exchange you are given, in the same order.',
       ].join('\n'),
     },
@@ -349,7 +378,12 @@ export function briefForDuel(duel: WorldDuel, world: LoadedWorld): { role: 'syst
  * duchy changed off screen. So every failure here degrades to the authored
  * beats, which are written to be read.
  */
-export async function stageDuel(duel: WorldDuel, world: LoadedWorld, instanceId?: string): Promise<StagedDuel> {
+export async function stageDuel(
+  duel: WorldDuel,
+  world: LoadedWorld,
+  instanceId?: string,
+  protagonistId?: string,
+): Promise<StagedDuel> {
   try {
     const raw = await callLLM({
       model: AI_MODELS.metadata,
@@ -357,13 +391,13 @@ export async function stageDuel(duel: WorldDuel, world: LoadedWorld, instanceId?
       temperature: 0.9,
       maxTokens: 900,
       responseSchema: SCHEMA,
-      messages: briefForDuel(duel, world),
+      messages: briefForDuel(duel, world, protagonistId),
     })
     const written = verifyDuelProse(JSON.parse(raw), duel.beats.length)
     if (!written) log.info('duel_staging.refused', { instanceId, duel: duel.id })
-    return composeDuel(duel, written, world)
+    return composeDuel(duel, written, world, protagonistId)
   } catch (err) {
     log.info('duel_staging.failed', { instanceId, duel: duel.id, error: (err as Error).message })
-    return composeDuel(duel, null, world)
+    return composeDuel(duel, null, world, protagonistId)
   }
 }

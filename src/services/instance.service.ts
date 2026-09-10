@@ -7,6 +7,8 @@ import type { WorldEventDoc } from '../models/world-event.model'
 import { getRedisClient } from '../config/redis'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { assertUnderSaveLimit } from './save-quota'
+import { interactiveWorldInstanceService } from './interactive-world-instance.service'
 import { characterCodexService } from './character-codex.service'
 import { extractOpeningPlace } from './opening-place.service'
 import { kinshipGraphService } from './kinship-graph.service'
@@ -16,12 +18,6 @@ import { isValidMessageLength, isValidStyleKey } from '../utils/narrative-styles
 import { isValidModeKey, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { DEFAULT_NARRATION_TONE, isValidNarrationTone } from '../utils/narration-tones'
 import { materializeTemplateCast } from './template-cast.service'
-
-const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number }> = {
-  free: { max_instances: 3, max_memories: 100 },
-  premium: { max_instances: 20, max_memories: 500 },
-  creator: { max_instances: 50, max_memories: 1000 },
-}
 
 const worldTemplates = () => mongoColl.worldTemplates()
 const worldInstances = () => mongoColl.worldInstances()
@@ -65,6 +61,37 @@ export function reasonCannotStart(template: WorldTemplateDoc, playerId: string):
   return null
 }
 
+/**
+ * Why this save cannot be walked as the world in the URL, or null where it can.
+ *
+ * Ownership is not enough: an owned chat realm — or another map — named in
+ * this world's path would mint that world's state, events and memories onto
+ * the wrong save. The template key is the binding. Stated once so the read
+ * and the turn cannot drift.
+ */
+export function reasonInstanceNotBoundToWorld(
+  worldKey: string,
+  instance: { player_id: unknown } | null | undefined,
+  template: { interactive_world_key?: string | null } | null | undefined,
+  playerId: string,
+): string | null {
+  if (!instance || idString(instance.player_id) !== playerId) return 'World instance not found'
+  if (!isInteractiveWorldTemplate(template)) return 'World instance not found'
+  const bound = (template?.interactive_world_key ?? '').trim()
+  if (!bound || bound !== worldKey.trim()) return 'World instance not found'
+  return null
+}
+
+export function assertInstanceBoundToWorld(
+  worldKey: string,
+  instance: { player_id: unknown } | null | undefined,
+  template: { interactive_world_key?: string | null } | null | undefined,
+  playerId: string,
+): void {
+  const closed = reasonInstanceNotBoundToWorld(worldKey, instance, template, playerId)
+  if (closed) throw new HttpError(404, closed)
+}
+
 export const instanceService = {
   async create(
     playerId: string,
@@ -79,17 +106,13 @@ export const instanceService = {
     // from "exists but not published" — the latter was an opaque 404 footgun.
     const template = await worldTemplates().findOne({ _id: templateOid })
     if (!template) throw new HttpError(404, 'Template not found')
+    if (isInteractiveWorldTemplate(template)) {
+      throw new HttpError(400, 'Walkable worlds are started from Walks, not Realms.')
+    }
     const closed = reasonCannotStart(template, playerId)
     if (closed) throw new HttpError(403, closed)
 
-    const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
-    const instanceCount = await worldInstances().countDocuments({
-      player_id: playerOid,
-      'meta.is_archived': { $ne: true },
-    })
-    if (instanceCount >= limits.max_instances) {
-      throw new HttpError(403, `Instance limit reached (${limits.max_instances})`)
-    }
+    await assertUnderSaveLimit(playerId, tier)
 
     const worldState: Record<string, number> = {}
     for (const [key, def] of Object.entries(template.base_stats_template || {})) {
@@ -260,6 +283,17 @@ export const instanceService = {
     })
   },
 
+  async requireBoundToWorld(
+    worldKey: string,
+    instanceId: string,
+    playerId: string,
+  ): Promise<{ instance: WorldInstanceDoc; template: WorldTemplateDoc }> {
+    const instance = await this.getById(instanceId, playerId)
+    const template = instance ? await worldTemplates().findOne({ _id: instance.template_id }) : null
+    assertInstanceBoundToWorld(worldKey, instance, template, playerId)
+    return { instance: instance as WorldInstanceDoc, template: template as WorldTemplateDoc }
+  },
+
   /**
    * Fast check: has this player entered this world before? Used before opening
    * a template so the client can offer "continue" vs "begin anew" without
@@ -305,70 +339,21 @@ export const instanceService = {
   },
 
   /**
-   * The player's one save for a walkable world, created on first entry.
+   * The player's latest active walk for a walkable world, created on first entry.
    *
    * Interactive worlds were taken off the realms list, and the remaining
    * entrance opened a preview with no save — every action refused, nothing
    * persisted. Finding by the world key (never the title) and minting through
-   * the ordinary create path is what makes "open this world" mean play it,
-   * without a second insert that would drift from chat instances.
+   * the ordinary create path is what makes "open this world" mean play it.
+   * A fresh walk is minted with the ordinary create path, not here; this only
+   * resumes the latest unarchived save.
    */
   async resolveInteractiveWorld(
     worldKey: string,
     playerId: string,
     tier: string,
   ): Promise<{ instance_id: string }> {
-    const key = worldKey.trim()
-    if (!key) {
-      throw new HttpError(404, 'This world is not yet open to play.')
-    }
-
-    const templates = (await worldTemplates()
-      .find({ interactive_world_key: key })
-      .sort({ created_at: 1 })
-      .toArray()) as WorldTemplateDoc[]
-
-    // The data file can exist without a template. That used to 200 a
-    // preview that could not persist — the player thought they were playing.
-    if (templates.length === 0) {
-      throw new HttpError(404, 'This world is not yet open to play.')
-    }
-
-    const playerOid = parseObjectId(playerId)
-    // Archived is still this player's save. Skipping it and minting a new
-    // one is how a second walk of the same world appeared on the account.
-    const existing = await worldInstances().findOne(
-      {
-        player_id: playerOid,
-        template_id: { $in: templates.map((t) => t._id) },
-      },
-      { sort: { created_at: 1 } },
-    )
-    if (existing) {
-      return { instance_id: idString(existing._id) }
-    }
-
-    // Prefer the published world so a first-time player is not bound to
-    // someone else's unpublished seed. The owner still reaches their own
-    // draft when nothing published exists — that is how playtest works.
-    const published = templates.find(
-      (t) => t.is_published && t.moderation_status !== 'hidden',
-    )
-    const owned = templates.find((t) => idString(t.creator_id) === playerId)
-    const template = published ?? owned ?? templates[0]
-
-    try {
-      const { instance } = await this.create(playerId, idString(template._id), tier)
-      return { instance_id: idString(instance._id) }
-    } catch (err) {
-      if (err instanceof HttpError && /instance limit/i.test(err.message)) {
-        throw new HttpError(403, 'You already walk as many worlds as your membership allows.')
-      }
-      if (err instanceof HttpError && err.statusCode === 404) {
-        throw new HttpError(404, 'This world is not yet open to play.')
-      }
-      throw err
-    }
+    return interactiveWorldInstanceService.resolve(worldKey, playerId, tier)
   },
 
   /**
@@ -503,13 +488,18 @@ export const instanceService = {
   },
 
   /** One row per world, not per story. This keeps the home feed compact and
-   * lets it page cleanly without splitting a realm's stories across pages. */
+   * lets it page cleanly without splitting a realm's stories across pages.
+   *
+   * [walks] is the map-world shelf. Chat playthroughs and walkable saves are
+   * different products — mixing them put a map with "0 events" on Your Realms
+   * and hid walks from the place that should hold them. */
   async listRealms(
     playerId: string,
     includeArchived: boolean = false,
     page: number = 1,
     limit: number = 12,
     search?: string,
+    walks: boolean = false,
   ) {
     const playerOid = parseObjectId(playerId)
     const filter: Record<string, unknown> = { player_id: playerOid }
@@ -542,9 +532,9 @@ export const instanceService = {
       // untitled row — unwind keeps empties — which is how a map save would
       // still appear in "Your Realms".
       {
-        $match: {
-          $expr: { $eq: [{ $ifNull: ['$template.interactive_world_key', ''] }, ''] },
-        },
+        $match: walks
+          ? { $expr: { $gt: [{ $strLenCP: { $ifNull: ['$template.interactive_world_key', ''] } }, 0] } }
+          : { $expr: { $eq: [{ $ifNull: ['$template.interactive_world_key', ''] }, ''] } },
       },
     ]
     if (term) {
@@ -585,7 +575,9 @@ export const instanceService = {
       { _id: iid, player_id: pid },
       { $set: { 'meta.is_archived': true, updated_at: new Date() } },
     )
-    if (result.matchedCount === 0) throw new Error('Instance not found')
+    if (result.matchedCount === 0) {
+      return interactiveWorldInstanceService.archive(instanceId, playerId)
+    }
 
     const redis = getRedisClient()
     await redis.del(`session:${idString(iid)}`)

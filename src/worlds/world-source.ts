@@ -72,6 +72,29 @@ export interface WorldChoice {
   label: string
   summary: string
   memory?: { text: string; subjects: string[]; objects: string[]; terms: string; valence: string }
+  /** Offered only when the bound lead is one of these. */
+  for_leads?: string | string[]
+  /** Withdrawn when the bound lead is one of these. */
+  not_for_leads?: string | string[]
+  /** Shown, but the server refuses if the save's meters are short. */
+  require_traits?: { strength?: number; charisma?: number; leadership?: number; level?: number }
+  /** Where to put more weight in the arm if the meters are short. */
+  train_hint?: string
+  /**
+   * A hinge the player may restore. Taking it snapshots the save *before* the
+   * flags land, so a death or a regretted road can be taken again.
+   */
+  critical?: { id: string; title: string; hint: string }
+}
+
+/** A repeatable place action that raises a meter. Not a story choice. */
+export interface WorldDrill {
+  id: string
+  at: string
+  label: string
+  raises: { strength?: number; charisma?: number; leadership?: number }
+  for_leads?: string | string[]
+  not_for_leads?: string | string[]
 }
 
 /** The condition a choice is offered under, in the same shape as everything else. */
@@ -87,6 +110,12 @@ interface AuthoredWorld {
   chapter_title: string
   /** One line of invitation, in the world's own voice. Read on its entrance. */
   blurb?: string
+  /**
+   * Version of the definition persisted in Mongo. Increment whenever a field
+   * copied by `ensureWorld` changes; independent of the CDN asset revision.
+   */
+  definition_version: number
+  /** Revision embedded in published asset keys. */
   revision: number
   start_location_id: string
   map_style: InteractiveMapStyleDoc
@@ -94,6 +123,7 @@ interface AuthoredWorld {
   assets: { id: string; role: InteractiveAssetDoc['role'] }[]
   locations: InteractiveLocationDoc[]
   choices: WorldChoice[]
+  drills?: WorldDrill[]
 }
 
 /** A permanent record of something the player did. Awarded once, never lost. */
@@ -142,6 +172,12 @@ export interface WorldGuardedKnowledge {
   note?: string
 }
 
+export interface WorldPrologue {
+  headline: string
+  beats: string[]
+  scene_asset_id?: string
+}
+
 /** An authored character. Everything below `portraits` is for narration only. */
 export interface WorldCastMember {
   id: string
@@ -161,6 +197,14 @@ export interface WorldCastMember {
   reveals_flag?: string
   /** The flag that must be true before the player can see them at all. */
   gated_by_flag?: string
+  /** Bound as the walk's lead. Default false — everyone else stays an NPC. */
+  playable?: boolean
+  start_location_id?: string
+  start_flags?: Record<string, boolean>
+  start_traits?: { strength?: number; charisma?: number; leadership?: number; level?: number }
+  prologue?: WorldPrologue
+  /** Hidden as an NPC once this flag is true — a dead champion is not in the Chainhouse. */
+  hidden_if_flag?: string
 }
 
 /** One side of a petition. Both are stated as the party would state them. */
@@ -239,8 +283,16 @@ export interface WorldDuelCombatant {
   /** Required for a fighter who is neither the player nor in the cast. */
   name?: string
   role?: string
+  /**
+   * The painted face of a fighter who exists only in this duel. Cast members
+   * derive their face from `cast_id`; the player ordinarily has no authored
+   * face. The id must name a portrait in this world's asset manifest.
+   */
+  portrait_asset_id?: string
   /** How they fight, for narration only. Never read as a strength. */
   style?: string
+  /** Authored rating for a contested Verdict. 1–10, same scale as walk traits. */
+  strength?: number
 }
 
 /**
@@ -289,11 +341,29 @@ export interface WorldDuelOutcome {
   sets: string[]
 }
 
+/** The authored other ending of a contested Verdict. Traits pick this or `outcome`. */
+export interface WorldDuelLoss {
+  winner: 'challenger' | 'defender'
+  verdict: string
+  cost: string
+  fatal: boolean
+  sets: string[]
+  sets_if_lead?: Record<string, string[]>
+  beats?: WorldDuelBeat[]
+}
+
 /** A fight that makes law, keyed to the authored choice that calls for it. */
 export interface WorldDuel {
   id: string
   choice_id: string
+  /** Further choices that stage this same fight. */
+  choice_ids?: string[]
   at: string
+  /**
+   * Traits pick between `outcome` and `loss`. Spectator Verdicts stay authored
+   * exactly as written — only a fight the lead is in is contested.
+   */
+  contested?: boolean
   /** The legal question on the sand. Read to the crowd before the first blow. */
   question: string
   /** The opening, in the Ring's own voice. */
@@ -304,6 +374,7 @@ export interface WorldDuel {
   defender: WorldDuelCombatant
   beats: WorldDuelBeat[]
   outcome: WorldDuelOutcome
+  loss?: WorldDuelLoss
 }
 
 export interface WorldReign {
@@ -439,7 +510,7 @@ export function worldVocabulary(world: LoadedWorld): Set<string> {
   const vocabulary = new Set<string>()
   for (const location of world.locations) {
     if (location.unlock_flag) vocabulary.add(location.unlock_flag)
-    if (location.reveal_flag) vocabulary.add(location.reveal_flag)
+    for (const flag of asList(location.reveal_flag)) vocabulary.add(flag)
   }
   for (const choice of world.choices) {
     for (const flag of [...asList(choice.requires), ...asList(choice.forbids), ...asList(choice.sets)]) {

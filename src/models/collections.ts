@@ -37,6 +37,7 @@ export const COLLECTIONS = {
   web_events: 'web_events',
   web_traffic_daily: 'web_traffic_daily',
   interactive_worlds: 'interactive_worlds',
+  interactive_world_instances: 'interactive_world_instances',
   interactive_world_states: 'interactive_world_states',
 } as const
 

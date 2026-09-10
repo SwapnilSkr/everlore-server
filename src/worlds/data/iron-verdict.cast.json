@@ -7,6 +7,20 @@
       "role": "Reigning champion of the Verdict Ring",
       "faction": "ring",
       "home_location_id": "chainhouse",
+      "playable": true,
+      "start_location_id": "verdict_ring",
+      "start_flags": { "cassian_trust": true },
+      "start_traits": { "strength": 7, "charisma": 4, "leadership": 5, "level": 1 },
+      "hidden_if_flag": "cassian_dead",
+      "prologue": {
+        "headline": "The sand remembers you.",
+        "scene_asset_id": "scene_verdict_ring",
+        "beats": [
+          "You have fought here long enough that the inner wall has your name on it twice, and neither time was a succession.",
+          "Kell is already on the sand. The carvers wait. The Chainhouse will lock behind you when you go home, as it always does.",
+          "Someone wrote the next fight down before you woke. Today you are still the one holding the blade."
+        ]
+      },
       "portraits": {
         "default": "portrait_cassian_vale",
         "resolute": "portrait_cassian_resolute",
@@ -31,6 +45,18 @@
       "role": "Writ-broker of the Sundial Market",
       "faction": "none",
       "home_location_id": "sundial_market",
+      "playable": true,
+      "start_location_id": "sundial_market",
+      "start_traits": { "strength": 3, "charisma": 8, "leadership": 4, "level": 1 },
+      "prologue": {
+        "headline": "Paper before the shout.",
+        "scene_asset_id": "scene_sundial_market",
+        "beats": [
+          "The Ring is two streets over and already filling. You have not gone. You never go until the paper is worth more than the noise.",
+          "In your coat is a sealed judgement you have not broken. The seal has been used before, on a village that is no longer on the map.",
+          "Cassian Vale will fight this afternoon. You have not met him. You will, if the paper turns out to be about him."
+        ]
+      },
       "portraits": {
         "default": "portrait_nara_voss",
         "wary": "portrait_nara_wary",
@@ -84,6 +110,19 @@
       "role": "The Duke's niece and the Court's quietest claimant",
       "faction": "court",
       "home_location_id": "sable_court",
+      "playable": true,
+      "start_location_id": "sable_court",
+      "start_flags": { "court_summoned": true },
+      "start_traits": { "strength": 2, "charisma": 7, "leadership": 8, "level": 1 },
+      "prologue": {
+        "headline": "This is your hall.",
+        "scene_asset_id": "scene_sable_court",
+        "beats": [
+          "Uncle Aldric has not sat the chair in a week. Barran is already drinking as if the succession were settled, and it is not.",
+          "The Court's champion is Cassian Vale. The Court likes to think it owns him. You have never been sure the Chainhouse agrees.",
+          "Somewhere in this city is a writ with a date on it that should not exist. You intend to have it in your hands before anyone else does."
+        ]
+      },
       "portraits": {
         "default": "portrait_sereth_morrow",
         "pleading": "portrait_sereth_pleading",

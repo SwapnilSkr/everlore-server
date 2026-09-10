@@ -10,4 +10,5 @@ export const InstanceQueryParams = t.Object({
   limit: t.Optional(t.Numeric()),
   include_archived: t.Optional(t.Boolean()),
   search: t.Optional(t.String({ maxLength: 100 })),
+  kind: t.Optional(t.Union([t.Literal('chat'), t.Literal('walks')])),
 })

@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
 import { deletePineconeNamespace } from './pinecone-cleanup.service'
+import { removeQueuedJobsForInstance } from '../queues'
 import { characterCodexService } from './character-codex.service'
 import { extractOpeningPlace } from './opening-place.service'
 import { kinshipGraphService } from './kinship-graph.service'
@@ -105,6 +106,7 @@ export const deletionService = {
         mongoColl.extractorRaw().deleteMany({ instance_id: { $in: instanceIds } }),
         mongoColl.locationStats().deleteMany({ instance_id: { $in: instanceIds } }),
         mongoColl.placeCandidates().deleteMany({ instance_id: { $in: instanceIds } }),
+        mongoColl.interactiveWorldStates().deleteMany({ instance_id: { $in: instanceIds } }),
         // Diagnostics are per-instance too. Left behind they are orphans that
         // accumulate forever and re-attach to nothing — the same shape as the
         // entity-graph rows that used to survive a delete and bleed into a
@@ -177,36 +179,10 @@ export const deletionService = {
     // the codex is purged; re-seeded in step 3.
     const priorProtagonist = await characters().findOne({ instance_id: iid, is_protagonist: true })
 
-    // 1. Purge all play data (mirrors deleteInstance, minus the instance doc).
-    await this.deleteInstanceData(iid, iidStr) // Pinecone mem_ namespace
-    await events().deleteMany({ instance_id: iid })
-    await memories().deleteMany({ instance_id: iid })
-    await sceneSummaries().deleteMany({ instance_id: iid })
-    await mongoColl.chapterSummaries().deleteMany({ instance_id: iid })
-    await mongoColl.arcSummaries().deleteMany({ instance_id: iid })
-    await characters().deleteMany({ instance_id: iid })
-    // The entity graph (registry + edges: meters, narrative, kinship, locations)
-    // is per-playthrough canon, NOT identity — a reset must purge it or the old
-    // story's people/places/relationships bleed into the reused instance (a new
-    // narrator "sister" mention resurrects the prior world's Sister entity; stale
-    // kinship edges feed relativesOf). Rewind prunes the graph up to the cut
-    // (repairAfterRewind); a reset clears ALL of it. See KINSHIP_GRAPH.md.
-    await entities().deleteMany({ instance_id: iid })
-    await entityEdges().deleteMany({ instance_id: iid })
-    // The Places atlas is a materialized location-graph projection. It must be
-    // removed with its source entities so a reset cannot show stale places.
-    await mongoColl.locationStats().deleteMany({ instance_id: iid })
-    await mongoColl.placeCandidates().deleteMany({ instance_id: iid })
-    await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
-    await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
-    await mongoColl.generationLogs().deleteMany({ instance_id: iid })
-    await mongoColl.extractorRaw().deleteMany({ instance_id: iid })
-    await mongoColl.projectionAnomalies().deleteMany({ instance_id: iid })
-    await mongoColl.signalLedger().deleteMany({ instance_id: iid })
-    await mongoColl.relationCandidates().deleteMany({ instance_id: iid })
-    await mongoColl.postProcessOutbox().deleteMany({ instance_id: iid })
-    await mongoColl.projectionCheckpoints().deleteMany({ instance_id: iid })
-    await mongoColl.projectionCheckpointChunks().deleteMany({ instance_id: iid })
+    // 1. Purge all play data (events, memories, Pinecone, graph, map state).
+    // The entity graph is per-playthrough canon, not identity — a reset must
+    // clear it or the old story's people bleed into the reused save.
+    await this.purgeInstancePayload(iid, iidStr)
 
     // 2. Restore world state / flags / scene from template defaults.
     const worldState: Record<string, number> = {}
@@ -352,12 +328,9 @@ export const deletionService = {
     const pid = parseObjectId(playerId)
     
     // Verify instance exists and belongs to player
-    const instance = await worldInstances().findOne({
-      _id: iid,
-      player_id: pid,
-    })
-    
-    if (!instance) {
+    const chat = await worldInstances().findOne({ _id: iid, player_id: pid })
+    const walk = await mongoColl.interactiveWorldInstances().findOne({ _id: iid, player_id: pid })
+    if (!chat && !walk) {
       throw new HttpError(404, 'Instance not found or you do not have permission to delete it')
     }
 
@@ -367,56 +340,31 @@ export const deletionService = {
   /** Admin/internal instance purge without owner checks. */
   async deleteInstanceById(instanceId: string | ObjectId): Promise<{ deleted: boolean }> {
     const iid = typeof instanceId === 'string' ? parseObjectId(instanceId) : instanceId
-    const instance = await worldInstances().findOne({ _id: iid })
-    if (!instance) throw new HttpError(404, 'Instance not found')
+    const chat = await worldInstances().findOne({ _id: iid })
+    const walk = await mongoColl.interactiveWorldInstances().findOne({ _id: iid })
+    if (!chat && !walk) throw new HttpError(404, 'Instance not found')
+    const playerId = chat?.player_id ?? walk!.player_id
 
     const iidStr = idString(iid)
     const redis = getRedisClient()
 
-    // Delete all associated data
-    await this.deleteInstanceData(iid, iidStr)
-
-    // Delete events
-    await events().deleteMany({ instance_id: iid })
-
-    // Delete memories
-    await memories().deleteMany({ instance_id: iid })
-
-    // Delete scene + chapter + arc summaries
-    await sceneSummaries().deleteMany({ instance_id: iid })
-    await mongoColl.chapterSummaries().deleteMany({ instance_id: iid })
-    await mongoColl.arcSummaries().deleteMany({ instance_id: iid })
-
-    // Delete character codex entries
-    await characters().deleteMany({ instance_id: iid })
-
-    // Delete the entity graph (registry + all edges) so no orphaned rows leak.
-    await entities().deleteMany({ instance_id: iid })
-    await entityEdges().deleteMany({ instance_id: iid })
-
-    await mongoColl.storyCalendars().deleteMany({ instance_id: iid })
-    await mongoColl.timelineBranches().deleteMany({ instance_id: iid })
-    // Reset and template-delete both purged this; deleting a single save did
-    // not, so every deleted instance left its place statistics behind.
-    await mongoColl.locationStats().deleteMany({ instance_id: iid })
-    await mongoColl.placeCandidates().deleteMany({ instance_id: iid })
-
-    // Delete observability logs for this instance
-    await mongoColl.generationLogs().deleteMany({ instance_id: iid })
-    await mongoColl.extractorRaw().deleteMany({ instance_id: iid })
-    await mongoColl.projectionAnomalies().deleteMany({ instance_id: iid })
-    await mongoColl.signalLedger().deleteMany({ instance_id: iid })
-    await mongoColl.relationCandidates().deleteMany({ instance_id: iid })
-    await mongoColl.postProcessOutbox().deleteMany({ instance_id: iid })
-    await mongoColl.projectionCheckpoints().deleteMany({ instance_id: iid })
-    await mongoColl.projectionCheckpointChunks().deleteMany({ instance_id: iid })
-
-    // Delete the instance
+    // Drop the save first so in-flight workers that check existence abort
+    // instead of writing events, memories, or Pinecone vectors back onto a
+    // destroyed playthrough.
     await worldInstances().deleteOne({ _id: iid })
+    await mongoColl.interactiveWorldInstances().deleteOne({ _id: iid })
+    await removeQueuedJobsForInstance(iidStr).catch((err) => {
+      console.warn(`Failed to drain queued jobs for instance ${iidStr}:`, (err as Error).message)
+    })
 
-    // Clear Redis session cache
+    await this.purgeInstancePayload(iid, iidStr)
+
+    // A worker that had already started can finish after the first purge.
+    // A second pass catches events, memories and vectors written in that window.
+    await this.purgeInstancePayload(iid, iidStr)
+
     await redis.del(`session:${iidStr}`)
-    await redis.del(`lock:gen:${idString(instance.player_id)}:${iidStr}`)
+    await redis.del(`lock:gen:${idString(playerId)}:${iidStr}`)
     await deadLetterJobs().deleteMany({
       $or: [
         { 'data.instanceId': iidStr },
@@ -424,6 +372,63 @@ export const deletionService = {
       ],
     })
 
+    return { deleted: true }
+  },
+
+  /**
+   * Everything that hangs off one save: Mongo rows plus Pinecone `mem_` / `sum_`
+   * namespaces. The instance document itself is not touched.
+   */
+  async purgeInstancePayload(instanceId: ObjectId, instanceIdStr: string): Promise<void> {
+    await this.deleteInstanceData(instanceId, instanceIdStr)
+    await Promise.all([
+      events().deleteMany({ instance_id: instanceId }),
+      memories().deleteMany({ instance_id: instanceId }),
+      sceneSummaries().deleteMany({ instance_id: instanceId }),
+      mongoColl.chapterSummaries().deleteMany({ instance_id: instanceId }),
+      mongoColl.arcSummaries().deleteMany({ instance_id: instanceId }),
+      characters().deleteMany({ instance_id: instanceId }),
+      entities().deleteMany({ instance_id: instanceId }),
+      entityEdges().deleteMany({ instance_id: instanceId }),
+      mongoColl.storyCalendars().deleteMany({ instance_id: instanceId }),
+      mongoColl.timelineBranches().deleteMany({ instance_id: instanceId }),
+      mongoColl.locationStats().deleteMany({ instance_id: instanceId }),
+      mongoColl.placeCandidates().deleteMany({ instance_id: instanceId }),
+      mongoColl.interactiveWorldStates().deleteMany({ instance_id: instanceId }),
+      mongoColl.generationLogs().deleteMany({ instance_id: instanceId }),
+      mongoColl.extractorRaw().deleteMany({ instance_id: instanceId }),
+      mongoColl.projectionAnomalies().deleteMany({ instance_id: instanceId }),
+      mongoColl.signalLedger().deleteMany({ instance_id: instanceId }),
+      mongoColl.relationCandidates().deleteMany({ instance_id: instanceId }),
+      mongoColl.postProcessOutbox().deleteMany({ instance_id: instanceId }),
+      mongoColl.projectionCheckpoints().deleteMany({ instance_id: instanceId }),
+      mongoColl.projectionCheckpointChunks().deleteMany({ instance_id: instanceId }),
+    ])
+  },
+
+  async deleteInteractiveWorld(worldKey: string, creatorId: string): Promise<{ deleted: boolean }> {
+    const key = worldKey.trim()
+    const cid = parseObjectId(creatorId)
+    const world = await mongoColl.interactiveWorlds().findOne({
+      key,
+      creator_id: cid,
+    })
+    if (!world) throw new HttpError(404, 'Walk not found or you do not have permission to delete it')
+
+    const saves = await mongoColl
+      .interactiveWorldInstances()
+      .find({ world_id: world._id }, { projection: { _id: 1 } })
+      .toArray()
+    for (const save of saves) {
+      await this.deleteInstanceById(save._id)
+    }
+
+    if (world.image_url && !isDefaultCoverUrl(world.image_url)) {
+      const storageKey = storageService.keyFromUrl(world.image_url)
+      if (storageKey) await storageService.delete(storageKey)
+    }
+
+    await mongoColl.interactiveWorlds().deleteOne({ _id: world._id })
     return { deleted: true }
   },
 
@@ -455,12 +460,17 @@ export const deletionService = {
       throw new HttpError(404, 'User not found')
     }
 
-    const instances = await worldInstances()
+    const chatInstances = await worldInstances()
+      .find({ player_id: pid })
+      .project({ _id: 1 })
+      .toArray()
+    const walkInstances = await mongoColl
+      .interactiveWorldInstances()
       .find({ player_id: pid })
       .project({ _id: 1 })
       .toArray()
 
-    for (const instance of instances) {
+    for (const instance of [...chatInstances, ...walkInstances]) {
       await this.deleteInstance(idString(instance._id), userId)
     }
 
@@ -471,6 +481,15 @@ export const deletionService = {
 
     for (const template of templates) {
       await this.deleteTemplate(idString(template._id), userId)
+    }
+
+    const walks = await mongoColl
+      .interactiveWorlds()
+      .find({ creator_id: pid })
+      .project({ key: 1 })
+      .toArray()
+    for (const world of walks) {
+      await this.deleteInteractiveWorld(world.key, userId)
     }
 
     await deadLetterJobs().deleteMany({

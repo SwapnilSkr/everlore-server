@@ -1,22 +1,18 @@
 /**
  * Give a developer a real Iron Verdict save they can open on a device.
  *
- * The world is reachable today only through a preview route, and a preview
- * has no instance behind it — close the app and the play is gone. A published
- * template plus one instance is what the deep link
- * `/interactive/iron-verdict/lab?instanceId=` actually loads.
+ * Writes InteractiveWorldDoc (unpublished catalog) and InteractiveWorldInstanceDoc
+ * (the save). Does not create a chat WorldTemplateDoc.
  *
- * Idempotent on title / world key and on (player, template): a second run
- * reprints the ids it already wrote rather than minting a second world the
- * device cannot tell from the first.
+ * Idempotent on world key and on (player, world): a second run reprints the
+ * ids it already wrote rather than minting a second walk.
  *
  *   bun run seed:iron-verdict --email=you@example.com
  *   bun run seed:iron-verdict --player=<objectid>
  */
 import { ObjectId } from 'mongodb'
 import { connectMongo, mongoColl } from '../src/config/mongo'
-import type { WorldInstanceDoc } from '../src/models/world-instance.model'
-import type { WorldTemplateDoc } from '../src/models/world-template.model'
+import type { InteractiveWorldDoc, InteractiveWorldInstanceDoc } from '../src/models/interactive-world.model'
 import { interactiveWorldService } from '../src/services/interactive-world.service'
 import { idString, parseObjectId } from '../src/utils/mongo-id'
 import { requireWorld } from '../src/worlds/world-source'
@@ -42,8 +38,6 @@ async function resolvePlayer(): Promise<{ _id: ObjectId; email?: string }> {
     process.exit(1)
   }
 
-  // Player id wins when both are passed: email is a lookup, and two different
-  // accounts must not silently receive the same seed.
   if (player) {
     const _id = parseObjectId(player)
     const user = await mongoColl.users().findOne({ _id })
@@ -62,132 +56,62 @@ async function resolvePlayer(): Promise<{ _id: ObjectId; email?: string }> {
   return user
 }
 
-async function ensureTemplate(playerId: ObjectId, authored: ReturnType<typeof requireWorld>): Promise<{
-  template: WorldTemplateDoc
-  created: boolean
-}> {
-  const templates = mongoColl.worldTemplates()
-  // Title is the name the device shows. Slug is the unique index, and
-  // must be the world key — slugifying the title would write `the-iron-verdict`
-  // and a second run looking up `iron-verdict` would insert a duplicate.
-  const existing =
-    (await templates.findOne({ title: authored.title })) ??
-    (await templates.findOne({ slug: authored.key }))
-
-  if (existing) {
-    const template = existing as WorldTemplateDoc
-    if (!template.interactive_world_key) {
-      // A reused template from before the key existed is still a map world.
-      // Leaving the field unset is how that save kept appearing in "Your Realms".
-      await templates.updateOne(
-        { _id: template._id },
-        { $set: { interactive_world_key: authored.key, updated_at: new Date() } },
-      )
-      template.interactive_world_key = authored.key
-    }
-    console.log(`Reused existing template ${idString(template._id)} titled "${template.title}".`)
-    return { template, created: false }
-  }
-
+async function stampCatalog(
+  playerId: ObjectId,
+  authored: ReturnType<typeof requireWorld>,
+  world: InteractiveWorldDoc,
+): Promise<InteractiveWorldDoc> {
   const now = new Date()
-  const template: WorldTemplateDoc = {
-    _id: new ObjectId(),
-    creator_id: playerId,
-    title: authored.title,
-    slug: authored.key,
-    // chapter_title is the only authored blurb that is not the title. A
-    // synopsis written here would be lore the file does not contain.
-    description: authored.chapter_title,
-    kind: 'world',
-    // Same key the map route loads. Without it this save is an ordinary
-    // instance, and listRealms cannot tell it from a chat playthrough.
-    interactive_world_key: authored.key,
-    // DELIBERATELY UNPUBLISHED. `is_published` is what `listPublished` filters
-    // discovery on, so setting it here would push this world into the Explore
-    // feed of every account on the cluster this script is pointed at — and the
-    // whole reason to seed a save is that the world has not been played yet.
-    // The owner reaches it through My Worlds and through the instance link
-    // printed below, neither of which needs the discovery flag.
-    is_published: false,
-    // A sentient template would seed a locked protagonist and flip chat POV.
-    // This world is a map the player walks, not a character they talk to.
-    is_sentient: false,
-    is_nsfw_capable: false,
-    version: 1,
-    // Same two authored strings, so the story loop has a premise if this save
-    // is later opened in chat — without a paraphrase that would drift from the file.
-    seed_prompt: `${authored.title} — ${authored.chapter_title}`,
-    // Empty on purpose: inventing a setting paragraph here would become canon
-    // the interactive world does not own.
-    global_lore: '',
-    // Interactive play does not roll gauges. A dummy stat would be a mechanic
-    // this world does not have, and instance create copies these into world_state.
-    base_stats_template: {},
-    // Map flags live on interactive world state. Putting them here would copy
-    // them into active_flags, and effectiveFlags would treat them as narrated.
-    flag_definitions: {},
-    scene_tags: [],
-    // Narration models default to env, same as template.service: leave empty
-    // unless a world needs a specific override.
-    model_preferences: {},
-    // template.service defaults. The interactive path does not read these; they
-    // only matter if this save is later opened in the story loop.
-    max_context_memories: 25,
-    max_lore_results: 10,
-    created_at: now,
-    updated_at: now,
-  }
-
-  await templates.insertOne(template)
-  console.log(`Created template ${idString(template._id)} titled "${template.title}".`)
-  return { template, created: true }
+  await mongoColl.interactiveWorlds().updateOne(
+    { _id: world._id },
+    {
+      $set: {
+        creator_id: playerId,
+        // Unpublished on purpose: seeding a save must not push Iron Verdict
+        // into every account's Explore Walks shelf.
+        is_published: false,
+        description: authored.chapter_title,
+        updated_at: now,
+      },
+    },
+  )
+  const next = await mongoColl.interactiveWorlds().findOne({ _id: world._id })
+  if (!next) throw new Error('Could not stamp the Iron Verdict catalog row.')
+  console.log(`Catalog world ${idString(world._id)} titled "${world.title}" (unpublished).`)
+  return next as InteractiveWorldDoc
 }
 
-async function ensureInstance(playerId: ObjectId, template: WorldTemplateDoc): Promise<{
-  instance: WorldInstanceDoc
-  created: boolean
-}> {
-  const instances = mongoColl.worldInstances()
-  // Most-recent first, including archived: a second run that minted a new save
-  // because the first was archived would leave two Iron Verdicts on the account.
-  const existing = await instances.findOne(
-    { player_id: playerId, template_id: template._id },
+async function ensureInstance(
+  playerId: ObjectId,
+  world: InteractiveWorldDoc,
+): Promise<{ instance: InteractiveWorldInstanceDoc; created: boolean }> {
+  const existing = await mongoColl.interactiveWorldInstances().findOne(
+    { player_id: playerId, world_id: world._id },
     { sort: { 'meta.last_active_at': -1 } },
   )
   if (existing) {
-    const instance = existing as WorldInstanceDoc
-    console.log(`Reused existing instance ${idString(instance._id)} for this player.`)
+    const instance = existing as InteractiveWorldInstanceDoc
+    console.log(`Reused existing walk ${idString(instance._id)} for this player.`)
     return { instance, created: false }
   }
 
   const now = new Date()
-  const instance: WorldInstanceDoc = {
+  const instance: InteractiveWorldInstanceDoc = {
     _id: new ObjectId(),
-    template_id: template._id,
-    template_version: template.version,
+    world_id: world._id,
+    world_key: world.key,
     player_id: playerId,
-    world_state: {},
-    active_flags: {},
-    // instance.service starts every world here. The interactive path overwrites
-    // scene_tag on the first turn; leaving current_scene unset fails the model.
-    current_scene: {
-      tag: 'dialogue',
-      turn_count: 0,
-      summary_pending: false,
-    },
     meta: {
       total_events: 0,
       total_memories: 0,
-      total_tokens_consumed: 0,
       last_active_at: now,
       is_archived: false,
     },
     created_at: now,
     updated_at: now,
   }
-
-  await instances.insertOne(instance)
-  console.log(`Created world instance ${idString(instance._id)}.`)
+  await mongoColl.interactiveWorldInstances().insertOne(instance)
+  console.log(`Created walk instance ${idString(instance._id)}.`)
   return { instance, created: true }
 }
 
@@ -196,16 +120,13 @@ async function main() {
   await connectMongo()
   const player = await resolvePlayer()
 
-  // The map definition is a separate document from the template. Without it
-  // the instance id prints and the deep link 404s on the first state fetch.
-  await interactiveWorldService.ensureWorld(authored.key)
-
-  const { template } = await ensureTemplate(player._id, authored)
-  const { instance } = await ensureInstance(player._id, template)
+  const world = await interactiveWorldService.ensureWorld(authored.key)
+  const catalog = await stampCatalog(player._id, authored, world)
+  const { instance } = await ensureInstance(player._id, catalog)
   const instanceId = idString(instance._id)
 
   console.log('')
-  console.log(`template id:  ${idString(template._id)}`)
+  console.log(`world id:     ${idString(catalog._id)}`)
   console.log(`instance id:  ${instanceId}`)
   console.log(`/interactive/${authored.key}/lab?instanceId=${instanceId}`)
 }

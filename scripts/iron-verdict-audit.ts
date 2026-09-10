@@ -22,6 +22,11 @@ import { composeRipenedPetition, siteForGrievance, verifyRipenedPetition } from 
 import { knowledgeFor, offerCast, presentCast } from '../src/worlds/cast'
 import { briefFor, composeSpokenReply, verifySpokenReply } from '../src/services/character-speech.service'
 import { briefForDuel, composeDuel, duelForChoice, offerDuel, verifyDuelProse } from '../src/services/duel.service'
+import { assertInstanceBoundToWorld, reasonInstanceNotBoundToWorld } from '../src/services/instance.service'
+import { HttpError } from '../src/utils/http-error'
+import { readFileSync } from 'fs'
+import { dirname, join } from 'path'
+import { fileURLToPath } from 'url'
 
 const world = requireWorld('iron-verdict')
 const IRON_VERDICT_ASSETS = world.assets
@@ -30,7 +35,12 @@ const IRON_VERDICT_LOCATIONS = world.locations
 const IRON_VERDICT_MAP_STYLE = world.map_style
 const IRON_VERDICT_REALMS = world.realms
 const IRON_VERDICT_START_LOCATION = world.start_location_id
-import { visibilityFor } from '../src/services/interactive-world.service'
+import {
+  definitionNeedsRefresh,
+  travelTargetsFor,
+  visibilityFor,
+  worldStateView,
+} from '../src/services/interactive-world.service'
 
 /** The four exclusive dispositions of the writ. One road may hold only one. */
 const DISPOSALS = new Set(['writ_sold', 'writ_burned', 'writ_given_court', 'writ_given_thornhollow'])
@@ -40,10 +50,68 @@ const warn: string[] = []
 
 const byId = new Map(IRON_VERDICT_LOCATIONS.map((l) => [l.id, l]))
 const assetIds = new Set(IRON_VERDICT_ASSETS.map((a) => a.id))
+const assetsById = new Map(IRON_VERDICT_ASSETS.map((a) => [a.id, a]))
 const realms = new Map(IRON_VERDICT_REALMS.map((r) => [r.id, r]))
 
 if (byId.size !== IRON_VERDICT_LOCATIONS.length) fail.push('duplicate location ids')
 if (!byId.has(IRON_VERDICT_START_LOCATION)) fail.push(`start location ${IRON_VERDICT_START_LOCATION} does not exist`)
+if (!Number.isInteger(world.definition_version) || world.definition_version < 1) {
+  fail.push('definition_version must be a positive integer')
+} else {
+  if (!definitionNeedsRefresh(world.definition_version - 1, world.definition_version)) {
+    fail.push('a stored definition one version behind would not be refreshed')
+  }
+  if (definitionNeedsRefresh(world.definition_version, world.definition_version)) {
+    fail.push('a current stored definition would be rewritten on every read')
+  }
+  if (definitionNeedsRefresh(world.definition_version + 1, world.definition_version)) {
+    fail.push('a newer stored definition would be downgraded by older authored data')
+  }
+}
+
+// THE WIRE STATE IS EFFECTIVE; STORAGE IS NOT. Narration may open an authored
+// gate, and the client must see the same truth used by cast/progression without
+// that derived flag becoming a permanent interactive-world mutation.
+const narratedGate = IRON_VERDICT_LOCATIONS.find(
+  (location) => location.unlock_flag && byId.get(IRON_VERDICT_START_LOCATION)?.routes.includes(location.id),
+)
+if (!narratedGate?.unlock_flag) {
+  fail.push('no adjacent authored gate exists to test effective wire state')
+} else {
+  const stored = {
+    current_location_id: IRON_VERDICT_START_LOCATION,
+    flags: { an_authored_fact: true },
+  } as any
+  const before = JSON.stringify(stored)
+  const effective = effectiveFlags(world, stored.flags, { [narratedGate.unlock_flag]: true })
+  const view = worldStateView(stored, effective, IRON_VERDICT_LOCATIONS)
+  if (view.flags[narratedGate.unlock_flag] !== true) {
+    fail.push('an effective narrated flag is absent from the state sent to the client')
+  }
+  if (view.flags.an_authored_fact !== true) {
+    fail.push('the effective state view dropped an authored stored flag')
+  }
+  if (JSON.stringify(stored) !== before || stored.flags[narratedGate.unlock_flag] === true) {
+    fail.push('building the effective wire state mutated the stored authored flags')
+  }
+}
+
+// A known open location is not necessarily one step away. The server-derived
+// targets must be exactly the current place's open authored neighbours.
+const everyFlag = Object.fromEntries([...worldVocabulary(world)].map((flag) => [flag, true]))
+const travelTargets = travelTargetsFor(IRON_VERDICT_LOCATIONS, IRON_VERDICT_START_LOCATION, everyFlag)
+const start = byId.get(IRON_VERDICT_START_LOCATION)!
+const openNonNeighbour = IRON_VERDICT_LOCATIONS.find(
+  (location) => location.id !== start.id && !start.routes.includes(location.id) && visibilityFor(location, everyFlag) === 'open',
+)
+if (!start.routes.length || !start.routes.every((id) => travelTargets.includes(id))) {
+  fail.push('an open authored neighbour is missing from the server-derived travel targets')
+}
+if (!openNonNeighbour) {
+  fail.push('no open non-neighbour exists to test the travel-target boundary')
+} else if (travelTargets.includes(openNonNeighbour.id)) {
+  fail.push(`non-adjacent ${openNonNeighbour.id} is offered as a one-step travel target`)
+}
 
 for (const location of IRON_VERDICT_LOCATIONS) {
   const at = `${location.id}:`
@@ -62,7 +130,7 @@ for (const location of IRON_VERDICT_LOCATIONS) {
     fail.push(`${at} y=${location.sprite.y} falls outside ${realm.id} (${realm.y_from}–${realm.y_to})`)
   }
   if (location.sprite.x <= 0 || location.sprite.x >= 1) fail.push(`${at} x=${location.sprite.x} is off the map`)
-  if (location.visibility === 'rumoured' && !location.reveal_flag) {
+  if (location.visibility === 'rumoured' && asList(location.reveal_flag).length === 0) {
     fail.push(`${at} is rumoured with no reveal_flag, so it can never appear`)
   }
   if (location.unlock_flag && !location.sealed_reason) {
@@ -76,6 +144,16 @@ for (const location of IRON_VERDICT_LOCATIONS) {
   }
 }
 
+const drillIds = new Set<string>()
+for (const drill of world.drills ?? []) {
+  const at = `drill ${drill.id}:`
+  if (drillIds.has(drill.id)) fail.push(`${at} duplicate id`)
+  drillIds.add(drill.id)
+  if (!byId.has(drill.at)) fail.push(`${at} is worked at unknown place ${drill.at}`)
+  const raises = Object.values(drill.raises ?? {}).some((n) => typeof n === 'number' && n > 0)
+  if (!raises) fail.push(`${at} raises nothing`)
+}
+
 // ── Sidecars ──────────────────────────────────────────────────────────────
 // The cast, progression and post-ending files are authored separately and are
 // the easiest thing in the world to let drift: nothing renders them yet, so a
@@ -84,9 +162,16 @@ for (const location of IRON_VERDICT_LOCATIONS) {
 const flagsInPlay = new Set<string>()
 for (const l of IRON_VERDICT_LOCATIONS) {
   if (l.unlock_flag) flagsInPlay.add(l.unlock_flag)
-  if (l.reveal_flag) flagsInPlay.add(l.reveal_flag)
+  for (const flag of asList(l.reveal_flag)) flagsInPlay.add(flag)
 }
 for (const c of IRON_VERDICT_CHOICES) for (const f of asList(c.sets)) flagsInPlay.add(f)
+for (const duel of world.duels) {
+  for (const flag of duel.outcome.sets) flagsInPlay.add(flag)
+  for (const flag of duel.loss?.sets ?? []) flagsInPlay.add(flag)
+  for (const sets of Object.values(duel.loss?.sets_if_lead ?? {})) {
+    for (const flag of sets) flagsInPlay.add(flag)
+  }
+}
 
 const cast = world.cast
 const castIds = new Set<string>()
@@ -96,7 +181,11 @@ for (const person of cast) {
   castIds.add(person.id)
   if (!byId.has(person.home_location_id)) fail.push(`${at} lives at unknown place ${person.home_location_id}`)
   if (!person.portraits?.default) fail.push(`${at} has no default portrait`)
-  for (const flag of [person.gated_by_flag, person.reveals_flag].filter(Boolean) as string[]) {
+  if (person.playable === true) {
+    const start = person.start_location_id ?? IRON_VERDICT_START_LOCATION
+    if (!byId.has(start)) fail.push(`${at} starts at unknown place ${start}`)
+  }
+  for (const flag of [person.gated_by_flag, person.reveals_flag, person.hidden_if_flag].filter(Boolean) as string[]) {
     if (!flagsInPlay.has(flag)) fail.push(`${at} references flag '${flag}' that the world does not use`)
   }
   // Guarded knowledge is the difference between a secret the player earns and
@@ -219,7 +308,7 @@ for (const road of roads) for (const id of road.run.reached) anywhere.add(id)
 
 for (const location of IRON_VERDICT_LOCATIONS) {
   if (!anywhere.has(location.id)) {
-    const gates = [location.unlock_flag, location.reveal_flag].filter(Boolean).join(' + ')
+    const gates = [location.unlock_flag, ...asList(location.reveal_flag)].filter(Boolean).join(' + ')
     fail.push(`${location.id}: no playthrough can reach it (gated on ${gates || 'nothing — check its routes'})`)
   }
 }
@@ -498,6 +587,13 @@ for (const duel of world.duels) {
     fail.push(`${at} is fought over '${duel.choice_id}', which no choice in this world offers`)
     continue
   }
+  for (const extra of duel.choice_ids ?? []) {
+    const other = IRON_VERDICT_CHOICES.find((c) => c.id === extra)
+    if (!other) fail.push(`${at} also answers to '${extra}', which no choice in this world offers`)
+    else if (asList(other.sets).sort().join() !== asList(trigger.sets).sort().join()) {
+      fail.push(`${at} '${extra}' writes different flags than '${duel.choice_id}'`)
+    }
+  }
   if (duelForChoice(world, trigger.id)?.id !== duel.id) {
     fail.push(`${at} a second duel answers to '${trigger.id}', so which fight is staged depends on file order`)
   }
@@ -517,6 +613,20 @@ for (const duel of world.duels) {
   if (!byId.has(duel.at)) fail.push(`${at} is fought in a place that does not exist`)
 
   for (const [side, combatant] of [['challenger', duel.challenger], ['defender', duel.defender]] as const) {
+    if (combatant.portrait_asset_id) {
+      const portrait = assetsById.get(combatant.portrait_asset_id)
+      if (!portrait) {
+        fail.push(`${at} the ${side}'s face '${combatant.portrait_asset_id}' is not in the manifest`)
+      } else if (portrait.role !== 'portrait') {
+        fail.push(`${at} the ${side}'s face '${combatant.portrait_asset_id}' is a ${portrait.role}, not a portrait`)
+      }
+      if (combatant.cast_id) {
+        fail.push(`${at} the ${side} has both a cast identity and a duel-local face, so which portrait owns them is ambiguous`)
+      }
+      if (combatant.is_player) {
+        fail.push(`${at} the ${side} is the player but carries a fixed authored face`)
+      }
+    }
     if (combatant.cast_id) {
       const member = cast.find((c) => c.id === combatant.cast_id)
       if (!member) fail.push(`${at} the ${side} is ${combatant.cast_id}, who is in nobody's cast`)
@@ -574,6 +684,26 @@ for (const duel of world.duels) {
     if (!beat.said && loud.beats[index]!.said) fail.push(`${at} exchange ${index + 1} was authored silent and speaks anyway`)
   }
 
+  // Asked to rewrite an exchange whose actor speaks, the flavour pass folds the
+  // speech into the prose — and the words are then read twice, once in the
+  // panel and once in the bubble over his head. Seen in play.
+  const doubled = composeDuel(
+    duel,
+    duel.beats.map((beat) => ({ action: `He moved, saying "${beat.said ?? 'nothing'}".`, said: beat.said })),
+    world,
+  )
+  for (const [index, beat] of duel.beats.entries()) {
+    if (beat.said && doubled.beats[index]!.said) {
+      fail.push(`${at} exchange ${index + 1} speaks in the prose AND over his head, so the player reads it twice`)
+    }
+  }
+  // The bite: an exchange whose prose does NOT speak must still carry its line,
+  // or the whole authored half of the fight has gone silent.
+  const spoken = duel.beats.filter((b) => b.said).length
+  if (spoken && composeDuel(duel, null, world).beats.filter((b) => b.said).length !== spoken) {
+    fail.push(`${at} the authored lines are dropped when nothing was rewritten`)
+  }
+
   // NOTHING STRUCTURAL REACHES THE MODEL. It is given a plan and asked for the
   // same exchanges in better words; an id, a flag or a place key in the brief
   // is something it can echo back, and the one thing it is never trusted with.
@@ -601,6 +731,11 @@ for (const duel of world.duels) {
     if (names(wire, flag)) fail.push(`${at} '${flag}' is sent to the client with the fight`)
   }
   for (const asset of assetIds) if (wire.includes(`"${asset}"`)) fail.push(`${at} the asset id '${asset}' is sent instead of a URL`)
+  for (const combatant of [duel.challenger, duel.defender]) {
+    if (combatant.portrait_asset_id && wire.includes(combatant.portrait_asset_id)) {
+      fail.push(`${at} the authored duel face '${combatant.portrait_asset_id}' is sent to the client instead of its URL`)
+    }
+  }
 }
 
 // The count is checked against the plan rather than merely bounded, because
@@ -803,6 +938,105 @@ console.log(
   `ripening: ${Object.keys(ladder).length} rungs, a season is ${seasonLength(reign)} rulings, ` +
   `${(reign?.petitions ?? []).filter((p) => ripensTo(reign, p.kind)).length}/${reign?.petitions?.length ?? 0} petitions seed one`,
 )
+
+// ── Cross-world binding ───────────────────────────────────────────────────
+// Ownership is not the binding. An owned chat realm, or a save for a different
+// map, named in this world's path would mint state / events / memories onto
+// the wrong save. The rule lives in one place; state() and act() both have
+// to go through it before any interactive write.
+
+const asked = 'world-asked'
+const player = 'player-own'
+const ownSave = { player_id: player }
+const boundHere = { interactive_world_key: asked }
+const boundElsewhere = { interactive_world_key: 'world-other' }
+const ordinaryRealm = { title: 'a chat realm' }
+const blankKey = { interactive_world_key: '' }
+const spacedKey = { interactive_world_key: '   ' }
+
+if (reasonInstanceNotBoundToWorld(asked, ownSave, boundHere, player)) {
+  fail.push('a save bound to the world in the URL is refused')
+}
+
+const mismatches: Array<[string, { player_id: unknown } | null, { interactive_world_key?: string; title?: string } | null]> = [
+  ['another walkable world', ownSave, boundElsewhere],
+  ['an ordinary realm', ownSave, ordinaryRealm],
+  ['a template with an empty key', ownSave, blankKey],
+  ['a template with a blank key', ownSave, spacedKey],
+  ["someone else's save", { player_id: 'player-other' }, boundHere],
+  ['a missing save', null, boundHere],
+  ['a save whose template is gone', ownSave, null],
+]
+
+for (const [what, inst, tmpl] of mismatches) {
+  let mutated = false
+  try {
+    assertInstanceBoundToWorld(asked, inst, tmpl, player)
+    mutated = true
+  } catch (err) {
+    if (!(err instanceof HttpError) || err.statusCode !== 404 || err.message !== 'World instance not found') {
+      fail.push(`a save for ${what} is not refused the way a missing save is`)
+    }
+  }
+  if (mutated) fail.push(`interactive state would be written for ${what}`)
+}
+
+function between(src: string, from: string, to?: string): string {
+  const start = src.indexOf(from)
+  if (start < 0) return ''
+  const end = to ? src.indexOf(to, start + from.length) : src.length
+  return end < 0 ? src.slice(start) : src.slice(start, end)
+}
+
+const here = dirname(fileURLToPath(import.meta.url))
+const worldServiceSrc = readFileSync(join(here, '../src/services/interactive-world.service.ts'), 'utf8')
+const walkInstanceServiceSrc = readFileSync(join(here, '../src/services/interactive-world-instance.service.ts'), 'utf8')
+const stateBody = between(worldServiceSrc, 'async state(', 'async act(')
+const actBody = between(worldServiceSrc, 'async act(')
+const requireBody = between(walkInstanceServiceSrc, 'async requireBound(', 'async create(')
+
+if (!requireBody.includes('reasonWalkInstanceNotBound')) {
+  fail.push('requireBound no longer uses the shared walk binding rule')
+}
+if (!stateBody.includes('requireBound')) {
+  fail.push('state() no longer proves the instance is bound to the world in the URL')
+} else {
+  const bindAt = stateBody.indexOf('requireBound')
+  const mutateAt = Math.min(
+    ...['interactiveWorldStates', 'this.definition', 'updateOne'].map((needle) => {
+      const at = stateBody.indexOf(needle)
+      return at < 0 ? Infinity : at
+    }),
+  )
+  if (bindAt > mutateAt) {
+    fail.push('state() initialises interactive state before proving the instance belongs to this world')
+  }
+}
+if (!actBody.includes('this.state(')) {
+  fail.push('act() no longer goes through state(), so the binding guard can drift')
+} else {
+  const viaState = actBody.indexOf('this.state(')
+  const writeAt = Math.min(
+    ...['updateOne', 'insertOne'].map((needle) => {
+      const at = actBody.indexOf(needle)
+      return at < 0 ? Infinity : at
+    }),
+  )
+  if (viaState > writeAt) {
+    fail.push('act() writes before going through state(), so a mismatched save can mutate first')
+  }
+}
+if (!actBody.includes('this.state(worldKey, instanceId, playerId, true)')) {
+  fail.push('act() reads the rendered state, so narrated flags could be persisted as authored facts')
+}
+if (!stateBody.includes('forMutation ? state : worldStateView(state, flags, world.locations)')) {
+  fail.push('state() no longer exposes effective flags and server-derived travel targets on the wire')
+}
+if (!actBody.includes('state: worldStateView(next, flags, world.locations)')) {
+  fail.push('act() no longer returns effective flags and new travel targets after the turn')
+}
+
+console.log(`binding: ${mismatches.length} mismatched saves refused before a write`)
 
 for (const plate of IRON_VERDICT_MAP_STYLE.plates) {
   if (!assetIds.has(plate.asset_id)) fail.push(`plate ${plate.asset_id} is not in the manifest`)

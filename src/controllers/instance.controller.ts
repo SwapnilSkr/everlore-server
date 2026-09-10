@@ -1,5 +1,6 @@
 import type { AuthUser } from '../middleware/auth'
 import { instanceService } from '../services/instance.service'
+import { interactiveWorldInstanceService } from '../services/interactive-world-instance.service'
 import { deletionService } from '../services/deletion.service'
 import { HttpError } from '../utils/http-error'
 
@@ -14,26 +15,46 @@ export const instanceController = {
     query,
   }: {
     user: AuthUser | null
-    query: { page?: number; limit?: number; include_archived?: boolean; search?: string }
+    query: {
+      page?: number
+      limit?: number
+      include_archived?: boolean
+      search?: string
+      kind?: 'chat' | 'walks'
+    }
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
+    if (query.kind === 'walks') {
+      return interactiveWorldInstanceService.listRealms(
+        user.id,
+        query.include_archived === true,
+        Number(query.page) || 1,
+        Number(query.limit) || 12,
+        query.search,
+      )
+    }
     return instanceService.listRealms(
       user.id,
       query.include_archived === true,
       Number(query.page) || 1,
       Number(query.limit) || 12,
       query.search,
+      false,
     )
   },
 
   playStatus: async ({ user, params }: { user: AuthUser | null; params: { templateId: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return instanceService.getPlayStatus(user.id, params.templateId)
+    const chat = await instanceService.getPlayStatus(user.id, params.templateId)
+    if (chat.has_played) return chat
+    return interactiveWorldInstanceService.getPlayStatus(user.id, params.templateId)
   },
 
   listByTemplate: async ({ user, params }: { user: AuthUser | null; params: { templateId: string } }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return instanceService.listByTemplate(user.id, params.templateId)
+    const chat = await instanceService.listByTemplate(user.id, params.templateId)
+    if (chat.template) return chat
+    return interactiveWorldInstanceService.listByWorld(user.id, params.templateId)
   },
 
   getById: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {

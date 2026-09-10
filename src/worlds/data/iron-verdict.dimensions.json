@@ -59,6 +59,10 @@
     "width": 744,
     "height": 1471
   },
+  "portrait_dovin_kell": {
+    "width": 577,
+    "height": 1493
+  },
   "portrait_gaunt": {
     "width": 578,
     "height": 1476
@@ -102,6 +106,10 @@
   "portrait_oathspeaker_ranneke": {
     "width": 693,
     "height": 1479
+  },
+  "portrait_rell_halloran": {
+    "width": 541,
+    "height": 1515
   },
   "portrait_sabra_idre": {
     "width": 682,
@@ -148,10 +156,6 @@
     "height": 1493
   },
   "scene_blackreach_hold": {
-    "width": 941,
-    "height": 1672
-  },
-  "scene_blackreach_hold_v2": {
     "width": 941,
     "height": 1672
   },

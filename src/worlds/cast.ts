@@ -58,6 +58,8 @@ export interface PresentCharacter {
    * reads as the world resetting.
    */
   first_met?: string
+  /** How they currently read the player. Absent until a conversation exists. */
+  disposition?: number
 }
 
 /** The cast of a loaded world, typed. Absent cast file means no cast, not a break. */
@@ -74,11 +76,14 @@ export function presentCast(
   world: LoadedWorld,
   locationId: string,
   flags: Record<string, boolean>,
+  protagonistId?: string,
 ): WorldCastMember[] {
   return castOf(world).filter(
     (member) =>
+      member.id !== protagonistId &&
       member.home_location_id === locationId &&
-      (!member.gated_by_flag || flags[member.gated_by_flag] === true),
+      (!member.gated_by_flag || flags[member.gated_by_flag] === true) &&
+      (!member.hidden_if_flag || flags[member.hidden_if_flag] !== true),
   )
 }
 
@@ -121,6 +126,7 @@ export function offerCast(
   members: WorldCastMember[],
   assets: (InteractiveAssetDoc & { url?: string | null })[],
   met: (id: string) => boolean,
+  disposition?: (id: string) => number | undefined,
 ): PresentCharacter[] {
   const urls = new Map(assets.map((asset) => [asset.id, asset.url ?? null]))
   return members.map((member) => ({
@@ -130,6 +136,7 @@ export function offerCast(
     faction: member.faction,
     portrait_url: urls.get(portraitAssetId(member, undefined)) ?? null,
     met: met(member.id),
+    disposition: disposition?.(member.id) ?? member.disposition_start,
     ...(met(member.id) ? {} : { first_met: member.first_met }),
   }))
 }

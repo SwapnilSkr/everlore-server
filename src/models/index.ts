@@ -27,6 +27,8 @@ export type {
   InteractiveAssetDoc,
   InteractiveLocationDoc,
   InteractiveWorldDoc,
+  InteractiveWorldInstanceDoc,
+  InteractiveWorldInstanceMetaDoc,
   InteractiveWorldStateDoc,
 } from './interactive-world.model'
 export type { CharacterProfileDoc } from './character-profile.model'

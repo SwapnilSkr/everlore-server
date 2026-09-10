@@ -3,8 +3,35 @@
   "title": "The Iron Verdict",
   "chapter_title": "Chapter I · The Bloodless Crown",
   "blurb": "A duchy where a fight makes law and a written roll outlives the man who signed it. Walk it, and what you decide is carved into the wall.",
+  "definition_version": 34,
   "revision": 9,
   "start_location_id": "verdict_ring",
+  "drills": [
+    {
+      "id": "yard_chainhouse",
+      "at": "chainhouse",
+      "label": "Spar on the Chainhouse yard",
+      "raises": { "strength": 1 }
+    },
+    {
+      "id": "forge_hollowforge",
+      "at": "hollowforge",
+      "label": "Work the hammer until the arm remembers",
+      "raises": { "strength": 1 }
+    },
+    {
+      "id": "stall_sundial",
+      "at": "sundial_market",
+      "label": "Talk a buyer out of a better price",
+      "raises": { "charisma": 1 }
+    },
+    {
+      "id": "hall_sable",
+      "at": "sable_court",
+      "label": "Sit the hall until the houses listen",
+      "raises": { "leadership": 1 }
+    }
+  ],
   "map_style": {
     "renderer": "terrain_plate_scene_graph",
     "skin": "medieval_atlas",
@@ -174,6 +201,10 @@
       "role": "portrait"
     },
     {
+      "id": "portrait_dovin_kell",
+      "role": "portrait"
+    },
+    {
       "id": "portrait_nara_voss",
       "role": "portrait"
     },
@@ -183,6 +214,10 @@
     },
     {
       "id": "portrait_nara_warm",
+      "role": "portrait"
+    },
+    {
+      "id": "portrait_rell_halloran",
       "role": "portrait"
     },
     {
@@ -631,13 +666,20 @@
       "scene_asset_id": "scene_sable_court",
       "scene_headline": "Marble, and no weapons at all.",
       "scene_body": "Every person here is measuring what your arrival costs them.",
+      "scene_when": [
+        {
+          "lead": "sereth_morrow",
+          "headline": "Your uncle's hall.",
+          "body": "Duke Aldric has not sat the chair in a week. Barran is already drinking as if the succession were a toast, and the writ is somewhere in this city that is not yet in your hands."
+        }
+      ],
       "routes": [
         "sundial_market",
         "iron_fane"
       ],
       "unlock_flag": "court_summoned",
       "sealed_reason": "You have no name the Court must answer.",
-      "reveal_flag": "writ_read"
+      "reveal_flag": ["writ_read", "court_summoned"]
     },
     {
       "id": "sundial_market",
@@ -657,7 +699,19 @@
       },
       "scene_asset_id": "scene_sundial_market",
       "scene_headline": "Lanterns sway over wet stone.",
-      "scene_body": "Nara Voss is already holding out her hand for the writ you have not shown her.",
+      "scene_body": "A new lead waits among the stalls, if you have not already become it.",
+      "scene_when": [
+        {
+          "flag": "writ_read",
+          "headline": "The lanterns have not moved.",
+          "body": "The writ is known, and the stalls have already begun to price what that knowledge is worth."
+        },
+        {
+          "lead": "nara_voss",
+          "headline": "Your stall. Your lantern.",
+          "body": "The Ring is shouting two streets over. In your coat there is paper the duchy does not know you have, and you have not yet decided whether to read it."
+        }
+      ],
       "routes": [
         "verdict_ring",
         "chainhouse",
@@ -686,6 +740,13 @@
       "scene_asset_id": "scene_chainhouse",
       "scene_headline": "The door locks from the outside.",
       "scene_body": "Cassian is not a prisoner. He simply cannot leave, and the difference has stopped mattering to him.",
+      "scene_when": [
+        {
+          "lead": "cassian_vale",
+          "headline": "Home, if that is the word.",
+          "body": "The door still locks from the outside. Gaunt will want you accounted for. The sand is still on your boots."
+        }
+      ],
       "routes": [
         "verdict_ring",
         "sundial_market"
@@ -712,6 +773,24 @@
       "scene_asset_id": "scene_verdict_ring",
       "scene_headline": "The crowd holds its breath.",
       "scene_body": "Two champions stand on the raked sand. Whatever is decided here becomes law, and cannot be appealed.",
+      "scene_when": [
+        {
+          "flag": "verdict_witnessed",
+          "lead": "cassian_vale",
+          "headline": "You are still on the sand.",
+          "body": "The trumpet has gone. Kell went down the stair. The carvers are already at the inner wall, and the crowd is leaving you behind."
+        },
+        {
+          "flag": "verdict_witnessed",
+          "headline": "The sand is still dark.",
+          "body": "The crowd has gone. The loser went down the stair. What was decided here is already law, and the Ring is only a ring until someone names the next quarrel."
+        },
+        {
+          "lead": "cassian_vale",
+          "headline": "The sand is yours.",
+          "body": "The trumpet has not gone. Kell is already waiting. The carvers wait at the wall with their chisels, because whatever happens next is going to be law."
+        }
+      ],
       "routes": [
         "sundial_market",
         "chainhouse",
@@ -1055,6 +1134,7 @@
       "id": "witness_verdict",
       "label": "Watch the Verdict",
       "at": "verdict_ring",
+      "not_for_leads": "cassian_vale",
       "sets": "verdict_witnessed",
       "summary": "Witnessed a Verdict in the Ring. The loser was carried down the stair.",
       "memory": {
@@ -1071,10 +1151,32 @@
       }
     },
     {
+      "id": "stand_the_verdict",
+      "label": "Stand the Verdict",
+      "at": "verdict_ring",
+      "for_leads": "cassian_vale",
+      "sets": "verdict_witnessed",
+      "summary": "Fought a Verdict on the sand. Kell went down the stair, and the market opened as the next road.",
+      "memory": {
+        "text": "Cassian Vale fought a Verdict in the Ring and put Dovin Kell down. The loser was carried toward the Drowned Stair, and the Sundial Market opened as the next lead.",
+        "subjects": [
+          "Cassian Vale",
+          "Dovin Kell"
+        ],
+        "objects": [
+          "The Verdict Ring",
+          "The Sundial Market"
+        ],
+        "terms": "Verdict, Ring, Cassian, sand, market",
+        "valence": "foreboding"
+      }
+    },
+    {
       "id": "trust_cassian",
       "label": "Go to Cassian",
       "at": "verdict_ring",
       "requires": "verdict_witnessed",
+      "not_for_leads": "cassian_vale",
       "sets": "cassian_trust",
       "summary": "Cassian trusted the player and opened the Chainhouse and the forge.",
       "memory": {
@@ -1095,6 +1197,7 @@
       "label": "Show Nara the writ",
       "at": "sundial_market",
       "requires": "cassian_trust",
+      "not_for_leads": "nara_voss",
       "sets": "writ_read",
       "summary": "Nara read the sealed writ. The succession Verdict was dated before the fight.",
       "memory": {
@@ -1107,6 +1210,90 @@
           "Marblegate"
         ],
         "terms": "writ, succession, forged date, Nara, Marblegate",
+        "valence": "alarmed"
+      }
+    },
+    {
+      "id": "hear_the_ring",
+      "label": "Listen to the Ring from the stalls",
+      "at": "sundial_market",
+      "for_leads": "nara_voss",
+      "sets": "verdict_witnessed",
+      "summary": "Heard a Verdict shouted from two streets over. The crowd is already spilling into the market.",
+      "memory": {
+        "text": "Nara Voss heard the Verdict from her stall in the Sundial Market. Cassian Vale won, and the loser was carried toward the Drowned Stair.",
+        "subjects": [
+          "Nara Voss",
+          "Cassian Vale"
+        ],
+        "objects": [
+          "The Sundial Market",
+          "The Verdict Ring"
+        ],
+        "terms": "Verdict, stalls, Cassian, market",
+        "valence": "foreboding"
+      }
+    },
+    {
+      "id": "keep_the_days_writ",
+      "label": "Read the paper in your coat",
+      "at": "sundial_market",
+      "for_leads": "nara_voss",
+      "requires": "verdict_witnessed",
+      "sets": "writ_read",
+      "summary": "Read the sealed writ she was already carrying. The succession Verdict was dated before the fight.",
+      "memory": {
+        "text": "Nara Voss read the sealed writ she had been holding in her coat. The succession Verdict is dated before the fight it decides, which means the outcome was bought.",
+        "subjects": [
+          "Nara Voss"
+        ],
+        "objects": [
+          "the sealed writ",
+          "The Sundial Market"
+        ],
+        "terms": "writ, succession, forged date, coat",
+        "valence": "alarmed"
+      }
+    },
+    {
+      "id": "hear_the_runner",
+      "label": "Hear the runner from the Ring",
+      "at": "sable_court",
+      "for_leads": "sereth_morrow",
+      "sets": "verdict_witnessed",
+      "summary": "A runner from the Ring named the afternoon’s Verdict. Cassian Vale still stands.",
+      "memory": {
+        "text": "A runner reached the Sable Court and told Lady Sereth Morrow that Cassian Vale had won the afternoon’s Verdict. The loser went down the Drowned Stair.",
+        "subjects": [
+          "Lady Sereth Morrow",
+          "Cassian Vale"
+        ],
+        "objects": [
+          "The Sable Court",
+          "The Verdict Ring"
+        ],
+        "terms": "runner, Verdict, Court, Cassian",
+        "valence": "foreboding"
+      }
+    },
+    {
+      "id": "demand_the_paper",
+      "label": "Have the day’s paper brought",
+      "at": "sable_court",
+      "for_leads": "sereth_morrow",
+      "requires": "verdict_witnessed",
+      "sets": "writ_read",
+      "summary": "A clerk laid the sealed writ in her hands. The succession Verdict was dated before the fight.",
+      "memory": {
+        "text": "Lady Sereth Morrow had the sealed writ brought to the Sable Court. The succession Verdict is dated before the fight it decides.",
+        "subjects": [
+          "Lady Sereth Morrow"
+        ],
+        "objects": [
+          "the sealed writ",
+          "The Sable Court"
+        ],
+        "terms": "writ, succession, clerk, court",
         "valence": "alarmed"
       }
     },
@@ -1481,6 +1668,11 @@
       "id": "sell_the_writ",
       "label": "Sell the writ to Verrine",
       "at": "casa_verrine",
+      "critical": {
+        "id": "writ_disposal",
+        "title": "The writ’s fate",
+        "hint": "Once the paper leaves your hands, one century of law follows. You can take this moment again."
+      },
       "requires": "writ_read",
       "forbids": [
         "writ_burned",
@@ -1512,6 +1704,11 @@
       "id": "burn_the_writ",
       "label": "Burn the writ on the Fane’s iron",
       "at": "iron_fane",
+      "critical": {
+        "id": "writ_disposal",
+        "title": "The writ’s fate",
+        "hint": "Once the paper leaves your hands, one century of law follows. You can take this moment again."
+      },
       "requires": "writ_read",
       "forbids": [
         "writ_sold",
@@ -1540,6 +1737,11 @@
       "id": "give_writ_court",
       "label": "Put the writ in the Court’s hands",
       "at": "sable_court",
+      "critical": {
+        "id": "writ_disposal",
+        "title": "The writ’s fate",
+        "hint": "Once the paper leaves your hands, one century of law follows. You can take this moment again."
+      },
       "requires": [
         "writ_read",
         "court_summoned"
@@ -1572,6 +1774,11 @@
       "id": "give_writ_thornhollow",
       "label": "Give the writ to Thornhollow",
       "at": "thornhollow",
+      "critical": {
+        "id": "writ_disposal",
+        "title": "The writ’s fate",
+        "hint": "Once the paper leaves your hands, one century of law follows. You can take this moment again."
+      },
       "requires": [
         "writ_read",
         "thornhollow_pact"
@@ -1604,7 +1811,13 @@
       "id": "let_cassian_throw",
       "label": "Let Cassian throw the Verdict",
       "at": "verdict_ring",
+      "critical": {
+        "id": "succession_verdict",
+        "title": "The succession Verdict",
+        "hint": "This fight makes law. If it goes against you, you may take it again — or put more weight in your arm at the Chainhouse first."
+      },
       "requires": "writ_burned",
+      "not_for_leads": "cassian_vale",
       "forbids": [
         "succession_fought",
         "succession_passed"
@@ -1628,15 +1841,54 @@
       }
     },
     {
+      "id": "throw_the_verdict",
+      "label": "Throw the Verdict",
+      "at": "verdict_ring",
+      "critical": {
+        "id": "succession_verdict",
+        "title": "The succession Verdict",
+        "hint": "This fight makes law. If it goes against you, you may take it again — or put more weight in your arm at the Chainhouse first."
+      },
+      "for_leads": "cassian_vale",
+      "requires": "writ_burned",
+      "forbids": [
+        "succession_fought",
+        "succession_passed"
+      ],
+      "sets": [
+        "succession_passed",
+        "cassian_dead"
+      ],
+      "summary": "Threw the succession Verdict on purpose and bled out on the sand, exactly as the paper required.",
+      "memory": {
+        "text": "Cassian Vale threw the succession Verdict and died on the sand, exactly as he had been paid to.",
+        "subjects": [
+          "Cassian Vale"
+        ],
+        "objects": [
+          "The Verdict Ring"
+        ],
+        "terms": "thrown, succession, cassian died",
+        "valence": "hollow"
+      }
+    },
+    {
       "id": "fight_succession",
-      "label": "Fight the succession Verdict yourself",
+      "label": "Fight the succession Verdict",
       "at": "verdict_ring",
       "requires": "writ_burned",
+      "require_traits": { "strength": 5 },
+      "train_hint": "Halloran is heavier than you. Spar on the Chainhouse yard, or work the hammer at Hollowforge, then take the sand again.",
+      "critical": {
+        "id": "succession_verdict",
+        "title": "The succession Verdict",
+        "hint": "This fight makes law. If it goes against you, you may take it again — or put more weight in your arm at the Chainhouse first."
+      },
       "sets": [
         "succession_fought",
         "succession_passed"
       ],
-      "summary": "The player took Cassian’s place on the sand and won the succession honestly, inheriting everything it decides.",
+      "summary": "Took the succession Verdict on the sand and won it honestly, inheriting everything it decides.",
       "memory": {
         "text": "The player fought the succession Verdict in Cassian Vale’s place and won it on the sand. The Ring stands unquestioned, and it now answers to them.",
         "subjects": [

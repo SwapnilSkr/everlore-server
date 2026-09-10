@@ -219,6 +219,7 @@ export const templateService = {
     // listing and a search go through the same gate.
     const filter: Record<string, unknown> = {
       is_published: true,
+      $expr: { $eq: [{ $strLenCP: { $ifNull: ['$interactive_world_key', ''] } }, 0] },
       ...(await moderationService.discoveryFilter(userId)),
     }
     if (search) {
@@ -282,7 +283,10 @@ export const templateService = {
   },
 
   async listByCreator(creatorId: string, page: number = 1, limit: number = 20, search?: string) {
-    const filter: Record<string, unknown> = { creator_id: parseObjectId(creatorId) }
+    const filter: Record<string, unknown> = {
+      creator_id: parseObjectId(creatorId),
+      $expr: { $eq: [{ $strLenCP: { $ifNull: ['$interactive_world_key', ''] } }, 0] },
+    }
     const term = search?.trim()
     if (term) {
       filter.$or = [

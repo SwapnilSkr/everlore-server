@@ -1,6 +1,7 @@
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { parseObjectId, idString } from '../../src/utils/mongo-id'
+import { liveInstanceExists } from '../../src/utils/live-instance'
 import { instanceService } from '../../src/services/instance.service'
 import { characterCodexService } from '../../src/services/character-codex.service'
 import { entityGraphService } from '../../src/services/entity-graph.service'
@@ -31,6 +32,7 @@ export async function projectCharacterEvent(params: {
   const { instanceId, playerId, eventId } = params
   const iid = parseObjectId(instanceId)
   const eid = parseObjectId(eventId)
+  if (!(await liveInstanceExists(iid))) return { skipped: 'instance_deleted' }
   const event = await mongoColl.events().findOne({ _id: eid, instance_id: iid })
   if (!event) return { skipped: 'event_missing' }
   if (event.data.codex_deltas) return { skipped: 'already_projected' }

@@ -60,3 +60,33 @@ export function getMaintenanceQueue(): Queue {
   }
   return maintenanceQueue
 }
+
+const QUEUED_JOB_STATES = [
+  'waiting',
+  'delayed',
+  'paused',
+  'prioritized',
+] as const
+
+/**
+ * Drop not-yet-running jobs for a save that is being destroyed. Active jobs
+ * are left to the worker, which no-ops once the instance document is gone.
+ */
+export async function removeQueuedJobsForInstance(instanceId: string): Promise<void> {
+  const queues = [
+    getGenerationQueue(),
+    getMemoryCurationQueue(),
+    getSceneSummaryQueue(),
+    getMaintenanceQueue(),
+  ]
+  await Promise.all(
+    queues.map(async (queue) => {
+      const jobs = await queue.getJobs([...QUEUED_JOB_STATES])
+      await Promise.all(
+        jobs
+          .filter((job) => job?.data?.instanceId === instanceId)
+          .map((job) => job.remove().catch(() => undefined)),
+      )
+    }),
+  )
+}

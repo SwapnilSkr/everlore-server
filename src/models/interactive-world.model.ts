@@ -103,8 +103,10 @@ export interface InteractiveLocationDoc {
   unlock_flag?: string
   /** Player-facing reason the place is shut. Never mechanical. */
   sealed_reason?: string
-  /** Lifts fog and promotes `rumoured` to `sealed`. */
-  reveal_flag?: string
+  /** Lifts fog and promotes `rumoured` to `sealed`. Any named flag is enough. */
+  reveal_flag?: string | string[]
+  /** Flag- and lead-keyed scene copy. First match wins. */
+  scene_when?: { flag?: string; lead?: string; headline?: string; body?: string }[]
 }
 
 export interface InteractiveRealmDoc {
@@ -141,10 +143,38 @@ export interface InteractiveWorldDoc {
   version: number
   title: string
   chapter_title: string
+  /** Catalog blurb for Explore / My Walks. Falls back to chapter_title when absent. */
+  description?: string
+  /** Catalog cover. Map art still lives on `assets`. */
+  image_url?: string
+  creator_id?: ObjectId
+  is_published: boolean
+  moderation_status?: 'active' | 'hidden'
+  moderation_reason?: string
+  moderated_at?: Date
+  moderated_by?: string
   map_style: InteractiveMapStyleDoc
   realms: InteractiveRealmDoc[]
   assets: InteractiveAssetDoc[]
   locations: InteractiveLocationDoc[]
+  created_at: Date
+  updated_at: Date
+}
+
+/** Player save for one walkable world. Map progress lives on InteractiveWorldStateDoc. */
+export interface InteractiveWorldInstanceMetaDoc {
+  total_events: number
+  total_memories: number
+  last_active_at: Date
+  is_archived: boolean
+}
+
+export interface InteractiveWorldInstanceDoc {
+  _id: ObjectId
+  world_id: ObjectId
+  world_key: string
+  player_id: ObjectId
+  meta: InteractiveWorldInstanceMetaDoc
   created_at: Date
   updated_at: Date
 }
@@ -264,7 +294,50 @@ export interface InteractiveWorldStateDoc {
    * could be spoken to, so read it defensively.
    */
   conversations?: Record<string, WorldConversationDoc>
+  /** Bound lead. Absent until the player picks who walks. */
+  protagonist?: { character_id: string }
+  traits?: { strength: number; charisma: number; leadership: number; level: number }
+  prologue_seen?: boolean
+  /**
+   * The road behind the player. Restoring one rewinds story, talks and
+   * memories to before that step. Traits earned in the yards are kept.
+   */
+  checkpoints?: WorldCheckpointDoc[]
+  drills_taken?: number
   sequence: number
   created_at: Date
   updated_at: Date
+}
+
+export type WorldCheckpointKind = 'hinge' | 'choice' | 'travel' | 'talk' | 'rule'
+
+export interface WorldCheckpointSnapshot {
+  flags: Record<string, boolean>
+  current_location_id: string
+  unlocked_location_ids: string[]
+  revealed_location_ids: string[]
+  seen_scene_ids: string[]
+  taken_choice_ids: string[]
+  ledger: WorldLedgerEntryDoc[]
+  ripened_petitions: RipenedPetitionDoc[]
+  conversations: Record<string, WorldConversationDoc>
+  /** Walk sequence at capture. Later checkpoints sit after this. */
+  walk_sequence: number
+  /**
+   * Last chronicle event written *before* this moment. Restore deletes
+   * events after it, and the memories those events sourced.
+   */
+  event_sequence: number
+}
+
+export interface WorldCheckpointDoc {
+  id: string
+  kind?: WorldCheckpointKind
+  choice_id: string
+  title: string
+  hint: string
+  at: string
+  fatal: boolean
+  captured_at: Date
+  snapshot: WorldCheckpointSnapshot
 }

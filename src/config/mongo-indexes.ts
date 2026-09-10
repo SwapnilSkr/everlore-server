@@ -44,6 +44,31 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     options: { unique: true, name: 'idx_interactive_worlds_key' },
   },
   {
+    collection: COLLECTIONS.interactive_worlds,
+    key: { creator_id: 1, updated_at: -1 },
+    options: { name: 'idx_interactive_worlds_creator' },
+  },
+  {
+    collection: COLLECTIONS.interactive_worlds,
+    key: { is_published: 1, created_at: -1 },
+    options: { name: 'idx_interactive_worlds_published' },
+  },
+  {
+    collection: COLLECTIONS.interactive_world_instances,
+    key: { player_id: 1, 'meta.is_archived': 1, 'meta.last_active_at': -1 },
+    options: { name: 'idx_interactive_world_instances_player_archived_active' },
+  },
+  {
+    collection: COLLECTIONS.interactive_world_instances,
+    key: { world_id: 1 },
+    options: { name: 'idx_interactive_world_instances_world' },
+  },
+  {
+    collection: COLLECTIONS.interactive_world_instances,
+    key: { player_id: 1, world_id: 1, 'meta.is_archived': 1 },
+    options: { name: 'idx_interactive_world_instances_player_world_archived' },
+  },
+  {
     collection: COLLECTIONS.interactive_world_states,
     key: { instance_id: 1, world_key: 1 },
     options: { unique: true, name: 'idx_interactive_world_states_instance_world' },

@@ -14,6 +14,7 @@ import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-m
 import { countTokens } from '../../src/utils/token-counter'
 import { normalizeNarrationMarkers, validateProseHygiene } from '../../src/utils/prose-hygiene'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
+import { liveInstanceExists } from '../../src/utils/live-instance'
 import { generationLockKey, releaseGenerationLock } from '../../src/utils/generation-lock'
 import { scoreScene, classifyBorderlineIntent } from '../lib/nsfw-classifier'
 import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
@@ -539,6 +540,9 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
     session,
     userNsfwEnabled,
   } = job.data
+  if (!(await liveInstanceExists(parseObjectId(instanceId)))) {
+    return
+  }
   let confirmedWorldAction = worldAction as PlayerWorldAction | undefined
   const actionTimeAdvance = confirmedWorldAction?.kind === 'travel' ? confirmedWorldAction.timeAdvance : undefined
   const actionTimeAdvanceLabel = actionTimeAdvance ? TIME_ADVANCE_LABELS[actionTimeAdvance] : undefined
