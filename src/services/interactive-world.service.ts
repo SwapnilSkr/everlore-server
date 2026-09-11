@@ -451,6 +451,36 @@ function overtureView(
   }
 }
 
+function addressCue(kind: string, fought: boolean): string {
+  if (fought) {
+    return '(The fight is over. You are still standing in front of them. Speak first: name what was decided, and tell them the next road — a person or a place. Do not wait to be asked.)'
+  }
+  if (kind === 'move') {
+    return '(They have just arrived. Speak first. Tell them what this place is, and what it asks of them next.)'
+  }
+  if (kind === 'train') {
+    return '(They have just finished working this place. Speak first. Tell them whether they are ready, and where to go.)'
+  }
+  if (kind === 'rule') {
+    return '(They have just handed down a ruling. Speak first about what that ruling means, and what comes next.)'
+  }
+  return '(Something just happened in front of them. Speak first about it, and point them onward — a person to see or a place to go. Do not wait to be asked.)'
+}
+
+function speakerAfter(
+  standing: ReturnType<typeof presentCast>,
+  fought: ReturnType<typeof duelForChoice>,
+) {
+  if (fought) {
+    const occupied = new Set(
+      [fought.challenger.cast_id, fought.defender.cast_id].filter((id): id is string => Boolean(id)),
+    )
+    const witness = standing.find((member) => !occupied.has(member.id))
+    if (witness) return witness
+  }
+  return standing[0]
+}
+
 /**
  * The one painting that stands for a whole world.
  *
@@ -856,7 +886,6 @@ export const interactiveWorldService = {
     } | null = null
     let fought: ReturnType<typeof duelForChoice> = null
     let skipEvent = false
-    let hingeChoice: WorldChoice | undefined
 
     if (action.type === 'bind') {
       if (state.protagonist?.character_id) throw new HttpError(400, 'You have already chosen who walks.')
@@ -1021,7 +1050,6 @@ export const interactiveWorldService = {
       }
       summary = choice.summary
       memory = choice.memory
-      hingeChoice = choice
     }
 
     if (action.type === 'talk') {
@@ -1307,12 +1335,14 @@ export const interactiveWorldService = {
     const here = world.locations.find((l) => l.id === next.current_location_id)
     const flags = { ...outcome, ...next.flags }
     const standing = presentCast(authored, next.current_location_id, flags, leadId)
-    const speaker = standing[0]
+    const speaker = speakerAfter(standing, fought)
     const shouldAddress =
-      action.type === 'choose' &&
+      (action.type === 'choose' ||
+        action.type === 'rule' ||
+        action.type === 'move' ||
+        action.type === 'train') &&
       speaker !== undefined &&
       here !== undefined &&
-      (hingeChoice?.critical !== undefined || fought !== null) &&
       !leadIsDead(leadId, flags)
 
     // Staged AFTER everything is written down. The fight is already law by
@@ -1340,8 +1370,7 @@ export const interactiveWorldService = {
               disposition: next.conversations?.[speaker.id]?.disposition ?? speaker.disposition_start,
               met: next.conversations?.[speaker.id] !== undefined,
               history: next.conversations?.[speaker.id]?.exchanges ?? [],
-              said:
-                '(They are still here after what just took place. Speak to the person standing in front of you about it.)',
+              said: addressCue(action.type, fought !== null),
             },
             (flag) => vocabulary.has(flag),
             String(state.instance_id),
@@ -1372,6 +1401,17 @@ export const interactiveWorldService = {
         { _id: state._id },
         { $set: { conversations: next.conversations } },
       )
+    } else if (shouldAddress && speaker) {
+      const line = speaker.first_met.trim()
+      if (line) {
+        spoken = {
+          character_id: speaker.id,
+          name: speaker.name,
+          line,
+          portrait_url: world.assets.find((asset) => asset.id === portraitAssetId(speaker, undefined))?.url ?? null,
+          initiated: true,
+        }
+      }
     }
 
     const duel: OfferedDuel | null = staged ? offerDuel(staged, world.assets) : null
