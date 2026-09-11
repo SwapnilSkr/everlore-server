@@ -37,10 +37,11 @@ const IRON_VERDICT_REALMS = world.realms
 const IRON_VERDICT_START_LOCATION = world.start_location_id
 import {
   definitionNeedsRefresh,
+  quickTravelTargetsFor,
   travelTargetsFor,
-  visibilityFor,
   worldStateView,
 } from '../src/services/interactive-world.service'
+import { visibilityFor, witnessedHere } from '../src/worlds/world-play'
 
 /** The four exclusive dispositions of the writ. One road may hold only one. */
 const DISPOSALS = new Set(['writ_sold', 'writ_burned', 'writ_given_court', 'writ_given_thornhollow'])
@@ -113,6 +114,26 @@ if (!openNonNeighbour) {
   fail.push(`non-adjacent ${openNonNeighbour.id} is offered as a one-step travel target`)
 }
 
+const seenNeighbour = start.routes.find((id) => travelTargets.includes(id))
+const hasteFromStart = quickTravelTargetsFor(
+  IRON_VERDICT_LOCATIONS,
+  IRON_VERDICT_START_LOCATION,
+  everyFlag,
+  seenNeighbour && openNonNeighbour ? [seenNeighbour, openNonNeighbour.id] : [],
+  IRON_VERDICT_LOCATIONS.map((location) => location.id),
+)
+if (seenNeighbour && hasteFromStart.includes(seenNeighbour)) {
+  fail.push('a neighbour is also offered as haste, so the walk and the known road are the same button')
+}
+if (openNonNeighbour && !hasteFromStart.includes(openNonNeighbour.id)) {
+  fail.push('a walked non-neighbour is missing from haste travel')
+}
+
+const startWitness = witnessedHere(world, IRON_VERDICT_START_LOCATION, everyFlag, IRON_VERDICT_CHOICES.filter((c) => c.at === IRON_VERDICT_START_LOCATION).map((c) => c.id))
+if (IRON_VERDICT_CHOICES.some((c) => c.at === IRON_VERDICT_START_LOCATION && c.summary) && !startWitness.some((fact) => fact.includes('You were present'))) {
+  fail.push('a taken deed at the start is invisible to someone who stood there')
+}
+
 for (const location of IRON_VERDICT_LOCATIONS) {
   const at = `${location.id}:`
   // `sprite` is the ANCHOR now, not art: only its x/y place the marker. There
@@ -152,6 +173,16 @@ for (const drill of world.drills ?? []) {
   if (!byId.has(drill.at)) fail.push(`${at} is worked at unknown place ${drill.at}`)
   const raises = Object.values(drill.raises ?? {}).some((n) => typeof n === 'number' && n > 0)
   if (!raises) fail.push(`${at} raises nothing`)
+}
+
+if (!world.overture?.beats.length) {
+  fail.push('the world has no overture, so a new walker is dropped into the lobby with no duchy')
+} else {
+  world.overture.beats.forEach((beat, index) => {
+    const at = `overture beat ${index + 1}:`
+    if (!beat.mark.trim() || !beat.title.trim() || !beat.body.trim()) fail.push(`${at} is missing copy`)
+    if (!assetIds.has(beat.scene_asset_id)) fail.push(`${at} paints unknown '${beat.scene_asset_id}'`)
+  })
 }
 
 // ── Sidecars ──────────────────────────────────────────────────────────────

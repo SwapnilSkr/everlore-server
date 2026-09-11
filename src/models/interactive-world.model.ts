@@ -298,6 +298,8 @@ export interface InteractiveWorldStateDoc {
   protagonist?: { character_id: string }
   traits?: { strength: number; charisma: number; leadership: number; level: number }
   prologue_seen?: boolean
+  /** The duchy tour before anyone is bound. */
+  overture_seen?: boolean
   /**
    * The road behind the player. Restoring one rewinds story, talks and
    * memories to before that step. Traits earned in the yards are kept.

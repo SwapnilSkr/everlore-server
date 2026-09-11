@@ -76,6 +76,53 @@ export interface LocationScene {
 }
 
 /** First matching variant wins. Authored order is the priority. */
+/**
+ * What someone standing in this place has actually seen happen here.
+ *
+ * Talk used to receive only static `knows`. A deed that just landed in this
+ * room — a fight, a hinge, a choice — was invisible to the person who watched
+ * it, so they would deny it. These are summaries the author already wrote,
+ * never flag names.
+ */
+export function witnessedHere(
+  world: LoadedWorld,
+  locationId: string,
+  flags: Record<string, boolean>,
+  takenChoiceIds: string[],
+  leadId?: string,
+): string[] {
+  const facts: string[] = []
+  const here = world.locations.find((location) => location.id === locationId)
+  if (here) {
+    const scene = sceneCopyFor(here, flags, leadId)
+    if (scene.body.trim()) facts.push(`This is how this place stands now: ${scene.body.trim()}`)
+  }
+  const taken = new Set(takenChoiceIds)
+  const recent = takenChoiceIds
+    .map((id) => world.choices.find((choice) => choice.id === id && choice.at === locationId && taken.has(choice.id)))
+    .filter((choice): choice is WorldChoice => choice !== undefined)
+    .slice(-4)
+  for (const choice of recent) {
+    if (choice.summary.trim()) {
+      facts.push(`You were present when this happened here: ${choice.summary.trim()}`)
+    }
+    const memory = choice.memory?.text?.trim()
+    if (memory) facts.push(memory)
+  }
+  return facts
+}
+
+export type WayOnKind = 'choice' | 'talk' | 'train' | 'travel'
+
+/** The next thing this walk still asks of the player. Derived, never authored as a quest id. */
+export interface WayOn {
+  kind: WayOnKind
+  at: string
+  label: string
+  blurb: string
+  character_id?: string
+}
+
 export function sceneCopyFor(
   location: InteractiveLocationDoc & { scene_when?: SceneWhen[] },
   flags: Record<string, boolean>,

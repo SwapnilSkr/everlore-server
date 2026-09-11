@@ -79,6 +79,11 @@ export interface SpeechContext {
   member: WorldCastMember
   /** Already filtered against the player's flags. A guarded fact must never arrive here ungated. */
   knowledge: string[]
+  /**
+   * Deeds this person actually saw in this room. Separate from [knowledge]
+   * so a static brief cannot deny a fight they just watched.
+   */
+  witnessed?: string[]
   where: InteractiveLocationDoc
   disposition: number
   met: boolean
@@ -113,12 +118,15 @@ export function briefFor(ctx: SpeechContext): { role: 'system' | 'user'; content
         `What you want: ${member.wants}`,
         `What you fear: ${member.fears}`,
         `What you know: ${ctx.knowledge.map((fact) => `- ${fact}`).join('\n')}`,
+        ctx.witnessed && ctx.witnessed.length > 0
+          ? `What you have seen happen in this place. You were here. Do not deny these, and do not claim ignorance of them:\n${ctx.witnessed.map((fact) => `- ${fact}`).join('\n')}`
+          : '',
         ctx.met
           ? 'You have spoken with this person before.'
           : `This is the first time you have met them. How it began: ${member.first_met}`,
         `How you feel about them, from cold hostility at ${-DISPOSITION_LIMIT} to trust at ${DISPOSITION_LIMIT}: ${ctx.disposition}`,
         '',
-        'Reply in your own voice, in two or three sentences at most, in the third person past tense, as a novel would render you speaking. Stay inside what you know: if you were not told something, you do not know it, and you may say so.',
+        'Reply in your own voice, in two or three sentences at most, in the third person past tense, as a novel would render you speaking. Stay inside what you know and what you have witnessed: if something is in neither list, you do not know it, and you may say so.',
         'You are not a helpful narrator. You have your own interest in this and you may lie, deflect, bargain or refuse.',
         // The model was writing "his disposition towards the questioner
         // shifted" and "no judgement was proffered" straight into the line —
@@ -133,12 +141,16 @@ export function briefFor(ctx: SpeechContext): { role: 'system' | 'user'; content
         'Set "disposition_delta" between -1 and 1: how this exchange has moved your feeling towards them.',
         '',
         'Never mention rules, systems, scores, progress, or the fact that anything is being decided. Never break out of the world to address the person reading.',
-      ].join('\n'),
+      ].filter(Boolean).join('\n'),
     },
-    ...ctx.history.flatMap((exchange) => [
-      { role: 'user' as const, content: `They said: ${exchange.said}` },
-      { role: 'user' as const, content: `You answered: ${exchange.replied}` },
-    ]),
+    ...ctx.history.flatMap((exchange) =>
+      exchange.said.trim()
+        ? [
+            { role: 'user' as const, content: `They said: ${exchange.said}` },
+            { role: 'user' as const, content: `You answered: ${exchange.replied}` },
+          ]
+        : [{ role: 'user' as const, content: `You spoke first, unbidden: ${exchange.replied}` }],
+    ),
     { role: 'user', content: `They said: ${ctx.said}` },
   ]
 }

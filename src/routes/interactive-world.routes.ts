@@ -109,6 +109,7 @@ export const interactiveWorldRoutes = new Elysia({ prefix: '/interactive-worlds'
         t.Literal('restore'),
         t.Literal('rebind'),
         t.Literal('train'),
+        t.Literal('tour'),
       ]),
       location_id: t.Optional(t.String({ minLength: 1, maxLength: 80 })),
       choice_id: t.Optional(t.String({ minLength: 1, maxLength: 80 })),

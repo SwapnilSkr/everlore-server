@@ -118,6 +118,7 @@ interface AuthoredWorld {
   /** Revision embedded in published asset keys. */
   revision: number
   start_location_id: string
+  overture?: WorldOverture
   map_style: InteractiveMapStyleDoc
   realms: InteractiveRealmDoc[]
   assets: { id: string; role: InteractiveAssetDoc['role'] }[]
@@ -176,6 +177,20 @@ export interface WorldPrologue {
   headline: string
   beats: string[]
   scene_asset_id?: string
+}
+
+/** A walk through the duchy before anyone is bound. */
+export interface WorldOvertureBeat {
+  scene_asset_id: string
+  mark: string
+  title: string
+  body: string
+}
+
+export interface WorldOverture {
+  headline: string
+  kicker: string
+  beats: WorldOvertureBeat[]
 }
 
 /** An authored character. Everything below `portraits` is for narration only. */

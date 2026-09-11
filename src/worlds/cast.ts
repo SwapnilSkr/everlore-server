@@ -60,6 +60,11 @@ export interface PresentCharacter {
   first_met?: string
   /** How they currently read the player. Absent until a conversation exists. */
   disposition?: number
+  /**
+   * What was actually said here. Absent until they have spoken, and the
+   * only reason a return to this room is not a first meeting again.
+   */
+  echoes?: { said: string; replied: string }[]
 }
 
 /** The cast of a loaded world, typed. Absent cast file means no cast, not a break. */
@@ -127,16 +132,21 @@ export function offerCast(
   assets: (InteractiveAssetDoc & { url?: string | null })[],
   met: (id: string) => boolean,
   disposition?: (id: string) => number | undefined,
+  echoes?: (id: string) => { said: string; replied: string }[] | undefined,
 ): PresentCharacter[] {
   const urls = new Map(assets.map((asset) => [asset.id, asset.url ?? null]))
-  return members.map((member) => ({
-    id: member.id,
-    name: member.name,
-    role: member.role,
-    faction: member.faction,
-    portrait_url: urls.get(portraitAssetId(member, undefined)) ?? null,
-    met: met(member.id),
-    disposition: disposition?.(member.id) ?? member.disposition_start,
-    ...(met(member.id) ? {} : { first_met: member.first_met }),
-  }))
+  return members.map((member) => {
+    const heard = echoes?.(member.id)
+    return {
+      id: member.id,
+      name: member.name,
+      role: member.role,
+      faction: member.faction,
+      portrait_url: urls.get(portraitAssetId(member, undefined)) ?? null,
+      met: met(member.id),
+      disposition: disposition?.(member.id) ?? member.disposition_start,
+      ...(met(member.id) ? {} : { first_met: member.first_met }),
+      ...(heard && heard.length > 0 ? { echoes: heard } : {}),
+    }
+  })
 }

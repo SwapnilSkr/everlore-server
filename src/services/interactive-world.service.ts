@@ -34,6 +34,8 @@ import {
   traitsMeet,
   traitsOf,
   visibilityFor,
+  witnessedHere,
+  type WayOn,
 } from '../worlds/world-play'
 import { RECALLED_EXCHANGES, speakAs } from './character-speech.service'
 import {
@@ -84,6 +86,48 @@ export function travelTargetsFor(
 }
 
 /**
+ * Places already walked that are not a neighbour of here.
+ *
+ * Adjacent travel stays a walk. These are the roads the player has already
+ * taken, offered as haste rather than as a second graph hop.
+ */
+export function quickTravelTargetsFor(
+  locations: InteractiveLocationDoc[],
+  currentLocationId: string,
+  flags: Record<string, boolean>,
+  seenSceneIds: string[],
+  unlockedIds: string[],
+): string[] {
+  const adjacent = new Set(travelTargetsFor(locations, currentLocationId, flags))
+  const seen = new Set(seenSceneIds)
+  const unlocked = new Set(unlockedIds)
+  return locations
+    .filter((location) => {
+      if (location.id === currentLocationId) return false
+      if (adjacent.has(location.id)) return false
+      if (!seen.has(location.id) || !unlocked.has(location.id)) return false
+      return visibilityFor(location, flags) === 'open'
+    })
+    .map((location) => location.id)
+}
+
+export function canMoveTo(
+  locations: InteractiveLocationDoc[],
+  currentLocationId: string,
+  destinationId: string,
+  flags: Record<string, boolean>,
+  seenSceneIds: string[],
+  unlockedIds: string[],
+): boolean {
+  return (
+    travelTargetsFor(locations, currentLocationId, flags).includes(destinationId) ||
+    quickTravelTargetsFor(locations, currentLocationId, flags, seenSceneIds, unlockedIds).includes(
+      destinationId,
+    )
+  )
+}
+
+/**
  * The state as rendered, never as stored.
  *
  * Narrated flags are derived from the instance on every read and must reach the
@@ -100,6 +144,13 @@ export function worldStateView(
     ...state,
     flags: { ...flags },
     travel_location_ids: travelTargetsFor(locations, state.current_location_id, flags),
+    quick_travel_location_ids: quickTravelTargetsFor(
+      locations,
+      state.current_location_id,
+      flags,
+      state.seen_scene_ids ?? [],
+      state.unlocked_location_ids ?? [],
+    ),
     checkpoints: (state.checkpoints ?? []).map(({ snapshot: _snap, ...moment }) => moment),
   }
 }
@@ -233,6 +284,81 @@ function drillsHere(
     .map(({ id, at, label, raises }) => ({ id, at, label, raises }))
 }
 
+function clipBlurb(text: string, cap = 180): string {
+  const trimmed = text.replace(/\s+/g, ' ').trim()
+  if (trimmed.length <= cap) return trimmed
+  return `${trimmed.slice(0, cap - 1).trimEnd()}…`
+}
+
+function wayOnOf(
+  authored: ReturnType<typeof requireWorld>,
+  world: InteractiveWorldDoc,
+  locationId: string,
+  flags: Record<string, boolean>,
+  taken: string[],
+  leadId: string | undefined,
+  present: { id: string; name: string; role: string }[],
+  conversations: InteractiveWorldStateDoc['conversations'],
+  unlockedIds: string[],
+): WayOn | null {
+  const hereChoices = authored.choices.filter((choice) =>
+    choiceOffered(choice, locationId, flags, taken, leadId),
+  )
+  const hinge = hereChoices.find((choice) => choice.critical)
+  const pick = hinge ?? hereChoices[0]
+  if (pick) {
+    return {
+      kind: 'choice',
+      at: locationId,
+      label: pick.label,
+      blurb: clipBlurb(pick.critical?.hint || pick.summary),
+    }
+  }
+  const work = drillsHere(authored, locationId, leadId)[0]
+  if (work) {
+    return {
+      kind: 'train',
+      at: locationId,
+      label: work.label,
+      blurb: 'Work this place before the road asks more of you.',
+    }
+  }
+  const unmet = present.find((member) => conversations?.[member.id] === undefined)
+  if (unmet) {
+    return {
+      kind: 'talk',
+      at: locationId,
+      label: `Speak with ${unmet.name}`,
+      blurb: clipBlurb(unmet.role),
+      character_id: unmet.id,
+    }
+  }
+  for (const location of world.locations) {
+    if (location.id === locationId) continue
+    if (!unlockedIds.includes(location.id)) continue
+    if (visibilityFor(location, flags) !== 'open') continue
+    const next = authored.choices.find((choice) =>
+      choiceOffered(choice, location.id, flags, taken, leadId),
+    )
+    if (!next) continue
+    return {
+      kind: 'travel',
+      at: location.id,
+      label: location.title,
+      blurb: clipBlurb(next.critical?.hint || next.label),
+    }
+  }
+  const neighbour = travelTargetsFor(world.locations, locationId, flags)[0]
+  if (!neighbour) return null
+  const dest = world.locations.find((location) => location.id === neighbour)
+  return {
+    kind: 'travel',
+    at: neighbour,
+    label: dest?.title ?? neighbour,
+    blurb: clipBlurb(dest?.description || 'The road is open.'),
+  }
+}
+
 function playableCards(
   authored: ReturnType<typeof requireWorld>,
   assets: (InteractiveWorldDoc['assets'][number] & { url?: string | null })[],
@@ -300,6 +426,25 @@ function prologueView(
     headline: member.prologue.headline,
     beats: member.prologue.beats,
     scene_url: sceneId ? urls.get(sceneId) ?? null : null,
+  }
+}
+
+function overtureView(
+  authored: ReturnType<typeof requireWorld>,
+  assets: (InteractiveWorldDoc['assets'][number] & { url?: string | null })[],
+) {
+  const tour = authored.overture
+  if (!tour?.beats.length) return null
+  const urls = new Map(assets.map((asset) => [asset.id, asset.url ?? null]))
+  return {
+    headline: tour.headline,
+    kicker: tour.kicker,
+    beats: tour.beats.map((beat) => ({
+      mark: beat.mark,
+      title: beat.title,
+      body: beat.body,
+      scene_url: urls.get(beat.scene_asset_id) ?? null,
+    })),
   }
 }
 
@@ -552,6 +697,9 @@ export const interactiveWorldService = {
     const flags = effectiveFlags(authored, state.flags, undefined)
     const leadId = state.protagonist?.character_id
     const here = world.locations.find((l) => l.id === state.current_location_id)
+    const standing = leadId
+      ? presentCast(authored, state.current_location_id, flags, leadId)
+      : []
     return {
       world,
       // act() needs the stored form so derived narration is never persisted.
@@ -562,18 +710,34 @@ export const interactiveWorldService = {
       playable: playableCards(authored, world.assets),
       lead: leadView(authored, world.assets, leadId),
       prologue: leadId && state.prologue_seen !== true ? prologueView(authored, world.assets, leadId) : null,
+      overture:
+        !leadId && state.overture_seen !== true ? overtureView(authored, world.assets) : null,
       scene: here ? sceneCopyFor(here, flags, leadId) : null,
       // Who is standing here is derived from the same flags as everything else,
       // so a character the story loop unlocked is present the moment the map
       // agrees they are — see `presentCast` for which field is the gate.
       cast: leadId
         ? offerCast(
-            presentCast(authored, state.current_location_id, flags, leadId),
+            standing,
             world.assets,
             (id) => state.conversations?.[id] !== undefined,
             (id) => state.conversations?.[id]?.disposition,
+            (id) => state.conversations?.[id]?.exchanges,
           )
         : [],
+      way_on: leadId
+        ? wayOnOf(
+            authored,
+            world,
+            state.current_location_id,
+            flags,
+            state.taken_choice_ids ?? [],
+            leadId,
+            standing,
+            state.conversations,
+            state.unlocked_location_ids,
+          )
+        : null,
       progression: progressionFor(authored.progression, authored.reign, world.locations, { ...state, flags }),
       moments: momentsOf(state, world.locations),
       death: deathOf(authored, state, flags, world.assets),
@@ -594,7 +758,7 @@ export const interactiveWorldService = {
     instanceId: string,
     playerId: string,
     action: {
-      type: 'move' | 'choose' | 'rule' | 'talk' | 'bind' | 'begin' | 'restore' | 'rebind' | 'train'
+      type: 'move' | 'choose' | 'rule' | 'talk' | 'bind' | 'begin' | 'restore' | 'rebind' | 'train' | 'tour'
       location_id?: string
       choice_id?: string
       petition_id?: string
@@ -609,7 +773,7 @@ export const interactiveWorldService = {
     const authored = requireWorld(worldKey)
     const { world, state, flags: known } = await this.state(worldKey, instanceId, playerId, true)
     const now = new Date()
-    if (action.type !== 'bind' && !state.protagonist?.character_id) {
+    if (action.type !== 'bind' && action.type !== 'tour' && !state.protagonist?.character_id) {
       throw new HttpError(403, 'Choose who walks before the world will move.')
     }
     if (
@@ -647,9 +811,16 @@ export const interactiveWorldService = {
     let flagsSet: string[] = []
     let seeding: Parameters<typeof ripenGrievance>[0] | null = null
     let memory: WorldChoice['memory'] | undefined
-    let spoken: { character_id: string; name: string; line: string; portrait_url: string | null } | null = null
+    let spoken: {
+      character_id: string
+      name: string
+      line: string
+      portrait_url: string | null
+      initiated?: boolean
+    } | null = null
     let fought: ReturnType<typeof duelForChoice> = null
     let skipEvent = false
+    let hingeChoice: WorldChoice | undefined
 
     if (action.type === 'bind') {
       if (state.protagonist?.character_id) throw new HttpError(400, 'You have already chosen who walks.')
@@ -664,9 +835,14 @@ export const interactiveWorldService = {
       next.unlocked_location_ids = seedUnlockedIds(world.locations, startId, startFlags)
       next.revealed_location_ids = seedRevealedIds(world.locations, startId, startFlags)
       next.prologue_seen = false
+      next.overture_seen = true
       const start = world.locations.find((l) => l.id === startId)
       next.seen_scene_ids = start?.scene_asset_id ? [startId] : []
       summary = `Chose to walk as ${member.name}.`
+    } else if (action.type === 'tour') {
+      next.overture_seen = true
+      skipEvent = true
+      summary = 'The duchy has been shown.'
     } else if (action.type === 'begin') {
       next.prologue_seen = true
       skipEvent = true
@@ -743,7 +919,18 @@ export const interactiveWorldService = {
     } else if (action.type === 'move') {
       const destination = world.locations.find((l) => l.id === action.location_id)
       const current = world.locations.find((l) => l.id === state.current_location_id)
-      if (!destination || !current || !current.routes.includes(destination.id)) {
+      if (
+        !destination ||
+        !current ||
+        !canMoveTo(
+          world.locations,
+          state.current_location_id,
+          destination.id,
+          known,
+          state.seen_scene_ids ?? [],
+          state.unlocked_location_ids ?? [],
+        )
+      ) {
         throw new HttpError(400, 'That route is not available')
       }
       const visibility = visibilityFor(destination, known)
@@ -798,6 +985,7 @@ export const interactiveWorldService = {
       }
       summary = choice.summary
       memory = choice.memory
+      hingeChoice = choice
     }
 
     if (action.type === 'talk') {
@@ -826,13 +1014,21 @@ export const interactiveWorldService = {
       // The vocabulary is the same guard narration is held to: a character can
       // open a road the world already gates on, and nothing else.
       const vocabulary = worldVocabulary(authored)
+      const scene = sceneCopyFor(here, known, state.protagonist?.character_id)
       const reply = await speakAs(
         {
           member,
           // Filtered against the LIVE flags. A guarded fact the player has not
           // earned never reaches the model, so it cannot reach the player.
           knowledge: knowledgeFor(member, known),
-          where: here,
+          witnessed: witnessedHere(
+            authored,
+            state.current_location_id,
+            known,
+            state.taken_choice_ids ?? [],
+            state.protagonist?.character_id,
+          ),
+          where: { ...here, description: scene.body || here.description },
           disposition: prior?.disposition ?? member.disposition_start,
           met: prior !== undefined,
           history: prior?.exchanges ?? [],
@@ -1022,7 +1218,7 @@ export const interactiveWorldService = {
                   ? `Said to ${spoken?.name ?? action.character_id}: ${action.said ?? ''}`
                   : action.type === 'bind' || action.type === 'rebind'
                     ? summary
-                    : action.type === 'restore' || action.type === 'train'
+                    : action.type === 'restore' || action.type === 'train' || action.type === 'tour'
                       ? summary
                     : `Choice: ${action.choice_id}`,
           ai_response: summary,
@@ -1073,16 +1269,77 @@ export const interactiveWorldService = {
     }
     const leadId = next.protagonist?.character_id
     const here = world.locations.find((l) => l.id === next.current_location_id)
-    // Staged AFTER everything is written down. The Verdict is already law by
-    // the time the first blow is described, so a provider that is slow or down
-    // can only cost the player the prose — never the flags, the ledger or the
-    // place the choice opened. `stageDuel` degrades to the authored beats
-    // rather than throwing, so this cannot fail the turn either.
-    const duel: OfferedDuel | null = fought
-      ? offerDuel(await stageDuel(fought, authored, String(state.instance_id), leadId), world.assets)
-      : null
-
     const flags = { ...outcome, ...next.flags }
+    const standing = presentCast(authored, next.current_location_id, flags, leadId)
+    const speaker = standing[0]
+    const shouldAddress =
+      action.type === 'choose' &&
+      speaker !== undefined &&
+      here !== undefined &&
+      (hingeChoice?.critical !== undefined || fought !== null) &&
+      !leadIsDead(leadId, flags)
+
+    // Staged AFTER everything is written down. The fight is already law by
+    // the time the first blow is described, so a provider that is slow or down
+    // can only cost the player the prose — never the flags. The person still
+    // standing here is addressed in parallel, with the same witnessed facts
+    // talk uses, so they cannot deny what just happened in this room.
+    const vocabulary = worldVocabulary(authored)
+    const scene = here ? sceneCopyFor(here, flags, leadId) : null
+    const [staged, addressed] = await Promise.all([
+      fought ? stageDuel(fought, authored, String(state.instance_id), leadId) : Promise.resolve(null),
+      shouldAddress && speaker && here
+        ? speakAs(
+            {
+              member: speaker,
+              knowledge: knowledgeFor(speaker, flags),
+              witnessed: witnessedHere(
+                authored,
+                next.current_location_id,
+                flags,
+                next.taken_choice_ids ?? [],
+                leadId,
+              ),
+              where: { ...here, description: scene?.body || here.description },
+              disposition: next.conversations?.[speaker.id]?.disposition ?? speaker.disposition_start,
+              met: next.conversations?.[speaker.id] !== undefined,
+              history: next.conversations?.[speaker.id]?.exchanges ?? [],
+              said:
+                '(They are still here after what just took place. Speak to the person standing in front of you about it.)',
+            },
+            (flag) => vocabulary.has(flag),
+            String(state.instance_id),
+          )
+        : Promise.resolve(null),
+    ])
+
+    if (addressed && speaker) {
+      const prior = next.conversations?.[speaker.id]
+      next.conversations = {
+        ...next.conversations,
+        [speaker.id]: {
+          disposition: addressed.disposition,
+          exchanges: [...(prior?.exchanges ?? []), { said: '', replied: addressed.line }].slice(
+            -RECALLED_EXCHANGES,
+          ),
+        },
+      }
+      const portraitId = addressed.portrait_asset_id
+      spoken = {
+        character_id: speaker.id,
+        name: speaker.name,
+        line: addressed.line,
+        portrait_url: world.assets.find((asset) => asset.id === portraitId)?.url ?? null,
+        initiated: true,
+      }
+      await mongoColl.interactiveWorldStates().updateOne(
+        { _id: state._id },
+        { $set: { conversations: next.conversations } },
+      )
+    }
+
+    const duel: OfferedDuel | null = staged ? offerDuel(staged, world.assets) : null
+
     return {
       world,
       state: worldStateView(next, flags, world.locations),
@@ -1090,14 +1347,30 @@ export const interactiveWorldService = {
       playable: playableCards(authored, world.assets),
       lead: leadView(authored, world.assets, leadId),
       prologue: leadId && next.prologue_seen !== true ? prologueView(authored, world.assets, leadId) : null,
+      overture:
+        !leadId && next.overture_seen !== true ? overtureView(authored, world.assets) : null,
       scene: here ? sceneCopyFor(here, flags, leadId) : null,
       duel,
       cast: offerCast(
-        presentCast(authored, next.current_location_id, flags, leadId),
+        standing,
         world.assets,
         (id) => next.conversations?.[id] !== undefined,
         (id) => next.conversations?.[id]?.disposition,
+        (id) => next.conversations?.[id]?.exchanges,
       ),
+      way_on: leadId
+        ? wayOnOf(
+            authored,
+            world,
+            next.current_location_id,
+            flags,
+            next.taken_choice_ids ?? [],
+            leadId,
+            standing,
+            next.conversations,
+            next.unlocked_location_ids,
+          )
+        : null,
       progression: progressionFor(authored.progression, authored.reign, world.locations, { ...next, flags }),
       moments: momentsOf(next, world.locations),
       death: deathOf(authored, next, flags, world.assets),

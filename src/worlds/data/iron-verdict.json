@@ -6,6 +6,42 @@
   "definition_version": 34,
   "revision": 9,
   "start_location_id": "verdict_ring",
+  "overture": {
+    "headline": "The Iron Verdict",
+    "kicker": "Chapter I · The Bloodless Crown",
+    "beats": [
+      {
+        "scene_asset_id": "scene_verdict_ring",
+        "mark": "I · THE RING",
+        "title": "Law is made on the sand.",
+        "body": "Whatever is decided here is carved into the inner wall before the blood dries. There is no appeal anywhere in the duchy."
+      },
+      {
+        "scene_asset_id": "scene_sable_court",
+        "mark": "II · THE COURT",
+        "title": "Paper outlives the man who signed it.",
+        "body": "Three houses keep the succession. A sealed writ is already older than the quarrel it claims to settle."
+      },
+      {
+        "scene_asset_id": "scene_sundial_market",
+        "mark": "III · THE CITY",
+        "title": "Corvane does not wait on champions.",
+        "body": "Coin, rumour and the day's price move faster than the Ring. The market has already heard the date."
+      },
+      {
+        "scene_asset_id": "scene_chainhouse",
+        "mark": "IV · THE YARD",
+        "title": "The door locks from the outside.",
+        "body": "Champions are held by paper, not by chains. Strength is made here — if you put the hours in before you take the sand."
+      },
+      {
+        "scene_asset_id": "scene_iron_fane",
+        "mark": "V · THE HINGE",
+        "title": "What you do can be taken again.",
+        "body": "A deed, a road, a word: each one waits on the road behind you. The sand still has to be stood on first."
+      }
+    ]
+  },
   "drills": [
     {
       "id": "yard_chainhouse",
