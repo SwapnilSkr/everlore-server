@@ -1,16 +1,12 @@
 /**
  * Stamp `interactive_world_key` on templates that already are map worlds.
  *
- * The field did not exist when those templates were seeded, so listRealms
- * cannot tell their saves from chat playthroughs and they appear in
- * "Your Realms" with turn counts the map never produces. Identification is
- * taken from authored world files (key and title), not a name list in this
- * script — a new map world is recognised the moment it has a data file.
+ * Identification is taken from first-party seed fixtures (key and title).
  *
  * Run intentionally: bun run backfill:interactive-world-keys
  */
 import { connectMongo, mongoColl } from '../src/config/mongo'
-import { loadWorld, worldKeys } from '../src/worlds/world-source'
+import { loadWorld, worldKeys } from '../src/worlds/world-fixture'
 
 await connectMongo()
 

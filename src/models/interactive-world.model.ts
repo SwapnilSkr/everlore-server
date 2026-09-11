@@ -1,4 +1,13 @@
 import type { ObjectId } from 'mongodb'
+import type {
+  WorldCastMember,
+  WorldChoice,
+  WorldDrill,
+  WorldDuel,
+  WorldOverture,
+  WorldProgression,
+  WorldReign,
+} from '../worlds/world-source'
 
 /** Immutable authored world definition. Revisioned CDN keys let clients cache safely. */
 export interface InteractiveAssetDoc {
@@ -157,6 +166,20 @@ export interface InteractiveWorldDoc {
   realms: InteractiveRealmDoc[]
   assets: InteractiveAssetDoc[]
   locations: InteractiveLocationDoc[]
+  /** Where a new walk begins. Absent on catalog rows written before play lived on this doc. */
+  start_location_id?: string
+  blurb?: string
+  /** CDN asset revision used when minting keys. Independent of `version`. */
+  revision?: number
+  overture?: WorldOverture
+  /** Offered deeds. Same engine for first-party and creator worlds. */
+  choices?: WorldChoice[]
+  drills?: WorldDrill[]
+  cast?: WorldCastMember[]
+  cast_unanswered?: string | null
+  progression?: WorldProgression | null
+  reign?: WorldReign | null
+  duels?: WorldDuel[]
   created_at: Date
   updated_at: Date
 }

@@ -20,7 +20,8 @@ import { homedir } from 'os'
 import { existsSync } from 'fs'
 import sharp from 'sharp'
 import { storageService, isStorageConfigured } from '../src/services/storage.service'
-import { assetKey, requireWorld } from '../src/worlds/world-source'
+import { assetKey } from '../src/worlds/world-source'
+import { requireWorld } from '../src/worlds/world-fixture'
 
 const WORLD = 'iron-verdict'
 const authoredWorld = requireWorld(WORLD)
@@ -338,7 +339,7 @@ await Bun.write(resolve(outDir, 'manifest.json'), JSON.stringify({ world: WORLD,
 // produces a map that renders wrong without erroring. Writing it from the same
 // pass that encoded the file is the only way the two cannot disagree.
 await Bun.write(
-  resolve(import.meta.dir, `../src/worlds/data/${WORLD}.dimensions.json`),
+  resolve(import.meta.dir, `../scripts/fixtures/walks/${WORLD}.dimensions.json`),
   // JSON, not a generated .ts module. The old file was TypeScript that this
   // script both WROTE and IMPORTED, so one asset name containing a dot emitted
   // an unquoted key, broke the module, and left the pipeline unable to run and

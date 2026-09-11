@@ -13,7 +13,8 @@
  *   bun run audit:asset-reachability [world-key]
  */
 import { isStorageConfigured, storageService } from '../src/services/storage.service'
-import { assetKey, requireWorld } from '../src/worlds/world-source'
+import { assetKey } from '../src/worlds/world-source'
+import { requireWorld } from '../src/worlds/world-fixture'
 import type { InteractiveAssetDoc } from '../src/models/interactive-world.model'
 
 const worldKey = process.argv[2] ?? 'iron-verdict'

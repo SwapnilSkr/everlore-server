@@ -12,9 +12,9 @@ import type { MemoryDoc } from '../models/memory.model'
 import {
   asList,
   effectiveFlags,
-  loadWorld,
-  requireWorld,
+  worldFromDoc,
   worldVocabulary,
+  type LoadedWorld,
   type WorldChoice,
 } from '../worlds/world-source'
 import { knowledgeFor, offerCast, portraitAssetId, presentCast } from '../worlds/cast'
@@ -255,7 +255,7 @@ async function pruneWalkAfter(instanceId: ObjectId, eventSequence?: number, capt
 }
 
 function deathOf(
-  authored: ReturnType<typeof requireWorld>,
+  authored: LoadedWorld,
   state: InteractiveWorldStateDoc,
   flags: Record<string, boolean>,
   assets: (InteractiveWorldDoc['assets'][number] & { url?: string | null })[],
@@ -275,7 +275,7 @@ function deathOf(
 }
 
 function drillsHere(
-  authored: ReturnType<typeof requireWorld>,
+  authored: LoadedWorld,
   locationId: string,
   leadId: string | undefined,
 ) {
@@ -291,8 +291,8 @@ function clipBlurb(text: string, cap = 180): string {
 }
 
 function wayOnOf(
-  authored: ReturnType<typeof requireWorld>,
-  world: InteractiveWorldDoc,
+  authored: LoadedWorld,
+  world: { locations: InteractiveWorldDoc['locations'] },
   locationId: string,
   flags: Record<string, boolean>,
   taken: string[],
@@ -307,11 +307,14 @@ function wayOnOf(
   const hinge = hereChoices.find((choice) => choice.critical)
   const pick = hinge ?? hereChoices[0]
   if (pick) {
+    // The choice is already a button on this parchment. The cue is for the
+    // map, and it must not use `summary` — that is what happened AFTER the
+    // deed, and a new walk read as a fight already fought.
     return {
       kind: 'choice',
       at: locationId,
       label: pick.label,
-      blurb: clipBlurb(pick.critical?.hint || pick.summary),
+      blurb: clipBlurb(pick.critical?.hint || 'This place still asks something of you.'),
     }
   }
   const work = drillsHere(authored, locationId, leadId)[0]
@@ -360,7 +363,7 @@ function wayOnOf(
 }
 
 function playableCards(
-  authored: ReturnType<typeof requireWorld>,
+  authored: LoadedWorld,
   assets: (InteractiveWorldDoc['assets'][number] & { url?: string | null })[],
 ) {
   const urls = new Map(assets.map((asset) => [asset.id, asset.url ?? null]))
@@ -379,7 +382,7 @@ function playableCards(
 }
 
 function contestsHere(
-  authored: ReturnType<typeof requireWorld>,
+  authored: LoadedWorld,
   locationId: string,
   flags: Record<string, boolean>,
   taken: string[],
@@ -397,7 +400,7 @@ function contestsHere(
 }
 
 function leadView(
-  authored: ReturnType<typeof requireWorld>,
+  authored: LoadedWorld,
   assets: (InteractiveWorldDoc['assets'][number] & { url?: string | null })[],
   characterId: string | undefined,
 ) {
@@ -414,7 +417,7 @@ function leadView(
 }
 
 function prologueView(
-  authored: ReturnType<typeof requireWorld>,
+  authored: LoadedWorld,
   assets: (InteractiveWorldDoc['assets'][number] & { url?: string | null })[],
   characterId: string,
 ) {
@@ -430,7 +433,7 @@ function prologueView(
 }
 
 function overtureView(
-  authored: ReturnType<typeof requireWorld>,
+  authored: LoadedWorld,
   assets: (InteractiveWorldDoc['assets'][number] & { url?: string | null })[],
 ) {
   const tour = authored.overture
@@ -456,72 +459,133 @@ function overtureView(
  * and one with neither is drawn as a world with no face rather than as a
  * broken frame.
  */
-function coverFor(authored: ReturnType<typeof requireWorld>, world: InteractiveWorldDoc): string | null {
-  const opening = authored.locations.find((l) => l.id === authored.start_location_id)?.scene_asset_id
+function coverFor(world: InteractiveWorldDoc): string | null {
+  const opening = world.locations.find((l) => l.id === world.start_location_id)?.scene_asset_id
   const id = opening ?? world.map_style?.plates?.[0]?.asset_id
   const asset = id ? world.assets.find((a) => a.id === id) : undefined
   return asset ? storageService.urlForKey(asset.key) : null
 }
 
+function playPayloadFrom(authored: LoadedWorld) {
+  return {
+    version: authored.definition_version,
+    title: authored.title,
+    chapter_title: authored.chapter_title,
+    blurb: authored.blurb,
+    revision: authored.revision,
+    start_location_id: authored.start_location_id,
+    overture: authored.overture,
+    map_style: authored.map_style,
+    realms: authored.realms,
+    assets: authored.assets,
+    locations: authored.locations,
+    choices: authored.choices,
+    drills: authored.drills ?? [],
+    cast: authored.cast,
+    cast_unanswered: authored.cast_unanswered,
+    progression: authored.progression,
+    reign: authored.reign,
+    duels: authored.duels,
+  }
+}
+
+function playDefinitionMissing(world: InteractiveWorldDoc): boolean {
+  return !world.start_location_id || world.choices === undefined || world.cast === undefined
+}
+
+function publicDefinition(world: InteractiveWorldDoc) {
+  const {
+    cast: _cast,
+    reign: _reign,
+    progression: _progression,
+    duels: _duels,
+    cast_unanswered: _unanswered,
+    overture: _overture,
+    choices: rawChoices,
+    drills: rawDrills,
+    ...rest
+  } = world
+  return {
+    ...rest,
+    choices: (rawChoices ?? []).map(
+      ({ id, at, requires, forbids, label, for_leads, not_for_leads, require_traits, train_hint, critical }) => ({
+        id,
+        at,
+        requires,
+        forbids,
+        label,
+        for_leads,
+        not_for_leads,
+        require_traits,
+        train_hint,
+        critical,
+      }),
+    ),
+    drills: (rawDrills ?? []).map(({ id, at, label, raises, for_leads, not_for_leads }) => ({
+      id,
+      at,
+      label,
+      raises,
+      for_leads,
+      not_for_leads,
+    })),
+    assets: world.assets.map((asset) => ({ ...asset, url: storageService.urlForKey(asset.key) })),
+  }
+}
+
 export const interactiveWorldService = {
-  async ensureWorld(worldKey: string): Promise<InteractiveWorldDoc> {
-    const authored = loadWorld(worldKey)
-    if (!authored) throw new HttpError(404, 'Interactive world not found')
+  async getWorld(worldKey: string): Promise<InteractiveWorldDoc> {
+    const world = await mongoColl.interactiveWorlds().findOne({ key: worldKey.trim() })
+    if (!world) throw new HttpError(404, 'Interactive world not found')
+    return world as InteractiveWorldDoc
+  },
+
+  /**
+   * Write a first-party fixture (or an editor payload) onto the catalog doc.
+   *
+   * Play never calls this. Seed and a creator save do. Catalog identity
+   * (publish, creator, cover, moderation) is left alone on update.
+   */
+  async upsertWorldFromAuthored(authored: LoadedWorld): Promise<InteractiveWorldDoc> {
     const worlds = mongoColl.interactiveWorlds()
     const now = new Date()
-    const definition = {
-      version: authored.definition_version,
-      title: authored.title,
-      chapter_title: authored.chapter_title,
-      map_style: authored.map_style,
-      realms: authored.realms,
-      assets: authored.assets,
-      locations: authored.locations,
-      updated_at: now,
+    const payload = playPayloadFrom(authored)
+    const existing = (await worlds.findOne({ key: authored.key })) as InteractiveWorldDoc | null
+    if (
+      existing &&
+      !playDefinitionMissing(existing) &&
+      !definitionNeedsRefresh(existing.version, authored.definition_version)
+    ) {
+      return existing
     }
     await worlds.updateOne(
-      { key: worldKey },
+      { key: authored.key },
       {
+        $set: { ...payload, updated_at: now },
         $setOnInsert: {
           _id: new ObjectId(),
-          key: worldKey,
+          key: authored.key,
           created_at: now,
           is_published: false,
-          ...definition,
         },
       },
       { upsert: true },
     )
-    // Each world owns its definition version. Asset revision is deliberately a
-    // different number: adding a new asset id changes the stored manifest but
-    // does not change the immutable CDN keys of art already published.
-    let world = await worlds.findOne({ key: worldKey })
-    if (!world) throw new Error(`Could not initialise the world "${worldKey}"`)
-    if (definitionNeedsRefresh(world.version, authored.definition_version)) {
-      // Guard the write as well as the read so concurrent initialisers cannot
-      // replace a newer definition with the stale one they observed.
-      await worlds.updateOne(
-        {
-          _id: world._id,
-          $or: [
-            { version: { $lt: authored.definition_version } },
-            { version: { $exists: false } },
-          ],
-        },
-        { $set: definition },
-      )
-      world = await worlds.findOne({ key: worldKey })
-      if (!world) throw new Error(`Could not refresh the world "${worldKey}"`)
-    }
+    const world = await worlds.findOne({ key: authored.key })
+    if (!world) throw new Error(`Could not store the world "${authored.key}"`)
     return world as InteractiveWorldDoc
   },
 
+  /** @deprecated Use getWorld. Kept so older scripts compile until they switch. */
+  async ensureWorld(worldKey: string): Promise<InteractiveWorldDoc> {
+    return this.getWorld(worldKey)
+  },
+
   catalogCard(world: InteractiveWorldDoc) {
-    const authored = loadWorld(world.key)
-    const cover = authored ? coverFor(authored, world) : null
+    const cover = coverFor(world)
     const image = typeof world.image_url === 'string' ? world.image_url.trim() : ''
     const coverUrl = (image.length > 0 ? image : null) ?? cover
-    const blurb = (world.description ?? authored?.blurb ?? world.chapter_title) || null
+    const blurb = (world.description ?? world.blurb ?? world.chapter_title) || null
     const id = idString(world._id)
     return {
       _id: world._id,
@@ -562,7 +626,7 @@ export const interactiveWorldService = {
       .find(filter)
       .sort({ created_at: -1 })
       .toArray()) as InteractiveWorldDoc[]
-    return docs.filter((world) => loadWorld(world.key)).map((world) => this.catalogCard(world))
+    return docs.map((world) => this.catalogCard(world))
   },
 
   async listMine(creatorId: string, page: number = 1, limit: number = 20, search?: string) {
@@ -613,46 +677,15 @@ export const interactiveWorldService = {
   },
 
   async definition(worldKey: string) {
-    // Any world with a data file is servable. There is no list of known worlds
-    // in this file any more - that was the last place a world had to be named
-    // in code to exist.
-    const authored = loadWorld(worldKey)
-    if (!authored) throw new HttpError(404, 'Interactive world not found')
-    const world = await this.ensureWorld(worldKey)
-    return {
-      ...world,
-      // Choices ship with the definition so the client renders authored copy
-      // instead of carrying a switch statement per location.
-      choices: authored.choices.map(
-        ({ id, at, requires, forbids, label, for_leads, not_for_leads, require_traits, train_hint, critical }) => ({
-          id,
-          at,
-          requires,
-          forbids,
-          label,
-          for_leads,
-          not_for_leads,
-          require_traits,
-          train_hint,
-          critical,
-        }),
-      ),
-      drills: (authored.drills ?? []).map(({ id, at, label, raises, for_leads, not_for_leads }) => ({
-        id,
-        at,
-        label,
-        raises,
-        for_leads,
-        not_for_leads,
-      })),
-      assets: world.assets.map((asset) => ({ ...asset, url: storageService.urlForKey(asset.key) })),
-    }
+    const world = await this.getWorld(worldKey)
+    return publicDefinition(world)
   },
 
   async state(worldKey: string, instanceId: string, playerId: string, forMutation: boolean = false) {
-    const authored = requireWorld(worldKey)
     const { instance } = await interactiveWorldInstanceService.requireBound(worldKey, instanceId, playerId)
-    const world = await this.definition(worldKey)
+    const catalog = await this.getWorld(worldKey)
+    const authored = worldFromDoc(catalog)
+    const world = publicDefinition(catalog)
     const instanceOid = instance._id
     const playerOid = instance.player_id
     const states = mongoColl.interactiveWorldStates()
@@ -700,7 +733,7 @@ export const interactiveWorldService = {
     const standing = leadId
       ? presentCast(authored, state.current_location_id, flags, leadId)
       : []
-    return {
+    const body = {
       world,
       // act() needs the stored form so derived narration is never persisted.
       // Every route response receives the rendered form instead.
@@ -751,6 +784,7 @@ export const interactiveWorldService = {
         state.traits,
       ),
     }
+    return { ...body, authored: forMutation ? authored : undefined }
   },
 
   async act(
@@ -770,8 +804,10 @@ export const interactiveWorldService = {
       said?: string
     },
   ) {
-    const authored = requireWorld(worldKey)
-    const { world, state, flags: known } = await this.state(worldKey, instanceId, playerId, true)
+    const played = await this.state(worldKey, instanceId, playerId, true)
+    const authored = played.authored
+    if (!authored) throw new Error('Walk play is missing its world document')
+    const { world, state, flags: known } = played
     const now = new Date()
     if (action.type !== 'bind' && action.type !== 'tour' && !state.protagonist?.character_id) {
       throw new HttpError(403, 'Choose who walks before the world will move.')

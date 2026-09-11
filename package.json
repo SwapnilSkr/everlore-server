@@ -75,6 +75,7 @@
     "repair:duplicate-places": "bun run scripts/repair-duplicate-places.ts",
     "seed:nsfw-lexicon": "bun run scripts/seed-nsfw-lexicon.ts",
     "seed:iron-verdict": "bun run scripts/seed-iron-verdict-realm.ts",
+    "seed:walk-definitions": "bun run scripts/seed-walk-definitions.ts",
     "gen:splash-avatars": "bun run scripts/gen-splash-avatars.ts",
     "gen:player-avatars": "bun run scripts/gen-player-avatars.ts",
     "seed:default-cover": "bun run scripts/seed-default-cover.ts",

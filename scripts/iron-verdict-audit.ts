@@ -13,10 +13,10 @@ import {
   effectiveFlags,
   worldVocabulary,
   choicePredicate,
-  requireWorld,
   satisfies,
   type WorldEnding,
 } from '../src/worlds/world-source'
+import { requireWorld } from '../src/worlds/world-fixture'
 import { endingFor, PETITIONS_OPEN, progressionFor, ripensTo, seasonLength } from '../src/worlds/progression'
 import { composeRipenedPetition, siteForGrievance, verifyRipenedPetition } from '../src/services/grievance-ripening.service'
 import { knowledgeFor, offerCast, presentCast } from '../src/worlds/cast'
@@ -1026,6 +1026,13 @@ const stateBody = between(worldServiceSrc, 'async state(', 'async act(')
 const actBody = between(worldServiceSrc, 'async act(')
 const requireBody = between(walkInstanceServiceSrc, 'async requireBound(', 'async create(')
 
+if (worldServiceSrc.includes('loadWorld(') || worldServiceSrc.includes('world-fixture')) {
+  fail.push('play still loads a per-world file instead of InteractiveWorldDoc')
+}
+if (!worldServiceSrc.includes('worldFromDoc')) {
+  fail.push('play no longer hydrates the engine from the catalog doc')
+}
+
 if (!requireBody.includes('reasonWalkInstanceNotBound')) {
   fail.push('requireBound no longer uses the shared walk binding rule')
 }
@@ -1034,7 +1041,7 @@ if (!stateBody.includes('requireBound')) {
 } else {
   const bindAt = stateBody.indexOf('requireBound')
   const mutateAt = Math.min(
-    ...['interactiveWorldStates', 'this.definition', 'updateOne'].map((needle) => {
+    ...['interactiveWorldStates', 'this.getWorld', 'updateOne'].map((needle) => {
       const at = stateBody.indexOf(needle)
       return at < 0 ? Infinity : at
     }),

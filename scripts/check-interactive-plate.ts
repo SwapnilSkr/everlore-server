@@ -26,7 +26,7 @@
  * or fail, and no threshold in this file gates anything.
  */
 import sharp from 'sharp'
-import { requireWorld } from '../src/worlds/world-source'
+import { requireWorld } from '../src/worlds/world-fixture'
 
 const file = process.argv[2]
 const plateKey = process.argv[3]

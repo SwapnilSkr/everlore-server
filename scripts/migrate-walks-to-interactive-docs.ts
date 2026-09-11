@@ -13,6 +13,7 @@ import type { WorldInstanceDoc } from '../src/models/world-instance.model'
 import type { WorldTemplateDoc } from '../src/models/world-template.model'
 import { interactiveWorldService } from '../src/services/interactive-world.service'
 import { idString } from '../src/utils/mongo-id'
+import { loadWorld } from '../src/worlds/world-fixture'
 
 function walkKeyOf(template: WorldTemplateDoc): string | null {
   const key = typeof template.interactive_world_key === 'string'
@@ -52,7 +53,10 @@ let templatesRemoved = 0
 let chatRowsRemoved = 0
 
 for (const [key, keyed] of byKey) {
-  const world = await interactiveWorldService.ensureWorld(key)
+  const fixture = loadWorld(key)
+  const world = fixture
+    ? await interactiveWorldService.upsertWorldFromAuthored(fixture)
+    : await interactiveWorldService.getWorld(key)
   const catalog = pickCatalogTemplate(keyed)
   const image = typeof catalog.image_url === 'string' ? catalog.image_url.trim() : ''
   await mongoColl.interactiveWorlds().updateOne(

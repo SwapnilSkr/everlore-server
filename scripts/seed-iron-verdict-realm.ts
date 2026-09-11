@@ -15,7 +15,7 @@ import { connectMongo, mongoColl } from '../src/config/mongo'
 import type { InteractiveWorldDoc, InteractiveWorldInstanceDoc } from '../src/models/interactive-world.model'
 import { interactiveWorldService } from '../src/services/interactive-world.service'
 import { idString, parseObjectId } from '../src/utils/mongo-id'
-import { requireWorld } from '../src/worlds/world-source'
+import { requireWorld } from '../src/worlds/world-fixture'
 
 const WORLD_KEY = 'iron-verdict'
 
@@ -120,7 +120,7 @@ async function main() {
   await connectMongo()
   const player = await resolvePlayer()
 
-  const world = await interactiveWorldService.ensureWorld(authored.key)
+  const world = await interactiveWorldService.upsertWorldFromAuthored(authored)
   const catalog = await stampCatalog(player._id, authored, world)
   const { instance } = await ensureInstance(player._id, catalog)
   const instanceId = idString(instance._id)

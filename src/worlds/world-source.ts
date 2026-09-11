@@ -1,27 +1,20 @@
 /**
  * Worlds are DATA, not code.
  *
- * Every authored world lives as JSON under `data/` and is read at runtime. That
- * is the whole point: a world is content, and content that has to be compiled
- * cannot be authored by anyone who is not editing this repository. Adding a
- * world is dropping a file in `data/`; changing one is editing that file. When
- * creators arrive, the same shape comes out of a database or an editor and
- * nothing here changes.
+ * The playable world is an `InteractiveWorldDoc` in Mongo. First-party walks,
+ * creator walks, and generated walks share this shape and the same engine.
+ * Nothing here reads a per-world file at request time — that would mean a
+ * world that is not in this repository cannot be walked.
  *
- * What stays in code is MECHANISM only — how a CDN key is built, where measured
- * pixel sizes are attached. None of that is per-world.
- *
- * The files are read with `readFileSync` rather than imported. A static import
- * would bake the content into the build and quietly reintroduce exactly the
- * problem this module exists to remove.
+ * What stays in code is MECHANISM only — how a CDN key is built, how a stored
+ * document becomes the in-memory world the engine already speaks.
  */
-import { readFileSync, existsSync } from 'fs'
-import { join } from 'path'
 import type {
   InteractiveAssetDoc,
   InteractiveLocationDoc,
   InteractiveMapStyleDoc,
   InteractiveRealmDoc,
+  InteractiveWorldDoc,
 } from '../models/interactive-world.model'
 
 /**
@@ -103,16 +96,16 @@ export const choicePredicate = (choice: WorldChoice): FlagPredicate => ({
   none_of: asList(choice.forbids),
 })
 
-/** Exactly the shape of a `data/<key>.json` file. */
-interface AuthoredWorld {
+/** Exactly the shape of a first-party seed fixture. Play never reads this. */
+export interface AuthoredWorld {
   key: string
   title: string
   chapter_title: string
   /** One line of invitation, in the world's own voice. Read on its entrance. */
   blurb?: string
   /**
-   * Version of the definition persisted in Mongo. Increment whenever a field
-   * copied by `ensureWorld` changes; independent of the CDN asset revision.
+   * Version of the definition persisted in Mongo. Increment whenever the play
+   * payload changes; independent of the CDN asset revision.
    */
   definition_version: number
   /** Revision embedded in published asset keys. */
@@ -435,8 +428,6 @@ export interface LoadedWorld extends Omit<AuthoredWorld, 'assets'>, WorldSidecar
   assets: InteractiveAssetDoc[]
 }
 
-const DATA = join(import.meta.dir, 'data')
-
 /**
  * Where an asset lives on the CDN.
  *
@@ -449,67 +440,39 @@ export function assetKey(worldKey: string, role: InteractiveAssetDoc['role'], id
   return `interactive-worlds/${worldKey}/${dir}/${id.replace(/_/g, '-')}-v${revision}.webp`
 }
 
-const cache = new Map<string, LoadedWorld>()
-
-function readJson<T>(path: string): T | null {
-  return existsSync(path) ? (JSON.parse(readFileSync(path, 'utf8')) as T) : null
-}
-
-/** Every world key with a data file, for callers that enumerate rather than ask. */
-export function worldKeys(): string[] {
-  const index = readJson<string[]>(join(DATA, 'index.json'))
-  return index ?? []
-}
-
 /**
- * Load an authored world, or null when no such world exists.
+ * The in-memory world the engine already speaks, taken from the stored doc.
  *
- * Returning null rather than throwing lets the caller decide what a missing
- * world means — a 404 to a player, a usage error to a script.
+ * A creator world, a generated world, and Iron Verdict are the same object
+ * here. Missing play fields are empty, not fatal — an unfinished walk has no
+ * choices yet, not a missing file.
  */
-export function loadWorld(key: string): LoadedWorld | null {
-  const hit = cache.get(key)
-  if (hit) return hit
-
-  // A key is a filename here, so anything that could climb out of `data/` is
-  // refused outright rather than sanitised.
-  if (!/^[a-z0-9-]+$/.test(key)) return null
-
-  const authored = readJson<AuthoredWorld>(join(DATA, `${key}.json`))
-  if (!authored) return null
-
-  // Measured on the published files by the asset pipeline. Absent for an asset
-  // that has not been generated yet, and deliberately left absent rather than
-  // defaulted — the client cannot lay out a plate it cannot measure, and a
-  // plausible-looking square renders silently wrong.
-  const dims = readJson<Record<string, { width: number; height: number }>>(
-    join(DATA, `${key}.dimensions.json`),
-  ) ?? {}
-
-  // Sidecars are keyed off the same world key, so adding one is dropping a
-  // file next to the world rather than registering it anywhere.
-  const cast = readJson<{ cast: WorldCastMember[]; unanswered?: string }>(join(DATA, `${key}.cast.json`))
-  const progression = readJson<WorldProgression>(join(DATA, `${key}.progression.json`))
-  const reign = readJson<WorldReign>(join(DATA, `${key}.reign.json`))
-  const duels = readJson<{ duels: WorldDuel[] }>(join(DATA, `${key}.duels.json`))
-
-  const world: LoadedWorld = {
-    ...authored,
-    cast: cast?.cast ?? [],
-    cast_unanswered: cast?.unanswered ?? null,
-    progression,
-    reign,
-    duels: duels?.duels ?? [],
-    assets: authored.assets.map(({ id, role }) => ({
-      id,
-      role,
-      key: assetKey(key, role, id, authored.revision),
-      revision: authored.revision,
-      ...(dims[id] ?? {}),
-    })),
+export function worldFromDoc(doc: InteractiveWorldDoc): LoadedWorld {
+  const start = doc.start_location_id || doc.locations?.[0]?.id
+  if (!start) {
+    throw new Error(`Interactive world "${doc.key}" has no start location`)
   }
-  cache.set(key, world)
-  return world
+  return {
+    key: doc.key,
+    title: doc.title,
+    chapter_title: doc.chapter_title,
+    blurb: doc.blurb,
+    definition_version: doc.version,
+    revision: doc.revision ?? 1,
+    start_location_id: start,
+    overture: doc.overture,
+    map_style: doc.map_style,
+    realms: doc.realms ?? [],
+    assets: doc.assets ?? [],
+    locations: doc.locations ?? [],
+    choices: doc.choices ?? [],
+    drills: doc.drills ?? [],
+    cast: doc.cast ?? [],
+    cast_unanswered: doc.cast_unanswered ?? null,
+    progression: doc.progression ?? null,
+    reign: doc.reign ?? null,
+    duels: doc.duels ?? [],
+  }
 }
 
 /**
@@ -580,9 +543,3 @@ export function effectiveFlags(
   return merged
 }
 
-/** Load or fail loudly. For callers that cannot continue without the world. */
-export function requireWorld(key: string): LoadedWorld {
-  const world = loadWorld(key)
-  if (!world) throw new Error(`No authored world "${key}" in ${DATA}`)
-  return world
-}
