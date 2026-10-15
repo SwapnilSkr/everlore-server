@@ -4,6 +4,7 @@ import { env } from './env'
 let openaiClient: OpenAI | null = null
 let openrouterClient: OpenAI | null = null
 
+/** Direct OpenAI access is reserved for embeddings (1024-dimensional Pinecone vectors). */
 export function getOpenAI(): OpenAI {
   if (!openaiClient) {
     openaiClient = new OpenAI({ apiKey: env.OPENAI_API_KEY })

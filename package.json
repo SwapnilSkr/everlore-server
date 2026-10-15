@@ -9,6 +9,8 @@
     "start:worker": "bun run worker/index.ts",
     "typecheck": "tsc --noEmit",
     "audit:all": "bun run scripts/run-pure-audits.ts",
+    "audit:openrouter-routing": "bun run scripts/openrouter-routing-audit.ts",
+    "audit:ink-promo": "bun run scripts/ink-promo-audit.ts",
     "test:nsfw": "bun run scripts/test-nsfw-model.ts",
     "probe:nsfw-extraction": "bun run scripts/nsfw-extraction-probe.ts",
     "probe:recurring-promotion": "bun run scripts/recurring-promotion-probe.ts",

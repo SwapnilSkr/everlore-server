@@ -3,6 +3,8 @@
  * needs Mongo. Used by `bun run audit:all` and CI.
  */
 const PURE_AUDITS = [
+  'audit:openrouter-routing',
+  'audit:ink-promo',
   'audit:review-access',
   'audit:choice-grounding',
   'audit:movement',

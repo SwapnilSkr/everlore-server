@@ -1,16 +1,18 @@
-import { getOpenAI, getOpenRouter } from '../config/openai'
+import { getOpenRouter } from '../config/openai'
 import { env } from '../config/env'
 import { recordLLMUsage, usageFromProvider, isLLMUsageActive } from './usage'
+import { log } from '../utils/logger'
 
-/**
- * Model ids served by the OpenAI API directly. Anything NOT in this set is
- * routed through OpenRouter (e.g. `deepseek/…`, `gryphe/…`). Keep narration and
- * auxiliary OpenAI models (gpt-4o-mini, gpt-4o, …) here.
- */
-const OPENAI_MODELS = new Set(['gpt-5', 'gpt-5.6-luna', 'gpt-4o', 'gpt-4o-mini', 'gpt-3.5-turbo'])
+const loggedNormalizations = new Set<string>()
 
-function clientFor(model: string) {
-  return OPENAI_MODELS.has(model) ? getOpenAI() : getOpenRouter()
+function normalizeChatModel(model: string): string {
+  return /^(?:gpt-|o\d)/i.test(model) ? `openai/${model}` : model
+}
+
+function logNormalization(original: string, normalized: string): void {
+  if (original === normalized || loggedNormalizations.has(original)) return
+  loggedNormalizations.add(original)
+  log.info('chat.model_normalized', { from: original, to: normalized })
 }
 
 /**
@@ -20,7 +22,8 @@ function clientFor(model: string) {
  * options; this maps them per model instead of forcing every call site to know.
  */
 function isNextGenOpenAIModel(model: string): boolean {
-  return /^gpt-5(\.|-|$)/.test(model) && model !== 'gpt-5'
+  const family = model.replace(/^openai\//, '')
+  return /^gpt-(?:[5-9]|[1-9]\d)(?:\.|-|$)/.test(family) && family !== 'gpt-5'
 }
 
 /**
@@ -54,17 +57,14 @@ function applyCompletionDialect(params: Record<string, any>, model: string): voi
  * The p90 preference deprioritizes hosts with a recently poor tail-latency
  * record, without turning a temporary telemetry gap into a hard outage.
  *
- * Returns `undefined` for OpenAI-direct models — they must NOT receive a
- * `provider` field (it's an OpenRouter-specific top-level body extension and is
- * meaningless / potentially rejected by the OpenAI API).
  */
-function providerPrefsFor(model: string): Record<string, unknown> | undefined {
-  if (OPENAI_MODELS.has(model)) return undefined
+function providerPrefsFor(requireParameters: boolean): Record<string, unknown> {
   const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
   return {
     provider: {
       sort: 'throughput',
       allow_fallbacks: true,
+      ...(requireParameters ? { require_parameters: true } : {}),
       ...(Number.isFinite(p90) && p90 > 0
         ? { preferred_max_latency: { p90 } }
         : {}),
@@ -78,15 +78,17 @@ interface LLMRequest {
   temperature?: number
   maxTokens?: number
   responseSchema?: object
-  responseFormat?: { type: string }
+  responseFormat?: { type: string; [key: string]: unknown }
   /** Abort if the provider has not produced its first text delta in time. */
   firstTokenTimeoutMs?: number
   /** Abort a streaming request if no token arrives for this long. */
   idleTimeoutMs?: number
   /** Absolute request timeout passed to the OpenAI SDK. */
   timeoutMs?: number
+  signal?: AbortSignal
+  reasoningEffort?: 'low' | 'medium' | 'high'
   /** Stable OpenRouter conversation key. It keeps a story on the provider that
-   * has its prompt/KV cache warm; ignored for direct OpenAI models. */
+   * has its prompt/KV cache warm. */
   sessionId?: string
   /** Label for per-call token accounting. Optional; omitted on unlabeled paths. */
   purpose?: string
@@ -124,29 +126,38 @@ export function isRateLimitError(error: unknown): boolean {
 }
 
 function routingParamsFor(req: LLMRequest): Record<string, unknown> {
-  if (OPENAI_MODELS.has(req.model)) return {}
   return {
-    ...(providerPrefsFor(req.model) ?? {}),
+    ...providerPrefsFor(Boolean(req.responseSchema || req.responseFormat?.type === 'json_schema')),
     ...(req.sessionId ? { session_id: req.sessionId.slice(0, 256) } : {}),
   }
 }
 
-export async function callLLM(req: LLMRequest): Promise<string> {
-  const client = clientFor(req.model)
-
+/** Pure request construction shared by streaming and non-streaming chat. */
+export function buildChatRequest(req: LLMRequest, stream = false): {
+  client: 'openrouter'
+  // OpenRouter extensions are absent from the OpenAI SDK's request type.
+  params: any
+} {
+  const model = normalizeChatModel(req.model)
+  // Keep the provider extensions and SDK dialect in one mutable request body.
   const params: any = {
-    model: req.model,
+    model,
     messages: req.messages,
     temperature: req.temperature ?? 0.8,
     max_tokens: req.maxTokens ?? 600,
+    ...(stream ? { stream: true } : {}),
+    ...routingParamsFor(req),
   }
 
-  if (req.responseSchema && OPENAI_MODELS.has(req.model)) {
+  if (req.responseSchema) {
+    const supplied = req.responseFormat?.type === 'json_schema'
+      ? req.responseFormat.json_schema as Record<string, unknown> | undefined
+      : undefined
     params.response_format = {
       type: 'json_schema',
       json_schema: {
-        name: 'generation_response',
-        strict: false,
+        name: supplied?.name ?? 'generation_response',
+        strict: supplied?.strict ?? false,
         schema: req.responseSchema,
       },
     }
@@ -154,21 +165,41 @@ export async function callLLM(req: LLMRequest): Promise<string> {
     params.response_format = req.responseFormat
   }
 
-  Object.assign(params, routingParamsFor(req))
-  applyCompletionDialect(params, req.model)
+  applyCompletionDialect(params, model)
+  if (req.reasoningEffort && isNextGenOpenAIModel(model)) {
+    params.reasoning = { effort: req.reasoningEffort }
+  }
+  return { client: 'openrouter', params }
+}
+
+function clientFor(transport: ReturnType<typeof buildChatRequest>['client']) {
+  switch (transport) {
+    case 'openrouter': return getOpenRouter()
+    default: throw new Error(`Unsupported chat transport: ${transport}`)
+  }
+}
+
+export async function callLLM(req: LLMRequest): Promise<string> {
+  const built = buildChatRequest(req)
+  const { params } = built
+  logNormalization(req.model, params.model)
+  const client = clientFor(built.client)
 
   const response = await client.chat.completions.create(params, {
     timeout: req.timeoutMs ?? 90000,
+    ...(req.timeoutMs ? { maxRetries: 0 } : {}),
+    ...(req.signal ? { signal: req.signal } : {}),
   })
   const content = response.choices[0]?.message?.content
 
-  if (!content) throw new Error('Empty LLM response')
+  const rawUsage = (response as { usage?: unknown }).usage
   recordLLMUsage({
     purpose: req.purpose,
     model: req.model,
     streamed: false,
-    ...usageFromProvider((response as { usage?: unknown }).usage),
+    ...usageFromProvider(rawUsage),
   })
+  if (!content) throw new Error('Empty LLM response')
   return content
 }
 
@@ -181,7 +212,10 @@ export async function callLLMStream(
   req: LLMRequest,
   onDelta: (chunk: string) => void,
 ): Promise<string> {
-  const client = clientFor(req.model)
+  const built = buildChatRequest(req, true)
+  const { params } = built
+  logNormalization(req.model, params.model)
+  const client = clientFor(built.client)
   const controller = new AbortController()
   const firstTokenTimeoutMs = req.firstTokenTimeoutMs ?? 30000
   const idleTimeoutMs = req.idleTimeoutMs ?? 45000
@@ -197,14 +231,6 @@ export async function callLLMStream(
     }, idleTimeoutMs)
   }
 
-  const params: any = {
-    model: req.model,
-    messages: req.messages as any,
-    temperature: req.temperature ?? 0.8,
-    max_tokens: req.maxTokens ?? 600,
-    stream: true,
-    ...routingParamsFor(req),
-  }
   if (isLLMUsageActive()) params.stream_options = { include_usage: true }
 
   let full = ''

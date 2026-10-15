@@ -3,6 +3,7 @@ const requiredEnvVars = [
   'MONGODB_URI',
   'REDIS_URL',
   'OPENAI_API_KEY',
+  'OPENROUTER_API_KEY',
   'PINECONE_API_KEY',
 ] as const
 
@@ -53,8 +54,7 @@ const optionalEnvVars = {
   REVIEW_DEMO_OTP: '',
   // ── Cheap-LLM signal flags (default OFF — both fall back to today's behavior) ──
   // Cheap aux model used by the optional re-rank / borderline-intent passes.
-  // Keep this NON-Claude (cost). gpt-4o-mini is in OPENAI_MODELS so it uses the
-  // direct OpenAI key; any other id routes via OpenRouter (see src/ai/client.ts).
+  // Keep this NON-Claude (cost). gpt-4o-mini routes through OpenRouter.
   CHEAP_RANK_MODEL: 'gpt-4o-mini',
   /** Re-rank the fused RAG candidate pool for true relevance before the final
    *  top-K slice (risk A). Off ⇒ existing fused order is used unchanged. */
@@ -76,6 +76,8 @@ const optionalEnvVars = {
   TEMPLATE_CREATE_RATE_MAX: '5',
   /** Keeps the full billing path deployable before Play products are live. */
   BILLING_ENFORCEMENT_ENABLED: 'false',
+  INK_PROMO_UNLIMITED: 'false',
+  INK_PROMO_DAILY_TURN_CAP: '500',
   /** Non-production QA checkout. Never enable this in a public production app. */
   BILLING_SIMULATION_ENABLED: 'false',
   // Cloudflare Web Analytics, read-only. The marketing site's page views live
@@ -138,6 +140,8 @@ export interface Env {
   CHAT_RATE_MAX: number
   TEMPLATE_CREATE_RATE_MAX: number
   BILLING_ENFORCEMENT_ENABLED: boolean
+  INK_PROMO_UNLIMITED: boolean
+  INK_PROMO_DAILY_TURN_CAP: number
   BILLING_SIMULATION_ENABLED: boolean
   CLOUDFLARE_API_TOKEN: string
   CLOUDFLARE_ACCOUNT_ID: string
@@ -156,6 +160,8 @@ function loadEnv(): Env {
   if (missing.length > 0) {
     console.warn(`Warning: Missing env vars: ${missing.join(', ')}. Using defaults for development.`)
   }
+
+  const configuredPromoCap = Number(process.env.INK_PROMO_DAILY_TURN_CAP || optionalEnvVars.INK_PROMO_DAILY_TURN_CAP)
 
   return {
     PORT: Number(process.env.PORT || optionalEnvVars.PORT),
@@ -205,6 +211,10 @@ function loadEnv(): Env {
     CHAT_RATE_MAX: Number(process.env.CHAT_RATE_MAX || optionalEnvVars.CHAT_RATE_MAX),
     TEMPLATE_CREATE_RATE_MAX: Number(process.env.TEMPLATE_CREATE_RATE_MAX || optionalEnvVars.TEMPLATE_CREATE_RATE_MAX),
     BILLING_ENFORCEMENT_ENABLED: process.env.BILLING_ENFORCEMENT_ENABLED === 'true',
+    INK_PROMO_UNLIMITED: process.env.INK_PROMO_UNLIMITED === 'true',
+    INK_PROMO_DAILY_TURN_CAP: Number.isSafeInteger(configuredPromoCap) && configuredPromoCap > 0
+      ? configuredPromoCap
+      : Number(optionalEnvVars.INK_PROMO_DAILY_TURN_CAP),
     BILLING_SIMULATION_ENABLED: process.env.BILLING_SIMULATION_ENABLED === 'true',
     CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN || optionalEnvVars.CLOUDFLARE_API_TOKEN,
     CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID || optionalEnvVars.CLOUDFLARE_ACCOUNT_ID,

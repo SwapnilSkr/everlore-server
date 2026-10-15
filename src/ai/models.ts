@@ -10,20 +10,19 @@ import { env } from '../config/env'
  * value here, or override it via the matching environment variable (no code
  * change / redeploy of logic needed).
  *
- * Provider routing is automatic (see ./client.ts): known OpenAI model ids go to
- * the OpenAI API; everything else (e.g. `deepseek/…`, `gryphe/…`) goes to
- * OpenRouter. So you can point any entry at an OpenRouter model freely.
+ * Chat models route through OpenRouter (see ./client.ts). Bare OpenAI chat ids
+ * are prefixed there; embeddings alone use the OpenAI API directly.
  *
  *  PURPOSE              MODEL (default)              STREAMED?  PROVIDER   ENV OVERRIDE
  *  ───────────────────────────────────────────────────────────────────────────────────
  *  narrationSfw         deepseek/deepseek-v3.2       yes        OpenRouter NARRATION_SFW_MODEL
  *  narrationNsfw        thedrummer/cydonia-24b-v4.1  yes        OpenRouter NARRATION_NSFW_MODEL
- *  metadata             gpt-4o-mini                  no         OpenAI     MODEL_METADATA
- *  memoryCuration       gpt-4o-mini                  no         OpenAI     MODEL_MEMORY_CURATION
- *  sceneSummary         gpt-4o-mini                  no         OpenAI     MODEL_SCENE_SUMMARY
- *  codexExtraction      gpt-4o-mini                  no         OpenAI     MODEL_CODEX_EXTRACTION
- *  codexCompaction      gpt-4o-mini                  no         OpenAI     MODEL_CODEX_COMPACTION
- *  protagonistDerive    gpt-4o-mini                  no         OpenAI     MODEL_PROTAGONIST_DERIVE
+ *  metadata             gpt-4o-mini                  no         OpenRouter MODEL_METADATA
+ *  memoryCuration       gpt-4o-mini                  no         OpenRouter MODEL_MEMORY_CURATION
+ *  sceneSummary         gpt-4o-mini                  no         OpenRouter MODEL_SCENE_SUMMARY
+ *  codexExtraction      gpt-4o-mini                  no         OpenRouter MODEL_CODEX_EXTRACTION
+ *  codexCompaction      gpt-4o-mini                  no         OpenRouter MODEL_CODEX_COMPACTION
+ *  protagonistDerive    gpt-4o-mini                  no         OpenRouter MODEL_PROTAGONIST_DERIVE
  *  embedding            text-embedding-3-small       —          OpenAI     MODEL_EMBEDDING
  *  image                bytedance-seed/seedream-4.5  —          OpenRouter IMAGE_MODEL
  *  authoring            google/gemini-2.5-flash-lite —          OpenRouter AUTHORING_MODEL
@@ -65,8 +64,8 @@ export const AI_MODELS = {
 
   /** Cheap judge for optional, gated signal passes: memory-recall re-ranking
    *  (RAG_RERANK_ENABLED) and borderline-NSFW intent (NSFW_INTENT_DEFER_ENABLED).
-   *  Default gpt-4o-mini (direct OpenAI key). Keep NON-Claude for cost; any
-   *  non-OpenAI id routes via OpenRouter — see ./client.ts. Set CHEAP_RANK_MODEL. */
+   *  Default gpt-4o-mini via OpenRouter. Keep NON-Claude for cost.
+   *  Set CHEAP_RANK_MODEL. */
   cheapRank: env.CHEAP_RANK_MODEL,
 
   /** Image generation (world/character avatars + chat backgrounds). OpenRouter,
