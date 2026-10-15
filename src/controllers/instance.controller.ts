@@ -5,7 +5,7 @@ import { HttpError } from '../utils/http-error'
 
 export const instanceController = {
   list: async ({ user, query }: { user: AuthUser | null; query: { include_archived?: boolean } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return instanceService.list(user.id, query.include_archived === true)
   },
 
@@ -16,7 +16,7 @@ export const instanceController = {
     user: AuthUser | null
     query: { page?: number; limit?: number; include_archived?: boolean; search?: string }
   }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return instanceService.listRealms(
       user.id,
       query.include_archived === true,
@@ -27,39 +27,39 @@ export const instanceController = {
   },
 
   playStatus: async ({ user, params }: { user: AuthUser | null; params: { templateId: string } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return instanceService.getPlayStatus(user.id, params.templateId)
   },
 
   listByTemplate: async ({ user, params }: { user: AuthUser | null; params: { templateId: string } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return instanceService.listByTemplate(user.id, params.templateId)
   },
 
   getById: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     const instance = await instanceService.getById(params.id, user.id)
-    if (!instance) throw new HttpError(404, 'Instance not found')
+    if (!instance) throw new HttpError(404, 'That story could not be found.')
     return instance
   },
 
   create: async ({ user, body }: { user: AuthUser | null; body: { template_id: string; persona_id?: string } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return instanceService.create(user.id, body.template_id, user.tier, body.persona_id)
   },
 
   archive: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return instanceService.archive(params.id, user.id)
   },
 
   reset: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return deletionService.resetInstance(params.id, user.id)
   },
 
   delete: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return deletionService.deleteInstance(params.id, user.id)
   },
 
@@ -72,12 +72,12 @@ export const instanceController = {
     params: { id: string }
     body: { name?: string; identity?: string; reuse_from_instance_id?: string }
   }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return instanceService.setPlayerProtagonist(params.id, user.id, body)
   },
 
   reusableProtagonists: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return instanceService.listReusableProtagonists(params.id, user.id)
   },
 
@@ -98,7 +98,7 @@ export const instanceController = {
       persona_id?: string | null
     }
   }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return instanceService.updateSettings(params.id, user.id, body)
   },
 }

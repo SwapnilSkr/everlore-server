@@ -69,7 +69,7 @@ export const instanceService = {
       'meta.is_archived': { $ne: true },
     })
     if (instanceCount >= limits.max_instances) {
-      throw new HttpError(403, `Instance limit reached (${limits.max_instances})`)
+      throw new HttpError(403, 'You are already keeping as many worlds as this membership allows.')
     }
 
     const worldState: Record<string, number> = {}

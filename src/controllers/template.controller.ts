@@ -37,14 +37,14 @@ export const templateController = {
     user: AuthUser | null
   }) => {
     const template = await templateService.getById(params.id)
-    if (!template) throw new HttpError(404, 'Template not found')
+    if (!template) throw new HttpError(404, 'That world could not be found.')
 
     const isOwner = Boolean(user && idString(template.creator_id) === user.id)
 
     if (!template.is_published) {
-      if (!user) throw new HttpError(401, 'Unauthorized')
+      if (!user) throw new HttpError(401, 'Sign in to continue.')
       if (!isOwner) {
-        throw new HttpError(403, 'You do not have access to this template')
+        throw new HttpError(403, 'That world is not open to you.')
       }
     }
 
@@ -52,7 +52,7 @@ export const templateController = {
     // see and fix it) and to nobody else. Reported as "not found" rather than
     // "forbidden": a deep link should not confirm the world still exists.
     if (template.moderation_status === 'hidden' && !isOwner) {
-      throw new HttpError(404, 'Template not found')
+      throw new HttpError(404, 'That world could not be found.')
     }
 
     return template
@@ -69,13 +69,13 @@ export const templateController = {
     body: { prompt: string }
     headers: Record<string, string | undefined>
   }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     if (user.tier !== 'creator' && user.tier !== 'premium') {
-      throw new HttpError(403, 'Creator or premium tier required')
+      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
     const rl = await rateLimit(user.id, 'image_generate')
     if (!rl.allowed) {
-      throw new HttpError(429, 'Image generation rate limit exceeded. Try again shortly.')
+      throw new HttpError(429, 'The portrait needs a moment. Try again shortly.')
     }
     const reservation = await billingService.reserve(
       user.id,
@@ -100,9 +100,9 @@ export const templateController = {
     user: AuthUser | null
     body: { image: File }
   }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     if (user.tier !== 'creator' && user.tier !== 'premium') {
-      throw new HttpError(403, 'Creator or premium tier required')
+      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
     const rl = await rateLimit(user.id, 'image_upload')
     if (!rl.allowed) {
@@ -127,13 +127,13 @@ export const templateController = {
     }
     headers: Record<string, string | undefined>
   }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     if (user.tier !== 'creator' && user.tier !== 'premium') {
-      throw new HttpError(403, 'Creator or premium tier required')
+      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
     const rl = await rateLimit(user.id, 'autofill')
     if (!rl.allowed) {
-      throw new HttpError(429, 'Autofill rate limit exceeded. Try again shortly.')
+      throw new HttpError(429, 'The draft needs a moment. Try again shortly.')
     }
     const opts = {
       brief: body.brief,
@@ -161,7 +161,7 @@ export const templateController = {
   // creation flow (which spends real money on preview images) so it never lets
   // a creator craft a whole world only to be walled at the final submit.
   quota: async ({ user }: { user: AuthUser | null }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     const canCreate = user.tier === 'creator' || user.tier === 'premium'
     if (!canCreate) {
       return { can_create: false, reason: 'tier', remaining: 0, retry_after: null }
@@ -176,9 +176,9 @@ export const templateController = {
   },
 
   create: async ({ user, body }: { user: AuthUser | null; body: CreateBody }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     if (user.tier !== 'creator' && user.tier !== 'premium') {
-      throw new HttpError(403, 'Creator or premium tier required')
+      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
     // Check the budget WITHOUT consuming it, so a create that fails validation
     // (or anything downstream) doesn't burn one of the day's slots.
@@ -186,7 +186,7 @@ export const templateController = {
     if (!rl.allowed) {
       throw new HttpError(
         429,
-        'Daily template creation limit reached. Try again later.',
+        'The forge needs rest. Try again later.',
         { retryAfter: rl.retryAfter ?? null, remaining: 0 },
       )
     }
@@ -205,17 +205,17 @@ export const templateController = {
     params: { id: string }
     body: UpdateBody
   }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return templateService.update(params.id, user.id, body)
   },
 
   publish: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return templateService.publish(params.id, user.id)
   },
 
   listMine: async ({ user, query }: { user: AuthUser | null; query: { page?: number; limit?: number; search?: string } }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return templateService.listByCreator(user.id, Number(query.page) || 1, Number(query.limit) || 20, query.search)
   },
 
@@ -226,7 +226,7 @@ export const templateController = {
     user: AuthUser | null
     params: { id: string }
   }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     return deletionService.deleteTemplate(params.id, user.id)
   },
 }

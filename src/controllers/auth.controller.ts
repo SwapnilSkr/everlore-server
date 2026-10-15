@@ -45,7 +45,7 @@ export const authController = {
     const phone = body.phone.trim()
     const rl = await rateLimit(phone, 'otp_send')
     if (!rl.allowed) {
-      throw new HttpError(429, 'Too many OTP requests. Please try again later.')
+      throw new HttpError(429, 'Too many codes requested. Please try again later.')
     }
 
     await authService.sendPhoneOtp(phone)
@@ -59,7 +59,7 @@ export const authController = {
 
     const rl = await rateLimit(phone, 'otp_verify')
     if (!rl.allowed) {
-      throw new HttpError(429, 'Too many OTP verification attempts. Please try again later.')
+      throw new HttpError(429, 'Too many tries at that code. Please try again later.')
     }
 
     const userDoc = await authService.signInWithPhoneOtp(phone, code)
@@ -71,7 +71,7 @@ export const authController = {
   },
 
   me: async ({ user }: { user: AuthUser | null }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     const dbUser = await authService.getUserById(user.id)
     return authService.serializeUser(dbUser)
   },
@@ -83,13 +83,13 @@ export const authController = {
     user: AuthUser | null
     body: Record<string, unknown>
   }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     await authService.updatePreferences(user.id, body)
     return { success: true }
   },
 
   deleteAccount: async ({ user }: { user: AuthUser | null }) => {
-    if (!user) throw new HttpError(401, 'Unauthorized')
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
     await deletionService.deleteAccount(user.id)
     disconnectUserSockets(user.id)
     return { deleted: true }
