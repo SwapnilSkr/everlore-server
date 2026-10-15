@@ -1,4 +1,5 @@
 import './polyfill-v8-snapshot'
+import { mediaRoutes } from './routes/media.routes'
 import { Elysia, ValidationError, ParseError, NotFoundError } from 'elysia'
 import { cors } from '@elysiajs/cors'
 import { connectMongo } from './config/mongo'
@@ -119,6 +120,7 @@ async function main() {
     .use(templateRoutes)
     .use(moderationRoutes)
     .use(instanceRoutes)
+    .use(mediaRoutes)
     .use(personaRoutes)
     .use(chronicleRoutes)
     .use(billingRoutes)

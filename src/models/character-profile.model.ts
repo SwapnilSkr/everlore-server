@@ -90,6 +90,9 @@ export interface CharacterProfileDoc {
   /** 'player' when the player authored it inside *asterisks* (canon, never
    *  re-litigated), 'narration' when the story established it. */
   life_state_source?: 'player' | 'narration'
+  voice?: import('./media.model').CharacterVoice
+  voice_traits?: import('./media.model').VoiceTraits
+  last_spoken_at?: Date
   role?: string
   appearance?: string
   persona?: string

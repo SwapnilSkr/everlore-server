@@ -47,6 +47,8 @@ export interface WorldInstanceDoc {
   _id: ObjectId
   template_id: ObjectId
   template_version: number
+  /** Save-owned casting survives codex rebuilds. Key is a hash of codex identityKey. */
+  media_voice_cast?: Record<string, { voice: import('./media.model').CharacterVoice; last_spoken_at?: Date }>
   /** Immutable-at-start cast copy; rewind never reads a later-edited template. */
   seed_cast_snapshot?: TemplateCastCharacterDoc[]
   player_id: ObjectId

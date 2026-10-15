@@ -1,6 +1,7 @@
 import { Queue } from 'bullmq'
 import { getQueueRedisClient } from '../config/redis'
 
+let mediaQueue: Queue | null = null
 let generationQueue: Queue | null = null
 let memoryCurationQueue: Queue | null = null
 let sceneSummaryQueue: Queue | null = null
@@ -11,6 +12,7 @@ let maintenanceQueue: Queue | null = null
  * Redis keeps only short-lived operational telemetry.
  */
 export const QUEUE_RETENTION = {
+  media: { removeOnComplete: { age: 1800, count: 500 }, removeOnFail: { age: 86400, count: 2000 } },
   generation: {
     removeOnComplete: { age: 1800, count: 500 },
     removeOnFail: { age: 86400, count: 2000 },
@@ -31,6 +33,11 @@ export const QUEUE_RETENTION = {
 
 function getConnection() {
   return getQueueRedisClient()
+}
+
+export function getMediaQueue(): Queue {
+  if (!mediaQueue) mediaQueue = new Queue('media', { connection: getConnection() })
+  return mediaQueue
 }
 
 export function getGenerationQueue(): Queue {
@@ -75,6 +82,7 @@ const QUEUED_JOB_STATES = [
 export async function removeQueuedJobsForInstance(instanceId: string): Promise<void> {
   const queues = [
     getGenerationQueue(),
+    getMediaQueue(),
     getMemoryCurationQueue(),
     getSceneSummaryQueue(),
     getMaintenanceQueue(),

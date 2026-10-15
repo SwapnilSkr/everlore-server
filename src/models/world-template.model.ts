@@ -28,6 +28,8 @@ export interface ModelPreferencesDoc {
  *  Seeded deterministically into the instance codex at creation. */
 export interface ProtagonistDoc {
   name: string
+  voice?: import('./media.model').CharacterVoice
+  voice_traits?: import('./media.model').VoiceTraits
   persona?: string
   appearance?: string
 }
@@ -39,6 +41,8 @@ export interface ProtagonistDoc {
  */
 export interface TemplateCastCharacterDoc {
   name: string
+  voice?: import('./media.model').CharacterVoice
+  voice_traits?: import('./media.model').VoiceTraits
   identity_kind?: CharacterIdentityKind
   aliases?: string[]
   role?: string

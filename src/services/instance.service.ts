@@ -1,3 +1,4 @@
+import { detectSpokenLines } from './media/detection'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { COLLECTIONS } from '../models/collections'
@@ -188,6 +189,7 @@ export const instanceService = {
         data: {
           player_input: '',
           ai_response: greeting,
+          spoken_lines: detectSpokenLines(greeting),
           state_mutations: {},
           flag_mutations: {},
           model_used: 'seed',
@@ -227,7 +229,7 @@ export const instanceService = {
     return worldInstances().findOne({
       _id: parseObjectId(instanceId),
       player_id: parseObjectId(playerId),
-    })
+    }, { projection: { media_voice_cast: 0 } })
   },
 
   /**

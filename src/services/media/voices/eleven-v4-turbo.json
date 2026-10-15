@@ -1,0 +1,375 @@
+{
+  "model": "elevenlabs/eleven-v4-turbo",
+  "rate_usd_per_character": 2e-05,
+  "sources": [
+    "https://elevenlabs.io/docs/help-center/product/voices/my-voices/what-are-default-voices",
+    "https://help.elevenlabs.io/hc/en-us/articles/20939463028881-How-are-voices-updated-changed",
+    "https://www.linkedin.com/posts/elevenlabsio_adam-bella-are-back-in-our-voice-library-activity-7426233453160853504-RFMH"
+  ],
+  "provenance": "Authored casting categories, paraphrased/inferred from ElevenLabs public default/legacy voice descriptions and its Adam/Bella announcement; age bands are casting judgments, not performer ages. IDs/order/rate match the Oct 16 2026 OpenRouter probe snapshot. Default voices are scheduled to expire December 31 2026: review provider availability before then. No replacement or fallback is automatic.",
+  "voices": [
+    {
+      "id": "george",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "resonant"
+        ],
+        "temperament": [
+          "steady"
+        ]
+      }
+    },
+    {
+      "id": "sarah",
+      "traits": {
+        "gender_presentation": [
+          "female"
+        ],
+        "age_band": [
+          "young"
+        ],
+        "timbre": [
+          "soft"
+        ],
+        "temperament": [
+          "gentle"
+        ]
+      }
+    },
+    {
+      "id": "adam",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "deep"
+        ],
+        "temperament": [
+          "calm"
+        ]
+      }
+    },
+    {
+      "id": "alice",
+      "traits": {
+        "gender_presentation": [
+          "female"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "clear"
+        ],
+        "temperament": [
+          "confident"
+        ]
+      }
+    },
+    {
+      "id": "bella",
+      "traits": {
+        "gender_presentation": [
+          "female"
+        ],
+        "age_band": [
+          "young"
+        ],
+        "timbre": [
+          "warm"
+        ],
+        "temperament": [
+          "friendly"
+        ]
+      }
+    },
+    {
+      "id": "bill",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "older"
+        ],
+        "timbre": [
+          "strong"
+        ],
+        "temperament": [
+          "steady"
+        ]
+      }
+    },
+    {
+      "id": "brian",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "deep"
+        ],
+        "temperament": [
+          "calm"
+        ]
+      }
+    },
+    {
+      "id": "callum",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "gravelly"
+        ],
+        "temperament": [
+          "intense"
+        ]
+      }
+    },
+    {
+      "id": "charlie",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "dry"
+        ],
+        "temperament": [
+          "calm"
+        ]
+      }
+    },
+    {
+      "id": "chris",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "warm"
+        ],
+        "temperament": [
+          "friendly"
+        ]
+      }
+    },
+    {
+      "id": "daniel",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "clear"
+        ],
+        "temperament": [
+          "confident"
+        ]
+      }
+    },
+    {
+      "id": "eric",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "smooth"
+        ],
+        "temperament": [
+          "gentle"
+        ]
+      }
+    },
+    {
+      "id": "harry",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "young"
+        ],
+        "timbre": [
+          "rough"
+        ],
+        "temperament": [
+          "intense"
+        ]
+      }
+    },
+    {
+      "id": "jessica",
+      "traits": {
+        "gender_presentation": [
+          "female"
+        ],
+        "age_band": [
+          "young"
+        ],
+        "timbre": [
+          "bright"
+        ],
+        "temperament": [
+          "playful"
+        ]
+      }
+    },
+    {
+      "id": "laura",
+      "traits": {
+        "gender_presentation": [
+          "female"
+        ],
+        "age_band": [
+          "young"
+        ],
+        "timbre": [
+          "clear"
+        ],
+        "temperament": [
+          "confident"
+        ]
+      }
+    },
+    {
+      "id": "liam",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "young"
+        ],
+        "timbre": [
+          "clear"
+        ],
+        "temperament": [
+          "steady"
+        ]
+      }
+    },
+    {
+      "id": "lily",
+      "traits": {
+        "gender_presentation": [
+          "female"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "raspy"
+        ],
+        "temperament": [
+          "calm"
+        ]
+      }
+    },
+    {
+      "id": "matilda",
+      "traits": {
+        "gender_presentation": [
+          "female"
+        ],
+        "age_band": [
+          "young"
+        ],
+        "timbre": [
+          "warm"
+        ],
+        "temperament": [
+          "friendly"
+        ]
+      }
+    },
+    {
+      "id": "river",
+      "traits": {
+        "gender_presentation": [
+          "neutral"
+        ],
+        "age_band": [
+          "young"
+        ],
+        "timbre": [
+          "clear"
+        ],
+        "temperament": [
+          "confident"
+        ]
+      }
+    },
+    {
+      "id": "roger",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "middle_aged"
+        ],
+        "timbre": [
+          "resonant"
+        ],
+        "temperament": [
+          "calm"
+        ]
+      }
+    },
+    {
+      "id": "will",
+      "traits": {
+        "gender_presentation": [
+          "male"
+        ],
+        "age_band": [
+          "young"
+        ],
+        "timbre": [
+          "bright"
+        ],
+        "temperament": [
+          "friendly"
+        ]
+      }
+    }
+  ],
+  "trait_weights": {
+    "gender_presentation": 8,
+    "age_band": 4,
+    "timbre": 1,
+    "temperament": 2
+  }
+}

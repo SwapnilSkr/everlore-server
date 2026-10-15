@@ -1,3 +1,5 @@
+import { purgeMedia } from './media/deletion'
+import { spokenLineUpdate, publishSpokenLines, publicMediaEvent, wireSpokenLines } from './media/events'
 import { randomUUID } from 'crypto'
 import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
@@ -1306,7 +1308,7 @@ export const memoryService = {
     const hasOlder = oldestSequence != null
       ? await events().countDocuments({ ...filter, sequence: { $lt: oldestSequence } }) > 0
       : false
-    return { events: evs.reverse(), total, page: opts.page || 1, hasOlder }
+    return { events: evs.reverse().map(publicMediaEvent), total, page: opts.page || 1, hasOlder }
   },
 
   async getMemories(instanceId: string, playerId: string, opts: any) {
@@ -1688,6 +1690,7 @@ export const memoryService = {
       instance_id: iid,
       sequence: { $gte: sequence },
     })
+    await purgeMedia({ instance_id: iid, event_id: { $in: doomedIds } })
 
     // 3b. Rebuild the character codex as an EXACT projection of the surviving
     // ledger. The per-turn codex deltas are stored on each event (like
@@ -2105,7 +2108,9 @@ export const memoryService = {
       nextSelectedReplayIndex = nextReplayVariants.length - 1
     }
 
+    await purgeMedia({ event_id: eid })
     await events().updateOne({ _id: eid }, {
+      $unset: { 'data.voice_attribution': '' },
       $push: {
         edit_history: {
           previous_data: event.data,
@@ -2114,6 +2119,7 @@ export const memoryService = {
       },
       $set: {
         'data.ai_response': nextAiResponse,
+        ...spokenLineUpdate(nextAiResponse, parsedPlayerInput.spoken, nextPlayerInput),
         'data.player_input': nextPlayerInput,
         'data.player_spoken_input': parsedPlayerInput.spoken,
         'data.player_narration_facts': parsedPlayerInput.narrationFacts,
@@ -2133,6 +2139,9 @@ export const memoryService = {
         updated_at: new Date(),
       },
     } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>)
+    await purgeMedia({ event_id: eid })
+    const spokenEvent = await events().findOne({ _id: eid })
+    if (spokenEvent) await publishSpokenLines(spokenEvent).catch(() => {})
 
     let deletedMemories = 0
 
@@ -2173,6 +2182,7 @@ export const memoryService = {
       recuration_queued: contentChanged,
       // Fresh chips + presence when the narrative was rewritten, so the client
       // can swap stale ones without a refetch (null when the prose was untouched).
+      spoken_lines: wireSpokenLines(spokenEvent?.data.spoken_lines),
       choices: editChoices,
       present_characters: editPresent,
       trackable_mentions: editTrackableMentions,
@@ -2481,7 +2491,9 @@ ${replayDirective || '(none)'}`,
     const nextVariants = [...replayVariants, nextVariant]
     const selectedIdx = nextVariants.length - 1
 
+    await purgeMedia({ event_id: eid })
     await events().updateOne({ _id: eid }, {
+      $unset: { 'data.voice_attribution': '' },
       $push: {
         edit_history: {
           previous_data: event.data,
@@ -2490,6 +2502,7 @@ ${replayDirective || '(none)'}`,
       },
       $set: {
         'data.ai_response': nextVariant.narrative,
+        ...spokenLineUpdate(nextVariant.narrative, event.data.player_spoken_input ?? event.data.player_input, event.data.player_input),
         'data.model_used': replayModelId,
         ...(replayModelId !== modelId ? { 'data.requested_model': modelId } : {}),
         ...(replayResult.fallbackAttempts.length ? { 'data.fallback_attempts': replayResult.fallbackAttempts } : {}),
@@ -2510,6 +2523,9 @@ ${replayDirective || '(none)'}`,
         updated_at: new Date(),
       },
     } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>)
+    await purgeMedia({ event_id: eid })
+    const spokenEvent = await events().findOne({ _id: eid })
+    if (spokenEvent) await publishSpokenLines(spokenEvent).catch(() => {})
 
     await worldInstances().updateOne(
       { _id: event.instance_id, player_id: pid },
@@ -2559,7 +2575,7 @@ ${replayDirective || '(none)'}`,
     }
     return {
       success: true,
-      event: updated,
+      event: updated ? publicMediaEvent(updated) : updated,
       replay_count: nextVariants.length,
       selected_index: selectedIdx,
       memories_deleted: deletedMemories,
@@ -2701,7 +2717,9 @@ ${replayDirective || '(none)'}`,
       }
     }
 
+    await purgeMedia({ event_id: eid })
     await events().updateOne({ _id: eid }, {
+      $unset: { 'data.voice_attribution': '' },
       $push: {
         edit_history: {
           previous_data: event.data,
@@ -2710,6 +2728,7 @@ ${replayDirective || '(none)'}`,
       },
       $set: {
         'data.ai_response': nextAi,
+        ...spokenLineUpdate(nextAi, event.data.player_spoken_input ?? event.data.player_input, event.data.player_input),
         'data.model_used': chosen.model_used || event.data.model_used,
         'data.replay_variants': nextVariants,
         'data.selected_replay_index': variantIndex,
@@ -2733,6 +2752,9 @@ ${replayDirective || '(none)'}`,
         updated_at: new Date(),
       },
     } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>)
+    await purgeMedia({ event_id: eid })
+    const spokenEvent = await events().findOne({ _id: eid })
+    if (spokenEvent) await publishSpokenLines(spokenEvent).catch(() => {})
 
     if (selectedProjection) {
       await worldInstances().updateOne(
@@ -2798,7 +2820,7 @@ ${replayDirective || '(none)'}`,
     const updated = await events().findOne({ _id: eid })
     return {
       success: true,
-      event: updated,
+      event: updated ? publicMediaEvent(updated) : updated,
       replay_count: nextVariants.length,
       selected_index: variantIndex,
       memories_deleted: deletedMemories,

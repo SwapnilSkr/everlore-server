@@ -135,6 +135,9 @@ export interface EventDataDoc {
   character_lifecycle_deltas?: CharacterLifecycleDeltaDoc[]
   /** Structured, player-confirmed command that drove this turn, when any. */
   world_action?: import('../utils/world-action').PlayerWorldAction
+  spoken_lines?: import('./media.model').SpokenLine[]
+  media_revision?: string
+  voice_attribution?: { status: 'processing' | 'done'; claimed_at: Date }
   ai_response: string
   /** Compact semantic record of the prior beat; safe for the next-turn prompt. */
   beat_ledger?: NarrativeBeatLedger

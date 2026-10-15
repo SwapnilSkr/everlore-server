@@ -1,3 +1,6 @@
+import { detectSpokenLines } from '../../src/services/media/detection'
+import { mediaRevision } from '../../src/services/media/attribution'
+import { publishSpokenLines, wireSpokenLines } from '../../src/services/media/events'
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
@@ -3058,6 +3061,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       ...(interactionSignals.length ? { interaction_signals: interactionSignals } : {}),
       ...(characterLifecycleDeltas.length ? { character_lifecycle_deltas: characterLifecycleDeltas } : {}),
       ...(confirmedWorldAction ? { world_action: confirmedWorldAction } : {}),
+      spoken_lines: detectSpokenLines(parsed.narrative, storedPlayerSpokenInput),
+      media_revision: mediaRevision(parsed.narrative, storedPlayerInput),
       ai_response: parsed.narrative,
       beat_ledger: parsed.beat_ledger,
       choices: parsed.choices,
@@ -3121,6 +3126,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   }
 
   await mongoColl.events().insertOne(event)
+  await publishSpokenLines(event).catch(() => {})
   // Materialize only after the event is durable; the ledger remains source of
   // truth and rewind/replay reconstructs this projection from surviving rows.
   await characterCodexService.applyLifecycleDeltas({
@@ -3440,6 +3446,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         sequence: event.sequence,
         player_input: event.data.player_input,
         narrative: parsed.narrative,
+        spoken_lines: wireSpokenLines(event.data.spoken_lines),
         scene_tag: parsed.scene_tag,
         emotional_tone: parsed.emotional_tone,
         model_used: event.data.model_used,

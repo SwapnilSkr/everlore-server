@@ -3,6 +3,7 @@ import { getRedisClient } from '../../src/config/redis'
 import { memoryService } from '../../src/services/memory.service'
 import { generationLockKey, releaseGenerationLock } from '../../src/utils/generation-lock'
 import { liveInstanceExists } from '../../src/utils/live-instance'
+import { wireSpokenLines } from '../../src/services/media/events'
 import { parseObjectId } from '../../src/utils/mongo-id'
 
 /**
@@ -48,6 +49,7 @@ export async function replayProcessor(job: Job) {
         instanceId,
         eventId,
         narrative: ev?.data?.ai_response || '',
+        spoken_lines: wireSpokenLines(ev?.data?.spoken_lines),
         selected_index: result.selected_index,
         // Fresh chips + presence regenerated from the selected variant, so the
         // replayed turn shows tap-to-play choices like a primary turn.

@@ -3,6 +3,8 @@
  * so collection strings never drift apart.
  */
 export const COLLECTIONS = {
+  media_assets: 'media_assets',
+  media_usage: 'media_usage',
   users: 'users',
   world_templates: 'world_templates',
   world_instances: 'world_instances',

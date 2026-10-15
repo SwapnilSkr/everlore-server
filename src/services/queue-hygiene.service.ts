@@ -1,17 +1,19 @@
 import type { Queue } from 'bullmq'
 import {
   getGenerationQueue,
+  getMediaQueue,
   getMaintenanceQueue,
   getMemoryCurationQueue,
   getSceneSummaryQueue,
   QUEUE_RETENTION,
 } from '../queues'
 
-export type ManagedQueueName = 'generation' | 'memory-curation' | 'scene-summary' | 'maintenance'
+export type ManagedQueueName = 'media' | 'generation' | 'memory-curation' | 'scene-summary' | 'maintenance'
 
 const CLEAN_BATCH_SIZE = 1_000
 
 const queues: Record<ManagedQueueName, () => Queue> = {
+  media: getMediaQueue,
   generation: getGenerationQueue,
   'memory-curation': getMemoryCurationQueue,
   'scene-summary': getSceneSummaryQueue,
@@ -19,6 +21,7 @@ const queues: Record<ManagedQueueName, () => Queue> = {
 }
 
 const retentionKeys: Record<ManagedQueueName, keyof typeof QUEUE_RETENTION> = {
+  media: 'media',
   generation: 'generation',
   'memory-curation': 'memoryCuration',
   'scene-summary': 'sceneSummary',

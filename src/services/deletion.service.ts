@@ -1,3 +1,5 @@
+import { purgeMedia } from './media/deletion'
+import { detectSpokenLines } from './media/detection'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
@@ -224,6 +226,7 @@ export const deletionService = {
         data: {
           player_input: '',
           ai_response: template.opening_line.trim(),
+          spoken_lines: detectSpokenLines(template.opening_line.trim()),
           state_mutations: {},
           flag_mutations: {},
           model_used: 'seed',
@@ -314,9 +317,10 @@ export const deletionService = {
 
   /** The one payload list shared by reset, save deletion and template deletion. */
   async purgeInstancePayload(instanceId: ObjectId, instanceIdStr: string): Promise<void> {
+    await events().deleteMany({ instance_id: instanceId })
+    await purgeMedia({ instance_id: instanceId })
     await this.deleteInstanceData(instanceId, instanceIdStr)
     await Promise.all([
-      events().deleteMany({ instance_id: instanceId }),
       memories().deleteMany({ instance_id: instanceId }),
       sceneSummaries().deleteMany({ instance_id: instanceId }),
       mongoColl.chapterSummaries().deleteMany({ instance_id: instanceId }),
@@ -385,6 +389,7 @@ export const deletionService = {
       await this.deleteTemplate(idString(template._id), userId)
     }
 
+    await purgeMedia({ player_id: pid })
     await deadLetterJobs().deleteMany({
       $or: [
         { 'data.playerId': userId },

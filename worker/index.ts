@@ -1,4 +1,6 @@
 import '../src/polyfill-v8-snapshot'
+import { mediaProcessor } from './processors/media.processor'
+import { mediaConcurrency } from '../src/services/media/config'
 import { Worker, type Job } from 'bullmq'
 import { connectMongo } from '../src/config/mongo'
 import { connectRedis, getQueueRedisClient, getRedisClient } from '../src/config/redis'
@@ -81,6 +83,8 @@ async function main() {
     limiter: { max: env.GENERATION_RATE_MAX, duration: 60000 },
   })
 
+  const mediaWorker = new Worker('media', mediaProcessor, { connection, concurrency: mediaConcurrency(), maxStalledCount: 0 })
+
   const memoryWorker = new Worker('memory-curation', memoryProcessor, {
     connection,
     concurrency: 5,
@@ -97,8 +101,24 @@ async function main() {
     concurrency: 1,
   })
 
+  mediaWorker.on('failed', async (job) => {
+    if (!job) return
+    try {
+      const { failMedia } = await import('../src/services/media/service')
+      const { mongoColl } = await import('../src/config/mongo')
+      const { parseObjectId } = await import('../src/utils/mongo-id')
+      const asset = await mongoColl.mediaAssets().findOne({ _id: parseObjectId(job.data.mediaId) })
+      if (asset && asset.status !== 'ready') await failMedia(asset)
+    } catch {
+      log.warn('media.failure_cleanup_pending', { jobId: job.id })
+    }
+  })
+
   // Schedule recurring maintenance jobs
   const maintenanceQueue = getMaintenanceQueue()
+  await maintenanceQueue.add('media-repair', { task: 'repair_media_reservations' }, {
+    repeat: { pattern: '* * * * *' }, priority: 10, ...QUEUE_RETENTION.maintenance,
+  })
   await maintenanceQueue.add('decay', { task: 'importance_decay' }, {
     repeat: { pattern: '0 3 * * *' },
     priority: 20,
@@ -161,6 +181,7 @@ async function main() {
   const shutdown = async () => {
     console.log('Shutting down workers...')
     await generationWorker.close()
+    await mediaWorker.close()
     await memoryWorker.close()
     await summaryWorker.close()
     await maintenanceWorker.close()
@@ -170,7 +191,7 @@ async function main() {
   process.on('SIGINT', shutdown)
 
   // Error monitoring
-  const workers = [generationWorker, memoryWorker, summaryWorker, maintenanceWorker]
+  const workers = [mediaWorker, generationWorker, memoryWorker, summaryWorker, maintenanceWorker]
   for (const w of workers) {
     w.on('failed', (job, err) => {
       console.error(`[${w.name}] Job ${job?.id} failed:`, err.message)

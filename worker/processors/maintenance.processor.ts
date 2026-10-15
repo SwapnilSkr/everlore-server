@@ -1,3 +1,4 @@
+import { repairMediaReservations } from '../../src/services/media/service'
 import { Job } from 'bullmq'
 import type { ObjectId } from 'mongodb'
 import { mongoColl } from '../../src/config/mongo'
@@ -18,6 +19,9 @@ const STUCK_SUMMARY_MS = 10 * 60 * 1000
 export async function maintenanceProcessor(job: Job) {
   const { task } = job.data
   switch (task) {
+    case 'repair_media_reservations':
+      await repairMediaReservations()
+      break
     case 'importance_decay': {
       const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
 

@@ -28,6 +28,7 @@ export function isStorageConfigured(): boolean {
 }
 
 const EXT: Record<string, string> = {
+  'audio/mpeg': 'mp3',
   'image/png': 'png',
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
@@ -61,6 +62,13 @@ export const storageService = {
       }),
     )
     return { url: `${env.CDN_BASE_URL.replace(/\/+$/, '')}/${key}`, key }
+  },
+
+  /** Media purges must surface a failed delete so cleanup can be retried. */
+  async deleteStrict(key: string): Promise<void> {
+    if (!key) return
+    if (!isStorageConfigured()) throw new Error('Storage unavailable for media cleanup')
+    await client().send(new DeleteObjectCommand({ Bucket: env.S3_BUCKET, Key: key }))
   },
 
   async delete(key: string): Promise<void> {
