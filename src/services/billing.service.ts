@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import type { UserTier } from '../models/user.model'
 import { HttpError } from '../utils/http-error'
+import { StoryRestingError } from '../utils/story-resting-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { env } from '../config/env'
 import { googlePlayService, type VerifiedGooglePurchase } from './google-play.service'
@@ -83,7 +84,7 @@ async function storyTurnsToday(playerId: ObjectId): Promise<number> {
         created_at: { $gte: utcDayStart() },
       },
     },
-    { $group: { _id: null, reserved: { $sum: { $multiply: ['$delta', -1] } } } },
+    { $group: { _id: null, reserved: { $sum: 1 } } },
   ]).toArray()
   return Math.max(0, Math.floor(row?.reserved ?? 0))
 }
@@ -158,7 +159,7 @@ export const billingService = {
   },
 
   async wallet(playerId: string, fallbackTier: string) {
-    await this.ensureWelcomeInk(playerId)
+    if (!env.INK_PROMO_UNLIMITED) await this.ensureWelcomeInk(playerId)
     const playerOid = parseObjectId(playerId)
     const now = new Date()
     const active = await entitlements().findOne({
@@ -170,6 +171,7 @@ export const billingService = {
     const tier = player?.admin_tier_override || active?.tier || player?.tier || (fallbackTier as UserTier)
     return {
       tier,
+      unlimited_ink: env.INK_PROMO_UNLIMITED,
       admin_tier_override: player?.admin_tier_override ?? null,
       balance: await balanceFor(playerOid),
       profile: await profileForPlayer(tier, playerOid),
@@ -184,27 +186,27 @@ export const billingService = {
   },
 
   async reserve(playerId: string, action: BillableAction, requestId: string) {
-    const cost = (await effectiveBilling()).costs[action]
+    const promo = env.INK_PROMO_UNLIMITED
+    const cost = promo ? 0 : (await effectiveBilling()).costs[action]
     if (!requestId.trim()) throw new HttpError(400, 'A billing request id is required')
-    if (!this.enforcementEnabled()) {
+    if (!promo && !this.enforcementEnabled()) {
       return { reservation_id: null, cost: 0, balance: null }
     }
-    await this.ensureWelcomeInk(playerId)
+    if (!promo) await this.ensureWelcomeInk(playerId)
     const playerOid = parseObjectId(playerId)
     const key = `reserve:${action}:${requestId}`
     const already = await ledger().findOne({ player_id: playerOid, idempotency_key: key })
-    if (already) return { reservation_id: key, cost, balance: await balanceFor(playerOid) }
+    if (already) return { reservation_id: key, cost: -already.delta, balance: await balanceFor(playerOid) }
 
     // A daily story cap is a provider-cost safety rail, not a replacement for
     // Ink balance. It is intentionally checked after idempotency so reconnects
     // do not consume a second slot for the same request.
     if (action === 'story_turn') {
-      const tier = await tierFor(playerOid)
-      const cap = (await profileForPlayer(tier, playerOid)).daily_story_safety_cap
+      const cap = promo
+        ? env.INK_PROMO_DAILY_TURN_CAP
+        : (await profileForPlayer(await tierFor(playerOid), playerOid)).daily_story_safety_cap
       const used = await storyTurnsToday(playerOid)
-      if (used + cost > cap) {
-        throw new HttpError(429, `Daily story safety limit reached (${cap} turns). Please try again tomorrow.`)
-      }
+      if (used + 1 > cap) throw new StoryRestingError()
     }
 
     // Mongo's single-document conditional update would require a materialized
@@ -212,7 +214,7 @@ export const billingService = {
     // already serializes story requests per instance, while forge calls are
     // rate-limited. This balance check is followed by a unique idempotency write.
     const balance = await balanceFor(playerOid)
-    if (balance < cost) throw new HttpError(402, 'Not enough Story Ink')
+    if (!promo && balance < cost) throw new HttpError(402, 'Not enough Story Ink')
     try {
       await ledger().insertOne({
         _id: new ObjectId(),
@@ -230,7 +232,7 @@ export const billingService = {
   },
 
   async release(playerId: string, reservationId: string | null) {
-    if (!reservationId || !this.enforcementEnabled()) return
+    if (!reservationId || env.INK_PROMO_UNLIMITED || !this.enforcementEnabled()) return
     const playerOid = parseObjectId(playerId)
     const reservation = await ledger().findOne({ player_id: playerOid, idempotency_key: reservationId })
     if (!reservation || reservation.delta >= 0) return
@@ -252,7 +254,7 @@ export const billingService = {
   },
 
   async settle(playerId: string, reservationId: string | null) {
-    if (!reservationId || !this.enforcementEnabled()) return
+    if (!reservationId || env.INK_PROMO_UNLIMITED || !this.enforcementEnabled()) return
     const playerOid = parseObjectId(playerId)
     const reservation = await ledger().findOne({ player_id: playerOid, idempotency_key: reservationId })
     if (!reservation || reservation.delta >= 0) return

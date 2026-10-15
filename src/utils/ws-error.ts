@@ -1,8 +1,9 @@
 import { HttpError } from './http-error'
+import { StoryRestingError } from './story-resting-error'
 import { log } from './logger'
 
 /** What a socket client is allowed to be told about a failure. */
-export type ClientError = { code: string; message: string }
+export type ClientError = { code: string; message: string; resets_at?: string }
 
 /**
  * Codes the play socket can emit for an authored failure, derived from the
@@ -39,6 +40,9 @@ const GENERIC: ClientError = {
  * full server-side and replaced with one generic line.
  */
 export function toClientError(err: unknown, context: Record<string, unknown> = {}): ClientError {
+  if (err instanceof StoryRestingError) {
+    return { code: 'STORY_RESTING', message: err.message, resets_at: err.resetsAt }
+  }
   if (err instanceof HttpError) {
     const code = CODE_BY_STATUS[err.statusCode]
     if (code) return { code, message: err.message }
