@@ -63,6 +63,15 @@ export interface WorldTemplateDoc {
    *  chat-with-a-character (always sentient, stats optional). Defaults to 'world'. */
   kind?: 'world' | 'character'
   is_published: boolean
+  /** Absent on drafts and legacy published worlds (which are public/approved). */
+  visibility?: 'private' | 'public'
+  review_status?: 'pending' | 'approved' | 'changes_requested'
+  review_note?: string
+  submitted_at?: Date
+  reviewed_at?: Date
+  reviewed_by?: string
+  /** Internal history for the review queue, retained across visibility changes. */
+  ever_approved?: boolean
   /**
    * Moderation state, set only by an admin acting on a report.
    *

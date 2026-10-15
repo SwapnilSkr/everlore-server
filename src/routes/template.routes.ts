@@ -1,4 +1,4 @@
-import { Elysia } from 'elysia'
+import { Elysia, t } from 'elysia'
 import { authPlugin } from '../middleware/auth'
 import {
   CreateTemplateBody,
@@ -8,6 +8,7 @@ import {
   GenerateImageBody,
   UploadImageBody,
   AutofillBody,
+  PublishTemplateBody,
 } from '../schemas/template.schema'
 import { templateController } from '../controllers/template.controller'
 
@@ -38,6 +39,6 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
 
   .put('/:id', (ctx) => templateController.update(ctx), { body: UpdateTemplateBody })
 
-  .post('/:id/publish', (ctx) => templateController.publish(ctx))
+  .post('/:id/publish', (ctx) => templateController.publish(ctx), { body: t.Optional(PublishTemplateBody) })
 
   .delete('/:id', (ctx) => templateController.delete(ctx))

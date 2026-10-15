@@ -16,6 +16,7 @@ import { isValidMessageLength, isValidStyleKey } from '../utils/narrative-styles
 import { isValidModeKey, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { DEFAULT_NARRATION_TONE, isValidNarrationTone } from '../utils/narration-tones'
 import { materializeTemplateCast } from './template-cast.service'
+import { isWorldListed } from '../utils/world-review'
 
 const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number }> = {
   free: { max_instances: 3, max_memories: 100 },
@@ -43,24 +44,12 @@ export const instanceService = {
     const playerOid = parseObjectId(playerId)
     const templateOid = parseObjectId(templateId)
 
-    // Look the template up by id alone so we can distinguish "doesn't exist"
-    // from "exists but not published" — the latter was an opaque 404 footgun.
     const template = await worldTemplates().findOne({ _id: templateOid })
     if (!template) throw new HttpError(404, 'Template not found')
-    if (!template.is_published) {
-      // A creator can start a playthrough on their OWN unpublished world to
-      // playtest it before publishing; anyone else gets a clear reason.
-      if (idString(template.creator_id) !== playerId) {
-        throw new HttpError(403, 'This world has not been published yet')
-      }
-    }
-
-    // A world hidden by moderation takes no new playthroughs. Existing ones are
-    // deliberately left alone — removing a story someone is in the middle of is
-    // a heavier action than a report warrants, and deletion covers the cases
-    // where the content genuinely has to go.
-    if (template.moderation_status === 'hidden' && idString(template.creator_id) !== playerId) {
-      throw new HttpError(403, 'This world is unavailable while it is under review')
+    // Creators can playtest drafts and worlds in review; existing saves are
+    // read through their own routes and remain usable after delisting.
+    if (idString(template.creator_id) !== playerId && !isWorldListed(template)) {
+      throw new HttpError(404, 'That world could not be found.')
     }
 
     const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
@@ -314,19 +303,12 @@ export const instanceService = {
       .toArray()) as WorldInstanceDoc[]
 
     if (instances.length === 0) {
-      const template = (await worldTemplates()
-        .find({ _id: templateOid })
-        .project({
-          _id: 1,
-          title: 1,
-          is_sentient: 1,
-          description: 1,
-          kind: 1,
-          image_url: 1,
-        })
-        .limit(1)
-        .toArray()) as WorldTemplateSummaryDoc[]
-      return { template: template[0] || null, stories: [] }
+      const template = await worldTemplates().findOne({ _id: templateOid })
+      if (!template || (idString(template.creator_id) !== playerId && !isWorldListed(template))) {
+        return { template: null, stories: [] }
+      }
+      const { _id, title, is_sentient, description, kind, image_url } = template
+      return { template: { _id, title, is_sentient, description, kind, image_url }, stories: [] }
     }
 
     const instanceIds = instances.map((i) => i._id)

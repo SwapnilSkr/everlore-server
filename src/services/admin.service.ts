@@ -275,6 +275,48 @@ export const adminService = {
     return listCollection(worldTemplates(), filter, { created_at: -1 }, opts)
   },
 
+  async listWorldReview() {
+    const worlds = await worldTemplates().aggregate([
+      { $match: { is_published: true, visibility: 'public', review_status: 'pending' } },
+      { $sort: { submitted_at: 1, _id: 1 } },
+      { $lookup: {
+        from: 'users', localField: 'creator_id', foreignField: '_id', as: 'creator',
+        pipeline: [{ $project: { _id: 1, username: 1 } }],
+      } },
+      { $project: {
+        _id: 1, title: 1, description: 1, image_url: 1,
+        seed_prompt: 1, global_lore: 1, opening_line: 1,
+        kind: 1, is_sentient: 1, is_nsfw_capable: 1, narrative_style: 1,
+        protagonist: 1, creator: { $first: '$creator' }, submitted_at: 1,
+        was_approved_before: { $eq: ['$ever_approved', true] },
+      } },
+    ]).toArray()
+    return { items: worlds }
+  },
+
+  async reviewWorld(worldId: string, status: 'approved' | 'changes_requested', adminUser: string, note?: string) {
+    const normalizedNote = note?.trim()
+    if (status === 'changes_requested' && (!normalizedNote || normalizedNote.length > 500)) {
+      throw new HttpError(400, 'Please add a note of up to 500 characters.')
+    }
+    const updated = await worldTemplates().findOneAndUpdate(
+      { _id: parseObjectId(worldId), is_published: true, visibility: 'public', review_status: 'pending' },
+      {
+        $set: {
+          review_status: status,
+          reviewed_at: new Date(),
+          reviewed_by: adminUser,
+          updated_at: new Date(),
+          ...(status === 'approved' ? { ever_approved: true } : { review_note: normalizedNote! }),
+        },
+        ...(status === 'approved' ? { $unset: { review_note: '' } } : {}),
+      },
+      { returnDocument: 'after' },
+    )
+    if (!updated) throw new HttpError(409, 'This world is no longer awaiting review.')
+    return { world: updated }
+  },
+
   async getWorld(templateId: string) {
     const tid = parseObjectId(templateId)
     const template = await worldTemplates().findOne({ _id: tid })

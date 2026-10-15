@@ -90,6 +90,17 @@ export const adminController = {
       adminUser,
     ),
 
+  listWorldReview: async () => adminService.listWorldReview(),
+  approveWorld: async ({ params, adminUser }: { params: { worldId: string }; adminUser: string }) =>
+    adminService.reviewWorld(params.worldId, 'approved', adminUser),
+  requestWorldChanges: async ({
+    params, body, adminUser,
+  }: {
+    params: { worldId: string }
+    body: { note: string }
+    adminUser: string
+  }) => adminService.reviewWorld(params.worldId, 'changes_requested', adminUser, body.note),
+
   listUsers: async ({ query }: { query: { page?: number; limit?: number; search?: string } }) =>
     adminService.listUsers({ ...pageQuery(query), search: query.search }),
 

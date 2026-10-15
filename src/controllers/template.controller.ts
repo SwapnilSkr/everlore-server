@@ -9,6 +9,8 @@ import type { CreateTemplateBody, UpdateTemplateBody } from '../schemas/template
 import { HttpError } from '../utils/http-error'
 import { idString } from '../utils/mongo-id'
 import { billingService } from '../services/billing.service'
+import { canForge } from '../utils/can-forge'
+import { isWorldListed } from '../utils/world-review'
 
 type CreateBody = Static<typeof CreateTemplateBody>
 type UpdateBody = Static<typeof UpdateTemplateBody>
@@ -41,17 +43,7 @@ export const templateController = {
 
     const isOwner = Boolean(user && idString(template.creator_id) === user.id)
 
-    if (!template.is_published) {
-      if (!user) throw new HttpError(401, 'Sign in to continue.')
-      if (!isOwner) {
-        throw new HttpError(403, 'That world is not open to you.')
-      }
-    }
-
-    // A world an admin has hidden stays visible to its own creator (so they can
-    // see and fix it) and to nobody else. Reported as "not found" rather than
-    // "forbidden": a deep link should not confirm the world still exists.
-    if (template.moderation_status === 'hidden' && !isOwner) {
+    if (!isOwner && !isWorldListed(template)) {
       throw new HttpError(404, 'That world could not be found.')
     }
 
@@ -70,7 +62,7 @@ export const templateController = {
     headers: Record<string, string | undefined>
   }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
-    if (user.tier !== 'creator' && user.tier !== 'premium') {
+    if (!canForge(user)) {
       throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
     const rl = await rateLimit(user.id, 'image_generate')
@@ -101,7 +93,7 @@ export const templateController = {
     body: { image: File }
   }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
-    if (user.tier !== 'creator' && user.tier !== 'premium') {
+    if (!canForge(user)) {
       throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
     const rl = await rateLimit(user.id, 'image_upload')
@@ -128,7 +120,7 @@ export const templateController = {
     headers: Record<string, string | undefined>
   }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
-    if (user.tier !== 'creator' && user.tier !== 'premium') {
+    if (!canForge(user)) {
       throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
     const rl = await rateLimit(user.id, 'autofill')
@@ -162,7 +154,7 @@ export const templateController = {
   // a creator craft a whole world only to be walled at the final submit.
   quota: async ({ user }: { user: AuthUser | null }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
-    const canCreate = user.tier === 'creator' || user.tier === 'premium'
+    const canCreate = canForge(user)
     if (!canCreate) {
       return { can_create: false, reason: 'tier', remaining: 0, retry_after: null }
     }
@@ -177,7 +169,7 @@ export const templateController = {
 
   create: async ({ user, body }: { user: AuthUser | null; body: CreateBody }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
-    if (user.tier !== 'creator' && user.tier !== 'premium') {
+    if (!canForge(user)) {
       throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
     // Check the budget WITHOUT consuming it, so a create that fails validation
@@ -209,9 +201,9 @@ export const templateController = {
     return templateService.update(params.id, user.id, body)
   },
 
-  publish: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
+  publish: async ({ user, params, body }: { user: AuthUser | null; params: { id: string }; body?: { visibility?: 'private' | 'public' } | null }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
-    return templateService.publish(params.id, user.id)
+    return templateService.publish(params.id, user.id, body?.visibility)
   },
 
   listMine: async ({ user, query }: { user: AuthUser | null; query: { page?: number; limit?: number; search?: string } }) => {

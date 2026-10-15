@@ -70,6 +70,10 @@ export const CreateTemplateBody = t.Object({
 
 export const UpdateTemplateBody = t.Partial(CreateTemplateBody)
 
+export const PublishTemplateBody = t.Object({
+  visibility: t.Optional(t.Union([t.Literal('private'), t.Literal('public')])),
+})
+
 export const GenerateImageBody = t.Object({
   prompt: t.String({ minLength: 4, maxLength: FIELD_LIMITS.imagePrompt }),
 })

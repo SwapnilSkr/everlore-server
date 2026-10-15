@@ -80,6 +80,7 @@ const optionalEnvVars = {
   INK_PROMO_DAILY_TURN_CAP: '500',
   /** Non-production QA checkout. Never enable this in a public production app. */
   BILLING_SIMULATION_ENABLED: 'false',
+  FORGE_OPEN_TO_ALL_TIERS: 'false',
   // Cloudflare Web Analytics, read-only. The marketing site's page views live
   // there; the admin console reads them through us so the token never reaches a
   // browser. Absent means the traffic panel simply says it is not configured.
@@ -143,6 +144,7 @@ export interface Env {
   INK_PROMO_UNLIMITED: boolean
   INK_PROMO_DAILY_TURN_CAP: number
   BILLING_SIMULATION_ENABLED: boolean
+  FORGE_OPEN_TO_ALL_TIERS: boolean
   CLOUDFLARE_API_TOKEN: string
   CLOUDFLARE_ACCOUNT_ID: string
   CLOUDFLARE_RUM_SITE_TAG: string
@@ -216,6 +218,7 @@ function loadEnv(): Env {
       ? configuredPromoCap
       : Number(optionalEnvVars.INK_PROMO_DAILY_TURN_CAP),
     BILLING_SIMULATION_ENABLED: process.env.BILLING_SIMULATION_ENABLED === 'true',
+    FORGE_OPEN_TO_ALL_TIERS: process.env.FORGE_OPEN_TO_ALL_TIERS === 'true',
     CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN || optionalEnvVars.CLOUDFLARE_API_TOKEN,
     CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID || optionalEnvVars.CLOUDFLARE_ACCOUNT_ID,
     CLOUDFLARE_RUM_SITE_TAG: process.env.CLOUDFLARE_RUM_SITE_TAG || optionalEnvVars.CLOUDFLARE_RUM_SITE_TAG,

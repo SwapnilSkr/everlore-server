@@ -21,6 +21,7 @@ const SearchPageQuery = t.Composite([
 ])
 
 const AdminPatchBody = t.Record(t.String(), t.Any())
+const RequestWorldChangesBody = t.Object({ note: t.String({ minLength: 1, maxLength: 500 }) })
 const AdminGrantInkBody = t.Object({
   amount: t.Numeric({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
   idempotency_key: t.String({ minLength: 1, maxLength: 120 }),
@@ -104,6 +105,12 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
 
   .patch('/worlds/:worldId/moderation', (ctx) => adminController.patchWorldModeration(ctx), {
     body: AdminWorldModerationBody,
+  })
+
+  .get('/worlds/review', () => adminController.listWorldReview())
+  .post('/worlds/:worldId/approve', (ctx) => adminController.approveWorld(ctx))
+  .post('/worlds/:worldId/request-changes', (ctx) => adminController.requestWorldChanges(ctx), {
+    body: RequestWorldChangesBody,
   })
 
   .get('/worlds', (ctx) => adminController.listWorlds(ctx), {

@@ -5,6 +5,7 @@ import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { sendPhoneOtp, verifyPhoneOtp } from '../providers/auth.provider'
 import { verifyFirebaseIdToken } from '../providers/firebase-auth.provider'
+import { canForge } from '../utils/can-forge'
 
 /** Ceiling on stored guide arcs; the app declares roughly a dozen. */
 const MAX_GUIDE_FLOWS = 64
@@ -54,6 +55,7 @@ export const authService = {
       phone: user.phone || null,
       username: user.username,
       tier: user.tier,
+      can_forge: canForge(user),
       preferences: user.preferences,
       token_balance: user.token_balance,
     }

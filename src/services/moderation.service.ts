@@ -13,6 +13,7 @@ import {
 } from '../models/content-report.model'
 import type { WorldTemplateDoc } from '../models/world-template.model'
 import { deletionService } from './deletion.service'
+import { discoveryReviewFilter } from '../utils/world-review'
 
 const users = () => mongoColl.users()
 const worldTemplates = () => mongoColl.worldTemplates()
@@ -76,6 +77,7 @@ export const moderationService = {
       // Absent means never moderated. `$ne` matches missing fields, so legacy
       // rows written before moderation existed still pass.
       moderation_status: { $ne: 'hidden' },
+      ...discoveryReviewFilter(),
     }
     if (blocks.templates.length > 0) filter._id = { $nin: blocks.templates }
     if (blocks.users.length > 0) filter.creator_id = { $nin: blocks.users }

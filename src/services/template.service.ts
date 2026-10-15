@@ -1,4 +1,4 @@
-import { ObjectId } from 'mongodb'
+import { ObjectId, type UpdateFilter } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import type {
   FlagDefinitionDoc,
@@ -16,6 +16,7 @@ import { familyExpandedKeys } from '../utils/narrative-styles'
 import { extractTemplateCast } from '../../worker/lib/template-cast-extractor'
 import { FIELD_LIMITS } from '../schemas/template.schema'
 import { moderationService } from './moderation.service'
+import { hasMeaningfulWorldEdit, publishReviewUpdate } from '../utils/world-review'
 
 const worldTemplates = () => mongoColl.worldTemplates()
 const users = () => mongoColl.users()
@@ -150,7 +151,8 @@ export const templateService = {
 
     const castSourceChanged = [
       'title', 'description', 'seed_prompt', 'global_lore', 'opening_line', 'protagonist',
-    ].some((key) => Object.prototype.hasOwnProperty.call(data, key))
+    ].some((key) => Object.prototype.hasOwnProperty.call(data, key) &&
+      hasMeaningfulWorldEdit(existing, { [key]: data[key] }))
     if (castSourceChanged) {
       const merged = { ...existing, ...data }
       const protagonist = merged.protagonist as WorldTemplateDoc['protagonist'] | undefined
@@ -173,12 +175,38 @@ export const templateService = {
       }
     }
 
-    await worldTemplates().updateOne({ _id: tid }, { $set: updateFields })
+    if (existing.visibility === 'public' && existing.review_status === 'approved' &&
+      hasMeaningfulWorldEdit(existing, updateFields)) {
+      updateFields.review_status = 'pending'
+      updateFields.submitted_at = new Date()
+      updateFields.ever_approved = true
+    }
+    // A legacy published world is approved too, even before it has review fields.
+    if (existing.is_published && existing.visibility === undefined &&
+      hasMeaningfulWorldEdit(existing, updateFields)) {
+      updateFields.visibility = 'public'
+      updateFields.review_status = 'pending'
+      updateFields.submitted_at = new Date()
+      updateFields.ever_approved = true
+    }
+
+    const result = await worldTemplates().updateOne(
+      {
+        _id: tid,
+        creator_id: creatorOid,
+        visibility: existing.visibility ?? { $exists: false },
+        review_status: existing.review_status ?? { $exists: false },
+      },
+      { $set: updateFields },
+    )
+    if (result.matchedCount === 0) {
+      throw new HttpError(409, 'This world changed while you were editing. Please reopen it.')
+    }
 
     return { ...existing, ...updateFields } as WorldTemplateDoc
   },
 
-  async publish(templateId: string, creatorId: string) {
+  async publish(templateId: string, creatorId: string, visibility: 'private' | 'public' = 'private') {
     const tid = parseObjectId(templateId)
     const creatorOid = parseObjectId(creatorId)
 
@@ -193,15 +221,24 @@ export const templateService = {
       await embedLore(loreKey, template.global_lore)
     }
 
-    await worldTemplates().updateOne(
-      { _id: tid },
+    const update = publishReviewUpdate(template, visibility)
+    const result = await worldTemplates().updateOne(
       {
-        $set: { is_published: true, updated_at: new Date() },
-        $inc: { version: 1 },
+        _id: tid,
+        creator_id: creatorOid,
+        visibility: template.visibility ?? { $exists: false },
+        review_status: template.review_status ?? { $exists: false },
       },
+      update as UpdateFilter<WorldTemplateDoc>,
     )
-
-    return { success: true }
+    if (result.matchedCount === 0) {
+      throw new HttpError(409, 'This world changed while you were sharing it. Please reopen it.')
+    }
+    return {
+      success: true,
+      visibility,
+      ...('review_status' in update.$set ? { review_status: update.$set.review_status } : {}),
+    }
   },
 
   async getById(templateId: string) {
@@ -222,10 +259,10 @@ export const templateService = {
       ...(await moderationService.discoveryFilter(userId)),
     }
     if (search) {
-      filter.$or = [
+      filter.$and = [{ $or: [
         { title: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } },
-      ]
+      ] }]
     }
 
     const total = await worldTemplates().countDocuments(filter)
