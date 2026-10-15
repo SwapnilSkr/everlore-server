@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { ObjectId } from 'mongodb'
 import { fixture } from './media-audit-fixture'
 import { detectSpokenLines } from '../src/services/media/detection'
-import { acceptAttribution, attributeEvent, mediaRevision, resolveVoiceSpeaker, attributionEffects } from '../src/services/media/attribution'
+import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, resolveVoiceSpeaker, attributionEffects } from '../src/services/media/attribution'
 import { chooseVoice, filterVoiceTags, isVerbatim, matureVoiceAllowed, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
 import { reserveMedia, releaseMedia, settleMedia, mediaUsage } from '../src/services/media/usage'
@@ -56,6 +56,12 @@ check('verbatim', () => {
   assert.equal(isVerbatim('Stay  close now.', 'Stay\nclose now.'), true)
   assert.equal(isVerbatim('Stay here.', 'Go away.'), false)
   assert.equal(isVerbatim('Stay here.', ''), false)
+})
+check('schema_echo', () => {
+  const rows = [{ line_id: 'l0', is_speech: true, speaker_name: 'Mara', spoken_text: 'Hold on', tags: [] }]
+  assert.deepEqual(attributionRows({ lines: rows }), rows)
+  assert.deepEqual(attributionRows({ type: 'object', properties: { lines: rows } }), rows)
+  assert.deepEqual(attributionRows({ type: 'object', properties: {} }), [])
 })
 check('speaker', () => {
   const f = fixture()

@@ -41,6 +41,18 @@ const schema = {
   } } },
 }
 
+/**
+ * Small models sometimes echo the schema with the answer inside
+ * (`{"type":"object","properties":{"lines":[…]}}`); the first live tap did
+ * exactly that and every line went unvoiceable. Take the payload out of it.
+ */
+export function attributionRows(output: unknown): unknown[] {
+  if (!output || typeof output !== 'object') return []
+  const o = output as { lines?: unknown; properties?: { lines?: unknown } }
+  if (Array.isArray(o.lines)) return o.lines
+  return Array.isArray(o.properties?.lines) ? o.properties.lines : []
+}
+
 export async function attributeEvent(event: WorldEventDoc, isSentient: boolean, personaName?: string): Promise<SpokenLine[]> {
   const revision = mediaRevision(event.data.ai_response, event.data.player_input)
   const original = { _id: event._id, 'data.ai_response': event.data.ai_response, 'data.player_input': event.data.player_input }
@@ -85,7 +97,7 @@ export async function attributeEvent(event: WorldEventDoc, isSentient: boolean, 
         }) },
       ],
     }))
-    const raw = output && typeof output === 'object' && 'lines' in output && Array.isArray(output.lines) ? output.lines as unknown[] : []
+    const raw = attributionRows(output)
     lines = candidates.map((line) => {
       const matches = raw.filter((r) => r && typeof r === 'object' && 'line_id' in r && r.line_id === line.line_id)
       return acceptAttribution(line, event.data.ai_response, matches.length === 1 ? matches[0] : undefined,
