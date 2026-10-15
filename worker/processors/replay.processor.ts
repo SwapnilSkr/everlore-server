@@ -2,6 +2,8 @@ import { Job } from 'bullmq'
 import { getRedisClient } from '../../src/config/redis'
 import { memoryService } from '../../src/services/memory.service'
 import { generationLockKey, releaseGenerationLock } from '../../src/utils/generation-lock'
+import { liveInstanceExists } from '../../src/utils/live-instance'
+import { parseObjectId } from '../../src/utils/mongo-id'
 
 /**
  * Streaming replay: generates an alternative response for an existing turn and
@@ -27,6 +29,9 @@ export async function replayProcessor(job: Job) {
   }
 
   try {
+    if (!(await liveInstanceExists(parseObjectId(instanceId)))) {
+      return
+    }
     const result = await memoryService.replayEvent(eventId, playerId, (chunk) => {
       if (chunk) markVisibleAttempt()
       redis.publish(

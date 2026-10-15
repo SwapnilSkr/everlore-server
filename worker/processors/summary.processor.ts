@@ -4,6 +4,7 @@ import { mongoColl } from '../../src/config/mongo'
 import { getPineconeIndex } from '../../src/config/pinecone'
 import { callLLM, embed, AI_MODELS } from '../../src/ai'
 import { parseObjectId, idString } from '../../src/utils/mongo-id'
+import { liveInstanceExists } from '../../src/utils/live-instance'
 import { getSceneSummaryQueue, QUEUE_RETENTION } from '../../src/queues'
 import { log } from '../../src/utils/logger'
 
@@ -58,6 +59,9 @@ export async function summaryProcessor(job: Job) {
 
   const { instanceId, sceneTag, startSequence, endSequence } = job.data
   const instanceOid = parseObjectId(instanceId)
+  if (!(await liveInstanceExists(instanceOid))) {
+    return { skipped: 'instance_deleted' }
+  }
   log.info('scene_summary.started', {
     jobId: job.id,
     instanceId,
@@ -209,6 +213,9 @@ async function maybeQueueChapter(instanceOid: ObjectId): Promise<void> {
 async function chapterRollup(job: Job) {
   const { instanceId, chapterIndex, startSequence, endSequence } = job.data
   const instanceOid = parseObjectId(instanceId)
+  if (!(await liveInstanceExists(instanceOid))) {
+    return { skipped: 'instance_deleted' }
+  }
 
   // Fetch the child scenes by EVENT RANGE, not by stored id: scene summaries are
   // replaced (new _id) when rebuilt, so a range query stays correct across edits.
@@ -337,6 +344,9 @@ async function maybeQueueArc(instanceOid: ObjectId): Promise<void> {
 async function arcRollup(job: Job) {
   const { instanceId, arcIndex, startSequence, endSequence } = job.data
   const instanceOid = parseObjectId(instanceId)
+  if (!(await liveInstanceExists(instanceOid))) {
+    return { skipped: 'instance_deleted' }
+  }
 
   // Fetch child chapters by EVENT RANGE (robust to chapter rebuilds, which mint
   // new _ids), same as chapters fetch their scenes.
