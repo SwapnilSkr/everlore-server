@@ -6,11 +6,13 @@ export function mediaLimit(kind: MediaKind): number {
   const value = Number(process.env[`MEDIA_DAILY_${kind.toUpperCase()}`] ?? defaults[kind])
   return Number.isSafeInteger(value) && value >= 0 ? value : defaults[kind]
 }
+/** On unless switched off (owner, Oct 16 2026): MEDIA_ENABLED=false turns
+ * everything off, MEDIA_<KIND>_ENABLED=false one kind. */
 export function mediaEnabled(kind?: MediaKind): boolean {
-  return process.env.MEDIA_ENABLED === 'true' && (!kind || process.env[`MEDIA_${kind.toUpperCase()}_ENABLED`] !== 'false')
+  return process.env.MEDIA_ENABLED !== 'false' && (!kind || process.env[`MEDIA_${kind.toUpperCase()}_ENABLED`] !== 'false')
 }
 export const voiceModel = () => process.env.MEDIA_VOICE_MODEL || catalogue.model
-/** Portrait / picture stills. Painted look matches the house style (owner, Oct 16 2026). */
+/** Portraits, pictures and scene stills (owner, Oct 16 2026). */
 export const imageModel = () => process.env.MEDIA_IMAGE_MODEL || 'black-forest-labs/flux-3-image-klein'
 /** The line shot: portrait lip-synced to the exact clip the player heard. */
 export const videoModel = () => process.env.MEDIA_VIDEO_MODEL || 'heygen/avatar-iv'
