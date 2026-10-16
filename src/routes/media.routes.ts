@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia'
 import { authPlugin } from '../middleware/auth'
 import { requestVoice } from '../services/media/service'
-import { requestPicture, requestPersonaPortrait, requestPortrait, requestVideo } from '../services/media/visual'
+import { requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, requestTurnVideo } from '../services/media/visual'
 import { mediaUsage } from '../services/media/usage'
 import { mediaEnabled } from '../services/media/config'
 import { HttpError } from '../utils/http-error'
@@ -57,6 +57,14 @@ export const mediaRoutes = new Elysia()
       return resting(error, set)
     }
   }, { params: t.Object({ ...idParams, lineId: t.String({ pattern: '^l[0-9]+$' }) }) })
+  .post('/instances/:id/events/:eventId/video', async ({ user, params, set }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    try {
+      return queued(await requestTurnVideo(user.id, params.id, params.eventId), set)
+    } catch (error) {
+      return resting(error, set)
+    }
+  }, { params: t.Object(idParams) })
   .post('/instances/:id/characters/:characterId/portrait', async ({ user, params, query, set }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     try {

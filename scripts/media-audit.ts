@@ -9,11 +9,11 @@ import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, reso
 import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, publicSpokenLines, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
 import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
-import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
+import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, ensurePassingFaceReady, passingFaceKey, requestTurnVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
 import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, describeMoment, MEDIA_VISUAL_POLICY, buildSafetyPrompts, visualPolicyLine } from '../src/services/media/safety'
-import { buildCutGraph, cutEffects } from '../src/services/media/cut'
+import { assembleDialogueFreeCut, buildCutGraph, cutEffects } from '../src/services/media/cut'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from '../src/services/media/scene-templates'
-import { directScene, directorEffects, validateDirectorPlan, DIRECTOR_SYSTEM_PROMPT, type DirectorInput } from '../src/services/media/director'
+import { directScene, directorEffects, validateDirectorPlan, DIRECTOR_SYSTEM_PROMPT, type DirectorInput, DIRECTOR_DIALOGUE_FREE_PROMPT } from '../src/services/media/director'
 import { foldDelta, newFoldState, characterCodexService } from '../src/services/character-codex.service'
 import { purgeCardPortraits, purgeTemplatePortraits } from '../src/services/media/deletion'
 import { reserveMedia, releaseMedia, settleMedia, mediaUsage } from '../src/services/media/usage'
@@ -43,6 +43,7 @@ mock.module('../src/config/redis', () => ({
 }))
 
 const realFrameJudge = safetyEffects.judge
+const realCutEffects = { ...cutEffects }
 
 const checks: Array<[string, () => unknown | Promise<unknown>]> = []
 const check = (name: string, fn: () => unknown | Promise<unknown>) => checks.push([name, fn])
@@ -889,6 +890,9 @@ check('director_verbatim', () => {
   const raw = md.split('```\n')[1]
   const block = raw.endsWith('\n') ? raw.slice(0, -1) : raw
   assert.equal(DIRECTOR_SYSTEM_PROMPT, block)
+  // The dialogue-free addendum is contract text too.
+  const addendum = md.match(/```addendum\n([\s\S]*?)\n```/)?.[1]
+  assert.equal(DIRECTOR_DIALOGUE_FREE_PROMPT, addendum)
 })
 
 const VIDEO_PROSE = 'Rain hammered the gutter. Alias watched the door. "Come with me," she whispered. A floorboard sighed beyond the shutters.'
@@ -1778,7 +1782,7 @@ check('every_later_card', async () => {
   const attributed = (await attributeEvent(later, false))[0]
   assert.equal(lineVoiceOf(attributed).character_id, String(f.card._id))
   assert.equal(lineVoiceOf(attributed).voice_id, cardVoice.voice_id)
-  assert.equal(attributed.filmable, undefined)
+  assert.ok(!('filmable' in attributed))
   // Even an old attributed line not played yet keeps its original choice.
   assert.equal((await requestVoice(String(f.player), String(f.instance), String(f.event), 'l0')).status, 'ready')
   const old = f.db.mediaAssets.rows.find((a) => String(a.event_id) === String(f.event))!
@@ -1825,11 +1829,26 @@ check('every_refusals', async () => {
     speech('l1', 'Player', 'Keep moving now.'), speech('l2', 'the watcher', 'Invented reply.'), speech('l3', 'Imaginary', 'Hold the gate.'),
   ])
   f.db.characters.rows = [{ ...f.card, canonical_name: 'Player', name_normalized: 'player', aliases: ['Alias'], is_protagonist: true } as unknown as Record<string, unknown>]
-  assert.ok((await attributeEvent(f.current, false)).every((l) => l.voice?.status === 'unvoiceable'))
+  const attributed = await attributeEvent(f.current, false)
+  assert.ok(attributed.slice(0, 3).every((l) => l.voice?.status === 'unvoiceable'))
+  const fallback = lineVoiceOf(attributed[3])
+  assert.equal(fallback.speaker_name, '')
+  assert.equal(fallback.character_id, undefined)
+  assert.equal(fallback.voice_id, expectedUnhintedVoice(JSON.stringify([String(f.event), 'l3'])))
   assert.equal(f.db.characters.rows.length, 1, 'refused lines never write cards')
   const g = spokenFixture('Persona says, “Stay beside me.”', [speech('l0', 'Persona', 'Stay beside me.')])
   assert.equal((await attributeEvent(g.current, true, 'Persona'))[0].voice?.status, 'unvoiceable')
   assert.equal(g.db.characters.rows.length, 0)
+})
+check('every_invented_fallback', async () => {
+  const f = spokenFixture('Someone says, “Hold the gate.”', [speech('l0', 'Imaginary', 'Hold the gate.')])
+  f.db.characters.rows = [{ ...f.card, canonical_name: 'Imaginary', name_normalized: 'imaginary', aliases: [] } as unknown as Record<string, unknown>]
+  const [line] = await attributeEvent(f.current, false)
+  const voice = lineVoiceOf(line)
+  assert.equal(voice.character_id, undefined, 'an invented handle never resolves to an existing card')
+  assert.equal(voice.speaker_name, '')
+  assert.equal(voice.voice_id, expectedUnhintedVoice(JSON.stringify([String(f.event), 'l0'])))
+  assert.equal(f.db.characters.inserts, 0)
 })
 check('every_mature', async () => {
   const f = spokenFixture('The watcher says, “Stay beside me.”', [speech('l0', 'the watcher', 'Stay beside me.')])
@@ -1839,8 +1858,8 @@ check('every_mature', async () => {
   assert.equal(f.db.characters.rows.length, 0)
 })
 check('every_rule_version', async () => {
-  assert.equal(ATTRIBUTION_RULE_VERSION, 3)
-  for (const version of [undefined, 1, 2]) {
+  assert.equal(ATTRIBUTION_RULE_VERSION, 4)
+  for (const version of [undefined, 1, 2, 3]) {
     const f = spokenFixture('The watcher says, “Stay beside me.”', [speech('l0', 'the watcher', 'Stay beside me.')])
     Object.assign(f.current.data, { voice_attribution: { status: 'done', claimed_at: new Date(), ...(version ? { rule_version: version } : {}) } })
     const [a, b] = await Promise.all([attributeEvent(f.current, false), attributeEvent(f.current, false)])
@@ -1904,31 +1923,321 @@ check('every_merge_media', async () => {
     assert.equal(f.db.mediaUsage.inserts, 1, 'old clip and voice survive even a merge into a different voice')
   }
 })
+function passingVideoFixture() {
+  const f = videoBase()
+  f.db.characters.rows = []
+  f.db.worldTemplates.rows[0].narrative_style = 'anime'
+  process.env.MEDIA_DAILY_VIDEO = '10'
+  process.env.MEDIA_DAILY_VOICE = '10'
+  process.env.MEDIA_DAILY_PORTRAIT = '10'
+  process.env.MEDIA_PORTRAIT_ENABLED = 'true'
+  const run = stubVideoRun(f)
+  const prompts: string[] = [], submits: Array<Record<string, unknown>> = []
+  const paint = visualEffects.image, submit = visualEffects.submit
+  visualEffects.fill = async (_card, prose) => { assert.equal(prose, VIDEO_PROSE); return 'Grey eyes and dark braids.' }
+  visualEffects.image = async (prompt, opts) => { prompts.push(prompt); return paint(prompt, opts) }
+  visualEffects.submit = async (req) => { submits.push(req as unknown as Record<string, unknown>); return submit(req) }
+  return { ...f, run, prompts, submits }
+}
+async function filmLine(f: ReturnType<typeof fixture>, eventId = f.event) {
+  const reply = await requestVideo(String(f.player), String(f.instance), String(eventId), 'l0')
+  assert.equal(reply.status, 'queued')
+  if (reply.status !== 'queued') throw new Error('Expected queued')
+  await processVideo(reply.media_id)
+  const row = f.db.mediaAssets.rows.find((r) => String(r._id) === reply.media_id)!
+  assert.equal(row.status, 'ready', JSON.stringify(row.error))
+  return row
+}
+function laterVideoEvent(f: ReturnType<typeof fixture>): ObjectId {
+  const old = f.db.events.rows[0] as unknown as WorldEventDoc
+  const id = new ObjectId()
+  f.db.events.rows.push({ ...old, _id: id, data: { ...old.data, voice_attribution: undefined, spoken_lines: detectSpokenLines(old.data.ai_response) } } as unknown as Record<string, unknown>)
+  return id
+}
 check('every_uncarded_video', async () => {
-  const f = spokenFixture('The amber rider says, “Stay beside me.”', [speech('l0', 'the amber rider', 'Stay beside me.')])
-  let paid = 0
-  mediaEffects.cast = async () => { paid++; throw new Error('uncarded voice must not cast') }
-  attributionEffects.call = async () => JSON.stringify({ lines: [speech('l0', 'the amber rider', 'Stay beside me.')] })
-  safetyEffects.call = async () => { paid++; throw new Error('must not call') }
-  visualEffects.enqueue = async () => { paid++ }
-  await assert.rejects(requestVideo(String(f.player), String(f.instance), String(f.event), 'l0'),
-    (e: unknown) => e instanceof HttpError && e.statusCode === 422 && e.message === 'This moment stays unseen.')
-  const lines = await attributeEvent(f.current, false)
-  assert.deepEqual(publicSpokenLines(lines), [{ line_id: 'l0', start: lines[0].start, end: lines[0].end, filmable: false }])
-  assert.equal(publicMediaEvent(f.current).data.spoken_lines![0].filmable, false)
-  assert.equal(f.db.mediaUsage.inserts, 0)
-  assert.equal(f.db.mediaAssets.inserts, 0)
+  const f = passingVideoFixture()
+  await filmLine(f)
+  const faces = f.db.mediaAssets.rows.filter((r) => r.kind === 'passing_face')
+  assert.equal(faces.length, 1)
+  const face = faces[0]
+  assert.equal(face.status, 'ready')
+  assert.equal(face.source, 'generated')
+  assert.equal(face.art_style, 'anime')
+  assert.equal(face.appearance, 'Grey eyes and dark braids.')
+  assert.equal(face.passing_key, JSON.stringify([String(f.instance), identityKey('Alias')]))
+  assert.equal(face.character_id, undefined)
+  assert.equal(f.db.characters.rows.length, 0)
   assert.equal(f.db.characters.inserts, 0)
-  assert.equal(paid, 0)
+  assert.equal(f.prompts.filter((s) => s.includes('head-and-shoulders portrait')).length, 1)
+  assert.ok(f.prompts.find((s) => s.includes('head-and-shoulders portrait'))!.includes(STYLE_HINT.anime.render))
+  assert.ok(f.submits.some((r) => r.model === 'heygen/avatar-iv' && JSON.stringify(r).includes(String(face.url))))
+  assert.equal(f.db.mediaUsage.rows.filter((r) => r.kind === 'portrait' && r.status === 'settled').length, 1)
+  const lines = await attributeEvent(f.db.events.rows[0] as unknown as WorldEventDoc, false)
+  assert.deepEqual(publicSpokenLines(lines), [{ line_id: 'l0', start: lines[0].start, end: lines[0].end }])
+  assert.ok(!('filmable' in publicMediaEvent(f.db.events.rows[0] as unknown as WorldEventDoc).data.spoken_lines![0]))
+})
+check('passing_face_reuse', async () => {
+  const f = passingVideoFixture()
+  await filmLine(f)
+  await filmLine(f, laterVideoEvent(f))
+  assert.equal(f.db.mediaAssets.rows.filter((r) => r.kind === 'passing_face').length, 1)
+  assert.equal(f.prompts.filter((s) => s.includes('head-and-shoulders portrait')).length, 1)
+  assert.equal(f.db.mediaUsage.rows.filter((r) => r.kind === 'portrait').length, 1)
+})
+check('passing_face_style', async () => {
+  const f = passingVideoFixture()
+  await filmLine(f)
+  f.db.worldTemplates.rows[0].narrative_style = 'noir'
+  await filmLine(f, laterVideoEvent(f))
+  const faces = f.db.mediaAssets.rows.filter((r) => r.kind === 'passing_face')
+  assert.equal(faces.length, 2)
+  assert.deepEqual(faces.map((r) => r.art_style).sort(), ['anime', 'noir'])
+  assert.ok(f.prompts.filter((s) => s.includes('head-and-shoulders portrait'))[1].includes(STYLE_HINT.noir.render))
+  assert.equal(f.db.mediaUsage.rows.filter((r) => r.kind === 'portrait' && r.status === 'settled').length, 2)
+})
+check('passing_face_gates', async () => {
+  for (const stage of ['pre', 'post', 'allowance'] as const) {
+    const f = passingVideoFixture()
+    if (stage === 'pre') {
+      safetyEffects.call = async () => JSON.stringify({ verdict: 'reject', reason_code: 'nudity' })
+    } else if (stage === 'post') {
+      safetyEffects.judge = async () => ({ verdict: 'reject', reason_code: 'nudity', people_count: 1, face_close_up: false, text_visible: false })
+    } else process.env.MEDIA_DAILY_PORTRAIT = '0'
+    const reply = await requestVideo(String(f.player), String(f.instance), String(f.event), 'l0')
+    if (reply.status !== 'queued') throw new Error('Expected queued')
+    await processVideo(reply.media_id)
+    const row = f.db.mediaAssets.rows.find((r) => String(r._id) === reply.media_id)!
+    assert.equal(row.status, stage === 'allowance' ? 'failed' : 'unseen')
+    assert.equal(f.db.mediaAssets.rows.filter((r) => r.kind === 'passing_face').length, 0)
+    assert.ok(f.db.mediaUsage.rows.every((r) => r.status === 'released'))
+    assert.ok(!f.submits.some((r) => r.model === 'heygen/avatar-iv'))
+  }
+})
+check('passing_face_later_card', async () => {
+  const f = passingVideoFixture()
+  await filmLine(f)
+  f.card.appearance = 'Grey eyes, dark braids.'
+  f.card.appearance_version = 1
+  f.db.characters.rows.push(f.card as unknown as Record<string, unknown>)
+  const references: string[] = []
+  const paint = visualEffects.image
+  visualEffects.image = async (prompt, opts) => {
+    if (prompt.includes('head-and-shoulders portrait')) references.push(String(opts?.reference))
+    return paint(prompt, opts)
+  }
+  await filmLine(f, laterVideoEvent(f))
+  assert.deepEqual(references, ['undefined'], 'the new card paints its own face without a passing-face reference')
+  assert.equal(f.db.mediaAssets.rows.filter((r) => r.kind === 'passing_face').length, 1)
+  assert.ok(f.db.mediaAssets.rows.some((r) => r.kind === 'portrait' && String(r.character_id) === String(f.character)))
+})
+check('passing_face_keys', async () => {
+  const f = passingVideoFixture()
+  assert.equal(passingFaceKey(f.instance, f.event, 'l0', 'Alias'), JSON.stringify([String(f.instance), identityKey('Alias')]))
+  assert.equal(passingFaceKey(f.instance, f.event, 'l0', ''), JSON.stringify([String(f.event), 'l0']))
+  assert.notEqual(passingFaceKey(f.instance, f.event, 'l0', ''), passingFaceKey(f.instance, f.event, 'l1', ''))
+  const reply = await requestVideo(String(f.player), String(f.instance), String(f.event), 'l0')
+  if (reply.status !== 'queued') throw new Error('Expected queued')
+  const row = f.db.mediaAssets.rows.find((r) => String(r._id) === reply.media_id) as unknown as MediaAssetDoc
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  const faces = await Promise.all([ensurePassingFaceReady(row, event, ''), ensurePassingFaceReady(row, event, '')])
+  assert.equal(faces[0].assetKey, faces[1].assetKey)
+  assert.equal(f.db.mediaAssets.rows.filter((r) => r.kind === 'passing_face').length, 1)
+})
+check('passing_face_delete', async () => {
+  const f = passingVideoFixture()
+  await filmLine(f)
+  const face = f.db.mediaAssets.rows.find((r) => r.kind === 'passing_face')!
+  const removed: string[] = []
+  const original = storageService.deleteStrict
+  storageService.deleteStrict = async (key) => { removed.push(key) }
+  try { await purgeMedia({ instance_id: f.instance }) } finally { storageService.deleteStrict = original }
+  assert.ok(removed.includes(String(face.asset_key)))
+  assert.equal(f.db.mediaAssets.rows.length, 0)
+  assert.equal(f.db.mediaUsage.rows.length, 0)
 })
 check('every_carded_video', async () => {
-  const f = fixture()
-  stubVideoRun(f)
-  const queued = await requestVideo(String(f.player), String(f.instance), String(f.event), 'l0')
-  assert.equal(queued.status, 'queued')
-  assert.equal(publicMediaEvent(f.db.events.rows[0] as unknown as WorldEventDoc).data.spoken_lines![0].filmable, undefined)
-  assert.equal(f.db.mediaUsage.rows.filter((r) => r.kind === 'video').length, 1)
-  assert.equal(f.db.mediaAssets.rows[0].character_id, f.character)
+  const f = videoBase()
+  const run = stubVideoRun(f)
+  f.card.portrait = { asset_key: 'media/portrait/card.jpg', source: 'generated', appearance_version: 1, painted_at: new Date() }
+  const requests: string[] = []
+  const submit = visualEffects.submit
+  visualEffects.submit = async (req) => { requests.push(JSON.stringify(req)); return submit(req) }
+  await filmLine(f)
+  assert.ok(requests.some((r) => r.includes('heygen/avatar-iv') && r.includes('media/portrait/card.jpg')))
+  assert.equal(f.db.mediaAssets.rows.filter((r) => r.kind === 'passing_face').length, 0)
+  assert.ok(run.published.some((m) => m.type === 'media_ready'))
+})
+function turnVideoFixture() {
+  const f = videoBase(), run = stubVideoRun(f)
+  const prose = 'Rain hammered the gutter. A floorboard sighed beyond the shutters.'
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  event.data.ai_response = prose
+  event.data.spoken_lines = []
+  process.env.MEDIA_DAILY_VIDEO = '2'
+  const inputs: DirectorInput[] = [], graphs: string[] = [], submits: string[] = []
+  attributionEffects.call = async () => { throw new Error('Dialogue-free cut must not attribute') }
+  mediaEffects.synthesize = async () => { throw new Error('Dialogue-free cut must not synthesize') }
+  const submit = visualEffects.submit
+  visualEffects.submit = async (req) => { submits.push(JSON.stringify(req)); return submit(req) }
+  directorEffects.call = async (req) => {
+    assert.ok(req.messages[0].content.includes(DIRECTOR_DIALOGUE_FREE_PROMPT))
+    const input = JSON.parse(req.messages[1].content) as DirectorInput
+    inputs.push(input)
+    return JSON.stringify({ ...goodPlan(), line_shot: null, shots: [
+      { ...goodPlan().shots[0], people_in_still: [{ name: 'Speaker', placement: 'door', facing: 'away' }], evidence: 'Rain hammered the gutter.', duration_s: 4 },
+      { ...goodPlan().shots[1], people_in_still: [{ name: 'Speaker', placement: 'door', facing: 'away' }], evidence: 'A floorboard sighed beyond the shutters.', duration_s: 4 },
+    ] })
+  }
+  // The present card is grounded by name in this turn, even without speech.
+  event.data.ai_response = 'Alias waits. ' + prose
+  cutEffects.runFiles = async (args) => { graphs.push(args[args.indexOf('-filter_complex') + 1]); await writeFile(args[args.length - 1], Buffer.from('cut')) }
+  return { ...f, run, inputs, graphs, submits }
+}
+async function filmTurn(f: ReturnType<typeof turnVideoFixture>) {
+  const reply = await requestTurnVideo(String(f.player), String(f.instance), String(f.event))
+  assert.equal(reply.status, 'queued')
+  if (reply.status !== 'queued') throw new Error('Expected queued')
+  await processVideo(reply.media_id)
+  return f.db.mediaAssets.rows.find((r) => String(r._id) === reply.media_id)!
+}
+check('dialogue_free_cut', async () => {
+  const f = turnVideoFixture()
+  const row = await filmTurn(f)
+  assert.equal(row.status, 'ready', JSON.stringify(row.error))
+  assert.equal(f.inputs[0].mode, 'dialogue_free')
+  assert.equal((row.plan as { plan: { line_shot: unknown } }).plan.line_shot, null)
+  assert.equal(f.submits.length, 2)
+  assert.ok(f.submits.every((r) => !r.includes('heygen') && !r.includes('audio_url')))
+  assert.ok(f.submits.every((r) => r.includes('No voices, no spoken words, no music with words.')))
+  assert.ok(f.submits.every((r) => r.includes('Rain on stone.')))
+  assert.ok((row.plan as { compiled: { shots: unknown[] } }).compiled.shots.length === 2)
+  assert.equal(f.graphs.length, 1)
+  assert.ok(!f.graphs[0].includes('[voice]'))
+  assert.ok(f.graphs[0].includes('[amb]volume=0.12589254'))
+  assert.ok(Number(row.duration_ms) >= 6000 && Number(row.duration_ms) <= 8000)
+  assert.equal(f.db.mediaUsage.rows.length, 1)
+  assert.equal(f.db.mediaUsage.rows[0].kind, 'video')
+  assert.equal(f.db.mediaUsage.rows[0].status, 'settled')
+  const message = f.run.published.find((m) => m.type === 'media_ready')!
+  assert.equal(message.kind, 'video')
+  assert.ok(!('line_id' in message))
+  assert.equal((await requestTurnVideo(String(f.player), String(f.instance), String(f.event))).status, 'ready')
+  assert.equal(f.db.mediaUsage.rows.length, 1)
+  const g = turnVideoFixture()
+  let stripped = 0
+  const wait = visualEffects.wait, run = cutEffects.run
+  visualEffects.wait = async (id, opts) => {
+    if (id.includes('x-ai/')) throw new Error('Primary scene model fails')
+    return wait(id, opts)
+  }
+  cutEffects.run = async (args, input) => { if (args.includes('-an')) stripped++; return run(args, input) }
+  assert.equal((await filmTurn(g)).status, 'ready')
+  assert.equal(stripped, 2, 'fallback audio is stripped from both scene shots')
+})
+check('dialogue_free_failure', async () => {
+  const f = turnVideoFixture()
+  visualEffects.image = async () => { throw new Error('stub failure') }
+  const row = await filmTurn(f)
+  assert.equal(row.status, 'failed')
+  assert.equal(f.db.mediaUsage.rows[0].status, 'released')
+  assert.ok(!('slot' in f.db.mediaUsage.rows[0]))
+  assert.ok(f.run.published.some((m) => m.type === 'media_failed' && m.kind === 'video' && !('line_id' in m)))
+})
+check('dialogue_free_degrades', async () => {
+  const f = turnVideoFixture()
+  const paint = visualEffects.image
+  let n = 0
+  visualEffects.image = async (...args) => { if (++n === 1) throw new Error('one shot fails'); return paint(...args) }
+  const row = await filmTurn(f)
+  assert.equal(row.status, 'ready', JSON.stringify(row.error))
+  assert.equal(row.duration_ms, 4000)
+  assert.equal(f.db.mediaUsage.rows[0].status, 'settled')
+})
+check('dialogue_free_validates', async () => {
+  const input = { ...directorInput(), mode: 'dialogue_free' as const }
+  const plan = { ...goodPlan(), line_shot: null, shots: goodPlan().shots.map((s) => ({ ...s, duration_s: 4 })) }
+  assert.deepEqual(validateDirectorPlan(plan, input), [])
+  assert.ok(validateDirectorPlan({ ...plan, line_shot: goodPlan().line_shot }, input).length)
+  assert.ok(validateDirectorPlan({ ...plan, shots: plan.shots.slice(0, 1) }, input).length)
+  assert.ok(validateDirectorPlan({ ...plan, shots: plan.shots.map((s) => ({ ...s, duration_s: 2 })) }, input).length)
+  assert.ok(validateDirectorPlan({ ...plan, shots: [null] }, input).length)
+})
+check('dialogue_free_route', async () => {
+  const { Elysia } = await import('elysia')
+  const { mediaRoutes } = await import('../src/routes/media.routes')
+  const f = turnVideoFixture()
+  const errorHandler = ({ error, set }: { error: unknown; set: { status?: unknown } }) => {
+    if (error instanceof HttpError) { set.status = error.statusCode; return { error: error.message } }
+  }
+  const path = `/instances/${f.instance}/events/${f.event}/video`
+  const request = (p = path) => new Request(`http://localhost${p}`, { method: 'POST' })
+  const unauthenticated = new Elysia().onError(errorHandler).use(mediaRoutes)
+  assert.equal((await unauthenticated.handle(request())).status, 401)
+  const app = new Elysia().onError(errorHandler)
+    .resolve({ as: 'global' }, () => ({ user: { id: String(f.player), email: '', username: '', tier: 'free' } }))
+    .use(mediaRoutes)
+  const response = await app.handle(request())
+  assert.equal(response.status, 202)
+  assert.equal((await response.json()).status, 'queued')
+  assert.equal((await app.handle(request('/instances/bad/events/bad/video'))).status, 422)
+  const later = laterVideoEvent(f)
+  process.env.MEDIA_DAILY_VIDEO = '0'
+  try {
+    const resting = await app.handle(request(`/instances/${f.instance}/events/${later}/video`))
+    assert.equal(resting.status, 429)
+    assert.deepEqual(await resting.json(), { status: 'resting', kind: 'video', resets_at: utcMediaDay().resets_at })
+  } finally { process.env.MEDIA_DAILY_VIDEO = '2' }
+  f.db.worldInstances.rows[0].player_id = new ObjectId()
+  assert.equal((await app.handle(request())).status, 404)
+})
+check('dialogue_free_assembly', async () => {
+  const previous = { ...cutEffects }
+  Object.assign(cutEffects, realCutEffects)
+  try {
+    const shot = await cutEffects.run(['-f', 'lavfi', '-i', 'color=c=blue:s=180x320:r=24', '-f', 'lavfi', '-i', 'sine=frequency=220:sample_rate=48000', '-t', '4', '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-ac', '2', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1'], [])
+    for (const transition of ['cut', 'dissolve_short', 'dip_to_black'] as const) {
+      const cut = await assembleDialogueFreeCut({ shots: [shot, shot], durations: [4, 4], transition })
+      assert.ok(cut.bytes.length > 1000)
+      assert.ok(Math.abs(await cutEffects.probeDuration(cut.bytes) - cut.totalS) < 0.15)
+      assert.equal(await cutEffects.hasAudio(cut.bytes), true, 'ambient audio survives assembly')
+    }
+    const single = await assembleDialogueFreeCut({ shots: [shot], durations: [4], transition: 'cut' })
+    assert.ok(Math.abs(await cutEffects.probeDuration(single.bytes) - 4) < 0.15)
+  } finally { Object.assign(cutEffects, previous) }
+})
+check('passing_face_hidden', async () => {
+  const f = passingVideoFixture()
+  const reply = await requestVideo(String(f.player), String(f.instance), String(f.event), 'l0')
+  if (reply.status !== 'queued') throw new Error('Expected queued')
+  const parent = f.db.mediaAssets.rows.find((r) => String(r._id) === reply.media_id) as unknown as MediaAssetDoc
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  await ensurePassingFaceReady(parent, event, '')
+  await repairMediaReservations()
+  assert.ok(f.run.published.every((m) => m.kind !== 'passing_face'))
+  const face = f.db.mediaAssets.rows.find((r) => r.kind === 'passing_face') as unknown as MediaAssetDoc
+  await failMedia(face, { stage: 'repair', message: 'stub failure' })
+  assert.ok(f.run.published.every((m) => m.kind !== 'passing_face'))
+})
+check('dialogue_free_resting', async () => {
+  const f = turnVideoFixture()
+  process.env.MEDIA_DAILY_VIDEO = '0'
+  try {
+    await assert.rejects(requestTurnVideo(String(f.player), String(f.instance), String(f.event)), (error: unknown) => {
+      assert.ok(error instanceof HttpError)
+      assert.equal(error.statusCode, 429)
+      assert.equal(error.message, 'The visions rest until tomorrow.')
+      assert.deepEqual(error.details, { status: 'resting', kind: 'video', resets_at: utcMediaDay().resets_at })
+      return true
+    })
+    assert.equal(f.db.mediaUsage.rows.length, 0)
+    assert.equal(f.db.mediaAssets.rows.length, 0)
+  } finally { process.env.MEDIA_DAILY_VIDEO = '2' }
+})
+check('dialogue_free_owner', async () => {
+  const f = turnVideoFixture()
+  await assert.rejects(requestTurnVideo(String(new ObjectId()), String(f.instance), String(f.event)), (e: unknown) => e instanceof HttpError && e.statusCode === 404)
+  assert.equal(f.db.mediaUsage.rows.length, 0)
+  assert.equal(f.db.mediaAssets.rows.length, 0)
 })
 
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }

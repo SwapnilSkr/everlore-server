@@ -267,3 +267,45 @@ export async function assembleCut(opts: {
     await rm(dir, { recursive: true, force: true }).catch(() => {})
   }
 }
+
+/** Same normalization, grade, transitions and ambience, without a voice input. */
+export async function assembleDialogueFreeCut(opts: {
+  shots: Buffer[]
+  durations: number[]
+  transition: 'cut' | 'dissolve_short' | 'dip_to_black'
+}): Promise<{ bytes: Buffer; totalS: number }> {
+  if (!opts.shots.length || opts.shots.length > 2) throw new Error('Cut needs one or two shots')
+  const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = await mkdtemp(join(tmpdir(), 'everlore-cut-'))
+  try {
+    const args: string[] = [], parts: string[] = []
+    for (let i = 0; i < opts.shots.length; i++) {
+      const file = join(dir, `shot${i}.mp4`)
+      await writeFile(file, opts.shots[i])
+      args.push('-t', opts.durations[i].toFixed(2), '-i', file)
+      parts.push(normVideo(String(i)), normAudio(String(i)))
+    }
+    let totalS = opts.durations.reduce((sum, s) => sum + s, 0)
+    if (opts.shots.length === 1) {
+      parts.push('[0v]null[v]', '[0a]anull[amb]')
+    } else if (opts.transition === 'cut') {
+      parts.push('[0v][1v]concat=n=2:v=1:a=0[v]', '[0a][1a]concat=n=2:v=0:a=1[amb]')
+    } else {
+      const fade = opts.transition === 'dip_to_black' ? 0.5 : 8 / 24
+      totalS -= fade
+      parts.push(`[0v][1v]xfade=transition=${opts.transition === 'dip_to_black' ? 'fadeblack' : 'fade'}:duration=${fade}:offset=${opts.durations[0] - fade}[v]`,
+        `[0a][1a]acrossfade=d=${fade}[amb]`)
+    }
+    parts.push('[amb]volume=0.12589254,loudnorm=I=-16:TP=-1.5:LRA=11[a]')
+    const out = join(dir, 'cut.mp4')
+    args.push('-filter_complex', parts.join(';'), '-map', '[v]', '-map', '[a]', '-t', totalS.toFixed(2),
+      '-c:v', 'libx264', '-preset', 'medium', '-crf', '20', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', out)
+    await cutEffects.runFiles(args)
+    return { bytes: Buffer.from(await readFile(out)), totalS }
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
+}

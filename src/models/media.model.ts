@@ -19,7 +19,6 @@ export interface SpokenLine {
   line_id: string
   start: number
   end: number
-  filmable?: false
   voice?: { status: 'unvoiceable' } | {
     status: 'voiceable'
     character_id?: string
@@ -42,7 +41,7 @@ export interface MediaAssetDoc {
   instance_id?: ObjectId
   /** Omitted for portraits painted outside any turn (card/persona screens). */
   event_id?: ObjectId
-  kind: MediaKind
+  kind: MediaKind | 'passing_face'
   /** The spoken line for voice/video; the turn marker for picture. */
   line_id: string
   /** The single face for voice/video/portrait; absent on multi-face pictures. */
@@ -66,6 +65,9 @@ export interface MediaAssetDoc {
    *  narrative_style key). Omitted for the painted default and on every legacy
    *  row, which counts as painted. Part of the portrait cache identity. */
   art_style?: string
+  /** Passing-face identity and prose-derived look, never written to a card. */
+  passing_key?: string
+  appearance?: string
   /** Why a failed job failed: the pipeline stage and the sanitized message.
    * Set by failMedia on every failed row; absent on queued/ready/unseen rows. */
   error?: { stage: string; message: string }

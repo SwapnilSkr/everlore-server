@@ -33,6 +33,10 @@ Describe the ambient sound bed in a few words (rain on stone, a crackling fire).
 OUTPUT
 Return only JSON matching the schema you are given. Fill every field. Use the speaker's and others' names exactly as given in the input. Never invent ids.`
 
+/** Mode addendum; the base system prompt remains the verbatim contract. */
+export const DIRECTOR_DIALOGUE_FREE_PROMPT = `DIALOGUE-FREE MODE
+When mode is "dialogue_free", there is no LINE shot and no voice. Plan exactly one OPENING and one CLOSING scene shot, in that order, each 3–4 seconds, about 6–8 seconds in total. Both narration spans contain the turn; ground each shot in its narration. Return line_shot as null. Use ending.transition_out between the scene shots. Keep the ambient bed, never voices.`
+
 export const DIRECTOR_FRAMINGS = [
   'establishing_wide',
   'wide',
@@ -77,11 +81,12 @@ export interface DirectorPlan {
     palette: string
   }
   shots: DirectorShot[]
-  line_shot: { transition_in: string; voice_lead_in_s: number }
+  line_shot: { transition_in: string; voice_lead_in_s: number } | null
   ending: { transition_out: string }
   ambient: string
 }
 export interface DirectorInput {
+  mode?: 'line' | 'dialogue_free'
   art_style: string
   narration_before: string
   line: { speaker_name: string; spoken_text: string; duration_s: number }
@@ -184,7 +189,11 @@ export function validateDirectorPlan(plan: unknown, input: DirectorInput): strin
   } else {
     if (shots.filter((s) => s?.role === 'opening').length > 1) errors.push('more than one opening shot')
     if (shots.filter((s) => s?.role === 'closing').length > 1) errors.push('more than one closing shot')
-    const known = new Set([input.line.speaker_name, ...input.others_present.map((o) => o.name)])
+    if (input.mode === 'dialogue_free') {
+      if (shots.length !== 2 || shots[0]?.role !== 'opening' || shots[1]?.role !== 'closing') errors.push('dialogue-free cut needs opening then closing')
+      if (shots.some((s) => s?.duration_s !== 3 && s?.duration_s !== 4)) errors.push('dialogue-free duration outside 3|4')
+    }
+    const known = new Set([...(input.mode === 'dialogue_free' ? [] : [input.line.speaker_name]), ...input.others_present.map((o) => o.name)])
     for (const [index, shot] of shots.entries()) {
       const where = `shots[${index}]`
       if (shot?.role !== 'opening' && shot?.role !== 'closing') errors.push(`${where}.role outside the list`)
@@ -210,10 +219,11 @@ export function validateDirectorPlan(plan: unknown, input: DirectorInput): strin
     }
   }
   const lineShot = p.line_shot as Record<string, unknown> | undefined
-  if (!(DIRECTOR_TRANSITIONS_IN as readonly string[]).includes(lineShot?.transition_in as string)) {
+  if (input.mode === 'dialogue_free' && p.line_shot !== null) errors.push('dialogue-free cut cannot have a line shot')
+  if (input.mode !== 'dialogue_free' && !(DIRECTOR_TRANSITIONS_IN as readonly string[]).includes(lineShot?.transition_in as string)) {
     errors.push('line_shot.transition_in outside the list')
   }
-  if (!(DIRECTOR_LEAD_INS as readonly number[]).includes(lineShot?.voice_lead_in_s as number)) {
+  if (input.mode !== 'dialogue_free' && !(DIRECTOR_LEAD_INS as readonly number[]).includes(lineShot?.voice_lead_in_s as number)) {
     errors.push('line_shot.voice_lead_in_s outside 0|0.3|0.6')
   }
   const ending = p.ending as Record<string, unknown> | undefined
@@ -239,16 +249,20 @@ export async function directScene(
   opts: { reasoningEffort?: 'low' | 'medium' | 'high'; timeoutMs?: number } = {},
 ): Promise<{ plan: DirectorPlan | null; errors: string[]; repaired: boolean }> {
   const user = JSON.stringify(input)
+  const system = input.mode === 'dialogue_free' ? `${DIRECTOR_SYSTEM_PROMPT}\n\n${DIRECTOR_DIALOGUE_FREE_PROMPT}` : DIRECTOR_SYSTEM_PROMPT
+  const schema = input.mode === 'dialogue_free'
+    ? { ...DIRECTOR_SCHEMA, properties: { ...DIRECTOR_SCHEMA.properties, line_shot: { type: 'null' } } }
+    : DIRECTOR_SCHEMA
   const first = await directorEffects.call({
     model,
-    responseSchema: DIRECTOR_SCHEMA,
+    responseSchema: schema,
     timeoutMs: opts.timeoutMs ?? 60000,
     maxTokens: 2048,
     temperature: 0.2,
     purpose: 'media_director',
     ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
     messages: [
-      { role: 'system', content: DIRECTOR_SYSTEM_PROMPT },
+      { role: 'system', content: system },
       { role: 'user', content: user },
     ],
   })
@@ -257,14 +271,14 @@ export async function directScene(
   if (!errors.length) return { plan, errors, repaired: false }
   const retry = await directorEffects.call({
     model,
-    responseSchema: DIRECTOR_SCHEMA,
+    responseSchema: schema,
     timeoutMs: opts.timeoutMs ?? 60000,
     maxTokens: 2048,
     temperature: 0.2,
     purpose: 'media_director_repair',
     ...(opts.reasoningEffort ? { reasoningEffort: opts.reasoningEffort } : {}),
     messages: [
-      { role: 'system', content: DIRECTOR_SYSTEM_PROMPT },
+      { role: 'system', content: system },
       { role: 'user', content: user },
       {
         role: 'user',

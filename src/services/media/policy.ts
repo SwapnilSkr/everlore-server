@@ -57,8 +57,7 @@ export function chooseVoice(traits: VoiceTraits, holders: VoiceHolder[], voices 
   return fitting.reduce((winner, voice) => last(voice.id) < last(winner.id) ? voice : winner).id
 }
 export function publicSpokenLines(lines: SpokenLine[]): SpokenLine[] {
-  return lines.map(({ line_id, start, end, voice, filmable }) => ({ line_id, start, end,
-    ...(filmable === false ? { filmable } : {}),
+  return lines.map(({ line_id, start, end, voice }) => ({ line_id, start, end,
     ...(voice?.status === 'unvoiceable' ? { voice } : {}),
   }))
 }

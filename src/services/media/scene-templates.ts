@@ -80,6 +80,7 @@ export function compileMotionPrompt(plan: DirectorPlan, shot: DirectorShot, mode
     `Environment: ${shot.environment_motion}`,
     people,
     `Wardrobe stays exactly: ${plan.continuity.wardrobe}`,
+    `Sound: ${plan.ambient || 'ambient scene sounds'}. No voices, no spoken words, no music with words.`,
     'No nudity, no sexual act, no suggestive depictions of anyone who looks underage, no real people, no graphic gore.',
     t.motionSuffix,
   ].join(' ')

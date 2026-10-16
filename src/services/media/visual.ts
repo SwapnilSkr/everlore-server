@@ -1,3 +1,5 @@
+import { createHash } from 'crypto'
+import { identityKey } from '../character-codex.service'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
 import { getMediaQueue, QUEUE_RETENTION } from '../../queues'
@@ -12,7 +14,7 @@ import type { CharacterProfileDoc } from '../../models/character-profile.model'
 import type { MediaAssetDoc, MediaKind, PortraitRef } from '../../models/media.model'
 import type { WorldEventDoc } from '../../models/world-event.model'
 import { storageService } from '../storage.service'
-import { attributeEvent, mediaRevision, resolveAttributedSpeaker, resolveVoiceSpeaker } from './attribution'
+import { attributeEvent, mediaRevision, resolveAttributedSpeaker } from './attribution'
 import { directorModel, imageModel, mediaEnabled, sceneFallbackModel, sceneModel, videoModel, voiceCatalogue } from './config'
 import { detectSpokenLines } from './detection'
 import { directScene, validateDirectorPlan, type DirectorInput, type DirectorPlan } from './director'
@@ -20,7 +22,7 @@ import { matureVoiceAllowed, utcMediaDay } from './policy'
 import { isPortraitCurrent, isReferenceAllowed, personaFaceForStyle, personaPortraitCacheKey, portraitCacheKey, resolvePortraitHolder, storePortrait, styleOfPortrait, withStyleKey } from './portraits'
 import { checkImage, checkVideoFrames, describeMoment, judgeShotFrames, logRejection, moderateDescription, safetyEffects } from './safety'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from './scene-templates'
-import { assembleCut, cutEffects, normalizeShot } from './cut'
+import { assembleCut, assembleDialogueFreeCut, cutEffects, normalizeShot } from './cut'
 import { duplicateKey, releaseMedia, reserveMedia, settleMedia } from './usage'
 import { mp3DurationMs } from './audio'
 import { failMedia, lineVoice, mediaEffects, sanitizeMediaError } from './service'
@@ -323,6 +325,92 @@ export async function ensurePortraitReady(
   }
 }
 
+/** Passing faces share the passing voice's identity, without ever becoming cards. */
+export function passingFaceKey(instanceId: ObjectId, eventId: ObjectId, lineId: string, handle: string): string {
+  return handle ? JSON.stringify([instanceId.toHexString(), identityKey(handle)])
+    : JSON.stringify([eventId.toHexString(), lineId])
+}
+
+export async function ensurePassingFaceReady(asset: MediaAssetDoc, event: WorldEventDoc, handle: string): Promise<PortraitReady> {
+  if (!mediaEnabled('portrait')) throw new Error('Portraits resting')
+  const instance = await mongoColl.worldInstances().findOne({ _id: asset.instance_id, player_id: asset.player_id })
+  if (!instance) throw new Error('Story removed')
+  const template = await mongoColl.worldTemplates().findOne({ _id: instance.template_id })
+  const style = templateMediaStyle(template), model = imageModel()
+  const passingKey = passingFaceKey(instance._id, event._id, asset.line_id, handle)
+  const cacheKey = `passing_face:${createHash('sha256').update(passingKey).digest('hex')}:${style.key}:${model}`
+  const flight = portraitFlights.get(cacheKey)
+  if (flight) return { ...await flight, painted: false }
+  const leader = (async (): Promise<PortraitReady> => {
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const prior = await mongoColl.mediaAssets().findOne({ cache_key: cacheKey })
+      if (prior?.status === 'ready' && prior.url && prior.asset_key) {
+        return { url: prior.url, assetKey: prior.asset_key, version: 1, painted: false }
+      }
+      if (prior) {
+        if (prior.status === 'processing' && Date.now() - new Date(prior.created_at).getTime() <= PORTRAIT_CLAIM_STALE_MS) {
+          return waitForPortraitClaim(prior._id, 1)
+        }
+        await releaseMedia(prior._id)
+        if (prior.asset_key) await mediaEffects.remove(prior.asset_key)
+        await mongoColl.mediaAssets().deleteOne({ _id: prior._id, status: prior.status })
+        continue
+      }
+      const id = new ObjectId(), now = new Date()
+      try {
+        await mongoColl.mediaAssets().insertOne({
+          _id: id, player_id: asset.player_id, instance_id: instance._id,
+          ...(!handle ? { event_id: event._id } : {}), line_id: asset.line_id,
+          kind: 'passing_face', source: 'generated', model, art_style: style.key, passing_key: passingKey,
+          cache_key: cacheKey, revision: asset.revision, input: '', cost_usd: 0,
+          status: 'processing', created_at: now, started_at: now,
+        })
+      } catch (error) {
+        if (duplicateKey(error)) continue
+        throw error
+      }
+      let uploaded = ''
+      try {
+        if (!await reserveMedia({ _id: id, player_id: asset.player_id, instance_id: instance._id, kind: 'portrait' })) {
+          throw new HttpError(429, RESTING_COPY.portrait, { status: 'resting', kind: 'portrait', resets_at: utcMediaDay().resets_at })
+        }
+        const old = await mongoColl.mediaAssets().findOne({ instance_id: instance._id, kind: 'passing_face', passing_key: passingKey, status: 'ready' })
+        const appearance = old?.appearance || await visualEffects.fill({ canonical_name: handle || `The speaker saying: ${asset.input}`, appearance: '' }, event.data.ai_response)
+        await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, { $set: { appearance, input: appearance } })
+        const image = await generatePortraitBytes(appearance, handle, template?.title || '', model, style.render)
+        const key = `media/passing_face/${asset.player_id}/${instance._id}/${id}${imageExtensionFor(image.contentType)}`
+        const staged = await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, { $set: { asset_key: key } })
+        if (!staged.matchedCount || !await liveMedia(asset)) throw new Error('Face moment passed')
+        uploaded = key
+        const result = await visualEffects.upload(image.data, image.contentType, { key })
+        uploaded = result.key
+        if (!await liveMedia(asset)) throw new Error('Face moment passed')
+        const saved = await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, { $set: {
+          status: 'ready', asset_key: result.key, url: result.url,
+          cost_usd: image.costUsd ?? 0.009, cost_source: image.costUsd === undefined ? 'catalogue' : 'generation',
+          ...(image.generationId ? { generation_id: image.generationId } : {}),
+        } })
+        if (!saved.matchedCount) throw new Error('Face removed')
+        await settleMedia(id)
+        return { url: result.url, assetKey: result.key, version: 1, painted: true }
+      } catch (error) {
+        await releaseMedia(id)
+        if (uploaded) {
+          await mongoColl.mediaAssets().updateOne({ _id: id }, { $set: { status: 'failed' } })
+          await mediaEffects.remove(uploaded)
+        }
+        await mongoColl.mediaAssets().deleteOne({ _id: id })
+        throw error
+      }
+    }
+    throw new Error('Passing face claim contested')
+  })()
+  portraitFlights.set(cacheKey, leader)
+  try { return await leader } finally {
+    if (portraitFlights.get(cacheKey) === leader) portraitFlights.delete(cacheKey)
+  }
+}
+
 async function loadContext(playerId: string, instanceId: string, eventId?: string) {
   const pid = parseObjectId(playerId), iid = parseObjectId(instanceId)
   const instance = await mongoColl.worldInstances().findOne({ _id: iid, player_id: pid })
@@ -345,7 +433,7 @@ function liveRevision(asset: MediaAssetDoc, event: WorldEventDoc): boolean {
 }
 
 async function liveMedia(asset: MediaAssetDoc): Promise<WorldEventDoc | null> {
-  if (!mediaEnabled(asset.kind)) return null
+  if (!mediaEnabled(asset.kind === 'passing_face' ? 'portrait' : asset.kind)) return null
   const [instance, event] = await Promise.all([
     mongoColl.worldInstances().findOne({ _id: asset.instance_id, player_id: asset.player_id }),
     asset.event_id
@@ -437,8 +525,8 @@ function presentCards(prose: string, cards: CharacterProfileDoc[], personaName?:
   }).slice(0, 4)
 }
 
-/** An unknown look is filled in at the first portrait and becomes canon. */
-async function fillUnknownLook(card: CharacterProfileDoc, prose: string): Promise<string> {
+/** Fill from prose; the caller stores the look on its card or passing-face row. */
+async function fillUnknownLook(card: Pick<CharacterProfileDoc, 'canonical_name' | 'role' | 'appearance'>, prose: string): Promise<string> {
   const raw = await safetyEffects.call({
     model: AI_MODELS.metadata,
     timeoutMs: 30000,
@@ -1099,21 +1187,20 @@ export async function requestVideo(playerId: string, instanceId: string, eventId
   if (line?.voice?.status !== 'voiceable') throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })
   const cards = await mongoColl.characters().find({ instance_id: iid, player_id: pid }).sort({ first_seen_sequence: 1 }).toArray()
   const card = resolveAttributedSpeaker(line.voice, cards, template.is_sentient, instance.persona_snapshot?.name)
-  if (line.filmable === false || !card) throw new HttpError(422, 'This moment stays unseen.')
   const voice = await lineVoice(instance, { ...event!, data: { ...event!.data, spoken_lines: lines } }, line, card)
-  const holder = await resolvePortraitHolder(instance, card, {
+  const holder = card ? await resolvePortraitHolder(instance, card, {
     isSentient: template.is_sentient, personaName: instance.persona_snapshot?.name,
     ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
-  })
+  }) : undefined
   const revision = mediaRevision(event!.data.ai_response, event!.data.player_input)
-  const key = `${eventId}:${lineId}:video:${revision}:${voice.voice_id}:${holder.portrait?.appearance_version ?? 0}:${videoModel()}:${sceneModel()}`
+  const key = `${eventId}:${lineId}:video:${revision}:${voice.voice_id}:${holder?.portrait?.appearance_version ?? 0}:${templateMediaStyle(template).key}:${videoModel()}:${sceneModel()}`
   const cached = await mongoColl.mediaAssets().findOne({ cache_key: key, status: 'ready' })
   if (cached?.url && await liveMedia(cached)) {
     return { status: 'ready', url: cached.url, ...(cached.duration_ms ? { duration_ms: cached.duration_ms } : {}) }
   }
   const asset = await insertAsset({
     player_id: pid, instance_id: iid, event_id: parseObjectId(eventId), kind: 'video', line_id: lineId,
-    character_id: card._id, source: 'generated', model: videoModel(), voice_id: voice.voice_id,
+    ...(card ? { character_id: card._id } : {}), source: 'generated', model: videoModel(), voice_id: voice.voice_id,
     cache_key: key, revision, input: line.voice.spoken_text.slice(0, 400),
     cost_usd: 0.65, cost_source: 'catalogue', status: 'queued',
   })
@@ -1126,6 +1213,32 @@ export async function requestVideo(playerId: string, instanceId: string, eventId
     throw new HttpError(429, RESTING_COPY.video, { status: 'resting', kind: 'video', resets_at: utcMediaDay().resets_at })
   }
   await visualEffects.enqueue('video', asset, instanceId)
+  return { status: 'queued', media_id: asset._id.toHexString() }
+}
+
+/** A narration-only cut uses the same video queue, cap and completion messages. */
+export async function requestTurnVideo(playerId: string, instanceId: string, eventId: string): Promise<QueuedReply> {
+  if (!mediaEnabled('video')) throw new HttpError(404, 'That moment could not be found.')
+  const { pid, iid, event, template } = await loadContext(playerId, instanceId, eventId)
+  const revision = mediaRevision(event!.data.ai_response, event!.data.player_input)
+  const key = `${eventId}:dialogue_free:${revision}:${templateMediaStyle(template).key}:${sceneModel()}:${directorModel()}`
+  const cached = await mongoColl.mediaAssets().findOne({ cache_key: key, status: 'ready' })
+  if (cached?.url && await liveMedia(cached)) return { status: 'ready', url: cached.url }
+  const asset = await insertAsset({
+    player_id: pid, instance_id: iid, event_id: event!._id, kind: 'video', line_id: '',
+    source: 'generated', model: sceneModel(), cache_key: key, revision, input: event!.data.ai_response.slice(0, 1500),
+    cost_usd: 0.3, cost_source: 'catalogue', status: 'queued',
+  })
+  if (!asset) throw new HttpError(422, 'This moment stays unseen.')
+  if (asset.status === 'ready' && asset.url && await liveMedia(asset)) return { status: 'ready', url: asset.url }
+  if (!await reserveMedia({ _id: asset._id, player_id: pid, instance_id: iid, event_id: event!._id, kind: 'video' })) {
+    await mongoColl.mediaAssets().deleteOne({ _id: asset._id })
+    throw new HttpError(429, RESTING_COPY.video, { status: 'resting', kind: 'video', resets_at: utcMediaDay().resets_at })
+  }
+  try { await visualEffects.enqueue('video', asset, instanceId) } catch (error) {
+    await failMedia(asset, { stage: 'queue', message: error instanceof Error ? error.message : String(error) })
+    throw error
+  }
   return { status: 'queued', media_id: asset._id.toHexString() }
 }
 
@@ -1150,8 +1263,9 @@ interface ShotOutcome {
 export async function makeSceneShot(args: {
   role: 'opening' | 'closing'
   continuity: DirectorPlan['continuity']
+  ambient?: string
   shot: DirectorPlan['shots'][number]
-  speakerPortrait: Buffer
+  speakerPortrait?: Buffer
   playerId: ObjectId
   instanceId: ObjectId
   /** The world's render style. Defaults to the painted default. */
@@ -1172,8 +1286,8 @@ export async function makeSceneShot(args: {
     // Before any paid generation, the COMPILED still and motion prompts are
     // moderated (§7 gate on what we actually send): a rejected shot prompt
     // drops that shot, before a cent is spent on it.
-    const stillPrompt = compileStillPrompt({ continuity: args.continuity } as DirectorPlan, args.shot, primary, args.styleRender)
-    const motionPrompt = compileMotionPrompt({ continuity: args.continuity } as DirectorPlan, args.shot, primary)
+    const stillPrompt = compileStillPrompt({ continuity: args.continuity, ambient: args.ambient } as DirectorPlan, args.shot, primary, args.styleRender)
+    const motionPrompt = compileMotionPrompt({ continuity: args.continuity, ambient: args.ambient } as DirectorPlan, args.shot, primary)
     const stillGate = await moderateDescription(stillPrompt)
     if (stillGate.verdict !== 'allow') {
       return dropped('still_prompt_rejected', [{ prompt: 'still', reason: stillGate.reason_code }], 0)
@@ -1187,14 +1301,14 @@ export async function makeSceneShot(args: {
     // $0.20 video is never spent animating a still that is already off-plan.
     // The speaker face is an older PNG portrait or a new JPEG one: sniffed,
     // never assumed.
-    const speakerReference = asMediaImageReference(args.speakerPortrait)
+    const speakerReference = args.speakerPortrait ? asMediaImageReference(args.speakerPortrait) : undefined
     let still: { data: Buffer; contentType: string; costUsd?: number } | null = null
     const stillChecks: unknown[] = []
     try {
       for (let attempt = 0; attempt < 2 && !still; attempt++) {
         const candidate = await visualEffects.image(
           stillPrompt,
-          { model: imageModel(), aspectRatio: '9:16', reference: speakerReference },
+          { model: imageModel(), aspectRatio: '9:16', ...(speakerReference ? { reference: speakerReference } : {}) },
         )
         const checks = await checkImage(candidate.data, candidate.contentType)
         stillChecks.push({ attempt, people_count: checks.people_count, face_close_up: checks.face_close_up, text_visible: checks.text_visible, verdict: checks.verdict })
@@ -1326,7 +1440,8 @@ export async function processVideo(mediaId: string): Promise<void> {
   try {
     const reservation = await mongoColl.mediaUsage().findOne({ _id: asset._id, status: 'reserved' })
     if (!reservation) throw new Error('Video no longer reserved')
-    if (!asset.event_id || !asset.character_id) throw new Error('Video subject missing')
+    if (!asset.event_id) throw new Error('Video subject missing')
+    if (!asset.line_id) { await processDialogueFreeCut(asset); return }
     const [instance, event] = await Promise.all([
       mongoColl.worldInstances().findOne({ _id: asset.instance_id, player_id: asset.player_id }),
       mongoColl.events().findOne({ _id: asset.event_id }),
@@ -1338,15 +1453,14 @@ export async function processVideo(mediaId: string): Promise<void> {
     const line = lines.find((l) => l.line_id === asset.line_id)
     if (line?.voice?.status !== 'voiceable') throw new Error('Line no longer voiceable')
     const cards = await mongoColl.characters().find({ instance_id: asset.instance_id, player_id: asset.player_id }).sort({ first_seen_sequence: 1 }).toArray()
-    const card = cards.find((c) => c._id.equals(asset.character_id!))
-      || resolveVoiceSpeaker(line.voice.speaker_name, cards, template?.is_sentient ?? false, personaName)
-    if (!card) throw new Error('Speaker removed')
+    const card = resolveAttributedSpeaker(line.voice, cards, template?.is_sentient ?? false, personaName)
     // The face and the exact clip the player heard, made first when missing.
     stage = 'face'
     let portraitUrlStr: string
     try {
-      const ready = await ensurePortraitReady(
-        asset.player_id.toHexString(), asset.instance_id.toHexString(), card)
+      const ready = card
+        ? await ensurePortraitReady(asset.player_id.toHexString(), asset.instance_id.toHexString(), card)
+        : await ensurePassingFaceReady(asset, event, line.voice.speaker_name)
       portraitUrlStr = ready.url
     } catch (error) {
       if (error instanceof UnseenError) {
@@ -1370,14 +1484,14 @@ export async function processVideo(mediaId: string): Promise<void> {
     const span = { start: line.start, end: line.end }
     const narrationBefore = prose.slice(0, span.start).slice(-1200)
     const narrationAfter = prose.slice(span.end, span.end + 1200)
-    const others = presentCards(prose, cards.filter((c) => !c._id.equals(card._id)), personaName)
+    const others = presentCards(prose, cards.filter((c) => !card || !c._id.equals(card._id)), personaName)
     const style = templateMediaStyle(template)
     const directorInput: DirectorInput = {
       art_style: style.render,
       narration_before: narrationBefore,
       line: { speaker_name: line.voice.speaker_name, spoken_text: line.voice.spoken_text, duration_s: clip.durationS },
       narration_after: narrationAfter,
-      speaker: { appearance: card.appearance || '', passing_look: await extractPassing(prose, card.canonical_name) },
+      speaker: { appearance: card?.appearance || '', passing_look: await extractPassing(prose, line.voice.speaker_name) },
       others_present: others.map((c) => ({ name: c.canonical_name, appearance: c.appearance || '' })),
       place: template?.title || '',
     }
@@ -1420,7 +1534,7 @@ export async function processVideo(mediaId: string): Promise<void> {
     stage = 'shoot'
     if (plan) {
       const settled = await Promise.allSettled(plan.shots.map((shot, index) => makeSceneShot({
-        role: shot.role, continuity: plan.continuity, shot,
+        role: shot.role, continuity: plan.continuity, ambient: plan.ambient, shot,
         speakerPortrait: portraitBytes, playerId: asset.player_id, instanceId: saveId,
         styleRender: style.render,
       }).then((outcome) => ({ outcome, index }))))
@@ -1481,11 +1595,11 @@ export async function processVideo(mediaId: string): Promise<void> {
     parts.push(normLine); durations.push(lineSegS)
     if (closing && closing !== opening) { parts.push(await normalizeShot(closing.videoBytes!)); durations.push(closing.durationS) }
     const hasOpening = !!opening, hasClosing = !!closing && closing !== opening
-    const leadIn = plan && hasOpening ? plan.line_shot.voice_lead_in_s : 0
+    const leadIn = plan && hasOpening ? plan.line_shot?.voice_lead_in_s ?? 0 : 0
     const voiceDelayS = hasOpening ? Math.max(0, opening!.durationS - leadIn) : 0
     const { bytes, totalS } = await assembleCut({
       shots: parts, durations, hasOpening, hasClosing,
-      transitionIn: plan?.line_shot.transition_in as 'cut' | 'dissolve_short' || 'cut',
+      transitionIn: plan?.line_shot?.transition_in as 'cut' | 'dissolve_short' || 'cut',
       transitionOut: plan?.ending.transition_out as 'cut' | 'dissolve_short' | 'dip_to_black' || 'dissolve_short',
       voiceMp3: clip.bytes, voiceDelayS, voiceS,
       ambienceFrom: opening ? 'opening' : closing ? 'closing' : null,
@@ -1534,5 +1648,72 @@ export async function processVideo(mediaId: string): Promise<void> {
       $set: { plan: { ...planRecord, render_ms: Date.now() - renderStarted } },
     }).catch(() => {})
     await failMedia(asset, { stage, message: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
+  let uploaded = ''
+  const started = Date.now()
+  let record: Record<string, unknown> = {}
+  let shots: ShotOutcome[] = []
+  try {
+    const event = await liveMedia(asset)
+    if (!event || !asset.instance_id) throw new Error('Video moment passed')
+    const instance = await mongoColl.worldInstances().findOne({ _id: asset.instance_id, player_id: asset.player_id })
+    if (!instance) throw new Error('Story removed')
+    const template = await mongoColl.worldTemplates().findOne({ _id: instance.template_id })
+    const style = templateMediaStyle(template)
+    const cards = await mongoColl.characters().find({ instance_id: instance._id, player_id: asset.player_id }).toArray()
+    const prose = event.data.ai_response
+    const input: DirectorInput = {
+      mode: 'dialogue_free', art_style: style.render,
+      narration_before: prose, narration_after: prose,
+      line: { speaker_name: '', spoken_text: '', duration_s: 0 },
+      speaker: { appearance: '', passing_look: '' },
+      others_present: presentCards(prose, cards, instance.persona_snapshot?.name).map((c) => ({ name: c.canonical_name, appearance: c.appearance || '' })),
+      place: template?.title || '',
+    }
+    const pre = await moderateDescription(prose)
+    if (pre.verdict !== 'allow') { await unseeMedia(asset, 'pre', pre.reason_code); return }
+    const directed = await directScene(directorModel(), input)
+    record = { director_model: directorModel(), input, ...directed }
+    if (!directed.plan) throw new Error('No scene shots planned')
+    const plan = directed.plan
+    record.compiled = { shots: plan.shots.map((shot) => ({
+      role: shot.role, still: compileStillPrompt(plan, shot, sceneModel(), style.render), motion: compileMotionPrompt(plan, shot, sceneModel()),
+    })) }
+    const settled = await Promise.allSettled(plan.shots.map((shot) => makeSceneShot({
+      role: shot.role, continuity: plan.continuity, ambient: plan.ambient, shot, playerId: asset.player_id, instanceId: instance._id, styleRender: style.render,
+    })))
+    shots = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
+    record.shots = shots
+    const ready = shots.filter((s) => s.status === 'ready' && s.videoBytes)
+    if (!ready.length) throw new Error('No scene shot survived')
+    const parts = await Promise.all(ready.map(async (s) => normalizeShot(
+      s.model === sceneFallbackModel() ? await cutEffects.run(['-i', 'pipe:0', '-an', '-c:v', 'copy', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1'], [s.videoBytes!]) : s.videoBytes!)))
+    const assembled = await assembleDialogueFreeCut({ shots: parts, durations: ready.map((s) => s.durationS), transition: plan.ending.transition_out as 'cut' | 'dissolve_short' | 'dip_to_black' })
+    if (!await liveMedia(asset)) throw new Error('Video moment passed')
+    const key = `media/video/${asset.player_id}/${asset.instance_id}/${asset._id}.mp4`
+    const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key } })
+    if (!staged.matchedCount) throw new Error('Video removed')
+    uploaded = key
+    const result = await visualEffects.upload(assembled.bytes, 'video/mp4', { key })
+    uploaded = result.key
+    if (!await liveMedia(asset)) throw new Error('Video moment passed')
+    const price = await visualEffects.prices(directorModel())
+    const cost = shots.reduce((sum, s) => sum + s.cost, 0) + JSON.stringify(input).length / 4 * price.prompt + 600 * price.completion
+    const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: {
+      status: 'ready', asset_key: result.key, url: result.url, duration_ms: Math.round(assembled.totalS * 1000), cost_usd: cost,
+      plan: { ...record, render_ms: Date.now() - started },
+    } })
+    if (!saved.matchedCount) throw new Error('Video removed')
+    await deleteSceneStills(asset, sceneStillKeys(shots))
+    await settleMedia(asset._id)
+    await notifyMedia({ ...asset, status: 'ready', url: result.url })
+  } catch (error) {
+    if (uploaded) await mediaEffects.remove(uploaded).catch(() => {})
+    await deleteSceneStills(asset, sceneStillKeys(shots))
+    await mongoColl.mediaAssets().updateOne({ _id: asset._id }, { $set: { plan: { ...record, render_ms: Date.now() - started } } }).catch(() => {})
+    await failMedia(asset, { stage: 'dialogue_free', message: error instanceof Error ? error.message : String(error) })
   }
 }

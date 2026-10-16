@@ -10,7 +10,7 @@ import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim } from './p
 import { voiceCatalogue, voiceModel } from './config'
 import { HttpError } from '../../utils/http-error'
 
-export const ATTRIBUTION_RULE_VERSION = 3
+export const ATTRIBUTION_RULE_VERSION = 4
 export const attributionEffects = { call: callLLM }
 
 export const mediaRevision = (prose: string, input = '') => createHash('sha256').update(JSON.stringify([prose, input])).digest('hex')
@@ -50,7 +50,7 @@ export function acceptAttribution(line: SpokenLine, prose: string, raw: unknown,
   const voice = card ? { character_id: card._id.toHexString() } : {
     model, voice_id: chooseVoice(traits, [], [...voiceCatalogue(model).voices].sort((a, b) => rank(a.id).localeCompare(rank(b.id)))),
   }
-  return { ...line, ...(!card ? { filmable: false as const } : {}), voice: { status: 'voiceable', ...voice, speaker_name: card?.canonical_name ?? r.speaker_name ?? '',
+  return { ...line, voice: { status: 'voiceable', ...voice, speaker_name: card?.canonical_name ?? r.speaker_name ?? '',
     spoken_text: r.spoken_text, tags: filterVoiceTags(r.tags), ...(Object.keys(traits).length ? { voice_traits: traits } : {}) } }
 }
 const schema = {
@@ -133,18 +133,18 @@ export async function attributeEvent(event: WorldEventDoc, isSentient: boolean, 
       const row = matches.length === 1 ? matches[0] as Record<string, unknown> : undefined
       const validated = speechRow(line, event.data.ai_response, row)
       if (!validated) continue
-      const handle = validated.speaker_name?.trim() ?? null
+      let handle = validated.speaker_name?.trim() ?? null
       const isPlayer = handle !== null && ((personaName && identityKey(handle) === identityKey(personaName))
         || (!isSentient && newFoldState(cards.filter((c) => c.is_protagonist)).byName.has(identityKey(handle))))
       const spoken = compactWhitespace(validated.spoken_text)
       const playerWords = compactWhitespace(event.data.player_spoken_input ?? event.data.player_input ?? '')
       if (isPlayer || (playerWords && playerWords.includes(spoken))) continue
       // A handle has to occur in the prose, independently of the model.
-      if (handle !== null && !event.data.ai_response.toLowerCase().includes(handle.toLowerCase())) continue
+      if (handle !== null && !event.data.ai_response.toLowerCase().includes(handle.toLowerCase())) handle = null
       const speaker = handle ? resolveVoiceSpeaker(handle, cards, isSentient, personaName) : undefined
       const seed = handle === null ? JSON.stringify([event._id.toHexString(), line.line_id])
         : JSON.stringify([event.instance_id.toHexString(), identityKey(handle)])
-      const accepted = acceptAttribution(line, event.data.ai_response, row, () => speaker, seed)
+      const accepted = acceptAttribution(line, event.data.ai_response, { ...validated, speaker_name: handle }, () => speaker, seed)
       // A rule upgrade must not change a clip the player has already heard.
       if (accepted.voice?.status === 'voiceable' && line.voice?.status === 'voiceable'
         && line.voice.spoken_text === accepted.voice.spoken_text) {

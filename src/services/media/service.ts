@@ -114,7 +114,7 @@ export async function requestVoice(playerId: string, instanceId: string, eventId
   }
   try {
     if (!await liveVoice(asset)) throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })
-    if (!await reserveMedia(asset)) {
+    if (!await reserveMedia({ ...asset, kind: 'voice' })) {
       await mongoColl.mediaAssets().deleteOne({ _id: asset._id })
       throw new HttpError(429, 'Their voices rest until tomorrow.', { status: 'resting', kind: 'voice', resets_at: utcMediaDay().resets_at })
     }
@@ -136,7 +136,7 @@ export async function requestVoice(playerId: string, instanceId: string, eventId
 
 async function liveVoice(asset: MediaAssetDoc): Promise<boolean> {
   if (!mediaEnabled('voice')) return false
-  if (!asset.event_id) return false
+  if (!asset.event_id || asset.kind === 'passing_face') return false
   const [instance, event, user] = await Promise.all([
     mongoColl.worldInstances().findOne({ _id: asset.instance_id, player_id: asset.player_id }),
     mongoColl.events().findOne({ _id: asset.event_id, instance_id: asset.instance_id, player_id: asset.player_id, 'data.media_revision': asset.revision }),
@@ -177,6 +177,7 @@ export async function failMedia(asset: MediaAssetDoc, cause: MediaFailure): Prom
     status: 'failed', cache_key: `${asset.cache_key}:failed:${asset._id}`, error: { stage: cause.stage, message },
   } })
   await releaseMedia(asset._id)
+  if (asset.kind === 'passing_face') return
   await mediaEffects.publish(asset.player_id.toHexString(), { type: 'media_failed', ...(asset.instance_id ? { instanceId: asset.instance_id.toHexString() } : {}), ...(asset.event_id ? { eventId: asset.event_id.toHexString() } : {}), media_id: asset._id.toHexString(), kind: asset.kind }).catch(() => {})
 }
 export async function processVoice(mediaId: string): Promise<void> {

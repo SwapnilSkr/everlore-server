@@ -3,7 +3,10 @@ import { mongoColl } from '../../config/mongo'
 import type { MediaAssetDoc } from '../../models/media.model'
 import { storageService } from '../storage.service'
 
-/** Fence running completions first; retain object keys if storage cleanup fails. */
+/** Fence running completions first; retain object keys if storage cleanup fails.
+ * All asset kinds, including passing_face claims and ready faces, share this
+ * purge. Handle-keyed faces have no event_id so rewinds retain them until the
+ * save is deleted; event/line-keyed faces are removed with their event. */
 export async function purgeMedia(filter: Filter<Pick<MediaAssetDoc, 'player_id' | 'instance_id' | 'event_id'>>): Promise<void> {
   await mongoColl.mediaAssets().updateMany(filter, { $set: { status: 'failed' } })
   const assets = await mongoColl.mediaAssets().find(filter).toArray()
