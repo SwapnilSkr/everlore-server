@@ -56,9 +56,11 @@ export class MemoryCollection {
   async findOne(filter: Row) { return structuredCloneRow(this.rows.find((row) => matches(row, filter)) || null) }
   find(filter: Row = {}) {
     let sortSpec: Row = {}
+    let skipTo = 0
     let limitTo: number | undefined
     const cursor = {
       sort: (sort: Row) => { sortSpec = sort; return cursor },
+      skip: (n: number) => { skipTo = n; return cursor },
       project: (_projection: Row) => cursor,
       limit: (n: number) => { limitTo = n; return cursor },
       toArray: async () => {
@@ -73,7 +75,7 @@ export class MemoryCollection {
             return 0
           })
         }
-        const sliced = limitTo !== undefined ? matched.slice(0, limitTo) : matched
+        const sliced = limitTo !== undefined ? matched.slice(skipTo, skipTo + limitTo) : matched.slice(skipTo)
         return sliced.map(structuredCloneRow)
       },
     }

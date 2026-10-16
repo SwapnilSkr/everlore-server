@@ -1,5 +1,5 @@
 import { purgeMedia } from './media/deletion'
-import { spokenLineUpdate, publishSpokenLines, publicMediaEvent, wireSpokenLines } from './media/events'
+import { spokenLineUpdate, publishSpokenLines, publicMediaEvent, withTurnMedia, wireSpokenLines } from './media/events'
 import { randomUUID } from 'crypto'
 import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
@@ -1317,7 +1317,8 @@ export const memoryService = {
     const hasOlder = oldestSequence != null
       ? await events().countDocuments({ ...filter, sequence: { $lt: oldestSequence } }) > 0
       : false
-    return { events: evs.reverse().map(publicMediaEvent), total, page: opts.page || 1, hasOlder }
+    const ordered = evs.reverse().map(publicMediaEvent)
+    return { events: await withTurnMedia(ordered), total, page: opts.page || 1, hasOlder }
   },
 
   async getMemories(instanceId: string, playerId: string, opts: any) {
@@ -2587,7 +2588,7 @@ ${replayDirective || '(none)'}`,
     }
     return {
       success: true,
-      event: updated ? publicMediaEvent(updated) : updated,
+      event: updated ? (await withTurnMedia([publicMediaEvent(updated)]))[0] : updated,
       replay_count: nextVariants.length,
       selected_index: selectedIdx,
       memories_deleted: deletedMemories,
@@ -2832,7 +2833,7 @@ ${replayDirective || '(none)'}`,
     const updated = await events().findOne({ _id: eid })
     return {
       success: true,
-      event: updated ? publicMediaEvent(updated) : updated,
+      event: updated ? (await withTurnMedia([publicMediaEvent(updated)]))[0] : updated,
       replay_count: nextVariants.length,
       selected_index: variantIndex,
       memories_deleted: deletedMemories,

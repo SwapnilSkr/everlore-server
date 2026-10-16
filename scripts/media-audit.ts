@@ -19,7 +19,7 @@ import { purgeCardPortraits, purgeTemplatePortraits } from '../src/services/medi
 import { reserveMedia, releaseMedia, settleMedia, mediaUsage } from '../src/services/media/usage'
 import { purgeMedia } from '../src/services/media/deletion'
 import { storageService } from '../src/services/storage.service'
-import { publicMediaEvent, wireSpokenLines } from '../src/services/media/events'
+import { publicMediaEvent, withTurnMedia, wireSpokenLines } from '../src/services/media/events'
 import { generateMediaImage } from '../src/services/media/image'
 import { imageSafetyTolerance } from '../src/services/media/config'
 import { asMediaImageReference, imageExtensionFor, sniffImageContentType, ProviderRefusalError } from '../src/ai/image'
@@ -3076,6 +3076,157 @@ check('keepsakes_poster', async () => {
     cutEffects.extractFrame = realExtract
   }
   assert.ok(run.published.some((m) => m.type === 'media_ready'))
+})
+// ── media-turn-media: a turn's pictures and films ride on the turn ──
+
+// One media row for turn-media checks. Pictures and dialogue-free cuts are
+// turn markers with an empty line_id; line films name their line.
+function turnMediaRow(f: ReturnType<typeof fixture>, extra: Partial<MediaAssetDoc> = {}): MediaAssetDoc {
+  return { _id: new ObjectId(), player_id: f.player, instance_id: f.instance, event_id: f.event,
+    kind: 'picture', line_id: '', source: 'generated', model: 'black-forest-labs/flux-3-image-klein',
+    cache_key: `turn-media:${new ObjectId().toHexString()}`, revision: f.revision, input: 'A calm moment.',
+    cost_usd: 0.009, status: 'queued', created_at: new Date(), ...extra }
+}
+const turnMediaOf = (event: WorldEventDoc) =>
+  (event.data as unknown as { media?: Array<Record<string, unknown>> }).media || []
+check('turn_media_load_instance', async () => {
+  // Contract §6: loadInstance carries the turn's ready picture and queued
+  // films, oldest first — and not a failed, unseen, voice, portrait or
+  // passing-face row. Processing reads as queued, so a reload still shows
+  // "Taking shape…". Asserts on the real payload, not the mapping function.
+  const { generationService } = await import('../src/services/generation.service')
+  const f = fixture()
+  const t0 = new Date('2026-10-16T10:00:00Z').getTime()
+  const at = (s: number) => new Date(t0 + s * 1000)
+  // Inserted newest-first to prove the payload sorts oldest first.
+  f.db.mediaAssets.rows.push(
+    turnMediaRow(f, { kind: 'video', line_id: 'l0', status: 'processing', created_at: at(3) }) as unknown as Record<string, unknown>,
+    turnMediaRow(f, { kind: 'picture', status: 'ready', url: 'https://example.test/pic.jpg', created_at: at(2) }) as unknown as Record<string, unknown>,
+    turnMediaRow(f, { kind: 'video', line_id: 'l0', status: 'queued', created_at: at(1) }) as unknown as Record<string, unknown>,
+    turnMediaRow(f, { kind: 'picture', status: 'failed', created_at: at(4) }) as unknown as Record<string, unknown>,
+    turnMediaRow(f, { kind: 'video', line_id: 'l0', status: 'unseen', created_at: at(5) }) as unknown as Record<string, unknown>,
+    turnMediaRow(f, { kind: 'voice', line_id: 'l0', status: 'ready', url: 'https://example.test/clip.mp3', created_at: at(6) }) as unknown as Record<string, unknown>,
+    turnMediaRow(f, { kind: 'portrait', status: 'ready', url: 'https://example.test/face.jpg', created_at: at(7) }) as unknown as Record<string, unknown>,
+    turnMediaRow(f, { kind: 'passing_face', status: 'ready', created_at: at(8) }) as unknown as Record<string, unknown>,
+  )
+  const loaded = await generationService.loadInstance(String(f.instance), String(f.player))
+  assert.equal(loaded.recentEvents.length, 1)
+  const media = turnMediaOf(loaded.recentEvents[0])
+  assert.equal(media.length, 3)
+  assert.deepEqual(media.map((m) => [m.kind, m.status]), [['video', 'queued'], ['picture', 'ready'], ['video', 'queued']])
+  assert.equal(media[0].line_id, 'l0')
+  assert.ok(!('url' in media[0]), 'a queued film has no url yet')
+  assert.equal(media[1].url, 'https://example.test/pic.jpg')
+  assert.ok(!('line_id' in media[1]), 'a picture names no line')
+  assert.equal(media[2].line_id, 'l0')
+})
+check('turn_media_owner', async () => {
+  // Another player's media never appears on our turn, even for the same event id.
+  const { generationService } = await import('../src/services/generation.service')
+  const f = fixture()
+  f.db.mediaAssets.rows.push(
+    turnMediaRow(f, { status: 'ready', url: 'https://example.test/mine.jpg' }) as unknown as Record<string, unknown>,
+    turnMediaRow(f, { status: 'ready', url: 'https://example.test/theirs.jpg', player_id: new ObjectId() }) as unknown as Record<string, unknown>,
+  )
+  const loaded = await generationService.loadInstance(String(f.instance), String(f.player))
+  const media = turnMediaOf(loaded.recentEvents[0])
+  assert.equal(media.length, 1)
+  assert.equal(media[0].url, 'https://example.test/mine.jpg')
+  // Mixed-player batch: the per-event guard drops a foreign row the batched
+  // query returned, so one call can never leak across players.
+  const g = fixture()
+  const other = new ObjectId()
+  const mine = g.db.events.rows[0] as unknown as WorldEventDoc
+  const theirs = { _id: new ObjectId(), player_id: other, instance_id: g.instance,
+    data: { ai_response: '“Come with me.”', player_input: '' }, edit_history: [] }
+  g.db.mediaAssets.rows.push(
+    turnMediaRow(g, { event_id: mine._id, status: 'ready', url: 'https://example.test/mine.jpg' }) as unknown as Record<string, unknown>,
+    turnMediaRow(g, { event_id: mine._id, status: 'ready', url: 'https://example.test/theirs.jpg', player_id: other }) as unknown as Record<string, unknown>,
+  )
+  const out = await withTurnMedia([mine as never, theirs as never])
+  assert.equal(turnMediaOf(out[0] as unknown as WorldEventDoc).length, 1)
+  assert.equal(turnMediaOf(out[0] as unknown as WorldEventDoc)[0].url, 'https://example.test/mine.jpg')
+  assert.equal(turnMediaOf(out[1] as unknown as WorldEventDoc).length, 0)
+})
+check('turn_media_batched', async () => {
+  // One query serves many events: three turns, one picture each, one media_assets find.
+  const { generationService } = await import('../src/services/generation.service')
+  const f = fixture()
+  const mkEvent = () => ({ _id: new ObjectId(), player_id: f.player, instance_id: f.instance,
+    data: { ai_response: '“Come with me.”', player_input: '', spoken_lines: [] }, edit_history: [] })
+  f.db.events.rows.push(mkEvent() as unknown as Record<string, unknown>, mkEvent() as unknown as Record<string, unknown>)
+  for (const row of f.db.events.rows) {
+    const id = row._id as ObjectId
+    f.db.mediaAssets.rows.push(turnMediaRow(f, { event_id: id, status: 'ready', url: `https://example.test/${id.toHexString()}.jpg` }) as unknown as Record<string, unknown>)
+  }
+  let finds = 0
+  const origFind = f.db.mediaAssets.find.bind(f.db.mediaAssets)
+  f.db.mediaAssets.find = ((filter: never) => { finds++; return origFind(filter) }) as never
+  const loaded = await generationService.loadInstance(String(f.instance), String(f.player))
+  assert.equal(loaded.recentEvents.length, 3)
+  assert.equal(finds, 1)
+  for (const event of loaded.recentEvents) {
+    const media = turnMediaOf(event)
+    assert.equal(media.length, 1)
+    assert.ok((media[0].url as string).includes(event._id.toHexString()), 'each turn carries its own picture')
+  }
+})
+check('turn_media_shape', async () => {
+  // Only the contract keys ride on the turn: no prompts, costs, cache keys,
+  // asset keys, plans, ids or internal flags at any depth.
+  const { generationService } = await import('../src/services/generation.service')
+  const f = fixture()
+  f.db.mediaAssets.rows.push(turnMediaRow(f, {
+    kind: 'video', line_id: 'l0', status: 'ready', url: 'https://example.test/cut.mp4',
+    poster_url: 'https://example.test/poster.jpg', duration_ms: 9000,
+  }) as unknown as Record<string, unknown>)
+  const loaded = await generationService.loadInstance(String(f.instance), String(f.player))
+  const media = turnMediaOf(loaded.recentEvents[0])
+  assert.equal(media.length, 1)
+  assert.deepEqual({ ...media[0] }, {
+    media_id: (f.db.mediaAssets.rows[0] as unknown as MediaAssetDoc)._id.toHexString(),
+    kind: 'video', status: 'ready', url: 'https://example.test/cut.mp4',
+    poster_url: 'https://example.test/poster.jpg', line_id: 'l0', duration_ms: 9000,
+  })
+  const text = JSON.stringify(media)
+  for (const key of ['player_id', 'instance_id', 'event_id', 'character_id', 'persona_id', 'source',
+    'model', 'voice_id', 'cache_key', 'revision', 'input', 'cost_usd', 'cost_source', 'asset_key',
+    'reference_asset_key', 'still_keys', 'plan', 'error', 'generation_id', 'passing_key',
+    'appearance', 'notified_at', 'hidden_from_keepsakes', 'created_at', 'started_at']) {
+    assert.ok(!text.includes(`"${key}":`), `forbidden key on the turn: ${key}`)
+  }
+})
+check('turn_media_hidden', async () => {
+  // Removing a piece from Keepsakes doesn't remove it from its turn.
+  const { generationService } = await import('../src/services/generation.service')
+  const f = fixture()
+  f.db.mediaAssets.rows.push(turnMediaRow(f, { status: 'ready', url: 'https://example.test/hidden.jpg', hidden_from_keepsakes: true }) as unknown as Record<string, unknown>)
+  const loaded = await generationService.loadInstance(String(f.instance), String(f.player))
+  assert.equal(turnMediaOf(loaded.recentEvents[0]).length, 1)
+})
+check('turn_media_pages', async () => {
+  // Event pages carry it too, through the same batched helper.
+  const { memoryService } = await import('../src/services/memory.service')
+  const f = fixture()
+  f.db.mediaAssets.rows.push(turnMediaRow(f, { status: 'ready', url: 'https://example.test/pic.jpg' }) as unknown as Record<string, unknown>)
+  const page = await memoryService.getEvents(String(f.instance), String(f.player), {})
+  assert.equal(page.events.length, 1)
+  assert.equal(turnMediaOf(page.events[0]).length, 1)
+  assert.equal(turnMediaOf(page.events[0])[0].url, 'https://example.test/pic.jpg')
+  const source = readFileSync('src/services/memory.service.ts', 'utf8')
+  assert.ok(source.includes('await withTurnMedia(ordered)'), 'event pages run the batched helper')
+})
+check('turn_media_replay', async () => {
+  // Both replay returns re-read the event and run it through the same two
+  // calls the checks above cover functionally; the wiring itself is asserted
+  // here so a dropped call fails the audit.
+  const source = readFileSync('src/services/memory.service.ts', 'utf8')
+  assert.equal((source.match(/await withTurnMedia\(\[publicMediaEvent\(updated\)\]\)/g) || []).length, 2)
+  const f = fixture()
+  f.db.mediaAssets.rows.push(turnMediaRow(f, { kind: 'video', line_id: 'l0', status: 'queued' }) as unknown as Record<string, unknown>)
+  const reread = await f.db.events.findOne({ _id: f.event }) as unknown as WorldEventDoc
+  const out = (await withTurnMedia([publicMediaEvent(reread as never)]))[0]
+  assert.equal(turnMediaOf(out as unknown as WorldEventDoc).length, 1)
 })
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }
 if (process.argv.includes('--check') && !checks.some(([name]) => name === process.argv[process.argv.indexOf('--check') + 1])) throw new Error('Unknown audit check')

@@ -11,7 +11,7 @@ import { EVENT_WINDOWS, buildEventWindow } from '../utils/event-window'
 import type { PlayerWorldAction } from '../utils/world-action'
 import { getRedisClient } from '../config/redis'
 import { generationLockKey } from '../utils/generation-lock'
-import { publicMediaEvent } from './media/events'
+import { publicMediaEvent, withTurnMedia } from './media/events'
 import { screenPlayerInput } from '../utils/input-guard'
 import { HttpError } from '../utils/http-error'
 
@@ -163,10 +163,11 @@ export const generationService = {
       .get(generationLockKey(playerId, instanceId))
       .catch(() => null)
 
+    const filtered = recentEvents.map(publicMediaEvent)
     return {
       instance,
       template,
-      recentEvents: recentEvents.map(publicMediaEvent),
+      recentEvents: await withTurnMedia(filtered),
       memories: mems,
       characters: codex,
       operation: activeLock

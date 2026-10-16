@@ -60,7 +60,7 @@ const mutations: Mutation[] = [
   { name: 'portraits rest at the daily cap', check: 'portrait_resting', file: 'visual.ts', changes: [["if (!await reserveMedia({ _id: row._id, player_id: pid, instance_id: iid, kind })) {", "if (false && !await reserveMedia({ _id: row._id, player_id: pid, instance_id: iid, kind })) {"]] },
   { name: 'replay recomputes offsets', check: 'revisions_payload', file: '../memory.service.ts', changes: [["...spokenLineUpdate(nextAi,", "...({}), // spokenLineUpdate(nextAi,"]] },
   // ── media-server-2-fix-1 ──
-  { name: 'load path filters media', check: 'load_instance_filters_media', path: 'src/services/generation.service.ts', changes: [["recentEvents: recentEvents.map(publicMediaEvent),", "recentEvents,"]] },
+  { name: 'load path filters media', check: 'load_instance_filters_media', path: 'src/services/generation.service.ts', changes: [["const filtered = recentEvents.map(publicMediaEvent)", "const filtered = recentEvents"]] },
   { name: 'instance param name shared', check: 'route_boot', path: 'src/routes/media.routes.ts', changes: [[".post('/instances/:id/events/:eventId/picture'", ".post('/instances/:instanceId/events/:eventId/picture'"]] },
   { name: 'malformed pre verdict throws', check: 'pregate_malformed', file: 'safety.ts', changes: [["if (report.verdict !== 'allow' && report.verdict !== 'reject') throw new Error('Gate returned no verdict')", "if (report.verdict !== 'allow' && report.verdict !== 'reject') return { verdict: 'allow', reason_code: 'ok' }"]] },
   { name: 'malformed post report throws', check: 'postgate_malformed', file: 'safety.ts', changes: [["if (typeof r.people_count !== 'number' || !Number.isFinite(r.people_count)) {\n    throw new Error('Vision gate returned no people count')\n  }", ""]] },
@@ -208,6 +208,30 @@ const mutations: Mutation[] = [
   { name: 'keepsakes cursor ends the list', check: 'keepsakes_cursor_last_page', file: 'keepsakes.ts', changes: [[".limit(limit + 1).toArray()", ".limit(limit).toArray()"]] },
   { name: 'keepsakes same-instant tiebreak', check: 'keepsakes_same_instant', file: 'keepsakes.ts', changes: [[".sort({ created_at: -1, _id: -1 }).limit(limit + 1).toArray()", ".sort({ created_at: -1 }).limit(limit + 1).toArray()"], ["? { $or: [{ created_at: { $lt: resume.t } }, { created_at: resume.t, _id: { $lt: resume.id } }] }", "? { created_at: { $lt: resume.t } }"]] },
   { name: 'keepsakes malformed cursor rejected', check: 'keepsakes_bad_cursor', file: 'keepsakes.ts', changes: [["if (!iso || Number.isNaN(t.getTime()) || !/^[0-9a-fA-F]{24}$/.test(hex)) {", "if (false) {"]] },
+  // ── media-turn-media ──
+  { name: 'turn media rides on load', check: 'turn_media_load_instance', path: 'src/services/generation.service.ts', changes: [["      recentEvents: await withTurnMedia(filtered),", "      recentEvents: filtered,"]] },
+  { name: 'turn media queued covers processing', check: 'turn_media_load_instance', file: 'events.ts', changes: [["    status: row.status === 'ready' ? 'ready' : 'queued',", "    status: row.status as 'ready' | 'queued',"]] },
+  { name: 'turn media owns rows', check: 'turn_media_owner', file: 'events.ts', changes: [["      if (!row.player_id.equals(event.player_id)) continue", "      if (false && !row.player_id.equals(event.player_id)) continue"]] },
+  { name: 'turn media batched query', check: 'turn_media_batched', file: 'events.ts', changes: [[`  const rows = await mongoColl.mediaAssets().find({
+    instance_id: { $in: iids },
+    event_id: { $in: ids },
+    player_id: { $in: pids },
+    kind: { $in: ['picture', 'video'] },
+    status: { $in: ['queued', 'processing', 'ready'] },
+  }).sort({ created_at: 1, _id: 1 }).toArray() as MediaAssetDoc[]`, `  const rows: MediaAssetDoc[] = []
+  for (const event of events) {
+    rows.push(...(await mongoColl.mediaAssets().find({
+      event_id: event._id,
+      player_id: event.player_id,
+      kind: { $in: ['picture', 'video'] },
+      status: { $in: ['queued', 'processing', 'ready'] },
+    }).sort({ created_at: 1, _id: 1 }).toArray() as MediaAssetDoc[]))
+  }`]] },
+  { name: 'turn media carries no internals', check: 'turn_media_shape', file: 'events.ts', changes: [["    media_id: row._id.toHexString(),", "    media_id: row._id.toHexString(),\n    cache_key: row.cache_key,"]] },
+  { name: 'turn media ignores keepsake hiding', check: 'turn_media_hidden', file: 'events.ts', changes: [["    status: { $in: ['queued', 'processing', 'ready'] },", "    status: { $in: ['queued', 'processing', 'ready'] },\n    hidden_from_keepsakes: { $ne: true },"]] },
+  { name: 'turn media rides on pages', check: 'turn_media_pages', path: 'src/services/memory.service.ts', changes: [["    return { events: await withTurnMedia(ordered), total, page: opts.page || 1, hasOlder }", "    return { events: ordered, total, page: opts.page || 1, hasOlder }"]] },
+  { name: 'turn media rides on replay', check: 'turn_media_replay', path: 'src/services/memory.service.ts', changes: [["      event: updated ? (await withTurnMedia([publicMediaEvent(updated)]))[0] : updated,\n      replay_count: nextVariants.length,\n      selected_index: selectedIdx,", "      event: updated ? publicMediaEvent(updated) : updated,\n      replay_count: nextVariants.length,\n      selected_index: selectedIdx,"]] },
+  { name: 'turn media rides on variant select', check: 'turn_media_replay', path: 'src/services/memory.service.ts', changes: [["      event: updated ? (await withTurnMedia([publicMediaEvent(updated)]))[0] : updated,\n      replay_count: nextVariants.length,\n      selected_index: variantIndex,", "      event: updated ? publicMediaEvent(updated) : updated,\n      replay_count: nextVariants.length,\n      selected_index: variantIndex,"]] },
 ]
 // Bun's preload loader substitutes only the named module, including legacy
 // checks on paths owned by other tasks. No temporary source mutation or restore.
