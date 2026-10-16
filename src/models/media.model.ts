@@ -89,6 +89,9 @@ export interface MediaRejectionDoc {
    * provider: the image/video provider refused the request for content. */
   stage: 'pre' | 'post' | 'provider'
   reason: string
+  /** The sanitised provider message on provider refusals (URLs redacted, at
+   * most 300 chars). Absent on pre/post gate rejections. */
+  message?: string
   model: string
   created_at: Date
 }

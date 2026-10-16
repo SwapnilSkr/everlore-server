@@ -22,7 +22,8 @@ import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from './sc
 import { assembleCut, cutEffects, normalizeShot } from './cut'
 import { duplicateKey, releaseMedia, reserveMedia, settleMedia } from './usage'
 import { mp3DurationMs } from './audio'
-import { failMedia, mediaEffects } from './service'
+import { failMedia, mediaEffects, sanitizeMediaError } from './service'
+import { log } from '../../utils/logger'
 
 export type QueuedReply = { status: 'ready'; url: string; duration_ms?: number } | { status: 'queued'; media_id: string }
 
@@ -249,24 +250,38 @@ async function notifyMedia(asset: MediaAssetDoc): Promise<void> {
   await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'ready' }, { $set: { notified_at: new Date() } })
 }
 
-/** A gate rejection: delete the file, release the slot, stay unseen, log it. */
+/** A gate rejection: delete the file, release the slot, stay unseen, log it.
+ * A provider refusal also keeps its reason: the sanitised provider message
+ * lands on the unseen row (`error`), on the rejection row (`message`) and in
+ * one `media.provider_refused` warn line — so a plain provider bug can never
+ * go silent as a bare `provider_400`. */
 export async function unseeMedia(
   asset: MediaAssetDoc,
   stage: 'pre' | 'post' | 'provider',
   reason: string,
   uploadedKey?: string,
+  provider?: { message: string; status: number },
 ): Promise<void> {
   if (uploadedKey) {
     try {
       await mediaEffects.remove(uploadedKey)
     } catch { /* The unseen row retains its key; maintenance retries removal. */ }
   }
+  // Sanitised once, stored in three places: URLs redacted, at most 300 chars.
+  const message = provider ? sanitizeMediaError(provider.message) : undefined
   await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: { $ne: 'ready' } }, {
-    $set: { status: 'unseen', cache_key: `${asset.cache_key}:unseen:${asset._id.toHexString()}` },
+    $set: {
+      status: 'unseen',
+      cache_key: `${asset.cache_key}:unseen:${asset._id.toHexString()}`,
+      ...(message !== undefined ? { error: { stage: 'provider', message } } : {}),
+    },
     ...(uploadedKey ? {} : { $unset: { asset_key: '' } }),
   })
   await releaseMedia(asset._id)
-  await logRejection(asset, stage, reason, asset.model)
+  await logRejection(asset, stage, reason, asset.model, message)
+  if (message !== undefined && provider) {
+    log.warn('media.provider_refused', { kind: asset.kind, media_id: asset._id.toHexString(), status: provider.status, message })
+  }
   await mediaEffects.publish(asset.player_id.toHexString(), {
     type: 'media_unseen',
     ...(asset.instance_id ? { instanceId: asset.instance_id.toHexString() } : {}),
@@ -409,7 +424,7 @@ export async function processPortrait(mediaId: string): Promise<void> {
         return
       }
       if (error instanceof ProviderRefusalError) {
-        await unseeMedia(asset, 'provider', providerReason(error))
+        await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })
         return
       }
       throw error
@@ -525,7 +540,7 @@ async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
         return
       }
       if (error instanceof ProviderRefusalError) {
-        await unseeMedia(asset, 'provider', providerReason(error))
+        await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })
         return
       }
       throw error
@@ -656,7 +671,7 @@ export async function processPicture(mediaId: string): Promise<void> {
       })
     } catch (error) {
       if (error instanceof ProviderRefusalError) {
-        await unseeMedia(asset, 'provider', providerReason(error))
+        await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })
         return
       }
       throw error
@@ -842,6 +857,8 @@ interface ShotOutcome {
   checks: unknown[]
   cost: number
   reason?: string
+  /** The sanitised provider message on a provider-refused shot. */
+  message?: string
 }
 
 export async function makeSceneShot(args: {
@@ -853,8 +870,16 @@ export async function makeSceneShot(args: {
   instanceId: ObjectId
 }): Promise<ShotOutcome> {
   const primary = sceneModel(), fallback = sceneFallbackModel()
-  const dropped = (reason: string, checks: unknown[], cost: number, stillUrl = '', stillKey?: string): ShotOutcome =>
-    ({ role: args.role, status: 'dropped', model: primary, stillUrl, durationS: 0, checks, cost, reason, ...(stillKey ? { stillKey } : {}) })
+  const dropped = (reason: string, checks: unknown[], cost: number, stillUrl = '', stillKey?: string, message?: string): ShotOutcome =>
+    ({ role: args.role, status: 'dropped', model: primary, stillUrl, durationS: 0, checks, cost, reason, ...(stillKey ? { stillKey } : {}), ...(message !== undefined ? { message } : {}) })
+  // A refused scene shot counts like any provider refusal: a rejection row
+  // with the sanitised message, which also rides home on the shot outcome so
+  // the cut's telemetry keeps the reason.
+  const logShotRefusal = async (reason: 'still_provider_refused' | 'shot_provider_refused', rawMessage: string, model: string): Promise<string> => {
+    const message = sanitizeMediaError(rawMessage)
+    await logRejection({ _id: new ObjectId(), player_id: args.playerId, instance_id: args.instanceId, kind: 'video' }, 'provider', reason, model, message)
+    return message
+  }
   try {
     // Before any paid generation, the COMPILED still and motion prompts are
     // moderated (§7 gate on what we actually send): a rejected shot prompt
@@ -890,22 +915,25 @@ export async function makeSceneShot(args: {
     } catch (error) {
       // A provider content refusal drops the shot like a gate rejection, with
       // its own reason — never a failed cut and never a worker crash.
-      if (error instanceof ProviderRefusalError) return dropped('still_provider_refused', [], 0)
+      if (error instanceof ProviderRefusalError) {
+        const message = await logShotRefusal('still_provider_refused', error.message, imageModel())
+        return dropped('still_provider_refused', [], 0, '', undefined, message)
+      }
       throw error
     }
     if (!still) return dropped('still_rejected', stillChecks, 0.034)
     const stillBytes = still.data
     const stillKey = `media/still/${args.playerId.toHexString()}/${args.instanceId.toHexString()}/${args.role}-${Date.now()}.png`
     const stillUp = await visualEffects.upload(stillBytes, 'image/png', { key: stillKey })
-    const dropShot = async (reason: string): Promise<ShotOutcome> => {
+    const dropShot = async (reason: string, message?: string): Promise<ShotOutcome> => {
       // A rejected shot takes its still with it: nothing unseen stays stored.
       // When that deletion itself fails, the key rides home on the outcome so
       // the caller records it on the asset row for purgeMedia (item 5).
       try {
         await mediaEffects.remove(stillUp.key)
-        return dropped(reason, stillChecks, 0.034 + 0.4, '')
+        return dropped(reason, stillChecks, 0.034 + 0.4, '', undefined, message)
       } catch {
-        return dropped(reason, stillChecks, 0.034 + 0.4, '', stillUp.key)
+        return dropped(reason, stillChecks, 0.034 + 0.4, '', stillUp.key, message)
       }
     }
     const expectedPeople = args.shot.people_in_still.length
@@ -937,7 +965,10 @@ export async function makeSceneShot(args: {
       } catch (error) {
         // A refused prompt will not pass on the fallback either: drop the
         // shot instead of burning a second video on the same refusal.
-        if (error instanceof ProviderRefusalError) return dropShot('shot_provider_refused')
+        if (error instanceof ProviderRefusalError) {
+          const message = await logShotRefusal('shot_provider_refused', error.message, model)
+          return dropShot('shot_provider_refused', message)
+        }
         stillChecks.push({ model, error: (error as Error).message.slice(0, 200), retry: model === primary ? 'fallback' : 'dropped' })
       }
     }
@@ -1031,7 +1062,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       }
       // A face the provider will not paint makes the whole video unseen.
       if (error instanceof ProviderRefusalError) {
-        await unseeMedia(asset, 'provider', providerReason(error))
+        await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })
         return
       }
       throw error
@@ -1118,7 +1149,7 @@ export async function processVideo(mediaId: string): Promise<void> {
     } catch (error) {
       await deleteSceneStills(asset, sceneStillKeys(shots))
       if (error instanceof ProviderRefusalError) {
-        await unseeMedia(asset, 'provider', providerReason(error))
+        await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })
         return
       }
       throw new Error('Line shot failed')
@@ -1180,7 +1211,7 @@ export async function processVideo(mediaId: string): Promise<void> {
           ...planRecord,
           compiled: {
             line: compileLinePrompt(line.voice.speaker_name, line.voice.spoken_text),
-            shots: shots.map((s) => ({ role: s.role, model: s.model, status: s.status, reason: s.reason })),
+            shots: shots.map((s) => ({ role: s.role, model: s.model, status: s.status, reason: s.reason, ...(s.message !== undefined ? { message: s.message } : {}) })),
           },
           shots,
           render_ms: Date.now() - renderStarted,

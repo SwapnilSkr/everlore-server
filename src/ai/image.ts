@@ -83,6 +83,8 @@ export interface MediaImageReference {
 export class ProviderRefusalError extends Error {
   readonly status: number
   readonly code: string | null
+  /** message is the provider's own message (stored sanitised by the caller),
+   * falling back to a status:code label when the envelope carries none. */
   constructor(status: number, code: unknown, message: string) {
     super(message)
     this.name = 'ProviderRefusalError'
@@ -167,7 +169,10 @@ export async function generateMediaImage(
   }
   if (!res.ok) {
     const refusal = providerRefusal(res.status, json)
-    if (refusal !== null) throw new ProviderRefusalError(res.status, refusal, `Image generation refused (${res.status}:${refusal})`)
+    // The classification stays structural (status + envelope), but the reason
+    // is never dropped: the provider's message rides on the error so the
+    // caller can store it sanitised on the unseen and rejection rows.
+    if (refusal !== null) throw new ProviderRefusalError(res.status, refusal, json.error?.message || `Image generation refused (${res.status}:${refusal})`)
     throw new Error(`Image generation failed (${res.status}): ${(json.error?.message || res.statusText).slice(0, 300)}`)
   }
   const item = json.data?.[0]

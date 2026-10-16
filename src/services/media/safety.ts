@@ -300,7 +300,7 @@ export async function describeMoment(input: {
   return raw.trim()
 }
 
-export async function logRejection(asset: Pick<MediaAssetDoc, '_id' | 'player_id' | 'kind'> & Partial<Pick<MediaAssetDoc, 'instance_id' | 'event_id'>>, stage: 'pre' | 'post' | 'provider', reason: string, model: string): Promise<void> {
+export async function logRejection(asset: Pick<MediaAssetDoc, '_id' | 'player_id' | 'kind'> & Partial<Pick<MediaAssetDoc, 'instance_id' | 'event_id'>>, stage: 'pre' | 'post' | 'provider', reason: string, model: string, message?: string): Promise<void> {
   await mongoColl.mediaRejections().insertOne({
     _id: new ObjectId(),
     player_id: asset.player_id,
@@ -309,6 +309,7 @@ export async function logRejection(asset: Pick<MediaAssetDoc, '_id' | 'player_id
     kind: asset.kind as MediaKind,
     stage,
     reason,
+    ...(message !== undefined ? { message } : {}),
     model,
     created_at: new Date(),
   })

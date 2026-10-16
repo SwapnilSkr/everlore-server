@@ -78,13 +78,16 @@ const mutations: Mutation[] = [
   { name: 'portrait paints the moderated description', check: 'portrait_prompt_gated', file: 'visual.ts', changes: [["`${description}. SFW head-and-shoulders portrait", "`${appearance}. SFW head-and-shoulders portrait"]] },
   { name: 'picture paints the moderated description', check: 'picture_prompt_gated', file: 'visual.ts', changes: [["const prompt = `${description} ${faces.length", "const prompt = `${event.data.ai_response.slice(0, 1500)} ${faces.length"]] },
   { name: 'refusal detection is structural', check: 'provider_refusal_detected', path: 'src/ai/image.ts', changes: [["if ((status === 400 || status === 422) && body", "if (false && (status === 400 || status === 422) && body"]] },
-  { name: 'portrait refusal is unseen', check: 'provider_refusal_unseen', file: 'visual.ts', changes: [["if (error instanceof ProviderRefusalError) {\n        await unseeMedia(asset, 'provider', providerReason(error))\n        return\n      }", "// refusal unseen disabled"]] },
+  { name: 'portrait refusal is unseen', check: 'provider_refusal_unseen', file: 'visual.ts', changes: [["if (error instanceof ProviderRefusalError) {\n        await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })\n        return\n      }", "// refusal unseen disabled"]] },
   { name: 'refused face unseen the whole video', check: 'provider_refusal_video_face', file: 'visual.ts', changes: [["// A face the provider will not paint makes the whole video unseen.\n      if (error instanceof ProviderRefusalError) {", "if (false) {"]] },
   { name: 'failed rows carry the error', check: 'failed_row_error', file: 'service.ts', changes: [["error: { stage: cause.stage, message },", ""]] },
   { name: 'trait aliases map catalogue labels', check: 'casting_traits', file: 'policy.ts', changes: [["table[key]?.[value] ?? [value]", "[value]"]] },
   { name: 'invalid traits ignored', check: 'attribution_traits', file: 'policy.ts', changes: [["if (typeof value === 'string' && (list as readonly string[]).includes(value)) out[key] = value", "out[key] = value as string"]] },
   { name: 'child stays unvoiceable', check: 'attribution_traits', file: 'attribution.ts', changes: [["if (!traitsVoiceable(traits)) return no", "if (false) return no"]] },
   { name: 'first cast persists traits', check: 'casting_traits_persist', file: 'casting.ts', changes: [["voice, ...(!hasTraits(fresh) && Object.keys(traits).length ? { voice_traits: traits } : {}),", "voice,"]] },
+  // ── media-server-2-fix-3 ──
+  { name: 'refusal reason kept', check: 'provider_refusal_unseen', file: 'visual.ts', changes: [["await logRejection(asset, stage, reason, asset.model, message)", "await logRejection(asset, stage, reason, asset.model)"]] },
+  { name: 'refused still still counts', check: 'shot_refusal_logged', file: 'visual.ts', changes: [["const message = await logShotRefusal('still_provider_refused', error.message, imageModel())", "const message: string | undefined = undefined"]] },
 ]
 for (const mutation of mutations) {
   const file = at(mutation)

@@ -1050,21 +1050,78 @@ check('provider_refusal_detected', async () => {
 check('provider_refusal_unseen', async () => {
   // A provider content refusal is a rejection, not a failure: the slot is
   // released, media_rejections logs stage provider, and media_unseen is sent.
+  // The reason is never lost: the sanitised provider message lands on the
+  // unseen row, on the rejection row and in one provider_refused warn line.
   const f = fixture()
   stubPortraitPipeline(f, async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false }))
-  visualEffects.image = (async () => { throw new ProviderRefusalError(400, '400', 'Image generation refused (400:400)') }) as never
+  visualEffects.image = (async () => { throw new ProviderRefusalError(400, '400', 'Black Forest Labs blocked this request https://cdn.example.test/still.png?token=secret-token-value filler') }) as never
   const published: Array<Record<string, unknown>> = []
   mediaEffects.publish = (async (_player: string, message: Record<string, unknown>) => { published.push(message) }) as never
+  const warned: string[] = []
+  const origWarn = console.warn
+  console.warn = ((...args: unknown[]) => { warned.push(args.map(String).join(' ')) }) as typeof console.warn
   const a = portraitRow(f)
   f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
   await reserveMedia(a)
-  await processPortrait(String(a._id))
+  try {
+    await processPortrait(String(a._id))
+  } finally {
+    console.warn = origWarn
+  }
   assert.equal(f.db.mediaAssets.rows[0].status, 'unseen')
   assert.equal(f.db.mediaUsage.rows[0].status, 'released')
   assert.equal(f.db.mediaRejections.rows.length, 1)
   assert.equal((f.db.mediaRejections.rows[0] as { stage: string }).stage, 'provider')
   assert.equal((f.db.mediaRejections.rows[0] as { reason: string }).reason, 'provider_400')
   assert.ok(published.some((m) => m.type === 'media_unseen'))
+  const row = f.db.mediaAssets.rows[0] as unknown as MediaAssetDoc
+  assert.deepEqual(Object.keys(row.error || {}).sort(), ['message', 'stage'])
+  assert.equal(row.error!.stage, 'provider')
+  assert.ok(row.error!.message.includes('Black Forest Labs blocked'), 'provider message kept on the unseen row')
+  assert.ok(!row.error!.message.includes('http'), 'no URLs in the stored message')
+  assert.ok(!row.error!.message.includes('secret-token-value'))
+  assert.ok(row.error!.message.length <= 300)
+  const rejection = f.db.mediaRejections.rows[0] as unknown as { message?: string }
+  assert.equal(rejection.message, row.error!.message, 'rejection row carries the same message')
+  assert.ok(!rejection.message!.includes('secret-token-value'))
+  assert.equal(warned.filter((l) => l.includes('media.provider_refused')).length, 1, 'exactly one provider_refused line')
+  const line = warned.find((l) => l.includes('media.provider_refused'))!
+  assert.ok(line.includes('kind=portrait'))
+  assert.ok(line.includes(`media_id=${String(a._id)}`))
+  assert.ok(line.includes('status=400'))
+  assert.ok(line.includes('Black Forest Labs blocked'))
+  assert.ok(!line.includes('secret-token-value'))
+})
+check('shot_refusal_logged', async () => {
+  // A refused scene still drops the shot but still counts: a rejection row
+  // with the sanitised message, kept on the shot's telemetry as well.
+  const f = fixture()
+  f.card.appearance = 'Grey eyes, dark braids'
+  safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
+    ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+    : 'A calm illustrated description naming who is present.'
+  visualEffects.image = (async () => { throw new ProviderRefusalError(400, '400', 'Flux blocked this still https://cdn.example.test/still.png?token=shot-secret filler') }) as never
+  visualEffects.upload = (async () => { throw new Error('upload must never run after a refused still') }) as never
+  visualEffects.download = (async () => Buffer.from('face')) as never
+  const shot = await makeSceneShot({
+    role: 'opening',
+    continuity: { wardrobe: 'Dark cloak', hair: 'Braids', props: 'none', time_of_day: 'Night', weather: 'Dry', light: 'Lamp', palette: 'Amber, black' },
+    shot: { role: 'opening', evidence: 'Rain hit the gutter.', framing: 'wide', people_in_still: [{ name: 'Tomas', placement: 'door', facing: 'away' }], still: 'A figure at a door.', camera_move: 'static', subject_action: 'none', environment_motion: 'rain', duration_s: 2 },
+    speakerPortrait: Buffer.from('face'),
+    playerId: f.player,
+    instanceId: f.instance,
+  })
+  assert.equal(shot.status, 'dropped')
+  assert.equal(shot.reason, 'still_provider_refused')
+  assert.ok(shot.message?.includes('Flux blocked this still'), 'shot telemetry keeps the message')
+  assert.ok(!shot.message!.includes('http'), 'no URLs in the shot message')
+  assert.ok(!shot.message!.includes('shot-secret'))
+  assert.equal(f.db.mediaRejections.rows.length, 1)
+  const rejection = f.db.mediaRejections.rows[0] as unknown as { stage: string; reason: string; message?: string; kind: string }
+  assert.equal(rejection.stage, 'provider')
+  assert.equal(rejection.reason, 'still_provider_refused')
+  assert.equal(rejection.kind, 'video')
+  assert.equal(rejection.message, shot.message, 'rejection row carries the same message')
 })
 check('provider_refusal_video_face', async () => {
   // A video whose face cannot be painted goes wholly unseen.
