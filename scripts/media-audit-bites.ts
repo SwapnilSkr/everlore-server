@@ -333,6 +333,28 @@ const mutations: Mutation[] = [
   { name: 'passing look description has a subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["name: speakerSubject(name), prose:", "name, prose:"]] },
   { name: 'director and scene names have a subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["speaker_name: speakerSubject(line.voice.speaker_name)", "speaker_name: line.voice.speaker_name"]] },
 
+  // ── media-no-look-no-paint ──
+  { name: 'no physical description blocks lasting paint', check: 'kept_no_appearance', file: 'visual.ts', changes: [["if (!report.has_appearance) throw new UnseenError('pre', 'no_appearance')", "// evidence gate removed"]] },
+  { name: 'empty sources never call the filler', check: 'kept_no_appearance', file: 'visual.ts', changes: [["if (!source.prose) throw new UnseenError('pre', 'no_appearance')", "// empty source allowed"]] },
+  { name: 'queued missing look follows unseen path', check: 'kept_no_appearance', file: 'visual.ts', changes: [["      await unseeMedia(asset, error.stage, error.reason)\n      return", "      await failMedia(asset, { stage: 'prepare', message: error.message })\n      return"]] },
+  { name: 'inline missing look uses evidence resolver', check: 'kept_no_appearance', file: 'visual.ts', changes: [["const appearance = await keptPortraitLook(instance, card, template, holder)", "const appearance = holder.appearance || 'Invented face'"]] },
+  { name: 'missing lasting look releases the video too', check: 'kept_video_no_appearance', file: 'visual.ts', changes: [["      if (error instanceof UnseenError) {\n        await unseeMedia(asset, error.stage, error.reason)\n        return\n      }\n      // A face the provider", "      if (error instanceof UnseenError) return\n      // A face the provider"]] },
+  { name: 'story evidence reaches lasting filler', check: 'kept_story_evidence', file: 'visual.ts', changes: [["visualEffects.fill(card, source.prose, { persona: source.persona })", "visualEffects.fill(card, '', { persona: source.persona })"]] },
+  { name: 'persona remains supporting context', check: 'kept_story_evidence', file: 'visual.ts', changes: [["{ supporting_persona: evidence.persona }", "{ supporting_persona: '' }"]] },
+  { name: 'card look precedes authored look', check: 'kept_evidence_order', file: 'look-evidence.ts', changes: [["card.appearance?.trim() || authored?.appearance?.trim()", "authored?.appearance?.trim() || card.appearance?.trim()"]] },
+  { name: 'authored look precedes narration', check: 'kept_evidence_order', file: 'look-evidence.ts', changes: [["card.appearance?.trim() || authored?.appearance?.trim() || ''", "card.appearance?.trim() || ''"]] },
+  { name: 'evidence verdict must be a boolean', check: 'kept_evidence_schema', file: 'visual.ts', changes: [["typeof report.has_appearance !== 'boolean' || ", ""]] },
+  { name: 'evidence verdict required in response schema', check: 'kept_evidence_schema', file: 'visual.ts', changes: [["required: ['look', 'has_appearance']", "required: ['look']"]] },
+  { name: 'narration reads are scoped to the save', check: 'kept_evidence_read_only', file: 'look-evidence.ts', changes: [["instance_id: instance._id, player_id: instance.player_id", "player_id: instance.player_id"]] },
+  { name: 'narration reads are scoped to the player', check: 'kept_evidence_read_only', file: 'look-evidence.ts', changes: [["instance_id: instance._id, player_id: instance.player_id", "instance_id: instance._id"]] },
+  { name: 'look narration is newest first', check: 'kept_evidence_read_only', file: 'look-evidence.ts', changes: [["sort({ sequence: -1, _id: -1 })", "sort({ sequence: 1, _id: 1 })"]] },
+  { name: 'look narration is bounded to thirty turns', check: 'kept_evidence_read_only', file: 'look-evidence.ts', changes: [[".limit(30)", ".limit(35)"]] },
+  { name: 'presence identifies a character without a written name', check: 'kept_evidence_read_only', file: 'look-evidence.ts', changes: [["if (!present && !narrator &&", "if (!narrator &&"]] },
+  { name: 'look narration is bounded to six thousand characters', check: 'kept_evidence_read_only', file: 'look-evidence.ts', changes: [["let remaining = 6000", "let remaining = 7000"]] },
+  { name: 'filler receives the whole bounded evidence window', check: 'kept_evidence_read_only', file: 'visual.ts', changes: [["evidence ? 6000 : 1200", "1200"]] },
+  { name: 'evidence gathering never writes story collections', check: 'kept_evidence_read_only', file: 'look-evidence.ts', changes: [["  const roster = newFoldState([card])", "  await mongoColl.events().updateOne({ instance_id: instance._id }, { $set: { touched: true } }); const roster = newFoldState([card])"]] },
+  { name: 'passing faces keep inventing without description', check: 'passing_without_appearance', file: 'visual.ts', changes: [["appearance: '' }, event.data.ai_response)", "appearance: '' }, event.data.ai_response, { persona: '' })"]] },
+
 ]
 // Bun's preload loader substitutes only the named module, including legacy
 // checks on paths owned by other tasks. No temporary source mutation or restore.

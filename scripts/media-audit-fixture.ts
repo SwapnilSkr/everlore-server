@@ -124,7 +124,7 @@ function structuredCloneRow<T>(value: T): T {
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, structuredCloneRow(v)])) as T
 }
 export function fixture() {
-  const names = ['worldInstances', 'worldTemplates', 'events', 'users', 'characters', 'mediaAssets', 'mediaUsage', 'mediaRejections', 'personas', 'memories'] as const
+  const names = ['worldInstances', 'worldTemplates', 'events', 'users', 'characters', 'mediaAssets', 'mediaUsage', 'mediaRejections', 'personas', 'memories', 'entities', 'entityEdges', 'placeCandidates', 'relationCandidates', 'locationStats', 'signalLedger', 'projectionAnomalies', 'projectionCheckpoints', 'projectionCheckpointChunks', 'storyCalendars', 'timelineBranches'] as const
   const db = Object.fromEntries(names.map((name) => [name, new MemoryCollection(name)])) as Record<typeof names[number], MemoryCollection>
   for (const name of names) Object.assign(mongoColl, { [name]: () => db[name] })
   const player = new ObjectId(), instance = new ObjectId(), event = new ObjectId(), template = new ObjectId(), character = new ObjectId()
@@ -167,4 +167,21 @@ export function readAuditSource(path: string | URL, _encoding: 'utf8'): string {
     ? JSON.parse(process.env.MEDIA_AUDIT_MUTATION) as { path: string; contents: string }
     : undefined
   return mutation?.path === file ? mutation.contents : readFileSync(file, 'utf8')
+}
+
+/** Observe every attempted story write, including no-match updates and deletes. */
+export function observeStoryWrites(f: ReturnType<typeof fixture>) {
+  const writes: Array<{ collection: string; method: string; stack: string }> = []
+  for (const [name, collection] of Object.entries(f.db)) {
+    if (['mediaAssets', 'mediaUsage', 'mediaRejections', 'personas', 'users'].includes(name)) continue
+    for (const method of ['insertOne', 'updateOne', 'updateMany', 'findOneAndUpdate', 'deleteOne', 'deleteMany'] as const) {
+      const original = collection[method].bind(collection)
+      // The fixture's mutation methods have different signatures; preserve their runtime arguments.
+      Object.assign(collection, { [method]: (...args: unknown[]) => {
+        writes.push({ collection: name, method, stack: new Error().stack || '' })
+        return (original as (...values: unknown[]) => unknown)(...args)
+      } })
+    }
+  }
+  return writes
 }

@@ -1,15 +1,18 @@
+import type { WorldInstanceDoc } from '../src/models/world-instance.model'
+import type { WorldTemplateDoc } from '../src/models/world-template.model'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import { writeFile } from 'node:fs/promises'
 import { ObjectId } from 'mongodb'
-import { fixture, readAuditSource as readFileSync } from './media-audit-fixture'
+import { fixture, observeStoryWrites, readAuditSource as readFileSync } from './media-audit-fixture'
 import { detectSpokenLines } from '../src/services/media/detection'
 import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, resolveVoiceSpeaker, attributionEffects, ATTRIBUTION_RULE_VERSION } from '../src/services/media/attribution'
 import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, publicSpokenLines, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
 import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
-import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, ensurePersonaFaceReady, ensurePassingFaceReady, passingFaceKey, PASSING_FACE_RULE_VERSION, requestTurnVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
+import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, ensurePersonaFaceReady, ensurePassingFaceReady, passingFaceKey, PASSING_FACE_RULE_VERSION, requestTurnVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, fillUnknownLook, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
+import { portraitLookEvidence } from '../src/services/media/look-evidence'
 import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, describeMoment, MEDIA_VISUAL_POLICY, buildSafetyPrompts, visualPolicyLine } from '../src/services/media/safety'
 import { assembleDialogueFreeCut, buildCutGraph, cutEffects } from '../src/services/media/cut'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt, POLICY_SENTENCE, SCENE_TEMPLATES } from '../src/services/media/scene-templates'
@@ -2833,6 +2836,192 @@ check('unnamed_video_subjects', async () => {
     assert.ok(scenes.some((p) => p.includes(`Visible people: ${subject} (`)), 'scene motion carries the same subject')
     assert.equal(f.db.characters.inserts, 0)
   }
+})
+
+// ── Lasting faces require existing appearance evidence; passing faces may invent. ──
+function noLookFixture(prose = 'Speaker folds their arms. “Come with me.”') {
+  const f = fixture()
+  process.env.MEDIA_PORTRAIT_ENABLED = 'true'
+  process.env.MEDIA_DAILY_PORTRAIT = '20'
+  Object.assign(f.card, { appearance: null })
+  f.db.worldTemplates.rows[0].is_sentient = true
+  f.db.worldTemplates.rows[0].protagonist = { name: 'Alias', persona: 'Proud and sharp-tongued.', appearance: null }
+  Object.assign(f.db.events.rows[0], { sequence: 1, data: { ai_response: prose, player_input: '' } })
+  return f
+}
+function stubEvidencePaint(f: ReturnType<typeof fixture>, hasAppearance: unknown, look = 'Grey eyes, silver curls.') {
+  const calls: Array<Parameters<typeof safetyEffects.call>[0]> = []
+  let paints = 0
+  visualEffects.fill = fillUnknownLook
+  safetyEffects.call = async (req) => {
+    calls.push(req)
+    if (req.purpose === 'media_portrait_look') return req.responseSchema
+      ? JSON.stringify({ has_appearance: hasAppearance, look }) : 'An invented face with grey eyes and silver curls.'
+    if (req.purpose === 'media_safety_pre') return JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+    return 'A calm portrait description.'
+  }
+  safetyEffects.judge = async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false })
+  visualEffects.image = async () => { paints++; return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 } }
+  visualEffects.upload = async (_data, _type, opts) => ({ key: opts?.key || '', url: 'https://example.test/portrait.jpg' })
+  const published: Array<Record<string, unknown>> = []
+  mediaEffects.publish = async (_pid, message) => { published.push(message) }
+  return { calls, paints: () => paints, published }
+}
+check('kept_no_appearance', async () => {
+  for (const inline of [false, true]) for (const prose of ['', 'Speaker folds their arms. “Come with me.”']) {
+    const f = noLookFixture(prose), run = stubEvidencePaint(f, false, 'An invented face that must not paint.')
+    const writes = observeStoryWrites(f)
+    if (inline) {
+      await assert.rejects(ensurePortraitReady(String(f.player), String(f.instance), f.card),
+        (error: unknown) => error instanceof Error && error.message === 'unseen:pre:no_appearance')
+      assert.equal(f.db.mediaAssets.rows.length, 0, 'inline claim removed')
+    } else {
+      const reply = await requestPortrait(String(f.player), String(f.instance), String(f.character))
+      assert.equal(reply.status, 'queued')
+      if (reply.status !== 'queued') throw new Error('Expected queued portrait')
+      await processPortrait(reply.media_id)
+      assert.equal(f.db.mediaAssets.rows[0].status, 'unseen')
+      assert.ok(run.published.some((message) => message.type === 'media_unseen'))
+    }
+    assert.equal(run.paints(), 0)
+    assert.equal(run.calls.length, prose ? 1 : 0, 'at most one filler; no description or moderation call')
+    assert.equal(f.db.mediaRejections.rows.length, 1)
+    assert.equal(f.db.mediaRejections.rows[0].reason, 'no_appearance')
+    assert.equal(f.db.mediaUsage.rows[0].status, 'released')
+    assert.equal(f.db.mediaUsage.rows[0].slot, undefined)
+    assert.deepEqual(writes, [])
+  }
+})
+check('kept_video_no_appearance', async () => {
+  const f = videoBase()
+  f.card.appearance = undefined
+  process.env.MEDIA_PORTRAIT_ENABLED = 'true'
+  process.env.MEDIA_DAILY_VIDEO = '20'
+  process.env.MEDIA_DAILY_PORTRAIT = '20'
+  stubVideoRun(f)
+  const run = stubEvidencePaint(f, false)
+  const reply = await requestVideo(String(f.player), String(f.instance), String(f.event), 'l0')
+  if (reply.status !== 'queued') throw new Error('Expected queued video')
+  const writes = observeStoryWrites(f)
+  await processVideo(reply.media_id)
+  assert.equal(f.db.mediaAssets.rows.find((row) => String(row._id) === reply.media_id)?.status, 'unseen')
+  assert.equal(run.paints(), 0)
+  assert.equal(run.calls.length, 1)
+  assert.equal(f.db.mediaUsage.rows.length, 2)
+  assert.ok(f.db.mediaUsage.rows.every((row) => row.status === 'released' && row.slot === undefined))
+  assert.ok(f.db.mediaRejections.rows.every((row) => row.reason === 'no_appearance'))
+  assert.equal(f.db.mediaRejections.rows.length, 2, 'portrait and requested video each log their refusal')
+  assert.ok(run.published.some((message) => message.type === 'media_unseen' && message.kind === 'video'))
+  // Existing processVideo re-checks attribution with a conditional event claim, even on a cached attribution.
+  assert.deepEqual(writes.map(({ collection, method }) => ({ collection, method })), [{ collection: 'events', method: 'findOneAndUpdate' }])
+  assert.ok(writes[0].stack.includes('attributeEvent'))
+})
+check('kept_story_evidence', async () => {
+  for (const inline of [false, true]) {
+    const prose = 'Alias has grey eyes and silver curls. “Come with me.”'
+    const f = noLookFixture(prose), run = stubEvidencePaint(f, true)
+    const writes = observeStoryWrites(f)
+    if (inline) assert.equal((await ensurePortraitReady(String(f.player), String(f.instance), f.card)).painted, true)
+    else {
+      const a = portraitRow(f)
+      f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+      await reserveMedia(a)
+      await processPortrait(String(a._id))
+      assert.equal(f.db.mediaAssets.rows[0].status, 'ready')
+    }
+    assert.equal(run.paints(), 1)
+    const fill = run.calls.filter((req) => req.purpose === 'media_portrait_look')
+    assert.equal(fill.length, 1)
+    const input = JSON.parse(String(fill[0].messages[1].content))
+    assert.equal(input.prose, prose)
+    assert.equal(input.supporting_persona, 'Proud and sharp-tongued.')
+    assert.equal(f.db.mediaUsage.rows[0].status, 'settled')
+    // The brief explicitly exempts existing storePortrait write-back from changes.
+    assert.deepEqual(writes.map(({ collection, method }) => ({ collection, method })), [{ collection: 'worldTemplates', method: 'updateOne' }])
+    assert.ok(writes.every((write) => write.stack.includes('storePortrait')))
+  }
+})
+check('kept_evidence_order', async () => {
+  for (const inline of [false, true]) for (const cardFirst of [false, true]) {
+    const f = noLookFixture('Speaker has red hair.'), run = stubEvidencePaint(f, true)
+    f.db.worldTemplates.rows[0].protagonist = { name: 'Alias', appearance: 'Black hair and amber eyes.' }
+    if (cardFirst) f.card.appearance = 'Grey eyes and silver curls.'
+    if (inline) await ensurePortraitReady(String(f.player), String(f.instance), f.card)
+    else {
+      const a = portraitRow(f)
+      f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+      await reserveMedia(a)
+      await processPortrait(String(a._id))
+    }
+    const description = run.calls.find((req) => req.purpose === 'media_describe')!
+    assert.ok(description)
+    const input = JSON.parse(String(description.messages[1].content))
+    assert.equal(input.moment, cardFirst ? 'Grey eyes and silver curls.' : 'Black hair and amber eyes.')
+    assert.equal(run.calls.filter((req) => req.purpose === 'media_portrait_look').length, 0)
+    assert.equal(run.paints(), 1)
+  }
+})
+check('kept_evidence_schema', async () => {
+  for (const verdict of [true, false, 'true', 'false', undefined, null, 1]) {
+    const f = noLookFixture(), run = stubEvidencePaint(f, verdict)
+    const a = portraitRow(f)
+    f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+    await reserveMedia(a)
+    await processPortrait(String(a._id))
+    const fill = run.calls.find((req) => req.purpose === 'media_portrait_look')!
+    assert.deepEqual(fill.responseSchema, {
+      type: 'object', additionalProperties: false, required: ['look', 'has_appearance'],
+      properties: { look: { type: 'string' }, has_appearance: { type: 'boolean' } },
+    })
+    assert.equal(run.paints(), verdict === true ? 1 : 0)
+    if (verdict !== true) {
+      assert.equal(f.db.mediaUsage.rows[0].status, 'released')
+      assert.equal(f.db.mediaUsage.rows[0].slot, undefined)
+    }
+  }
+})
+check('kept_evidence_read_only', async () => {
+  const f = noLookFixture()
+  // Use seed cast, aliases and presence, plus foreign saves and players.
+  f.db.worldTemplates.rows[0].is_sentient = false
+  delete f.db.worldTemplates.rows[0].protagonist
+  f.db.worldTemplates.rows[0].seed_cast = [{ name: 'Alias', persona: 'Proud.' }]
+  const base = f.db.events.rows[0]
+  f.db.events.rows = Array.from({ length: 35 }, (_, sequence) => ({ ...base, _id: new ObjectId(), sequence,
+    data: { ai_response: sequence === 34 ? 'Their silver curls catch the light.' : `Speaker waits, turn ${sequence}.`, present_characters: sequence === 34 ? ['Alias'] : [] } }))
+  f.db.events.rows.push({ ...base, _id: new ObjectId(), sequence: 40, instance_id: new ObjectId(), data: { ai_response: 'Speaker foreign save.' } },
+    { ...base, _id: new ObjectId(), sequence: 41, player_id: new ObjectId(), data: { ai_response: 'Speaker foreign player.' } })
+  const writes = observeStoryWrites(f)
+  const source = await portraitLookEvidence(f.db.worldInstances.rows[0] as unknown as WorldInstanceDoc, f.card,
+    f.db.worldTemplates.rows[0] as unknown as WorldTemplateDoc)
+  assert.ok(source.prose.startsWith('Their silver curls catch the light.\n\nSpeaker waits, turn 33.'))
+  assert.ok(source.prose.endsWith('Speaker waits, turn 5.'))
+  assert.ok(!source.prose.includes('turn 4.'))
+  assert.ok(!source.prose.includes('foreign'))
+  assert.equal(source.persona, 'Proud.')
+  const long = 'Speaker ' + 'x'.repeat(7000)
+  f.db.events.rows = [{ ...base, sequence: 50, data: { ai_response: long } }]
+  const bounded = await portraitLookEvidence(f.db.worldInstances.rows[0] as unknown as WorldInstanceDoc, f.card, null)
+  assert.equal(bounded.prose, long.slice(0, 6000))
+  const run = stubEvidencePaint(f, true)
+  await fillUnknownLook(f.card, bounded.prose, { persona: '' })
+  assert.equal(JSON.parse(String(run.calls[0].messages[1].content)).prose.length, 6000)
+  assert.deepEqual(writes, [])
+})
+check('passing_without_appearance', async () => {
+  const f = noLookFixture('The watcher says, “Come with me.”'), run = stubEvidencePaint(f, false)
+  f.db.characters.rows = []
+  const a = asset(f, { kind: 'video', status: 'processing', revision: mediaRevision('The watcher says, “Come with me.”', '') })
+  f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+  const writes = observeStoryWrites(f)
+  const face = await ensurePassingFaceReady(a, f.db.events.rows[0] as unknown as WorldEventDoc, 'the watcher')
+  assert.equal(face.painted, true)
+  assert.equal(run.paints(), 1)
+  assert.equal(run.calls[0].purpose, 'media_portrait_look')
+  assert.equal(run.calls[0].responseSchema, undefined, 'passing filler remains free to invent')
+  assert.equal(f.db.mediaRejections.rows.length, 0)
+  assert.equal(f.db.mediaUsage.rows[0].status, 'settled')
+  assert.deepEqual(writes, [])
 })
 
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }
