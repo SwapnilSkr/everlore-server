@@ -103,6 +103,11 @@ const mutations: Mutation[] = [
   { name: 'persona keeps separate faces per style', check: 'persona_per_style', file: 'portraits.ts', changes: [["if (key !== PAINTED_STYLE_KEY) return persona.portraits?.[key]", "if (key !== PAINTED_STYLE_KEY) return persona.portrait"]] },
   { name: 'picture paints the player face for its world', check: 'picture_persona_style', file: 'visual.ts', changes: [["? await ensurePersonaFaceReady(asset.player_id.toHexString(), instance.persona_id, style.key, style.render)", "? null"]] },
   { name: 'vision gate allows drawn styles', check: 'vision_drawn_styles', file: 'safety.ts', changes: [["painterly, anime, cartoon or semi-photographic", "painterly or semi-photographic"]] },
+  // ── media-picture-parallel-faces ──
+  { name: 'faces paint at the same time', check: 'picture_faces_parallel', file: 'visual.ts', changes: [["const settled = await Promise.allSettled(faceRuns.map((run) => run()))", "const settled: Array<{ status: 'fulfilled'; value: { name: string; bytes: Buffer; contentType: string; assetKey: string; painted: boolean } } | { status: 'rejected'; reason: unknown }> = []\n    for (const run of faceRuns) { try { settled.push({ status: 'fulfilled', value: await run() }) } catch (error) { settled.push({ status: 'rejected', reason: error }) } }"]] },
+  { name: 'one paint per face', check: 'picture_faces_single_paint', file: 'visual.ts', changes: [["  const flight = portraitFlights.get(cacheKey)\n  if (flight) {", "  const flight = portraitFlights.get(cacheKey)\n  if (false && flight) {"], ["source: 'generated', model, cache_key: cacheKey,", "source: 'generated', model, cache_key: `${cacheKey}:${id.toHexString()}`,"]] },
+  { name: 'refused face releases its claim', check: 'picture_face_failure_releases', file: 'visual.ts', changes: [["      } catch (error) {\n        await mongoColl.mediaAssets().deleteOne({ _id: id })", "      } catch (error) {\n        // claim retained"]] },
+  { name: 'portrait allowance gates faces', check: 'picture_faces_allowance_edge', file: 'visual.ts', changes: [["if (!await reserveMedia({ _id: id, player_id: pid, instance_id: iid, kind: 'portrait' })) {", "if (false && !await reserveMedia({ _id: id, player_id: pid, instance_id: iid, kind: 'portrait' })) {"]] },
 ]
 for (const mutation of mutations) {
   const file = at(mutation)

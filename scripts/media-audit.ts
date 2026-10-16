@@ -8,7 +8,7 @@ import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, reso
 import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, traitsVoiceable, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
 import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
-import { makeSceneShot, processPicture, processPortrait, processVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
+import { makeSceneShot, processPicture, processPortrait, processVideo, ensurePortraitReady, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
 import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, VISION_SYSTEM } from '../src/services/media/safety'
 import { buildCutGraph, cutEffects } from '../src/services/media/cut'
 import { compileMotionPrompt, compileStillPrompt } from '../src/services/media/scene-templates'
@@ -970,6 +970,187 @@ check('reference_key', async () => {
   const row = f.db.mediaAssets.rows.find((r) => (r.kind as string) === 'picture') as unknown as MediaAssetDoc
   assert.equal(row.status, 'ready')
   assert.equal(row.reference_asset_key, 'media/portrait/keep.png')
+})
+// ── media-picture-parallel-faces ──
+
+// Extra unpainted faces for multi-face picture checks. The fixture's Speaker
+// stays first (first_seen_sequence 1) so the present order is deterministic.
+function addUnpaintedCards(f: ReturnType<typeof fixture>, names: string[]) {
+  let seq = 2
+  for (const name of names) {
+    f.db.characters.rows.push({
+      _id: new ObjectId(), instance_id: f.instance, player_id: f.player,
+      canonical_name: name, name_normalized: name.toLowerCase(), aliases: [],
+      appearance: `${name} with a weathered face and steady eyes`, appearance_version: 1,
+      immutable_facts: [], mutable_state: [], disposition_to_player: '', hidden_thought: '',
+      first_seen_sequence: seq, last_seen_sequence: seq, mention_count: 1,
+      created_at: new Date(), updated_at: new Date(),
+    } as unknown as Record<string, unknown>)
+    seq++
+  }
+  f.card.appearance = 'Grey eyes, dark braids'
+  f.card.appearance_version = 1
+}
+
+/** Full stub pipeline for a picture with unpainted faces. The vision verdict
+ * (one face, no close-up, no text) satisfies the portrait post-gate and the
+ * picture post-gate alike. */
+function stubPictureFaces(f: ReturnType<typeof fixture>) {
+  safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
+    ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+    : 'Faces in a tavern. Wide view, calm mood.'
+  safetyEffects.judge = (async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: false, text_visible: false })) as never
+  visualEffects.fill = (async () => 'Filled look') as never
+  visualEffects.download = (async () => Buffer.from(PNG_BYTES)) as never
+  visualEffects.upload = (async (_data: Buffer, _type: string, o?: { key?: string }) => ({ key: o?.key || '', url: `https://example.test/${o?.key}` })) as never
+  mediaEffects.remove = (async () => {}) as never
+  mediaEffects.publish = (async () => {}) as never
+}
+
+function pictureProse(f: ReturnType<typeof fixture>, prose: string) {
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  event.data.ai_response = prose
+}
+
+async function queuePicture(f: ReturnType<typeof fixture>): Promise<MediaAssetDoc> {
+  const reply = await requestPicture(String(f.player), String(f.instance), String(f.event))
+  assert.equal(reply.status, 'queued')
+  if (reply.status !== 'queued') throw new Error('picture cached unexpectedly')
+  await processPicture(String(reply.media_id))
+  const row = f.db.mediaAssets.rows.find((r) => (r.kind as string) === 'picture') as unknown as MediaAssetDoc
+  return row
+}
+
+check('picture_faces_parallel', async () => {
+  // Three unpainted faces paint at the same time: all three paint calls have
+  // started before any finishes, the picture still renders, the reference is
+  // the first present card's face, and one timing line accounts the phase.
+  const f = fixture()
+  addUnpaintedCards(f, ['Mara', 'Tomas'])
+  pictureProse(f, 'Mara, Tomas and Speaker gathered by the door. "Come with me."')
+  stubPictureFaces(f)
+  const events: string[] = []
+  let started = 0
+  visualEffects.image = (async (prompt: string) => {
+    if (prompt.includes('head-and-shoulders portrait')) {
+      events.push('start'); started++
+      const begin = Date.now()
+      while (started < 3 && Date.now() - begin < 3000) await Bun.sleep(20)
+      events.push('finish')
+    }
+    return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 }
+  }) as never
+  const logged: string[] = []
+  const origLog = console.log
+  console.log = ((...args: unknown[]) => { logged.push(args.map(String).join(' ')) }) as typeof console.log
+  try {
+    const row = await queuePicture(f)
+    assert.equal(row.status, 'ready')
+  } finally {
+    console.log = origLog
+  }
+  assert.deepEqual(events.filter((e) => e === 'start'), ['start', 'start', 'start'])
+  const thirdStart = events.indexOf('start', events.indexOf('start', events.indexOf('start') + 1) + 1)
+  assert.ok(thirdStart !== -1 && thirdStart < events.indexOf('finish'), 'all three paints started before any finished')
+  const row = f.db.mediaAssets.rows.find((r) => (r.kind as string) === 'picture') as unknown as MediaAssetDoc
+  const firstPortrait = (f.db.characters.rows[0] as unknown as { portrait: { asset_key: string } }).portrait
+  assert.equal(row.reference_asset_key, firstPortrait.asset_key)
+  const line = logged.find((l) => l.includes('media.picture_rendered'))
+  assert.ok(line, 'one timing line per finished picture')
+  for (const field of ['outcome=ready', 'faces_requested=3', 'faces_painted=3', 'faces_reused=0', 'faces_dropped=0']) {
+    assert.ok(line!.includes(field), `timing line carries ${field}`)
+  }
+  assert.ok(/render_ms=\d+/.test(line!) && /face_ms=\d+/.test(line!))
+})
+check('picture_faces_single_paint', async () => {
+  // Two concurrent paints of one face, plus a picture naming it, end with one
+  // image call, one settled portrait slot, and one asset key everywhere.
+  const f = fixture()
+  f.card.appearance = 'Grey eyes, dark braids'
+  f.card.appearance_version = 1
+  pictureProse(f, 'Speaker leaned closer. "Come with me."')
+  stubPictureFaces(f)
+  let portraitCalls = 0
+  visualEffects.image = (async (prompt: string) => {
+    if (prompt.includes('head-and-shoulders portrait')) portraitCalls++
+    return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 }
+  }) as never
+  const reply = await requestPicture(String(f.player), String(f.instance), String(f.event))
+  assert.equal(reply.status, 'queued')
+  if (reply.status !== 'queued') throw new Error('picture cached unexpectedly')
+  const [a, b] = await Promise.all([
+    ensurePortraitReady(String(f.player), String(f.instance), f.card),
+    ensurePortraitReady(String(f.player), String(f.instance), f.card),
+    processPicture(String(reply.media_id)),
+  ])
+  assert.equal(portraitCalls, 1)
+  assert.equal(a.assetKey, b.assetKey)
+  assert.equal(f.db.mediaUsage.rows.filter((r) => (r.kind as string) === 'portrait' && (r.status as string) === 'settled').length, 1)
+  const row = f.db.mediaAssets.rows.find((r) => (r.kind as string) === 'picture') as unknown as MediaAssetDoc
+  assert.equal(row.status, 'ready')
+  assert.equal(row.reference_asset_key, a.assetKey)
+})
+check('picture_face_failure_releases', async () => {
+  // The winner's paint is refused: its claim is gone, its slot is released,
+  // the waiter rejects (that face stays out of frame), and the next tap
+  // paints normally.
+  const f = fixture()
+  f.card.appearance = 'Grey eyes, dark braids'
+  f.card.appearance_version = 1
+  pictureProse(f, 'Speaker leaned closer. "Come with me."')
+  stubPictureFaces(f)
+  const prior = process.env.MEDIA_PORTRAIT_WAIT_MS
+  process.env.MEDIA_PORTRAIT_WAIT_MS = '3000'
+  let hold = true, refuse = false
+  visualEffects.image = (async (prompt: string) => {
+    if (prompt.includes('head-and-shoulders portrait')) {
+      while (hold) await Bun.sleep(20)
+      if (refuse) throw new ProviderRefusalError(400, '400', 'Image generation refused (400:400)')
+    }
+    return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 }
+  }) as never
+  try {
+    const winner = ensurePortraitReady(String(f.player), String(f.instance), f.card)
+    while (f.db.mediaAssets.rows.length === 0) await Bun.sleep(20)
+    const waiter = ensurePortraitReady(String(f.player), String(f.instance), f.card)
+    await Bun.sleep(150) // Let the waiter lose the claim and start polling.
+    refuse = true
+    hold = false
+    const [won, waited] = await Promise.allSettled([winner, waiter])
+    assert.equal(won.status, 'rejected')
+    assert.equal(waited.status, 'rejected')
+    assert.equal(f.db.mediaAssets.rows.filter((r) => (r.kind as string) === 'portrait').length, 0)
+    assert.equal(f.db.mediaUsage.rows.length, 1)
+    assert.equal((f.db.mediaUsage.rows[0] as { status: string }).status, 'released')
+    assert.ok(!('slot' in f.db.mediaUsage.rows[0]))
+    refuse = false
+    const retry = await ensurePortraitReady(String(f.player), String(f.instance), f.card)
+    assert.ok(retry.url)
+    assert.equal(f.db.mediaUsage.rows.filter((r) => (r.status as string) === 'settled').length, 1)
+  } finally {
+    if (prior === undefined) delete process.env.MEDIA_PORTRAIT_WAIT_MS
+    else process.env.MEDIA_PORTRAIT_WAIT_MS = prior
+  }
+})
+check('picture_faces_allowance_edge', async () => {
+  // One portrait slot left and three faces: one paints, two stay out of
+  // frame, and the picture itself still renders.
+  const f = fixture()
+  addUnpaintedCards(f, ['Mara', 'Tomas'])
+  pictureProse(f, 'Mara, Tomas and Speaker gathered by the door. "Come with me."')
+  stubPictureFaces(f)
+  visualEffects.image = (async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 })) as never
+  const prior = process.env.MEDIA_DAILY_PORTRAIT
+  process.env.MEDIA_DAILY_PORTRAIT = '1'
+  try {
+    const row = await queuePicture(f)
+    assert.equal(row.status, 'ready')
+    assert.equal(f.db.mediaUsage.rows.filter((r) => (r.kind as string) === 'portrait' && (r.status as string) === 'settled').length, 1)
+    assert.equal(f.db.characters.rows.filter((r) => 'portrait' in r).length, 1)
+  } finally {
+    if (prior === undefined) delete process.env.MEDIA_DAILY_PORTRAIT
+    else process.env.MEDIA_DAILY_PORTRAIT = prior
+  }
 })
 // ── media-server-2-fix-2 ──
 check('portrait_prompt_gated', async () => {

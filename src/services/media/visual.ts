@@ -152,10 +152,67 @@ export async function generatePortraitBytes(
  * settles its own portrait slot and stores a ready portrait row, so later
  * taps hit the cache and cost nothing. Throws UnseenError when the gates
  * refuse the face; throws HttpError 429 when portraits rest.
+ *
+ * One paint per face, across processes: the winner claims the face first by
+ * inserting a `media_assets` row under the portrait's final `cache_key` (the
+ * column carries a unique index, so the claim is atomic across processes).
+ * The claim rides `status: 'processing'` with no `url` and no `asset_key`:
+ * only `ready` rows are ever served (`requestPortrait` filters on `ready`),
+ * `liveMedia` needs an `event_id` the claim never has so `notifyMedia`
+ * returns early, and no usage row exists until the winner reserves — so the
+ * claim is never surfaced, notified or billed. A caller that loses the claim
+ * paints nothing and reserves nothing; it waits for the winner's row to turn
+ * ready (bounded polling, below) and reports it as reused. On every failure
+ * the winner deletes its claim, so the next tap can try again. A claim older
+ * than `PORTRAIT_CLAIM_STALE_MS` may be taken over, so a crashed process
+ * never wedges its face (the 5-minute repair sweep is the backstop: it fails
+ * the abandoned claim, which frees the key).
  */
+export interface PortraitReady {
+  url: string
+  version: number
+  assetKey: string
+  /** True when this call painted the face (and spent the slot). A reused or
+   * waited-for face reports false, so per-picture telemetry stays exact. */
+  painted: boolean
+}
+
+/** A claim older than this may be taken over: far above a normal paint
+ * (~10 s), far below the 5-minute repair sweep, so takeover preempts repair. */
+const PORTRAIT_CLAIM_STALE_MS = 90000
+const PORTRAIT_CLAIM_POLL_MS = 200
+/** How long one face waits for a rival paint before staying out of frame:
+ * several paints' worth, still well under a picture job's budget. */
+const portraitWaitMs = () => {
+  const n = Number(process.env.MEDIA_PORTRAIT_WAIT_MS ?? 30000)
+  return Number.isSafeInteger(n) && n > 0 ? n : 30000
+}
+
+/** In-process single flight: two faces in one process share one promise
+ * without touching Mongo twice. Keyed by the same cache key as the claim. */
+const portraitFlights = new Map<string, Promise<PortraitReady>>()
+
+/** A caller that lost the claim waits on the winner's row: ready is
+ * returned as reused, a gone or rejected row (or the timeout) rejects, so
+ * that face stays out of frame on this tap. Polls by `_id`, never by
+ * `cache_key`, so a successor claim for the next tap is never latched onto. */
+async function waitForPortraitClaim(winnerId: ObjectId, version: number): Promise<PortraitReady> {
+  const deadline = Date.now() + portraitWaitMs()
+  for (;;) {
+    const winner = await mongoColl.mediaAssets().findOne({ _id: winnerId })
+    if (!winner) throw new Error('Portrait paint failed')
+    if (winner.status === 'ready' && winner.url && winner.asset_key) {
+      return { url: winner.url, version, assetKey: winner.asset_key, painted: false }
+    }
+    if (winner.status === 'failed' || winner.status === 'unseen') throw new Error('Portrait paint failed')
+    if (Date.now() >= deadline) throw new Error('Portrait paint timed out')
+    await Bun.sleep(PORTRAIT_CLAIM_POLL_MS)
+  }
+}
+
 export async function ensurePortraitReady(
   playerId: string, instanceId: string, card: CharacterProfileDoc,
-): Promise<{ url: string; version: number; assetKey: string }> {
+): Promise<PortraitReady> {
   const pid = parseObjectId(playerId), iid = parseObjectId(instanceId)
   const instance = await mongoColl.worldInstances().findOne({ _id: iid, player_id: pid })
   if (!instance) throw new HttpError(404, 'That story could not be found.')
@@ -170,46 +227,98 @@ export async function ensurePortraitReady(
       url: portraitUrl(holder.portrait!.asset_key),
       version: holder.portrait!.appearance_version,
       assetKey: holder.portrait!.asset_key,
+      painted: false,
     }
   }
-  const id = new ObjectId()
-  if (!await reserveMedia({ _id: id, player_id: pid, instance_id: iid, kind: 'portrait' })) {
-    throw new HttpError(429, RESTING_COPY.portrait, { status: 'resting', kind: 'portrait', resets_at: utcMediaDay().resets_at })
+  const version = (holder.portrait?.appearance_version ?? holder.appearanceVersion) + (holder.portrait ? 1 : 0) || 1
+  const model = imageModel()
+  const cacheKey = portraitCacheKey(card._id, version, model, style.key)
+  const flight = portraitFlights.get(cacheKey)
+  if (flight) {
+    const shared = await flight
+    return { ...shared, painted: false }
   }
+  const leader = (async (): Promise<PortraitReady> => {
+    const already = await mongoColl.mediaAssets().findOne({ cache_key: cacheKey, status: 'ready' })
+    if (already?.url && already.asset_key) {
+      return { url: already.url, version, assetKey: already.asset_key, painted: false }
+    }
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const id = new ObjectId()
+      const now = new Date()
+      try {
+        await mongoColl.mediaAssets().insertOne({
+          _id: id, player_id: pid, instance_id: iid, kind: 'portrait', line_id: '', character_id: card._id,
+          source: 'generated', model, cache_key: cacheKey,
+          revision: mediaRevision(holder.appearance, String(version)), input: holder.appearance.slice(0, 500),
+          cost_usd: 0, cost_source: 'catalogue' as const, status: 'processing', created_at: now, started_at: now,
+          ...(style.key !== PAINTED_STYLE_KEY ? { art_style: style.key } : {}),
+        })
+      } catch (error) {
+        if (!duplicateKey(error)) throw error
+        const winner = await mongoColl.mediaAssets().findOne({ cache_key: cacheKey })
+        if (winner && winner.status === 'ready' && winner.url && winner.asset_key) {
+          return { url: winner.url, version, assetKey: winner.asset_key, painted: false }
+        }
+        if (!winner) continue // The winner failed and cleared its claim: retry as winner.
+        if (winner.status === 'failed' || winner.status === 'unseen') throw new Error('Portrait paint failed')
+        if (winner.status === 'processing'
+          && Date.now() - new Date(winner.created_at).getTime() > PORTRAIT_CLAIM_STALE_MS) {
+          await mongoColl.mediaAssets().deleteOne({ _id: winner._id, status: 'processing' })
+          continue // A crashed paint never wedges its face: take the claim over.
+        }
+        return waitForPortraitClaim(winner._id, version)
+      }
+      if (!await reserveMedia({ _id: id, player_id: pid, instance_id: iid, kind: 'portrait' })) {
+        await mongoColl.mediaAssets().deleteOne({ _id: id })
+        throw new HttpError(429, RESTING_COPY.portrait, { status: 'resting', kind: 'portrait', resets_at: utcMediaDay().resets_at })
+      }
+      try {
+        const appearance = holder.appearance.trim() || await visualEffects.fill(card, '')
+        let reference: { data: Buffer; contentType: string } | undefined
+        if (holder.portrait) {
+          reference = asMediaImageReference(await visualEffects.download(portraitUrl(holder.portrait.asset_key)))
+        }
+        const image = await generatePortraitBytes(appearance, card.canonical_name, template?.title || '', model, style.render, reference)
+        const key = `media/portrait/${pid.toHexString()}/${iid.toHexString()}/${id.toHexString()}${imageExtensionFor(image.contentType)}`
+        const result = await visualEffects.upload(image.data, image.contentType, { key })
+        const portrait = withStyleKey({ asset_key: result.key, source: 'generated', appearance_version: version, painted_at: new Date() }, style.key)
+        await storePortrait(instance, card, holder, portrait, appearance, {
+          ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
+          styleKey: style.key,
+        })
+        const saved = await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, {
+          $set: {
+            status: 'ready', asset_key: result.key, url: result.url,
+            revision: mediaRevision(appearance, String(version)), input: appearance.slice(0, 500),
+            cost_usd: image.costUsd ?? 0.009, cost_source: image.costUsd !== undefined ? 'generation' as const : 'catalogue' as const,
+            ...(image.generationId ? { generation_id: image.generationId } : {}),
+          },
+        })
+        if (!saved.matchedCount) {
+          await releaseMedia(id)
+          throw new Error('Portrait claim taken over')
+        }
+        await settleMedia(id)
+        return { url: result.url, version, assetKey: result.key, painted: true }
+      } catch (error) {
+        await mongoColl.mediaAssets().deleteOne({ _id: id })
+        if (error instanceof UnseenError) {
+          await releaseMedia(id)
+          await logRejection({ _id: id, player_id: pid, instance_id: iid, kind: 'portrait' }, error.stage, error.reason, model)
+        } else {
+          await releaseMedia(id)
+        }
+        throw error
+      }
+    }
+    throw new Error('Portrait claim contested')
+  })()
+  portraitFlights.set(cacheKey, leader)
   try {
-    const appearance = holder.appearance.trim() || await visualEffects.fill(card, '')
-    let reference: { data: Buffer; contentType: string } | undefined
-    if (holder.portrait) {
-      reference = asMediaImageReference(await visualEffects.download(portraitUrl(holder.portrait.asset_key)))
-    }
-    const image = await generatePortraitBytes(appearance, card.canonical_name, template?.title || '', imageModel(), style.render, reference)
-    const key = `media/portrait/${pid.toHexString()}/${iid.toHexString()}/${id.toHexString()}${imageExtensionFor(image.contentType)}`
-    const result = await visualEffects.upload(image.data, image.contentType, { key })
-    const version = (holder.portrait?.appearance_version ?? holder.appearanceVersion) + (holder.portrait ? 1 : 0) || 1
-    const portrait = withStyleKey({ asset_key: result.key, source: 'generated', appearance_version: version, painted_at: new Date() }, style.key)
-    await storePortrait(instance, card, holder, portrait, appearance, {
-      ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
-      styleKey: style.key,
-    })
-    await mongoColl.mediaAssets().insertOne({
-      _id: id, player_id: pid, instance_id: iid, kind: 'portrait', line_id: '', character_id: card._id,
-      source: 'generated', model: imageModel(), cache_key: portraitCacheKey(card._id, version, imageModel(), style.key),
-      revision: mediaRevision(appearance, String(version)), input: appearance.slice(0, 500),
-      cost_usd: image.costUsd ?? 0.009, cost_source: image.costUsd !== undefined ? 'generation' as const : 'catalogue' as const,
-      status: 'ready', asset_key: result.key, url: result.url, created_at: new Date(),
-      ...(image.generationId ? { generation_id: image.generationId } : {}),
-      ...(style.key !== PAINTED_STYLE_KEY ? { art_style: style.key } : {}),
-    })
-    await settleMedia(id)
-    return { url: result.url, version, assetKey: result.key }
-  } catch (error) {
-    if (error instanceof UnseenError) {
-      await releaseMedia(id)
-      await logRejection({ _id: id, player_id: pid, instance_id: iid, kind: 'portrait' }, error.stage, error.reason, imageModel())
-    } else {
-      await releaseMedia(id)
-    }
-    throw error
+    return await leader
+  } finally {
+    if (portraitFlights.get(cacheKey) === leader) portraitFlights.delete(cacheKey)
   }
 }
 
@@ -749,6 +858,10 @@ export async function processPicture(mediaId: string): Promise<void> {
     { _id: parseObjectId(mediaId), status: 'queued' }, { $set: { status: 'processing', started_at: new Date() } }, { returnDocument: 'after' })
   if (!asset) return
   if (!asset.instance_id) throw new Error('Picture has no save')
+  const renderStarted = Date.now()
+  let faceMs = 0
+  let facesRequested = 0, facesPainted = 0, facesReused = 0, facesDropped = 0
+  let outcome: 'ready' | 'unseen' | 'failed' = 'failed'
   let uploaded = ''
   let stage = 'prepare'
   try {
@@ -764,17 +877,34 @@ export async function processPicture(mediaId: string): Promise<void> {
     const style = templateMediaStyle(template)
     const cards = await mongoColl.characters().find({ instance_id: asset.instance_id, player_id: asset.player_id }).sort({ first_seen_sequence: 1 }).toArray()
     const present = presentCards(event.data.ai_response, cards, personaName)
-    // Faces for everyone named, made on this tap within the portrait allowance.
+    // Faces for everyone named, painted at the same time within the portrait
+    // allowance: each face's paint-plus-download is one task, joined together,
+    // and the fulfilled ones are collected in the original present order so
+    // the picture prompt stays deterministic. A face we cannot paint this tap
+    // simply stays out of frame. Still at most 3 faces.
     stage = 'faces'
+    const faceCards = present.slice(0, 3)
+    facesRequested = faceCards.length
+    const faceStarted = Date.now()
+    const saveId = asset.instance_id
+    const faceRuns = faceCards.map((card) => async () => {
+      const ready = await ensurePortraitReady(
+        asset.player_id.toHexString(), saveId.toHexString(), card)
+      const ref = asMediaImageReference(await visualEffects.download(ready.url))
+      return { name: card.canonical_name, bytes: ref.data, contentType: ref.contentType, assetKey: ready.assetKey, painted: ready.painted }
+    })
     const faces: Array<{ name: string; bytes: Buffer; contentType: string; assetKey: string }> = []
-    for (const card of present.slice(0, 3)) {
-      try {
-        const ready = await ensurePortraitReady(
-          asset.player_id.toHexString(), asset.instance_id.toHexString(), card)
-        const ref = asMediaImageReference(await visualEffects.download(ready.url))
-        faces.push({ name: card.canonical_name, bytes: ref.data, contentType: ref.contentType, assetKey: ready.assetKey })
-      } catch { /* A face we cannot paint this tap simply stays out of frame. */ }
+    const settled = await Promise.allSettled(faceRuns.map((run) => run()))
+    for (const result of settled) {
+      if (result.status === 'fulfilled') {
+        faces.push({ name: result.value.name, bytes: result.value.bytes, contentType: result.value.contentType, assetKey: result.value.assetKey })
+        if (result.value.painted) facesPainted++
+        else facesReused++
+      } else {
+        facesDropped++
+      }
     }
+    faceMs = Date.now() - faceStarted
     const playerPresent = !!personaName && event.data.ai_response.toLowerCase().includes(personaName.toLowerCase())
     let playerFraming = ''
     if (playerPresent) {
@@ -801,6 +931,7 @@ export async function processPicture(mediaId: string): Promise<void> {
     stage = 'generate'
     const pre = await moderateDescription(description)
     if (pre.verdict !== 'allow') {
+      outcome = 'unseen'
       await unseeMedia(asset, 'pre', pre.reason_code)
       return
     }
@@ -813,6 +944,7 @@ export async function processPicture(mediaId: string): Promise<void> {
       })
     } catch (error) {
       if (error instanceof ProviderRefusalError) {
+        outcome = 'unseen'
         await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })
         return
       }
@@ -820,6 +952,7 @@ export async function processPicture(mediaId: string): Promise<void> {
     }
     const post = await checkImage(image.data, image.contentType)
     if (post.verdict !== 'allow' || post.text_visible) {
+      outcome = 'unseen'
       await unseeMedia(asset, 'post', post.verdict !== 'allow' ? post.reason_code : 'picture_text_visible')
       return
     }
@@ -840,12 +973,23 @@ export async function processPicture(mediaId: string): Promise<void> {
     })
     if (!saved.modifiedCount) throw new Error('Picture removed')
     await settleMedia(asset._id)
+    outcome = 'ready'
     await notifyMedia({ ...asset, status: 'ready', url: result.url })
   } catch (error) {
     if (uploaded) {
       try { await mediaEffects.remove(uploaded) } catch { /* retained for maintenance */ }
     }
     await failMedia(asset, { stage, message: error instanceof Error ? error.message : String(error) })
+  } finally {
+    // One structured line per finished picture: total render time from job
+    // start plus the face phase's share and its account. Nothing reaches the
+    // player; the fields match the logger's usual snake_case shape.
+    log.info('media.picture_rendered', {
+      kind: 'picture', media_id: asset._id.toHexString(), outcome,
+      render_ms: Date.now() - renderStarted, face_ms: faceMs,
+      faces_requested: facesRequested, faces_painted: facesPainted,
+      faces_reused: facesReused, faces_dropped: facesDropped,
+    })
   }
 }
 
