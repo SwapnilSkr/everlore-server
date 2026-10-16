@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb'
+import { env } from '../../config/env'
 import { mongoColl } from '../../config/mongo'
 import { PAINTED_STYLE_KEY, templateMediaStyle } from '../image.service'
 import { identityKey, newFoldState } from '../character-codex.service'
@@ -21,6 +22,10 @@ export interface PortraitHolder {
   appearanceVersion: number
   portrait?: PortraitRef
 }
+
+/** The public URL of a stored face. */
+export const portraitUrl = (assetKey: string) =>
+  `${env.CDN_BASE_URL.replace(/\/+$/, '')}/${assetKey}`
 
 /** Only generated/authored faces may be animated or used as references.
  * A missing source counts as uploaded: older images have no record. */

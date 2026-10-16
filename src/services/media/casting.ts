@@ -3,7 +3,7 @@ import { mongoColl } from '../../config/mongo'
 import { identityKey, newFoldState } from '../character-codex.service'
 import type { CharacterProfileDoc } from '../../models/character-profile.model'
 import type { WorldInstanceDoc } from '../../models/world-instance.model'
-import type { WorldTemplateDoc } from '../../models/world-template.model'
+import type { ProtagonistDoc, TemplateCastCharacterDoc, WorldTemplateDoc } from '../../models/world-template.model'
 import type { CharacterVoice, VoiceTraits } from '../../models/media.model'
 import { chooseVoice, type VoiceHolder } from './policy'
 import { voiceCatalogue, voiceModel } from './config'
@@ -11,12 +11,17 @@ import { voiceCatalogue, voiceModel } from './config'
 export const castKey = (card: Pick<CharacterProfileDoc, 'canonical_name' | 'identity_scope'>) =>
   createHash('sha256').update(identityKey(card.canonical_name, card.identity_scope)).digest('hex')
 
+/** The world's authored cast: seed cast, plus the protagonist of a sentient world. */
+export function authoredCast(template: WorldTemplateDoc | null): Array<TemplateCastCharacterDoc | ProtagonistDoc> {
+  return [...(template?.seed_cast || []), ...(template?.is_sentient && template.protagonist ? [template.protagonist] : [])]
+}
+
 /** A virtual world plan reserves future cast voices without assigning untapped cards. */
 function planWorldVoices(original: WorldTemplateDoc): WorldTemplateDoc {
   const template: WorldTemplateDoc = { ...original, seed_cast: original.seed_cast?.map((entry) => ({ ...entry })),
     ...(original.protagonist ? { protagonist: { ...original.protagonist } } : {}),
   }
-  const entries = [...(template.seed_cast || []), ...(template.is_sentient && template.protagonist ? [template.protagonist] : [])]
+  const entries = authoredCast(template)
   if (entries.every((entry) => entry.voice)) return template
   const model = voiceModel(), catalogue = voiceCatalogue(model)
   const holders: VoiceHolder[] = entries.flatMap((entry) => entry.voice?.model === model ? [{ voice_id: entry.voice.voice_id }] : [])
@@ -39,7 +44,7 @@ export async function castCharacter(instance: WorldInstanceDoc, card: CharacterP
     const fresh = cards.find((c) => c._id.equals(card._id))
     if (!fresh) throw new Error('Speaker removed')
     const id = castKey(fresh), roster = newFoldState([fresh])
-    const originalEntries = [...(original.seed_cast || []), ...(original.is_sentient && original.protagonist ? [original.protagonist] : [])]
+    const originalEntries = authoredCast(original)
     const identityKeys = new Set([fresh.canonical_name, ...(fresh.aliases || [])].map((name) => castKey({ canonical_name: name, identity_scope: fresh.identity_scope })))
     const existing = originalEntries.find((entry) => roster.byName.get(identityKey(entry.name)) === fresh)?.voice
       || Object.entries(live.media_voice_cast || {}).find(([key]) => identityKeys.has(key))?.[1].voice || fresh.voice
@@ -48,7 +53,7 @@ export async function castCharacter(instance: WorldInstanceDoc, card: CharacterP
       return existing
     }
     const template = planWorldVoices(original)
-    const entries = [...(template.seed_cast || []), ...(template.is_sentient && template.protagonist ? [template.protagonist] : [])]
+    const entries = authoredCast(template)
     const authored = entries.find((entry) => roster.byName.get(identityKey(entry.name)) === fresh)
     if (authored) {
       const index = (template.seed_cast || []).indexOf(authored)

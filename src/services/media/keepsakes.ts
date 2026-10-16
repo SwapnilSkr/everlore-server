@@ -1,9 +1,9 @@
 import { ObjectId, type Filter } from 'mongodb'
-import { env } from '../../config/env'
 import { mongoColl } from '../../config/mongo'
 import { HttpError } from '../../utils/http-error'
 import { parseObjectId } from '../../utils/mongo-id'
 import type { MediaAssetDoc, PortraitRef } from '../../models/media.model'
+import { portraitUrl } from './portraits'
 
 /**
  * Keepsakes (contract everlore-docs/phases/keepsakes.md §4): everything the
@@ -115,11 +115,12 @@ function isCurrentPortraitRow(row: MediaAssetDoc, current?: PortraitRef): boolea
   if (!current) return false
   if (row.asset_key) return row.asset_key === current.asset_key
   if (!row.url) return false
-  return row.url === portraitPublicUrl(current.asset_key)
+  return row.url === portraitUrl(current.asset_key)
 }
 
-const portraitPublicUrl = (assetKey: string) =>
-  `${env.CDN_BASE_URL.replace(/\/+$/, '')}/${assetKey}`
+/** Distinct ids in first-seen order, for one `$in` query per collection. */
+const distinctIds = (ids: Array<ObjectId | undefined>): ObjectId[] =>
+  [...new Set(ids.flatMap((id) => id ? [id.toHexString()] : []))].map((hex) => new ObjectId(hex))
 
 function parseListQuery(query: { kind?: string; before?: string; limit?: string }): {
   kinds: Array<'picture' | 'video' | 'portrait'>
@@ -179,14 +180,10 @@ export async function listKeepsakes(
     if (!fetched.length) { exhausted = true; break }
 
     // Batched lookups: one query per collection, never one per row.
-    const instanceIds = [...new Set(fetched.filter((r) => r.instance_id).map((r) => r.instance_id!.toHexString()))]
-      .map((hex) => new ObjectId(hex))
-    const eventIds = [...new Set(fetched.filter((r) => r.event_id).map((r) => r.event_id!.toHexString()))]
-      .map((hex) => new ObjectId(hex))
-    const characterIds = [...new Set(fetched.filter((r) => r.character_id).map((r) => r.character_id!.toHexString()))]
-      .map((hex) => new ObjectId(hex))
-    const personaIds = [...new Set(fetched.filter((r) => r.persona_id).map((r) => r.persona_id!.toHexString()))]
-      .map((hex) => new ObjectId(hex))
+    const instanceIds = distinctIds(fetched.map((r) => r.instance_id))
+    const eventIds = distinctIds(fetched.map((r) => r.event_id))
+    const characterIds = distinctIds(fetched.map((r) => r.character_id))
+    const personaIds = distinctIds(fetched.map((r) => r.persona_id))
     const [instances, events, characters, personas] = await Promise.all([
       instanceIds.length ? mongoColl.worldInstances().find({ _id: { $in: instanceIds } }).toArray() : [],
       eventIds.length ? mongoColl.events().find({ _id: { $in: eventIds } }).toArray() : [],
@@ -197,8 +194,7 @@ export async function listKeepsakes(
     const eventById = new Map(events.map((e) => [e._id.toHexString(), e]))
     const characterById = new Map(characters.map((c) => [c._id.toHexString(), c]))
     const personaById = new Map(personas.map((p) => [p._id.toHexString(), p]))
-    const templateIds = [...new Set(instances.map((i) => i.template_id.toHexString()))]
-      .map((hex) => new ObjectId(hex))
+    const templateIds = distinctIds(instances.map((i) => i.template_id))
     const templates = templateIds.length
       ? await mongoColl.worldTemplates().find({ _id: { $in: templateIds } }).toArray()
       : []

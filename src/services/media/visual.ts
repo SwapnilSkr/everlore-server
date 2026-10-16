@@ -7,7 +7,6 @@ import { asMediaImageReference, imageExtensionFor, ProviderRefusalError } from '
 import { generateMediaImage, mediaImageReferenceLimit } from './image'
 import { submitVideo, awaitVideo, downloadVideo } from '../../ai/video'
 import { AI_MODELS } from '../../ai/models'
-import { env } from '../../config/env'
 import { HttpError } from '../../utils/http-error'
 import { parseObjectId } from '../../utils/mongo-id'
 import type { CharacterProfileDoc } from '../../models/character-profile.model'
@@ -20,7 +19,7 @@ import { directorModel, imageModel, mediaEnabled, sceneFallbackModel, sceneModel
 import { detectSpokenLines } from './detection'
 import { directScene, plannedFilmSeconds, type DirectorInput, type DirectorPlan } from './director'
 import { matureVoiceAllowed, utcMediaDay } from './policy'
-import { isPortraitCurrent, isReferenceAllowed, personaFaceForStyle, personaPortraitCacheKey, portraitCacheKey, resolvePortraitHolder, storePortrait, styleOfPortrait, withStyleKey } from './portraits'
+import { isPortraitCurrent, isReferenceAllowed, personaFaceForStyle, personaPortraitCacheKey, portraitCacheKey, portraitUrl, resolvePortraitHolder, storePortrait, styleOfPortrait, withStyleKey } from './portraits'
 import { checkImage, checkVideoFrames, describeMoment, judgeShotFrames, logRejection, moderateDescription, safetyEffects } from './safety'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt, speakerSubject } from './scene-templates'
 import { assembleCut, assembleDialogueFreeCut, cutEffects, normalizeShot } from './cut'
@@ -30,6 +29,7 @@ import { failMedia, lineVoice, mediaEffects, sanitizeMediaError } from './servic
 import { log } from '../../utils/logger'
 import { portraitLookEvidence } from './look-evidence'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
+import type { PersonaDoc } from '../../models/persona.model'
 import { PAINTED_STYLE_KEY, resolveMediaStyle, templateMediaStyle } from '../image.service'
 
 export type QueuedReply = { status: 'ready'; url: string; duration_ms?: number } | { status: 'queued'; media_id: string }
@@ -52,7 +52,8 @@ export const visualEffects = {
     if (!res.ok) throw new Error(`Reference download failed (${res.status})`)
     return Buffer.from(await res.arrayBuffer())
   },
-  prices: (() => {    let cached: { at: number; rates: Record<string, { prompt: number; completion: number }> } | null = null
+  prices: (() => {
+    let cached: { at: number; rates: Record<string, { prompt: number; completion: number }> } | null = null
     return async (model: string): Promise<{ prompt: number; completion: number }> => {
       if (cached && Date.now() - cached.at < 3600000 && cached.rates[model]) return cached.rates[model]
       try {
@@ -75,9 +76,6 @@ const RESTING_COPY: Record<string, string> = {
   // resting details below. "Media" is technical copy a player never reads.
   portrait: '',
 }
-
-const portraitUrl = (assetKey: string) =>
-  `${env.CDN_BASE_URL.replace(/\/+$/, '')}/${assetKey}`
 
 /** A gate rejection inside a synchronous generation core. The caller turns
  * it into `media_unseen` (standalone job) or degrades (inline use). */
@@ -313,11 +311,9 @@ export async function ensurePortraitReady(
         return { url: result.url, version, assetKey: result.key, painted: true }
       } catch (error) {
         await mongoColl.mediaAssets().deleteOne({ _id: id })
+        await releaseMedia(id)
         if (error instanceof UnseenError) {
-          await releaseMedia(id)
           await logRejection({ _id: id, player_id: pid, instance_id: iid, kind: 'portrait' }, error.stage, error.reason, model)
-        } else {
-          await releaseMedia(id)
         }
         throw error
       }
@@ -771,14 +767,10 @@ export async function requestPersonaPortrait(
     style = templateMediaStyle(template)
   }
   const face = personaFaceForStyle(persona, style.key)
-  if (face && isReferenceAllowed(face.source)
-    && face.appearance_version >= (persona.appearance_version ?? 1)
-    && styleOfPortrait(face) === style.key) {
+  if (face && isPersonaFaceCurrent(persona, face, style.key)) {
     return { status: 'ready', url: portraitUrl(face.asset_key) }
   }
-  const version = face && isReferenceAllowed(face.source)
-    ? face.appearance_version + 1
-    : (persona.appearance_version ?? 1)
+  const version = nextPersonaFaceVersion(persona, face)
   const model = imageModel()
   const key = personaPortraitCacheKey(persona._id, version, model, style.key)
   const cached = await mongoColl.mediaAssets().findOne({ cache_key: key, status: 'ready' })
@@ -805,6 +797,42 @@ export async function requestPersonaPortrait(
   // so the job can be traced back to its face.
   await visualEffects.enqueue('portrait', asset, persona._id.toHexString())
   return { status: 'queued', media_id: asset._id.toHexString() }
+}
+
+/** A persona face is current while it may be a reference, is no older than
+ * the persona's look and was painted in the asked-for style. */
+function isPersonaFaceCurrent(persona: PersonaDoc, face: PortraitRef, styleKey: string): boolean {
+  return isReferenceAllowed(face.source)
+    && face.appearance_version >= (persona.appearance_version ?? 1)
+    && styleOfPortrait(face) === styleKey
+}
+
+/** A repaint moves one past the kept face; a first face takes the persona's look version. */
+function nextPersonaFaceVersion(persona: PersonaDoc, face: PortraitRef | undefined): number {
+  return face && isReferenceAllowed(face.source)
+    ? face.appearance_version + 1
+    : (persona.appearance_version ?? 1)
+}
+
+/** The painted default stays the legacy single portrait; any other style is a
+ * map entry and becomes the persona's last-used style. */
+async function storePersonaFace(personaId: ObjectId, styleKey: string, assetKey: string, version: number): Promise<void> {
+  if (styleKey === PAINTED_STYLE_KEY) {
+    const portrait = { asset_key: assetKey, source: 'generated' as const, appearance_version: version, painted_at: new Date() }
+    await mongoColl.personas().updateOne({ _id: personaId }, {
+      $set: { portrait, appearance_version: portrait.appearance_version, updated_at: new Date() },
+    })
+    return
+  }
+  const portrait = { asset_key: assetKey, source: 'generated' as const, appearance_version: version, art_style: styleKey, painted_at: new Date() }
+  await mongoColl.personas().updateOne({ _id: personaId }, {
+    $set: {
+      [`portraits.${styleKey}`]: portrait,
+      appearance_version: portrait.appearance_version,
+      last_art_style: styleKey,
+      updated_at: new Date(),
+    },
+  })
 }
 
 async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
@@ -850,26 +878,7 @@ async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
     uploaded = key
     const result = await visualEffects.upload(image.data, image.contentType, { key })
     uploaded = result.key
-    const face = personaFaceForStyle(persona, styleKey)
-    const version = face && isReferenceAllowed(face.source)
-      ? face.appearance_version + 1
-      : (persona.appearance_version ?? 1)
-    if (styleKey === PAINTED_STYLE_KEY) {
-      const portrait = { asset_key: result.key, source: 'generated' as const, appearance_version: version, painted_at: new Date() }
-      await mongoColl.personas().updateOne({ _id: persona._id }, {
-        $set: { portrait, appearance_version: portrait.appearance_version, updated_at: new Date() },
-      })
-    } else {
-      const portrait = { asset_key: result.key, source: 'generated' as const, appearance_version: version, art_style: styleKey, painted_at: new Date() }
-      await mongoColl.personas().updateOne({ _id: persona._id }, {
-        $set: {
-          [`portraits.${styleKey}`]: portrait,
-          appearance_version: portrait.appearance_version,
-          last_art_style: styleKey,
-          updated_at: new Date(),
-        },
-      })
-    }
+    await storePersonaFace(persona._id, styleKey, result.key, nextPersonaFaceVersion(persona, personaFaceForStyle(persona, styleKey)))
     const cost = image.costUsd ?? asset.cost_usd
     stage = 'save'
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, {
@@ -911,9 +920,7 @@ export async function ensurePersonaFaceReady(
   const persona = await mongoColl.personas().findOne({ _id: personaId, player_id: pid })
   if (!persona) return null
   const face = personaFaceForStyle(persona, styleKey)
-  if (face && isReferenceAllowed(face.source)
-    && face.appearance_version >= (persona.appearance_version ?? 1)
-    && styleOfPortrait(face) === styleKey) {
+  if (face && isPersonaFaceCurrent(persona, face, styleKey)) {
     return { url: portraitUrl(face.asset_key), assetKey: face.asset_key }
   }
   const appearance = (persona.description || '').trim()
@@ -931,25 +938,8 @@ export async function ensurePersonaFaceReady(
     const image = await generatePortraitBytes(appearance, persona.name, '', imageModel(), render, reference)
     const key = `media/persona/${pid.toHexString()}/${id.toHexString()}${imageExtensionFor(image.contentType)}`
     const result = await visualEffects.upload(image.data, image.contentType, { key })
-    const version = face && isReferenceAllowed(face.source)
-      ? face.appearance_version + 1
-      : (persona.appearance_version ?? 1)
-    if (styleKey === PAINTED_STYLE_KEY) {
-      const portrait = { asset_key: result.key, source: 'generated' as const, appearance_version: version, painted_at: new Date() }
-      await mongoColl.personas().updateOne({ _id: persona._id }, {
-        $set: { portrait, appearance_version: portrait.appearance_version, updated_at: new Date() },
-      })
-    } else {
-      const portrait = { asset_key: result.key, source: 'generated' as const, appearance_version: version, art_style: styleKey, painted_at: new Date() }
-      await mongoColl.personas().updateOne({ _id: persona._id }, {
-        $set: {
-          [`portraits.${styleKey}`]: portrait,
-          appearance_version: portrait.appearance_version,
-          last_art_style: styleKey,
-          updated_at: new Date(),
-        },
-      })
-    }
+    const version = nextPersonaFaceVersion(persona, face)
+    await storePersonaFace(persona._id, styleKey, result.key, version)
     const model = imageModel()
     await mongoColl.mediaAssets().insertOne({
       _id: id, player_id: pid, persona_id: persona._id, kind: 'portrait', line_id: '',
@@ -963,11 +953,9 @@ export async function ensurePersonaFaceReady(
     await settleMedia(id)
     return { url: result.url, assetKey: result.key }
   } catch (error) {
+    await releaseMedia(id)
     if (error instanceof UnseenError) {
-      await releaseMedia(id)
       await logRejection({ _id: id, player_id: pid, kind: 'portrait' }, error.stage, error.reason, imageModel())
-    } else {
-      await releaseMedia(id)
     }
     return null
   }
@@ -1661,20 +1649,18 @@ export async function processVideo(mediaId: string): Promise<void> {
     void lineShot.catch(() => {})
     const shots: ShotOutcome[] = planRecord.shots as ShotOutcome[]
     stage = 'shoot'
-    if (plan) {
-      const settled = await Promise.allSettled(plan.shots.map((shot, index) => makeSceneShot({
-        role: shot.role, continuity: plan.continuity, ambient: plan.ambient, shot,
-        speakerPortrait: portraitBytes, playerId: asset.player_id, instanceId: saveId,
-        styleRender: style.render,
-      }).then((outcome) => ({ outcome, index }))))
-      const ordered = settled.map((result, index) => {
-        if (result.status === 'fulfilled') return result.value.outcome
-        const role = plan.shots[index]?.role === 'closing' ? 'closing' as const : 'opening' as const
-        return { role, status: 'dropped' as const, model: sceneModel(), stillUrl: '', durationS: 0, checks: [{ error: 'shot threw' }], cost: 0, reason: 'shot_failed' }
-      })
-      for (const shot of ordered.sort((a, b) => plan.shots.findIndex((s) => s.role === a.role) - plan.shots.findIndex((s) => s.role === b.role))) shots.push(shot)
-      cost += shots.reduce((sum, s) => sum + s.cost, 0)
-    }
+    const settled = await Promise.allSettled(plan.shots.map((shot) => makeSceneShot({
+      role: shot.role, continuity: plan.continuity, ambient: plan.ambient, shot,
+      speakerPortrait: portraitBytes, playerId: asset.player_id, instanceId: saveId,
+      styleRender: style.render,
+    })))
+    const ordered = settled.map((result, index) => {
+      if (result.status === 'fulfilled') return result.value
+      const role = plan.shots[index]?.role === 'closing' ? 'closing' as const : 'opening' as const
+      return { role, status: 'dropped' as const, model: sceneModel(), stillUrl: '', durationS: 0, checks: [{ error: 'shot threw' }], cost: 0, reason: 'shot_failed' }
+    })
+    for (const shot of ordered.sort((a, b) => plan.shots.findIndex((s) => s.role === a.role) - plan.shots.findIndex((s) => s.role === b.role))) shots.push(shot)
+    cost += shots.reduce((sum, s) => sum + s.cost, 0)
     // The line shot: portrait plus the exact clip. A failed line shot fails
     // the whole video and releases the slot — after the scene stills are
     // deleted, since they are inputs, not deliverables.
@@ -1725,12 +1711,12 @@ export async function processVideo(mediaId: string): Promise<void> {
     parts.push(normLine); durations.push(lineSegS)
     if (closing && closing !== opening) { parts.push(await normalizeShot(closing.videoBytes!)); durations.push(closing.durationS) }
     const hasOpening = !!opening, hasClosing = !!closing && closing !== opening
-    const leadIn = plan && hasOpening ? plan.line_shot?.voice_lead_in_s ?? 0 : 0
+    const leadIn = hasOpening ? plan.line_shot?.voice_lead_in_s ?? 0 : 0
     const voiceDelayS = hasOpening ? Math.max(0, opening!.durationS - leadIn) : 0
     const { bytes } = await assembleCut({
       shots: parts, durations, hasOpening, hasClosing,
-      transitionIn: plan?.line_shot?.transition_in as 'cut' | 'dissolve_short' || 'cut',
-      transitionOut: plan?.ending.transition_out as 'cut' | 'dissolve_short' | 'dip_to_black' || 'dissolve_short',
+      transitionIn: plan.line_shot?.transition_in as 'cut' | 'dissolve_short' || 'cut',
+      transitionOut: plan.ending.transition_out as 'cut' | 'dissolve_short' | 'dip_to_black' || 'dissolve_short',
       voiceMp3: excerptAudio, voiceDelayS, voiceS,
       ambienceFrom: opening ? 'opening' : closing ? 'closing' : null,
     })

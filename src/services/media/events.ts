@@ -4,8 +4,7 @@ import { mongoColl } from '../../config/mongo'
 import { detectSpokenLines } from './detection'
 import { publicSpokenLines } from './policy'
 import { mediaEnabled } from './config'
-import type { MediaAssetDoc } from '../../models/media.model'
-import type { SpokenLine, VoiceAttribution } from '../../models/media.model'
+import type { MediaAssetDoc, SpokenLine, VoiceAttribution } from '../../models/media.model'
 import type { WorldEventDoc } from '../../models/world-event.model'
 
 export function spokenLineUpdate(prose: string, playerSpoken = '', playerInput = playerSpoken) {
@@ -75,15 +74,7 @@ function toTurnMedia(row: MediaAssetDoc): TurnMediaItem | null {
 export async function withTurnMedia<T extends WorldEventDoc>(events: T[]): Promise<T[]> {
   if (!events.length) return events
   const ids = events.map((event) => event._id)
-  const seen = new Set<string>()
-  const pids = []
-  for (const event of events) {
-    const hex = event.player_id.toHexString()
-    if (!seen.has(hex)) {
-      seen.add(hex)
-      pids.push(event.player_id)
-    }
-  }
+  const pids = [...new Map(events.map((event) => [event.player_id.toHexString(), event.player_id])).values()]
   // instance_id leads the {instance_id, event_id} index; without it this scans.
   const iids = [...new Map(events.map((event) => [event.instance_id.toHexString(), event.instance_id])).values()]
   const rows = await mongoColl.mediaAssets().find({

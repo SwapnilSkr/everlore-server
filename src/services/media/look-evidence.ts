@@ -3,15 +3,14 @@ import type { CharacterProfileDoc } from '../../models/character-profile.model'
 import type { WorldInstanceDoc } from '../../models/world-instance.model'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
 import { identityKey, newFoldState } from '../character-codex.service'
+import { authoredCast } from './casting'
 
 /** Read existing looks before bounded narration; personality never supplies a face. */
 export async function portraitLookEvidence(
   instance: WorldInstanceDoc, card: CharacterProfileDoc, template: WorldTemplateDoc | null,
 ): Promise<{ appearance: string; prose: string; persona: string }> {
   const roster = newFoldState([card])
-  const entries = [...(template?.seed_cast || []),
-    ...(template?.is_sentient && template.protagonist ? [template.protagonist] : [])]
-  const authored = entries.find((entry) => roster.byName.get(identityKey(entry.name)) === card)
+  const authored = authoredCast(template).find((entry) => roster.byName.get(identityKey(entry.name)) === card)
   const appearance = card.appearance?.trim() || authored?.appearance?.trim() || ''
   const persona = authored?.persona?.trim() || ''
   if (appearance) return { appearance, prose: '', persona }

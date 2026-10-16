@@ -1,4 +1,6 @@
-import type { DirectorShot } from './director'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { ffmpegPath, ffprobePath } from './config'
 
 /**
@@ -47,63 +49,51 @@ export const cutEffects = {
     const [err, code] = await Promise.all([new Response(child.stderr).text(), child.exited])
     if (code !== 0) throw new Error(`ffmpeg failed: ${err.slice(0, 300)}`)
   },
-  probeDuration: async (video: Buffer): Promise<number> => {
-    const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
-    const { tmpdir } = await import('node:os')
-    const { join } = await import('node:path')
-    const dir = await mkdtemp(join(tmpdir(), 'everlore-probe-'))
-    try {
-      const src = join(dir, 'shot.mp4')
-      await writeFile(src, video)
-      const child = Bun.spawnSync([ffprobePath(), '-v', 'error',
-        '-show_entries', 'format=duration:stream=duration', '-of', 'csv=p=0', src],
-        { stdout: 'pipe', stderr: 'pipe' })
-      const duration = child.stdout.toString().trim().split('\n')
-        .map(Number).filter((n) => Number.isFinite(n) && n > 0)
-        .reduce((best, n) => Math.max(best, n), -Infinity)
-      if (!Number.isFinite(duration) || duration <= 0) throw new Error('Could not read video duration')
-      return duration
-    } finally {
-      await rm(dir, { recursive: true, force: true }).catch(() => {})
-    }
-  },
-    hasAudio: async (video: Buffer): Promise<boolean> => {    const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
-    const { tmpdir } = await import('node:os')
-    const { join } = await import('node:path')
-    const dir = await mkdtemp(join(tmpdir(), 'everlore-probe-'))
-    try {
-      const src = join(dir, 'shot.mp4')
-      await writeFile(src, video)
-      const child = Bun.spawnSync([ffprobePath(), '-v', 'error',
-        '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', src],
-        { stdout: 'pipe', stderr: 'pipe' })
-      return child.stdout.toString().trim().length > 0
-    } finally {
-      await rm(dir, { recursive: true, force: true }).catch(() => {})
-    }
-  },
+  probeDuration: (video: Buffer): Promise<number> => withTempDir('everlore-probe-', async (dir) => {
+    const src = join(dir, 'shot.mp4')
+    await writeFile(src, video)
+    const child = Bun.spawnSync([ffprobePath(), '-v', 'error',
+      '-show_entries', 'format=duration:stream=duration', '-of', 'csv=p=0', src],
+      { stdout: 'pipe', stderr: 'pipe' })
+    const duration = child.stdout.toString().trim().split('\n')
+      .map(Number).filter((n) => Number.isFinite(n) && n > 0)
+      .reduce((best, n) => Math.max(best, n), -Infinity)
+    if (!Number.isFinite(duration) || duration <= 0) throw new Error('Could not read video duration')
+    return duration
+  }),
+  hasAudio: (video: Buffer): Promise<boolean> => withTempDir('everlore-probe-', async (dir) => {
+    const src = join(dir, 'shot.mp4')
+    await writeFile(src, video)
+    const child = Bun.spawnSync([ffprobePath(), '-v', 'error',
+      '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', src],
+      { stdout: 'pipe', stderr: 'pipe' })
+    return child.stdout.toString().trim().length > 0
+  }),
   /**
    * One JPEG frame of a finished cut, for the Keepsakes feed. Falls back to
    * the first frame when the cut is shorter than the sample point. Throws on
    * any ffmpeg failure — the caller never lets that fail the film.
    */
-  extractFrame: async (video: Buffer, atS = 0.5): Promise<Buffer> => {
-    const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
-    const { tmpdir } = await import('node:os')
-    const { join } = await import('node:path')
-    const dir = await mkdtemp(join(tmpdir(), 'everlore-poster-'))
-    try {
-      const src = join(dir, 'cut.mp4')
-      const out = join(dir, 'poster.jpg')
-      await writeFile(src, video)
-      await cutEffects.runFiles([
-        '-ss', String(atS), '-i', src, '-frames:v', '1', '-q:v', '3', out,
-      ])
-      return Buffer.from(await readFile(out))
-    } finally {
-      await rm(dir, { recursive: true, force: true }).catch(() => {})
-    }
-  },
+  extractFrame: (video: Buffer, atS = 0.5): Promise<Buffer> => withTempDir('everlore-poster-', async (dir) => {
+    const src = join(dir, 'cut.mp4')
+    const out = join(dir, 'poster.jpg')
+    await writeFile(src, video)
+    await cutEffects.runFiles([
+      '-ss', String(atS), '-i', src, '-frames:v', '1', '-q:v', '3', out,
+    ])
+    return Buffer.from(await readFile(out))
+  }),
+}
+
+/** ffprobe and mp4+faststart need seekable files, not pipes: a scratch
+ * directory per call, always removed, whatever the work threw. */
+async function withTempDir<T>(prefix: string, work: (dir: string) => Promise<T>): Promise<T> {
+  const dir = await mkdtemp(join(tmpdir(), prefix))
+  try {
+    return await work(dir)
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
 }
 
 const normVideo = (label: string) =>
@@ -213,10 +203,6 @@ export async function normalizeShot(video: Buffer): Promise<Buffer> {
   return out
 }
 
-export function shotDuration(shot: DirectorShot): number {
-  return shot.duration_s
-}
-
 /**
  * Assemble the cut from normalized shot buffers plus the voice clip, using
  * the probe's recipe: one resolution, the director's transitions, the J-cut
@@ -241,11 +227,7 @@ export async function assembleCut(opts: {
   /** Which scene shot beds ambience under the voice (null: voice alone). */
   ambienceFrom: 'opening' | 'closing' | null
 }): Promise<{ bytes: Buffer; totalS: number }> {
-  const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
-  const { tmpdir } = await import('node:os')
-  const { join } = await import('node:path')
-  const dir = await mkdtemp(join(tmpdir(), 'everlore-cut-'))
-  try {
+  return withTempDir('everlore-cut-', async (dir) => {
     const args: string[] = []
     for (let i = 0; i < opts.shots.length; i++) {
       const file = join(dir, `shot${i}.mp4`)
@@ -284,9 +266,7 @@ export async function assembleCut(opts: {
     )
     await cutEffects.runFiles(args)
     return { bytes: Buffer.from(await readFile(outFile)), totalS }
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {})
-  }
+  })
 }
 
 /** Same normalization, grade, transitions and ambience, without a voice input. */
@@ -296,11 +276,7 @@ export async function assembleDialogueFreeCut(opts: {
   transition: 'cut' | 'dissolve_short' | 'dip_to_black'
 }): Promise<{ bytes: Buffer; totalS: number }> {
   if (!opts.shots.length || opts.shots.length > 2) throw new Error('Cut needs one or two shots')
-  const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
-  const { tmpdir } = await import('node:os')
-  const { join } = await import('node:path')
-  const dir = await mkdtemp(join(tmpdir(), 'everlore-cut-'))
-  try {
+  return withTempDir('everlore-cut-', async (dir) => {
     const args: string[] = [], parts: string[] = []
     for (let i = 0; i < opts.shots.length; i++) {
       const file = join(dir, `shot${i}.mp4`)
@@ -326,7 +302,5 @@ export async function assembleDialogueFreeCut(opts: {
       '-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-ac', '2', '-movflags', '+faststart', out)
     await cutEffects.runFiles(args)
     return { bytes: Buffer.from(await readFile(out)), totalS }
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {})
-  }
+  })
 }
