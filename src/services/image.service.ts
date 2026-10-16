@@ -15,19 +15,22 @@ import { screenImagePrompt } from '../utils/input-guard'
  */
 
 /** narrative_style key -> how it is drawn (render) + the atmosphere (mood).
- * Covers append render + mood. Media prompts use render only, because some
- * moods carry words like "sensual" that have no place in an SFW picture.
+ * Covers append render + mood. Media prompts use the media render (the
+ * per-key `media` override when present, else render), because some renders
+ * and moods carry words like "sensual" that have no place in an SFW picture.
  * Every render + mood below joins with ', ' to exactly the phrase covers
  * used before the split, so cover prompts stay byte-identical. */
 export interface CoverStyle {
   render: string
   mood: string
+  /** Media-only replacement for render. Covers never see it. */
+  media?: string
 }
 export const STYLE_HINT: Record<string, CoverStyle> = {
   anime: { render: 'vibrant anime illustration, clean linework, expressive eyes', mood: '' },
   tsundere: { render: 'vibrant anime illustration, expressive, lively', mood: '' },
   romcom: { render: 'bright modern anime illustration', mood: 'warm and charming' },
-  flirty: { render: 'sensual anime illustration', mood: 'warm intimate lighting' },
+  flirty: { render: 'sensual anime illustration', mood: 'warm intimate lighting', media: 'vibrant anime illustration, warm expressive' },
   noir: { render: 'moody cinematic noir illustration, high contrast, muted palette', mood: '' },
   slice_of_life: { render: 'soft cozy anime illustration', mood: 'gentle pastel lighting' },
   whimsical: { render: 'whimsical storybook illustration', mood: 'soft luminous colors' },
@@ -115,12 +118,14 @@ export function decorateImagePrompt(core: string, narrativeStyle?: string): stri
 
 /**
  * The world's art style for media prompts (contract media §3.1): the style
- * key and its render phrase. A missing or unknown key falls back to the
- * painted default. Media never sees the mood half.
+ * key and its media render phrase (the per-key `media` override when the
+ * cover render carries a mood word, else the render itself). A missing or
+ * unknown key falls back to the painted default. Media never sees the mood
+ * half, and never the cover render it replaces.
  */
 export function resolveMediaStyle(narrativeStyle?: string | null): { key: string; render: string } {
   const entry = (narrativeStyle && STYLE_HINT[narrativeStyle]) || undefined
-  if (entry && narrativeStyle) return { key: narrativeStyle, render: entry.render }
+  if (entry && narrativeStyle) return { key: narrativeStyle, render: entry.media || entry.render }
   return { key: PAINTED_STYLE_KEY, render: PAINTED_RENDER }
 }
 

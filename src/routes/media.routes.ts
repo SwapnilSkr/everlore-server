@@ -68,17 +68,24 @@ export const mediaRoutes = new Elysia()
     params: t.Object({ id: t.String({ pattern: '^[a-fA-F0-9]{24}$' }), characterId: t.String({ pattern: '^[a-fA-F0-9]{24}$' }) }),
     query: t.Optional(t.Object({ repaint: t.Optional(t.String()) })),
   })
-  .post('/personas/:personaId/portrait', async ({ user, params, set }) => {
+  .post('/personas/:personaId/portrait', async ({ user, params, query, set }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     try {
       // "Give yourself a face" paints from the persona's own description and
       // stores on the persona, with or without a save. It never resolves to
       // a card: the save's protagonist can belong to another world entirely.
-      return queued(await requestPersonaPortrait(user.id, params.personaId), set)
+      // An optional save paints that save's world style; an unknown or foreign
+      // save is a 404 from the service. Personas live under /personas, never
+      // under /instances/:id, so the save rides the query, not the path.
+      return queued(await requestPersonaPortrait(user.id, params.personaId,
+        { ...(query?.instance_id ? { instanceId: query.instance_id } : {}) }), set)
     } catch (error) {
       return resting(error, set)
     }
-  }, { params: t.Object({ personaId: t.String({ pattern: '^[a-fA-F0-9]{24}$' }) }) })
+  }, {
+    params: t.Object({ personaId: t.String({ pattern: '^[a-fA-F0-9]{24}$' }) }),
+    query: t.Optional(t.Object({ instance_id: t.Optional(t.String({ pattern: '^[a-fA-F0-9]{24}$' })) })),
+  })
   .get('/media/usage', async ({ user }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     if (!mediaEnabled()) throw new HttpError(404, 'That moment could not be found.')

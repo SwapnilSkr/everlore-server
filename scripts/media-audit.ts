@@ -1496,6 +1496,15 @@ const ORIGINAL_HINTS: Record<string, string> = {
   chaotic_comedy: 'lively colorful cartoon illustration, exaggerated expressive comedy, dynamic energy',
 }
 const ORIGINAL_DEFAULT = 'high-quality character illustration, cinematic lighting'
+// The allure words that must never reach a media prompt. Exactly the two such
+// words the style table carries today (flirty's cover render; the flirty and
+// yandere moods) — both members of VISUAL_SEXUAL_TERMS in input-guard.ts,
+// which the image guard counts as sexualized-appearance signals. Per-key mood
+// halves come from the table itself (checked above); this list only covers
+// words a cover render can smuggle past a mood-phrase check. It lives in the
+// audit, never in logic: production picks the authored `media` render as-is.
+const MEDIA_FORBIDDEN_WORDS = ['sensual', 'intimate']
+const hasMoodWord = (text: string, word: string) => new RegExp(`\\b${word}\\b`, 'i').test(text)
 check('cover_identical', () => {
   const core = 'A dragon over a misty city'
   for (const [key, hint] of Object.entries(ORIGINAL_HINTS)) {
@@ -1517,21 +1526,31 @@ check('cover_strip', () => {
 })
 check('no_mood_in_media', () => {
   // No media prompt may contain a mood phrase, for any key. Media uses the
-  // render half only.
+  // media render only (the per-key override when a cover render carries a mood
+  // word itself, as flirty's "sensual" does) — and no allure word from the
+  // closed list, which is what catches a smuggled word a mood-phrase check
+  // cannot see.
   for (const [key, entry] of Object.entries(STYLE_HINT)) {
+    const mediaRender = resolveMediaStyle(key).render
     const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
     const shot = (goodPlan().shots[0]) as unknown as Parameters<typeof compileStillPrompt>[1]
     const prompts = [
-      portraitImagePrompt('A calm face', entry.render),
-      pictureImagePrompt('A tavern scene', entry.render, 1, ''),
-      compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite', entry.render),
-      entry.render,
+      portraitImagePrompt('A calm face', mediaRender),
+      pictureImagePrompt('A tavern scene', mediaRender, 1, ''),
+      compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite', mediaRender),
+      mediaRender,
     ]
-    for (const prompt of prompts) assert.ok(prompt.includes(entry.render), `${key} render missing`)
+    for (const prompt of prompts) assert.ok(prompt.includes(mediaRender), `${key} render missing`)
     if (entry.mood) {
       for (const prompt of prompts) assert.ok(!prompt.includes(entry.mood), `${key} mood leaks: ${entry.mood}`)
     }
+    for (const word of MEDIA_FORBIDDEN_WORDS) {
+      for (const prompt of prompts) assert.ok(!hasMoodWord(prompt, word), `${key} mood word leaks: ${word}`)
+    }
   }
+  // The known smuggler, pinned: flirty's cover render carries "sensual", so
+  // its media render must not.
+  assert.ok(!hasMoodWord(resolveMediaStyle('flirty').render, 'sensual'))
   assert.equal(resolveMediaStyle('no-such-style').render, PAINTED_RENDER)
   assert.equal(resolveMediaStyle(undefined).key, PAINTED_STYLE_KEY)
 })
@@ -1716,6 +1735,115 @@ check('vision_drawn_styles', () => {
   assert.ok(VISION_SYSTEM.includes('anime'))
   assert.ok(VISION_SYSTEM.includes('cartoon'))
   assert.ok(VISION_SYSTEM.includes('A fictional illustrated face is ALLOWED'))
+})
+// ── media-world-style-fix-1 ──
+check('portrait_no_text', async () => {
+  // A live portrait once painted signage spelling the character's name. The
+  // prompt asks for no text, and the post-gate rejects a face that drew any —
+  // the way the picture gate already does.
+  assert.ok(portraitImagePrompt('A calm face', 'a render').includes('no text, no lettering, no signage'))
+  const f = fixture()
+  stubPortraitPipeline(f, async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: true }))
+  visualEffects.image = (async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 })) as never
+  const published: Array<Record<string, unknown>> = []
+  mediaEffects.publish = (async (_player: string, message: Record<string, unknown>) => { published.push(message) }) as never
+  const a = portraitRow(f)
+  f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+  await reserveMedia(a)
+  await processPortrait(String(a._id))
+  assert.equal(f.db.mediaAssets.rows[0].status, 'unseen')
+  assert.equal((f.db.mediaAssets.rows[0] as { reason?: string }).reason, undefined)
+  assert.equal('asset_key' in f.db.mediaAssets.rows[0], false)
+  assert.equal(f.db.mediaUsage.rows[0].status, 'released')
+  assert.equal(f.db.mediaRejections.rows.length, 1)
+  assert.equal((f.db.mediaRejections.rows[0] as { stage: string }).stage, 'post')
+  assert.equal((f.db.mediaRejections.rows[0] as { reason: string }).reason, 'portrait_text_visible')
+  assert.ok(published.some((m) => m.type === 'media_unseen'))
+})
+check('persona_route_takes_save', async () => {
+  // The persona portrait route lives under /personas, never under /instances,
+  // and an optional save rides the query into requestPersonaPortrait. An
+  // unknown or foreign save is a 404 from the service.
+  const source = readFileSync('src/routes/media.routes.ts', 'utf8')
+  assert.ok(source.includes("'/personas/:personaId/portrait'"))
+  assert.ok(!source.includes('/instances/:id/personas'))
+  assert.ok(source.includes('query?.instance_id'))
+  assert.ok(source.includes('requestPersonaPortrait(user.id, params.personaId'))
+  // Registered under the persona param name: an unauthenticated tap proves the
+  // path compiled (the route's own 401, via the boot's HttpError mapping)
+  // instead of missing (404).
+  const { Elysia } = await import('elysia')
+  const { mediaRoutes } = await import('../src/routes/media.routes')
+  const app = new Elysia()
+    .onError(({ error, set }) => {
+      if (error instanceof HttpError) { set.status = error.statusCode; return { error: error.message } }
+    })
+    .use(mediaRoutes)
+  const post = (path: string) => app.handle(new Request(`http://localhost${path}`, { method: 'POST' }))
+  const res = await post('/personas/aaaaaaaaaaaaaaaaaaaaaaaa/portrait')
+  assert.equal(res.status, 401)
+  // The save rides a 24-hex query: anything else never reaches the service.
+  assert.equal((await post('/personas/aaaaaaaaaaaaaaaaaaaaaaaa/portrait?instance_id=nothex')).status, 422)
+  assert.equal((await post('/personas/zzz/portrait')).status, 422)
+  // And personas are never under a save's path.
+  assert.equal((await post('/instances/aaaaaaaaaaaaaaaaaaaaaaaa/personas/bbbbbbbbbbbbbbbbbbbbbbbb/portrait')).status, 404)
+  const f = fixture()
+  const personaId = new ObjectId()
+  f.db.personas.rows.push({
+    _id: personaId, player_id: f.player, name: 'Asha',
+    description: 'A traveller in her late twenties with curious grey eyes.',
+    appearance_version: 1, created_at: new Date(), updated_at: new Date(),
+  } as unknown as Record<string, unknown>)
+  await assert.rejects(
+    requestPersonaPortrait(String(f.player), String(personaId), { instanceId: String(new ObjectId()) }),
+    (e: unknown) => e instanceof HttpError && e.statusCode === 404)
+  const foreign = new ObjectId(), foreignInstance = new ObjectId()
+  f.db.worldInstances.rows.push({ _id: foreignInstance, player_id: foreign, template_id: f.template })
+  await assert.rejects(
+    requestPersonaPortrait(String(f.player), String(personaId), { instanceId: String(foreignInstance) }),
+    (e: unknown) => e instanceof HttpError && e.statusCode === 404)
+})
+check('persona_delete_cleans_faces', async () => {
+  // Deleting a persona deletes its kept portrait, every per-style face and
+  // every persona portrait row — and nothing of anyone else's.
+  const { personaService } = await import('../src/services/persona.service')
+  const f = fixture()
+  const personaId = new ObjectId(), otherId = new ObjectId()
+  f.db.personas.rows.push({
+    _id: personaId, player_id: f.player, name: 'Asha', gender: 'female', age: null,
+    description: 'A traveller.', other_info: '', appearance_version: 2,
+    portrait: { asset_key: 'media/persona/painted.png', source: 'generated', appearance_version: 2, painted_at: new Date() },
+    portraits: {
+      anime: { asset_key: 'media/persona/anime.png', source: 'generated', appearance_version: 2, art_style: 'anime', painted_at: new Date() },
+    },
+    created_at: new Date(), updated_at: new Date(),
+  } as unknown as Record<string, unknown>)
+  const row = (key: string, pid: ObjectId, owner: ObjectId): MediaAssetDoc => ({
+    _id: new ObjectId(), player_id: pid, persona_id: owner, kind: 'portrait', line_id: '',
+    source: 'generated', model: 'black-forest-labs/flux-3-image-klein',
+    cache_key: `persona:${owner.toHexString()}:painted:v2:${key}`,
+    revision: 'r', input: 'A traveller.', cost_usd: 0.009, status: 'ready',
+    asset_key: key, url: `https://example.test/${key}`, created_at: new Date(),
+  })
+  f.db.mediaAssets.rows.push(row('media/persona/row.png', f.player, personaId) as unknown as Record<string, unknown>)
+  f.db.mediaAssets.rows.push(row('media/persona/other.png', f.player, otherId) as unknown as Record<string, unknown>)
+  const removed: string[] = []
+  const origDelete = storageService.delete
+  storageService.delete = (async (key: string) => { removed.push(key) }) as never
+  try {
+    await personaService.delete(String(f.player), String(personaId))
+  } finally {
+    storageService.delete = origDelete
+  }
+  assert.equal(f.db.personas.rows.length, 0)
+  assert.equal(f.db.mediaAssets.rows.length, 1)
+  assert.equal((f.db.mediaAssets.rows[0] as { asset_key: string }).asset_key, 'media/persona/other.png')
+  assert.ok(removed.includes('media/persona/painted.png'))
+  assert.ok(removed.includes('media/persona/anime.png'))
+  assert.ok(removed.includes('media/persona/row.png'))
+  assert.ok(!removed.includes('media/persona/other.png'))
+  await assert.rejects(personaService.delete(String(f.player), String(personaId)),
+    (e: unknown) => e instanceof HttpError && e.statusCode === 404)
 })
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }
 if (process.argv.includes('--check') && !checks.some(([name]) => name === process.argv[process.argv.indexOf('--check') + 1])) throw new Error('Unknown audit check')

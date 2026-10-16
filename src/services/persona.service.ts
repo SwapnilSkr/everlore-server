@@ -4,6 +4,7 @@ import { getRedisClient } from '../config/redis'
 import type { PersonaDoc, PersonaGender, PersonaSnapshotDoc } from '../models/persona.model'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { storageService } from './storage.service'
 
 const personas = () => mongoColl.personas()
 const worldInstances = () => mongoColl.worldInstances()
@@ -182,8 +183,26 @@ export const personaService = {
   async delete(playerId: string, personaId: string) {
     const pid = parseObjectId(playerId)
     const personaOid = parseObjectId(personaId)
+    const existing = await personas().findOne({ _id: personaOid, player_id: pid })
+    if (!existing) throw new HttpError(404, 'Persona not found')
+    // Faces die with the persona: the kept portrait, every per-style face,
+    // and every persona portrait row. Asset rows go first so an in-flight
+    // paint finds no queued row to claim and no persona to store on.
+    const keys: string[] = []
+    if (existing.portrait?.asset_key) keys.push(existing.portrait.asset_key)
+    for (const face of Object.values(existing.portraits || {})) {
+      if (face?.asset_key) keys.push(face.asset_key)
+    }
+    const assets = await mongoColl.mediaAssets()
+      .find({ persona_id: personaOid, player_id: pid })
+      .toArray()
+    for (const asset of assets) {
+      if (asset.asset_key) keys.push(asset.asset_key)
+    }
+    await mongoColl.mediaAssets().deleteMany({ persona_id: personaOid, player_id: pid })
     const result = await personas().deleteOne({ _id: personaOid, player_id: pid })
     if (result.deletedCount === 0) throw new HttpError(404, 'Persona not found')
+    for (const key of new Set(keys)) await storageService.delete(key)
     const affected = await worldInstances()
       .find({ player_id: pid, persona_id: personaOid }, { projection: { _id: 1 } })
       .toArray()

@@ -75,6 +75,7 @@ export class MemoryCollection {
   async deleteOne(filter: Row) {
     const index = this.rows.findIndex((r) => matches(r, filter))
     if (index >= 0) this.rows.splice(index, 1)
+    return { deletedCount: index >= 0 ? 1 : 0 }
   }
   async deleteMany(filter: Row) { this.rows = this.rows.filter((r) => !matches(r, filter)) }
   private apply(row: Row, update: Row) {

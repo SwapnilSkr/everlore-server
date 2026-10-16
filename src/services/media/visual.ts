@@ -99,7 +99,7 @@ interface PortraitBytes {
  * same string the job sends.
  */
 export function portraitImagePrompt(description: string, render: string): string {
-  return `${description}. ${render}. SFW head-and-shoulders portrait, plain dark background, vertical 9:16, clearly an illustration of a fictional person, never a photograph.`
+  return `${description}. ${render}. SFW head-and-shoulders portrait, plain dark background, vertical 9:16, clearly an illustration of a fictional person, never a photograph, no text, no lettering, no signage.`
 }
 
 /**
@@ -141,8 +141,8 @@ export async function generatePortraitBytes(
     { model, aspectRatio: '9:16', ...(reference ? { reference } : {}) },
   )
   const post = await checkImage(image.data, image.contentType)
-  if (post.verdict !== 'allow' || post.people_count !== 1) {
-    throw new UnseenError('post', post.verdict !== 'allow' ? post.reason_code : 'portrait_not_single_face')
+  if (post.verdict !== 'allow' || post.text_visible || post.people_count !== 1) {
+    throw new UnseenError('post', post.verdict !== 'allow' ? post.reason_code : post.text_visible ? 'portrait_text_visible' : 'portrait_not_single_face')
   }
   return { data: image.data, contentType: image.contentType, generationId: image.generationId, ...(image.costUsd !== undefined ? { costUsd: image.costUsd } : {}) }
 }
