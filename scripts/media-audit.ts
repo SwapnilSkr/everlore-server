@@ -19,7 +19,7 @@ import { purgeCardPortraits, purgeTemplatePortraits } from '../src/services/medi
 import { reserveMedia, releaseMedia, settleMedia, mediaUsage } from '../src/services/media/usage'
 import { purgeMedia } from '../src/services/media/deletion'
 import { storageService } from '../src/services/storage.service'
-import { publicMediaEvent, withTurnMedia, wireSpokenLines } from '../src/services/media/events'
+import { publicMediaEvent, publishSpokenLines, withTurnMedia, wireSpokenLines } from '../src/services/media/events'
 import { generateMediaImage } from '../src/services/media/image'
 import { imageSafetyTolerance } from '../src/services/media/config'
 import { asMediaImageReference, imageExtensionFor, sniffImageContentType, ProviderRefusalError } from '../src/ai/image'
@@ -31,7 +31,7 @@ import { castCharacter } from '../src/services/media/casting'
 import { COMPOSITION, DEFAULT_HINT, PAINTED_RENDER, PAINTED_STYLE_KEY, STYLE_HINT, decorateImagePrompt, resolveMediaStyle, stripServerDecorations, templateMediaStyle } from '../src/services/image.service'
 import { HttpError } from '../src/utils/http-error'
 import { hideKeepsake, keepsakeExcerpt, listKeepsakes, KEEPSAKE_FORBIDDEN_KEYS } from '../src/services/media/keepsakes'
-import type { MediaAssetDoc } from '../src/models/media.model'
+import type { MediaAssetDoc, SpokenLine, VoiceAttribution } from '../src/models/media.model'
 import type { WorldEventDoc } from '../src/models/world-event.model'
 
 // load_instance_filters_media has no database: the socket's load path runs
@@ -220,6 +220,44 @@ check('wire_switch', () => {
     assert.deepEqual(publicMediaEvent(event()).data.spoken_lines, lines)
   } finally {
     process.env.MEDIA_ENABLED = prior.enabled; process.env.MEDIA_VOICE_ENABLED = prior.voice
+  }
+})
+check('stale_line_payload', async () => {
+  const f = fixture()
+  const line: SpokenLine = { line_id: 'l0', start: 0, end: 15, voice: { status: 'unvoiceable' } }
+  const fresh = [{ line_id: 'l0', start: 0, end: 15 }]
+  const publish = redisStub.publish
+  const messages: Array<{ lines: SpokenLine[] }> = []
+  redisStub.publish = (async (_channel: string, message: string) => { messages.push(JSON.parse(message)); return 0 }) as typeof publish
+  try {
+    for (const version of [undefined, 'missing', ATTRIBUTION_RULE_VERSION - 1, ATTRIBUTION_RULE_VERSION, ATTRIBUTION_RULE_VERSION + 1] as const) {
+      const attribution: VoiceAttribution | undefined = version === undefined ? undefined : {
+        status: 'done', claimed_at: new Date(), ...(version === 'missing' ? {} : { rule_version: version }),
+      }
+      const stored = f.db.events.rows[0] as unknown as WorldEventDoc
+      stored.data.spoken_lines = [line]
+      if (attribution) stored.data.voice_attribution = attribution
+      else delete stored.data.voice_attribution
+      stored.edit_history = [{ previous_data: { spoken_lines: [line], voice_attribution: attribution, media_revision: 'old' }, edited_at: new Date() } as never]
+      const before = JSON.stringify(stored)
+      const expected = version === ATTRIBUTION_RULE_VERSION ? [line] : fresh
+      assert.deepEqual(publicSpokenLines([line], version === ATTRIBUTION_RULE_VERSION), expected)
+      assert.deepEqual(wireSpokenLines([line], attribution), expected, `wire version ${version}`)
+      const event = await f.db.events.findOne({ _id: f.event }) as unknown as WorldEventDoc
+      const out = publicMediaEvent(event)
+      assert.deepEqual(out.data.spoken_lines, expected, `event version ${version}`)
+      assert.ok(!('voice_attribution' in out.data) && !('media_revision' in out.data))
+      const history = out.edit_history[0].previous_data as Record<string, unknown>
+      assert.ok(!('spoken_lines' in history) && !('voice_attribution' in history) && !('media_revision' in history))
+      await publishSpokenLines(stored)
+      assert.deepEqual(messages.at(-1)?.lines, expected, `published version ${version}`)
+      assert.equal(JSON.stringify(stored), before, 'payload reads never change the stored event')
+    }
+    assert.deepEqual(publicSpokenLines([line]), fresh, 'no event means no current verdict')
+    assert.deepEqual(wireSpokenLines([line]), fresh)
+    assert.equal(f.calls(), 0, 'reading a verdict never triggers attribution')
+  } finally {
+    redisStub.publish = publish
   }
 })
 check('load_instance_filters_media', async () => {
@@ -671,7 +709,7 @@ check('cut_graph', () => {
   assert.ok(!solo.filter.includes('xfade'))
 })
 check('compile_prompts', () => {  const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
-  const shot = (goodPlan().shots[0]) as unknown as Parameters<typeof compileStillPrompt>[1]
+  const shot = { ...plan.shots[0], people_in_still: plan.shots[1].people_in_still }
   const still = compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite')
   assert.ok(still.includes('Dark cloak'))
   assert.ok(still.includes('A brass lamp.'))
@@ -680,6 +718,71 @@ check('compile_prompts', () => {  const plan = goodPlan() as unknown as Paramete
   assert.ok(motion.includes('slow_push_in') || motion.includes('drifts slowly closer'))
   assert.ok(motion.includes('No other people appear'))
   assert.ok(motion.includes('Dark cloak'))
+})
+check('peopleless_prompts', () => {
+  const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
+  // Deliberately unrelated person continuity must never enter an empty composition.
+  plan.continuity.wardrobe = 'No clothing is visible; all human figures remain outside both compositions.'
+  plan.continuity.hair = 'No hair is visible.'
+  for (const model of ['x-ai/grok-imagine-video-1.5-lite', 'alibaba/wan-3.0', 'unknown-model']) {
+    const shot = plan.shots[0]
+    const still = compileStillPrompt(plan, shot, model)
+    const motion = compileMotionPrompt(plan, shot, model)
+    for (const prompt of [still, motion]) {
+      assert.ok(!prompt.includes(plan.continuity.wardrobe), 'empty shot omits wardrobe verbatim')
+      assert.ok(!prompt.includes(plan.continuity.hair), 'empty shot omits hair verbatim')
+      assert.ok(!/wardrobe|hair/iu.test(prompt), 'empty shot has no person continuity labels')
+    }
+    assert.ok(still.includes(`Props: ${plan.continuity.props}.`))
+    for (const value of [plan.continuity.time_of_day, plan.continuity.weather, plan.continuity.light, plan.continuity.palette]) assert.ok(still.includes(value))
+    assert.ok(motion.includes(plan.ambient!))
+    const people = plan.shots[1]
+    assert.ok(compileStillPrompt(plan, people, model).includes(`Wardrobe: ${plan.continuity.wardrobe} Hair: ${plan.continuity.hair} Props: ${plan.continuity.props}.`))
+    assert.ok(compileMotionPrompt(plan, people, model).includes(`Wardrobe stays exactly: ${plan.continuity.wardrobe}`))
+  }
+})
+check('peopleless_references', async () => {
+  const f = fixture()
+  const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
+  const frames = safetyEffects.frames
+  try {
+    for (const people of [0, 1]) {
+      const steps: string[] = []
+      const shot = people ? plan.shots[1] : plan.shots[0]
+      const expectedStill = compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite')
+      const expectedMotion = compileMotionPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite')
+      safetyEffects.call = async (req) => {
+        const text = req.messages.find((message) => message.role === 'user')?.content
+        assert.equal(text, steps.length ? expectedMotion : expectedStill, 'gate sees the entire compiled prompt')
+        steps.push('gate')
+        return JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+      }
+      visualEffects.image = async (_prompt, opts) => {
+        assert.deepEqual(steps, ['gate', 'gate'], 'both compiled gates run before generation')
+        assert.equal(!!opts?.reference, people > 0, 'only populated stills get a portrait reference')
+        if (people) assert.deepEqual(opts!.reference!.data, Buffer.from(PNG_BYTES))
+        steps.push('image')
+        return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null }
+      }
+      safetyEffects.frames = async () => [Buffer.from('first'), Buffer.from('middle'), Buffer.from('last')]
+      safetyEffects.judge = async (_image, _type, reference) => {
+        const videoFrame = steps.includes('video')
+        assert.equal(!!reference, videoFrame && people > 0, 'only populated videos ask for a wardrobe match')
+        if (reference) assert.deepEqual(reference.data, Buffer.from(JPEG_BYTES))
+        steps.push(videoFrame ? 'frame-check' : 'still-check')
+        return { verdict: 'allow', reason_code: 'ok', people_count: people, face_close_up: false, text_visible: false, wardrobe_match: people > 0 }
+      }
+      visualEffects.upload = async (_data, _type, opts) => ({ key: opts!.key!, url: 'https://example.test/still.jpg' })
+      visualEffects.submit = async (req) => { assert.equal(req.prompt, expectedMotion); steps.push('video'); return { jobId: 'shot', status: 'pending' } }
+      visualEffects.wait = async () => ({ jobId: 'shot', status: 'completed', generationId: null })
+      visualEffects.fetch = async () => Buffer.from('video')
+      const result = await makeSceneShot({ role: shot.role, shot, continuity: plan.continuity, ambient: plan.ambient, speakerPortrait: Buffer.from(PNG_BYTES), playerId: f.player, instanceId: f.instance })
+      assert.equal(result.status, 'ready', result.reason)
+      assert.deepEqual(steps, ['gate', 'gate', 'image', 'still-check', 'video', 'frame-check', 'frame-check', 'frame-check'])
+    }
+  } finally {
+    safetyEffects.frames = frames
+  }
 })
 // ── media-server-2-fix-1 ──
 

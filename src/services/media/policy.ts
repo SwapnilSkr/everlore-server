@@ -56,8 +56,9 @@ export function chooseVoice(traits: VoiceTraits, holders: VoiceHolder[], voices 
   const last = (id: string) => Math.max(0, ...holders.filter((h) => h.voice_id === id).map((h) => h.last_spoken_at?.getTime() || 0))
   return fitting.reduce((winner, voice) => last(voice.id) < last(winner.id) ? voice : winner).id
 }
-export function publicSpokenLines(lines: SpokenLine[]): SpokenLine[] {
+/** Without a current event verdict, every line is still available for attribution. */
+export function publicSpokenLines(lines: SpokenLine[], attributionIsCurrent = false): SpokenLine[] {
   return lines.map(({ line_id, start, end, voice }) => ({ line_id, start, end,
-    ...(voice?.status === 'unvoiceable' ? { voice } : {}),
+    ...(attributionIsCurrent && voice?.status === 'unvoiceable' ? { voice } : {}),
   }))
 }

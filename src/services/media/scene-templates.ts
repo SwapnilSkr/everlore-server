@@ -59,7 +59,7 @@ export function compileStillPrompt(plan: DirectorPlan, shot: DirectorShot, model
   return [
     t.stillPrefix,
     `${styleRender}.`,
-    `Wardrobe: ${c.wardrobe} Hair: ${c.hair} Props: ${c.props}.`,
+    `${shot.people_in_still.length ? `Wardrobe: ${c.wardrobe} Hair: ${c.hair} ` : ''}Props: ${c.props}.`,
     `Time: ${c.time_of_day}. Weather: ${c.weather}. Light: ${c.light}. Palette: ${c.palette}.`,
     `${FRAMING_NOTES[shot.framing] || shot.framing}.`,
     shot.still,
@@ -79,7 +79,7 @@ export function compileMotionPrompt(plan: DirectorPlan, shot: DirectorShot, mode
     `Subject: ${shot.subject_action}`,
     `Environment: ${shot.environment_motion}`,
     people,
-    `Wardrobe stays exactly: ${plan.continuity.wardrobe}`,
+    ...(shot.people_in_still.length ? [`Wardrobe stays exactly: ${plan.continuity.wardrobe}`] : []),
     `Sound: ${plan.ambient || 'ambient scene sounds'}. No voices, no spoken words, no music with words.`,
     'No nudity, no sexual act, no suggestive depictions of anyone who looks underage, no real people, no graphic gore.',
     t.motionSuffix,

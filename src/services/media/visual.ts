@@ -1301,7 +1301,7 @@ export async function makeSceneShot(args: {
     // $0.20 video is never spent animating a still that is already off-plan.
     // The speaker face is an older PNG portrait or a new JPEG one: sniffed,
     // never assumed.
-    const speakerReference = args.speakerPortrait ? asMediaImageReference(args.speakerPortrait) : undefined
+    const speakerReference = args.shot.people_in_still.length && args.speakerPortrait ? asMediaImageReference(args.speakerPortrait) : undefined
     let still: { data: Buffer; contentType: string; costUsd?: number } | null = null
     const stillChecks: unknown[] = []
     try {
@@ -1352,7 +1352,7 @@ export async function makeSceneShot(args: {
         })
         const status = await visualEffects.wait(submitted.jobId)
         const video = await visualEffects.fetch(submitted.jobId)
-        const frames = await checkVideoFrames(video, { data: stillBytes, contentType: stillContentType })
+        const frames = await checkVideoFrames(video, expectedPeople ? { data: stillBytes, contentType: stillContentType } : undefined)
         const ok = judgeShotFrames(frames, expectedPeople)
         const record = {
           model, job: submitted.jobId, cost: status.costUsd,
