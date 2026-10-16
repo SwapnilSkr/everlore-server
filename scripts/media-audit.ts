@@ -30,6 +30,7 @@ import { identityKey } from '../src/services/character-codex.service'
 import { castCharacter } from '../src/services/media/casting'
 import { COMPOSITION, DEFAULT_HINT, PAINTED_RENDER, PAINTED_STYLE_KEY, STYLE_HINT, decorateImagePrompt, resolveMediaStyle, stripServerDecorations, templateMediaStyle } from '../src/services/image.service'
 import { HttpError } from '../src/utils/http-error'
+import { hideKeepsake, keepsakeExcerpt, listKeepsakes, KEEPSAKE_FORBIDDEN_KEYS } from '../src/services/media/keepsakes'
 import type { MediaAssetDoc } from '../src/models/media.model'
 import type { WorldEventDoc } from '../src/models/world-event.model'
 
@@ -1015,6 +1016,7 @@ function stubVideoRun(f: ReturnType<typeof videoBase>, opts: {
   cutEffects.probeDuration = async () => 3
   cutEffects.run = async () => Buffer.from('norm')
   cutEffects.runFiles = async (args: string[]) => { await writeFile(args[args.length - 1], Buffer.from('cut')) }
+  cutEffects.extractFrame = async () => Buffer.from('poster-frame')
   return run
 }
 
@@ -2203,6 +2205,9 @@ check('dialogue_free_assembly', async () => {
     }
     const single = await assembleDialogueFreeCut({ shots: [shot], durations: [4], transition: 'cut' })
     assert.ok(Math.abs(await cutEffects.probeDuration(single.bytes) - 4) < 0.15)
+    // The poster frame comes out of a finished cut with real ffmpeg.
+    const poster = await cutEffects.extractFrame(single.bytes)
+    assert.ok(poster.length > 100)
   } finally { Object.assign(cutEffects, previous) }
 })
 check('passing_face_hidden', async () => {
@@ -2617,6 +2622,460 @@ check('persona_delete_cleans_faces', async () => {
   assert.ok(!removed.includes('media/persona/other.png'))
   await assert.rejects(personaService.delete(String(f.player), String(personaId)),
     (e: unknown) => e instanceof HttpError && e.statusCode === 404)
+})
+// ── keepsakes-server ──
+
+const KEEPSAKE_PROSE = 'Rain hammered the gutter over the amber road, and the lanterns swayed hard in the wind. “Stay close,” Seren whispered, her hand on the hilt. A floorboard sighed beyond the shutters.'
+
+/** Keepsakes fixture: a titled world with a cover, a persona save with a lead
+ *  card, and one event whose first line is voiceable speech by Seren. */
+function keepsakeFixture() {
+  const f = fixture()
+  f.db.worldTemplates.rows[0].title = 'The Amber Road'
+  f.db.worldTemplates.rows[0].image_url = 'https://example.test/cover.png'
+  f.db.worldInstances.rows[0].persona_snapshot = { name: 'Asha', gender: 'female' }
+  f.db.characters.rows.push({
+    _id: new ObjectId(), instance_id: f.instance, player_id: f.player,
+    canonical_name: 'Borin', name_normalized: 'borin', aliases: [],
+    appearance: 'A broad smith', appearance_version: 1,
+    is_protagonist: true,
+    immutable_facts: [], mutable_state: [], disposition_to_player: '', hidden_thought: '',
+    first_seen_sequence: 0, last_seen_sequence: 0, mention_count: 1,
+    created_at: new Date(), updated_at: new Date(),
+  } as unknown as Record<string, unknown>)
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  event.data.ai_response = KEEPSAKE_PROSE
+  const spans = detectSpokenLines(KEEPSAKE_PROSE)
+  assert.equal(spans.length, 1)
+  event.data.spoken_lines = [{ ...spans[0], voice: { status: 'voiceable', speaker_name: 'Seren', spoken_text: 'Stay close,', tags: [] } }]
+  return f
+}
+
+let keepsakeTick = 0
+function keepsakeRow(f: ReturnType<typeof keepsakeFixture>, extra: Partial<MediaAssetDoc> = {}): MediaAssetDoc {
+  keepsakeTick++
+  return {
+    _id: new ObjectId(), player_id: f.player, instance_id: f.instance, event_id: f.event,
+    kind: 'picture', line_id: '', source: 'generated', model: 'black-forest-labs/flux-3-image-klein',
+    cache_key: `keepsake:${keepsakeTick}:${new ObjectId().toHexString()}`, revision: 'r', input: 'A rainy road.',
+    cost_usd: 0.009, cost_source: 'catalogue', status: 'ready',
+    asset_key: `media/picture/keep/${keepsakeTick}.jpg`, url: `https://example.test/keep${keepsakeTick}.jpg`,
+    created_at: new Date(Date.now() + keepsakeTick * 1000),
+    ...extra,
+  }
+}
+function keepsakeIds(page: Awaited<ReturnType<typeof listKeepsakes>>): string[] {
+  return page.items.map((i) => i.media_id)
+}
+
+check('keepsakes_owner', async () => {
+  // Only the owner sees their pieces: another player's rows never appear, on
+  // the service or on the wire. The route param is :mediaId, never :id.
+  const source = readFileSync('src/routes/media.routes.ts', 'utf8')
+  assert.ok(source.includes('/media/keepsakes/:mediaId/hide'), 'hide route keeps its own param name')
+  assert.ok(!source.includes('/media/keepsakes/:id/hide'))
+  const f = keepsakeFixture()
+  const mine = keepsakeRow(f)
+  const theirs = keepsakeRow(f, { player_id: new ObjectId(), cache_key: `keepsake:theirs:${new ObjectId().toHexString()}` })
+  f.db.mediaAssets.rows.push(mine as unknown as Record<string, unknown>, theirs as unknown as Record<string, unknown>)
+  const page = await listKeepsakes(String(f.player))
+  assert.deepEqual(keepsakeIds(page), [String(mine._id)])
+  const other = await listKeepsakes(String(theirs.player_id))
+  assert.deepEqual(keepsakeIds(other), [String(theirs._id)])
+  const { Elysia } = await import('elysia')
+  const { mediaRoutes } = await import('../src/routes/media.routes')
+  const errorHandler = ({ error, set }: { error: unknown; set: { status?: unknown } }) => {
+    if (error instanceof HttpError) { set.status = error.statusCode; return { error: error.message } }
+  }
+  const anonymous = new Elysia().onError(errorHandler).use(mediaRoutes)
+  assert.equal((await anonymous.handle(new Request('http://localhost/media/keepsakes'))).status, 401)
+  assert.equal((await anonymous.handle(new Request('http://localhost/media/keepsakes/aaaaaaaaaaaaaaaaaaaaaaaa/hide', { method: 'POST' }))).status, 401)
+  const app = new Elysia().onError(errorHandler)
+    .resolve({ as: 'global' }, () => ({ user: { id: String(f.player), email: '', username: '', tier: 'free' } }))
+    .use(mediaRoutes)
+  const listed = await app.handle(new Request('http://localhost/media/keepsakes?kind=picture&limit=2'))
+  assert.equal(listed.status, 200)
+  assert.deepEqual(keepsakeIds(await listed.json()), [String(mine._id)])
+  assert.equal((await app.handle(new Request('http://localhost/media/keepsakes?kind=nope'))).status, 422)
+  assert.equal((await app.handle(new Request('http://localhost/media/keepsakes?limit=0'))).status, 422)
+  assert.equal((await app.handle(new Request('http://localhost/media/keepsakes?limit=99'))).status, 422)
+  assert.equal((await app.handle(new Request('http://localhost/media/keepsakes?before=not-a-date'))).status, 422)
+})
+check('keepsakes_exclusions', async () => {
+  // Every status but ready is out; voice, passing faces, hidden rows and rows
+  // whose save is gone are out; a repainted-over face is out. kind=all is
+  // pictures and films only; faces come only with kind=portrait (c07aad0).
+  const f = keepsakeFixture()
+  const picture = keepsakeRow(f)
+  const film = keepsakeRow(f, { kind: 'video', line_id: 'l0', duration_ms: 11000, cache_key: `keepsake:film:${new ObjectId().toHexString()}` })
+  const face = keepsakeRow(f, {
+    kind: 'portrait', character_id: f.character, event_id: undefined,
+    cache_key: `keepsake:face:${new ObjectId().toHexString()}`,
+  })
+  delete (face as Partial<MediaAssetDoc>).event_id
+  const oldFace = keepsakeRow(f, {
+    kind: 'portrait', character_id: f.character, event_id: undefined, url: 'https://example.test/old.jpg',
+    asset_key: 'media/portrait/old.jpg', created_at: new Date(Date.now() - 100000),
+    cache_key: `keepsake:oldface:${new ObjectId().toHexString()}`,
+  })
+  delete (oldFace as Partial<MediaAssetDoc>).event_id
+  const personaId = new ObjectId()
+  const personaDoc = {
+    _id: personaId, player_id: f.player, name: 'Asha', gender: 'female',
+    description: 'A traveller.', appearance_version: 1, created_at: new Date(), updated_at: new Date(),
+  } as unknown as Record<string, unknown>
+  f.db.personas.rows.push(personaDoc)
+  const personaFace = keepsakeRow(f, {
+    kind: 'portrait', instance_id: undefined, event_id: undefined, persona_id: personaId,
+    cache_key: `keepsake:personaface:${new ObjectId().toHexString()}`,
+  })
+  delete (personaFace as Partial<MediaAssetDoc>).instance_id
+  delete (personaFace as Partial<MediaAssetDoc>).event_id
+  // Faces are current structurally: the card shows the new face, the persona
+  // shows the persona face. The repainted-over face matches neither.
+  f.card.portrait = { asset_key: face.asset_key!, source: 'generated', appearance_version: 1, painted_at: new Date() }
+  personaDoc.portrait = { asset_key: personaFace.asset_key!, source: 'generated', appearance_version: 1, painted_at: new Date() }
+  const queued = keepsakeRow(f, { status: 'queued', cache_key: `keepsake:queued:${new ObjectId().toHexString()}` })
+  const failed = keepsakeRow(f, { status: 'failed', cache_key: `keepsake:failed:${new ObjectId().toHexString()}` })
+  const unseen = keepsakeRow(f, { status: 'unseen', cache_key: `keepsake:unseen:${new ObjectId().toHexString()}` })
+  const voice = keepsakeRow(f, { kind: 'voice', line_id: 'l0', cache_key: `keepsake:voice:${new ObjectId().toHexString()}` })
+  const passing = keepsakeRow(f, { kind: 'passing_face', line_id: 'l0', cache_key: `keepsake:passing:${new ObjectId().toHexString()}` })
+  const hidden = keepsakeRow(f, { hidden_from_keepsakes: true, cache_key: `keepsake:hidden:${new ObjectId().toHexString()}` })
+  const orphan = keepsakeRow(f, { instance_id: new ObjectId(), cache_key: `keepsake:orphan:${new ObjectId().toHexString()}` })
+  for (const row of [picture, film, face, oldFace, personaFace, queued, failed, unseen, voice, passing, hidden, orphan]) {
+    f.db.mediaAssets.rows.push(row as unknown as Record<string, unknown>)
+  }
+  const all = await listKeepsakes(String(f.player))
+  assert.deepEqual(keepsakeIds(all), [String(film._id), String(picture._id)])
+  assert.ok(!all.next_before, 'no next page when everything fits')
+  const byKind = new Map(all.items.map((i) => [i.media_id, i.kind]))
+  assert.equal(byKind.get(String(picture._id)), 'picture')
+  assert.equal(byKind.get(String(film._id)), 'video')
+  assert.ok(!all.next_before, 'no next page when everything fits')
+  const faces = await listKeepsakes(String(f.player), { kind: 'portrait' })
+  assert.equal(faces.items.length, 2)
+  assert.ok(faces.items.every((i) => i.kind === 'portrait'))
+  assert.ok(keepsakeIds(faces).includes(String(face._id)))
+  assert.ok(keepsakeIds(faces).includes(String(personaFace._id)))
+  assert.ok(!keepsakeIds(faces).includes(String(oldFace._id)), 'the repainted-over face never appears')
+  assert.deepEqual(keepsakeIds(await listKeepsakes(String(f.player), { kind: 'picture' })), [String(picture._id)])
+  assert.deepEqual(keepsakeIds(await listKeepsakes(String(f.player), { kind: 'video' })), [String(film._id)])
+  // World, save, excerpt and speaker ride along; the film carries duration.
+  const filmItem = all.items.find((i) => i.media_id === String(film._id))!
+  assert.deepEqual(filmItem.world, { title: 'The Amber Road', cover_url: 'https://example.test/cover.png' })
+  assert.equal(filmItem.save_label, 'Asha', 'the persona snapshot names the save')
+  assert.equal(filmItem.excerpt, 'Stay close,')
+  assert.equal(filmItem.speaker_name, 'Seren')
+  assert.equal(filmItem.duration_ms, 11000)
+  assert.equal(filmItem.instance_id, String(f.instance))
+  assert.equal(filmItem.event_id, String(f.event))
+  const pictureItem = all.items.find((i) => i.media_id === String(picture._id))!
+  assert.equal(pictureItem.excerpt, KEEPSAKE_PROSE)
+  assert.equal(pictureItem.speaker_name, undefined)
+  const faceItem = faces.items.find((i) => i.media_id === String(face._id))!
+  assert.deepEqual(faceItem.character, { id: String(f.character), name: 'Speaker' })
+  assert.equal(faceItem.excerpt, undefined)
+  const personaItem = faces.items.find((i) => i.media_id === String(personaFace._id))!
+  assert.deepEqual(personaItem.character, { id: String(personaId), name: 'Asha' })
+  assert.equal(personaItem.world, null, 'a persona face belongs to no save')
+  assert.equal(personaItem.save_label, undefined)
+  // Without the snapshot the lead card names the save; a long turn cuts at a word.
+  delete f.db.worldInstances.rows[0].persona_snapshot
+  const relabelled = await listKeepsakes(String(f.player), { kind: 'picture' })
+  assert.equal(relabelled.items[0].save_label, 'Borin')
+  const long = 'Word '.repeat(100).trim()
+  f.db.events.rows[0].data.ai_response = long
+  const cut = await listKeepsakes(String(f.player), { kind: 'picture' })
+  assert.ok(cut.items[0].excerpt!.length <= 280)
+  assert.ok(long.startsWith(cut.items[0].excerpt!))
+  assert.equal(long[cut.items[0].excerpt!.length], ' ', 'cut at a word boundary')
+  assert.equal(keepsakeExcerpt('  spaced   out  '), 'spaced out')
+})
+function keepsakeKeys(value: unknown, out: string[] = []): string[] {
+  if (Array.isArray(value)) { for (const v of value) keepsakeKeys(v, out); return out }
+  if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) { out.push(k); keepsakeKeys(v, out) }
+    return out
+  }
+  return out
+}
+check('keepsakes_forbidden', async () => {
+  // The payload carries no internal key: asserted on the real JSON by walking
+  // every key, not on the mapping. Shape matches keepsakes.md §4 exactly.
+  const f = keepsakeFixture()
+  const film = keepsakeRow(f, {
+    kind: 'video', line_id: 'l0', duration_ms: 11000, poster_url: 'https://example.test/poster.jpg',
+    generation_id: 'gen-1', voice_id: 'george', cost_source: 'generation',
+    reference_asset_key: 'media/portrait/keep.png', still_keys: ['media/still/a.jpg'],
+    plan: { shots: [] }, error: { stage: 'x', message: 'y' },
+    cache_key: `keepsake:forbidden:${new ObjectId().toHexString()}`,
+  })
+  const face = keepsakeRow(f, {
+    kind: 'portrait', character_id: f.character, event_id: undefined, appearance: 'Grey eyes',
+    cache_key: `keepsake:forbiddenface:${new ObjectId().toHexString()}`,
+  })
+  delete (face as Partial<MediaAssetDoc>).event_id
+  f.card.portrait = { asset_key: face.asset_key!, source: 'generated', appearance_version: 1, painted_at: new Date() }
+  f.db.mediaAssets.rows.push(film as unknown as Record<string, unknown>, face as unknown as Record<string, unknown>)
+  const page = await listKeepsakes(String(f.player))
+  assert.equal(page.items.length, 1)
+  const facePage = await listKeepsakes(String(f.player), { kind: 'portrait' })
+  assert.equal(facePage.items.length, 1)
+  const keys = keepsakeKeys(JSON.parse(JSON.stringify({ items: [...page.items, ...facePage.items] })))
+  for (const bad of KEEPSAKE_FORBIDDEN_KEYS) assert.ok(!keys.includes(bad), `forbidden key reached the client: ${bad}`)
+  const allowedItem = ['media_id', 'kind', 'url', 'poster_url', 'duration_ms', 'width', 'height', 'created_at', 'instance_id', 'event_id', 'world', 'save_label', 'excerpt', 'speaker_name', 'character']
+  for (const item of [...page.items, ...facePage.items]) {
+    for (const key of Object.keys(item)) assert.ok(allowedItem.includes(key), `unknown keepsake key: ${key}`)
+  }
+  assert.deepEqual(Object.keys(page.items[0].world || {}).sort(), ['cover_url', 'title'])
+  assert.deepEqual(Object.keys(facePage.items[0].character || {}).sort(), ['id', 'name'])
+  console.log(`KEEPSAKE_EXAMPLE ${JSON.stringify(page.items.find((i) => i.kind === 'video'))}`)
+})
+check('keepsakes_paging', async () => {
+  // Cursor paging on created_at: each row exactly once across pages, newest first.
+  const f = keepsakeFixture()
+  const rows = [0, 1, 2, 3, 4].map((n) => keepsakeRow(f, {
+    created_at: new Date(Date.now() + n * 1000),
+    cache_key: `keepsake:page:${n}:${new ObjectId().toHexString()}`,
+  }))
+  for (const row of rows) f.db.mediaAssets.rows.push(row as unknown as Record<string, unknown>)
+  const seen: string[] = []
+  let before: string | undefined
+  let pages = 0
+  for (;;) {
+    const page = await listKeepsakes(String(f.player), { limit: '2', ...(before ? { before } : {}) })
+    pages++
+    const ids = keepsakeIds(page)
+    assert.ok(ids.every((id) => !seen.includes(id)), 'no row twice')
+    seen.push(...ids)
+    if (!page.next_before) break
+    before = page.next_before
+    assert.ok(pages < 10, 'paging terminates')
+  }
+  assert.equal(pages, 3)
+  assert.deepEqual(seen, [...rows].reverse().map((r) => String(r._id)))
+})
+check('keepsakes_superseded_page_two', async () => {
+  // A repainted-over portrait whose newer version sits on an earlier page has
+  // no rival on its own page — so currency is structural (the card's portrait),
+  // and the old face never appears on any page.
+  const f = keepsakeFixture()
+  const fresh = keepsakeRow(f, {
+    kind: 'portrait', character_id: f.character,
+    cache_key: `keepsake:newface:${new ObjectId().toHexString()}`,
+  })
+  delete (fresh as Partial<MediaAssetDoc>).event_id
+  const stale = keepsakeRow(f, {
+    kind: 'portrait', character_id: f.character, url: 'https://example.test/stale.jpg',
+    asset_key: 'media/portrait/stale.jpg', created_at: new Date(Date.now() - 5000),
+    cache_key: `keepsake:staleface:${new ObjectId().toHexString()}`,
+  })
+  delete (stale as Partial<MediaAssetDoc>).event_id
+  f.card.portrait = { asset_key: fresh.asset_key!, source: 'generated', appearance_version: 1, painted_at: new Date() }
+  f.db.mediaAssets.rows.push(fresh as unknown as Record<string, unknown>, stale as unknown as Record<string, unknown>)
+  const first = await listKeepsakes(String(f.player), { kind: 'portrait', limit: '1' })
+  assert.deepEqual(keepsakeIds(first), [String(fresh._id)])
+  assert.ok(first.next_before, 'a row follows, so the page carries a cursor')
+  const second = await listKeepsakes(String(f.player), { kind: 'portrait', limit: '1', before: first.next_before })
+  assert.deepEqual(keepsakeIds(second), [], 'the superseded face never appears, even alone on its page')
+  assert.ok(!second.next_before, 'no cursor past the last row')
+})
+check('keepsakes_persona_style_current', async () => {
+  // A persona keeps one face per world style: the map entry for a styled row,
+  // the legacy single portrait for a row with no style (kept by url when the
+  // row keeps no key).
+  const f = keepsakeFixture()
+  const personaId = new ObjectId()
+  const animeKey = 'media/persona/anime.png'
+  const legacyKey = 'media/persona/legacy.png'
+  f.db.personas.rows.push({
+    _id: personaId, player_id: f.player, name: 'Asha', gender: 'female',
+    description: 'A traveller.', appearance_version: 1, created_at: new Date(), updated_at: new Date(),
+    portrait: { asset_key: legacyKey, source: 'generated', appearance_version: 1, painted_at: new Date() },
+    portraits: { anime: { asset_key: animeKey, source: 'generated', appearance_version: 1, painted_at: new Date() } },
+  } as unknown as Record<string, unknown>)
+  const personaRow = (extra: Partial<MediaAssetDoc>) => {
+    const row = keepsakeRow(f, {
+      kind: 'portrait', instance_id: undefined, event_id: undefined, persona_id: personaId, ...extra,
+    })
+    delete (row as Partial<MediaAssetDoc>).instance_id
+    delete (row as Partial<MediaAssetDoc>).event_id
+    return row
+  }
+  const animeNow = personaRow({ art_style: 'anime', asset_key: animeKey, url: 'https://example.test/anime.png', cache_key: `keepsake:anime:${new ObjectId().toHexString()}` })
+  const animeOld = personaRow({ art_style: 'anime', asset_key: 'media/persona/anime-old.png', url: 'https://example.test/anime-old.png', created_at: new Date(Date.now() - 3000), cache_key: `keepsake:animeold:${new ObjectId().toHexString()}` })
+  const legacyNow = personaRow({ url: `${env.CDN_BASE_URL.replace(/\/+$/, '')}/${legacyKey}`, cache_key: `keepsake:legacy:${new ObjectId().toHexString()}` })
+  delete (legacyNow as Partial<MediaAssetDoc>).asset_key
+  const legacyOld = personaRow({ asset_key: 'media/persona/legacy-old.png', url: 'https://example.test/legacy-old.png', created_at: new Date(Date.now() - 4000), cache_key: `keepsake:legacyold:${new ObjectId().toHexString()}` })
+  for (const row of [animeNow, animeOld, legacyNow, legacyOld]) {
+    f.db.mediaAssets.rows.push(row as unknown as Record<string, unknown>)
+  }
+  const page = await listKeepsakes(String(f.player), { kind: 'portrait' })
+  assert.deepEqual(keepsakeIds(page).sort(), [String(animeNow._id), String(legacyNow._id)].sort())
+  assert.ok(!page.next_before)
+})
+check('keepsakes_dense_hidden', async () => {
+  // 25 removed rows between two visible ones: the query skips them, so page 2
+  // with limit=1 is still the older visible piece, never empty.
+  const f = keepsakeFixture()
+  const base = Date.now()
+  const newer = keepsakeRow(f, { created_at: new Date(base + 100000), cache_key: `keepsake:dense-new:${new ObjectId().toHexString()}` })
+  const older = keepsakeRow(f, { created_at: new Date(base - 100000), cache_key: `keepsake:dense-old:${new ObjectId().toHexString()}` })
+  f.db.mediaAssets.rows.push(newer as unknown as Record<string, unknown>)
+  for (let n = 0; n < 25; n++) {
+    f.db.mediaAssets.rows.push(keepsakeRow(f, {
+      hidden_from_keepsakes: true, created_at: new Date(base + n * 1000),
+      cache_key: `keepsake:dense-hidden:${n}:${new ObjectId().toHexString()}`,
+    }) as unknown as Record<string, unknown>)
+  }
+  f.db.mediaAssets.rows.push(older as unknown as Record<string, unknown>)
+  const first = await listKeepsakes(String(f.player), { kind: 'picture', limit: '1' })
+  assert.deepEqual(keepsakeIds(first), [String(newer._id)])
+  assert.ok(first.next_before)
+  const second = await listKeepsakes(String(f.player), { kind: 'picture', limit: '1', before: first.next_before })
+  assert.deepEqual(keepsakeIds(second), [String(older._id)], 'page 2 is the older piece, never empty')
+  assert.ok(!second.next_before, 'no cursor on the last page')
+})
+check('keepsakes_cursor_last_page', async () => {
+  // next_before is present on every page but the last, and no page carrying a
+  // cursor is ever empty.
+  const f = keepsakeFixture()
+  const rows = [0, 1, 2, 3, 4].map((n) => keepsakeRow(f, {
+    created_at: new Date(Date.now() + n * 1000),
+    cache_key: `keepsake:lastpage:${n}:${new ObjectId().toHexString()}`,
+  }))
+  for (const row of rows) f.db.mediaAssets.rows.push(row as unknown as Record<string, unknown>)
+  const pages: Array<Awaited<ReturnType<typeof listKeepsakes>>> = []
+  let before: string | undefined
+  for (;;) {
+    const page = await listKeepsakes(String(f.player), { limit: '2', ...(before ? { before } : {}) })
+    pages.push(page)
+    if (!page.next_before) break
+    before = page.next_before
+    assert.ok(pages.length < 10, 'paging terminates')
+  }
+  assert.equal(pages.length, 3)
+  assert.deepEqual(pages.map((p) => p.items.length), [2, 2, 1])
+  assert.ok(pages[0].next_before && pages[1].next_before, 'every page but the last carries a cursor')
+  for (const page of pages) assert.ok(page.items.length > 0, 'no page is ever empty')
+  assert.deepEqual(pages.flatMap(keepsakeIds), [...rows].reverse().map((r) => String(r._id)))
+})
+check('keepsakes_same_instant', async () => {
+  // Two rows sharing a created_at both appear exactly once: the cursor breaks
+  // the tie on _id.
+  const f = keepsakeFixture()
+  const instant = new Date('2026-10-16T12:00:00.000Z')
+  const a = keepsakeRow(f, { created_at: instant, cache_key: `keepsake:instant-a:${new ObjectId().toHexString()}` })
+  const b = keepsakeRow(f, { created_at: new Date(instant.getTime()), cache_key: `keepsake:instant-b:${new ObjectId().toHexString()}` })
+  f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>, b as unknown as Record<string, unknown>)
+  const [firstId, secondId] = [String(a._id), String(b._id)].sort().reverse()
+  const first = await listKeepsakes(String(f.player), { kind: 'picture', limit: '1' })
+  assert.deepEqual(keepsakeIds(first), [firstId], 'the greater _id leads')
+  assert.ok(first.next_before)
+  const second = await listKeepsakes(String(f.player), { kind: 'picture', limit: '1', before: first.next_before })
+  assert.deepEqual(keepsakeIds(second), [secondId], 'the tied row follows instead of vanishing')
+  assert.ok(!second.next_before)
+})
+check('keepsakes_bad_cursor', async () => {
+  // A malformed cursor is a calm 422, never a crash or a silent first page.
+  const f = keepsakeFixture()
+  f.db.mediaAssets.rows.push(keepsakeRow(f) as unknown as Record<string, unknown>)
+  f.db.mediaAssets.rows.push(keepsakeRow(f) as unknown as Record<string, unknown>)
+  const calm = (e: unknown) => e instanceof HttpError && e.statusCode === 422 && (e as Error).message === 'Unknown keepsake page.'
+  const bad = [
+    'not-a-date',
+    '',
+    '!!!',
+    Buffer.from('no-separator-here').toString('base64url'),
+    Buffer.from('2026-10-16T00:00:00.000Z|xyz').toString('base64url'),
+    Buffer.from('2026-10-16T00:00:00.000Z|zzzzzzzzzzzzzzzzzzzzzzzz').toString('base64url'),
+    Buffer.from('|aaaaaaaaaaaaaaaaaaaaaaaa').toString('base64url'),
+  ]
+  for (const before of bad) {
+    await assert.rejects(listKeepsakes(String(f.player), { before }), calm, `cursor rejected: ${before}`)
+  }
+  const first = await listKeepsakes(String(f.player), { limit: '1' })
+  assert.ok(first.next_before)
+  const truncated = first.next_before!.slice(0, first.next_before!.length - 6)
+  await assert.rejects(listKeepsakes(String(f.player), { before: truncated }), calm, 'truncated cursor rejected')
+})
+check('keepsakes_hide', async () => {
+  // Hide removes the piece here and leaves it under its turn. Idempotent,
+  // own media only (otherwise 404), malformed ids never reach the service.
+  const f = keepsakeFixture()
+  const row = keepsakeRow(f)
+  const foreign = keepsakeRow(f, { player_id: new ObjectId(), cache_key: `keepsake:foreign:${new ObjectId().toHexString()}` })
+  f.db.mediaAssets.rows.push(row as unknown as Record<string, unknown>, foreign as unknown as Record<string, unknown>)
+  await hideKeepsake(String(f.player), String(row._id))
+  assert.equal((f.db.mediaAssets.rows[0] as unknown as MediaAssetDoc).hidden_from_keepsakes, true)
+  assert.deepEqual(keepsakeIds(await listKeepsakes(String(f.player))), [])
+  await hideKeepsake(String(f.player), String(row._id))
+  assert.deepEqual(keepsakeIds(await listKeepsakes(String(f.player))), [])
+  await assert.rejects(hideKeepsake(String(f.player), String(foreign._id)),
+    (e: unknown) => e instanceof HttpError && e.statusCode === 404)
+  assert.equal((f.db.mediaAssets.rows[1] as unknown as { hidden_from_keepsakes?: boolean }).hidden_from_keepsakes, undefined)
+  const { Elysia } = await import('elysia')
+  const { mediaRoutes } = await import('../src/routes/media.routes')
+  const errorHandler = ({ error, set }: { error: unknown; set: { status?: unknown } }) => {
+    if (error instanceof HttpError) { set.status = error.statusCode; return { error: error.message } }
+  }
+  const app = new Elysia().onError(errorHandler)
+    .resolve({ as: 'global' }, () => ({ user: { id: String(f.player), email: '', username: '', tier: 'free' } }))
+    .use(mediaRoutes)
+  const other = keepsakeRow(f, { cache_key: `keepsake:route:${new ObjectId().toHexString()}` })
+  f.db.mediaAssets.rows.push(other as unknown as Record<string, unknown>)
+  const first = await app.handle(new Request(`http://localhost/media/keepsakes/${other._id}/hide`, { method: 'POST' }))
+  assert.equal(first.status, 204)
+  const second = await app.handle(new Request(`http://localhost/media/keepsakes/${other._id}/hide`, { method: 'POST' }))
+  assert.equal(second.status, 204)
+  assert.equal((await app.handle(new Request(`http://localhost/media/keepsakes/${foreign._id}/hide`, { method: 'POST' }))).status, 404)
+  assert.equal((await app.handle(new Request('http://localhost/media/keepsakes/nothex/hide', { method: 'POST' }))).status, 422)
+})
+check('keepsakes_poster', async () => {
+  // A film gets a poster frame next to it; a poster failure still delivers it.
+  // Older films simply have none.
+  const f = videoBase()
+  const run = stubVideoRun(f)
+  const uploads: Array<{ key: string; type: string }> = []
+  const baseUpload = visualEffects.upload
+  visualEffects.upload = (async (data: Buffer, type: string, o?: { key?: string }) => {
+    uploads.push({ key: o?.key || '', type })
+    return baseUpload(data, type, o)
+  }) as never
+  const asset = await queueVideo(f)
+  await processVideo(String(asset._id))
+  const row = f.db.mediaAssets.rows[0] as unknown as MediaAssetDoc
+  assert.equal(row.status, 'ready')
+  const poster = uploads.find((u) => u.key.endsWith('-poster.jpg'))
+  assert.ok(poster, 'a poster frame is uploaded next to the film')
+  assert.equal(poster.type, 'image/jpeg')
+  assert.equal(row.poster_url, `https://example.test/${poster.key}`)
+  const listed = await listKeepsakes(String(f.player))
+  assert.equal(listed.items.length, 1)
+  assert.equal(listed.items[0].poster_url, row.poster_url)
+  // A dialogue-free cut gets one too.
+  const g = turnVideoFixture()
+  const turn = await filmTurn(g)
+  assert.equal(turn.status, 'ready')
+  assert.ok((turn.poster_url as string).endsWith('-poster.jpg'))
+  // And a poster failure still delivers the film, without one.
+  const h = videoBase()
+  stubVideoRun(h)
+  const realExtract = cutEffects.extractFrame
+  cutEffects.extractFrame = (async () => { throw new Error('ffmpeg missing') }) as never
+  try {
+    const failed = await queueVideo(h)
+    await processVideo(String(failed._id))
+    const delivered = h.db.mediaAssets.rows[0] as unknown as MediaAssetDoc
+    assert.equal(delivered.status, 'ready')
+    assert.ok(delivered.url)
+    assert.ok(!('poster_url' in delivered), 'older and poster-less films carry no poster_url')
+    assert.deepEqual(keepsakeIds(await listKeepsakes(String(h.player))), [String(failed._id)])
+    assert.equal((await listKeepsakes(String(h.player))).items[0].poster_url, undefined)
+  } finally {
+    cutEffects.extractFrame = realExtract
+  }
+  assert.ok(run.published.some((m) => m.type === 'media_ready'))
 })
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }
 if (process.argv.includes('--check') && !checks.some(([name]) => name === process.argv[process.argv.indexOf('--check') + 1])) throw new Error('Unknown audit check')

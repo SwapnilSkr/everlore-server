@@ -40,6 +40,8 @@ export type EverloreIndexDef = {
 export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   { collection: COLLECTIONS.media_assets, key: { cache_key: 1 }, options: { unique: true } },
   { collection: COLLECTIONS.media_assets, key: { instance_id: 1, event_id: 1 } },
+  { collection: COLLECTIONS.media_assets, key: { player_id: 1, status: 1, created_at: -1 },
+    options: { name: 'idx_media_assets_player_status_created' } },
   { collection: COLLECTIONS.media_usage, key: { player_id: 1, kind: 1, day: 1, slot: 1 },
     options: { unique: true, partialFilterExpression: { slot: { $exists: true } } } },
   { collection: COLLECTIONS.media_usage, key: { instance_id: 1, event_id: 1 } },

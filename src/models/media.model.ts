@@ -74,6 +74,12 @@ export interface MediaAssetDoc {
   asset_key?: string
   url?: string
   duration_ms?: number
+  width?: number
+  height?: number
+  /** The player removed this from Keepsakes; it stays under its turn in chat. */
+  hidden_from_keepsakes?: boolean
+  /** One frame of a ready film, uploaded next to it. Absent on older films. */
+  poster_url?: string
   /** Portrait this image was painted from (picture, scene still, line shot). */
   reference_asset_key?: string
   /** Scene-still inputs not yet deleted (item 5): stills are inputs, not

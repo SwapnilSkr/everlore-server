@@ -193,6 +193,21 @@ const mutations: Mutation[] = [
   { name: 'tolerance passthrough', check: 'image_safety_tolerance', file: 'image.ts', changes: [["body.safety_tolerance = tolerance", "// omitted tolerance"]] },
   { name: 'tolerance env override', check: 'image_safety_tolerance', file: 'config.ts', changes: [["const value = process.env.MEDIA_IMAGE_SAFETY_TOLERANCE", "const value = undefined"]] },
   { name: 'tolerance default', check: 'image_safety_tolerance', file: 'config.ts', changes: [["value.trim() === '' ? 2 : Number(value)", "value.trim() === '' ? 3 : Number(value)"]] },
+  // ── keepsakes-server ──
+  { name: 'keepsakes list owns rows', check: 'keepsakes_owner', file: 'keepsakes.ts', changes: [["player_id: pid,\n    status: 'ready',", "status: 'ready',"]] },
+  { name: 'keepsakes hide param name', check: 'keepsakes_owner', path: 'src/routes/media.routes.ts', changes: [["/media/keepsakes/:mediaId/hide", "/media/keepsakes/:id/hide"]] },
+  { name: 'keepsakes hidden stays hidden', check: 'keepsakes_exclusions', file: 'keepsakes.ts', changes: [["hidden_from_keepsakes: { $ne: true },", "hidden_from_keepsakes: { $ne: false },"]] },
+  { name: 'keepsakes payload keeps no asset key', check: 'keepsakes_forbidden', file: 'keepsakes.ts', changes: [["        url: row.url,", "        url: row.url,\n        asset_key: row.asset_key || row.url,"]] },
+  { name: 'keepsakes page walks newest first', check: 'keepsakes_paging', file: 'keepsakes.ts', changes: [[".sort({ created_at: -1, _id: -1 }).limit(limit + 1).toArray()", ".sort({ created_at: 1, _id: 1 }).limit(limit + 1).toArray()"]] },
+  { name: 'keepsakes hide owns row', check: 'keepsakes_hide', file: 'keepsakes.ts', changes: [["const row = await mongoColl.mediaAssets().findOne({ _id: mid, player_id: pid })", "const row = await mongoColl.mediaAssets().findOne({ _id: mid })"]] },
+  { name: 'keepsakes film carries poster', check: 'keepsakes_poster', file: 'visual.ts', changes: [["const poster = await attachPoster(asset, bytes)", "const poster = null"]] },
+  // ── keepsakes-server-fix-1 ──
+  { name: 'keepsakes superseded faces stay out', check: 'keepsakes_superseded_page_two', file: 'keepsakes.ts', changes: [["if (row.asset_key) return row.asset_key === current.asset_key", "if (row.asset_key) return true"]] },
+  { name: 'keepsakes persona style map', check: 'keepsakes_persona_style_current', file: 'keepsakes.ts', changes: [["if (artStyle) return persona.portraits?.[artStyle]", "if (artStyle) return persona.portrait"]] },
+  { name: 'keepsakes hidden rows skipped', check: 'keepsakes_dense_hidden', file: 'keepsakes.ts', changes: [["hidden_from_keepsakes: { $ne: true },", "hidden_from_keepsakes: { $ne: 'never' }"]] },
+  { name: 'keepsakes cursor ends the list', check: 'keepsakes_cursor_last_page', file: 'keepsakes.ts', changes: [[".limit(limit + 1).toArray()", ".limit(limit).toArray()"]] },
+  { name: 'keepsakes same-instant tiebreak', check: 'keepsakes_same_instant', file: 'keepsakes.ts', changes: [[".sort({ created_at: -1, _id: -1 }).limit(limit + 1).toArray()", ".sort({ created_at: -1 }).limit(limit + 1).toArray()"], ["? { $or: [{ created_at: { $lt: resume.t } }, { created_at: resume.t, _id: { $lt: resume.id } }] }", "? { created_at: { $lt: resume.t } }"]] },
+  { name: 'keepsakes malformed cursor rejected', check: 'keepsakes_bad_cursor', file: 'keepsakes.ts', changes: [["if (!iso || Number.isNaN(t.getTime()) || !/^[0-9a-fA-F]{24}$/.test(hex)) {", "if (false) {"]] },
 ]
 // Bun's preload loader substitutes only the named module, including legacy
 // checks on paths owned by other tasks. No temporary source mutation or restore.

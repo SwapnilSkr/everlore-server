@@ -1427,6 +1427,23 @@ async function deleteSceneStills(asset: MediaAssetDoc, keys: string[]): Promise<
 const sceneStillKeys = (shots: ShotOutcome[]): string[] =>
   shots.flatMap((s) => s.stillKey ? [s.stillKey] : [])
 
+/**
+ * One frame of a finished film, uploaded next to it as its Keepsakes poster.
+ * A poster failure never fails the film: the cut still delivers, without one.
+ */
+async function attachPoster(asset: MediaAssetDoc, film: Buffer): Promise<{ url: string; key: string } | null> {
+  try {
+    const frame = await cutEffects.extractFrame(film)
+    const poster = await visualEffects.upload(frame, 'image/jpeg', {
+      key: `media/video/${asset.player_id.toHexString()}/${asset.instance_id!.toHexString()}/${asset._id.toHexString()}-poster.jpg`,
+    })
+    return poster
+  } catch (error) {
+    log.warn('media.poster_failed', { kind: 'video', media_id: asset._id.toHexString(), error: error instanceof Error ? error.message.slice(0, 200) : String(error).slice(0, 200) })
+    return null
+  }
+}
+
 export async function processVideo(mediaId: string): Promise<void> {
   const asset = await mongoColl.mediaAssets().findOneAndUpdate(
     { _id: parseObjectId(mediaId), status: 'queued' }, { $set: { status: 'processing', started_at: new Date() } }, { returnDocument: 'after' })
@@ -1434,6 +1451,7 @@ export async function processVideo(mediaId: string): Promise<void> {
   if (!asset.instance_id) throw new Error('Video has no save')
   const saveId = asset.instance_id
   let uploaded = ''
+  let posterKey = ''
   const renderStarted = Date.now()
   let planRecord: Record<string, unknown> = {}
   let stage = 'prepare'
@@ -1611,11 +1629,14 @@ export async function processVideo(mediaId: string): Promise<void> {
     uploaded = key
     const result = await visualEffects.upload(bytes, 'video/mp4', { key })
     uploaded = result.key
+    const poster = await attachPoster(asset, bytes)
+    posterKey = poster?.key ?? ''
     stage = 'save'
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, {
       $set: {
         status: 'ready', asset_key: result.key, url: result.url, duration_ms: Math.round(totalS * 1000),
         cost_usd: cost, cost_source: 'generation',
+        ...(poster ? { poster_url: poster.url } : {}),
         plan: {
           ...planRecord,
           compiled: {
@@ -1641,6 +1662,9 @@ export async function processVideo(mediaId: string): Promise<void> {
     if (uploaded) {
       try { await mediaEffects.remove(uploaded) } catch { /* retained for maintenance */ }
     }
+    if (posterKey) {
+      try { await mediaEffects.remove(posterKey) } catch { /* retained for maintenance */ }
+    }
     // A video that fails after its shots still deletes their stills (item 5).
     await deleteSceneStills(asset, sceneStillKeys((planRecord.shots as ShotOutcome[] | undefined) || []))
     // Keep the telemetry: plan, prompts and shot checks survive the failure.
@@ -1653,6 +1677,7 @@ export async function processVideo(mediaId: string): Promise<void> {
 
 async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
   let uploaded = ''
+  let posterKey = ''
   const started = Date.now()
   let record: Record<string, unknown> = {}
   let shots: ShotOutcome[] = []
@@ -1702,8 +1727,11 @@ async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
     if (!await liveMedia(asset)) throw new Error('Video moment passed')
     const price = await visualEffects.prices(directorModel())
     const cost = shots.reduce((sum, s) => sum + s.cost, 0) + JSON.stringify(input).length / 4 * price.prompt + 600 * price.completion
+    const poster = await attachPoster(asset, assembled.bytes)
+    posterKey = poster?.key ?? ''
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: {
       status: 'ready', asset_key: result.key, url: result.url, duration_ms: Math.round(assembled.totalS * 1000), cost_usd: cost,
+      ...(poster ? { poster_url: poster.url } : {}),
       plan: { ...record, render_ms: Date.now() - started },
     } })
     if (!saved.matchedCount) throw new Error('Video removed')
@@ -1712,6 +1740,7 @@ async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
     await notifyMedia({ ...asset, status: 'ready', url: result.url })
   } catch (error) {
     if (uploaded) await mediaEffects.remove(uploaded).catch(() => {})
+    if (posterKey) await mediaEffects.remove(posterKey).catch(() => {})
     await deleteSceneStills(asset, sceneStillKeys(shots))
     await mongoColl.mediaAssets().updateOne({ _id: asset._id }, { $set: { plan: { ...record, render_ms: Date.now() - started } } }).catch(() => {})
     await failMedia(asset, { stage: 'dialogue_free', message: error instanceof Error ? error.message : String(error) })

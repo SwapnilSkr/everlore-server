@@ -2,6 +2,7 @@ import { Elysia, t } from 'elysia'
 import { authPlugin } from '../middleware/auth'
 import { requestVoice } from '../services/media/service'
 import { requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, requestTurnVideo } from '../services/media/visual'
+import { hideKeepsake, listKeepsakes } from '../services/media/keepsakes'
 import { mediaUsage } from '../services/media/usage'
 import { mediaEnabled } from '../services/media/config'
 import { HttpError } from '../utils/http-error'
@@ -98,4 +99,22 @@ export const mediaRoutes = new Elysia()
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     if (!mediaEnabled()) throw new HttpError(404, 'That moment could not be found.')
     return mediaUsage(parseObjectId(user.id))
+  })
+  .get('/media/keepsakes', async ({ user, query }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    return listKeepsakes(user.id, { ...(query?.kind ? { kind: query.kind } : {}), ...(query?.before ? { before: query.before } : {}), ...(query?.limit ? { limit: query.limit } : {}) })
+  }, {
+    query: t.Optional(t.Object({
+      kind: t.Optional(t.String()),
+      before: t.Optional(t.String()),
+      limit: t.Optional(t.String()),
+    })),
+  })
+  // The param is :mediaId, never :id: one param name per path segment.
+  .post('/media/keepsakes/:mediaId/hide', async ({ user, params, set }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    await hideKeepsake(user.id, params.mediaId)
+    set.status = 204
+  }, {
+    params: t.Object({ mediaId: t.String({ pattern: '^[a-fA-F0-9]{24}$' }) }),
   })

@@ -14,7 +14,9 @@ import type { CharacterProfileDoc } from '../src/models/character-profile.model'
 // Deliberately small Mongo double, with actual unique-slot and cache-key constraints.
 type Row = Record<string, unknown>
 const get = (row: Row, path: string): unknown => path.split('.').reduce<unknown>((v, k) => v && typeof v === 'object' ? (v as Row)[k] : undefined, row)
-const same = (a: unknown, b: unknown) => a instanceof ObjectId && b instanceof ObjectId ? a.equals(b) : a === b
+const same = (a: unknown, b: unknown) => a instanceof ObjectId && b instanceof ObjectId ? a.equals(b)
+  : a instanceof Date && b instanceof Date ? a.getTime() === b.getTime()
+  : a === b
 function matches(row: Row, filter: Row): boolean {
   return Object.entries(filter).every(([path, expected]) => {
     if (path === '$or') return (expected as Row[]).some((part) => matches(row, part))
@@ -25,7 +27,8 @@ function matches(row: Row, filter: Row): boolean {
         if (op === '$exists') return (actual !== undefined) === value
         if (op === '$ne') return !same(actual, value)
         if (op === '$in') return (value as unknown[]).some((v) => same(actual, v))
-        if (op === '$lt') return (actual as Date) < (value as Date)
+        // Keyset paging compares instants and ids, not only dates.
+        if (op === '$lt') return compareRows(actual, value) < 0
         throw new Error(`Unsupported fixture operator ${op}`)
       })
     }
@@ -52,11 +55,27 @@ export class MemoryCollection {
   }
   async findOne(filter: Row) { return structuredCloneRow(this.rows.find((row) => matches(row, filter)) || null) }
   find(filter: Row = {}) {
+    let sortSpec: Row = {}
+    let limitTo: number | undefined
     const cursor = {
-      sort: (_sort: Row) => cursor,
+      sort: (sort: Row) => { sortSpec = sort; return cursor },
       project: (_projection: Row) => cursor,
-      limit: (_n: number) => cursor,
-      toArray: async () => this.rows.filter((r) => matches(r, filter)).map(structuredCloneRow),
+      limit: (n: number) => { limitTo = n; return cursor },
+      toArray: async () => {
+        const matched = this.rows.filter((r) => matches(r, filter))
+        const keys = Object.entries(sortSpec)
+        if (keys.length) {
+          matched.sort((a, b) => {
+            for (const [path, direction] of keys) {
+              const order = compareRows(get(a, path), get(b, path))
+              if (order !== 0) return direction === -1 ? -order : order
+            }
+            return 0
+          })
+        }
+        const sliced = limitTo !== undefined ? matched.slice(0, limitTo) : matched
+        return sliced.map(structuredCloneRow)
+      },
     }
     return cursor
   }
@@ -86,6 +105,16 @@ export class MemoryCollection {
     for (const [key, value] of Object.entries((update.$set || {}) as Row)) set(row, key, value)
     for (const key of Object.keys((update.$unset || {}) as Row)) set(row, key, undefined, true)
   }
+}
+function compareRows(a: unknown, b: unknown): number {
+  if (a === b) return 0
+  if (a === undefined) return -1
+  if (b === undefined) return 1
+  if (a instanceof Date && b instanceof Date) return a.getTime() - b.getTime()
+  if (a instanceof ObjectId && b instanceof ObjectId) return a.toHexString() < b.toHexString() ? -1 : 1
+  if (typeof a === 'number' && typeof b === 'number') return a - b
+  if (typeof a === 'boolean' && typeof b === 'boolean') return Number(a) - Number(b)
+  return String(a) < String(b) ? -1 : 1
 }
 function structuredCloneRow<T>(value: T): T {
   if (value instanceof ObjectId || value instanceof Date || !value || typeof value !== 'object') return value

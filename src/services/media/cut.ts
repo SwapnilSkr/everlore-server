@@ -67,8 +67,7 @@ export const cutEffects = {
       await rm(dir, { recursive: true, force: true }).catch(() => {})
     }
   },
-  hasAudio: async (video: Buffer): Promise<boolean> => {
-    const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
+    hasAudio: async (video: Buffer): Promise<boolean> => {    const { mkdtemp, writeFile, rm } = await import('node:fs/promises')
     const { tmpdir } = await import('node:os')
     const { join } = await import('node:path')
     const dir = await mkdtemp(join(tmpdir(), 'everlore-probe-'))
@@ -79,6 +78,28 @@ export const cutEffects = {
         '-select_streams', 'a', '-show_entries', 'stream=index', '-of', 'csv=p=0', src],
         { stdout: 'pipe', stderr: 'pipe' })
       return child.stdout.toString().trim().length > 0
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {})
+    }
+  },
+  /**
+   * One JPEG frame of a finished cut, for the Keepsakes feed. Falls back to
+   * the first frame when the cut is shorter than the sample point. Throws on
+   * any ffmpeg failure — the caller never lets that fail the film.
+   */
+  extractFrame: async (video: Buffer, atS = 0.5): Promise<Buffer> => {
+    const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = await mkdtemp(join(tmpdir(), 'everlore-poster-'))
+    try {
+      const src = join(dir, 'cut.mp4')
+      const out = join(dir, 'poster.jpg')
+      await writeFile(src, video)
+      await cutEffects.runFiles([
+        '-ss', String(atS), '-i', src, '-frames:v', '1', '-q:v', '3', out,
+      ])
+      return Buffer.from(await readFile(out))
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => {})
     }
