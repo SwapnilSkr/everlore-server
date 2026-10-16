@@ -16,7 +16,7 @@ import { directorModel, imageModel, mediaEnabled, sceneFallbackModel, sceneModel
 import { detectSpokenLines } from './detection'
 import { directScene, validateDirectorPlan, type DirectorInput, type DirectorPlan } from './director'
 import { matureVoiceAllowed, utcMediaDay } from './policy'
-import { isPortraitCurrent, isReferenceAllowed, portraitCacheKey, resolvePortraitHolder, storePortrait } from './portraits'
+import { isPortraitCurrent, isReferenceAllowed, personaFaceForStyle, personaPortraitCacheKey, portraitCacheKey, resolvePortraitHolder, storePortrait, styleOfPortrait, withStyleKey } from './portraits'
 import { checkImage, checkVideoFrames, describeMoment, judgeShotFrames, logRejection, moderateDescription, safetyEffects } from './safety'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from './scene-templates'
 import { assembleCut, cutEffects, normalizeShot } from './cut'
@@ -24,6 +24,7 @@ import { duplicateKey, releaseMedia, reserveMedia, settleMedia } from './usage'
 import { mp3DurationMs } from './audio'
 import { failMedia, mediaEffects, sanitizeMediaError } from './service'
 import { log } from '../../utils/logger'
+import { PAINTED_STYLE_KEY, resolveMediaStyle, templateMediaStyle } from '../image.service'
 
 export type QueuedReply = { status: 'ready'; url: string; duration_ms?: number } | { status: 'queued'; media_id: string }
 
@@ -93,12 +94,21 @@ interface PortraitBytes {
 }
 
 /**
- * The exact portrait image prompt: the moderated description plus the fixed
- * style suffix. One builder so the audit and the live check assert on the
+ * The exact portrait image prompt: the moderated description plus the world's
+ * own render style. One builder so the audit and the live check assert on the
  * same string the job sends.
  */
-export function portraitImagePrompt(description: string): string {
-  return `${description}. SFW head-and-shoulders portrait, plain dark background, vertical 9:16. Stylized cinematic painting with visible painterly texture: clearly an illustration of a fictional person, never a photograph.`
+export function portraitImagePrompt(description: string, render: string): string {
+  return `${description}. ${render}. SFW head-and-shoulders portrait, plain dark background, vertical 9:16, clearly an illustration of a fictional person, never a photograph.`
+}
+
+/**
+ * The exact picture image prompt: the moderated description plus the world's
+ * own render style and the fixed framing. One builder so the audit asserts on
+ * the same string the job sends.
+ */
+export function pictureImagePrompt(description: string, render: string, faceCount: number, playerFraming: string): string {
+  return `${description}. ${render}. ${faceCount ? `The same ${faceCount === 1 ? 'face' : 'faces'} as the reference portrait${faceCount === 1 ? '' : 's'}.` : ''} Fully clothed, SFW, vertical 9:16. ${playerFraming}`.trim()
 }
 
 /** The portrait generation core: gates then paint. Shared by the queued job
@@ -110,6 +120,7 @@ export async function generatePortraitBytes(
   name: string,
   place: string,
   model: string,
+  render: string,
   reference?: { data: Buffer; contentType: string },
 ): Promise<PortraitBytes> {
   const description = await describeMoment({
@@ -122,11 +133,11 @@ export async function generatePortraitBytes(
   const pre = await moderateDescription(description)
   if (pre.verdict !== 'allow') throw new UnseenError('pre', pre.reason_code)
   // What is gated is what is painted: the image prompt is the moderated
-  // description plus the fixed style suffix. The raw look never reaches the
+  // description plus the world's render style. The raw look never reaches the
   // image model (a scar in the look once tripped the provider filter while
   // the gated description painted cleanly).
   const image = await visualEffects.image(
-    portraitImagePrompt(description),
+    portraitImagePrompt(description, render),
     { model, aspectRatio: '9:16', ...(reference ? { reference } : {}) },
   )
   const post = await checkImage(image.data, image.contentType)
@@ -153,7 +164,8 @@ export async function ensurePortraitReady(
     isSentient: template?.is_sentient ?? false, personaName: instance.persona_snapshot?.name,
     ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
   })
-  if (isPortraitCurrent(holder)) {
+  const style = templateMediaStyle(template)
+  if (isPortraitCurrent(holder, style.key)) {
     return {
       url: portraitUrl(holder.portrait!.asset_key),
       version: holder.portrait!.appearance_version,
@@ -170,21 +182,23 @@ export async function ensurePortraitReady(
     if (holder.portrait) {
       reference = asMediaImageReference(await visualEffects.download(portraitUrl(holder.portrait.asset_key)))
     }
-    const image = await generatePortraitBytes(appearance, card.canonical_name, template?.title || '', imageModel(), reference)
+    const image = await generatePortraitBytes(appearance, card.canonical_name, template?.title || '', imageModel(), style.render, reference)
     const key = `media/portrait/${pid.toHexString()}/${iid.toHexString()}/${id.toHexString()}${imageExtensionFor(image.contentType)}`
     const result = await visualEffects.upload(image.data, image.contentType, { key })
     const version = (holder.portrait?.appearance_version ?? holder.appearanceVersion) + (holder.portrait ? 1 : 0) || 1
-    const portrait: PortraitRef = { asset_key: result.key, source: 'generated', appearance_version: version, painted_at: new Date() }
+    const portrait = withStyleKey({ asset_key: result.key, source: 'generated', appearance_version: version, painted_at: new Date() }, style.key)
     await storePortrait(instance, card, holder, portrait, appearance, {
       ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
+      styleKey: style.key,
     })
     await mongoColl.mediaAssets().insertOne({
       _id: id, player_id: pid, instance_id: iid, kind: 'portrait', line_id: '', character_id: card._id,
-      source: 'generated', model: imageModel(), cache_key: portraitCacheKey(card._id, version, imageModel()),
+      source: 'generated', model: imageModel(), cache_key: portraitCacheKey(card._id, version, imageModel(), style.key),
       revision: mediaRevision(appearance, String(version)), input: appearance.slice(0, 500),
       cost_usd: image.costUsd ?? 0.009, cost_source: image.costUsd !== undefined ? 'generation' as const : 'catalogue' as const,
       status: 'ready', asset_key: result.key, url: result.url, created_at: new Date(),
       ...(image.generationId ? { generation_id: image.generationId } : {}),
+      ...(style.key !== PAINTED_STYLE_KEY ? { art_style: style.key } : {}),
     })
     await settleMedia(id)
     return { url: result.url, version, assetKey: result.key }
@@ -346,7 +360,8 @@ export async function requestPortrait(
   const holder = await resolvePortraitHolder(instance, card, {
     isSentient: template.is_sentient, personaName: instance.persona_snapshot?.name, ...(personaId ? { personaId } : {}),
   })
-  if (isPortraitCurrent(holder) && !opts.repaint) {
+  const style = templateMediaStyle(template)
+  if (isPortraitCurrent(holder, style.key) && !opts.repaint) {
     const url = portraitUrl(holder.portrait!.asset_key)
     return { status: 'ready', url }
   }
@@ -356,12 +371,16 @@ export async function requestPortrait(
   // collides with the kept portrait: every tap repaints, every tap is charged.
   const kind: MediaKind = opts.repaint ? 'picture' : 'portrait'
   const current = holder.portrait?.appearance_version ?? 0
-  const outdated = !!holder.portrait && current < holder.appearanceVersion
+  // Out of date by look or by style: a portrait whose style key differs from
+  // the world's current key repaints on this tap, with the old face as the
+  // reference and the new style in the prompt and the cache key.
+  const outdated = !!holder.portrait
+    && (current < holder.appearanceVersion || styleOfPortrait(holder.portrait) !== style.key)
   const version = holder.portrait ? current + (outdated ? 1 : 0) : (holder.appearanceVersion || 1)
   const model = imageModel()
   const key = opts.repaint
-    ? `${portraitCacheKey(card._id, version, model)}:repaint:${new ObjectId().toHexString()}`
-    : portraitCacheKey(card._id, version, model)
+    ? `${portraitCacheKey(card._id, version, model, style.key)}:repaint:${new ObjectId().toHexString()}`
+    : portraitCacheKey(card._id, version, model, style.key)
   const cached = await mongoColl.mediaAssets().findOne({ cache_key: key, status: 'ready' })
   if (cached?.url) return { status: 'ready', url: cached.url }
   const asset = await insertAsset({
@@ -369,6 +388,7 @@ export async function requestPortrait(
     source: 'generated', model, cache_key: key,
     revision: mediaRevision(holder.appearance, String(version || 1)), input: holder.appearance.slice(0, 500),
     cost_usd: 0.009, cost_source: 'catalogue', status: 'queued',
+    ...(style.key !== PAINTED_STYLE_KEY ? { art_style: style.key } : {}),
   })
   if (!asset || asset.status === 'ready') {
     if (asset?.url) return { status: 'ready', url: asset.url }
@@ -409,6 +429,7 @@ export async function processPortrait(mediaId: string): Promise<void> {
       isSentient: template?.is_sentient ?? false, personaName: instance.persona_snapshot?.name,
       ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
     })
+    const style = templateMediaStyle(template)
     const appearance = holder.appearance.trim() || await visualEffects.fill(card, '')
     let reference: { data: Buffer; contentType: string } | undefined
     if (holder.portrait) {
@@ -418,7 +439,7 @@ export async function processPortrait(mediaId: string): Promise<void> {
     stage = 'paint'
     let image: PortraitBytes
     try {
-      image = await generatePortraitBytes(appearance, card.canonical_name, template?.title || '', asset.model, reference)
+      image = await generatePortraitBytes(appearance, card.canonical_name, template?.title || '', asset.model, style.render, reference)
     } catch (error) {
       if (error instanceof UnseenError) {
         await unseeMedia(asset, error.stage, error.reason)
@@ -438,12 +459,13 @@ export async function processPortrait(mediaId: string): Promise<void> {
     const result = await visualEffects.upload(image.data, image.contentType, { key })
     uploaded = result.key
     const version = (holder.portrait?.appearance_version ?? holder.appearanceVersion) + (holder.portrait ? 1 : 0) || 1
-    const portrait: PortraitRef = { asset_key: result.key, source: 'generated', appearance_version: version, painted_at: new Date() }
+    const portrait = withStyleKey({ asset_key: result.key, source: 'generated', appearance_version: version, painted_at: new Date() }, style.key)
     // A player repaint of a world face overrides on that save's card only.
     const repaintOfWorld = holder.kind === 'world_cast' && asset.cache_key.includes(':repaint:')
     await storePortrait(instance, card, holder, portrait, appearance, {
       ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
       ...(repaintOfWorld ? { repaintOfWorld: true } : {}),
+      styleKey: style.key,
     })
     const cost = image.costUsd ?? asset.cost_usd
     stage = 'save'
@@ -474,23 +496,39 @@ export async function processPortrait(mediaId: string): Promise<void> {
  * reservation carries no save, because the allowance is per player, per kind,
  * per day, and a persona face belongs to no save (it must survive any one
  * save's purge; account deletion still purges it by player).
+ *
+ * Faces are kept per world art style (contract media §3.1): with a save, it
+ * paints that save's style; without one, the persona's last-used world style
+ * or the painted default. The legacy single portrait reads as the painted
+ * entry, with no migration.
  */
-export async function requestPersonaPortrait(playerId: string, personaId: string): Promise<QueuedReply> {
+export async function requestPersonaPortrait(
+  playerId: string, personaId: string, opts: { instanceId?: string } = {},
+): Promise<QueuedReply> {
   if (!mediaEnabled('portrait')) throw new HttpError(404, 'That moment could not be found.')
   const pid = parseObjectId(playerId)
   const persona = await mongoColl.personas().findOne({ _id: parseObjectId(personaId), player_id: pid })
   if (!persona) throw new HttpError(404, 'That face could not be found.')
   const appearance = (persona.description || '').trim()
   if (!appearance) throw new HttpError(422, 'This moment stays unseen.')
-  if (persona.portrait && isReferenceAllowed(persona.portrait.source)
-    && persona.portrait.appearance_version >= (persona.appearance_version ?? 1)) {
-    return { status: 'ready', url: portraitUrl(persona.portrait.asset_key) }
+  let style = resolveMediaStyle(persona.last_art_style)
+  if (opts.instanceId) {
+    const instance = await mongoColl.worldInstances().findOne({ _id: parseObjectId(opts.instanceId), player_id: pid })
+    if (!instance) throw new HttpError(404, 'That story could not be found.')
+    const template = await mongoColl.worldTemplates().findOne({ _id: instance.template_id })
+    style = templateMediaStyle(template)
   }
-  const version = persona.portrait
-    ? persona.portrait.appearance_version + 1
+  const face = personaFaceForStyle(persona, style.key)
+  if (face && isReferenceAllowed(face.source)
+    && face.appearance_version >= (persona.appearance_version ?? 1)
+    && styleOfPortrait(face) === style.key) {
+    return { status: 'ready', url: portraitUrl(face.asset_key) }
+  }
+  const version = face && isReferenceAllowed(face.source)
+    ? face.appearance_version + 1
     : (persona.appearance_version ?? 1)
   const model = imageModel()
-  const key = `persona:${personaId}:v${version}:${model}`
+  const key = personaPortraitCacheKey(persona._id, version, model, style.key)
   const cached = await mongoColl.mediaAssets().findOne({ cache_key: key, status: 'ready' })
   if (cached?.url && cached.persona_id?.equals(persona._id)
     && cached.revision === mediaRevision(appearance, String(version))) {
@@ -501,6 +539,7 @@ export async function requestPersonaPortrait(playerId: string, personaId: string
     source: 'generated', model, cache_key: key,
     revision: mediaRevision(appearance, String(version)), input: appearance.slice(0, 500),
     cost_usd: 0.009, cost_source: 'catalogue', status: 'queued',
+    ...(style.key !== PAINTED_STYLE_KEY ? { art_style: style.key } : {}),
   })
   if (!asset) throw new HttpError(422, 'This moment stays unseen.')
   if (asset.status === 'ready' && asset.url && asset.persona_id?.equals(persona._id)) {
@@ -525,16 +564,22 @@ async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
     if (!asset.persona_id) throw new Error('Portrait subject missing')
     const persona = await mongoColl.personas().findOne({ _id: asset.persona_id, player_id: asset.player_id })
     if (!persona) throw new Error('Persona removed')
+    const styleKey = asset.art_style || PAINTED_STYLE_KEY
+    const render = resolveMediaStyle(asset.art_style).render
     const appearance = (persona.description || '').trim()
     if (!appearance) throw new Error('Persona has no face to paint')
     let reference: { data: Buffer; contentType: string } | undefined
-    if (persona.portrait && isReferenceAllowed(persona.portrait.source)) {
-      reference = asMediaImageReference(await visualEffects.download(portraitUrl(persona.portrait.asset_key)))
+    // Any kept face is the identity reference, whatever its style.
+    const kept = personaFaceForStyle(persona, styleKey)
+      ?? persona.portrait
+      ?? Object.values(persona.portraits || {})[0]
+    if (kept && isReferenceAllowed(kept.source)) {
+      reference = asMediaImageReference(await visualEffects.download(portraitUrl(kept.asset_key)))
     }
     stage = 'paint'
     let image: PortraitBytes
     try {
-      image = await generatePortraitBytes(appearance, persona.name, '', asset.model, reference)
+      image = await generatePortraitBytes(appearance, persona.name, '', asset.model, render, reference)
     } catch (error) {
       if (error instanceof UnseenError) {
         await unseeMedia(asset, error.stage, error.reason)
@@ -553,13 +598,26 @@ async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
     uploaded = key
     const result = await visualEffects.upload(image.data, image.contentType, { key })
     uploaded = result.key
-    const version = persona.portrait && isReferenceAllowed(persona.portrait.source)
-      ? persona.portrait.appearance_version + 1
+    const face = personaFaceForStyle(persona, styleKey)
+    const version = face && isReferenceAllowed(face.source)
+      ? face.appearance_version + 1
       : (persona.appearance_version ?? 1)
-    const portrait: PortraitRef = { asset_key: result.key, source: 'generated', appearance_version: version, painted_at: new Date() }
-    await mongoColl.personas().updateOne({ _id: persona._id }, {
-      $set: { portrait, appearance_version: portrait.appearance_version, updated_at: new Date() },
-    })
+    if (styleKey === PAINTED_STYLE_KEY) {
+      const portrait = { asset_key: result.key, source: 'generated' as const, appearance_version: version, painted_at: new Date() }
+      await mongoColl.personas().updateOne({ _id: persona._id }, {
+        $set: { portrait, appearance_version: portrait.appearance_version, updated_at: new Date() },
+      })
+    } else {
+      const portrait = { asset_key: result.key, source: 'generated' as const, appearance_version: version, art_style: styleKey, painted_at: new Date() }
+      await mongoColl.personas().updateOne({ _id: persona._id }, {
+        $set: {
+          [`portraits.${styleKey}`]: portrait,
+          appearance_version: portrait.appearance_version,
+          last_art_style: styleKey,
+          updated_at: new Date(),
+        },
+      })
+    }
     const cost = image.costUsd ?? asset.cost_usd
     stage = 'save'
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, {
@@ -586,6 +644,82 @@ async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
 }
 
 // ── Pictures ──
+
+/**
+ * The player's face for one world's style, painted synchronously when
+ * missing. Reserves and settles its own portrait slot and stores a ready
+ * face row, so later taps hit the cache and cost nothing. Returns null when
+ * the player has no describable face, portraits rest, or the gates refuse —
+ * the caller then frames through the player's eyes instead.
+ */
+export async function ensurePersonaFaceReady(
+  playerId: string, personaId: ObjectId, styleKey: string, render: string,
+): Promise<{ url: string; assetKey: string } | null> {
+  const pid = parseObjectId(playerId)
+  const persona = await mongoColl.personas().findOne({ _id: personaId, player_id: pid })
+  if (!persona) return null
+  const face = personaFaceForStyle(persona, styleKey)
+  if (face && isReferenceAllowed(face.source)
+    && face.appearance_version >= (persona.appearance_version ?? 1)
+    && styleOfPortrait(face) === styleKey) {
+    return { url: portraitUrl(face.asset_key), assetKey: face.asset_key }
+  }
+  const appearance = (persona.description || '').trim()
+  if (!appearance) return null
+  const id = new ObjectId()
+  if (!await reserveMedia({ _id: id, player_id: pid, kind: 'portrait' })) return null
+  try {
+    const kept = (face && isReferenceAllowed(face.source) ? face : undefined)
+      ?? (persona.portrait && isReferenceAllowed(persona.portrait.source) ? persona.portrait : undefined)
+      ?? Object.values(persona.portraits || {}).find((p) => isReferenceAllowed(p.source))
+    let reference: { data: Buffer; contentType: string } | undefined
+    if (kept) {
+      reference = asMediaImageReference(await visualEffects.download(portraitUrl(kept.asset_key)))
+    }
+    const image = await generatePortraitBytes(appearance, persona.name, '', imageModel(), render, reference)
+    const key = `media/persona/${pid.toHexString()}/${id.toHexString()}${imageExtensionFor(image.contentType)}`
+    const result = await visualEffects.upload(image.data, image.contentType, { key })
+    const version = face && isReferenceAllowed(face.source)
+      ? face.appearance_version + 1
+      : (persona.appearance_version ?? 1)
+    if (styleKey === PAINTED_STYLE_KEY) {
+      const portrait = { asset_key: result.key, source: 'generated' as const, appearance_version: version, painted_at: new Date() }
+      await mongoColl.personas().updateOne({ _id: persona._id }, {
+        $set: { portrait, appearance_version: portrait.appearance_version, updated_at: new Date() },
+      })
+    } else {
+      const portrait = { asset_key: result.key, source: 'generated' as const, appearance_version: version, art_style: styleKey, painted_at: new Date() }
+      await mongoColl.personas().updateOne({ _id: persona._id }, {
+        $set: {
+          [`portraits.${styleKey}`]: portrait,
+          appearance_version: portrait.appearance_version,
+          last_art_style: styleKey,
+          updated_at: new Date(),
+        },
+      })
+    }
+    const model = imageModel()
+    await mongoColl.mediaAssets().insertOne({
+      _id: id, player_id: pid, persona_id: persona._id, kind: 'portrait', line_id: '',
+      source: 'generated', model, cache_key: personaPortraitCacheKey(persona._id, version, model, styleKey),
+      revision: mediaRevision(appearance, String(version)), input: appearance.slice(0, 500),
+      cost_usd: image.costUsd ?? 0.009, cost_source: image.costUsd !== undefined ? 'generation' as const : 'catalogue' as const,
+      status: 'ready', asset_key: result.key, url: result.url, created_at: new Date(),
+      ...(image.generationId ? { generation_id: image.generationId } : {}),
+      ...(styleKey !== PAINTED_STYLE_KEY ? { art_style: styleKey } : {}),
+    })
+    await settleMedia(id)
+    return { url: result.url, assetKey: result.key }
+  } catch (error) {
+    if (error instanceof UnseenError) {
+      await releaseMedia(id)
+      await logRejection({ _id: id, player_id: pid, kind: 'portrait' }, error.stage, error.reason, imageModel())
+    } else {
+      await releaseMedia(id)
+    }
+    return null
+  }
+}
 
 export async function requestPicture(playerId: string, instanceId: string, eventId: string): Promise<QueuedReply> {
   if (!mediaEnabled('picture')) throw new HttpError(404, 'That moment could not be found.')
@@ -627,6 +761,7 @@ export async function processPicture(mediaId: string): Promise<void> {
     if (!instance || !event || !liveRevision(asset, event)) throw new Error('Picture moment passed')
     const template = await mongoColl.worldTemplates().findOne({ _id: instance.template_id })
     const personaName = instance.persona_snapshot?.name
+    const style = templateMediaStyle(template)
     const cards = await mongoColl.characters().find({ instance_id: asset.instance_id, player_id: asset.player_id }).sort({ first_seen_sequence: 1 }).toArray()
     const present = presentCards(event.data.ai_response, cards, personaName)
     // Faces for everyone named, made on this tap within the portrait allowance.
@@ -643,13 +778,17 @@ export async function processPicture(mediaId: string): Promise<void> {
     const playerPresent = !!personaName && event.data.ai_response.toLowerCase().includes(personaName.toLowerCase())
     let playerFraming = ''
     if (playerPresent) {
-      const persona = instance.persona_id ? await mongoColl.personas().findOne({ _id: instance.persona_id }) : null
-      if (!persona?.portrait) {
-        // Until the player has a face, pictures are framed through their eyes.
+      // The player's face for this world's style, painted on this tap when
+      // missing (inside the portrait allowance). Until they have one, pictures
+      // are framed through their eyes.
+      const ready = instance.persona_id
+        ? await ensurePersonaFaceReady(asset.player_id.toHexString(), instance.persona_id, style.key, style.render)
+        : null
+      if (!ready) {
         playerFraming = 'The viewpoint character is never shown: frame through their eyes or over their shoulder, their face never visible.'
       } else {
-        const ref = asMediaImageReference(await visualEffects.download(portraitUrl(persona.portrait.asset_key)))
-        faces.push({ name: personaName!, bytes: ref.data, contentType: ref.contentType, assetKey: persona.portrait.asset_key })
+        const ref = asMediaImageReference(await visualEffects.download(ready.url))
+        faces.push({ name: personaName!, bytes: ref.data, contentType: ref.contentType, assetKey: ready.assetKey })
       }
     }
     const description = await describeMoment({
@@ -665,7 +804,7 @@ export async function processPicture(mediaId: string): Promise<void> {
       await unseeMedia(asset, 'pre', pre.reason_code)
       return
     }
-    const prompt = `${description} ${faces.length ? `The same ${faces.length === 1 ? 'face' : 'faces'} as the reference portrait${faces.length === 1 ? '' : 's'}.` : ''} Fully clothed, SFW, vertical 9:16. ${playerFraming}`.trim()
+    const prompt = pictureImagePrompt(description, style.render, faces.length, playerFraming)
     let image: Awaited<ReturnType<typeof visualEffects.image>>
     try {
       image = await visualEffects.image(prompt, {
@@ -871,6 +1010,8 @@ export async function makeSceneShot(args: {
   speakerPortrait: Buffer
   playerId: ObjectId
   instanceId: ObjectId
+  /** The world's render style. Defaults to the painted default. */
+  styleRender?: string
 }): Promise<ShotOutcome> {
   const primary = sceneModel(), fallback = sceneFallbackModel()
   const dropped = (reason: string, checks: unknown[], cost: number, stillUrl = '', stillKey?: string, message?: string): ShotOutcome =>
@@ -887,7 +1028,7 @@ export async function makeSceneShot(args: {
     // Before any paid generation, the COMPILED still and motion prompts are
     // moderated (§7 gate on what we actually send): a rejected shot prompt
     // drops that shot, before a cent is spent on it.
-    const stillPrompt = compileStillPrompt({ continuity: args.continuity } as DirectorPlan, args.shot, primary)
+    const stillPrompt = compileStillPrompt({ continuity: args.continuity } as DirectorPlan, args.shot, primary, args.styleRender)
     const motionPrompt = compileMotionPrompt({ continuity: args.continuity } as DirectorPlan, args.shot, primary)
     const stillGate = await moderateDescription(stillPrompt)
     if (stillGate.verdict !== 'allow') {
@@ -897,9 +1038,9 @@ export async function makeSceneShot(args: {
     if (motionGate.verdict !== 'allow') {
       return dropped('motion_prompt_rejected', [{ prompt: 'motion', reason: motionGate.reason_code }], 0)
     }
-    // Its own wide still, painted in the house style with no face close-up.
-    // The people count is enforced here, at $0.009 a retry, so a $0.20 video
-    // is never spent animating a still that is already off-plan.
+    // Its own wide still, painted in the world's render style with no face
+    // close-up. The people count is enforced here, at $0.009 a retry, so a
+    // $0.20 video is never spent animating a still that is already off-plan.
     // The speaker face is an older PNG portrait or a new JPEG one: sniffed,
     // never assumed.
     const speakerReference = asMediaImageReference(args.speakerPortrait)
@@ -1085,8 +1226,9 @@ export async function processVideo(mediaId: string): Promise<void> {
     const narrationBefore = prose.slice(0, span.start).slice(-1200)
     const narrationAfter = prose.slice(span.end, span.end + 1200)
     const others = presentCards(prose, cards.filter((c) => !c._id.equals(card._id)), personaName)
+    const style = templateMediaStyle(template)
     const directorInput: DirectorInput = {
-      art_style: 'semi-realistic cinematic digital painting, warm rim light',
+      art_style: style.render,
       narration_before: narrationBefore,
       line: { speaker_name: line.voice.speaker_name, spoken_text: line.voice.spoken_text, duration_s: clip.durationS },
       narration_after: narrationAfter,
@@ -1135,6 +1277,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       const settled = await Promise.allSettled(plan.shots.map((shot, index) => makeSceneShot({
         role: shot.role, continuity: plan.continuity, shot,
         speakerPortrait: portraitBytes, playerId: asset.player_id, instanceId: saveId,
+        styleRender: style.render,
       }).then((outcome) => ({ outcome, index }))))
       const ordered = settled.map((result, index) => {
         if (result.status === 'fulfilled') return result.value.outcome

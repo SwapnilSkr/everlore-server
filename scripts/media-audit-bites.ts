@@ -44,7 +44,7 @@ const mutations: Mutation[] = [
   { name: 'rejected shot takes its still', check: 'postgate_deletes', file: 'visual.ts', changes: [["await mediaEffects.remove(stillUp.key)", "/* still retained */"]] },
   { name: 'lasting change needs quoted evidence', check: 'lasting_evidence', file: '../character-codex.service.ts', changes: [["|| (ctx.prose !== undefined && isTurnEvidence(ctx.prose, delta.appearance_evidence))", "|| true"]] },
   { name: 'lasting change needs a whole sentence', check: 'lasting_evidence', file: 'detection.ts', changes: [["return spans.some(([s, e]) => at <= s && e <= end)", "return at >= 0"]] },
-  { name: 'current portrait costs nothing', check: 'repaint_on_tap', file: 'visual.ts', changes: [["if (isPortraitCurrent(holder) && !opts.repaint) {", "if (false) {"]] },
+  { name: 'current portrait costs nothing', check: 'repaint_on_tap', file: 'visual.ts', changes: [["if (isPortraitCurrent(holder, style.key) && !opts.repaint) {", "if (false) {"]] },
   { name: 'world faces live on the world', check: 'placement', file: 'portraits.ts', changes: [["kind: 'world_cast',", "kind: 'save_card',"]] },
   { name: 'save portraits purged with the save', check: 'purge_portraits', file: 'deletion.ts', changes: [["for (const card of cards) {", "for (const card of []) {"]] },
   { name: 'director validator rejects bad plans', check: 'director_validates', file: 'director.ts', changes: [["if (!nonEmpty(p.ambient)) errors.push('ambient is empty')\n  return errors", "if (!nonEmpty(p.ambient)) errors.push('ambient is empty')\n  return []"]] },
@@ -75,8 +75,8 @@ const mutations: Mutation[] = [
   { name: 'reference stores the asset key', check: 'reference_key', file: 'visual.ts', changes: [["...(faces[0] ? { reference_asset_key: faces[0].assetKey } : {}),", "...(faces[0] ? { reference_asset_key: faces[0].name } : {}),"]] },
   { name: 'portraits rest silently', check: 'portrait_resting', file: 'visual.ts', changes: [["portrait: '',", "portrait: 'The requested media waits until tomorrow.',"]] },
   // ── media-server-2-fix-2 ──
-  { name: 'portrait paints the moderated description', check: 'portrait_prompt_gated', file: 'visual.ts', changes: [["`${description}. SFW head-and-shoulders portrait", "`${appearance}. SFW head-and-shoulders portrait"]] },
-  { name: 'picture paints the moderated description', check: 'picture_prompt_gated', file: 'visual.ts', changes: [["const prompt = `${description} ${faces.length", "const prompt = `${event.data.ai_response.slice(0, 1500)} ${faces.length"]] },
+  { name: 'portrait paints the moderated description', check: 'portrait_prompt_gated', file: 'visual.ts', changes: [["`${description}. ${render}. SFW head-and-shoulders portrait", "`${appearance}. ${render}. SFW head-and-shoulders portrait"]] },
+  { name: 'picture paints the moderated description', check: 'picture_prompt_gated', file: 'visual.ts', changes: [["pictureImagePrompt(description, style.render, faces.length, playerFraming)", "pictureImagePrompt(event.data.ai_response.slice(0, 1500), style.render, faces.length, playerFraming)"]] },
   { name: 'refusal detection is structural', check: 'provider_refusal_detected', path: 'src/ai/image.ts', changes: [["if ((status === 400 || status === 422) && body", "if (false && (status === 400 || status === 422) && body"]] },
   { name: 'portrait refusal is unseen', check: 'provider_refusal_unseen', file: 'visual.ts', changes: [["if (error instanceof ProviderRefusalError) {\n        await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })\n        return\n      }", "// refusal unseen disabled"]] },
   { name: 'refused face unseen the whole video', check: 'provider_refusal_video_face', file: 'visual.ts', changes: [["// A face the provider will not paint makes the whole video unseen.\n      if (error instanceof ProviderRefusalError) {", "if (false) {"]] },
@@ -92,6 +92,17 @@ const mutations: Mutation[] = [
   { name: 'jpeg key carries its own extension', check: 'jpeg_portrait_stored', path: 'src/ai/image.ts', changes: [["if (contentType === 'image/jpeg') return '.jpg'", "if (contentType === 'image/jpeg') return '.png'"]] },
   { name: 'downloaded face sniffed, never assumed', check: 'png_reference_sniffed', file: 'visual.ts', changes: [["reference = asMediaImageReference(bytes)", "reference = { data: bytes, contentType: 'image/jpeg' }"]] },
   { name: 'unknown bytes rejected, never guessed', check: 'unknown_image_rejected', path: 'src/ai/image.ts', changes: [["throw new Error('Image bytes are of an unknown type')", "return 'image/png' as const"]] },
+  // ── media-world-style ──
+  { name: 'cover stays byte-identical', check: 'cover_identical', path: 'src/services/image.service.ts', changes: [["romcom: { render: 'bright modern anime illustration', mood: 'warm and charming' },", "romcom: { render: 'bright modern anime illustration', mood: 'warm and cold' },"]] },
+  { name: 'cover decorations strip for screening', check: 'cover_strip', path: 'src/services/image.service.ts', changes: [["[...Object.values(STYLE_HINT).map(hintText), hintText(DEFAULT_HINT), COMPOSITION]", "[...Object.values(STYLE_HINT).map((h) => h.render), hintText(DEFAULT_HINT), COMPOSITION]"]] },
+  { name: 'no mood in any media prompt', check: 'no_mood_in_media', file: 'visual.ts', changes: [["return `${description}. ${render}. SFW head-and-shoulders portrait", "return `${description}. ${render}, warm intimate lighting. SFW head-and-shoulders portrait"]] },
+  { name: 'anime worlds paint anime', check: 'anime_media_style', path: 'src/services/image.service.ts', changes: [["if (entry && narrativeStyle) return { key: narrativeStyle, render: entry.render }", "if (entry && narrativeStyle) return { key: narrativeStyle, render: PAINTED_RENDER }"]] },
+  { name: 'save override never changes art style', check: 'override_ignored', file: 'visual.ts', changes: [["const style = templateMediaStyle(template)\n  if (isPortraitCurrent(holder, style.key) && !opts.repaint) {", "const style = resolveMediaStyle(instance.narrative_style_override || template.narrative_style)\n  if (isPortraitCurrent(holder, style.key) && !opts.repaint) {"]] },
+  { name: 'style change makes a portrait out of date', check: 'style_repaint', file: 'portraits.ts', changes: [["&& styleOfPortrait(holder.portrait) === (styleKey || PAINTED_STYLE_KEY)", "&& true"]] },
+  { name: 'legacy portrait stays current on painted worlds', check: 'legacy_painted_current', file: 'portraits.ts', changes: [["return portrait?.art_style || PAINTED_STYLE_KEY", "return portrait?.art_style || 'stale'"]] },
+  { name: 'persona keeps separate faces per style', check: 'persona_per_style', file: 'portraits.ts', changes: [["if (key !== PAINTED_STYLE_KEY) return persona.portraits?.[key]", "if (key !== PAINTED_STYLE_KEY) return persona.portrait"]] },
+  { name: 'picture paints the player face for its world', check: 'picture_persona_style', file: 'visual.ts', changes: [["? await ensurePersonaFaceReady(asset.player_id.toHexString(), instance.persona_id, style.key, style.render)", "? null"]] },
+  { name: 'vision gate allows drawn styles', check: 'vision_drawn_styles', file: 'safety.ts', changes: [["painterly, anime, cartoon or semi-photographic", "painterly or semi-photographic"]] },
 ]
 for (const mutation of mutations) {
   const file = at(mutation)

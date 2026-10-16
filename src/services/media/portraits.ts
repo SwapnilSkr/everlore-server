@@ -1,8 +1,10 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
+import { PAINTED_STYLE_KEY, templateMediaStyle } from '../image.service'
 import { identityKey, newFoldState } from '../character-codex.service'
 import type { CharacterProfileDoc } from '../../models/character-profile.model'
 import type { WorldInstanceDoc } from '../../models/world-instance.model'
+import type { PersonaDoc } from '../../models/persona.model'
 import type { PortraitRef } from '../../models/media.model'
 
 /**
@@ -26,10 +28,37 @@ export function isReferenceAllowed(source: string | undefined): boolean {
   return source === 'generated' || source === 'authored'
 }
 
-export function isPortraitCurrent(holder: PortraitHolder): boolean {
+/** The style a portrait counts as: its key, or the painted default when it
+ * has none (every legacy portrait). */
+export function styleOfPortrait(portrait?: PortraitRef): string {
+  return portrait?.art_style || PAINTED_STYLE_KEY
+}
+
+export function isPortraitCurrent(holder: PortraitHolder, styleKey: string): boolean {
   return !!holder.portrait
     && isReferenceAllowed(holder.portrait.source)
     && holder.portrait.appearance_version >= holder.appearanceVersion
+    && styleOfPortrait(holder.portrait) === (styleKey || PAINTED_STYLE_KEY)
+}
+
+/** A persona's face for one world style: the map entry, except the painted
+ * default, which is the legacy single portrait (no migration). */
+export function personaFaceForStyle(
+  persona: Pick<PersonaDoc, 'portrait' | 'portraits'>,
+  styleKey: string,
+): PortraitRef | undefined {
+  const key = styleKey || PAINTED_STYLE_KEY
+  if (key !== PAINTED_STYLE_KEY) return persona.portraits?.[key]
+  return persona.portrait
+}
+
+/** Stamp a fresh portrait with its style key. The painted default is omitted,
+ * never null; legacy portraits without the key read the same way. */
+export function withStyleKey(portrait: PortraitRef, styleKey: string): PortraitRef {
+  const { asset_key, source, appearance_version, painted_at } = portrait
+  const key = styleKey || PAINTED_STYLE_KEY
+  if (key === PAINTED_STYLE_KEY) return { asset_key, source, appearance_version, painted_at }
+  return { asset_key, source, appearance_version, painted_at, art_style: key }
 }
 
 /**
@@ -47,11 +76,13 @@ export async function resolvePortraitHolder(
   if (isPlayer && opts.personaId) {
     const persona = await mongoColl.personas().findOne({ _id: opts.personaId })
     if (persona) {
+      const template = await mongoColl.worldTemplates().findOne({ _id: instance.template_id })
+      const face = personaFaceForStyle(persona, templateMediaStyle(template).key)
       return {
         kind: 'persona',
         appearance: persona.description || card.appearance || '',
         appearanceVersion: persona.appearance_version ?? 1,
-        ...(persona.portrait ? { portrait: persona.portrait } : {}),
+        ...(face ? { portrait: face } : {}),
       }
     }
   }
@@ -87,19 +118,33 @@ export async function resolvePortraitHolder(
 }
 
 /** Persist a fresh portrait and its look on the holder's home. A player
- * repaint of a world character lands on the save's card, never the world. */
+ * repaint of a world character lands on the save's card, never the world.
+ * Persona faces land in the style's map entry (the painted default stays the
+ * legacy single portrait), and a non-default paint records the last style. */
 export async function storePortrait(
   instance: WorldInstanceDoc,
   card: CharacterProfileDoc,
   holder: PortraitHolder,
   portrait: PortraitRef,
   appearance: string,
-  opts: { personaId?: ObjectId; repaintOfWorld?: boolean },
+  opts: { personaId?: ObjectId; repaintOfWorld?: boolean; styleKey?: string },
 ): Promise<void> {
   const now = new Date()
   if (holder.kind === 'persona' && opts.personaId) {
+    const key = opts.styleKey || PAINTED_STYLE_KEY
+    if (key === PAINTED_STYLE_KEY) {
+      await mongoColl.personas().updateOne({ _id: opts.personaId }, {
+        $set: { portrait, appearance_version: portrait.appearance_version, updated_at: now },
+      })
+      return
+    }
     await mongoColl.personas().updateOne({ _id: opts.personaId }, {
-      $set: { portrait, appearance_version: portrait.appearance_version, updated_at: now },
+      $set: {
+        [`portraits.${key}`]: portrait,
+        appearance_version: portrait.appearance_version,
+        last_art_style: key,
+        updated_at: now,
+      },
     })
     return
   }
@@ -133,9 +178,14 @@ export async function storePortrait(
   })
 }
 
-/** Portrait cache identity: the look it was painted from. An out-of-date
- * portrait repaints on the next tap that needs it, using the old portrait
- * as the reference so it stays the same person. */
-export function portraitCacheKey(cardId: ObjectId, version: number, model: string): string {
-  return `portrait:${cardId.toHexString()}:v${version}:${model}`
+/** Portrait cache identity: the look it was painted from, in the style it
+ * was painted in. An out-of-date portrait repaints on the next tap that needs
+ * it, using the old portrait as the reference so it stays the same person. */
+export function portraitCacheKey(cardId: ObjectId, version: number, model: string, styleKey: string): string {
+  return `portrait:${cardId.toHexString()}:v${version}:${styleKey || PAINTED_STYLE_KEY}:${model}`
+}
+
+/** Persona-portrait cache identity, same shape: whose face, which style, which look. */
+export function personaPortraitCacheKey(personaId: ObjectId, version: number, model: string, styleKey: string): string {
+  return `persona:${personaId.toHexString()}:${styleKey || PAINTED_STYLE_KEY}:v${version}:${model}`
 }

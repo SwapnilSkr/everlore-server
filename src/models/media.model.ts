@@ -53,6 +53,10 @@ export interface MediaAssetDoc {
   notified_at?: Date
   generation_id?: string
   status: 'queued' | 'processing' | 'ready' | 'failed' | 'unseen'
+  /** The style key a portrait/persona-portrait was painted in (the template's
+   *  narrative_style key). Omitted for the painted default and on every legacy
+   *  row, which counts as painted. Part of the portrait cache identity. */
+  art_style?: string
   /** Why a failed job failed: the pipeline stage and the sanitized message.
    * Set by failMedia on every failed row; absent on queued/ready/unseen rows. */
   error?: { stage: string; message: string }
@@ -71,11 +75,16 @@ export interface MediaAssetDoc {
   started_at?: Date
 }
 /** A portrait belongs where the character belongs (contract §3). Only
- * generated/authored faces are stored here; uploads never are. */
+ *  generated/authored faces are stored here; uploads never are. */
 export interface PortraitRef {
   asset_key: string
   source: 'generated' | 'authored'
   appearance_version: number
+  /** The style key it was painted in (the template's narrative_style key). A
+   *  portrait whose key differs from the world's current key is out of date,
+   *  like a behind appearance_version. Omitted for the painted default — and
+   *  on every legacy portrait, which counts as painted. Never null. */
+  art_style?: string
   painted_at: Date
 }
 /** Every §7 rejection is logged for review: kind, stage and reason, no image. */

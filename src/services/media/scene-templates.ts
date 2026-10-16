@@ -1,14 +1,13 @@
 import type { DirectorPlan, DirectorShot } from './director'
+import { PAINTED_RENDER } from '../image.service'
 
 /**
  * Per-model prompt templates live in data (contract §3A.3). Code fills them
  * from the director's plan; the director never writes a model prompt.
- * - Still prompt: house style + continuity + framing + `still` + "no text".
+ * - Still prompt: the world's art style (§3.1) + continuity + framing + `still` + "no text".
  * - Motion prompt: `camera_move` + `subject_action` + `environment_motion` +
  *   wardrobe + "no other people appear, no cut, the composition stays continuous".
  */
-
-export const HOUSE_STYLE = 'semi-realistic cinematic digital painting, warm rim light'
 
 const FRAMING_NOTES: Record<string, string> = {
   establishing_wide: 'an extreme wide establishing view of the whole place, no person larger than a distant figure',
@@ -54,12 +53,12 @@ export const SCENE_TEMPLATES: Record<string, SceneModelTemplate> = {
 const templateFor = (model: string): SceneModelTemplate =>
   SCENE_TEMPLATES[model] || SCENE_TEMPLATES['x-ai/grok-imagine-video-1.5-lite']
 
-export function compileStillPrompt(plan: DirectorPlan, shot: DirectorShot, model: string): string {
+export function compileStillPrompt(plan: DirectorPlan, shot: DirectorShot, model: string, styleRender: string = PAINTED_RENDER): string {
   const t = templateFor(model)
   const c = plan.continuity
   return [
     t.stillPrefix,
-    `${HOUSE_STYLE}.`,
+    `${styleRender}.`,
     `Wardrobe: ${c.wardrobe} Hair: ${c.hair} Props: ${c.props}.`,
     `Time: ${c.time_of_day}. Weather: ${c.weather}. Light: ${c.light}. Palette: ${c.palette}.`,
     `${FRAMING_NOTES[shot.framing] || shot.framing}.`,

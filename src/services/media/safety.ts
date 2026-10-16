@@ -42,10 +42,10 @@ const MODERATION_SYSTEM = [
   'Return only JSON matching the schema.',
 ].join(' ')
 
-const VISION_SYSTEM = [
+export const VISION_SYSTEM = [
   'You are the safety gate for illustrated story art. Look at the image and decide what it SHOWS.',
   'Reject nudity, sexual acts or sexualized posing, minors in romantic or sexual situations, graphic gore, or readable text anywhere in the frame.',
-  'A fictional illustrated face is ALLOWED even when the painting is semi-photographic. Reject for real people only when the image is clearly a photograph of an actual public figure.',
+  'A fictional illustrated face is ALLOWED in any drawn style — painterly, anime, cartoon or semi-photographic. Reject for real people only when the image is clearly a photograph of an actual public figure.',
   'A fully clothed embrace, hands, a closed door, a candle, rain on glass, or distant silhouettes are ALLOWED.',
   'Also report what you see: how many people are visible, whether any face fills a large share of the frame, whether any text is visible.',
   'Return only JSON: { verdict, reason_code, people_count, face_close_up, text_visible }.',

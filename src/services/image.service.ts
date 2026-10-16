@@ -14,31 +14,46 @@ import { screenImagePrompt } from '../utils/input-guard'
  * voice so the picture matches how the story reads.
  */
 
-/** narrative_style key -> art-style phrase appended to the image prompt. */
-const STYLE_HINT: Record<string, string> = {
-  anime: 'vibrant anime illustration, clean linework, expressive eyes',
-  tsundere: 'vibrant anime illustration, expressive, lively',
-  romcom: 'bright modern anime illustration, warm and charming',
-  flirty: 'sensual anime illustration, warm intimate lighting',
-  noir: 'moody cinematic noir illustration, high contrast, muted palette',
-  slice_of_life: 'soft cozy anime illustration, gentle pastel lighting',
-  whimsical: 'whimsical storybook illustration, soft luminous colors',
-  epic_fantasy: 'epic painterly fantasy concept art, dramatic lighting',
-  grimdark: 'dark grim fantasy concept art, desaturated, ominous mood',
-  modern_casual: 'clean contemporary illustration, natural lighting',
-  yandere: 'vibrant anime illustration, intense expressive eyes, unsettling intimate mood',
-  dark_romance: 'moody cinematic illustration, dramatic chiaroscuro lighting, sensual dangerous mood',
-  shonen: 'dynamic shonen anime illustration, bold action linework, dramatic energy',
-  cyberpunk: 'neon-soaked cyberpunk illustration, rain-slick reflections, holographic glow, high contrast',
-  kdrama: 'soft cinematic illustration, warm romantic lighting, tender mood',
-  cozy_comfort: 'soft warm illustration, gentle golden lighting, cozy comforting atmosphere',
-  dark_academia: 'moody dark-academia illustration, candlelit gothic interior, muted vintage palette',
-  regency: 'elegant period-romance illustration, soft painterly lighting, regency-era setting',
-  horror: 'eerie horror illustration, deep shadows, unsettling atmosphere, desaturated dread',
-  litrpg: 'vibrant fantasy game-art illustration, heroic adventurer, glowing magical effects',
-  chaotic_comedy: 'lively colorful cartoon illustration, exaggerated expressive comedy, dynamic energy',
+/** narrative_style key -> how it is drawn (render) + the atmosphere (mood).
+ * Covers append render + mood. Media prompts use render only, because some
+ * moods carry words like "sensual" that have no place in an SFW picture.
+ * Every render + mood below joins with ', ' to exactly the phrase covers
+ * used before the split, so cover prompts stay byte-identical. */
+export interface CoverStyle {
+  render: string
+  mood: string
 }
-const DEFAULT_HINT = 'high-quality character illustration, cinematic lighting'
+export const STYLE_HINT: Record<string, CoverStyle> = {
+  anime: { render: 'vibrant anime illustration, clean linework, expressive eyes', mood: '' },
+  tsundere: { render: 'vibrant anime illustration, expressive, lively', mood: '' },
+  romcom: { render: 'bright modern anime illustration', mood: 'warm and charming' },
+  flirty: { render: 'sensual anime illustration', mood: 'warm intimate lighting' },
+  noir: { render: 'moody cinematic noir illustration, high contrast, muted palette', mood: '' },
+  slice_of_life: { render: 'soft cozy anime illustration', mood: 'gentle pastel lighting' },
+  whimsical: { render: 'whimsical storybook illustration', mood: 'soft luminous colors' },
+  epic_fantasy: { render: 'epic painterly fantasy concept art', mood: 'dramatic lighting' },
+  grimdark: { render: 'dark grim fantasy concept art, desaturated', mood: 'ominous mood' },
+  modern_casual: { render: 'clean contemporary illustration', mood: 'natural lighting' },
+  yandere: { render: 'vibrant anime illustration, intense expressive eyes', mood: 'unsettling intimate mood' },
+  dark_romance: { render: 'moody cinematic illustration, dramatic chiaroscuro lighting', mood: 'sensual dangerous mood' },
+  shonen: { render: 'dynamic shonen anime illustration, bold action linework', mood: 'dramatic energy' },
+  cyberpunk: { render: 'neon-soaked cyberpunk illustration, rain-slick reflections, holographic glow, high contrast', mood: '' },
+  kdrama: { render: 'soft cinematic illustration, warm romantic lighting', mood: 'tender mood' },
+  cozy_comfort: { render: 'soft warm illustration, gentle golden lighting', mood: 'cozy comforting atmosphere' },
+  dark_academia: { render: 'moody dark-academia illustration, candlelit gothic interior, muted vintage palette', mood: '' },
+  regency: { render: 'elegant period-romance illustration, soft painterly lighting', mood: 'regency-era setting' },
+  horror: { render: 'eerie horror illustration, deep shadows', mood: 'unsettling atmosphere, desaturated dread' },
+  litrpg: { render: 'vibrant fantasy game-art illustration, heroic adventurer', mood: 'glowing magical effects' },
+  chaotic_comedy: { render: 'lively colorful cartoon illustration, exaggerated expressive comedy', mood: 'dynamic energy' },
+}
+export const DEFAULT_HINT: CoverStyle = { render: 'high-quality character illustration', mood: 'cinematic lighting' }
+
+/** The painted default: worlds with no known style keep the look media always had. */
+export const PAINTED_STYLE_KEY = 'painted'
+export const PAINTED_RENDER = 'semi-realistic cinematic digital painting, warm rim light'
+
+const hintText = (hint: CoverStyle): string =>
+  hint.mood ? `${hint.render}, ${hint.mood}` : hint.render
 
 // Max length of the bare visual core before style/composition are appended.
 export const VISUAL_CORE_MAX = 500
@@ -46,7 +61,7 @@ export const VISUAL_CORE_MAX = 500
 // NOTE: never say "phone background" / "phone wallpaper" / "phone screen" —
 // image models take that literally and render art INSIDE a smartphone mockup
 // (notch, status bar, bezel). Ask for full-bleed artwork and scrub device leaks.
-const COMPOSITION =
+export const COMPOSITION =
   'tall vertical 9:16 full-bleed illustration filling the entire frame edge to edge with no letterboxing, ' +
   'single clear focal subject, atmospheric depth, pure artwork only — ' +
   'absolutely no phone, no smartphone, no device, no screen, no bezel, no notch, no status bar, ' +
@@ -64,7 +79,7 @@ const COMPOSITION =
  */
 export function stripServerDecorations(text: string): string {
   let out = text
-  for (const hint of [...Object.values(STYLE_HINT), DEFAULT_HINT, COMPOSITION]) {
+  for (const hint of [...Object.values(STYLE_HINT).map(hintText), hintText(DEFAULT_HINT), COMPOSITION]) {
     out = out.split(hint).join(' ')
   }
   return out
@@ -95,7 +110,27 @@ export function scrubDeviceLeakage(text: string): string {
 export function decorateImagePrompt(core: string, narrativeStyle?: string): string {
   const clean = scrubDeviceLeakage((core || '').replace(/^["']|["']$/g, '')).slice(0, VISUAL_CORE_MAX)
   const hint = STYLE_HINT[narrativeStyle || ''] || DEFAULT_HINT
-  return `${clean}. ${hint}. ${COMPOSITION}.`
+  return `${clean}. ${hintText(hint)}. ${COMPOSITION}.`
+}
+
+/**
+ * The world's art style for media prompts (contract media §3.1): the style
+ * key and its render phrase. A missing or unknown key falls back to the
+ * painted default. Media never sees the mood half.
+ */
+export function resolveMediaStyle(narrativeStyle?: string | null): { key: string; render: string } {
+  const entry = (narrativeStyle && STYLE_HINT[narrativeStyle]) || undefined
+  if (entry && narrativeStyle) return { key: narrativeStyle, render: entry.render }
+  return { key: PAINTED_STYLE_KEY, render: PAINTED_RENDER }
+}
+
+/**
+ * The template's locked narrative_style, never a save's per-conversation
+ * override: portraits are shared by every save of a world, so the override
+ * must not change what they look like.
+ */
+export function templateMediaStyle(template?: { narrative_style?: string | null } | null): { key: string; render: string } {
+  return resolveMediaStyle(template?.narrative_style)
 }
 
 export const imageService = {

@@ -7,9 +7,9 @@ import { detectSpokenLines } from '../src/services/media/detection'
 import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, resolveVoiceSpeaker, attributionEffects } from '../src/services/media/attribution'
 import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, traitsVoiceable, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
-import { isReferenceAllowed, resolvePortraitHolder } from '../src/services/media/portraits'
-import { makeSceneShot, processPicture, processPortrait, processVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects } from '../src/services/media/visual'
-import { checkImage, judgeShotFrames, moderateDescription, safetyEffects } from '../src/services/media/safety'
+import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
+import { makeSceneShot, processPicture, processPortrait, processVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
+import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, VISION_SYSTEM } from '../src/services/media/safety'
 import { buildCutGraph, cutEffects } from '../src/services/media/cut'
 import { compileMotionPrompt, compileStillPrompt } from '../src/services/media/scene-templates'
 import { directScene, directorEffects, validateDirectorPlan, DIRECTOR_SYSTEM_PROMPT, type DirectorInput } from '../src/services/media/director'
@@ -23,6 +23,7 @@ import { generateMediaImage, asMediaImageReference, imageExtensionFor, sniffImag
 import { submitVideo } from '../src/ai/video'
 import { env } from '../src/config/env'
 import { castCharacter } from '../src/services/media/casting'
+import { COMPOSITION, DEFAULT_HINT, PAINTED_RENDER, PAINTED_STYLE_KEY, STYLE_HINT, decorateImagePrompt, resolveMediaStyle, stripServerDecorations, templateMediaStyle } from '../src/services/image.service'
 import { HttpError } from '../src/utils/http-error'
 import type { MediaAssetDoc } from '../src/models/media.model'
 import type { WorldEventDoc } from '../src/models/world-event.model'
@@ -1285,6 +1286,256 @@ check('unknown_image_rejected', async () => {
   }
 })
 
+function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }
+// ── media-world-style: every image in the world's own art style ──
+
+// Today's cover phrases, verbatim (image.service.ts before the render/mood
+// split). decorateImagePrompt must reproduce them byte for byte.
+const ORIGINAL_HINTS: Record<string, string> = {
+  anime: 'vibrant anime illustration, clean linework, expressive eyes',
+  tsundere: 'vibrant anime illustration, expressive, lively',
+  romcom: 'bright modern anime illustration, warm and charming',
+  flirty: 'sensual anime illustration, warm intimate lighting',
+  noir: 'moody cinematic noir illustration, high contrast, muted palette',
+  slice_of_life: 'soft cozy anime illustration, gentle pastel lighting',
+  whimsical: 'whimsical storybook illustration, soft luminous colors',
+  epic_fantasy: 'epic painterly fantasy concept art, dramatic lighting',
+  grimdark: 'dark grim fantasy concept art, desaturated, ominous mood',
+  modern_casual: 'clean contemporary illustration, natural lighting',
+  yandere: 'vibrant anime illustration, intense expressive eyes, unsettling intimate mood',
+  dark_romance: 'moody cinematic illustration, dramatic chiaroscuro lighting, sensual dangerous mood',
+  shonen: 'dynamic shonen anime illustration, bold action linework, dramatic energy',
+  cyberpunk: 'neon-soaked cyberpunk illustration, rain-slick reflections, holographic glow, high contrast',
+  kdrama: 'soft cinematic illustration, warm romantic lighting, tender mood',
+  cozy_comfort: 'soft warm illustration, gentle golden lighting, cozy comforting atmosphere',
+  dark_academia: 'moody dark-academia illustration, candlelit gothic interior, muted vintage palette',
+  regency: 'elegant period-romance illustration, soft painterly lighting, regency-era setting',
+  horror: 'eerie horror illustration, deep shadows, unsettling atmosphere, desaturated dread',
+  litrpg: 'vibrant fantasy game-art illustration, heroic adventurer, glowing magical effects',
+  chaotic_comedy: 'lively colorful cartoon illustration, exaggerated expressive comedy, dynamic energy',
+}
+const ORIGINAL_DEFAULT = 'high-quality character illustration, cinematic lighting'
+check('cover_identical', () => {
+  const core = 'A dragon over a misty city'
+  for (const [key, hint] of Object.entries(ORIGINAL_HINTS)) {
+    assert.equal(decorateImagePrompt(core, key), `${core}. ${hint}. ${COMPOSITION}.`)
+  }
+  assert.equal(decorateImagePrompt(core, undefined), `${core}. ${ORIGINAL_DEFAULT}. ${COMPOSITION}.`)
+  assert.equal(decorateImagePrompt(core, 'no-such-style'), `${core}. ${ORIGINAL_DEFAULT}. ${COMPOSITION}.`)
+  // The table the audit loops is the table covers use.
+  assert.deepEqual(Object.keys(STYLE_HINT).sort(), Object.keys(ORIGINAL_HINTS).sort())
+  assert.equal(`${DEFAULT_HINT.render}, ${DEFAULT_HINT.mood}`, ORIGINAL_DEFAULT)
+})
+check('cover_strip', () => {
+  // Screening still reads only what a human asked for: our own decorations,
+  // flirty mood included, strip out.
+  const stripped = stripServerDecorations(decorateImagePrompt('A quiet tavern', 'flirty'))
+  assert.ok(stripped.includes('A quiet tavern'))
+  assert.ok(!stripped.includes('sensual'))
+  assert.ok(!stripped.includes('warm intimate lighting'))
+})
+check('no_mood_in_media', () => {
+  // No media prompt may contain a mood phrase, for any key. Media uses the
+  // render half only.
+  for (const [key, entry] of Object.entries(STYLE_HINT)) {
+    const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
+    const shot = (goodPlan().shots[0]) as unknown as Parameters<typeof compileStillPrompt>[1]
+    const prompts = [
+      portraitImagePrompt('A calm face', entry.render),
+      pictureImagePrompt('A tavern scene', entry.render, 1, ''),
+      compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite', entry.render),
+      entry.render,
+    ]
+    for (const prompt of prompts) assert.ok(prompt.includes(entry.render), `${key} render missing`)
+    if (entry.mood) {
+      for (const prompt of prompts) assert.ok(!prompt.includes(entry.mood), `${key} mood leaks: ${entry.mood}`)
+    }
+  }
+  assert.equal(resolveMediaStyle('no-such-style').render, PAINTED_RENDER)
+  assert.equal(resolveMediaStyle(undefined).key, PAINTED_STYLE_KEY)
+})
+check('anime_media_style', () => {
+  // An anime world's portrait, picture, still and director input all carry
+  // the anime render phrase.
+  const anime = resolveMediaStyle('anime')
+  assert.equal(anime.key, 'anime')
+  const render = 'vibrant anime illustration, clean linework, expressive eyes'
+  assert.equal(anime.render, render)
+  assert.ok(portraitImagePrompt('A face', anime.render).includes(render))
+  assert.ok(pictureImagePrompt('A scene', anime.render, 2, '').includes(render))
+  const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
+  const shot = (goodPlan().shots[0]) as unknown as Parameters<typeof compileStillPrompt>[1]
+  assert.ok(compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite', anime.render).includes(render))
+  assert.equal(templateMediaStyle({ narrative_style: 'anime' }).render, render)
+})
+check('override_ignored', async () => {
+  // The save's per-conversation voice override never changes the art style:
+  // the queued portrait carries the template's key, not the override's.
+  const f = fixture()
+  f.db.worldTemplates.rows[0].narrative_style = 'noir'
+  f.db.worldInstances.rows[0].narrative_style_override = 'anime'
+  f.card.appearance = 'Grey eyes, dark braids'
+  f.card.appearance_version = 1
+  assert.equal(templateMediaStyle({ narrative_style: 'noir' }).key, 'noir')
+  assert.equal(templateMediaStyle({}).key, PAINTED_STYLE_KEY)
+  assert.equal(templateMediaStyle(null).key, PAINTED_STYLE_KEY)
+  const queued = await requestPortrait(String(f.player), String(f.instance), String(f.character))
+  assert.equal(queued.status, 'queued')
+  const row = f.db.mediaAssets.rows[0] as unknown as MediaAssetDoc
+  assert.equal(row.art_style, 'noir')
+  assert.ok(row.cache_key.includes(':noir:'))
+})
+check('style_repaint', async () => {
+  // A portrait whose key differs from the world's current key is out of date.
+  // Nothing paints without the tap; the tap repaints with the old face as the
+  // reference and the new style in the prompt.
+  const f = fixture()
+  f.db.worldTemplates.rows[0].narrative_style = 'anime'
+  stubPortraitPipeline(f, async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false }))
+  f.card.portrait = { asset_key: 'media/portrait/old.png', source: 'generated', appearance_version: 1, art_style: 'noir', painted_at: new Date() }
+  assert.equal(f.db.mediaAssets.rows.length, 0)
+  const queued = await requestPortrait(String(f.player), String(f.instance), String(f.character))
+  assert.equal(queued.status, 'queued')
+  assert.equal(f.db.mediaUsage.rows.filter((r) => (r as { status: string }).status === 'reserved').length, 1)
+  const seen: string[] = []
+  visualEffects.download = async (url) => { seen.push(url); return Buffer.from(PNG_BYTES) }
+  let prompt = ''
+  visualEffects.image = (async (p: string) => {
+    prompt = p
+    return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 }
+  }) as never
+  const a = portraitRow(f)
+  f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+  await reserveMedia(a)
+  await processPortrait(String(a._id))
+  const done = f.db.mediaAssets.rows.find((r) => (r._id as ObjectId).equals(a._id)) as unknown as MediaAssetDoc
+  assert.equal(done.status, 'ready')
+  assert.equal(seen.length, 1)
+  assert.ok(seen[0].endsWith('media/portrait/old.png'))
+  assert.ok(prompt.includes('vibrant anime illustration, clean linework, expressive eyes'))
+  assert.ok(!prompt.includes('warm intimate lighting'))
+  const stored = (f.db.characters.rows[0] as unknown as { portrait: { art_style?: string } }).portrait
+  assert.equal(stored.art_style, 'anime')
+})
+check('legacy_painted_current', async () => {
+  // A legacy portrait without art_style counts as the painted default, so a
+  // painted world does not repaint it: the tap costs nothing.
+  const f = fixture()
+  f.card.appearance = 'Grey eyes, dark braids'
+  f.card.appearance_version = 1
+  f.card.portrait = { asset_key: 'media/portrait/old.png', source: 'generated', appearance_version: 1, painted_at: new Date() }
+  assert.equal(styleOfPortrait(f.card.portrait), PAINTED_STYLE_KEY)
+  const ready = await requestPortrait(String(f.player), String(f.instance), String(f.character))
+  assert.equal(ready.status, 'ready')
+  assert.ok((ready as { url: string }).url.endsWith('media/portrait/old.png'))
+  assert.equal(f.db.mediaUsage.inserts, 0)
+})
+check('persona_per_style', async () => {
+  // The persona keeps separate faces per style. The legacy single portrait
+  // reads as the painted entry; an anime save paints the anime entry on tap.
+  const f = fixture()
+  f.db.worldTemplates.rows[0].narrative_style = 'anime'
+  const personaId = new ObjectId()
+  f.db.personas.rows.push({
+    _id: personaId, player_id: f.player, name: 'Asha',
+    description: 'A traveller in her late twenties with curious grey eyes.',
+    appearance_version: 1,
+    portrait: { asset_key: 'media/persona/painted.png', source: 'generated', appearance_version: 1, painted_at: new Date() },
+    created_at: new Date(), updated_at: new Date(),
+  } as unknown as Record<string, unknown>)
+  const persona = () => f.db.personas.rows[0] as unknown as {
+    portrait: { asset_key: string }; portraits?: Record<string, { asset_key: string; art_style?: string }>; last_art_style?: string
+  }
+  assert.equal(personaFaceForStyle(persona() as never, PAINTED_STYLE_KEY)?.asset_key, 'media/persona/painted.png')
+  assert.equal(personaFaceForStyle(persona() as never, 'anime'), undefined)
+  safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
+    ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+    : 'A calm head-and-shoulders portrait description.'
+  safetyEffects.judge = (async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false })) as never
+  visualEffects.download = (async () => Buffer.from(PNG_BYTES)) as never
+  visualEffects.image = (async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 })) as never
+  visualEffects.upload = (async (_data: Buffer, _type: string, o?: { key?: string }) => ({ key: o?.key || '', url: `https://example.test/${o?.key}` })) as never
+  mediaEffects.remove = (async () => {}) as never
+  const published: Array<Record<string, unknown>> = []
+  mediaEffects.publish = (async (_player: string, message: Record<string, unknown>) => { published.push(message) }) as never
+  const reply = await requestPersonaPortrait(String(f.player), String(personaId), { instanceId: String(f.instance) })
+  assert.equal(reply.status, 'queued')
+  if (reply.status !== 'queued') throw new Error('persona portrait cached unexpectedly')
+  const asset = f.db.mediaAssets.rows[0] as unknown as MediaAssetDoc
+  assert.equal(asset.art_style, 'anime')
+  await processPortrait(String(reply.media_id))
+  assert.equal(f.db.mediaAssets.rows[0].status, 'ready')
+  assert.ok(persona().portraits?.anime?.asset_key.startsWith('media/persona/'))
+  assert.equal(persona().portraits?.anime?.art_style, 'anime')
+  assert.equal(persona().last_art_style, 'anime')
+  assert.equal(persona().portrait.asset_key, 'media/persona/painted.png')
+  // Again from the same style: ready, nothing reserved. And the save-less tap
+  // uses the last-used style: ready too.
+  const again = await requestPersonaPortrait(String(f.player), String(personaId), { instanceId: String(f.instance) })
+  assert.equal(again.status, 'ready')
+  const plain = await requestPersonaPortrait(String(f.player), String(personaId))
+  assert.equal(plain.status, 'ready')
+  assert.equal(f.db.mediaUsage.inserts, 1)
+})
+check('picture_persona_style', async () => {
+  // The player is in frame but has no face for this world's style: the tap
+  // paints it inside the portrait allowance and uses it as the reference.
+  const f = fixture()
+  f.db.worldTemplates.rows[0].narrative_style = 'anime'
+  const personaId = new ObjectId()
+  f.db.personas.rows.push({
+    _id: personaId, player_id: f.player, name: 'Asha',
+    description: 'A traveller in her late twenties with curious grey eyes.',
+    appearance_version: 1, created_at: new Date(), updated_at: new Date(),
+  } as unknown as Record<string, unknown>)
+  f.db.worldInstances.rows[0].persona_id = personaId
+  f.db.worldInstances.rows[0].persona_snapshot = { name: 'Asha' }
+  const prose = 'Asha leaned closer. Neon buzzed beyond the shutters.'
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  event.data.ai_response = prose
+  safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
+    ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+    : 'Asha in a neon alley. Wide view, calm mood.'
+  let judges = 0
+  safetyEffects.judge = (async () => {
+    judges++
+    // First the portrait post-gate (exactly one face), then the picture's.
+    return judges === 1
+      ? { verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false }
+      : { verdict: 'allow', reason_code: 'ok', people_count: 0, face_close_up: false, text_visible: false }
+  }) as never
+  visualEffects.download = (async () => Buffer.from(PNG_BYTES)) as never
+  const prompts: string[] = []
+  visualEffects.image = (async (p: string) => {
+    prompts.push(p)
+    return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 }
+  }) as never
+  visualEffects.upload = (async (_data: Buffer, _type: string, o?: { key?: string }) => ({ key: o?.key || '', url: `https://example.test/${o?.key}` })) as never
+  mediaEffects.remove = (async () => {}) as never
+  mediaEffects.publish = (async () => {}) as never
+  const reply = await requestPicture(String(f.player), String(f.instance), String(f.event))
+  assert.equal(reply.status, 'queued')
+  if (reply.status !== 'queued') throw new Error('picture cached unexpectedly')
+  await processPicture(String(reply.media_id))
+  const row = f.db.mediaAssets.rows.find((r) => (r.kind as string) === 'picture') as unknown as MediaAssetDoc
+  assert.equal(row.status, 'ready')
+  assert.ok((row.reference_asset_key as string).startsWith('media/persona/'))
+  assert.equal(prompts.length, 2)
+  assert.ok(prompts[0].includes('vibrant anime illustration, clean linework, expressive eyes'))
+  assert.ok(prompts[1].includes('vibrant anime illustration, clean linework, expressive eyes'))
+  const persona = f.db.personas.rows[0] as unknown as { portraits?: Record<string, { asset_key: string }> }
+  assert.ok(persona.portraits?.anime?.asset_key.startsWith('media/persona/'))
+  const kinds = f.db.mediaUsage.rows.map((r) => (r as { kind: string }).status === 'settled' ? (r as { kind: string }).kind : '')
+  assert.ok(kinds.includes('portrait'), 'the persona face counted against the portrait allowance')
+  assert.ok(kinds.includes('picture'))
+})
+check('vision_drawn_styles', () => {
+  // The vision gate must not penalise drawn styles: anime and cartoon faces
+  // are allowed illustrations, never photographs.
+  assert.ok(VISION_SYSTEM.includes('anime'))
+  assert.ok(VISION_SYSTEM.includes('cartoon'))
+  assert.ok(VISION_SYSTEM.includes('A fictional illustrated face is ALLOWED'))
+})
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }
 if (process.argv.includes('--check') && !checks.some(([name]) => name === process.argv[process.argv.indexOf('--check') + 1])) throw new Error('Unknown audit check')
 let failures = 0
