@@ -18,14 +18,14 @@ import { storageService } from '../storage.service'
 import { attributeEvent, mediaRevision, resolveAttributedSpeaker } from './attribution'
 import { directorModel, imageModel, mediaEnabled, sceneFallbackModel, sceneModel, videoModel, voiceCatalogue } from './config'
 import { detectSpokenLines } from './detection'
-import { directScene, validateDirectorPlan, type DirectorInput, type DirectorPlan } from './director'
+import { directScene, plannedFilmSeconds, type DirectorInput, type DirectorPlan } from './director'
 import { matureVoiceAllowed, utcMediaDay } from './policy'
 import { isPortraitCurrent, isReferenceAllowed, personaFaceForStyle, personaPortraitCacheKey, portraitCacheKey, resolvePortraitHolder, storePortrait, styleOfPortrait, withStyleKey } from './portraits'
 import { checkImage, checkVideoFrames, describeMoment, judgeShotFrames, logRejection, moderateDescription, safetyEffects } from './safety'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from './scene-templates'
 import { assembleCut, assembleDialogueFreeCut, cutEffects, normalizeShot } from './cut'
 import { duplicateKey, releaseMedia, reserveMedia, settleMedia } from './usage'
-import { mp3DurationMs } from './audio'
+import { audioEffects, LINE_TAIL_S, measureLineSentences, mp3DurationMs } from './audio'
 import { failMedia, lineVoice, mediaEffects, sanitizeMediaError } from './service'
 import { log } from '../../utils/logger'
 import { PAINTED_STYLE_KEY, resolveMediaStyle, templateMediaStyle } from '../image.service'
@@ -1335,12 +1335,14 @@ export async function makeSceneShot(args: {
       }).slice(0, mediaImageReferenceLimit())
     let still: { data: Buffer; contentType: string; costUsd?: number } | null = null
     const stillChecks: unknown[] = []
+    let spent = 0
     try {
       for (let attempt = 0; attempt < 2 && !still; attempt++) {
         const candidate = await visualEffects.image(
           stillPrompt.prompt,
           { model: imageModel(), aspectRatio: '9:16', ...(speakerReference ? { reference: speakerReference } : presentReferences.length ? { references: presentReferences } : {}) },
         )
+        spent += candidate.costUsd ?? 0.009
         const checks = await checkImage(candidate.data, candidate.contentType)
         stillChecks.push({ attempt, people_count: checks.people_count, face_close_up: checks.face_close_up, text_visible: checks.text_visible, verdict: checks.verdict })
         if (checks.verdict === 'allow' && !checks.text_visible && !checks.face_close_up
@@ -1357,7 +1359,7 @@ export async function makeSceneShot(args: {
       }
       throw error
     }
-    if (!still) return dropped('still_rejected', stillChecks, 0.018)
+    if (!still) return dropped('still_rejected', stillChecks, spent)
     const stillBytes = still.data
     const stillContentType = still.contentType
     const stillKey = `media/still/${args.playerId.toHexString()}/${args.instanceId.toHexString()}/${args.role}-${Date.now()}${imageExtensionFor(stillContentType)}`
@@ -1368,13 +1370,14 @@ export async function makeSceneShot(args: {
       // the caller records it on the asset row for purgeMedia (item 5).
       try {
         await mediaEffects.remove(stillUp.key)
-        return dropped(reason, stillChecks, 0.018 + 0.4, '', undefined, message)
+        return dropped(reason, stillChecks, spent, '', undefined, message)
       } catch {
-        return dropped(reason, stillChecks, 0.018 + 0.4, '', stillUp.key, message)
+        return dropped(reason, stillChecks, spent, '', stillUp.key, message)
       }
     }
     const expectedPeople = args.shot.people_in_still.length
     for (const [model, withAudio] of [[primary, undefined], [fallback, false]] as const) {
+      let rendered: { video: Buffer; jobId: string; costUsd?: number }
       try {
         const submitted = await visualEffects.submit({
           model, prompt: motionPrompt.prompt, firstFrameUrl: stillUp.url,
@@ -1382,32 +1385,37 @@ export async function makeSceneShot(args: {
           ...(withAudio === undefined ? {} : { generateAudio: withAudio }),
         })
         const status = await visualEffects.wait(submitted.jobId)
+        spent += status.costUsd ?? (model === primary ? 0.02 * args.shot.duration_s + 0.01 : 0.21)
         const video = await visualEffects.fetch(submitted.jobId)
-        const frames = await checkVideoFrames(video, expectedPeople ? { data: stillBytes, contentType: stillContentType } : undefined)
-        const ok = judgeShotFrames(frames, expectedPeople)
+        rendered = { video, jobId: submitted.jobId, costUsd: status.costUsd }
+      } catch (error) {
+        // Only provider failures can spend the fallback. Frame checks below
+        // are outside this catch, so a rendered rejection never buys another shot.
+        let message: string | undefined
+        if (error instanceof ProviderRefusalError) message = await logShotRefusal('shot_provider_refused', error.message, model)
+        stillChecks.push({ model, error: sanitizeMediaError(error instanceof Error ? error.message : String(error)), retry: model === primary ? 'fallback' : 'dropped' })
+        if (model === fallback) return dropShot(error instanceof ProviderRefusalError ? 'shot_provider_refused' : 'shot_failed', message)
+        continue
+      }
+      try {
+        const frames = await checkVideoFrames(rendered.video, expectedPeople ? { data: stillBytes, contentType: stillContentType } : undefined)
         const record = {
-          model, job: submitted.jobId, cost: status.costUsd,
+          model, job: rendered.jobId, cost: rendered.costUsd,
           frames: frames.map((f) => ({ verdict: f.verdict, people: f.people_count, face: f.face_close_up, text: f.text_visible, wardrobe: f.wardrobe_match })),
         }
-        if (ok) {
-          // The fallback's audio track is always dropped: it returned audio even
-          // with generate_audio:false, and no voice may hide in ambience.
+        if (judgeShotFrames(frames, expectedPeople)) {
+          // Fallback audio is dropped by assembly even with generate_audio:false.
           return {
-            role: args.role, status: 'ready', model, stillUrl: stillUp.url, stillKey: stillUp.key, videoBytes: video,
+            role: args.role, status: 'ready', model, stillUrl: stillUp.url, stillKey: stillUp.key, videoBytes: rendered.video,
             durationS: args.shot.duration_s, checks: [...stillChecks, record],
-            cost: (still.costUsd ?? 0.009) + (status.costUsd ?? 0.2),
+            cost: spent,
           }
         }
-        stillChecks.push({ ...record, retry: model === primary ? 'fallback' : 'dropped' })
+        stillChecks.push({ ...record, retry: 'dropped' })
       } catch (error) {
-        // A refused prompt will not pass on the fallback either: drop the
-        // shot instead of burning a second video on the same refusal.
-        if (error instanceof ProviderRefusalError) {
-          const message = await logShotRefusal('shot_provider_refused', error.message, model)
-          return dropShot('shot_provider_refused', message)
-        }
-        stillChecks.push({ model, error: (error as Error).message.slice(0, 200), retry: model === primary ? 'fallback' : 'dropped' })
+        stillChecks.push({ model, error: sanitizeMediaError(error instanceof Error ? error.message : String(error)), retry: 'dropped' })
       }
+      return dropShot('shot_rejected')
     }
     return dropShot('shot_rejected')
   } catch {
@@ -1478,6 +1486,17 @@ async function attachPoster(asset: MediaAssetDoc, film: Buffer): Promise<{ url: 
   }
 }
 
+/** Probe the deliverable; duration telemetry never alters the director's cut. */
+async function recordFilmDuration(asset: MediaAssetDoc, record: Record<string, unknown>, bytes: Buffer): Promise<number> {
+  const actualS = await cutEffects.probeDuration(bytes)
+  record.actual_duration_s = actualS
+  if (Number(record.planned_duration_s) > 8 || actualS > 8) {
+    log.warn('media.film_over_budget', { media_id: asset._id.toHexString(),
+      planned_duration_s: record.planned_duration_s, actual_duration_s: actualS })
+  }
+  return actualS
+}
+
 export async function processVideo(mediaId: string): Promise<void> {
   const asset = await mongoColl.mediaAssets().findOneAndUpdate(
     { _id: parseObjectId(mediaId), status: 'queued' }, { $set: { status: 'processing', started_at: new Date() } }, { returnDocument: 'after' })
@@ -1486,6 +1505,7 @@ export async function processVideo(mediaId: string): Promise<void> {
   const saveId = asset.instance_id
   let uploaded = ''
   let posterKey = ''
+  let excerptKey = ''
   const renderStarted = Date.now()
   let planRecord: Record<string, unknown> = {}
   let stage = 'prepare'
@@ -1531,6 +1551,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       asset.player_id.toHexString(), asset.instance_id.toHexString(),
       asset.event_id.toHexString(), asset.line_id)
     const portraitBytes = await visualEffects.download(portraitUrlStr)
+    const timing = await measureLineSentences(line.voice.spoken_text, clip.bytes)
     // The director pass.
     const prose = event.data.ai_response
     const span = { start: line.start, end: line.end }
@@ -1539,9 +1560,10 @@ export async function processVideo(mediaId: string): Promise<void> {
     const others = presentCards(prose, cards.filter((c) => !card || !c._id.equals(card._id)), personaName)
     const style = templateMediaStyle(template)
     const directorInput: DirectorInput = {
+      budget_s: 8,
       art_style: style.render,
       narration_before: narrationBefore,
-      line: { speaker_name: line.voice.speaker_name, spoken_text: line.voice.spoken_text, duration_s: clip.durationS },
+      line: { speaker_name: line.voice.speaker_name, spoken_text: line.voice.spoken_text, duration_s: timing.durationS, sentences: timing.sentences },
       narration_after: narrationAfter,
       speaker: { appearance: card?.appearance || '', passing_look: await extractPassing(prose, line.voice.speaker_name) },
       others_present: others.map((c) => ({ name: c.canonical_name, appearance: c.appearance || '' })),
@@ -1556,8 +1578,16 @@ export async function processVideo(mediaId: string): Promise<void> {
     stage = 'direct'
     const model = directorModel()
     const directed = await directScene(model, directorInput)
-    const planErrors = directed.plan ? validateDirectorPlan(directed.plan, directorInput) : directed.errors
-    const plan: DirectorPlan | null = directed.plan && !planErrors.length ? directed.plan : null
+    const plan = directed.plan! // Line mode always has a deterministic line-only fallback.
+    const range = plan.line_excerpt!
+    const first = timing.sentences[range.first], last = timing.sentences[range.last]
+    const excerptText = timing.sentences.slice(range.first, range.last + 1).map((sentence) => sentence.text).join(' ')
+    const excerptAudio = await audioEffects.slice(clip.bytes, first.start_s, last.end_s)
+    const excerptS = last.end_s - first.start_s
+    excerptKey = `media/still/${asset.player_id}/${saveId}/${asset._id}-excerpt.wav`
+    await mongoColl.mediaAssets().updateOne({ _id: asset._id }, { $set: { still_keys: [excerptKey] } })
+    const excerptUpload = await visualEffects.upload(excerptAudio, 'audio/wav', { key: excerptKey })
+    excerptKey = excerptUpload.key
     const price = await visualEffects.prices(model)
     const directorCost = (JSON.stringify(directorInput).length / 4) * price.prompt + 600 * price.completion
     let cost = directorCost
@@ -1567,8 +1597,10 @@ export async function processVideo(mediaId: string): Promise<void> {
       director_model: model,
       input: directorInput,
       plan,
-      errors: directed.plan ? planErrors : directed.errors,
-      repaired: directed.repaired,
+      errors: directed.errors,
+      line_excerpt: { ...range, text: excerptText, start_s: first.start_s, end_s: last.end_s },
+      timing_method: timing.method,
+      planned_duration_s: plannedFilmSeconds(plan, directorInput),
       shots: [] as unknown[],
     }
     // Scene shots start together with the line shot and settle independently:
@@ -1578,9 +1610,9 @@ export async function processVideo(mediaId: string): Promise<void> {
     const lineShot = startLineShot({
       model: asset.model,
       speakerName: line.voice.speaker_name,
-      spokenText: line.voice.spoken_text,
+      spokenText: excerptText,
       portraitUrl: portraitUrlStr,
-      audioUrl: clip.url,
+      audioUrl: excerptUpload.url,
     })
     // Observe a refusal immediately while sibling scene shots are running;
     // awaiting the original promise below still makes the verdict binding.
@@ -1611,7 +1643,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       lineVideo = done.video
       cost += done.cost
     } catch (error) {
-      await deleteSceneStills(asset, sceneStillKeys(shots))
+      await deleteSceneStills(asset, [...sceneStillKeys(shots), excerptKey])
       if (error instanceof ProviderRefusalError) {
         await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })
         return
@@ -1633,7 +1665,7 @@ export async function processVideo(mediaId: string): Promise<void> {
         || lineFrames.find((f) => f.text_visible)
         || lineFrames.find((f) => f.people_count !== 1)
       await unseeMedia(asset, 'post', bad ? bad.reason_code : 'line_shot_rejected')
-      await deleteSceneStills(asset, sceneStillKeys(shots))
+      await deleteSceneStills(asset, [...sceneStillKeys(shots), excerptKey])
       return
     }
     // Assemble: scene shots that survived, then the line, degraded never broken.
@@ -1643,8 +1675,8 @@ export async function processVideo(mediaId: string): Promise<void> {
     const closing = ready.find((s) => s.role === 'closing')
     const normLine = await normalizeShot(lineVideo)
     const lineDur = await cutEffects.probeDuration(normLine)
-    const voiceS = clip.durationS
-    const lineSegS = Math.min(lineDur, voiceS + 0.3)
+    const voiceS = excerptS
+    const lineSegS = Math.min(lineDur, voiceS + LINE_TAIL_S)
     const parts: Buffer[] = []
     const durations: number[] = []
     if (opening) { parts.push(await normalizeShot(opening.videoBytes!)); durations.push(opening.durationS) }
@@ -1653,13 +1685,14 @@ export async function processVideo(mediaId: string): Promise<void> {
     const hasOpening = !!opening, hasClosing = !!closing && closing !== opening
     const leadIn = plan && hasOpening ? plan.line_shot?.voice_lead_in_s ?? 0 : 0
     const voiceDelayS = hasOpening ? Math.max(0, opening!.durationS - leadIn) : 0
-    const { bytes, totalS } = await assembleCut({
+    const { bytes } = await assembleCut({
       shots: parts, durations, hasOpening, hasClosing,
       transitionIn: plan?.line_shot?.transition_in as 'cut' | 'dissolve_short' || 'cut',
       transitionOut: plan?.ending.transition_out as 'cut' | 'dissolve_short' | 'dip_to_black' || 'dissolve_short',
-      voiceMp3: clip.bytes, voiceDelayS, voiceS,
+      voiceMp3: excerptAudio, voiceDelayS, voiceS,
       ambienceFrom: opening ? 'opening' : closing ? 'closing' : null,
     })
+    const actualS = await recordFilmDuration(asset, planRecord, bytes)
     const key = `media/video/${asset.player_id.toHexString()}/${asset.instance_id.toHexString()}/${asset._id.toHexString()}.mp4`
     const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key } })
     if (!staged.matchedCount) throw new Error('Video removed')
@@ -1672,13 +1705,13 @@ export async function processVideo(mediaId: string): Promise<void> {
     stage = 'save'
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, {
       $set: {
-        status: 'ready', asset_key: result.key, url: result.url, duration_ms: Math.round(totalS * 1000),
+        status: 'ready', asset_key: result.key, url: result.url, duration_ms: Math.round(actualS * 1000),
         cost_usd: cost, cost_source: 'generation',
         ...(poster ? { poster_url: poster.url } : {}),
         plan: {
           ...planRecord,
           compiled: {
-            line: compileLinePrompt(line.voice.speaker_name, line.voice.spoken_text).prompt,
+            line: compileLinePrompt(line.voice.speaker_name, excerptText).prompt,
             shots: shots.map((s) => ({ role: s.role, model: s.model, status: s.status, reason: s.reason, ...(s.message !== undefined ? { message: s.message } : {}) })),
           },
           shots,
@@ -1689,9 +1722,9 @@ export async function processVideo(mediaId: string): Promise<void> {
     if (!saved.modifiedCount) throw new Error('Video removed')
     // The cut is assembled: its still inputs are deleted (item 5). Their URLs
     // stay in the stored plan as telemetry, but the objects are gone.
-    await deleteSceneStills(asset, sceneStillKeys(shots))
+    await deleteSceneStills(asset, [...sceneStillKeys(shots), excerptKey])
     await settleMedia(asset._id)
-    await notifyMedia({ ...asset, status: 'ready', url: result.url, duration_ms: Math.round(totalS * 1000) })
+    await notifyMedia({ ...asset, status: 'ready', url: result.url, duration_ms: Math.round(actualS * 1000) })
   } catch (error) {
     if (error instanceof UnseenError) {
       await unseeMedia(asset, error.stage, error.reason, uploaded || undefined)
@@ -1704,7 +1737,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       try { await mediaEffects.remove(posterKey) } catch { /* retained for maintenance */ }
     }
     // A video that fails after its shots still deletes their stills (item 5).
-    await deleteSceneStills(asset, sceneStillKeys((planRecord.shots as ShotOutcome[] | undefined) || []))
+    await deleteSceneStills(asset, [...sceneStillKeys((planRecord.shots as ShotOutcome[] | undefined) || []), excerptKey].filter(Boolean))
     // Keep the telemetry: plan, prompts and shot checks survive the failure.
     await mongoColl.mediaAssets().updateOne({ _id: asset._id }, {
       $set: { plan: { ...planRecord, render_ms: Date.now() - renderStarted } },
@@ -1754,7 +1787,7 @@ async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
     const prose = event.data.ai_response
     const present = presentCards(prose, cards, instance.persona_snapshot?.name)
     const input: DirectorInput = {
-      mode: 'dialogue_free', art_style: style.render,
+      mode: 'dialogue_free', budget_s: 8, art_style: style.render,
       narration_before: prose, narration_after: prose,
       line: { speaker_name: '', spoken_text: '', duration_s: 0 },
       speaker: { appearance: '', passing_look: '' },
@@ -1767,6 +1800,7 @@ async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
     record = { director_model: directorModel(), input, ...directed }
     if (!directed.plan) throw new Error('No scene shots planned')
     const plan = directed.plan
+    record.planned_duration_s = plannedFilmSeconds(plan, input)
     const presentPortraits = await readyPresentPortraits(instance, present, plan, template?.is_sentient === true)
     record.compiled = { shots: plan.shots.map((shot) => ({
       role: shot.role, still: compileStillPrompt(plan, shot, sceneModel(), style.render).prompt, motion: compileMotionPrompt(plan, shot, sceneModel()).prompt,
@@ -1781,6 +1815,7 @@ async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
     const parts = await Promise.all(ready.map(async (s) => normalizeShot(
       s.model === sceneFallbackModel() ? await cutEffects.run(['-i', 'pipe:0', '-an', '-c:v', 'copy', '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov', 'pipe:1'], [s.videoBytes!]) : s.videoBytes!)))
     const assembled = await assembleDialogueFreeCut({ shots: parts, durations: ready.map((s) => s.durationS), transition: plan.ending.transition_out as 'cut' | 'dissolve_short' | 'dip_to_black' })
+    const actualS = await recordFilmDuration(asset, record, assembled.bytes)
     if (!await liveMedia(asset)) throw new Error('Video moment passed')
     const key = `media/video/${asset.player_id}/${asset.instance_id}/${asset._id}.mp4`
     const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key } })
@@ -1794,7 +1829,7 @@ async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
     const poster = await attachPoster(asset, assembled.bytes)
     posterKey = poster?.key ?? ''
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: {
-      status: 'ready', asset_key: result.key, url: result.url, duration_ms: Math.round(assembled.totalS * 1000), cost_usd: cost,
+      status: 'ready', asset_key: result.key, url: result.url, duration_ms: Math.round(actualS * 1000), cost_usd: cost,
       ...(poster ? { poster_url: poster.url } : {}),
       plan: { ...record, render_ms: Date.now() - started },
     } })

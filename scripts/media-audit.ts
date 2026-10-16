@@ -21,7 +21,9 @@ import { purgeMedia } from '../src/services/media/deletion'
 import { storageService } from '../src/services/storage.service'
 import { publicMediaEvent, publishSpokenLines, withTurnMedia, wireSpokenLines } from '../src/services/media/events'
 import { generateMediaImage } from '../src/services/media/image'
-import { imageSafetyTolerance } from '../src/services/media/config'
+import { log } from '../src/utils/logger'
+import { audioEffects, measureLineSentences, splitLineSentences, LINE_TAIL_S } from '../src/services/media/audio'
+import { ffmpegPath, imageSafetyTolerance } from '../src/services/media/config'
 import { asMediaImageReference, imageExtensionFor, sniffImageContentType, ProviderRefusalError } from '../src/ai/image'
 import { submitVideo } from '../src/ai/video'
 import { env } from '../src/config/env'
@@ -45,6 +47,7 @@ mock.module('../src/config/redis', () => ({
 
 const realFrameJudge = safetyEffects.judge
 const realCutEffects = { ...cutEffects }
+const realAudioEffects = { ...audioEffects }
 
 const checks: Array<[string, () => unknown | Promise<unknown>]> = []
 const check = (name: string, fn: () => unknown | Promise<unknown>) => checks.push([name, fn])
@@ -469,7 +472,7 @@ check('postgate_deletes', async () => {
       instanceId: f.instance,
     })
     assert.equal(shot.status, 'dropped')
-    assert.equal(calls, 2)
+    assert.equal(calls, 1, 'a rendered rejection never buys the fallback')
     assert.ok(uploaded.startsWith('media/still/'))
     assert.equal(removed, uploaded)
     // The portrait path never uploads before its post-gate: nothing to delete.
@@ -571,9 +574,10 @@ check('purge_portraits', async () => {
 })
 function directorInput(): DirectorInput {
   return {
+    budget_s: 8,
     art_style: 'semi-realistic cinematic digital painting, warm rim light',
     narration_before: 'Rain hammered the gutter. She watched the door in the brass of the lamp.',
-    line: { speaker_name: 'Seren', spoken_text: 'Stay close.', duration_s: 2 },
+    line: { speaker_name: 'Seren', spoken_text: 'Stay close.', duration_s: 2, sentences: [{ index: 0, text: 'Stay close.', start_s: 0, end_s: 2, duration_s: 2 }] },
     narration_after: 'A floorboard sighed beyond the shutters.',
     speaker: { appearance: 'Grey eyes, dark braids', passing_look: 'Soaked coat' },
     others_present: [{ name: 'Tomas', appearance: 'A boy' }],
@@ -587,6 +591,7 @@ function goodPlan() {
       { role: 'opening', evidence: 'She watched the door in the brass of the lamp.', framing: 'insert_detail', people_in_still: [], still: 'A brass lamp.', camera_move: 'slow_push_in', subject_action: 'none', environment_motion: 'flame trembles', duration_s: 3 },
       { role: 'closing', evidence: 'A floorboard sighed beyond the shutters.', framing: 'wide', people_in_still: [{ name: 'Tomas', placement: 'door', facing: 'away' }], still: 'A door.', camera_move: 'static', subject_action: 'none', environment_motion: 'dust', duration_s: 2 },
     ],
+    line_excerpt: { first: 0, last: 0 },
     line_shot: { transition_in: 'cut', voice_lead_in_s: 0.3 },
     ending: { transition_out: 'dip_to_black' },
     ambient: 'Rain on stone.',
@@ -611,21 +616,31 @@ check('director_validates', () => {
   cut.line_shot.transition_in = 'wipe'
   assert.ok(validateDirectorPlan(cut, input).some((e) => e.includes('transition_in')))
 })
-check('director_repair_once', async () => {
-  const input = directorInput()
-  let calls = 0
-  const bad = { ...goodPlan(), shots: [] as unknown[] }
-  delete (bad as { continuity?: unknown }).continuity
-  directorEffects.call = async () => { calls++; return JSON.stringify(calls === 1 ? bad : goodPlan()) }
-  const fixed = await directScene('test-model', input)
-  assert.equal(calls, 2)
-  assert.equal(fixed.repaired, true)
-  assert.ok(fixed.plan)
-  assert.deepEqual(fixed.errors, [])
-  directorEffects.call = async () => { calls++; return JSON.stringify(bad) }
-  const broken = await directScene('test-model', input)
-  assert.equal(broken.plan, null)
-  assert.ok(broken.errors.length > 0)
+check('director_single_call', async () => {
+  for (const mode of ['line', 'dialogue_free'] as const) {
+    for (const response of ['invalid JSON', 'null', '{}', JSON.stringify({ ...goodPlan(), shots: [null] }), JSON.stringify(goodPlan())]) {
+      let calls = 0
+      directorEffects.call = async () => { calls++; return response }
+      const result = await directScene('test-model', { ...directorInput(), mode })
+      assert.equal(calls, 1)
+      assert.ok(!('repaired' in result))
+      if (mode === 'line') assert.ok(result.plan?.line_excerpt)
+      else if (!result.plan) assert.ok(result.errors.length)
+    }
+  }
+  for (const raw of ['not JSON', '{}', JSON.stringify({ ...goodPlan(), shots: [null], line_excerpt: { first: 9, last: 9 } })]) {
+    const f = videoBase()
+    stubVideoRun(f)
+    let calls = 0
+    directorEffects.call = async () => { calls++; return raw }
+    const asset = await queueVideo(f)
+    await processVideo(String(asset._id))
+    const row = f.db.mediaAssets.rows.find((r) => String(r._id) === String(asset._id))!
+    assert.equal(row.status, 'ready', JSON.stringify(row.error))
+    assert.equal(calls, 1)
+    assert.ok(!('repaired' in (row.plan as Record<string, unknown>)))
+    assert.deepEqual((row.plan as { plan: { shots: unknown[] } }).plan.shots, [])
+  }
 })
 check('shot_judgement', () => {
   const frame = (extra: Record<string, unknown> = {}) => ({
@@ -1220,6 +1235,7 @@ function stubVideoRun(f: ReturnType<typeof videoBase>, opts: {
         still: 'A rain-slicked door under a gutter.', camera_move: 'static',
         subject_action: 'none', environment_motion: 'rain runs off the gutter', duration_s: 2,
       }],
+      line_excerpt: { first: 0, last: 0 },
       line_shot: { transition_in: 'cut', voice_lead_in_s: 0 },
       ending: { transition_out: 'cut' },
       ambient: 'Rain on stone.',
@@ -1231,9 +1247,12 @@ function stubVideoRun(f: ReturnType<typeof videoBase>, opts: {
   mediaEffects.remove = (async (key: string) => { run.removed.push(key) }) as never
   mediaEffects.publish = (async (_player: string, message: Record<string, unknown>) => { run.published.push(message) }) as never
   cutEffects.hasAudio = async () => false
-  cutEffects.probeDuration = async () => 3
+  let deliveredDurationS = 3
+  audioEffects.inspect = async () => ({ durationS: 3, pauses: [] })
+  audioEffects.slice = async () => Buffer.from('excerpt-audio')
+  cutEffects.probeDuration = async (bytes) => bytes.toString() === 'cut' ? deliveredDurationS : 3
   cutEffects.run = async () => Buffer.from('norm')
-  cutEffects.runFiles = async (args: string[]) => { await writeFile(args[args.length - 1], Buffer.from('cut')) }
+  cutEffects.runFiles = async (args: string[]) => { deliveredDurationS = Number(args[args.lastIndexOf('-t') + 1]); await writeFile(args[args.length - 1], Buffer.from('cut')) }
   cutEffects.extractFrame = async () => Buffer.from('poster-frame')
   return run
 }
@@ -1326,7 +1345,7 @@ check('still_cleanup', async () => {
   const asset2 = await queueVideo(g)
   await processVideo(String(asset2._id))
   const row2 = g.db.mediaAssets.rows[0] as unknown as MediaAssetDoc
-  assert.deepEqual(row2.still_keys, run2.uploaded.filter((k) => k.startsWith('media/still/')))
+  assert.deepEqual([...(row2.still_keys || [])].sort(), run2.uploaded.filter((k) => k.startsWith('media/still/')).sort())
   const purged: string[] = []
   storageService.deleteStrict = (async (key: string) => { purged.push(key) }) as never
   await purgeMedia({ instance_id: g.instance })
@@ -2303,14 +2322,15 @@ function turnVideoFixture() {
     assert.ok(req.messages[0].content.includes(DIRECTOR_DIALOGUE_FREE_PROMPT))
     const input = JSON.parse(req.messages[1].content) as DirectorInput
     inputs.push(input)
-    return JSON.stringify({ ...goodPlan(), line_shot: null, shots: [
+    return JSON.stringify({ ...goodPlan(), line_shot: null, line_excerpt: null, shots: [
       { ...goodPlan().shots[0], people_in_still: [{ name: 'Speaker', placement: 'door', facing: 'away' }], evidence: 'Rain hammered the gutter.', duration_s: 4 },
       { ...goodPlan().shots[1], people_in_still: [{ name: 'Speaker', placement: 'door', facing: 'away' }], evidence: 'A floorboard sighed beyond the shutters.', duration_s: 4 },
     ] })
   }
   // The present card is grounded by name in this turn, even without speech.
   event.data.ai_response = 'Alias waits. ' + prose
-  cutEffects.runFiles = async (args) => { graphs.push(args[args.indexOf('-filter_complex') + 1]); await writeFile(args[args.length - 1], Buffer.from('cut')) }
+  const runFiles = cutEffects.runFiles
+  cutEffects.runFiles = async (args) => { graphs.push(args[args.indexOf('-filter_complex') + 1]); await runFiles(args) }
   return { ...f, run, inputs, graphs, submits }
 }
 async function filmTurn(f: ReturnType<typeof turnVideoFixture>) {
@@ -2609,7 +2629,7 @@ check('dialogue_free_degrades', async () => {
 })
 check('dialogue_free_validates', async () => {
   const input = { ...directorInput(), mode: 'dialogue_free' as const }
-  const plan = { ...goodPlan(), line_shot: null, shots: goodPlan().shots.map((s) => ({ ...s, duration_s: 4 })) }
+  const plan = { ...goodPlan(), line_shot: null, line_excerpt: null, shots: goodPlan().shots.map((s) => ({ ...s, duration_s: 4 })) }
   assert.deepEqual(validateDirectorPlan(plan, input), [])
   assert.ok(validateDirectorPlan({ ...plan, line_shot: goodPlan().line_shot }, input).length)
   assert.ok(validateDirectorPlan({ ...plan, shots: plan.shots.slice(0, 1) }, input).length)
@@ -2696,6 +2716,7 @@ check('dialogue_free_owner', async () => {
   assert.equal(f.db.mediaUsage.rows.length, 0)
   assert.equal(f.db.mediaAssets.rows.length, 0)
 })
+
 
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }
 // ── media-world-style: every image in the world's own art style ──
@@ -3680,6 +3701,236 @@ check('turn_media_replay', async () => {
   const out = (await withTurnMedia([publicMediaEvent(reread as never)]))[0]
   assert.equal(turnMediaOf(out as unknown as WorldEventDoc).length, 1)
 })
+
+/** Tones with two interior gaps and quiet edges: no provider or voice spend. */
+function sentenceClip(): Buffer {
+  const expression = "if(between(t\\,0.2\\,1)+between(t\\,1.4\\,2.2)+between(t\\,2.6\\,3.4)\\,0.2*sin(2*PI*(440+110*floor(t/1.2))*t)\\,0)"
+  const child = Bun.spawnSync([ffmpegPath(), '-v', 'error', '-f', 'lavfi', '-i',
+    `aevalsrc=${expression}:s=48000:d=3.6`, '-c:a', 'pcm_s16le', '-f', 'wav', 'pipe:1'], { stdout: 'pipe', stderr: 'pipe' })
+  assert.equal(child.exitCode, 0, child.stderr.toString())
+  return Buffer.from(child.stdout)
+}
+check('sentence_pause_timings', async () => {
+  Object.assign(cutEffects, realCutEffects)
+  Object.assign(audioEffects, realAudioEffects)
+  const clip = sentenceClip()
+  const timed = await measureLineSentences('First thought. Main point! Last thought?', clip)
+  assert.equal(timed.method, 'silence_pauses')
+  assert.equal(timed.sentences.length, 3)
+  assert.ok(Math.abs(timed.durationS - 3.6) < 0.001)
+  assert.deepEqual(splitLineSentences('First thought... “Main point!” Last thought? Unfinished'), ['First thought...', '“Main point!”', 'Last thought?', 'Unfinished'])
+  for (const [i, sentence] of timed.sentences.entries()) {
+    assert.ok(Math.abs(sentence.start_s - i * 1.2) < 0.01)
+    assert.ok(Math.abs(sentence.end_s - (i + 1) * 1.2) < 0.01)
+  }
+  assert.ok(Math.abs(timed.sentences.reduce((sum, s) => sum + s.duration_s, 0) - timed.durationS) < 1e-9)
+})
+check('sentence_proportional_timings', async () => {
+  Object.assign(cutEffects, realCutEffects)
+  Object.assign(audioEffects, realAudioEffects)
+  const timed = await measureLineSentences('A. Longer sentence!', sentenceClip())
+  assert.equal(timed.method, 'proportional_characters')
+  assert.ok(Math.abs(timed.sentences[0].end_s - timed.durationS * 2 / 18) < 1e-9)
+  assert.equal(timed.sentences[0].start_s, 0)
+  assert.equal(timed.sentences[1].start_s, timed.sentences[0].end_s)
+  assert.equal(timed.sentences[1].end_s, timed.durationS)
+  assert.equal(timed.sentences.reduce((sum, s) => sum + s.duration_s, 0), timed.durationS)
+})
+check('excerpt_fallback', async () => {
+  const input = directorInput()
+  input.line.sentences = [2, 3, 4].map((duration_s, index) => ({ index, text: `Sentence ${index}.`, duration_s,
+    start_s: [0, 2, 5][index], end_s: [2, 5, 9][index] }))
+  for (const excerpt of [null, { first: -1, last: 1 }, { first: 2, last: 1 }, { first: 0, last: 3 },
+    { first: 0.5, last: 1 }, { first: 0, last: 2, indices: [0, 2] }, { text: 'invented words' }]) {
+    directorEffects.call = async () => JSON.stringify({ ...goodPlan(), shots: [goodPlan().shots[0], { ...goodPlan().shots[1], framing: 'face_close_up' }], line_excerpt: excerpt })
+    const result = await directScene('test', input)
+    assert.deepEqual(result.plan?.line_excerpt, { first: 0, last: 1 }, 'longest prefix fits 8 minus the valid three-second opening')
+    assert.equal(result.plan?.shots.length, 1, 'invalid shot dropped independently')
+  }
+  directorEffects.call = async () => JSON.stringify({ ...goodPlan(), shots: [], line_excerpt: { first: 1, last: 2 } })
+  assert.deepEqual((await directScene('test', input)).plan?.line_excerpt, { first: 1, last: 2 }, 'director may omit the first sentence')
+  input.line.sentences[0].duration_s = 12
+  directorEffects.call = async () => JSON.stringify({ ...goodPlan(), line_excerpt: null })
+  assert.deepEqual((await directScene('test', input)).plan?.line_excerpt, { first: 0, last: 0 }, 'at least the first sentence survives')
+})
+check('director_budget_prompt', async () => {
+  for (const mode of ['line', 'dialogue_free'] as const) {
+    directorEffects.call = async (req) => {
+      const prompt = req.messages[0].content as string
+      assert.ok(prompt.includes('at most 8 seconds in total'))
+      assert.ok(prompt.includes('hard limit for line films and dialogue-free cuts alike'))
+      assert.ok(prompt.includes('exact measured durations and start_s/end_s'))
+      assert.ok(prompt.includes('0.3-second silent tail'))
+      assert.ok(!prompt.includes('8–14'))
+      const input = JSON.parse(req.messages[1].content as string)
+      assert.equal(input.budget_s, 8)
+      assert.equal(input.line.sentences[0].duration_s, 2)
+      return JSON.stringify(goodPlan())
+    }
+    await directScene('test', { ...directorInput(), mode })
+  }
+})
+check('invalid_dialogue_free_plan', async () => {
+  for (const raw of ['not JSON', '{}', JSON.stringify({ ...goodPlan(), line_shot: null, line_excerpt: null, shots: [null] })]) {
+    const f = turnVideoFixture()
+    let calls = 0
+    directorEffects.call = async () => { calls++; return raw }
+    const row = await filmTurn(f)
+    assert.equal(calls, 1)
+    assert.equal(row.status, 'failed')
+    assert.equal((row.plan as { plan: unknown }).plan, null)
+    assert.equal(f.db.mediaUsage.rows[0].status, 'released')
+    assert.ok(!('slot' in f.db.mediaUsage.rows[0]))
+    assert.ok(f.run.published.some((m) => m.type === 'media_failed'))
+    assert.equal(f.submits.length, 0)
+  }
+})
+check('excerpt_audio', async () => {
+  const f = videoBase(), run = stubVideoRun(f)
+  const full = sentenceClip(), untouched = Buffer.from(full)
+  const spoken = 'First thought. Main point! Last thought?'
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  event.data.ai_response = `Rain falls. Alias says, “${spoken}” A door closes.`
+  event.data.spoken_lines = detectSpokenLines(event.data.ai_response)
+  attributionEffects.call = async () => JSON.stringify({ lines: [{ line_id: 'l0', is_speech: true, speaker_name: 'Alias', spoken_text: spoken, tags: [] }] })
+  const asset = await queueVideo(f)
+  asset.revision = mediaRevision(event.data.ai_response, '')
+  f.db.mediaAssets.rows.find((r) => String(r._id) === String(asset._id))!.revision = asset.revision
+  const voiceRow = { ...asset, _id: new ObjectId(), kind: 'voice', status: 'ready',
+    cache_key: `${f.event}:l0:george:${catalogue.model}`, model: catalogue.model,
+    url: 'https://example.test/full.wav', asset_key: 'media/voice/full.wav', duration_ms: 3600 }
+  f.db.mediaAssets.rows.push(voiceRow as unknown as Record<string, unknown>)
+  const download = visualEffects.download, probe = cutEffects.probeDuration, ffmpeg = cutEffects.run
+  visualEffects.download = async (url) => url === voiceRow.url ? full : download(url)
+  cutEffects.probeDuration = async (bytes) => bytes.equals(full) ? realCutEffects.probeDuration(bytes) : probe(bytes)
+  cutEffects.run = async (args, buffers) => args.includes('wav') ? realCutEffects.run(args, buffers) : ffmpeg(args, buffers)
+  Object.assign(audioEffects, realAudioEffects)
+  let calls = 0, voices = 0, sliced = Buffer.alloc(0), sentAudio = ''
+  const submit = visualEffects.submit, upload = visualEffects.upload, runFiles = cutEffects.runFiles
+  visualEffects.upload = async (bytes, type, opts) => {
+    if (type === 'audio/wav') sliced = Buffer.from(bytes)
+    return upload(bytes, type, opts)
+  }
+  visualEffects.submit = async (req) => {
+    if (req.model.includes('heygen')) sentAudio = req.inputReferences!.find((r) => r.type === 'audio_url')!.url
+    return submit(req)
+  }
+  cutEffects.runFiles = async (args) => {
+    const voiceFile = args.find((arg) => arg.endsWith('/voice.mp3'))
+    if (voiceFile) assert.deepEqual(await Bun.file(voiceFile).bytes(), new Uint8Array(sliced), 'assembly uses the same sliced performance')
+    return runFiles(args)
+  }
+  mediaEffects.synthesize = async () => { voices++; throw new Error('must not re-voice excerpt') }
+  directorEffects.call = async (req) => {
+    calls++
+    const input = JSON.parse(req.messages[1].content as string) as DirectorInput
+    assert.equal(input.budget_s, 8)
+    assert.equal(input.line.sentences?.length, 3)
+    assert.ok(Math.abs(input.line.sentences![1].start_s - 1.2) < 0.01)
+    return JSON.stringify({ ...goodPlan(), shots: [], line_excerpt: { first: 1, last: 1 } })
+  }
+  await processVideo(String(asset._id))
+  const row = f.db.mediaAssets.rows.find((r) => String(r._id) === String(asset._id))!
+  assert.equal(row.status, 'ready', JSON.stringify(row.error))
+  assert.equal(calls, 1)
+  assert.equal(voices, 0)
+  assert.ok(sentAudio.endsWith('-excerpt.wav') && sentAudio !== voiceRow.url)
+  const duration = await realCutEffects.probeDuration(sliced)
+  assert.ok(Math.abs(duration - (1.2 + LINE_TAIL_S)) < 0.01)
+  // Compare decoded PCM, not just duration: the excerpt really comes from this clip.
+  const pcm = async (bytes: Buffer, filter: string) => realCutEffects.run(['-i', 'pipe:0', '-af', filter, '-f', 's16le', '-c:a', 'pcm_s16le', 'pipe:1'], [bytes])
+  const plan = row.plan as Record<string, unknown>
+  const range = plan.line_excerpt as { start_s: number; end_s: number; text: string }
+  assert.equal(range.text, 'Main point!')
+  assert.equal(plan.timing_method, 'silence_pauses')
+  assert.deepEqual(await pcm(sliced, `atrim=duration=${range.end_s - range.start_s}`),
+    await pcm(full, `atrim=start=${range.start_s}:end=${range.end_s},asetpts=PTS-STARTPTS`))
+  assert.deepEqual(full, untouched)
+  assert.ok(f.db.mediaAssets.rows.some((r) => r.url === voiceRow.url && r.duration_ms === 3600), 'full Hear it row unchanged')
+  assert.ok(run.removed.some((key) => key.endsWith('-excerpt.wav')))
+  const message = run.published.find((m) => m.type === 'media_ready')!
+  assert.equal(message.line_id, 'l0')
+  assert.deepEqual(Object.keys(message).sort(), ['type', 'instanceId', 'eventId', 'media_id', 'kind', 'url', 'line_id', 'character_id'].sort())
+})
+check('film_over_budget', async () => {
+  const warn = log.warn, logged: Array<Record<string, unknown>> = []
+  log.warn = (name, fields) => { if (name === 'media.film_over_budget') logged.push(fields || {}) }
+  try {
+    const f = videoBase(), run = stubVideoRun(f)
+    audioEffects.inspect = async () => ({ durationS: 10, pauses: [] })
+    const probe = cutEffects.probeDuration
+    cutEffects.probeDuration = async (bytes) => bytes.toString() === 'cut' ? probe(bytes) : 10.3
+    const direct = directorEffects.call
+    let calls = 0
+    directorEffects.call = async (req) => {
+      calls++
+      const plan = JSON.parse(await direct(req))
+      plan.shots[0].duration_s = 4
+      return JSON.stringify(plan)
+    }
+    const asset = await queueVideo(f)
+    await processVideo(String(asset._id))
+    const row = f.db.mediaAssets.rows.find((r) => String(r._id) === String(asset._id))!
+    assert.equal(row.status, 'ready', JSON.stringify(row.error))
+    assert.equal(calls, 1)
+    assert.equal((row.plan as { plan: { shots: unknown[] } }).plan.shots.length, 1)
+    assert.equal((row.plan as { planned_duration_s: number }).planned_duration_s, 14.3)
+    assert.equal(row.duration_ms, 14300)
+    assert.equal(run.sceneSubmits.length, 1)
+    assert.equal(logged.length, 1)
+    assert.equal(logged[0].planned_duration_s, 14.3)
+    assert.equal(logged[0].actual_duration_s, 14.3)
+    const g = turnVideoFixture()
+    const probe2 = cutEffects.probeDuration
+    cutEffects.probeDuration = async (bytes) => bytes.toString() === 'cut' ? 9 : probe2(bytes)
+    const turn = await filmTurn(g)
+    assert.equal(turn.status, 'ready')
+    assert.equal(g.inputs.length, 1)
+    assert.equal(g.submits.length, 2)
+    assert.equal(turn.duration_ms, 9000)
+    assert.equal(logged.length, 2)
+    assert.equal(logged[1].planned_duration_s, 8)
+    assert.equal(logged[1].actual_duration_s, 9)
+  } finally { log.warn = warn }
+})
+check('scene_fallback_provider_only', async () => {
+  for (const failure of ['people', 'face', 'wardrobe', 'text', 'content', 'judge_error', 'provider_error', 'timeout', 'refusal'] as const) {
+    const f = videoBase(), run = stubVideoRun(f)
+    let painted = 0
+    const image = visualEffects.image
+    visualEffects.image = async (...args) => { painted++; return image(...args) }
+    const judge = safetyEffects.judge, wait = visualEffects.wait
+    safetyEffects.judge = (async (...args: Parameters<typeof judge>) => {
+      const frame = await judge(...args)
+      if (args[0].toString().startsWith('sf')) {
+        if (failure === 'judge_error') throw new Error('vision unavailable')
+        return { ...frame,
+          ...(failure === 'people' ? { people_count: 2 } : {}),
+          ...(failure === 'face' ? { face_close_up: true } : {}),
+          ...(failure === 'wardrobe' ? { wardrobe_match: false } : {}),
+          ...(failure === 'text' ? { text_visible: true } : {}),
+          ...(failure === 'content' ? { verdict: 'reject', reason_code: 'explicit_nudity' } : {}),
+        }
+      }
+      return frame
+    }) as typeof safetyEffects.judge
+    visualEffects.wait = async (id, opts) => {
+      if (id.includes('x-ai/') && ['provider_error', 'timeout', 'refusal'].includes(failure)) {
+        if (failure === 'refusal') throw new ProviderRefusalError(422, '422', 'provider refusal')
+        throw new Error(failure)
+      }
+      return wait(id, opts)
+    }
+    const plan = goodPlan()
+    const shot = await makeSceneShot({ role: 'closing', continuity: plan.continuity, shot: plan.shots[1] as never, playerId: f.player, instanceId: f.instance })
+    const providerFailed = ['provider_error', 'timeout', 'refusal'].includes(failure)
+    assert.equal(shot.status, providerFailed ? 'ready' : 'dropped', failure)
+    assert.equal(run.sceneSubmits.length, providerFailed ? 2 : 1, failure)
+    assert.equal(painted, 1, 'no second still for a fallback')
+    if (providerFailed) assert.ok(run.sceneSubmits[1].includes('wan'))
+  }
+})
+
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }
 if (process.argv.includes('--check') && !checks.some(([name]) => name === process.argv[process.argv.indexOf('--check') + 1])) throw new Error('Unknown audit check')
 let failures = 0
