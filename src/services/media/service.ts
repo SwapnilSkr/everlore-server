@@ -113,6 +113,7 @@ export async function requestVoice(playerId: string, instanceId: string, eventId
 
 async function liveVoice(asset: MediaAssetDoc): Promise<boolean> {
   if (!mediaEnabled('voice')) return false
+  if (!asset.event_id) return false
   const [instance, event, user] = await Promise.all([
     mongoColl.worldInstances().findOne({ _id: asset.instance_id, player_id: asset.player_id }),
     mongoColl.events().findOne({ _id: asset.event_id, instance_id: asset.instance_id, player_id: asset.player_id, 'data.media_revision': asset.revision }),
@@ -123,10 +124,10 @@ async function liveVoice(asset: MediaAssetDoc): Promise<boolean> {
 export async function failMedia(asset: MediaAssetDoc): Promise<void> {
   const [instance, event, player] = await Promise.all([
     mongoColl.worldInstances().findOne({ _id: asset.instance_id }),
-    mongoColl.events().findOne({ _id: asset.event_id }),
+    asset.event_id ? mongoColl.events().findOne({ _id: asset.event_id }) : null,
     mongoColl.users().findOne({ _id: asset.player_id }, { projection: { 'preferences.nsfw_enabled': 1 } }),
   ])
-  if (!instance || !event || !player) {
+  if (!instance || (asset.event_id && !event) || !player) {
     const current = await mongoColl.mediaAssets().findOne({ _id: asset._id })
     if (current?.asset_key) await mediaEffects.remove(current.asset_key)
     await mongoColl.mediaAssets().deleteOne({ _id: asset._id })
@@ -135,7 +136,7 @@ export async function failMedia(asset: MediaAssetDoc): Promise<void> {
   }
   await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: { $ne: 'ready' } }, { $set: { status: 'failed', cache_key: `${asset.cache_key}:failed:${asset._id}` } })
   await releaseMedia(asset._id)
-  await mediaEffects.publish(asset.player_id.toHexString(), { type: 'media_failed', instanceId: asset.instance_id.toHexString(), eventId: asset.event_id.toHexString(), media_id: asset._id.toHexString(), kind: asset.kind }).catch(() => {})
+  await mediaEffects.publish(asset.player_id.toHexString(), { type: 'media_failed', ...(asset.instance_id ? { instanceId: asset.instance_id.toHexString() } : {}), ...(asset.event_id ? { eventId: asset.event_id.toHexString() } : {}), media_id: asset._id.toHexString(), kind: asset.kind }).catch(() => {})
 }
 export async function processVoice(mediaId: string): Promise<void> {
   const _id = parseObjectId(mediaId)
@@ -144,6 +145,7 @@ export async function processVoice(mediaId: string): Promise<void> {
   let uploaded: string | undefined
   let delivered = false
   try {
+    if (!asset.voice_id) throw new Error('Voice missing')
     const reservation = await mongoColl.mediaUsage().findOne({ _id, status: 'reserved' })
     if (!reservation || !await liveVoice(asset)) throw new Error('Voice no longer available')
     const audio = await mediaEffects.synthesize({ model: asset.model, voice: asset.voice_id, input: asset.input, responseFormat: 'mp3', signal: AbortSignal.timeout(15000) })
@@ -165,7 +167,9 @@ export async function processVoice(mediaId: string): Promise<void> {
     delivered = true
     await settleMedia(_id)
     const now = new Date()
-    const card = await mongoColl.characters().findOne({ _id: asset.character_id, instance_id: asset.instance_id })
+    const card = asset.character_id
+      ? await mongoColl.characters().findOne({ _id: asset.character_id, instance_id: asset.instance_id })
+      : null
     if (card) {
       await mongoColl.characters().updateOne({ _id: card._id }, { $set: { last_spoken_at: now } })
       await mongoColl.worldInstances().updateOne({ _id: asset.instance_id }, { $set: { [`media_voice_cast.${castKey(card)}.last_spoken_at`]: now } })
@@ -186,7 +190,7 @@ export async function processVoice(mediaId: string): Promise<void> {
 
 async function notifyReady(asset: MediaAssetDoc): Promise<void> {
   if (!await liveVoice(asset) || !await mongoColl.mediaAssets().findOne({ _id: asset._id, status: 'ready' })) return
-  await mediaEffects.publish(asset.player_id.toHexString(), { type: 'media_ready', instanceId: asset.instance_id.toHexString(), eventId: asset.event_id.toHexString(), media_id: String(asset._id), kind: asset.kind, line_id: asset.line_id, url: asset.url })
+  await mediaEffects.publish(asset.player_id.toHexString(), { type: 'media_ready', ...(asset.instance_id ? { instanceId: asset.instance_id.toHexString() } : {}), eventId: asset.event_id?.toHexString(), media_id: String(asset._id), kind: asset.kind, line_id: asset.line_id, url: asset.url })
   await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'ready' }, { $set: { notified_at: new Date() } })
 }
 

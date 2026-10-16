@@ -10,6 +10,10 @@ import { AI_MODELS } from './models'
  * form — image-only models like Seedream reject `["image","text"]`.) The OpenAI
  * SDK doesn't type these fields, so we call the REST endpoint directly. Returns
  * decoded bytes + mime.
+ *
+ * This is the world-cover path (image.service.ts). Media portraits, pictures
+ * and scene stills use generateMediaImage below: a different model on a
+ * different endpoint. The two must never share a function again.
  */
 export async function generateImage(
   prompt: string,
@@ -56,4 +60,84 @@ export async function generateImage(
     data: Buffer.from(match.groups.b64, 'base64'),
     contentType: match.groups.mime || 'image/png',
   }
+}
+
+export interface MediaImageReference {
+  /** PNG/JPEG bytes for an identity or wardrobe reference (sent as a data URL). */
+  data: Buffer
+  contentType: string
+}
+
+export interface MediaImageResult {
+  data: Buffer
+  contentType: string
+  width?: number
+  height?: number
+  generationId: string | null
+  /** Billed cost from the response usage, when the provider returns one. */
+  costUsd?: number
+}
+
+/**
+ * Generate a media image (portrait, picture, scene still) via OpenRouter's
+ * dedicated image API (`POST /api/v1/images`), the shape the media probe
+ * established: `prompt`, `aspect_ratio`, `n`, `input_references`. References
+ * are generated/authored portraits only — never uploads, never covers —
+ * enforced by the caller (safety.ts), not by this transport.
+ */
+export async function generateMediaImage(
+  prompt: string,
+  opts: {
+    model?: string
+    aspectRatio?: string
+    reference?: MediaImageReference
+    signal?: AbortSignal
+  } = {},
+): Promise<MediaImageResult> {
+  if (!env.OPENROUTER_API_KEY) {
+    throw new Error('OPENROUTER_API_KEY is not configured')
+  }
+  const model = opts.model || process.env.MEDIA_IMAGE_MODEL || 'black-forest-labs/flux.2-klein-4b'
+  const body: Record<string, unknown> = {
+    model,
+    prompt,
+    aspect_ratio: opts.aspectRatio || '9:16',
+    n: 1,
+  }
+  if (opts.reference) {
+    const mime = opts.reference.contentType === 'image/jpeg' ? 'image/jpeg' : 'image/png'
+    body.input_references = [{
+      type: 'image_url',
+      image_url: { url: `data:${mime};base64,${opts.reference.data.toString('base64')}` },
+    }]
+  }
+  const res = await fetch('https://openrouter.ai/api/v1/images', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://everloreapp.com',
+      'X-Title': 'Everlore',
+    },
+    body: JSON.stringify(body),
+    signal: opts.signal,
+  })
+  const generationId = res.headers.get('X-Generation-Id')
+  const json = await res.json().catch(() => ({})) as {
+    data?: Array<{ b64_json?: string; url?: string }>
+    usage?: { cost?: number }
+    error?: { message?: string }
+  }
+  if (!res.ok) {
+    throw new Error(`Image generation failed (${res.status}): ${(json.error?.message || res.statusText).slice(0, 300)}`)
+  }
+  const item = json.data?.[0]
+  const bytes = item?.b64_json
+  if (!bytes || typeof bytes !== 'string') {
+    throw new Error('Image model returned no inline bytes')
+  }
+  const data = Buffer.from(bytes, 'base64')
+  if (!data.length) throw new Error('Image model returned empty bytes')
+  const cost = typeof json.usage?.cost === 'number' && json.usage.cost >= 0 ? json.usage.cost : undefined
+  return { data, contentType: 'image/png', generationId, ...(cost !== undefined ? { costUsd: cost } : {}) }
 }

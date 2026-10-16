@@ -1,6 +1,9 @@
 import { ObjectId, MongoServerError } from 'mongodb'
 import { mongoColl } from '../src/config/mongo'
 import { mediaEffects } from '../src/services/media/service'
+import { visualEffects } from '../src/services/media/visual'
+import { safetyEffects } from '../src/services/media/safety'
+import { directorEffects } from '../src/services/media/director'
 import { attributionEffects, mediaRevision } from '../src/services/media/attribution'
 import { detectSpokenLines } from '../src/services/media/detection'
 import type { CharacterProfileDoc } from '../src/models/character-profile.model'
@@ -45,7 +48,12 @@ export class MemoryCollection {
   }
   async findOne(filter: Row) { return structuredCloneRow(this.rows.find((row) => matches(row, filter)) || null) }
   find(filter: Row = {}) {
-    const cursor = { sort: (_sort: Row) => cursor, toArray: async () => this.rows.filter((r) => matches(r, filter)).map(structuredCloneRow) }
+    const cursor = {
+      sort: (_sort: Row) => cursor,
+      project: (_projection: Row) => cursor,
+      limit: (_n: number) => cursor,
+      toArray: async () => this.rows.filter((r) => matches(r, filter)).map(structuredCloneRow),
+    }
     return cursor
   }
   async countDocuments(filter: Row) { return this.rows.filter((r) => matches(r, filter)).length }
@@ -80,7 +88,7 @@ function structuredCloneRow<T>(value: T): T {
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, structuredCloneRow(v)])) as T
 }
 export function fixture() {
-  const names = ['worldInstances', 'worldTemplates', 'events', 'users', 'characters', 'mediaAssets', 'mediaUsage'] as const
+  const names = ['worldInstances', 'worldTemplates', 'events', 'users', 'characters', 'mediaAssets', 'mediaUsage', 'mediaRejections', 'personas'] as const
   const db = Object.fromEntries(names.map((name) => [name, new MemoryCollection(name)])) as Record<typeof names[number], MemoryCollection>
   for (const name of names) Object.assign(mongoColl, { [name]: () => db[name] })
   const player = new ObjectId(), instance = new ObjectId(), event = new ObjectId(), template = new ObjectId(), character = new ObjectId()
@@ -99,5 +107,19 @@ export function fixture() {
   mediaEffects.enqueue = async () => {}
   mediaEffects.publish = async () => {}
   mediaEffects.cost = async () => undefined
+  // Visual-media effects reset to loud stubs: a check that forgets to stub a
+  // paid-shaped call fails instead of reaching the network.
+  const unstubbed = (name: string) => { throw new Error(`unstubbed visual effect: ${name}`) }
+  visualEffects.image = async () => unstubbed('image')
+  visualEffects.submit = async () => unstubbed('submit')
+  visualEffects.wait = async () => unstubbed('wait')
+  visualEffects.fetch = async () => unstubbed('fetch')
+  visualEffects.fill = async () => unstubbed('fill')
+  visualEffects.upload = async () => unstubbed('upload')
+  visualEffects.download = async () => unstubbed('download')
+  visualEffects.enqueue = async () => undefined as never
+  safetyEffects.call = async () => unstubbed('call')
+  safetyEffects.judge = async () => unstubbed('judge')
+  directorEffects.call = async () => unstubbed('director')
   return { db, player, instance, event, template, character, card, prose, revision, calls: () => calls }
 }

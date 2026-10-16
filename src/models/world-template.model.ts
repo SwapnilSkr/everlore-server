@@ -32,6 +32,9 @@ export interface ProtagonistDoc {
   voice_traits?: import('./media.model').VoiceTraits
   persona?: string
   appearance?: string
+  appearance_version?: number
+  /** World cast and companion faces live on the world, shared by every save. */
+  portrait?: import('./media.model').PortraitRef
 }
 
 /**
@@ -47,6 +50,8 @@ export interface TemplateCastCharacterDoc {
   aliases?: string[]
   role?: string
   appearance?: string
+  appearance_version?: number
+  portrait?: import('./media.model').PortraitRef
   persona?: string
   immutable_facts?: string[]
   /** Grounded starting bond toward the player, copied into each instance at sequence 0. */

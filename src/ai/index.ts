@@ -12,5 +12,6 @@ export { callLLM, callLLMStream, callLLMWithFallback, callLLMStreamWithFallback 
 export { runWithLLMUsage, snapshotLLMUsage, isLLMUsageActive, type LLMCallUsage } from './usage'
 export { narrationTemperature } from './narration-profile'
 export { embed, embedBatch } from './embedding'
-export { generateImage } from './image'
+export { generateImage, generateMediaImage } from './image'
+export { submitVideo, pollVideo, awaitVideo, downloadVideo } from './video'
 export { synthesizeSpeech, type TtsRequest, type TtsResult, type TtsResponseFormat } from './tts'

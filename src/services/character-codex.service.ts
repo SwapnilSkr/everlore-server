@@ -13,6 +13,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import type { WorldFactSource } from '../utils/world-authority'
 import { isAbstractNonPersonTerm, isLabelLike } from '../utils/person-identity'
+import { isTurnEvidence } from './media/detection'
 import {
   relationshipBaseline,
   type RelationshipInitialization,
@@ -43,6 +44,12 @@ export type CharacterCodexDelta = {
   resolved_name?: string
   role?: string
   appearance?: string
+  /** Quoted sentence from this turn evidencing a LASTING look change (face,
+   * hair, build, permanent marks). Clothes, dirt and blood are passing and
+   * never belong here. Stamped `appearance_evidence_verified` by the live path
+   * after the structural check; the extractor must never set the flag. */
+  appearance_evidence?: string
+  appearance_evidence_verified?: boolean
   persona?: string
   immutable_facts?: string[]
   mutable_state?: string[]
@@ -470,7 +477,7 @@ export function foldDelta(
   state: FoldState,
   delta: CharacterCodexDelta,
   sequence: number,
-  ctx: { iid: ObjectId; pid: ObjectId; now: Date },
+  ctx: { iid: ObjectId; pid: ObjectId; now: Date; prose?: string },
 ): void {
   if (!shouldSetText(delta.name)) return
   // Replay/rewind rebuilds must enforce the same identity boundary as live
@@ -608,6 +615,20 @@ export function foldDelta(
     target.identity_kind = delta.identity_kind
   }
   if (!target.appearance && shouldSetText(delta.appearance)) target.appearance = delta.appearance.trim()
+  // A lasting change counts only with a quoted sentence as evidence, never a
+  // model's guess. The live path verifies against the turn prose and stamps
+  // the delta, so the ledgered flag replays identically without prose.
+  if (target.appearance && shouldSetText(delta.appearance) && delta.appearance.trim() !== target.appearance) {
+    const evidenced = delta.appearance_evidence_verified === true
+      || (ctx.prose !== undefined && isTurnEvidence(ctx.prose, delta.appearance_evidence))
+    if (evidenced) {
+      target.appearance = delta.appearance.trim()
+      target.appearance_version = (target.appearance_version ?? 1) + 1
+      // The portrait painted from the old look is out of date from here: it
+      // repaints on the next tap that needs the face, never on its own.
+      delta.appearance_evidence_verified = true
+    }
+  }
   if (!target.persona && shouldSetText(delta.persona)) target.persona = delta.persona.trim()
   if (shouldSetText(delta.disposition_to_player)) target.disposition_to_player = delta.disposition_to_player.trim()
   if (shouldSetText(delta.hidden_thought)) target.hidden_thought = delta.hidden_thought.trim()
@@ -712,12 +733,12 @@ async function foldAndPersist(
   iid: ObjectId,
   pid: ObjectId,
   existing: CharacterProfileDoc[],
-  batches: Array<{ sequence: number; deltas: CharacterCodexDelta[] }>,
+  batches: Array<{ sequence: number; deltas: CharacterCodexDelta[]; prose?: string }>,
 ): Promise<void> {
   const now = new Date()
   const state = newFoldState(existing)
   for (const batch of batches) {
-    for (const delta of batch.deltas) foldDelta(state, delta, batch.sequence, { iid, pid, now })
+    for (const delta of batch.deltas) foldDelta(state, delta, batch.sequence, { iid, pid, now, ...(batch.prose !== undefined ? { prose: batch.prose } : {}) })
   }
   if (state.created.size > 0) {
     try {
@@ -855,6 +876,9 @@ export const characterCodexService = {
     playerId: string
     sequence: number
     deltas: CharacterCodexDelta[]
+    /** Turn prose for the lasting-look evidence check. Absent on prose-free
+     * repair paths: unevidenced changes stay ignored there too. */
+    prose?: string
   }): Promise<CharacterProfileDoc[]> {
     const { instanceId, playerId, sequence, deltas } = params
     if (!deltas.length) {
@@ -865,7 +889,7 @@ export const characterCodexService = {
     const pid = parseObjectId(playerId)
 
     const existing = await characters().find({ instance_id: iid }).toArray()
-    await foldAndPersist(iid, pid, existing, [{ sequence, deltas }])
+    await foldAndPersist(iid, pid, existing, [{ sequence, deltas, ...(params.prose !== undefined ? { prose: params.prose } : {}) }])
     return this.listForInstance(instanceId, 30)
   },
 

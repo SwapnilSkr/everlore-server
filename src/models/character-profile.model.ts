@@ -95,6 +95,11 @@ export interface CharacterProfileDoc {
   last_spoken_at?: Date
   role?: string
   appearance?: string
+  /** The look the portrait was painted from. A portrait behind this version
+   * is out of date: repainted on the next tap that needs the face, never alone. */
+  appearance_version?: number
+  /** The face itself. Lives on the save's card for play-born characters. */
+  portrait?: import('./media.model').PortraitRef
   persona?: string
   immutable_facts: string[]
   mutable_state: string[]

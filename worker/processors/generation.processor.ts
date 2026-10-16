@@ -3695,6 +3695,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
             playerId,
             sequence: nextSequence,
             deltas,
+            // Post-stream only: the lasting-look evidence check reads the turn
+            // prose here, never before or during the narrator stream.
+            prose: rawNarrative,
           })
         : characterCodex
 

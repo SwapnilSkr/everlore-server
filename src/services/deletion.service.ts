@@ -1,4 +1,4 @@
-import { purgeMedia } from './media/deletion'
+import { purgeCardPortraits, purgeMedia, purgeTemplatePortraits } from './media/deletion'
 import { detectSpokenLines } from './media/detection'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
@@ -92,6 +92,7 @@ export const deletionService = {
       const key = storageService.keyFromUrl(template.image_url)
       if (key) await storageService.delete(key)
     }
+    await purgeTemplatePortraits(tid)
 
     // Delete the template
     await worldTemplates().deleteOne({ _id: tid })
@@ -319,6 +320,7 @@ export const deletionService = {
   async purgeInstancePayload(instanceId: ObjectId, instanceIdStr: string): Promise<void> {
     await events().deleteMany({ instance_id: instanceId })
     await purgeMedia({ instance_id: instanceId })
+    await purgeCardPortraits(instanceId)
     await this.deleteInstanceData(instanceId, instanceIdStr)
     await Promise.all([
       memories().deleteMany({ instance_id: instanceId }),

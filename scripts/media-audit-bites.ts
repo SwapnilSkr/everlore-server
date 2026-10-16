@@ -1,8 +1,9 @@
 /** Each mutation is applied alone to our own new code, run, then restored in finally. */
 import { readFile, writeFile } from 'node:fs/promises'
 import assert from 'node:assert/strict'
-type Mutation = { name: string; check: string; file: string; changes: Array<[string, string]> }
+type Mutation = { name: string; check: string; file: string; path?: string; changes: Array<[string, string]> }
 const root = 'src/services/media/'
+const at = (m: Mutation) => m.path ?? root + m.file
 const mutations: Mutation[] = [
   { name: 'apostrophe guard', check: 'apostrophes', file: 'detection.ts', changes: [["if (!double && letter(prose[i - 1]) && letter(prose[i + 1])) continue", "if (false && !double && letter(prose[i - 1]) && letter(prose[i + 1])) continue"]] },
   { name: 'unclosed quote rejected', check: 'unclosed', file: 'detection.ts', changes: [["  if (!double && (unmatched || stack.length)) return []", "  if (double && stack.length) spans.push({ start, end: prose.length })\n  if (!double && (unmatched || stack.length)) return []"]] },
@@ -33,13 +34,49 @@ const mutations: Mutation[] = [
   { name: 'provider failure releases', check: 'provider_failure', file: 'service.ts', changes: [["    await failMedia(asset)\n  }\n}", "    // omitted release\n  }\n}"]] },
   { name: 'late result deletes uploaded object', check: 'late_result', file: 'service.ts', changes: [["if (!saved.modifiedCount) throw new Error('Voice removed')", "// omitted completion fence"]] },
   { name: 'abandoned reservation recovery', check: 'repair', file: 'service.ts', changes: [["for (const asset of abandoned) await failMedia(asset)", "for (const asset of abandoned) { /* no recovery */ }"]] },
-  { name: 'object deletion', check: 'deletion', file: 'deletion.ts', changes: [["for (const asset of assets) if (asset.asset_key) await storageService.deleteStrict(asset.asset_key)", "// omitted object deletion"]] },
+  { name: 'object deletion', check: 'deletion', file: 'deletion.ts', changes: [["if (asset.asset_key) await storageService.deleteStrict(asset.asset_key)", "// omitted object deletion"]] },
   { name: 'shared save purge integration', check: 'deletion', file: '../deletion.service.ts', changes: [["await purgeMedia({ instance_id: instanceId })", "// omitted shared media purge"]] },
   { name: 'attribution stays private', check: 'revisions_payload', file: 'policy.ts', changes: [["...(voice?.status === 'unvoiceable' ? { voice } : {})", "...(voice ? { voice } : {})"]] },
+  { name: 'generated/authored references only', check: 'reference_gate', file: 'portraits.ts', changes: [["return source === 'generated' || source === 'authored'", "return true"]] },
+  { name: 'portrait reference is the kept face', check: 'cover_never_face', file: 'visual.ts', changes: [["const bytes = await visualEffects.download(portraitUrl(holder.portrait.asset_key))", "const bytes = await visualEffects.download(template?.image_url || portraitUrl(holder.portrait.asset_key))"]] },
+  { name: 'pre-gate blocks generation', check: 'pregate_blocks', file: 'visual.ts', changes: [["if (pre.verdict !== 'allow') throw new UnseenError('pre', pre.reason_code)", "if (false && pre.verdict !== 'allow') throw new UnseenError('pre', pre.reason_code)"]] },
+  { name: 'post-gate rejects bad faces', check: 'postgate_deletes', file: 'visual.ts', changes: [["if (post.verdict !== 'allow' || post.people_count !== 1) {", "if (false) {"]] },
+  { name: 'rejected shot takes its still', check: 'postgate_deletes', file: 'visual.ts', changes: [["await mediaEffects.remove(stillUp.key)", "/* still retained */"]] },
+  { name: 'lasting change needs quoted evidence', check: 'lasting_evidence', file: '../character-codex.service.ts', changes: [["|| (ctx.prose !== undefined && isTurnEvidence(ctx.prose, delta.appearance_evidence))", "|| true"]] },
+  { name: 'lasting change needs a whole sentence', check: 'lasting_evidence', file: 'detection.ts', changes: [["return spans.some(([s, e]) => at <= s && e <= end)", "return at >= 0"]] },
+  { name: 'current portrait costs nothing', check: 'repaint_on_tap', file: 'visual.ts', changes: [["if (isPortraitCurrent(holder) && !opts.repaint) {", "if (false) {"]] },
+  { name: 'world faces live on the world', check: 'placement', file: 'portraits.ts', changes: [["kind: 'world_cast',", "kind: 'save_card',"]] },
+  { name: 'save portraits purged with the save', check: 'purge_portraits', file: 'deletion.ts', changes: [["for (const card of cards) {", "for (const card of []) {"]] },
+  { name: 'director validator rejects bad plans', check: 'director_validates', file: 'director.ts', changes: [["if (!nonEmpty(p.ambient)) errors.push('ambient is empty')\n  return errors", "if (!nonEmpty(p.ambient)) errors.push('ambient is empty')\n  return []"]] },
+  { name: 'director gets one repair', check: 'director_repair_once', file: 'director.ts', changes: [["let errors = plan ? validateDirectorPlan(plan, input) : ['director output was not JSON']", "let errors: string[] = []"]] },
+  { name: 'cut joins overlap 6 frames', check: 'cut_graph', file: 'cut.ts', changes: [["offset = offset - 0.25 + durations[i + 1]", "offset = offset - 0.5 + durations[i + 1]"]] },
+  { name: 'still carries continuity', check: 'compile_prompts', file: 'scene-templates.ts', changes: [["`Wardrobe: ${c.wardrobe} Hair: ${c.hair} Props: ${c.props}.`,", "`Hair: ${c.hair} Props: ${c.props}.`,"]] },
+  { name: 'empty shots skip the wardrobe match', check: 'shot_judgement', file: 'safety.ts', changes: [["&& (expectedPeople === 0 || frames.every((f) => f.wardrobe_match !== false))", "&& (expectedPeople === 0 && frames.every((f) => f.wardrobe_match !== false))"]] },
+  { name: 'pictures rest at the daily cap', check: 'picture_resting', file: 'visual.ts', changes: [["if (!await reserveMedia({ _id: asset._id, player_id: pid, instance_id: iid, event_id: asset.event_id, kind: 'picture' })) {", "if (false && !await reserveMedia({ _id: asset._id, player_id: pid, instance_id: iid, event_id: asset.event_id, kind: 'picture' })) {"]] },
+  { name: 'videos rest at the daily cap', check: 'video_resting', file: 'visual.ts', changes: [["if (!await reserveMedia({ _id: asset._id, player_id: pid, instance_id: iid, event_id: asset.event_id, kind: 'video' })) {", "if (false && !await reserveMedia({ _id: asset._id, player_id: pid, instance_id: iid, event_id: asset.event_id, kind: 'video' })) {"]] },
+  { name: 'mature lines stay quiet on video', check: 'video_unvoiceable', file: 'visual.ts', changes: [["if (!matureVoiceAllowed(event!.nsfw_intent, user?.preferences?.nsfw_enabled === true)) {\n    throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })\n  }\n  if (!/^l\\d+$/u.test(lineId))", "if (!/^l\\d+$/u.test(lineId))"]] },
+  { name: 'portraits rest at the daily cap', check: 'portrait_resting', file: 'visual.ts', changes: [["if (!await reserveMedia({ _id: row._id, player_id: pid, instance_id: iid, kind })) {", "if (false && !await reserveMedia({ _id: row._id, player_id: pid, instance_id: iid, kind })) {"]] },
   { name: 'replay recomputes offsets', check: 'revisions_payload', file: '../memory.service.ts', changes: [["...spokenLineUpdate(nextAi,", "...({}), // spokenLineUpdate(nextAi,"]] },
+  // ── media-server-2-fix-1 ──
+  { name: 'instance param name shared', check: 'route_boot', path: 'src/routes/media.routes.ts', changes: [[".post('/instances/:id/events/:eventId/picture'", ".post('/instances/:instanceId/events/:eventId/picture'"]] },
+  { name: 'malformed pre verdict throws', check: 'pregate_malformed', file: 'safety.ts', changes: [["if (report.verdict !== 'allow' && report.verdict !== 'reject') throw new Error('Gate returned no verdict')", "if (report.verdict !== 'allow' && report.verdict !== 'reject') return { verdict: 'allow', reason_code: 'ok' }"]] },
+  { name: 'malformed post report throws', check: 'postgate_malformed', file: 'safety.ts', changes: [["if (typeof r.people_count !== 'number' || !Number.isFinite(r.people_count)) {\n    throw new Error('Vision gate returned no people count')\n  }", ""]] },
+  { name: 'line shot counts exactly one', check: 'line_postcheck', file: 'visual.ts', changes: [["&& linePeople.every((count) => count === 1)", "&& true"]] },
+  { name: 'compiled still prompt moderated', check: 'prompt_moderated', file: 'visual.ts', changes: [["if (stillGate.verdict !== 'allow') {", "if (false) {"]] },
+  { name: 'thrown still still drops', check: 'line_only_cut', file: 'visual.ts', changes: [["return dropped('shot_failed', [], 0)", "throw new Error('shot_failed')"]] },
+  // Without the internal catch the allSettled defensive mapping still drops the
+  // shot — the checks assertion above tells the two paths apart, so this one
+  // mutation locks both in. A second mutation on the defensive branch itself
+  // could never fire and therefore could never bite.
+  { name: 'line shot starts with scenes', check: 'line_only_cut', file: 'visual.ts', changes: [["return (async () => {\n    const submitted = await visualEffects.submit({", "return (async () => {\n    await Bun.sleep(9000)\n    const submitted = await visualEffects.submit({"]] },
+  { name: 'failed stills stay recorded', check: 'still_cleanup', file: 'visual.ts', changes: [["await mongoColl.mediaAssets().updateOne({ _id: asset._id }, { $set: { still_keys: keys } }).catch(() => {})", ""]] },
+  { name: 'director prompt stays verbatim', check: 'director_verbatim', file: 'director.ts', changes: [["Return only JSON matching the schema you are given. Fill every field. Use the speaker's and others' names exactly as given in the input. Never invent ids.", ""]] },
+  { name: 'persona face needs no save', check: 'persona_standalone', file: 'visual.ts', changes: [["if (!persona) throw new HttpError(404, 'That face could not be found.')", "if (!persona) throw new HttpError(404, 'That face could not be found.')\n  const needsSave = await mongoColl.worldInstances().findOne({ player_id: pid })\n  if (!needsSave) throw new HttpError(404, 'That face could not be found.')"]] },
+  { name: 'reference stores the asset key', check: 'reference_key', file: 'visual.ts', changes: [["...(faces[0] ? { reference_asset_key: faces[0].assetKey } : {}),", "...(faces[0] ? { reference_asset_key: faces[0].name } : {}),"]] },
+  { name: 'portraits rest silently', check: 'portrait_resting', file: 'visual.ts', changes: [["portrait: '',", "portrait: 'The requested media waits until tomorrow.',"]] },
 ]
 for (const mutation of mutations) {
-  const file = root + mutation.file
+  const file = at(mutation)
   const original = await readFile(file, 'utf8')
   let tampered = original
   for (const [from, to] of mutation.changes) {

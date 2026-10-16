@@ -5,6 +5,7 @@
 export const COLLECTIONS = {
   media_assets: 'media_assets',
   media_usage: 'media_usage',
+  media_rejections: 'media_rejections',
   users: 'users',
   world_templates: 'world_templates',
   world_instances: 'world_instances',

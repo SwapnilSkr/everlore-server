@@ -7,7 +7,7 @@ import { utcMediaDay } from './policy'
 export const duplicateKey = (error: unknown) => error instanceof MongoServerError && error.code === 11000
 
 /** Unique live slot ownership makes the cap atomic even without replica-set transactions. */
-export async function reserveMedia(row: Pick<MediaUsageDoc, '_id' | 'player_id' | 'instance_id' | 'event_id' | 'kind'>, now = new Date()): Promise<boolean> {
+export async function reserveMedia(row: Pick<MediaUsageDoc, '_id' | 'player_id' | 'kind'> & Partial<Pick<MediaUsageDoc, 'instance_id' | 'event_id'>>, now = new Date()): Promise<boolean> {
   const { day } = utcMediaDay(now)
   const prior = await mongoColl.mediaUsage().findOne({ _id: row._id })
   if (prior) return prior.status !== 'released'

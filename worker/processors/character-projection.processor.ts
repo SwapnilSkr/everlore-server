@@ -92,7 +92,7 @@ export async function projectCharacterEvent(params: {
       for (const delta of deltas) if (delta.is_protagonist) delete delta.relationship_deltas
     }
     const codex = deltas.length
-      ? await characterCodexService.applyDeltas({ instanceId, playerId, sequence: event.sequence, deltas })
+      ? await characterCodexService.applyDeltas({ instanceId, playerId, sequence: event.sequence, deltas, prose: event.data.ai_response })
       : cards
 
     // Ledger the deltas BEFORE the derived graph work. The deltas ARE the story

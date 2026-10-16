@@ -39,3 +39,42 @@ export function detectSpokenLines(prose: string, playerSpoken = ''): SpokenLine[
       && !(echo && echo.includes(compactWhitespace(text)))
   }).map((span, i) => ({ line_id: `l${i}`, ...span }))
 }
+
+/**
+ * Lasting-look evidence rule, punctuation-structure only: `evidence` counts
+ * only when it is a verbatim span of the turn's prose (whitespace-normalised)
+ * that covers at least one whole sentence. "A quoted sentence from the turn"
+ * means a sentence copied verbatim from the turn's prose — narration or
+ * dialogue — not text wrapped in dialogue quotes: "Her hair had gone white
+ * overnight." in narration counts. Sentence boundaries are punctuation
+ * structure (`.`, `!`, `?`, `…`, with closing quotes allowed before the
+ * boundary), never a word list. A lasting change without evidence is ignored.
+ */
+export function isTurnEvidence(prose: string, evidence: string | undefined): boolean {
+  if (!prose || !evidence || !evidence.trim()) return false
+  const norm = (s: string): string => s.replace(/\s+/gu, ' ').trim()
+  const flat = norm(prose)
+  const needle = norm(evidence)
+  if (!needle) return false
+  const at = flat.indexOf(needle)
+  if (at < 0) return false
+  const end = at + needle.length
+  // Whole-sentence spans of the prose: a sentence ends at sentence punctuation
+  // (closing quotes may intervene) followed by whitespace or the end.
+  const closers = new Set(['"', "'", '“', '”', '‘', '’'])
+  const spans: Array<[number, number]> = []
+  let start = 0
+  for (let i = 0; i < flat.length; i++) {
+    const c = flat[i]
+    if (c !== '.' && c !== '!' && c !== '?' && c !== '…') continue
+    let j = i + 1
+    while (j < flat.length && closers.has(flat[j])) j++
+    if (j < flat.length && !/\s/u.test(flat[j])) continue
+    spans.push([start, j])
+    let k = j
+    while (k < flat.length && /\s/u.test(flat[k])) k++
+    start = k
+    i = k - 1
+  }
+  return spans.some(([s, e]) => at <= s && e <= end)
+}
