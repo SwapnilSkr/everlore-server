@@ -9,7 +9,7 @@ import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, reso
 import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, publicSpokenLines, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
 import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
-import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, ensurePassingFaceReady, passingFaceKey, requestTurnVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
+import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, ensurePersonaFaceReady, ensurePassingFaceReady, passingFaceKey, PASSING_FACE_RULE_VERSION, requestTurnVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
 import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, describeMoment, MEDIA_VISUAL_POLICY, buildSafetyPrompts, visualPolicyLine } from '../src/services/media/safety'
 import { assembleDialogueFreeCut, buildCutGraph, cutEffects } from '../src/services/media/cut'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from '../src/services/media/scene-templates'
@@ -2205,6 +2205,151 @@ async function filmTurn(f: ReturnType<typeof turnVideoFixture>) {
   await processVideo(reply.media_id)
   return f.db.mediaAssets.rows.find((r) => String(r._id) === reply.media_id)!
 }
+// Capture the actual serialized model inputs, including portrait work performed
+// inside a picture or film, rather than asserting on a parallel prompt builder.
+function capturePlaces() {
+  const descriptions: Array<{ place: string; framing: string }> = [], directors: DirectorInput[] = []
+  const describe = safetyEffects.call, direct = directorEffects.call
+  safetyEffects.call = async (req) => {
+    if (req.purpose === 'media_describe') descriptions.push(JSON.parse(req.messages[1].content as string))
+    return describe(req)
+  }
+  directorEffects.call = async (req) => {
+    directors.push(JSON.parse(req.messages[1].content as string))
+    return direct(req)
+  }
+  return { descriptions, directors }
+}
+function assertPlaces(f: ReturnType<typeof fixture>, captured: ReturnType<typeof capturePlaces>, place: string) {
+  const title = f.db.worldTemplates.rows[0].title
+  assert.ok(typeof title === 'string' && title.length > 20)
+  for (const input of captured.descriptions) {
+    assert.notEqual(input.place, title, 'the title must never reach the describer as a place')
+    assert.equal(input.place, input.framing === 'portrait' ? '' : place)
+  }
+  for (const input of captured.directors) {
+    assert.notEqual(input.place, title, 'the title must never reach the director as a place')
+    assert.equal(input.place, place)
+  }
+}
+function setMomentPlace(f: ReturnType<typeof fixture>, older: boolean, recorded: boolean, current = true) {
+  const anchor = (name: string) => ({ entity_id: null, name, name_normalized: name.toLowerCase() })
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  event.sequence = 20
+  event.type = 'narration'
+  if (recorded) event.location_anchor = anchor('The earlier courtyard')
+  f.db.worldInstances.rows[0].current_location = current ? anchor('The present landing') : null
+  if (older) f.db.events.rows.push({ ...event, _id: new ObjectId(), sequence: 21, location_anchor: anchor('The present landing') } as unknown as Record<string, unknown>)
+  // Neither another save nor a private side chat advances this save's scene.
+  f.db.events.rows.push(
+    { ...event, _id: new ObjectId(), instance_id: new ObjectId(), sequence: 99 } as unknown as Record<string, unknown>,
+    { ...event, _id: new ObjectId(), type: 'side_chat', sequence: 100 } as unknown as Record<string, unknown>,
+  )
+  return recorded ? 'The earlier courtyard' : older || !current ? '' : 'The present landing'
+}
+check('portrait_places', async () => {
+  for (const mode of ['inline_card', 'queued_repaint', 'inline_persona', 'queued_persona'] as const) {
+    const f = fixture()
+    process.env.MEDIA_PORTRAIT_ENABLED = 'true'
+    process.env.MEDIA_DAILY_PORTRAIT = '10'
+    stubPictureFaces(f)
+    visualEffects.image = async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null })
+    f.card.appearance = 'Grey eyes and dark braids.'
+    setMomentPlace(f, false, true)
+    const captured = capturePlaces()
+    if (mode === 'inline_card') {
+      assert.equal((await ensurePortraitReady(String(f.player), String(f.instance), f.card)).painted, true)
+    } else if (mode === 'queued_repaint') {
+      f.card.portrait = { asset_key: 'media/portrait/kept.jpg', source: 'generated', appearance_version: 1, painted_at: new Date() }
+      const reply = await requestPortrait(String(f.player), String(f.instance), String(f.character), { repaint: true })
+      assert.equal(reply.status, 'queued')
+      if (reply.status !== 'queued') throw new Error('Expected repaint')
+      await processPortrait(reply.media_id)
+      assert.equal(f.db.mediaAssets.rows.find((r) => String(r._id) === reply.media_id)?.status, 'ready')
+    } else {
+      const personaId = new ObjectId()
+      f.db.personas.rows.push({ _id: personaId, player_id: f.player, name: 'Traveller', description: 'Grey eyes and dark braids.', appearance_version: 1 })
+      if (mode === 'inline_persona') {
+        assert.ok(await ensurePersonaFaceReady(String(f.player), personaId, PAINTED_STYLE_KEY, PAINTED_RENDER))
+      } else {
+        const reply = await requestPersonaPortrait(String(f.player), String(personaId))
+        assert.equal(reply.status, 'queued')
+        if (reply.status !== 'queued') throw new Error('Expected persona portrait')
+        await processPortrait(reply.media_id)
+        assert.equal(f.db.mediaAssets.rows[0].status, 'ready')
+      }
+    }
+    assert.equal(captured.descriptions.length, 1, mode)
+    assertPlaces(f, captured, '')
+  }
+  const f = passingVideoFixture()
+  setMomentPlace(f, false, true)
+  const captured = capturePlaces()
+  await filmLine(f)
+  assert.equal(captured.descriptions.filter((i) => i.framing === 'portrait').length, 1)
+  assertPlaces(f, captured, 'The earlier courtyard')
+})
+check('picture_places', async () => {
+  for (const [older, recorded, current] of [[false, false, true], [true, true, true], [true, false, true], [false, true, true], [false, false, false], [true, true, false]]) {
+    const f = fixture()
+    f.db.characters.rows = []
+    const expected = setMomentPlace(f, older, recorded, current)
+    stubPictureFaces(f)
+    visualEffects.image = async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null })
+    const captured = capturePlaces()
+    assert.equal((await queuePicture(f)).status, 'ready')
+    assert.equal(captured.descriptions.length, 1)
+    assert.equal(captured.descriptions[0].framing, 'scene')
+    assertPlaces(f, captured, expected)
+  }
+})
+check('director_places', async () => {
+  for (const mode of ['line', 'turn'] as const) {
+    for (const [older, recorded] of [[false, false], [true, true], [true, false], [false, true]]) {
+      const f = mode === 'line' ? passingVideoFixture() : turnVideoFixture()
+      const expected = setMomentPlace(f, older, recorded)
+      const captured = capturePlaces()
+      if (mode === 'line') await filmLine(f)
+      else assert.equal((await filmTurn(f as ReturnType<typeof turnVideoFixture>)).status, 'ready')
+      assert.equal(captured.directors.length, 1, mode)
+      assertPlaces(f, captured, expected)
+    }
+  }
+})
+check('passing_face_rule_version', async () => {
+  for (const legacy of [true, false]) {
+    const f = passingVideoFixture()
+    await filmLine(f)
+    const old = f.db.mediaAssets.rows.find((r) => r.kind === 'passing_face')!
+    const oldId = old._id, oldKey = old.asset_key
+    assert.ok((old.cache_key as string).endsWith(`:v${PASSING_FACE_RULE_VERSION}`))
+    // Seed both deployed (unversioned) and explicitly previous-rule caches.
+    old.cache_key = (old.cache_key as string).replace(/:v\d+$/, legacy ? '' : `:v${PASSING_FACE_RULE_VERSION - 1}`)
+    visualEffects.fill = async () => { throw new Error('The stored look must be reused') }
+    await filmLine(f, laterVideoEvent(f))
+    assert.equal(f.prompts.filter((s) => s.includes('head-and-shoulders portrait')).length, 2, 'previous-rule face repaints')
+    assert.ok(f.run.removed.includes(oldKey as string), 'superseded ready file is deleted')
+    assert.ok(!f.db.mediaAssets.rows.some((r) => r._id === oldId), 'superseded ready row is deleted')
+    const fresh = f.db.mediaAssets.rows.find((r) => r.kind === 'passing_face')!
+    assert.equal(fresh.appearance, old.appearance)
+    await filmLine(f, laterVideoEvent(f))
+    assert.equal(f.prompts.filter((s) => s.includes('head-and-shoulders portrait')).length, 2, 'current-rule face is reused')
+    assert.equal(f.db.mediaUsage.rows.filter((r) => r.kind === 'portrait' && r.status === 'settled').length, 2)
+  }
+})
+check('passing_rule_keeps_cards', async () => {
+  const f = fixture()
+  f.card.appearance = 'Grey eyes and dark braids.'
+  f.card.appearance_version = 1
+  f.card.portrait = { asset_key: 'media/portrait/kept.jpg', source: 'generated', appearance_version: 1, painted_at: new Date() }
+  const kept = structuredClone(f.card.portrait)
+  assert.equal((await requestPortrait(String(f.player), String(f.instance), String(f.character))).status, 'ready')
+  assert.equal((await ensurePortraitReady(String(f.player), String(f.instance), f.card)).painted, false)
+  assert.deepEqual(f.card.portrait, kept)
+  assert.equal(f.db.mediaUsage.inserts, 0)
+  assert.equal(f.db.mediaAssets.inserts, 0)
+})
+
 check('dialogue_free_cut', async () => {
   const f = turnVideoFixture()
   const row = await filmTurn(f)

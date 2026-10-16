@@ -133,7 +133,7 @@ export function fixture() {
   const card: CharacterProfileDoc = { _id: character, instance_id: instance, player_id: player, canonical_name: 'Speaker', name_normalized: 'speaker', aliases: ['Alias'], immutable_facts: [], mutable_state: [], disposition_to_player: '', hidden_thought: '', first_seen_sequence: 1, last_seen_sequence: 1, mention_count: 1, created_at: new Date(), updated_at: new Date() }
   db.characters.rows = [card as unknown as Row]
   db.worldInstances.rows = [{ _id: instance, player_id: player, template_id: template }]
-  db.worldTemplates.rows = [{ _id: template, is_sentient: false }]
+  db.worldTemplates.rows = [{ _id: template, is_sentient: false, title: 'The Crown of Watching Skulls — fixture title only' }]
   db.users.rows = [{ _id: player, preferences: { nsfw_enabled: false } }]
   db.events.rows = [{ _id: event, player_id: player, instance_id: instance, data: { ai_response: prose, player_input: '', media_revision: revision, spoken_lines: detectSpokenLines(prose) } }]
   process.env.MEDIA_ENABLED = 'true'; process.env.MEDIA_VOICE_ENABLED = 'true'; process.env.MEDIA_DAILY_VOICE = '2'

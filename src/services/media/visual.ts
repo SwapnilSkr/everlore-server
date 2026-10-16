@@ -13,6 +13,7 @@ import { parseObjectId } from '../../utils/mongo-id'
 import type { CharacterProfileDoc } from '../../models/character-profile.model'
 import type { MediaAssetDoc, MediaKind, PortraitRef } from '../../models/media.model'
 import type { WorldEventDoc } from '../../models/world-event.model'
+import type { WorldInstanceDoc } from '../../models/world-instance.model'
 import { storageService } from '../storage.service'
 import { attributeEvent, mediaRevision, resolveAttributedSpeaker } from './attribution'
 import { directorModel, imageModel, mediaEnabled, sceneFallbackModel, sceneModel, videoModel, voiceCatalogue } from './config'
@@ -282,7 +283,7 @@ export async function ensurePortraitReady(
         if (holder.portrait) {
           reference = asMediaImageReference(await visualEffects.download(portraitUrl(holder.portrait.asset_key)))
         }
-        const image = await generatePortraitBytes(appearance, card.canonical_name, template?.title || '', model, style.render, reference)
+        const image = await generatePortraitBytes(appearance, card.canonical_name, '', model, style.render, reference)
         const key = `media/portrait/${pid.toHexString()}/${iid.toHexString()}/${id.toHexString()}${imageExtensionFor(image.contentType)}`
         const result = await visualEffects.upload(image.data, image.contentType, { key })
         const portrait = withStyleKey({ asset_key: result.key, source: 'generated', appearance_version: version, painted_at: new Date() }, style.key)
@@ -325,6 +326,9 @@ export async function ensurePortraitReady(
   }
 }
 
+/** Bump when prompt rules change: passing faces are disposable, unlike kept portraits. */
+export const PASSING_FACE_RULE_VERSION = 2
+
 /** Passing faces share the passing voice's identity, without ever becoming cards. */
 export function passingFaceKey(instanceId: ObjectId, eventId: ObjectId, lineId: string, handle: string): string {
   return handle ? JSON.stringify([instanceId.toHexString(), identityKey(handle)])
@@ -338,7 +342,7 @@ export async function ensurePassingFaceReady(asset: MediaAssetDoc, event: WorldE
   const template = await mongoColl.worldTemplates().findOne({ _id: instance.template_id })
   const style = templateMediaStyle(template), model = imageModel()
   const passingKey = passingFaceKey(instance._id, event._id, asset.line_id, handle)
-  const cacheKey = `passing_face:${createHash('sha256').update(passingKey).digest('hex')}:${style.key}:${model}`
+  const cacheKey = `passing_face:${createHash('sha256').update(passingKey).digest('hex')}:${style.key}:${model}:v${PASSING_FACE_RULE_VERSION}`
   const flight = portraitFlights.get(cacheKey)
   if (flight) return { ...await flight, painted: false }
   const leader = (async (): Promise<PortraitReady> => {
@@ -374,10 +378,12 @@ export async function ensurePassingFaceReady(asset: MediaAssetDoc, event: WorldE
         if (!await reserveMedia({ _id: id, player_id: asset.player_id, instance_id: instance._id, kind: 'portrait' })) {
           throw new HttpError(429, RESTING_COPY.portrait, { status: 'resting', kind: 'portrait', resets_at: utcMediaDay().resets_at })
         }
-        const old = await mongoColl.mediaAssets().findOne({ instance_id: instance._id, kind: 'passing_face', passing_key: passingKey, status: 'ready' })
+        const oldFilter = { instance_id: instance._id, kind: 'passing_face' as const, passing_key: passingKey, status: 'ready' as const }
+        const old = await mongoColl.mediaAssets().findOne({ ...oldFilter, art_style: style.key })
+          || await mongoColl.mediaAssets().findOne(oldFilter)
         const appearance = old?.appearance || await visualEffects.fill({ canonical_name: handle || `The speaker saying: ${asset.input}`, appearance: '' }, event.data.ai_response)
         await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, { $set: { appearance, input: appearance } })
-        const image = await generatePortraitBytes(appearance, handle, template?.title || '', model, style.render)
+        const image = await generatePortraitBytes(appearance, handle, '', model, style.render)
         const key = `media/passing_face/${asset.player_id}/${instance._id}/${id}${imageExtensionFor(image.contentType)}`
         const staged = await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, { $set: { asset_key: key } })
         if (!staged.matchedCount || !await liveMedia(asset)) throw new Error('Face moment passed')
@@ -392,6 +398,12 @@ export async function ensurePassingFaceReady(asset: MediaAssetDoc, event: WorldE
         } })
         if (!saved.matchedCount) throw new Error('Face removed')
         await settleMedia(id)
+        // Keep other styles, but retire the previous prompt rule's face only
+        // after its replacement survives every gate and is stored successfully.
+        if (old && old.art_style === style.key) {
+          if (old.asset_key) await mediaEffects.remove(old.asset_key)
+          await mongoColl.mediaAssets().deleteOne({ _id: old._id, status: 'ready' })
+        }
         return { url: result.url, assetKey: result.key, version: 1, painted: true }
       } catch (error) {
         await releaseMedia(id)
@@ -637,7 +649,7 @@ export async function processPortrait(mediaId: string): Promise<void> {
     stage = 'paint'
     let image: PortraitBytes
     try {
-      image = await generatePortraitBytes(appearance, card.canonical_name, template?.title || '', asset.model, style.render, reference)
+      image = await generatePortraitBytes(appearance, card.canonical_name, '', asset.model, style.render, reference)
     } catch (error) {
       if (error instanceof UnseenError) {
         await unseeMedia(asset, error.stage, error.reason)
@@ -942,6 +954,19 @@ export async function requestPicture(playerId: string, instanceId: string, event
   return { status: 'queued', media_id: asset._id.toHexString() }
 }
 
+/** The event anchor is the chat engine's end-of-turn place snapshot, including
+ * provisional places. A save's live cursor cannot describe a historical turn. */
+async function momentPlace(instance: WorldInstanceDoc, event: WorldEventDoc): Promise<string> {
+  const recorded = event.location_anchor?.name.trim()
+  if (recorded) return recorded
+  const current = instance.current_location?.name.trim()
+  if (!current) return ''
+  const [newest] = await mongoColl.events().find({
+    instance_id: instance._id, player_id: instance.player_id, type: { $ne: 'side_chat' },
+  }, { projection: { _id: 1 } }).sort({ sequence: -1 }).limit(1).toArray()
+  return newest?._id.equals(event._id) ? current : ''
+}
+
 export async function processPicture(mediaId: string): Promise<void> {
   const asset = await mongoColl.mediaAssets().findOneAndUpdate(
     { _id: parseObjectId(mediaId), status: 'queued' }, { $set: { status: 'processing', started_at: new Date() } }, { returnDocument: 'after' })
@@ -1015,7 +1040,7 @@ export async function processPicture(mediaId: string): Promise<void> {
       present: present.map((c) => ({ name: c.canonical_name, has_portrait: faces.some((f) => f.name === c.canonical_name) })),
       passing_look: '',
       framing: 'scene',
-      place: template?.title || '',
+      place: await momentPlace(instance, event),
     })
     stage = 'generate'
     const pre = await moderateDescription(description)
@@ -1511,7 +1536,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       narration_after: narrationAfter,
       speaker: { appearance: card?.appearance || '', passing_look: await extractPassing(prose, line.voice.speaker_name) },
       others_present: others.map((c) => ({ name: c.canonical_name, appearance: c.appearance || '' })),
-      place: template?.title || '',
+      place: await momentPlace(instance, event),
     }
     const gatedDescription = `${narrationBefore} ${narrationAfter}`.slice(0, 1500)
     const pre = await moderateDescription(gatedDescription)
@@ -1696,7 +1721,7 @@ async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
       line: { speaker_name: '', spoken_text: '', duration_s: 0 },
       speaker: { appearance: '', passing_look: '' },
       others_present: presentCards(prose, cards, instance.persona_snapshot?.name).map((c) => ({ name: c.canonical_name, appearance: c.appearance || '' })),
-      place: template?.title || '',
+      place: await momentPlace(instance, event),
     }
     const pre = await moderateDescription(prose)
     if (pre.verdict !== 'allow') { await unseeMedia(asset, 'pre', pre.reason_code); return }
