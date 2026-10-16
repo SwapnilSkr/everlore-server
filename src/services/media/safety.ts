@@ -184,14 +184,14 @@ async function visionFrame(image: Buffer, contentType: string, reference?: { dat
 
 /** Injectable for audits; production judges through the vision model. */
 async function judgeFrame(image: Buffer, contentType: string, reference?: { data: Buffer; contentType: string }): Promise<FrameCheck> {
-  const mime = contentType === 'image/jpeg' ? 'image/jpeg' : 'image/png'
+  // Callers sniff every image (JPEG from Flux 3, older PNG portraits, WebP):
+  // the labelled type rides the data URL verbatim, never remapped to a default.
   const parts: Array<Record<string, unknown>> = [
     { type: 'text', text: reference ? `${VISION_SYSTEM} A second reference image (the still this shot started from) follows: also report whether the visible people wear the same clothes and hair as the reference.` : VISION_SYSTEM },
-    { type: 'image_url', image_url: { url: `data:${mime};base64,${image.toString('base64')}` } },
+    { type: 'image_url', image_url: { url: `data:${contentType};base64,${image.toString('base64')}` } },
   ]
   if (reference) {
-    const refMime = reference.contentType === 'image/jpeg' ? 'image/jpeg' : 'image/png'
-    parts.push({ type: 'image_url', image_url: { url: `data:${refMime};base64,${reference.data.toString('base64')}` } })
+    parts.push({ type: 'image_url', image_url: { url: `data:${reference.contentType};base64,${reference.data.toString('base64')}` } })
   }
   // The OpenAI SDK types no image_url parts; call the REST endpoint directly.
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {

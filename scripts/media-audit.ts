@@ -19,7 +19,7 @@ import { reserveMedia, releaseMedia, settleMedia, mediaUsage } from '../src/serv
 import { purgeMedia } from '../src/services/media/deletion'
 import { storageService } from '../src/services/storage.service'
 import { publicMediaEvent, wireSpokenLines } from '../src/services/media/events'
-import { generateMediaImage, ProviderRefusalError } from '../src/ai/image'
+import { generateMediaImage, asMediaImageReference, imageExtensionFor, sniffImageContentType, ProviderRefusalError } from '../src/ai/image'
 import { submitVideo } from '../src/ai/video'
 import { env } from '../src/config/env'
 import { castCharacter } from '../src/services/media/casting'
@@ -274,9 +274,14 @@ function asset(f: ReturnType<typeof fixture>, extra: Partial<MediaAssetDoc> = {}
 }
 function portraitRow(f: ReturnType<typeof fixture>, extra: Partial<MediaAssetDoc> = {}): MediaAssetDoc {
   return { _id: new ObjectId(), player_id: f.player, instance_id: f.instance, character_id: f.character,
-    kind: 'portrait', line_id: '', source: 'generated', model: 'black-forest-labs/flux.2-klein-4b',
-    cache_key: `portrait:${f.character}:v1:flux`, revision: 'r', input: 'Grey eyes, dark braids.', cost_usd: 0.017, status: 'queued', created_at: new Date(), ...extra }
+    kind: 'portrait', line_id: '', source: 'generated', model: 'black-forest-labs/flux-3-image-klein',
+    cache_key: `portrait:${f.character}:v1:flux`, revision: 'r', input: 'Grey eyes, dark braids.', cost_usd: 0.009, status: 'queued', created_at: new Date(), ...extra }
 }
+// Fixture bytes with real magic: Flux 3 Klein returns JPEG, kept portraits are
+// PNG. Downloads model the kept (PNG) face; generations model the new (JPEG) one.
+const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])
+const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x00])
+const WEBP_BYTES = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50])
 function stubPortraitPipeline(f: ReturnType<typeof fixture>, judge: () => unknown) {
   f.card.appearance = 'Grey eyes, dark braids, leather collar'
   f.card.portrait = { asset_key: 'media/portrait/old.png', source: 'generated', appearance_version: 1, painted_at: new Date() }
@@ -285,8 +290,8 @@ function stubPortraitPipeline(f: ReturnType<typeof fixture>, judge: () => unknow
     : 'A calm head-and-shoulders portrait description.'
   safetyEffects.judge = judge as never
   visualEffects.fill = async () => 'Filled look'
-  visualEffects.download = async () => Buffer.from('png')
-  visualEffects.upload = async (_data, _type, opts) => ({ key: opts?.key || '', url: 'https://example.test/new.png' })
+  visualEffects.download = async () => Buffer.from(PNG_BYTES)
+  visualEffects.upload = async (_data, _type, opts) => ({ key: opts?.key || '', url: 'https://example.test/new.jpg' })
   mediaEffects.remove = async () => {}
 }
 check('reference_gate', () => {
@@ -302,8 +307,8 @@ check('cover_never_face', async () => {
   f.db.worldTemplates.rows[0].image_url = 'https://example.test/cover.png'
   stubPortraitPipeline(f, async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false }))
   const seen: string[] = []
-  visualEffects.download = async (url) => { seen.push(url); return Buffer.from('png') }
-  visualEffects.image = async () => ({ data: Buffer.from('img'), contentType: 'image/png', generationId: null, costUsd: 0.017 })
+  visualEffects.download = async (url) => { seen.push(url); return Buffer.from(PNG_BYTES) }
+  visualEffects.image = async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 })
   const a = portraitRow(f)
   f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
   await reserveMedia(a)
@@ -337,9 +342,9 @@ check('pregate_blocks', async () => {
 check('postgate_deletes', async () => {
   const f = fixture()
   stubPortraitPipeline(f, async () => ({ verdict: 'reject', reason_code: 'explicit_nudity', people_count: 1, face_close_up: true, text_visible: false }))
-  visualEffects.image = async () => ({ data: Buffer.from('img'), contentType: 'image/png', generationId: null, costUsd: 0.017 })
+  visualEffects.image = async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 })
   let uploaded = '', removed = ''
-  visualEffects.upload = async (_data, _type, opts) => { uploaded = opts?.key || ''; return { key: uploaded, url: 'https://example.test/new.png' } }
+  visualEffects.upload = async (_data, _type, opts) => { uploaded = opts?.key || ''; return { key: uploaded, url: 'https://example.test/new.jpg' } }
   mediaEffects.remove = async (key) => { removed = key }
   // A rejected scene shot takes its already-uploaded still with it.
   const frames = safetyEffects.frames
@@ -352,12 +357,12 @@ check('postgate_deletes', async () => {
     visualEffects.submit = async () => { calls++; return { jobId: 'job', status: 'pending' } }
     visualEffects.wait = async () => ({ jobId: 'job', status: 'completed', generationId: null, costUsd: 0.09 })
     visualEffects.fetch = async () => Buffer.from('video')
-    visualEffects.download = async () => Buffer.from('png')
+    visualEffects.download = async () => Buffer.from(PNG_BYTES)
     const shot = await makeSceneShot({
       role: 'opening',
       continuity: { wardrobe: 'Dark cloak', hair: 'Braids', props: 'none', time_of_day: 'Night', weather: 'Dry', light: 'Lamp', palette: 'Amber, black' },
       shot: { role: 'opening', evidence: 'Rain hit the gutter.', framing: 'wide', people_in_still: [{ name: 'Tomas', placement: 'door', facing: 'away' }], still: 'A figure at a door.', camera_move: 'static', subject_action: 'none', environment_motion: 'rain', duration_s: 2 },
-      speakerPortrait: Buffer.from('face'),
+      speakerPortrait: Buffer.from(PNG_BYTES),
       playerId: f.player,
       instanceId: f.instance,
     })
@@ -713,8 +718,9 @@ function stubVideoRun(f: ReturnType<typeof videoBase>, opts: {
 } = {}): VideoRun {
   const run: VideoRun = { events: [], uploaded: [], removed: [], published: [], sceneSubmits: [] }
   let lineSubmitted = false
-  const portraitBytes = Buffer.from('portrait-bytes')
-  const stillBytes = Buffer.from('still-bytes')
+  // The kept face downloads as PNG; generations come back JPEG (Flux 3 Klein).
+  const portraitBytes = Buffer.from(PNG_BYTES)
+  const stillBytes = Buffer.from(JPEG_BYTES)
   const sceneVideo = Buffer.from('scene-video')
   const lineVideo = Buffer.from('line-video')
   const sceneFrames = [Buffer.from('sf0'), Buffer.from('sf1'), Buffer.from('sf2')]
@@ -742,7 +748,7 @@ function stubVideoRun(f: ReturnType<typeof videoBase>, opts: {
   visualEffects.image = (async (prompt: string) => {
     if (prompt.includes('head-and-shoulders portrait')) {
       if (opts.portraitImage === 'refuse') throw new ProviderRefusalError(400, '400', 'Image generation refused (400:400)')
-      return { data: portraitBytes, contentType: 'image/png', generationId: null, costUsd: 0.017 }
+      return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 }
     }
     run.events.push('image-call')
     if (opts.stillImage === 'throw') {
@@ -754,7 +760,7 @@ function stubVideoRun(f: ReturnType<typeof videoBase>, opts: {
       run.events.push('image-throw')
       throw new Error('Image generation failed (400): graphic violence')
     }
-    return { data: stillBytes, contentType: 'image/png', generationId: null, costUsd: 0.017 }
+    return { data: stillBytes, contentType: 'image/jpeg', generationId: null, costUsd: 0.009 }
   }) as never
   visualEffects.submit = (async (req: { model: string }) => {
     run.events.push('submit')
@@ -908,7 +914,7 @@ check('persona_standalone', async () => {
     ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
     : 'A calm head-and-shoulders portrait description.'
   safetyEffects.judge = (async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false })) as never
-  visualEffects.image = (async () => ({ data: Buffer.from('face'), contentType: 'image/png', generationId: null, costUsd: 0.017 })) as never
+  visualEffects.image = (async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 })) as never
   visualEffects.upload = (async (_data: Buffer, _type: string, o?: { key?: string }) => ({ key: o?.key || '', url: `https://example.test/${o?.key}` })) as never
   mediaEffects.remove = (async () => {}) as never
   const published: Array<Record<string, unknown>> = []
@@ -951,8 +957,8 @@ check('reference_key', async () => {
     ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
     : 'Speaker in a tavern. Wide view, calm mood.'
   safetyEffects.judge = (async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 0, face_close_up: false, text_visible: false })) as never
-  visualEffects.download = (async () => Buffer.from('face')) as never
-  visualEffects.image = (async () => ({ data: Buffer.from('pic'), contentType: 'image/png', generationId: null, costUsd: 0.017 })) as never
+  visualEffects.download = (async () => Buffer.from(PNG_BYTES)) as never
+  visualEffects.image = (async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 })) as never
   visualEffects.upload = (async (_data: Buffer, _type: string, o?: { key?: string }) => ({ key: o?.key || '', url: `https://example.test/${o?.key}` })) as never
   mediaEffects.remove = (async () => {}) as never
   mediaEffects.publish = (async () => {}) as never
@@ -974,7 +980,7 @@ check('portrait_prompt_gated', async () => {
   let prompt = ''
   visualEffects.image = (async (p: string) => {
     prompt = p
-    return { data: Buffer.from('img'), contentType: 'image/png', generationId: null, costUsd: 0.017 }
+    return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 }
   }) as never
   const a = portraitRow(f)
   f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
@@ -999,11 +1005,11 @@ check('picture_prompt_gated', async () => {
     ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
     : 'Speaker in a tavern. Wide view, calm mood.'
   safetyEffects.judge = (async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 0, face_close_up: false, text_visible: false })) as never
-  visualEffects.download = (async () => Buffer.from('face')) as never
+  visualEffects.download = (async () => Buffer.from(PNG_BYTES)) as never
   let prompt = ''
   visualEffects.image = (async (p: string) => {
     prompt = p
-    return { data: Buffer.from('pic'), contentType: 'image/png', generationId: null, costUsd: 0.017 }
+    return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 }
   }) as never
   visualEffects.upload = (async (_data: Buffer, _type: string, o?: { key?: string }) => ({ key: o?.key || '', url: `https://example.test/${o?.key}` })) as never
   mediaEffects.remove = (async () => {}) as never
@@ -1102,12 +1108,12 @@ check('shot_refusal_logged', async () => {
     : 'A calm illustrated description naming who is present.'
   visualEffects.image = (async () => { throw new ProviderRefusalError(400, '400', 'Flux blocked this still https://cdn.example.test/still.png?token=shot-secret filler') }) as never
   visualEffects.upload = (async () => { throw new Error('upload must never run after a refused still') }) as never
-  visualEffects.download = (async () => Buffer.from('face')) as never
+  visualEffects.download = (async () => Buffer.from(PNG_BYTES)) as never
   const shot = await makeSceneShot({
     role: 'opening',
     continuity: { wardrobe: 'Dark cloak', hair: 'Braids', props: 'none', time_of_day: 'Night', weather: 'Dry', light: 'Lamp', palette: 'Amber, black' },
     shot: { role: 'opening', evidence: 'Rain hit the gutter.', framing: 'wide', people_in_still: [{ name: 'Tomas', placement: 'door', facing: 'away' }], still: 'A figure at a door.', camera_move: 'static', subject_action: 'none', environment_motion: 'rain', duration_s: 2 },
-    speakerPortrait: Buffer.from('face'),
+    speakerPortrait: Buffer.from(PNG_BYTES),
     playerId: f.player,
     instanceId: f.instance,
   })
@@ -1206,6 +1212,77 @@ check('casting_traits_persist', async () => {
   const again = await castCharacter(f.db.worldInstances.rows[0] as never, f.card, { gender_presentation: 'masculine' })
   assert.deepEqual(again, voice)
   assert.deepEqual(f.db.characters.rows[0].voice_traits, traits)
+})
+
+check('jpeg_portrait_stored', async () => {
+  // Flux 3 Klein returns JPEG: the portrait is stored with image/jpeg and a
+  // .jpg key — the upload carries the image's own type, never a PNG default.
+  const f = fixture()
+  stubPortraitPipeline(f, async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false }))
+  visualEffects.image = (async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: 'gen-1', costUsd: 0.009 })) as never
+  let uploadedType = '', uploadedKey = ''
+  visualEffects.upload = (async (_data: Buffer, type: string, o?: { key?: string }) => {
+    uploadedType = type; uploadedKey = o?.key || ''
+    return { key: uploadedKey, url: `https://example.test/${uploadedKey}` }
+  }) as never
+  mediaEffects.remove = (async () => {}) as never
+  mediaEffects.publish = (async () => {}) as never
+  const a = portraitRow(f)
+  f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+  await reserveMedia(a)
+  await processPortrait(String(a._id))
+  const row = f.db.mediaAssets.rows[0] as unknown as MediaAssetDoc
+  assert.equal(row.status, 'ready')
+  assert.equal(uploadedType, 'image/jpeg')
+  assert.ok(uploadedKey.endsWith('.jpg'), `key carries the jpeg extension: ${uploadedKey}`)
+  assert.ok((row.asset_key as string).endsWith('.jpg'))
+  assert.equal(row.cost_usd, 0.009)
+})
+check('png_reference_sniffed', async () => {
+  // The kept (older PNG) face downloads as PNG and goes out as an image/png
+  // reference — sniffed from the bytes, never assumed from the model.
+  const f = fixture()
+  stubPortraitPipeline(f, async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false }))
+  visualEffects.download = (async () => Buffer.from(PNG_BYTES)) as never
+  let refType = ''
+  visualEffects.image = (async (_prompt: string, opts?: { reference?: { contentType: string } }) => {
+    refType = opts?.reference?.contentType || ''
+    return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 }
+  }) as never
+  visualEffects.upload = (async (_data: Buffer, _type: string, o?: { key?: string }) => ({ key: o?.key || '', url: `https://example.test/${o?.key}` })) as never
+  mediaEffects.remove = (async () => {}) as never
+  mediaEffects.publish = (async () => {}) as never
+  const a = portraitRow(f)
+  f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+  await reserveMedia(a)
+  await processPortrait(String(a._id))
+  assert.equal(f.db.mediaAssets.rows[0].status, 'ready')
+  assert.equal(refType, 'image/png')
+})
+check('unknown_image_rejected', async () => {
+  // Magic-byte sniffing: JPEG, PNG and WebP are recognised; anything else is
+  // an error, never a guess — in the helper and on the transport.
+  assert.equal(sniffImageContentType(Buffer.from(JPEG_BYTES)), 'image/jpeg')
+  assert.equal(sniffImageContentType(Buffer.from(PNG_BYTES)), 'image/png')
+  assert.equal(sniffImageContentType(Buffer.from(WEBP_BYTES)), 'image/webp')
+  assert.equal(imageExtensionFor('image/jpeg'), '.jpg')
+  assert.equal(imageExtensionFor('image/png'), '.png')
+  assert.equal(imageExtensionFor('image/webp'), '.webp')
+  assert.throws(() => sniffImageContentType(Buffer.from('not an image')), /unknown type/)
+  assert.throws(() => asMediaImageReference(Buffer.from('not an image')), /unknown type/)
+  const realFetch = globalThis.fetch
+  const realKey = env.OPENROUTER_API_KEY
+  env.OPENROUTER_API_KEY = 'audit'
+  globalThis.fetch = (async () => ({
+    ok: true, status: 200, statusText: 'ok', headers: { get: () => 'gen-x' },
+    json: async () => ({ data: [{ b64_json: Buffer.from('not an image at all').toString('base64') }] }),
+  })) as unknown as typeof fetch
+  try {
+    await assert.rejects(generateMediaImage('a calm portrait'), /unknown type/)
+  } finally {
+    globalThis.fetch = realFetch
+    env.OPENROUTER_API_KEY = realKey
+  }
 })
 
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }

@@ -88,6 +88,10 @@ const mutations: Mutation[] = [
   // ── media-server-2-fix-3 ──
   { name: 'refusal reason kept', check: 'provider_refusal_unseen', file: 'visual.ts', changes: [["await logRejection(asset, stage, reason, asset.model, message)", "await logRejection(asset, stage, reason, asset.model)"]] },
   { name: 'refused still still counts', check: 'shot_refusal_logged', file: 'visual.ts', changes: [["const message = await logShotRefusal('still_provider_refused', error.message, imageModel())", "const message: string | undefined = undefined"]] },
+  // ── media-image-switch (Flux 3 Klein: JPEG by default, sniffed types) ──
+  { name: 'jpeg key carries its own extension', check: 'jpeg_portrait_stored', path: 'src/ai/image.ts', changes: [["if (contentType === 'image/jpeg') return '.jpg'", "if (contentType === 'image/jpeg') return '.png'"]] },
+  { name: 'downloaded face sniffed, never assumed', check: 'png_reference_sniffed', file: 'visual.ts', changes: [["reference = asMediaImageReference(bytes)", "reference = { data: bytes, contentType: 'image/jpeg' }"]] },
+  { name: 'unknown bytes rejected, never guessed', check: 'unknown_image_rejected', path: 'src/ai/image.ts', changes: [["throw new Error('Image bytes are of an unknown type')", "return 'image/png' as const"]] },
 ]
 for (const mutation of mutations) {
   const file = at(mutation)

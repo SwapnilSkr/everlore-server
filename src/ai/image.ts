@@ -63,9 +63,50 @@ export async function generateImage(
 }
 
 export interface MediaImageReference {
-  /** PNG/JPEG bytes for an identity or wardrobe reference (sent as a data URL). */
+  /** JPEG/PNG/WebP bytes for an identity or wardrobe reference (sent as a data URL). */
   data: Buffer
   contentType: string
+}
+
+/**
+ * The image type sniffed from the magic bytes — never a guess from a model
+ * id, a URL or a caller label. Flux 3 Klein returns JPEG (ff d8 ff); older
+ * kept portraits are PNG; WebP stays supported. Anything else throws.
+ */
+export type SniffedImageContentType = 'image/jpeg' | 'image/png' | 'image/webp'
+
+export function sniffImageContentType(data: Buffer): SniffedImageContentType {
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) {
+    return 'image/jpeg'
+  }
+  if (
+    data.length >= 8
+    && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47
+    && data[4] === 0x0d && data[5] === 0x0a && data[6] === 0x1a && data[7] === 0x0a
+  ) {
+    return 'image/png'
+  }
+  if (
+    data.length >= 12
+    && data.toString('ascii', 0, 4) === 'RIFF'
+    && data.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'image/webp'
+  }
+  throw new Error('Image bytes are of an unknown type')
+}
+
+/** The storage/upload extension matching a sniffed image type. */
+export function imageExtensionFor(contentType: string): '.jpg' | '.png' | '.webp' {
+  if (contentType === 'image/jpeg') return '.jpg'
+  if (contentType === 'image/png') return '.png'
+  if (contentType === 'image/webp') return '.webp'
+  throw new Error(`Unknown image content type: ${contentType}`)
+}
+
+/** Downloaded bytes (an older PNG portrait, a new JPEG one) as a reference. */
+export function asMediaImageReference(data: Buffer): MediaImageReference {
+  return { data, contentType: sniffImageContentType(data) }
 }
 
 /**
@@ -136,7 +177,7 @@ export async function generateMediaImage(
   if (!env.OPENROUTER_API_KEY) {
     throw new Error('OPENROUTER_API_KEY is not configured')
   }
-  const model = opts.model || process.env.MEDIA_IMAGE_MODEL || 'black-forest-labs/flux.2-klein-4b'
+  const model = opts.model || process.env.MEDIA_IMAGE_MODEL || 'black-forest-labs/flux-3-image-klein'
   const body: Record<string, unknown> = {
     model,
     prompt,
@@ -144,10 +185,9 @@ export async function generateMediaImage(
     n: 1,
   }
   if (opts.reference) {
-    const mime = opts.reference.contentType === 'image/jpeg' ? 'image/jpeg' : 'image/png'
     body.input_references = [{
       type: 'image_url',
-      image_url: { url: `data:${mime};base64,${opts.reference.data.toString('base64')}` },
+      image_url: { url: `data:${opts.reference.contentType};base64,${opts.reference.data.toString('base64')}` },
     }]
   }
   const res = await fetch('https://openrouter.ai/api/v1/images', {
@@ -183,5 +223,8 @@ export async function generateMediaImage(
   const data = Buffer.from(bytes, 'base64')
   if (!data.length) throw new Error('Image model returned empty bytes')
   const cost = typeof json.usage?.cost === 'number' && json.usage.cost >= 0 ? json.usage.cost : undefined
-  return { data, contentType: 'image/png', generationId, ...(cost !== undefined ? { costUsd: cost } : {}) }
+  // Flux 3 Klein returns JPEG (no output_format knob); older runs were PNG.
+  // Sniff, never assume — unknown bytes are an error, never a guess.
+  const contentType = sniffImageContentType(data)
+  return { data, contentType, generationId, ...(cost !== undefined ? { costUsd: cost } : {}) }
 }

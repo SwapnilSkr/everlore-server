@@ -11,7 +11,7 @@ export function mediaEnabled(kind?: MediaKind): boolean {
 }
 export const voiceModel = () => process.env.MEDIA_VOICE_MODEL || catalogue.model
 /** Portrait / picture stills. Painted look matches the house style (owner, Oct 16 2026). */
-export const imageModel = () => process.env.MEDIA_IMAGE_MODEL || 'black-forest-labs/flux.2-klein-4b'
+export const imageModel = () => process.env.MEDIA_IMAGE_MODEL || 'black-forest-labs/flux-3-image-klein'
 /** The line shot: portrait lip-synced to the exact clip the player heard. */
 export const videoModel = () => process.env.MEDIA_VIDEO_MODEL || 'heygen/avatar-iv'
 /** Scene shots, image-to-video from their own wide stills. */
