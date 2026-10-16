@@ -1,5 +1,5 @@
 /**
- * Pure guard checks for RECURRENCE-based codex promotion.
+ * Pure guard checks for recurrence and structurally corroborated codex promotion.
  *
  * A figure the story keeps returning to earns a card whether or not they have a
  * proper name — recurrence plus direct involvement is what proves a person
@@ -10,7 +10,10 @@
 import {
   isEligibleRecurringPromotion,
   looksLikeUnnamedLabel,
+  newCardPromotionEvidence,
 } from '../worker/lib/character-codex-extractor'
+
+import { classifyPresenceCodexGaps, isActionableMention } from '../worker/lib/presence-gap-detector'
 
 const checks: Array<[string, boolean, boolean]> = [
   ['repeated named figure qualifies', isEligibleRecurringPromotion(['Vico Rossi'], ['Vico Rossi']), true],
@@ -30,6 +33,42 @@ const checks: Array<[string, boolean, boolean]> = [
   ['"the Rider" reads as an authored epithet', looksLikeUnnamedLabel('the Rider'), false],
   ['a proper name is not held to the unnamed bar', looksLikeUnnamedLabel('Vico Rossi'), false],
 ]
+
+function promotes(name: string, prose: string, presentCast: string[] = [], knownCards: string[] = ['Tamsin']): boolean {
+  const personEvidenceKeys = new Set(classifyPresenceCodexGaps(prose, { codex: knownCards })
+    .filter(isActionableMention).map((candidate) => candidate.key))
+  return newCardPromotionEvidence({ names: [name], prose, presentCast, knownCards, personEvidenceKeys }).admits
+}
+
+// Exact excerpts supplied in the brief, including its ellipses. These exercise
+// the same gate as the extractor, with no metadata cast and no recurrence.
+const lyssaTurns = [
+  '*The old woman leans on her pole … She watches the new arrival …*\n\n“Lyssa,” *she says, her voice like dry reeds.* “And this bridge? It leads to the Spire of Echoes. …” *She gestures with her chin …* “You’re welcome to walk the path. …”',
+  `Lyssa goes still, her gaze drifting past Tamsin … "I lost the sky," *she says, her voice softer than before.* "The first time I crossed …" *She looks back …* "But that's my story. …"`,
+]
+for (const [index, prose] of lyssaTurns.entries()) {
+  checks.push([`speaker: Lyssa turn ${index + 2} cards despite empty metadata`, promotes('Lyssa', prose), true])
+}
+for (const [label, name, prose, expected] of [
+  ['remembered name', 'Mara', '“Mara would have loved this,” she says.', false],
+  ['addressed name', 'Mara', '“Mara!” he calls toward the ridge.', false],
+  ['capitalised adverb', 'Quietly', 'Quietly she waits by the bridge.', false],
+  ['quote addresses existing card', 'Lyssa', '“Mara, Lyssa,” she says.', false],
+  ['named speaker before quote', 'Lyssa', '_Lyssa avers,_ “Wait.”', true],
+  ['named speaker after quote', 'Lyssa', '“Wait,” _Lyssa avers._', true],
+  ['single subject signal stays held', 'Lyssa', 'Lyssa goes still.', false],
+] as const) {
+  checks.push([`speaker: ${label}`, promotes(name, prose, [], ['Mara', 'Tamsin']), expected])
+}
+checks.push(['speaker: subject plus independent presence cards', promotes('Lyssa', 'Lyssa goes still.', ['Lyssa']), true])
+checks.push(['speaker: a known card cannot supply a new naming identity', promotes('Mara', '“Mara,” she says.', [], ['Mara']), false])
+
+for (const prose of ['Spire goes still.', '“Spire,” she says.']) {
+  checks.push([`speaker: known place stays out in ${prose}`, newCardPromotionEvidence({
+    names: ['Spire'], prose, presentCast: ['Spire'], knownCards: [], knownPlaces: ['Spire'],
+    personEvidenceKeys: new Set(),
+  }).admits, false])
+}
 
 let failed = 0
 for (const [label, actual, expected] of checks) {

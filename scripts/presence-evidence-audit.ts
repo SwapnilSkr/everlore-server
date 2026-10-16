@@ -61,6 +61,25 @@ check('Bram finally said — full also fails (no identity rescue)', full('Bram',
 check('Bram, still furious, said — action-only fails', action('Bram', 'Bram, still furious, said nothing.'), false)
 check('Mara almost nodded — action-only fails', action('Mara', 'Mara almost nodded, then stopped.'), false)
 
+console.log('speaker: quote boundaries retain attribution but never remembered/addressed names:')
+{
+  const cases: Array<[string, string, string, boolean]> = [
+    ['italic pronoun after', 'Lyssa', '“Lyssa,” *she says, her voice like dry reeds.*', true],
+    ['underscore pronoun after', 'Lyssa', '“Lyssa,” _she avers._', true],
+    ['plain pronoun before', 'Lyssa', 'She avers, “Lyssa.”', true],
+    ['named tag before', 'Lyssa', '_Lyssa avers,_ “Wait.”', true],
+    ['named tag after', 'Lyssa', '“Wait,” *Lyssa avers.*', true],
+    ['remembered name', 'Mara', '“Mara would have loved this,” she says.', false],
+    ['addressed name', 'Mara', '“Mara!” he calls toward the ridge.', false],
+    ['capitalised adverb', 'Quietly', 'Quietly she waits by the bridge.', false],
+    ['quote addresses existing card', 'Lyssa', '“Mara, Lyssa,” she says.', false],
+  ]
+  for (const [label, name, prose, expected] of cases) {
+    check(`speaker: ${label} passage`, showsParticipationInPassage(name, prose), expected)
+    check(`speaker: ${label} citation`, citationAdmitsToPresent(evaluatePresenceCitation({ name, evidence: prose, prose })), expected)
+  }
+}
+
 console.log('citation stack — (a) fabrication, (b) name in excerpt, (c) action grammar, advisory:')
 {
   const prose = 'Bram nodded and set his cup down. Later they spoke of Rhea.'

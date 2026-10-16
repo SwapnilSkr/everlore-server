@@ -1,3 +1,4 @@
+import { hasAttributedSpeech } from './speaker-evidence'
 import { callLLM, AI_MODELS } from '../../src/ai'
 import { normalizeEntityName } from '../../src/services/entity-graph.service'
 import { hasSceneParticipationGrammar, PERSON_POSSESSION_TOKENS } from './presence-gap-detector'
@@ -175,7 +176,7 @@ export function excerptShowsSubjectPredicate(name: string, evidence: string): bo
   const head = tokens[0].replace(/^[^a-z']+|[^a-z']+$/g, '')
   if (!head) return false
   if (CLAUSE_SKIP.has(head) || DETERMINER.has(head)) return false
-  if (head === 'who' || head === 'whom' || head === 'whose' || head === 'which') return false
+  if (/^(?:who|whom|whose|which|he|she|they|it|we|you|i)$/.test(head)) return false
   // A DISTAL DEICTIC is a report of where somebody is, not their presence here.
   // "Jax is out there" has the shape of an action — a name, then a predicate
   // head — and it describes a man sitting in a parked van the player can see
@@ -229,6 +230,7 @@ export function showsParticipationInPassage(name: string, prose: string): boolea
   //
   // Only a CLOSED span is stripped, and only one of ordinary length, so an
   // unbalanced quote cannot swallow the passage.
+  if (hasAttributedSpeech(name, text)) return true
   const narration = narrationOnly(text)
   // Sentence and clause boundaries only — punctuation, never vocabulary.
   for (const sentence of narration.split(/(?<=[.!?…])\s+|\n+|["“”]/)) {
@@ -305,13 +307,14 @@ export function evaluatePresenceCitation(params: {
   // It has perfect subject-predicate shape and it is verbatim in the prose;
   // what it is not is narration.
   //
-  // A span that straddles the quote and its attribution is untouched, because it
-  // still appears in the narration-only text.
+  // A span containing a quote and its attribution needs the separate structural
+  // speech check below: stripping the quote also removes a self-named speaker.
   const quotedOnly = a && !hasExactEvidence(params.evidence, narrationOnly(params.prose))
   const structural = b && !quotedOnly && excerptShowsSubjectPredicate(params.name, params.evidence)
   const listedAction =
     b && !quotedOnly && hasSceneParticipationGrammar(params.name, params.evidence, { evidence: 'action' })
-  const c = structural || listedAction
+  const attributedSpeech = a && b && hasAttributedSpeech(params.name, params.evidence)
+  const c = structural || listedAction || attributedSpeech
   const rejected: CitationCheck[] = []
   if (!a) rejected.push('a')
   if (!b) rejected.push('b')

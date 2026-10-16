@@ -4,6 +4,7 @@
  */
 import { classifyPresenceCodexGaps, detectPresenceCodexGaps, isActionableMention } from '../worker/lib/presence-gap-detector'
 import { isDirectSelfIntroduction, promoteProperNameOverRole } from '../worker/lib/character-codex-extractor'
+import { entityAdjudicationCandidates } from '../worker/lib/entity-adjudicator'
 import { premiseKinshipCards } from '../src/services/kinship-graph.service'
 
 let pass = 0
@@ -34,10 +35,49 @@ check(
   true,
 )
 check(
-  'quoted name without identity question is not a self-introduction',
+  'speaker: quoted name does not require an identity question',
   isDirectSelfIntroduction('Enzo', '"Enzo," he says, his voice flat.', 'I ask about the statuette.'),
-  false,
+  true,
 )
+
+console.log('speaker: structural tags, self-naming and remembered names:')
+{
+  const cases: Array<[string, string, boolean]> = [
+    ['italic after', '“Lyssa,” *she says, her voice like dry reeds.*', true],
+    ['underscore after', '“Lyssa.” _she replies._', true],
+    ['italic before', '*She murmurs,* “Lyssa.”', true],
+    ['plain before', 'She murmurs, “Lyssa.”', true],
+    ['three-token name', '“Lyssa Vale Renn,” _she avers._', true],
+    ['remembered', '“Mara would have loved this,” she says.', false],
+    ['addressed', '“Mara!” he calls toward the ridge.', false],
+    ['addressing another card', '“Mara, Lyssa,” she says.', false],
+  ]
+  for (const [label, prose, expected] of cases) {
+    const name = label === 'three-token name' ? 'Lyssa Vale Renn' : /Mara/.test(prose) ? 'Mara' : 'Lyssa'
+    check(`speaker: ${label} naming`, isDirectSelfIntroduction(name, prose), expected)
+  }
+  check('speaker: existing addressed card is not a new identity',
+    isDirectSelfIntroduction('Mara', '“Mara,” *she says.*', '', ['Mara']), false)
+  for (const prose of ['“Mara would have loved this,” she says.', '“Mara!” he calls toward the ridge.',
+    'Quietly she waits by the bridge.', '“Mara, Lyssa,” she says.']) {
+    check(`speaker: no actionable phantom in ${prose}`, classifyPresenceCodexGaps(prose, {}).filter(isActionableMention).map((m) => m.key), [])
+  }
+  check('speaker: an unfamiliar predicate supplies person evidence without presence',
+    classifyPresenceCodexGaps('Lyssa goes still.', {}).map((m) => [m.key, m.tier, m.evidence]),
+    [['lyssa', 'probable', 'subject predicate']])
+  check('speaker: a name-led actor reaches the existing semantic presence judge',
+    entityAdjudicationCandidates({ prose: 'Lyssa goes still.', knownNames: [] }).map((m) => m.key), ['lyssa'])
+  // Exact excerpts supplied in the brief, including its ellipses.
+  const turns = [
+    '*The old woman leans on her pole … She watches the new arrival …*\n\n“Lyssa,” *she says, her voice like dry reeds.* “And this bridge? It leads to the Spire of Echoes. …” *She gestures with her chin …* “You’re welcome to walk the path. …”',
+    `Lyssa goes still, her gaze drifting past Tamsin … "I lost the sky," *she says, her voice softer than before.* "The first time I crossed …" *She looks back …* "But that's my story. …"`,
+  ]
+  for (const [index, prose] of turns.entries()) {
+    check(`speaker: Lyssa turn ${index + 2} is actionable`,
+      classifyPresenceCodexGaps(prose, { exclude: ['Tamsin', 'Spire', 'Echoes'] })
+        .filter(isActionableMention).map((m) => m.key), ['lyssa'])
+  }
+}
 
 console.log('codex kinship name-resolution:')
 {

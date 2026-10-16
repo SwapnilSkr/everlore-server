@@ -2376,11 +2376,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   /**
    * Does the NARRATION show this person taking part in this passage?
    *
-   * Quoted speech is removed first. Somebody saying a name out loud is not that
-   * person walking into the room, and the whole reason Roland was seated at a
-   * table he had never been near is that this test ran over the raw passage
-   * with the dialogue still in it. The death extractor has stripped quotes
-   * since it was written; presence never did.
+   * The shared passage verifier checks attribution before stripping reported
+   * speech. A tagged speaker can participate; merely saying somebody else's
+   * name cannot put that person in the room.
    */
   const showsSceneParticipation = (label: string): boolean => {
     const narration = narrationOnly(rawNarrative)
@@ -2394,7 +2392,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       : [label]
     return surfaces.some(
       (surface) =>
-        showsParticipationInPassage(surface, narration) ||
+        showsParticipationInPassage(surface, rawNarrative) ||
         hasSceneParticipationGrammar(surface, narration, { evidence: 'action' }),
     )
   }
@@ -2585,7 +2583,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       // running it over a whole passage is how "Mara, my sister, had been gone
       // for years" corroborated Mara's arrival. openingCast keeps the full
       // grammar — the authored seed has no judge to delegate identity to.
-      if (showsParticipationInPassage(phrase, narrationOnly(rawNarrative))) return true
+      if (showsParticipationInPassage(phrase, rawNarrative)) return true
       if (hasSceneParticipationGrammar(phrase, narrationOnly(rawNarrative), { evidence: 'action' })) return true
       // Prose names a titled cast member bare ("Ardren" for Lord Ardren), so
       // test the distinctive tokens too — still against scene-participation
@@ -2593,7 +2591,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       for (const token of phrase.split(/\s+/)) {
         const normalized = normalizeEntityName(token)
         if (normalized.length < 3 || PRESENCE_TITLE_WORDS.has(normalized)) continue
-        if (showsParticipationInPassage(token, narrationOnly(rawNarrative))) return true
+        if (showsParticipationInPassage(token, rawNarrative)) return true
         if (hasSceneParticipationGrammar(token, narrationOnly(rawNarrative), { evidence: 'action' })) return true
       }
       return false

@@ -34,8 +34,8 @@ function snippetsFor(candidate: string, prose: string): string[] {
 
 /**
  * Candidate detection is deliberately non-canonical. Only terms that already
- * have a strong deterministic person signal are sent to the semantic judge;
- * all other prose remains exactly on the existing fallback path.
+ * have structural person evidence are sent to the semantic judge. A generic
+ * name-led predicate is a candidate, never an automatic presence admission.
  */
 export function entityAdjudicationCandidates(params: {
   prose: string
@@ -47,7 +47,7 @@ export function entityAdjudicationCandidates(params: {
     codex: params.knownNames,
     exclude: params.exclude || [],
   })
-    .filter(isActionableMention)
+    .filter((candidate) => isActionableMention(candidate) || candidate.evidence === 'subject predicate')
     .slice(0, params.limit ?? 4)
 }
 

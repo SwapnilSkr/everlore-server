@@ -2,6 +2,7 @@ import { callLLM, AI_MODELS } from '../../src/ai'
 import { isEphemeralPersonDescriptor, isNonPersonRole, type CharacterCodexDelta } from '../../src/services/character-codex.service'
 import type { CharacterIdentityKind, RelationshipMeterKey } from '../../src/models/character-profile.model'
 import { classifyPresenceCodexGaps, isActionableMention } from './presence-gap-detector'
+import { hasAttributedSelfName, hasAttributedSpeech, hasNameLedPredicate } from './speaker-evidence'
 import { isAbstractNonPersonTerm, isLabelLike } from '../../src/utils/person-identity'
 import {
   relationshipEvidenceBindsToCharacter,
@@ -71,27 +72,42 @@ function nameAppearsInText(name: string, normText: string): boolean {
 export function isDirectSelfIntroduction(
   name: string,
   prose: string,
-  playerInput = '',
+  _playerInput = '',
+  knownCards: readonly string[] = [],
 ): boolean {
   const candidate = String(name || '').trim()
-  if (!candidate || candidate.length < 3) return false
+  if (!candidate || candidate.length < 3 || knownCards.some((known) => normForMatch(known) === normForMatch(candidate))) return false
   const escaped = candidate.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')
   const explicit = new RegExp(
     `(?:^|["“][^"”]{0,220}|[.!?]\\s*)(?:I\\s+am|I['’]m|my\\s+name\\s+is|you\\s+may\\s+call\\s+me)\\s+${escaped}(?=\\b|[,.;!?”])`,
     'i',
   ).test(String(prose || ''))
   if (explicit) return true
-  // A compact dialogue tag can be a genuine self-identification even when the
-  // narrator uses the conventional “\"Enzo,\" he says” rather than “I am Enzo.”
-  // Accept it only as the direct answer to the player's identity question; without
-  // that turn-level context it could merely be someone calling another person.
-  const asksIdentity = /\b(?:who\s+(?:are|might)\s+you|what(?:'s|\s+is)\s+your\s+name|what\s+should\s+i\s+call\s+you|may\s+i\s+ask\s+your\s+name)\b/i
-    .test(String(playerInput || ''))
-  if (!asksIdentity) return false
-  return new RegExp(
-    `["“]\\s*${escaped}\\s*[,!.]?["”]?\\s*,?\\s*(?:\\*[^*]{0,180}\\*\\s*)?(?:he|she|they)\\s+(?:said|says|replied|replies|answered|answers)\\b`,
-    'i',
-  ).test(String(prose || ''))
+  return hasAttributedSelfName(candidate, prose, knownCards)
+}
+
+/** The real new-card gate, exposed for offline promotion audits. Other identity,
+ * descriptor, relative and protagonist guards still run at the caller. */
+export function newCardPromotionEvidence(params: {
+  names: string[]
+  prose: string
+  presentCast: string[]
+  knownCards: string[]
+  knownPlaces?: readonly string[]
+  personEvidenceKeys: ReadonlySet<string>
+}): { physicallyPresent: boolean; corroboratedPerson: boolean; directSelfIntroduction: boolean; admits: boolean } {
+  const places = new Set((params.knownPlaces || []).map(normForMatch))
+  const names = params.names.filter((name) => !places.has(normForMatch(name)))
+  const present = new Set(params.presentCast.map(normForMatch))
+  const attributed = names.some((name) => hasAttributedSpeech(name, params.prose) &&
+    !params.knownCards.some((known) => normForMatch(known) === normForMatch(name)))
+  const physicallyPresent = attributed || names.some((name) => present.has(normForMatch(name)))
+  const corroboratedPerson = attributed || names.some((name) =>
+    params.personEvidenceKeys.has(normForMatch(name)) || hasNameLedPredicate(name, params.prose))
+  const directSelfIntroduction = names.some((name) =>
+    isDirectSelfIntroduction(name, params.prose, '', params.knownCards))
+  return { physicallyPresent, corroboratedPerson, directSelfIntroduction,
+    admits: (physicallyPresent && corroboratedPerson) || directSelfIntroduction }
 }
 
 const RELATIVE_WORDS = [
@@ -1283,19 +1299,16 @@ Respond ONLY JSON:
       }
     }
     if (isNewCard) {
-      const candidateKeys = [delta.name, delta.resolved_name || '', ...(delta.aliases || [])]
-        .map(normForMatch)
-        .filter(Boolean)
-      const presentNames = new Set((presentCast || []).map(normForMatch))
-      const physicallyPresent = candidateKeys.some((name) => presentNames.has(name))
-      const corroboratedPerson = candidateKeys.some((name) => personEvidenceKeys.has(name))
-      const directSelfIntroduction = [delta.name, delta.resolved_name || '', ...(delta.aliases || [])]
-        .some((name) => isDirectSelfIntroduction(name, aiResponse, playerInput))
-      // A literal in-scene self-introduction is both presence and person
-      // evidence. It is the only exception to the usual two-source gate, so a
-      // named walk-on is not lost just because the independent metadata pass
-      // missed them on their entrance.
-      if ((!physicallyPresent || !corroboratedPerson) && !directSelfIntroduction && !recurringPromotion) {
+      const candidateNames = [delta.name, delta.resolved_name || '', ...(delta.aliases || [])].filter(Boolean)
+      const { physicallyPresent, corroboratedPerson, directSelfIntroduction, admits } = newCardPromotionEvidence({
+        names: candidateNames,
+        prose: aiResponse,
+        presentCast: presentCast || [],
+        knownCards: [...knownByName.keys()],
+        knownPlaces: knownPlaceNames,
+        personEvidenceKeys,
+      })
+      if (!admits && !recurringPromotion) {
         console.warn(
           `[codex-extractor] held uncorroborated new card "${delta.name}" (present=${physicallyPresent}, personEvidence=${corroboratedPerson}, directIntro=${directSelfIntroduction})`,
         )

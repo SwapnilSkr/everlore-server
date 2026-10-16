@@ -1,3 +1,4 @@
+import { hasAttributedSpeech, hasNameLedPredicate } from './speaker-evidence'
 /**
  * Shared WITNESS -> ENTITY-STUB gap detector.
  *
@@ -219,10 +220,11 @@ export interface MentionCandidate extends VisibleNameCandidate {
   count: number
 }
 
-const SPEECH_VERBS =
-  'said|says|asked|asks|replied|replies|answered|answers|whispered|whispers|shouted|shouts|murmured|murmurs|growled|growls|muttered|mutters|called|calls|added|adds|continued|continues|cried|cries|hissed|hisses|snapped|snaps|breathed|breathes|begged|begs|warned|warns|laughed|laughs'
-
 /**
+ * Legacy presence-only backstop. Generic subject shape is separate person
+ * evidence: it cannot distinguish a present actor from travel reported in the
+ * past. Keep this unchanged until the presence callers all have cited evidence.
+ *
  * Verbs that show a person DOING something in the scene.
  *
  * The list was built from a handful of examples and was far too small: a
@@ -312,23 +314,6 @@ function appearsAsDefiniteLocation(display: string, prose: string): boolean {
   ).test(prose)
 }
 
-/**
- * A sentence-initial capitalized abstract can be given a human verb in normal
- * prose ("Valour answers", "Silence waits"). A second human-only signal is
- * required before that weak position can promote an unknown name to a person.
- * This intentionally prefers a missed one-line walk-on over minting a durable
- * card for a literary device.
- */
-function hasIndependentPersonSignal(display: string, prose: string): boolean {
-  const n = escapeRe(display)
-  return (
-    new RegExp(`\\b${n}(?:'s|\\u2019s)\\s+(?:${PERSON_POSSESSIONS})\\b`, 'i').test(prose) ||
-    new RegExp(`\\b${n},\\s+(?:my|his|her|their|the|a|an)\\s+\\w+`, 'i').test(prose) ||
-    new RegExp(`\\b(?:${TITLE_WORDS})\\s+${n}\\b`, 'i').test(prose) ||
-    new RegExp(`\\b(?:my|his|her|their)\\s+\\w+\\s+${n}\\b`, 'i').test(prose)
-  )
-}
-
 const TITLE_SET = new Set(TITLE_WORDS.split('|'))
 
 /** Action-family evidence: the person is shown doing or speaking, not merely
@@ -375,13 +360,10 @@ export function hasSceneParticipationGrammar(
 function tierFor(display: string, prose: string): { tier: MentionTier; evidence: string; count: number } {
   const n = escapeRe(display)
   const count = (prose.match(new RegExp(`\\b${n}\\b`, 'g')) || []).length
-  // dialogue attribution: "Mara said" / "said Mara" → speaking here.
-  if (new RegExp(`\\b${n}\\s+(?:${SPEECH_VERBS})\\b`, 'i').test(prose) ||
-      new RegExp(`\\b(?:${SPEECH_VERBS})\\s+${n}\\b`, 'i').test(prose)) {
+  if (hasAttributedSpeech(display, prose)) {
     return { tier: 'confirmed', evidence: 'dialogue attribution', count }
   }
-  // action attribution: "Mara turned / reached / stepped" → acting in scene.
-  if (new RegExp(`\\b${n}\\s+(?:${ACTION_VERBS})\\b`, 'i').test(prose)) {
+  if (new RegExp(`\\b${n}\\s+(?:${ACTION_VERBS})\\b`, 'i').test(prose.replace(/[“"]([^”"]{0,600})[”"]/g, ' '))) {
     return { tier: 'confirmed', evidence: 'action in scene', count }
   }
   // "Nora's jaw tightened" / "Mara's smile faded" is direct evidence of a
@@ -404,6 +386,12 @@ function tierFor(display: string, prose: string): { tier: MentionTier; evidence:
   // possessive kinship before the name: "my sister Mara".
   if (new RegExp(`\\b(?:my|his|her|their)\\s+\\w+\\s+${n}\\b`, 'i').test(prose)) {
     return { tier: 'confirmed', evidence: 'possessive kinship', count }
+  }
+  // An arbitrary predicate proves a person-shaped subject, not that its action
+  // happened here. The semantic presence judge or an independent cast claim
+  // supplies that second signal; this alone must never mint a stub.
+  if (hasNameLedPredicate(display, prose)) {
+    return { tier: 'probable', evidence: 'subject predicate', count }
   }
   if (count > 1) return { tier: 'probable', evidence: 'repeated mention', count }
   return { tier: 'mentioned_only', evidence: 'single bare mention', count }
@@ -428,16 +416,15 @@ export function classifyPresenceCodexGaps(prose: string, tracked: TrackedNames):
     })
     .map((c) => {
       let { tier, evidence, count } = tierFor(c.display, text)
-      // Verb/title signals are position-robust — a comma or sentence start can't fake
-      // "Mara said" / "Captain Mara". The rest (appositive, possessive, repeat) CAN be
-      // faked by a capitalized sentence-adverb ("Downstairs, a door slammed"), so when
-      // they're the only evidence and the token never appears mid-sentence, demote it.
+      // Quotation attribution and legacy actions are strong signals. A generic
+      // subject predicate remains probable and cannot admit a walk-on alone;
+      // appositives and repetition still need a mid-sentence name anchor.
       const robust =
         evidence === 'person possessive' ||
         evidence === 'title-name' ||
+        evidence === 'dialogue attribution' ||
         evidence === 'action in scene' ||
-        (evidence === 'dialogue attribution' &&
-          (appearsMidSentence(c.display, text) || hasIndependentPersonSignal(c.display, text)))
+        evidence === 'subject predicate'
       if (tier !== 'mentioned_only' && !robust && !appearsMidSentence(c.display, text)) {
         tier = 'mentioned_only'
         evidence = 'sentence-initial only, no person signal'
