@@ -68,6 +68,43 @@ export interface MediaImageReference {
   contentType: string
 }
 
+/**
+ * A provider content refusal, detected structurally: an HTTP client error
+ * carrying the provider's error envelope. Never matched on message words —
+ * the message text is provider-specific ("Black Forest Labs blocked this
+ * request…", "flagged for graphic violence") while the envelope shape is
+ * stable. Recorded shape (OpenRouter `/api/v1/images`, Oct 16 2026 live run):
+ * HTTP 400 with a JSON body of `{"error": {"message": "…", "code": 400}}`.
+ * The `code` field mirrors the status when present; classification rests on
+ * status plus envelope presence, never on any word in the message. A 4xx
+ * without that envelope (malformed body, unknown shape) stays a plain
+ * failure so a transport bug cannot hide as a refusal.
+ */
+export class ProviderRefusalError extends Error {
+  readonly status: number
+  readonly code: string | null
+  constructor(status: number, code: unknown, message: string) {
+    super(message)
+    this.name = 'ProviderRefusalError'
+    this.status = status
+    this.code = typeof code === 'string' || typeof code === 'number' ? String(code) : null
+  }
+}
+
+/**
+ * Structural refusal test shared by the image and video transports: a 400 or
+ * 422 carrying the provider's error object is a refusal of the request. Every
+ * other status (5xx, 429, timeouts) is a failure, never a refusal.
+ */
+export function providerRefusal(status: number, body: unknown): string | null {
+  if ((status === 400 || status === 422) && body && typeof body === 'object'
+    && 'error' in body && body.error && typeof body.error === 'object') {
+    const code = (body.error as { code?: unknown }).code
+    return typeof code === 'string' || typeof code === 'number' ? String(code) : `http_${status}`
+  }
+  return null
+}
+
 export interface MediaImageResult {
   data: Buffer
   contentType: string
@@ -126,9 +163,11 @@ export async function generateMediaImage(
   const json = await res.json().catch(() => ({})) as {
     data?: Array<{ b64_json?: string; url?: string }>
     usage?: { cost?: number }
-    error?: { message?: string }
+    error?: { message?: string; code?: unknown }
   }
   if (!res.ok) {
+    const refusal = providerRefusal(res.status, json)
+    if (refusal !== null) throw new ProviderRefusalError(res.status, refusal, `Image generation refused (${res.status}:${refusal})`)
     throw new Error(`Image generation failed (${res.status}): ${(json.error?.message || res.statusText).slice(0, 300)}`)
   }
   const item = json.data?.[0]

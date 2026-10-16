@@ -1,4 +1,5 @@
 import { env } from '../config/env'
+import { ProviderRefusalError, providerRefusal } from './image'
 
 /**
  * Talking and scene video via OpenRouter (`POST /api/v1/videos`,
@@ -58,8 +59,12 @@ export async function submitVideo(opts: VideoSubmitOpts): Promise<{ jobId: strin
   const res = await fetch('https://openrouter.ai/api/v1/videos', {
     method: 'POST', headers: headers(), body: JSON.stringify(body), signal: opts.signal,
   })
-  const json = await res.json().catch(() => ({})) as { id?: string; status?: string; error?: { message?: string } }
-  if (!res.ok) throw new Error(`Video submit failed (${res.status}): ${(json.error?.message || res.statusText).slice(0, 300)}`)
+  const json = await res.json().catch(() => ({})) as { id?: string; status?: string; error?: { message?: string; code?: unknown } }
+  if (!res.ok) {
+    const refusal = providerRefusal(res.status, json)
+    if (refusal !== null) throw new ProviderRefusalError(res.status, refusal, `Video submit refused (${res.status}:${refusal})`)
+    throw new Error(`Video submit failed (${res.status}): ${(json.error?.message || res.statusText).slice(0, 300)}`)
+  }
   if (typeof json.id !== 'string') throw new Error('Video submit returned no job id')
   return { jobId: json.id, status: typeof json.status === 'string' ? json.status : 'pending' }
 }

@@ -4,7 +4,7 @@ import { identityKey, newFoldState } from '../character-codex.service'
 import type { CharacterProfileDoc } from '../../models/character-profile.model'
 import type { WorldInstanceDoc } from '../../models/world-instance.model'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
-import type { CharacterVoice } from '../../models/media.model'
+import type { CharacterVoice, VoiceTraits } from '../../models/media.model'
 import { chooseVoice, type VoiceHolder } from './policy'
 import { voiceCatalogue, voiceModel } from './config'
 
@@ -28,7 +28,7 @@ function planWorldVoices(original: WorldTemplateDoc): WorldTemplateDoc {
   return template
 }
 
-export async function castCharacter(instance: WorldInstanceDoc, card: CharacterProfileDoc): Promise<CharacterVoice> {
+export async function castCharacter(instance: WorldInstanceDoc, card: CharacterProfileDoc, traits: VoiceTraits = {}): Promise<CharacterVoice> {
   for (let attempt = 0; attempt < 12; attempt++) {
     const [live, original, cards] = await Promise.all([
       mongoColl.worldInstances().findOne({ _id: instance._id }),
@@ -73,13 +73,27 @@ export async function castCharacter(instance: WorldInstanceDoc, card: CharacterP
     ]
     const recent = await mongoColl.mediaAssets().find({ instance_id: live._id, kind: 'voice', model, status: 'ready' }).sort({ created_at: -1 }).toArray()
     for (const holder of holders) holder.last_spoken_at = recent.find((a) => a.voice_id === holder.voice_id)?.created_at || holder.last_spoken_at
-    const voice: CharacterVoice = { model, voice_id: chooseVoice(fresh.voice_traits || {}, holders, catalogue.voices) }
+    const voice: CharacterVoice = { model, voice_id: chooseVoice(effectiveTraits(fresh, traits), holders, catalogue.voices) }
     const assigned = await mongoColl.worldInstances().updateOne({ _id: live._id,
       media_voice_cast: live.media_voice_cast || { $exists: false },
     }, { $set: { [`media_voice_cast.${id}.voice`]: voice } })
     if (!assigned.modifiedCount) continue
-    await mongoColl.characters().updateOne({ _id: fresh._id, instance_id: live._id }, { $set: { voice } })
+    // The first cast persists the traits it cast by; later casts never
+    // overwrite them, so casting is stable once persisted.
+    await mongoColl.characters().updateOne({ _id: fresh._id, instance_id: live._id }, { $set: {
+      voice, ...(!hasTraits(fresh) && Object.keys(traits).length ? { voice_traits: traits } : {}),
+    } })
     return voice
   }
   throw new Error('Cast changed repeatedly')
+}
+
+/** Traits already on the card, if any. */
+function hasTraits(card: CharacterProfileDoc): boolean {
+  return !!card.voice_traits && Object.keys(card.voice_traits).length > 0
+}
+
+/** The card's own traits win; the attribution call's traits fill a blank card. */
+function effectiveTraits(card: CharacterProfileDoc, traits: VoiceTraits): VoiceTraits {
+  return hasTraits(card) ? card.voice_traits! : traits
 }

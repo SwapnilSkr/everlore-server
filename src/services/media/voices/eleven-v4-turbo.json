@@ -287,7 +287,8 @@
           "female"
         ],
         "age_band": [
-          "middle_aged"
+          "middle_aged",
+          "older"
         ],
         "timbre": [
           "raspy"
@@ -371,5 +372,48 @@
     "age_band": 4,
     "timbre": 1,
     "temperament": 2
+  },
+  "trait_aliases": {
+    "gender_presentation": {
+      "feminine": ["female"],
+      "masculine": ["male"],
+      "neutral": ["neutral"],
+      "female": ["female"],
+      "male": ["male"]
+    },
+    "age_band": {
+      "child": [],
+      "young": ["young"],
+      "adult": ["middle_aged"],
+      "older": ["older"],
+      "elderly": ["older"],
+      "middle_aged": ["middle_aged"]
+    },
+    "timbre": {
+      "light": ["soft", "clear", "bright"],
+      "warm": ["warm"],
+      "deep": ["deep"],
+      "rough": ["rough", "gravelly", "raspy"],
+      "airy": ["soft", "smooth"],
+      "unclear": [],
+      "resonant": ["resonant"],
+      "soft": ["soft"],
+      "clear": ["clear"],
+      "strong": ["strong"],
+      "gravelly": ["gravelly"],
+      "dry": ["dry"],
+      "smooth": ["smooth"],
+      "bright": ["bright"],
+      "raspy": ["raspy"]
+    },
+    "temperament": {
+      "steady": ["steady"],
+      "gentle": ["gentle"],
+      "calm": ["calm"],
+      "confident": ["confident"],
+      "friendly": ["friendly"],
+      "intense": ["intense"],
+      "playful": ["playful"]
+    }
   }
 }

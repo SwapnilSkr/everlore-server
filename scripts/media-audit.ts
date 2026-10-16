@@ -5,7 +5,7 @@ import { ObjectId } from 'mongodb'
 import { fixture } from './media-audit-fixture'
 import { detectSpokenLines } from '../src/services/media/detection'
 import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, resolveVoiceSpeaker, attributionEffects } from '../src/services/media/attribution'
-import { chooseVoice, filterVoiceTags, isVerbatim, matureVoiceAllowed, utcMediaDay } from '../src/services/media/policy'
+import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, traitsVoiceable, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
 import { isReferenceAllowed, resolvePortraitHolder } from '../src/services/media/portraits'
 import { makeSceneShot, processPicture, processPortrait, processVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects } from '../src/services/media/visual'
@@ -19,6 +19,9 @@ import { reserveMedia, releaseMedia, settleMedia, mediaUsage } from '../src/serv
 import { purgeMedia } from '../src/services/media/deletion'
 import { storageService } from '../src/services/storage.service'
 import { publicMediaEvent, wireSpokenLines } from '../src/services/media/events'
+import { generateMediaImage, ProviderRefusalError } from '../src/ai/image'
+import { submitVideo } from '../src/ai/video'
+import { env } from '../src/config/env'
 import { castCharacter } from '../src/services/media/casting'
 import { HttpError } from '../src/utils/http-error'
 import type { MediaAssetDoc } from '../src/models/media.model'
@@ -153,7 +156,7 @@ check('cache_free', async () => {
 check('release', async () => {
   const f = fixture(), a = asset(f)
   assert.equal(await reserveMedia(a), true)
-  await failMedia(a)
+  await failMedia(a, { stage: 'test', message: 'test release' })
   assert.equal(f.db.mediaUsage.rows[0].status, 'released'); assert.equal('slot' in f.db.mediaUsage.rows[0], false)
   assert.equal(await reserveMedia(asset(f)), true)
 })
@@ -705,6 +708,8 @@ function stubVideoRun(f: ReturnType<typeof videoBase>, opts: {
   moderate?: (text: string) => { verdict: 'allow' | 'reject'; reason_code: string }
   /** Scene stills: succeed, or throw like a provider filter 400. */
   stillImage?: 'ok' | 'throw'
+  /** The face portrait: succeed, or refuse like a provider content filter. */
+  portraitImage?: 'ok' | 'refuse'
 } = {}): VideoRun {
   const run: VideoRun = { events: [], uploaded: [], removed: [], published: [], sceneSubmits: [] }
   let lineSubmitted = false
@@ -736,6 +741,7 @@ function stubVideoRun(f: ReturnType<typeof videoBase>, opts: {
   safetyEffects.frames = (async (video: Buffer) => video.equals(lineVideo) ? [...lineFrames] : [...sceneFrames]) as never
   visualEffects.image = (async (prompt: string) => {
     if (prompt.includes('head-and-shoulders portrait')) {
+      if (opts.portraitImage === 'refuse') throw new ProviderRefusalError(400, '400', 'Image generation refused (400:400)')
       return { data: portraitBytes, contentType: 'image/png', generationId: null, costUsd: 0.017 }
     }
     run.events.push('image-call')
@@ -957,6 +963,192 @@ check('reference_key', async () => {
   const row = f.db.mediaAssets.rows.find((r) => (r.kind as string) === 'picture') as unknown as MediaAssetDoc
   assert.equal(row.status, 'ready')
   assert.equal(row.reference_asset_key, 'media/portrait/keep.png')
+})
+// ── media-server-2-fix-2 ──
+check('portrait_prompt_gated', async () => {
+  // What is gated is what is painted: the exact string sent to the image
+  // model is the moderated description plus the fixed style suffix — the raw
+  // look (with its scar) never reaches the provider.
+  const f = fixture()
+  stubPortraitPipeline(f, async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false }))
+  let prompt = ''
+  visualEffects.image = (async (p: string) => {
+    prompt = p
+    return { data: Buffer.from('img'), contentType: 'image/png', generationId: null, costUsd: 0.017 }
+  }) as never
+  const a = portraitRow(f)
+  f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+  await reserveMedia(a)
+  await processPortrait(String(a._id))
+  assert.equal(f.db.mediaAssets.rows[0].status, 'ready')
+  assert.ok(prompt.includes('A calm head-and-shoulders portrait description.'), 'paints the moderated description')
+  assert.ok(!prompt.includes('Grey eyes, dark braids, leather collar'), 'no raw look in the prompt')
+})
+check('picture_prompt_gated', async () => {
+  // The picture prompt is the moderated description plus fixed framing — the
+  // raw turn prose is never sent to the image model.
+  const f = fixture()
+  f.card.appearance = 'Grey eyes, dark braids'
+  f.card.appearance_version = 1
+  f.card.portrait = { asset_key: 'media/portrait/keep.png', source: 'generated', appearance_version: 1, painted_at: new Date() }
+  const prose = 'Speaker leaned closer. "Come with me."'
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  event.data.ai_response = prose
+  event.data.spoken_lines = detectSpokenLines(prose)
+  safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
+    ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+    : 'Speaker in a tavern. Wide view, calm mood.'
+  safetyEffects.judge = (async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 0, face_close_up: false, text_visible: false })) as never
+  visualEffects.download = (async () => Buffer.from('face')) as never
+  let prompt = ''
+  visualEffects.image = (async (p: string) => {
+    prompt = p
+    return { data: Buffer.from('pic'), contentType: 'image/png', generationId: null, costUsd: 0.017 }
+  }) as never
+  visualEffects.upload = (async (_data: Buffer, _type: string, o?: { key?: string }) => ({ key: o?.key || '', url: `https://example.test/${o?.key}` })) as never
+  mediaEffects.remove = (async () => {}) as never
+  mediaEffects.publish = (async () => {}) as never
+  const reply = await requestPicture(String(f.player), String(f.instance), String(f.event))
+  assert.equal(reply.status, 'queued')
+  if (reply.status !== 'queued') throw new Error('picture cached unexpectedly')
+  await processPicture(String(reply.media_id))
+  const row = f.db.mediaAssets.rows.find((r) => (r.kind as string) === 'picture') as unknown as MediaAssetDoc
+  assert.equal(row.status, 'ready')
+  assert.ok(prompt.includes('Speaker in a tavern. Wide view, calm mood.'), 'paints the moderated description')
+  assert.ok(!prompt.includes(prose), 'no raw prose in the prompt')
+})
+check('provider_refusal_detected', async () => {
+  // Structural refusal detection: an HTTP 400/422 carrying the provider's
+  // error envelope is a refusal — never matched on message words. Recorded
+  // shape (OpenRouter, Oct 16 2026 live run): 400 + {"error": {...}}. A 400
+  // without that envelope, a 429 and a 5xx stay plain failures.
+  const realFetch = globalThis.fetch
+  const realKey = env.OPENROUTER_API_KEY
+  env.OPENROUTER_API_KEY = 'audit'
+  const refusalBody = { error: { message: 'Black Forest Labs blocked this request: it was flagged for graphic violence.', code: 400 } }
+  const stub = (status: number, body: unknown) => (async () => ({
+    ok: false, status, statusText: 'error', headers: { get: () => null }, json: async () => body,
+  })) as unknown as typeof fetch
+  try {
+    globalThis.fetch = stub(400, refusalBody)
+    await assert.rejects(generateMediaImage('a calm portrait'),
+      (e: unknown) => e instanceof ProviderRefusalError && e.status === 400 && e.code === '400')
+    globalThis.fetch = stub(422, refusalBody)
+    await assert.rejects(submitVideo({ prompt: 'say it', inputReferences: [] }),
+      (e: unknown) => e instanceof ProviderRefusalError && e.status === 422)
+    globalThis.fetch = stub(400, {})
+    await assert.rejects(generateMediaImage('a calm portrait'),
+      (e: unknown) => !(e instanceof ProviderRefusalError) && (e as Error).message.includes('Image generation failed (400)'))
+    globalThis.fetch = stub(429, refusalBody)
+    await assert.rejects(generateMediaImage('a calm portrait'),
+      (e: unknown) => !(e instanceof ProviderRefusalError))
+  } finally {
+    globalThis.fetch = realFetch
+    env.OPENROUTER_API_KEY = realKey
+  }
+})
+check('provider_refusal_unseen', async () => {
+  // A provider content refusal is a rejection, not a failure: the slot is
+  // released, media_rejections logs stage provider, and media_unseen is sent.
+  const f = fixture()
+  stubPortraitPipeline(f, async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false }))
+  visualEffects.image = (async () => { throw new ProviderRefusalError(400, '400', 'Image generation refused (400:400)') }) as never
+  const published: Array<Record<string, unknown>> = []
+  mediaEffects.publish = (async (_player: string, message: Record<string, unknown>) => { published.push(message) }) as never
+  const a = portraitRow(f)
+  f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+  await reserveMedia(a)
+  await processPortrait(String(a._id))
+  assert.equal(f.db.mediaAssets.rows[0].status, 'unseen')
+  assert.equal(f.db.mediaUsage.rows[0].status, 'released')
+  assert.equal(f.db.mediaRejections.rows.length, 1)
+  assert.equal((f.db.mediaRejections.rows[0] as { stage: string }).stage, 'provider')
+  assert.equal((f.db.mediaRejections.rows[0] as { reason: string }).reason, 'provider_400')
+  assert.ok(published.some((m) => m.type === 'media_unseen'))
+})
+check('provider_refusal_video_face', async () => {
+  // A video whose face cannot be painted goes wholly unseen.
+  const f = videoBase()
+  const run = stubVideoRun(f, { portraitImage: 'refuse' })
+  const asset = await queueVideo(f)
+  await processVideo(String(asset._id))
+  const row = f.db.mediaAssets.rows[0] as unknown as MediaAssetDoc
+  assert.equal(row.status, 'unseen')
+  assert.equal(f.db.mediaUsage.rows[0].status, 'released')
+  assert.equal(f.db.mediaRejections.rows.length, 1)
+  assert.equal((f.db.mediaRejections.rows[0] as { stage: string }).stage, 'provider')
+  assert.ok(run.published.some((m) => m.type === 'media_unseen'))
+  assert.ok(!run.uploaded.some((k) => k.startsWith('media/still/')), 'no scene still outlived the unseen video')
+})
+check('failed_row_error', async () => {
+  // No silent failures: the catch logs one line (kind, media id, stage,
+  // message) and the failed row carries error.{stage,message} — with no URLs.
+  const f = fixture(), a = asset(f)
+  f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+  await reserveMedia(a)
+  mediaEffects.synthesize = async () => { throw new Error('provider blew up https://cdn.example.test/clip.mp3?token=secret-token-value plus filler') }
+  const warned: string[] = []
+  const origWarn = console.warn
+  console.warn = ((...args: unknown[]) => { warned.push(args.map(String).join(' ')) }) as typeof console.warn
+  try {
+    await processVoice(String(a._id))
+  } finally {
+    console.warn = origWarn
+  }
+  const row = f.db.mediaAssets.rows[0] as unknown as MediaAssetDoc
+  assert.equal(row.status, 'failed')
+  assert.deepEqual(Object.keys(row.error || {}).sort(), ['message', 'stage'])
+  assert.equal(row.error!.stage, 'synthesize')
+  assert.ok(!row.error!.message.includes('http'), 'no URLs in the stored message')
+  assert.ok(!row.error!.message.includes('secret-token-value'))
+  assert.ok(row.error!.message.length <= 300)
+  assert.equal(warned.length, 1, 'exactly one log line')
+  const line = warned[0]
+  assert.ok(line.includes('media.process_failed'))
+  assert.ok(line.includes('kind=voice'))
+  assert.ok(line.includes('stage=synthesize'))
+  assert.ok(line.includes(`media_id=${String(a._id)}`))
+  assert.ok(!line.includes('secret-token-value'))
+})
+check('casting_traits', () => {
+  // Voice casting by traits against the catalogue's own labels: an old woman
+  // gets an older feminine voice, a deep-voiced man a masculine one.
+  assert.equal(chooseVoice({ gender_presentation: 'feminine', age_band: 'elderly' }, []), 'lily')
+  assert.equal(chooseVoice({ gender_presentation: 'masculine', timbre: 'deep' }, []), 'adam')
+  // Authored seed traits in catalogue labels keep working.
+  assert.equal(chooseVoice({ gender_presentation: 'female' }, []), 'sarah')
+})
+check('attribution_traits', () => {
+  const f = fixture()
+  const line = detectSpokenLines(f.prose)[0]
+  const good = { is_speech: true, speaker_name: 'Alias', spoken_text: 'Come with me.', tags: [],
+    gender_presentation: 'feminine', age_band: 'older', timbre: 'warm' }
+  const accepted = acceptAttribution(line, f.prose, good, () => f.card)
+  if (accepted.voice?.status !== 'voiceable') throw new Error('expected voiceable')
+  assert.deepEqual(accepted.voice.voice_traits, { gender_presentation: 'feminine', age_band: 'older', timbre: 'warm' })
+  // An invalid trait is ignored; the valid ones stand.
+  const mixed = acceptAttribution(line, f.prose, { ...good, gender_presentation: 'robot', timbre: 42 }, () => f.card)
+  if (mixed.voice?.status !== 'voiceable') throw new Error('expected voiceable')
+  assert.deepEqual(mixed.voice.voice_traits, { age_band: 'older' })
+  assert.deepEqual(filterVoiceTraits('not an object'), {})
+  assert.equal(traitsVoiceable({}), true)
+  // A child or unclear-gender speaker stays unvoiceable.
+  assert.equal(acceptAttribution(line, f.prose, { ...good, age_band: 'child' }, () => f.card).voice?.status, 'unvoiceable')
+  assert.equal(acceptAttribution(line, f.prose, { ...good, gender_presentation: 'unclear' }, () => f.card).voice?.status, 'unvoiceable')
+  // An unclear timbre only withholds the timbre vote: still voiceable.
+  assert.equal(acceptAttribution(line, f.prose, { ...good, timbre: 'unclear' }, () => f.card).voice?.status, 'voiceable')
+})
+check('casting_traits_persist', async () => {
+  // The first cast persists the traits it cast by; later casts never
+  // overwrite them, so casting is stable once persisted.
+  const f = fixture()
+  const traits = { gender_presentation: 'feminine', age_band: 'elderly' }
+  const voice = await castCharacter(f.db.worldInstances.rows[0] as never, f.card, traits)
+  assert.equal(voice.voice_id, 'lily')
+  assert.deepEqual(f.db.characters.rows[0].voice_traits, traits)
+  const again = await castCharacter(f.db.worldInstances.rows[0] as never, f.card, { gender_presentation: 'masculine' })
+  assert.deepEqual(again, voice)
+  assert.deepEqual(f.db.characters.rows[0].voice_traits, traits)
 })
 
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }

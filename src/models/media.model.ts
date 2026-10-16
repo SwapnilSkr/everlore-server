@@ -19,6 +19,10 @@ export interface SpokenLine {
     speaker_name: string
     spoken_text: string
     tags: string[]
+    /** Voice traits the attribution call returned for this speaker, validated
+     * against the closed lists. Absent when the call returned none. Never
+     * sent to the player (publicSpokenLines strips voiceable voices). */
+    voice_traits?: VoiceTraits
   }
 }
 export interface MediaAssetDoc {
@@ -49,6 +53,9 @@ export interface MediaAssetDoc {
   notified_at?: Date
   generation_id?: string
   status: 'queued' | 'processing' | 'ready' | 'failed' | 'unseen'
+  /** Why a failed job failed: the pipeline stage and the sanitized message.
+   * Set by failMedia on every failed row; absent on queued/ready/unseen rows. */
+  error?: { stage: string; message: string }
   asset_key?: string
   url?: string
   duration_ms?: number
@@ -78,7 +85,9 @@ export interface MediaRejectionDoc {
   instance_id?: ObjectId
   event_id?: ObjectId
   kind: MediaKind
-  stage: 'pre' | 'post'
+  /** pre: moderation gate before generation; post: vision gate after;
+   * provider: the image/video provider refused the request for content. */
+  stage: 'pre' | 'post' | 'provider'
   reason: string
   model: string
   created_at: Date

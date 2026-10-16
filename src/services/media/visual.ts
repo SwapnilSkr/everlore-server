@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
 import { getMediaQueue, QUEUE_RETENTION } from '../../queues'
-import { generateMediaImage } from '../../ai/image'
+import { generateMediaImage, ProviderRefusalError } from '../../ai/image'
 import { submitVideo, awaitVideo, downloadVideo } from '../../ai/video'
 import { AI_MODELS } from '../../ai/models'
 import { env } from '../../config/env'
@@ -79,11 +79,25 @@ export class UnseenError extends Error {
   }
 }
 
+/** The reason logged for a provider content refusal: the HTTP status only,
+ * never words from the provider's message (which provider and model the row
+ * already records). */
+export const providerReason = (error: ProviderRefusalError): string => `provider_${error.status}`
+
 interface PortraitBytes {
   data: Buffer
   contentType: string
   costUsd?: number
   generationId: string | null
+}
+
+/**
+ * The exact portrait image prompt: the moderated description plus the fixed
+ * style suffix. One builder so the audit and the live check assert on the
+ * same string the job sends.
+ */
+export function portraitImagePrompt(description: string): string {
+  return `${description}. SFW head-and-shoulders portrait, plain dark background, vertical 9:16. Stylized cinematic painting with visible painterly texture: clearly an illustration of a fictional person, never a photograph.`
 }
 
 /** The portrait generation core: gates then paint. Shared by the queued job
@@ -105,8 +119,12 @@ async function generatePortraitBytes(
   })
   const pre = await moderateDescription(description)
   if (pre.verdict !== 'allow') throw new UnseenError('pre', pre.reason_code)
+  // What is gated is what is painted: the image prompt is the moderated
+  // description plus the fixed style suffix. The raw look never reaches the
+  // image model (a scar in the look once tripped the provider filter while
+  // the gated description painted cleanly).
   const image = await visualEffects.image(
-    `${appearance}. SFW head-and-shoulders portrait, plain dark background, vertical 9:16. Stylized cinematic painting with visible painterly texture: clearly an illustration of a fictional person, never a photograph.`,
+    portraitImagePrompt(description),
     { model, aspectRatio: '9:16', ...(reference ? { reference } : {}) },
   )
   const post = await checkImage(image.data, image.contentType)
@@ -234,7 +252,7 @@ async function notifyMedia(asset: MediaAssetDoc): Promise<void> {
 /** A gate rejection: delete the file, release the slot, stay unseen, log it. */
 export async function unseeMedia(
   asset: MediaAssetDoc,
-  stage: 'pre' | 'post',
+  stage: 'pre' | 'post' | 'provider',
   reason: string,
   uploadedKey?: string,
 ): Promise<void> {
@@ -360,6 +378,7 @@ export async function processPortrait(mediaId: string): Promise<void> {
   }
   if (!asset.instance_id) throw new Error('Portrait has no save')
   let uploaded = ''
+  let stage = 'prepare'
   try {
     const reservation = await mongoColl.mediaUsage().findOne({ _id: asset._id, status: 'reserved' })
     if (!reservation) throw new Error('Portrait no longer reserved')
@@ -380,6 +399,7 @@ export async function processPortrait(mediaId: string): Promise<void> {
       const bytes = await visualEffects.download(portraitUrl(holder.portrait.asset_key))
       reference = { data: bytes, contentType: 'image/png' }
     }
+    stage = 'paint'
     let image: PortraitBytes
     try {
       image = await generatePortraitBytes(appearance, card.canonical_name, template?.title || '', asset.model, reference)
@@ -388,11 +408,16 @@ export async function processPortrait(mediaId: string): Promise<void> {
         await unseeMedia(asset, error.stage, error.reason)
         return
       }
+      if (error instanceof ProviderRefusalError) {
+        await unseeMedia(asset, 'provider', providerReason(error))
+        return
+      }
       throw error
     }
     const key = `media/portrait/${asset.player_id.toHexString()}/${asset.instance_id.toHexString()}/${asset._id.toHexString()}.png`
     const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key } })
     if (!staged.matchedCount) throw new Error('Portrait removed')
+    stage = 'upload'
     uploaded = key
     const result = await visualEffects.upload(image.data, 'image/png', { key })
     uploaded = result.key
@@ -405,6 +430,7 @@ export async function processPortrait(mediaId: string): Promise<void> {
       ...(repaintOfWorld ? { repaintOfWorld: true } : {}),
     })
     const cost = image.costUsd ?? asset.cost_usd
+    stage = 'save'
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, {
       $set: {
         status: 'ready', asset_key: result.key, url: result.url, cost_usd: cost,
@@ -414,11 +440,11 @@ export async function processPortrait(mediaId: string): Promise<void> {
     if (!saved.modifiedCount) throw new Error('Portrait removed')
     await settleMedia(asset._id)
     await notifyMedia({ ...asset, status: 'ready', url: result.url })
-  } catch {
+  } catch (error) {
     if (uploaded) {
       try { await mediaEffects.remove(uploaded) } catch { /* retained for maintenance */ }
     }
-    await failMedia(asset)
+    await failMedia(asset, { stage, message: error instanceof Error ? error.message : String(error) })
   }
 }
 
@@ -476,6 +502,7 @@ export async function requestPersonaPortrait(playerId: string, personaId: string
 
 async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
   let uploaded = ''
+  let stage = 'prepare'
   try {
     const reservation = await mongoColl.mediaUsage().findOne({ _id: asset._id, status: 'reserved' })
     if (!reservation) throw new Error('Portrait no longer reserved')
@@ -488,6 +515,7 @@ async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
     if (persona.portrait && isReferenceAllowed(persona.portrait.source)) {
       reference = { data: await visualEffects.download(portraitUrl(persona.portrait.asset_key)), contentType: 'image/png' }
     }
+    stage = 'paint'
     let image: PortraitBytes
     try {
       image = await generatePortraitBytes(appearance, persona.name, '', asset.model, reference)
@@ -496,11 +524,16 @@ async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
         await unseeMedia(asset, error.stage, error.reason)
         return
       }
+      if (error instanceof ProviderRefusalError) {
+        await unseeMedia(asset, 'provider', providerReason(error))
+        return
+      }
       throw error
     }
     const key = `media/persona/${asset.player_id.toHexString()}/${asset._id.toHexString()}.png`
     const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key } })
     if (!staged.matchedCount) throw new Error('Portrait removed')
+    stage = 'upload'
     uploaded = key
     const result = await visualEffects.upload(image.data, 'image/png', { key })
     uploaded = result.key
@@ -512,6 +545,7 @@ async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
       $set: { portrait, appearance_version: portrait.appearance_version, updated_at: new Date() },
     })
     const cost = image.costUsd ?? asset.cost_usd
+    stage = 'save'
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, {
       $set: {
         status: 'ready', asset_key: result.key, url: result.url, cost_usd: cost,
@@ -527,11 +561,11 @@ async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
       url: result.url,
       persona_id: persona._id.toHexString(),
     }).catch(() => {})
-  } catch {
+  } catch (error) {
     if (uploaded) {
       try { await mediaEffects.remove(uploaded) } catch { /* retained for maintenance */ }
     }
-    await failMedia(asset)
+    await failMedia(asset, { stage, message: error instanceof Error ? error.message : String(error) })
   }
 }
 
@@ -566,6 +600,7 @@ export async function processPicture(mediaId: string): Promise<void> {
   if (!asset) return
   if (!asset.instance_id) throw new Error('Picture has no save')
   let uploaded = ''
+  let stage = 'prepare'
   try {
     const reservation = await mongoColl.mediaUsage().findOne({ _id: asset._id, status: 'reserved' })
     if (!reservation) throw new Error('Picture no longer reserved')
@@ -579,6 +614,7 @@ export async function processPicture(mediaId: string): Promise<void> {
     const cards = await mongoColl.characters().find({ instance_id: asset.instance_id, player_id: asset.player_id }).sort({ first_seen_sequence: 1 }).toArray()
     const present = presentCards(event.data.ai_response, cards, personaName)
     // Faces for everyone named, made on this tap within the portrait allowance.
+    stage = 'faces'
     const faces: Array<{ name: string; bytes: Buffer; assetKey: string }> = []
     for (const card of present.slice(0, 3)) {
       try {
@@ -605,16 +641,26 @@ export async function processPicture(mediaId: string): Promise<void> {
       framing: 'scene',
       place: template?.title || '',
     })
+    stage = 'generate'
     const pre = await moderateDescription(description)
     if (pre.verdict !== 'allow') {
       await unseeMedia(asset, 'pre', pre.reason_code)
       return
     }
     const prompt = `${description} ${faces.length ? `The same ${faces.length === 1 ? 'face' : 'faces'} as the reference portrait${faces.length === 1 ? '' : 's'}.` : ''} Fully clothed, SFW, vertical 9:16. ${playerFraming}`.trim()
-    const image = await visualEffects.image(prompt, {
-      model: asset.model, aspectRatio: '9:16',
-      ...(faces[0] ? { reference: { data: faces[0].bytes, contentType: 'image/png' } } : {}),
-    })
+    let image: Awaited<ReturnType<typeof visualEffects.image>>
+    try {
+      image = await visualEffects.image(prompt, {
+        model: asset.model, aspectRatio: '9:16',
+        ...(faces[0] ? { reference: { data: faces[0].bytes, contentType: 'image/png' } } : {}),
+      })
+    } catch (error) {
+      if (error instanceof ProviderRefusalError) {
+        await unseeMedia(asset, 'provider', providerReason(error))
+        return
+      }
+      throw error
+    }
     const post = await checkImage(image.data, image.contentType)
     if (post.verdict !== 'allow' || post.text_visible) {
       await unseeMedia(asset, 'post', post.verdict !== 'allow' ? post.reason_code : 'picture_text_visible')
@@ -623,9 +669,11 @@ export async function processPicture(mediaId: string): Promise<void> {
     const key = `media/picture/${asset.player_id.toHexString()}/${asset.instance_id.toHexString()}/${asset._id.toHexString()}.png`
     const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key } })
     if (!staged.matchedCount) throw new Error('Picture removed')
+    stage = 'upload'
     uploaded = key
     const result = await visualEffects.upload(image.data, 'image/png', { key })
     uploaded = result.key
+    stage = 'save'
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, {
       $set: {
         status: 'ready', asset_key: result.key, url: result.url, cost_usd: image.costUsd ?? asset.cost_usd,
@@ -636,11 +684,11 @@ export async function processPicture(mediaId: string): Promise<void> {
     if (!saved.modifiedCount) throw new Error('Picture removed')
     await settleMedia(asset._id)
     await notifyMedia({ ...asset, status: 'ready', url: result.url })
-  } catch {
+  } catch (error) {
     if (uploaded) {
       try { await mediaEffects.remove(uploaded) } catch { /* retained for maintenance */ }
     }
-    await failMedia(asset)
+    await failMedia(asset, { stage, message: error instanceof Error ? error.message : String(error) })
   }
 }
 
@@ -693,7 +741,7 @@ export async function ensureVoiceReady(
   const cards = await mongoColl.characters().find({ instance_id: iid, player_id: pid }).sort({ first_seen_sequence: 1 }).toArray()
   const card = resolveVoiceSpeaker(line.voice.speaker_name, cards, template.is_sentient, instance.persona_snapshot?.name)
   if (!card) throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })
-  const voice = await mediaEffects.cast(instance, card)
+  const voice = await mediaEffects.cast(instance, card, line.voice.voice_traits ?? {})
   const revision = mediaRevision(event!.data.ai_response, event!.data.player_input)
   const key = `${eventId}:${lineId}:${voice.voice_id}:${voice.model}`
   const cached = await mongoColl.mediaAssets().findOne({ cache_key: key, status: 'ready' })
@@ -751,7 +799,7 @@ export async function requestVideo(playerId: string, instanceId: string, eventId
   const cards = await mongoColl.characters().find({ instance_id: iid, player_id: pid }).sort({ first_seen_sequence: 1 }).toArray()
   const card = resolveVoiceSpeaker(line.voice.speaker_name, cards, template.is_sentient, instance.persona_snapshot?.name)
   if (!card) throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })
-  const voice = await mediaEffects.cast(instance, card)
+  const voice = await mediaEffects.cast(instance, card, line.voice.voice_traits ?? {})
   const holder = await resolvePortraitHolder(instance, card, {
     isSentient: template.is_sentient, personaName: instance.persona_snapshot?.name,
     ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
@@ -826,17 +874,24 @@ export async function makeSceneShot(args: {
     // is never spent animating a still that is already off-plan.
     let still: { data: Buffer; contentType: string; costUsd?: number } | null = null
     const stillChecks: unknown[] = []
-    for (let attempt = 0; attempt < 2 && !still; attempt++) {
-      const candidate = await visualEffects.image(
-        stillPrompt,
-        { model: imageModel(), aspectRatio: '9:16', reference: { data: args.speakerPortrait, contentType: 'image/png' } },
-      )
-      const checks = await checkImage(candidate.data, candidate.contentType)
-      stillChecks.push({ attempt, people_count: checks.people_count, face_close_up: checks.face_close_up, text_visible: checks.text_visible, verdict: checks.verdict })
-      if (checks.verdict === 'allow' && !checks.text_visible && !checks.face_close_up
-        && checks.people_count === args.shot.people_in_still.length) {
-        still = candidate
+    try {
+      for (let attempt = 0; attempt < 2 && !still; attempt++) {
+        const candidate = await visualEffects.image(
+          stillPrompt,
+          { model: imageModel(), aspectRatio: '9:16', reference: { data: args.speakerPortrait, contentType: 'image/png' } },
+        )
+        const checks = await checkImage(candidate.data, candidate.contentType)
+        stillChecks.push({ attempt, people_count: checks.people_count, face_close_up: checks.face_close_up, text_visible: checks.text_visible, verdict: checks.verdict })
+        if (checks.verdict === 'allow' && !checks.text_visible && !checks.face_close_up
+          && checks.people_count === args.shot.people_in_still.length) {
+          still = candidate
+        }
       }
+    } catch (error) {
+      // A provider content refusal drops the shot like a gate rejection, with
+      // its own reason — never a failed cut and never a worker crash.
+      if (error instanceof ProviderRefusalError) return dropped('still_provider_refused', [], 0)
+      throw error
     }
     if (!still) return dropped('still_rejected', stillChecks, 0.034)
     const stillBytes = still.data
@@ -880,6 +935,9 @@ export async function makeSceneShot(args: {
         }
         stillChecks.push({ ...record, retry: model === primary ? 'fallback' : 'dropped' })
       } catch (error) {
+        // A refused prompt will not pass on the fallback either: drop the
+        // shot instead of burning a second video on the same refusal.
+        if (error instanceof ProviderRefusalError) return dropShot('shot_provider_refused')
         stillChecks.push({ model, error: (error as Error).message.slice(0, 200), retry: model === primary ? 'fallback' : 'dropped' })
       }
     }
@@ -941,6 +999,7 @@ export async function processVideo(mediaId: string): Promise<void> {
   let uploaded = ''
   const renderStarted = Date.now()
   let planRecord: Record<string, unknown> = {}
+  let stage = 'prepare'
   try {
     const reservation = await mongoColl.mediaUsage().findOne({ _id: asset._id, status: 'reserved' })
     if (!reservation) throw new Error('Video no longer reserved')
@@ -959,6 +1018,7 @@ export async function processVideo(mediaId: string): Promise<void> {
     const card = cards.find((c) => c._id.equals(asset.character_id!))
     if (!card) throw new Error('Speaker removed')
     // The face and the exact clip the player heard, made first when missing.
+    stage = 'face'
     let portraitUrlStr: string
     try {
       const ready = await ensurePortraitReady(
@@ -969,8 +1029,14 @@ export async function processVideo(mediaId: string): Promise<void> {
         await unseeMedia(asset, error.stage, error.reason)
         return
       }
+      // A face the provider will not paint makes the whole video unseen.
+      if (error instanceof ProviderRefusalError) {
+        await unseeMedia(asset, 'provider', providerReason(error))
+        return
+      }
       throw error
     }
+    stage = 'voice'
     const clip = await ensureVoiceReady(
       asset.player_id.toHexString(), asset.instance_id.toHexString(),
       asset.event_id.toHexString(), asset.line_id)
@@ -996,6 +1062,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       await unseeMedia(asset, 'pre', pre.reason_code)
       return
     }
+    stage = 'direct'
     const model = directorModel()
     const directed = await directScene(model, directorInput)
     const planErrors = directed.plan ? validateDirectorPlan(directed.plan, directorInput) : directed.errors
@@ -1025,6 +1092,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       audioUrl: clip.url,
     })
     const shots: ShotOutcome[] = planRecord.shots as ShotOutcome[]
+    stage = 'shoot'
     if (plan) {
       const settled = await Promise.allSettled(plan.shots.map((shot, index) => makeSceneShot({
         role: shot.role, continuity: plan.continuity, shot,
@@ -1041,13 +1109,18 @@ export async function processVideo(mediaId: string): Promise<void> {
     // The line shot: portrait plus the exact clip. A failed line shot fails
     // the whole video and releases the slot — after the scene stills are
     // deleted, since they are inputs, not deliverables.
+    stage = 'line'
     let lineVideo: Buffer
     try {
       const done = await lineShot
       lineVideo = done.video
       cost += done.cost
-    } catch {
+    } catch (error) {
       await deleteSceneStills(asset, sceneStillKeys(shots))
+      if (error instanceof ProviderRefusalError) {
+        await unseeMedia(asset, 'provider', providerReason(error))
+        return
+      }
       throw new Error('Line shot failed')
     }
     // The line shot gets the same first/middle/last-frame post-check (§7 says
@@ -1068,6 +1141,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       return
     }
     // Assemble: scene shots that survived, then the line, degraded never broken.
+    stage = 'assemble'
     const ready = shots.filter((s) => s.status === 'ready' && s.videoBytes)
     const opening = ready.find((s) => s.role === 'opening')
     const closing = ready.find((s) => s.role === 'closing')
@@ -1093,9 +1167,11 @@ export async function processVideo(mediaId: string): Promise<void> {
     const key = `media/video/${asset.player_id.toHexString()}/${asset.instance_id.toHexString()}/${asset._id.toHexString()}.mp4`
     const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key } })
     if (!staged.matchedCount) throw new Error('Video removed')
+    stage = 'upload'
     uploaded = key
     const result = await visualEffects.upload(bytes, 'video/mp4', { key })
     uploaded = result.key
+    stage = 'save'
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, {
       $set: {
         status: 'ready', asset_key: result.key, url: result.url, duration_ms: Math.round(totalS * 1000),
@@ -1131,6 +1207,6 @@ export async function processVideo(mediaId: string): Promise<void> {
     await mongoColl.mediaAssets().updateOne({ _id: asset._id }, {
       $set: { plan: { ...planRecord, render_ms: Date.now() - renderStarted } },
     }).catch(() => {})
-    await failMedia(asset)
+    await failMedia(asset, { stage, message: error instanceof Error ? error.message : String(error) })
   }
 }

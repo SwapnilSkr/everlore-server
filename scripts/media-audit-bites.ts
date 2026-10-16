@@ -31,9 +31,9 @@ const mutations: Mutation[] = [
   { name: 'ownership 404', check: 'auth_switch', file: 'service.ts', changes: [["if (!instance) throw new HttpError(404", "if (false && !instance) throw new HttpError(404"]] },
   { name: 'disabled endpoint 404', check: 'auth_switch', file: 'service.ts', changes: [["if (!mediaEnabled('voice')) throw", "if (false && !mediaEnabled('voice')) throw"]] },
   { name: 'delivered reservation settles', check: 'delivery', file: 'service.ts', changes: [["    await settleMedia(_id)", "    await releaseMedia(_id)"]] },
-  { name: 'provider failure releases', check: 'provider_failure', file: 'service.ts', changes: [["    await failMedia(asset)\n  }\n}", "    // omitted release\n  }\n}"]] },
+  { name: 'provider failure releases', check: 'provider_failure', file: 'service.ts', changes: [["    await failMedia(asset, { stage, message: error instanceof Error ? error.message : String(error) })\n  }\n}", "    // omitted release\n  }\n}"]] },
   { name: 'late result deletes uploaded object', check: 'late_result', file: 'service.ts', changes: [["if (!saved.modifiedCount) throw new Error('Voice removed')", "// omitted completion fence"]] },
-  { name: 'abandoned reservation recovery', check: 'repair', file: 'service.ts', changes: [["for (const asset of abandoned) await failMedia(asset)", "for (const asset of abandoned) { /* no recovery */ }"]] },
+  { name: 'abandoned reservation recovery', check: 'repair', file: 'service.ts', changes: [["for (const asset of abandoned) await failMedia(asset, { stage: 'repair', message: 'abandoned reservation' })", "for (const asset of abandoned) { /* no recovery */ }"]] },
   { name: 'object deletion', check: 'deletion', file: 'deletion.ts', changes: [["if (asset.asset_key) await storageService.deleteStrict(asset.asset_key)", "// omitted object deletion"]] },
   { name: 'shared save purge integration', check: 'deletion', file: '../deletion.service.ts', changes: [["await purgeMedia({ instance_id: instanceId })", "// omitted shared media purge"]] },
   { name: 'attribution stays private', check: 'revisions_payload', file: 'policy.ts', changes: [["...(voice?.status === 'unvoiceable' ? { voice } : {})", "...(voice ? { voice } : {})"]] },
@@ -74,6 +74,17 @@ const mutations: Mutation[] = [
   { name: 'persona face needs no save', check: 'persona_standalone', file: 'visual.ts', changes: [["if (!persona) throw new HttpError(404, 'That face could not be found.')", "if (!persona) throw new HttpError(404, 'That face could not be found.')\n  const needsSave = await mongoColl.worldInstances().findOne({ player_id: pid })\n  if (!needsSave) throw new HttpError(404, 'That face could not be found.')"]] },
   { name: 'reference stores the asset key', check: 'reference_key', file: 'visual.ts', changes: [["...(faces[0] ? { reference_asset_key: faces[0].assetKey } : {}),", "...(faces[0] ? { reference_asset_key: faces[0].name } : {}),"]] },
   { name: 'portraits rest silently', check: 'portrait_resting', file: 'visual.ts', changes: [["portrait: '',", "portrait: 'The requested media waits until tomorrow.',"]] },
+  // ── media-server-2-fix-2 ──
+  { name: 'portrait paints the moderated description', check: 'portrait_prompt_gated', file: 'visual.ts', changes: [["`${description}. SFW head-and-shoulders portrait", "`${appearance}. SFW head-and-shoulders portrait"]] },
+  { name: 'picture paints the moderated description', check: 'picture_prompt_gated', file: 'visual.ts', changes: [["const prompt = `${description} ${faces.length", "const prompt = `${event.data.ai_response.slice(0, 1500)} ${faces.length"]] },
+  { name: 'refusal detection is structural', check: 'provider_refusal_detected', path: 'src/ai/image.ts', changes: [["if ((status === 400 || status === 422) && body", "if (false && (status === 400 || status === 422) && body"]] },
+  { name: 'portrait refusal is unseen', check: 'provider_refusal_unseen', file: 'visual.ts', changes: [["if (error instanceof ProviderRefusalError) {\n        await unseeMedia(asset, 'provider', providerReason(error))\n        return\n      }", "// refusal unseen disabled"]] },
+  { name: 'refused face unseen the whole video', check: 'provider_refusal_video_face', file: 'visual.ts', changes: [["// A face the provider will not paint makes the whole video unseen.\n      if (error instanceof ProviderRefusalError) {", "if (false) {"]] },
+  { name: 'failed rows carry the error', check: 'failed_row_error', file: 'service.ts', changes: [["error: { stage: cause.stage, message },", ""]] },
+  { name: 'trait aliases map catalogue labels', check: 'casting_traits', file: 'policy.ts', changes: [["table[key]?.[value] ?? [value]", "[value]"]] },
+  { name: 'invalid traits ignored', check: 'attribution_traits', file: 'policy.ts', changes: [["if (typeof value === 'string' && (list as readonly string[]).includes(value)) out[key] = value", "out[key] = value as string"]] },
+  { name: 'child stays unvoiceable', check: 'attribution_traits', file: 'attribution.ts', changes: [["if (!traitsVoiceable(traits)) return no", "if (false) return no"]] },
+  { name: 'first cast persists traits', check: 'casting_traits_persist', file: 'casting.ts', changes: [["voice, ...(!hasTraits(fresh) && Object.keys(traits).length ? { voice_traits: traits } : {}),", "voice,"]] },
 ]
 for (const mutation of mutations) {
   const file = at(mutation)

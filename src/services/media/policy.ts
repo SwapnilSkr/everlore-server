@@ -13,9 +13,48 @@ export function utcMediaDay(now = new Date()) {
   return { day, resets_at: new Date(Date.parse(`${day}T00:00:00.000Z`) + 86400000).toISOString() }
 }
 export interface VoiceHolder { voice_id: string; last_spoken_at?: Date }
+
+/**
+ * Voice-trait closed lists the attribution call reports from. An enum
+ * validation, not a heuristic word list: the model must answer from these
+ * values, and anything else is dropped by filterVoiceTraits below.
+ */
+export const VOICE_TRAIT_LISTS = {
+  gender_presentation: ['feminine', 'masculine', 'neutral', 'unclear'],
+  age_band: ['child', 'young', 'adult', 'older', 'elderly'],
+  timbre: ['light', 'warm', 'deep', 'rough', 'airy', 'unclear'],
+} as const
+
+/** Keep only closed-list values; an invalid trait is ignored, never fatal. */
+export function filterVoiceTraits(raw: unknown): VoiceTraits {
+  if (!raw || typeof raw !== 'object') return {}
+  const r = raw as Record<string, unknown>
+  const out: Record<string, string> = {}
+  for (const [key, list] of Object.entries(VOICE_TRAIT_LISTS)) {
+    const value = r[key]
+    if (typeof value === 'string' && (list as readonly string[]).includes(value)) out[key] = value
+  }
+  return out
+}
+
+/** A child or an unclear-gender speaker is never cast and stays unvoiceable:
+ * no catalogue voice fits either. An unclear timbre only withholds the
+ * timbre vote; the line still voices. */
+export function traitsVoiceable(traits: VoiceTraits): boolean {
+  return traits.age_band !== 'child' && traits.gender_presentation !== 'unclear'
+}
+
 export function chooseVoice(traits: VoiceTraits, holders: VoiceHolder[], voices = catalogue.voices): string {
+  // Card traits use the attribution vocabulary (feminine, older, …); catalogue
+  // voices carry the provider's labels (female, middle_aged, …). The mapping
+  // lives in the catalogue data (trait_aliases), never here — with identity
+  // fallbacks so authored seed traits in catalogue labels keep working.
+  const table = (catalogue as unknown as { trait_aliases?: Record<string, Record<string, string[]>> }).trait_aliases ?? {}
+  const labels = (key: string, value: string): string[] => table[key]?.[value] ?? [value]
   const scores = voices.map((voice) => Object.entries(traits).reduce((score, [key, value]) =>
-    score + (voice.traits[key as keyof typeof voice.traits]?.includes(value) ? catalogue.trait_weights[key as keyof typeof catalogue.trait_weights] : 0), 0))
+    score + (typeof value === 'string'
+      && (voice.traits[key as keyof typeof voice.traits] as unknown as string[] | undefined)?.some((label) => labels(key, value).includes(label))
+      ? catalogue.trait_weights[key as keyof typeof catalogue.trait_weights] ?? 0 : 0), 0))
   const best = Math.max(...scores)
   const fitting = voices.filter((_, i) => scores[i] === best)
   const free = fitting.find((voice) => !holders.some((holder) => holder.voice_id === voice.id))

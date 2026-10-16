@@ -108,7 +108,9 @@ async function main() {
       const { mongoColl } = await import('../src/config/mongo')
       const { parseObjectId } = await import('../src/utils/mongo-id')
       const asset = await mongoColl.mediaAssets().findOne({ _id: parseObjectId(job.data.mediaId) })
-      if (asset && asset.status !== 'ready') await failMedia(asset)
+      if (asset && asset.status !== 'ready') {
+        await failMedia(asset, { stage: 'worker', message: job.failedReason || 'media job failed outside its processor' })
+      }
     } catch {
       log.warn('media.failure_cleanup_pending', { jobId: job.id })
     }
