@@ -59,6 +59,7 @@ const mutations: Mutation[] = [
   { name: 'portraits rest at the daily cap', check: 'portrait_resting', file: 'visual.ts', changes: [["if (!await reserveMedia({ _id: row._id, player_id: pid, instance_id: iid, kind })) {", "if (false && !await reserveMedia({ _id: row._id, player_id: pid, instance_id: iid, kind })) {"]] },
   { name: 'replay recomputes offsets', check: 'revisions_payload', file: '../memory.service.ts', changes: [["...spokenLineUpdate(nextAi,", "...({}), // spokenLineUpdate(nextAi,"]] },
   // ── media-server-2-fix-1 ──
+  { name: 'load path filters media', check: 'load_instance_filters_media', path: 'src/services/generation.service.ts', changes: [["recentEvents: recentEvents.map(publicMediaEvent),", "recentEvents,"]] },
   { name: 'instance param name shared', check: 'route_boot', path: 'src/routes/media.routes.ts', changes: [[".post('/instances/:id/events/:eventId/picture'", ".post('/instances/:instanceId/events/:eventId/picture'"]] },
   { name: 'malformed pre verdict throws', check: 'pregate_malformed', file: 'safety.ts', changes: [["if (report.verdict !== 'allow' && report.verdict !== 'reject') throw new Error('Gate returned no verdict')", "if (report.verdict !== 'allow' && report.verdict !== 'reject') return { verdict: 'allow', reason_code: 'ok' }"]] },
   { name: 'malformed post report throws', check: 'postgate_malformed', file: 'safety.ts', changes: [["if (typeof r.people_count !== 'number' || !Number.isFinite(r.people_count)) {\n    throw new Error('Vision gate returned no people count')\n  }", ""]] },

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
+import { mock } from 'bun:test'
 import { writeFile } from 'node:fs/promises'
 import { ObjectId } from 'mongodb'
 import { fixture, readAuditSource as readFileSync } from './media-audit-fixture'
 import { detectSpokenLines } from '../src/services/media/detection'
 import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, resolveVoiceSpeaker, attributionEffects } from '../src/services/media/attribution'
-import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, traitsVoiceable, utcMediaDay } from '../src/services/media/policy'
+import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, publicSpokenLines, traitsVoiceable, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
 import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
 import { makeSceneShot, processPicture, processPortrait, processVideo, ensurePortraitReady, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
@@ -28,6 +29,15 @@ import { COMPOSITION, DEFAULT_HINT, PAINTED_RENDER, PAINTED_STYLE_KEY, STYLE_HIN
 import { HttpError } from '../src/utils/http-error'
 import type { MediaAssetDoc } from '../src/models/media.model'
 import type { WorldEventDoc } from '../src/models/world-event.model'
+
+// load_instance_filters_media has no database: the socket's load path runs
+// against the fixture, with a null generation lock standing in for Redis.
+const redisStub = { get: async () => null, publish: async () => 0, del: async () => 0 }
+mock.module('../src/config/redis', () => ({
+  getRedisClient: () => redisStub,
+  getRedisSubscriber: () => { throw new Error('Unexpected Redis subscriber') },
+  getQueueRedisClient: () => { throw new Error('Unexpected queue connection') },
+}))
 
 const realFrameJudge = safetyEffects.judge
 
@@ -205,6 +215,51 @@ check('wire_switch', () => {
     assert.deepEqual(publicMediaEvent(event()).data.spoken_lines, lines)
   } finally {
     process.env.MEDIA_ENABLED = prior.enabled; process.env.MEDIA_VOICE_ENABLED = prior.voice
+  }
+})
+check('load_instance_filters_media', async () => {
+  // Contract §§5–6: the socket's load path filters like every other event
+  // path. Asserts on the real loadInstance payload, not the mapping function.
+  const { generationService } = await import('../src/services/generation.service')
+  const seed = (f: ReturnType<typeof fixture>) => {
+    const event = f.db.events.rows[0] as unknown as WorldEventDoc
+    event.data.spoken_lines = [
+      { line_id: 'l0', start: 0, end: 12, voice: { status: 'voiceable', speaker_name: 'Speaker', character_id: String(f.character), spoken_text: 'Come with me.', tags: [] } },
+      { line_id: 'l1', start: 13, end: 25, voice: { status: 'unvoiceable' } },
+    ]
+    event.data.voice_attribution = { status: 'done', claimed_at: new Date() }
+    event.data.media_revision = 'revision'
+    event.edit_history = [{
+      previous_data: {
+        spoken_lines: event.data.spoken_lines,
+        voice_attribution: { status: 'done', claimed_at: new Date() },
+        media_revision: 'revision',
+      },
+      edited_at: new Date(),
+    } as never]
+  }
+  const f = fixture()
+  seed(f)
+  const snapshot = JSON.parse(JSON.stringify(f.db.events.rows[0].data.spoken_lines))
+  const expected = publicSpokenLines(snapshot)
+  const loaded = await generationService.loadInstance(String(f.instance), String(f.player))
+  assert.equal(loaded.recentEvents.length, 1)
+  const out = loaded.recentEvents[0]
+  assert.ok(!('voice_attribution' in out.data), 'attribution internals never reach the player')
+  assert.ok(!('media_revision' in out.data))
+  assert.deepEqual(out.data.spoken_lines, expected)
+  assert.ok(!('voice' in (out.data.spoken_lines as Array<Record<string, unknown>>)[0]), 'voiceable voice internals never reach the player')
+  const prior = out.edit_history[0].previous_data as unknown as Record<string, unknown>
+  assert.ok(!('spoken_lines' in prior) && !('voice_attribution' in prior) && !('media_revision' in prior))
+  const g = fixture()
+  seed(g)
+  process.env.MEDIA_VOICE_ENABLED = 'false'
+  try {
+    const off = await generationService.loadInstance(String(g.instance), String(g.player))
+    assert.equal(off.recentEvents[0].data.spoken_lines, undefined)
+    assert.ok(!('voice_attribution' in off.recentEvents[0].data))
+  } finally {
+    process.env.MEDIA_VOICE_ENABLED = 'true'
   }
 })
 check('delivery', async () => {

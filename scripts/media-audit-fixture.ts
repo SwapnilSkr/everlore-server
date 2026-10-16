@@ -92,7 +92,7 @@ function structuredCloneRow<T>(value: T): T {
   return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, structuredCloneRow(v)])) as T
 }
 export function fixture() {
-  const names = ['worldInstances', 'worldTemplates', 'events', 'users', 'characters', 'mediaAssets', 'mediaUsage', 'mediaRejections', 'personas'] as const
+  const names = ['worldInstances', 'worldTemplates', 'events', 'users', 'characters', 'mediaAssets', 'mediaUsage', 'mediaRejections', 'personas', 'memories'] as const
   const db = Object.fromEntries(names.map((name) => [name, new MemoryCollection(name)])) as Record<typeof names[number], MemoryCollection>
   for (const name of names) Object.assign(mongoColl, { [name]: () => db[name] })
   const player = new ObjectId(), instance = new ObjectId(), event = new ObjectId(), template = new ObjectId(), character = new ObjectId()
