@@ -15,6 +15,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
 import { characterCodexService } from './character-codex.service'
+import { snapshotCodexMedia, restoreCodexMedia, type CodexMediaSnapshot } from './codex-media-carryover'
 import { materializeTemplateCast } from './template-cast.service'
 import { entityGraphService } from './entity-graph.service'
 import { timeService } from './time.service'
@@ -685,7 +686,7 @@ async function publishCodexUpdated(playerId: string, instance: any, codex: any[]
   }
 }
 
-async function rebuildCodexAndRelationsAfterReplay(params: {
+export async function rebuildCodexAndRelationsAfterReplay(params: {
   event: any
   playerId: string
   instance: any
@@ -696,6 +697,7 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
 }) {
   const { event, playerId, instance, template, narrative, deltas, forceExactRebuild } = params
   const instanceId = idString(event.instance_id)
+  const mediaSnapshot = await snapshotCodexMedia(event.instance_id)
   if (forceExactRebuild) {
     try {
       const checkpointed = await rebuildCodexKinshipFromCheckpoint({
@@ -705,6 +707,7 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
         template,
         beforeOrAtSequence: Math.max(0, event.sequence - 1),
         checkpointMustBeBefore: event.sequence,
+        mediaSnapshot,
       })
       if (checkpointed.used) return checkpointed.codex || characterCodexService.listForInstance(instanceId, 200)
     } catch (err) {
@@ -749,6 +752,7 @@ async function rebuildCodexAndRelationsAfterReplay(params: {
         batches,
       })
     }
+    await restoreCodexMedia(mediaSnapshot)
   } else if (deltas.length > 0) {
     await characterCodexService.applyDeltas({
       instanceId,
@@ -852,6 +856,7 @@ async function rebuildCodexKinshipFromCheckpoint(params: {
   template: any
   beforeOrAtSequence: number
   checkpointMustBeBefore?: number
+  mediaSnapshot?: CodexMediaSnapshot
 }): Promise<{
   used: boolean
   checkpointSequence?: number
@@ -865,7 +870,8 @@ async function rebuildCodexKinshipFromCheckpoint(params: {
     return { used: false }
   }
 
-  await projectionCheckpointService.restoreCodexAndKinship(latest._id)
+  const mediaSnapshot = params.mediaSnapshot ?? await snapshotCodexMedia(parseObjectId(instanceId))
+  await projectionCheckpointService.restoreCodexAndKinship(latest._id, mediaSnapshot)
   await restoreInitialTemplateCast({ instanceId, playerId, instance, template })
 
   const iid = parseObjectId(instanceId)
@@ -891,6 +897,9 @@ async function rebuildCodexKinshipFromCheckpoint(params: {
     })
   }
   await characterCodexService.applyManualIdentityRevisions({ instanceId, playerId })
+
+  // Characters born in the suffix must exist before orphan cleanup runs.
+  await restoreCodexMedia(mediaSnapshot)
 
   const codex = await characterCodexService.listForInstance(instanceId, 200)
   const entityMap = await entityGraphService.syncCodexEntities({
@@ -1740,6 +1749,7 @@ export const memoryService = {
       .sort({ sequence: 1 })
       .toArray()
     const hasLedgeredDeltas = survivors.some((e) => Array.isArray(e.data?.codex_deltas))
+    const mediaSnapshot = await snapshotCodexMedia(iid)
 
     let usedCheckpointRebuild = false
     if (hasLedgeredDeltas) {
@@ -1750,6 +1760,7 @@ export const memoryService = {
           instance,
           template,
           beforeOrAtSequence: Math.max(0, sequence - 1),
+          mediaSnapshot,
         })
         usedCheckpointRebuild = checkpointed.used
       } catch (err) {
@@ -1799,6 +1810,7 @@ export const memoryService = {
     }
 
     await characterCodexService.applyManualIdentityRevisions({ instanceId, playerId })
+    if (!usedCheckpointRebuild) await restoreCodexMedia(mediaSnapshot)
 
     // 3c. Entity-graph repair: entities born in removed turns are deleted,
     // edge provenance from removed events is pruned (empty edges dropped),

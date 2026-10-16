@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import type { ProjectionCheckpointChunkKind } from '../models/projection-checkpoint.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { snapshotCodexMedia, restoreCodexMedia, type CodexMediaSnapshot } from './codex-media-carryover'
 
 const CHUNK_SIZE = 400
 const KEEP_CHECKPOINTS = 6
@@ -261,10 +262,13 @@ export const projectionCheckpointService = {
     return { ...result, drifted }
   },
 
-  async restoreCodexAndKinship(checkpointId: ObjectId) {
+  // A caller replaying a suffix supplies its pre-rebuild snapshot and restores
+  // media after that suffix, rather than deleting its characters' faces here.
+  async restoreCodexAndKinship(checkpointId: ObjectId, mediaSnapshot?: CodexMediaSnapshot) {
     const checkpoint = await checkpoints().findOne({ _id: checkpointId, status: 'active' })
     if (!checkpoint) throw new Error('Projection checkpoint not found')
     const iid = checkpoint.instance_id
+    const media = mediaSnapshot ?? await snapshotCodexMedia(iid)
     const [characters, edges] = await Promise.all([
       readChunkDocs<any>(checkpointId, 'characters'),
       readChunkDocs<any>(checkpointId, 'entity_edges'),
@@ -273,7 +277,10 @@ export const projectionCheckpointService = {
 
     await mongoColl.characters().deleteMany({ instance_id: iid })
     if (characters.length) {
-      await mongoColl.characters().insertMany(characters as never[], { ordered: false }).catch(async (err) => {
+      // A historical snapshot may reference an object since repainted/deleted.
+      // Current media is carried separately, never resurrected from history.
+      const projection = characters.map(({ portrait, voice, voice_traits, ...card }) => card)
+      await mongoColl.characters().insertMany(projection as never[], { ordered: false }).catch(async (err) => {
         await mongoColl.characters().deleteMany({ instance_id: iid })
         throw err
       })
@@ -286,6 +293,7 @@ export const projectionCheckpointService = {
         throw err
       })
     }
+    if (!mediaSnapshot) await restoreCodexMedia(media)
     return { sequence: checkpoint.sequence, characters: characters.length, kinshipEdges: kinshipEdges.length }
   },
 
