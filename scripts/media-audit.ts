@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import { writeFile } from 'node:fs/promises'
-import { ObjectId } from 'mongodb'
+import { ObjectId, MongoServerError } from 'mongodb'
 import { fixture, observeStoryWrites, readAuditSource as readFileSync } from './media-audit-fixture'
 import { detectSpokenLines } from '../src/services/media/detection'
 import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, resolveVoiceSpeaker, attributionEffects, ATTRIBUTION_RULE_VERSION } from '../src/services/media/attribution'
@@ -13,7 +13,7 @@ import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReserva
 import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
 import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, ensurePersonaFaceReady, ensurePassingFaceReady, passingFaceKey, PASSING_FACE_RULE_VERSION, requestTurnVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, fillUnknownLook, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
 import { portraitLookEvidence } from '../src/services/media/look-evidence'
-import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, describeMoment, MEDIA_VISUAL_POLICY, buildSafetyPrompts, visualPolicyLine } from '../src/services/media/safety'
+import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, logRejection, describeMoment, MEDIA_VISUAL_POLICY, buildSafetyPrompts, visualPolicyLine } from '../src/services/media/safety'
 import { assembleDialogueFreeCut, buildCutGraph, cutEffects } from '../src/services/media/cut'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt, POLICY_SENTENCE, SCENE_TEMPLATES } from '../src/services/media/scene-templates'
 import { directScene, directorEffects, validateDirectorPlan, DIRECTOR_SYSTEM_PROMPT, type DirectorInput, DIRECTOR_DIALOGUE_FREE_PROMPT } from '../src/services/media/director'
@@ -3128,6 +3128,130 @@ check('passing_without_appearance', async () => {
   assert.equal(f.db.mediaRejections.rows.length, 0)
   assert.equal(f.db.mediaUsage.rows[0].status, 'settled')
   assert.deepEqual(writes, [])
+})
+
+// ── media-edge-fixes ──
+check('portrait_vanished_insert_race', async () => {
+  const f = fixture()
+  f.db.mediaAssets.insertOne = async () => { throw new MongoServerError({ code: 11000, message: 'winner vanished' }) }
+  let queued = 0
+  visualEffects.enqueue = async () => { queued++; return undefined as never }
+  await assert.rejects(requestPortrait(String(f.player), String(f.instance), String(f.character)),
+    (error: unknown) => error instanceof HttpError && error.statusCode === 422 && error.details?.status === 'unseen')
+  assert.equal(f.db.mediaUsage.inserts, 0)
+  assert.equal(queued, 0)
+})
+
+check('voice_inline_concurrent', async () => {
+  for (const mode of ['inline', 'queued', 'processing', 'tap_race'] as const) {
+    const f = fixture()
+    let paid = 0
+    const uploads = new Map<string, Buffer>()
+    mediaEffects.synthesize = async () => {
+      paid++
+      const row = f.db.mediaAssets.rows.find((r) => r.kind === 'voice')
+      assert.equal(row?.status, 'processing', 'claim the unique row before paying')
+      assert.equal((await f.db.mediaUsage.findOne({ _id: row?._id }))?.status, 'reserved')
+      await Bun.sleep(40)
+      return { data: mp3(), contentType: 'audio/mpeg', generationId: null }
+    }
+    mediaEffects.upload = async (bytes, _type, opts) => {
+      const key = opts!.key!
+      uploads.set(key, bytes)
+      return { key, url: `https://example.test/${key}` }
+    }
+    mediaEffects.remove = async (key) => { uploads.delete(key) }
+    visualEffects.download = async (url) => {
+      const bytes = uploads.get(url.replace('https://example.test/', ''))
+      assert.ok(bytes, 'only download the durable recording')
+      return bytes
+    }
+    const args = [String(f.player), String(f.instance), String(f.event), 'l0'] as const
+    const workers: Promise<unknown>[] = []
+    if (mode === 'queued' || mode === 'processing') {
+      const reply = await requestVoice(...args)
+      assert.equal(reply.status, 'queued')
+      if (reply.status !== 'queued') throw new Error('expected queued voice')
+      if (mode === 'processing') workers.push(processVoice(reply.media_id), processVoice(reply.media_id))
+    }
+    if (mode === 'tap_race') workers.push(requestVoice(...args))
+    const [a, b] = await Promise.all([ensureVoiceReady(...args), ensureVoiceReady(...args), ...workers])
+    assert.equal(String(a.asset._id), String(b.asset._id), mode)
+    assert.deepEqual(a.bytes, mp3())
+    assert.equal(paid, 1, mode)
+    assert.equal(f.db.mediaAssets.rows.length, 1, mode)
+    assert.equal(f.db.mediaAssets.rows[0].status, 'ready')
+    assert.equal(f.db.mediaUsage.inserts, 1, mode)
+    assert.equal(f.db.mediaUsage.rows[0].status, 'settled')
+    assert.equal(uploads.size, 1, 'no orphan recording')
+    assert.ok(uploads.has(String(f.db.mediaAssets.rows[0].asset_key)))
+  }
+})
+
+check('voice_inline_upload_cleanup', async () => {
+  for (const failure of ['ambiguous_upload', 'removed_row'] as const) {
+    const f = fixture()
+    const uploads = new Set<string>()
+    mediaEffects.synthesize = async () => ({ data: mp3(), contentType: 'audio/mpeg', generationId: null })
+    mediaEffects.upload = async (_bytes, _type, opts) => {
+      const key = opts!.key!
+      uploads.add(key)
+      if (failure === 'ambiguous_upload') throw new Error('upload response lost')
+      await f.db.mediaAssets.deleteMany({ event_id: f.event })
+      return { key, url: `https://example.test/${key}` }
+    }
+    mediaEffects.remove = async (key) => { uploads.delete(key) }
+    await assert.rejects(ensureVoiceReady(String(f.player), String(f.instance), String(f.event), 'l0'), /Voice no longer available/)
+    assert.equal(uploads.size, 0, failure)
+    assert.equal(f.db.mediaUsage.rows.filter((r) => r.status === 'reserved').length, 0, failure)
+  }
+})
+
+check('rejection_optional_scope', async () => {
+  const f = fixture()
+  for (const scope of [{}, { instance_id: f.instance }, { event_id: f.event }, { instance_id: f.instance, event_id: f.event }]) {
+    await logRejection({ _id: new ObjectId(), player_id: f.player, kind: 'portrait', ...scope }, 'pre', 'blocked', 'fixture')
+    const row = f.db.mediaRejections.rows.at(-1)!
+    assert.equal(Object.hasOwn(row, 'instance_id'), Object.hasOwn(scope, 'instance_id'))
+    assert.equal(Object.hasOwn(row, 'event_id'), Object.hasOwn(scope, 'event_id'))
+    if ('instance_id' in scope) assert.equal(row.instance_id, scope.instance_id)
+    if ('event_id' in scope) assert.equal(row.event_id, scope.event_id)
+  }
+})
+
+for (const [kind, processJob] of [['portrait', processPortrait], ['picture', processPicture], ['video', processVideo]] as const) {
+  check(`${kind}_missing_save_releases`, async () => {
+    for (const missing of ['key', 'save'] as const) {
+      const f = fixture()
+      const row = asset(f, { kind })
+      if (missing === 'key') delete row.instance_id
+      else f.db.worldInstances.rows = []
+      f.db.mediaAssets.rows.push(row as unknown as Record<string, unknown>)
+      assert.equal(await reserveMedia(row), true)
+      await processJob(String(row._id))
+      assert.equal(f.db.mediaAssets.rows.length, 0, missing)
+      assert.equal(f.db.mediaUsage.rows.length, 0, 'the reservation is removed immediately with its missing save')
+    }
+  })
+}
+
+check('portrait_repaint_version', async () => {
+  const f = fixture()
+  stubPictureFaces(f)
+  f.card.appearance = 'Grey eyes, dark braids'
+  f.card.appearance_version = 1
+  f.card.portrait = { asset_key: 'media/portrait/current.png', source: 'generated', appearance_version: 1, painted_at: new Date() }
+  visualEffects.image = async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null })
+  const reply = await requestPortrait(String(f.player), String(f.instance), String(f.character), { repaint: true })
+  assert.equal(reply.status, 'queued')
+  if (reply.status !== 'queued') throw new Error('expected repaint')
+  const queued = f.db.mediaAssets.rows[0]
+  assert.ok(String(queued.cache_key).includes(':v2:'))
+  assert.equal(queued.revision, mediaRevision(f.card.appearance, '2'))
+  await processPortrait(reply.media_id)
+  assert.equal(f.db.mediaAssets.rows[0].status, 'ready')
+  const card = await f.db.characters.findOne({ _id: f.character }) as unknown as typeof f.card
+  assert.equal(card.portrait?.appearance_version, 2, 'stored version matches the queued cache identity')
 })
 
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }

@@ -335,8 +335,8 @@ export async function logRejection(asset: Pick<MediaAssetDoc, '_id' | 'player_id
   await mongoColl.mediaRejections().insertOne({
     _id: new ObjectId(),
     player_id: asset.player_id,
-    instance_id: asset.instance_id,
-    event_id: asset.event_id,
+    ...(asset.instance_id ? { instance_id: asset.instance_id } : {}),
+    ...(asset.event_id ? { event_id: asset.event_id } : {}),
     kind: asset.kind as MediaKind,
     stage,
     reason,

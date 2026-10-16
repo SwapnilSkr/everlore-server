@@ -15,7 +15,7 @@ import type { WorldEventDoc } from '../../models/world-event.model'
 import type { WorldInstanceDoc } from '../../models/world-instance.model'
 import { storageService } from '../storage.service'
 import { attributeEvent, mediaRevision, resolveAttributedSpeaker } from './attribution'
-import { directorModel, imageModel, mediaEnabled, sceneFallbackModel, sceneModel, videoModel, voiceCatalogue } from './config'
+import { directorModel, imageModel, mediaEnabled, sceneFallbackModel, sceneModel, videoModel } from './config'
 import { detectSpokenLines } from './detection'
 import { directScene, plannedFilmSeconds, type DirectorInput, type DirectorPlan } from './director'
 import { matureVoiceAllowed, utcMediaDay } from './policy'
@@ -24,8 +24,8 @@ import { checkImage, checkVideoFrames, describeMoment, judgeShotFrames, logRejec
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt, speakerSubject } from './scene-templates'
 import { assembleCut, assembleDialogueFreeCut, cutEffects, normalizeShot } from './cut'
 import { duplicateKey, releaseMedia, reserveMedia, settleMedia } from './usage'
-import { audioEffects, LINE_TAIL_S, measureLineSentences, mp3DurationMs } from './audio'
-import { failMedia, lineVoice, mediaEffects, sanitizeMediaError } from './service'
+import { audioEffects, LINE_TAIL_S, measureLineSentences } from './audio'
+import { failMedia, lineVoice, mediaEffects, processVoice, requestVoice, sanitizeMediaError } from './service'
 import { log } from '../../utils/logger'
 import { portraitLookEvidence } from './look-evidence'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
@@ -614,13 +614,7 @@ export async function requestPortrait(
   // An explicit repaint paints the same look anew, so its cache key never
   // collides with the kept portrait: every tap repaints, every tap is charged.
   const kind: MediaKind = opts.repaint ? 'picture' : 'portrait'
-  const current = holder.portrait?.appearance_version ?? 0
-  // Out of date by look or by style: a portrait whose style key differs from
-  // the world's current key repaints on this tap, with the old face as the
-  // reference and the new style in the prompt and the cache key.
-  const outdated = !!holder.portrait
-    && (current < holder.appearanceVersion || styleOfPortrait(holder.portrait) !== style.key)
-  const version = holder.portrait ? current + (outdated ? 1 : 0) : (holder.appearanceVersion || 1)
+  const version = (holder.portrait?.appearance_version ?? holder.appearanceVersion) + (holder.portrait ? 1 : 0) || 1
   const model = imageModel()
   const key = opts.repaint
     ? `${portraitCacheKey(card._id, version, model, style.key)}:repaint:${new ObjectId().toHexString()}`
@@ -634,10 +628,9 @@ export async function requestPortrait(
     cost_usd: 0.009, cost_source: 'catalogue', status: 'queued',
     ...(style.key !== PAINTED_STYLE_KEY ? { art_style: style.key } : {}),
   })
-  if (!asset || asset.status === 'ready') {
-    if (asset?.url) return { status: 'ready', url: asset.url }
-  }
-  const row = asset!
+  if (!asset) throw new HttpError(422, 'This moment stays unseen.', { status: 'unseen' })
+  if (asset.status === 'ready' && asset.url) return { status: 'ready', url: asset.url }
+  const row = asset
   if (!await reserveMedia({ _id: row._id, player_id: pid, instance_id: iid, kind })) {
     await mongoColl.mediaAssets().deleteOne({ _id: row._id })
     throw new HttpError(429, RESTING_COPY[kind], { status: 'resting', kind, resets_at: utcMediaDay().resets_at })
@@ -656,10 +649,10 @@ export async function processPortrait(mediaId: string): Promise<void> {
     await processPersonaPortrait(asset)
     return
   }
-  if (!asset.instance_id) throw new Error('Portrait has no save')
   let uploaded = ''
   let stage = 'prepare'
   try {
+    if (!asset.instance_id) throw new Error('Portrait has no save')
     const reservation = await mongoColl.mediaUsage().findOne({ _id: asset._id, status: 'reserved' })
     if (!reservation) throw new Error('Portrait no longer reserved')
     if (!asset.character_id) throw new Error('Portrait subject missing')
@@ -1001,7 +994,6 @@ export async function processPicture(mediaId: string): Promise<void> {
   const asset = await mongoColl.mediaAssets().findOneAndUpdate(
     { _id: parseObjectId(mediaId), status: 'queued' }, { $set: { status: 'processing', started_at: new Date() } }, { returnDocument: 'after' })
   if (!asset) return
-  if (!asset.instance_id) throw new Error('Picture has no save')
   const renderStarted = Date.now()
   let faceMs = 0
   let facesRequested = 0, facesPainted = 0, facesReused = 0, facesDropped = 0
@@ -1009,6 +1001,7 @@ export async function processPicture(mediaId: string): Promise<void> {
   let uploaded = ''
   let stage = 'prepare'
   try {
+    if (!asset.instance_id) throw new Error('Picture has no save')
     const reservation = await mongoColl.mediaUsage().findOne({ _id: asset._id, status: 'reserved' })
     if (!reservation) throw new Error('Picture no longer reserved')
     const [instance, event] = await Promise.all([
@@ -1193,37 +1186,27 @@ export async function ensureVoiceReady(
     const bytes = await visualEffects.download(cached.url)
     return { url: cached.url, bytes, durationS: (cached.duration_ms ?? 3000) / 1000, asset: cached }
   }
-  const id = new ObjectId()
-  const input = [...line.voice.tags, line.voice.spoken_text].join(' ')
-  if (!await reserveMedia({ _id: id, player_id: pid, instance_id: iid, event_id: parseObjectId(eventId), kind: 'voice' })) {
-    throw new HttpError(429, 'Their voices rest until tomorrow.', { status: 'resting', kind: 'voice', resets_at: utcMediaDay().resets_at })
-  }
-  try {
-    const audio = await mediaEffects.synthesize({ model: voice.model, voice: voice.voice_id, input, responseFormat: 'mp3', signal: AbortSignal.timeout(15000) })
-    let cost = input.length * voiceCatalogue(voice.model).rate_usd_per_character
-    let costSource: 'catalogue' | 'generation' = 'catalogue'
-    let generationId: string | null = audio.generationId
-    if (audio.generationId) {
-      const actual = await mediaEffects.cost(audio.generationId)
-      if (actual !== undefined) { cost = actual; costSource = 'generation' }
+  // Share the tap's unique row and atomic worker claim before buying speech.
+  await requestVoice(playerId, instanceId, eventId, lineId)
+  const winner = await mongoColl.mediaAssets().findOne({ cache_key: key })
+  if (!winner || winner.revision !== revision) throw new Error('Voice no longer available')
+  const deadline = Date.now() + 90000
+  for (;;) {
+    const current = await mongoColl.mediaAssets().findOne({ _id: winner._id })
+    if (!current || current.revision !== revision || current.status === 'failed' || current.status === 'unseen') {
+      throw new Error('Voice no longer available')
     }
-    const duration_ms = mp3DurationMs(audio.data)
-    const s3key = `media/voice/${pid.toHexString()}/${iid.toHexString()}/${id.toHexString()}.mp3`
-    const result = await mediaEffects.upload(audio.data, 'audio/mpeg', { key: s3key })
-    const row: MediaAssetDoc = {
-      _id: id, player_id: pid, instance_id: iid, event_id: parseObjectId(eventId), kind: 'voice', line_id: lineId,
-      ...(card ? { character_id: card._id } : {}), source: 'generated', model: voice.model, voice_id: voice.voice_id,
-      cache_key: key, revision, input, cost_usd: cost, cost_source: costSource, status: 'ready',
-      asset_key: result.key, url: result.url, duration_ms, created_at: new Date(),
-      ...(generationId ? { generation_id: generationId } : {}),
+    if (current.status === 'ready' && current.url) {
+      const bytes = await visualEffects.download(current.url)
+      return { url: current.url, bytes, durationS: (current.duration_ms ?? 3000) / 1000, asset: current }
     }
-    await mongoColl.mediaAssets().insertOne(row)
-    await settleMedia(id)
-    return { url: result.url, bytes: audio.data, durationS: duration_ms / 1000, asset: row }
-  } catch (error) {
-    await releaseMedia(id)
-    await mongoColl.mediaAssets().deleteOne({ _id: id })
-    throw error
+    if (Date.now() >= deadline) throw new Error('Voice timed out')
+    // The tap may still be reserving its row. Never claim it before that finishes.
+    if (current.status === 'queued' && await mongoColl.mediaUsage().findOne({ _id: current._id, status: 'reserved' })) {
+      await processVoice(current._id.toHexString())
+    } else {
+      await Bun.sleep(100)
+    }
   }
 }
 
@@ -1531,8 +1514,6 @@ export async function processVideo(mediaId: string): Promise<void> {
   const asset = await mongoColl.mediaAssets().findOneAndUpdate(
     { _id: parseObjectId(mediaId), status: 'queued' }, { $set: { status: 'processing', started_at: new Date() } }, { returnDocument: 'after' })
   if (!asset) return
-  if (!asset.instance_id) throw new Error('Video has no save')
-  const saveId = asset.instance_id
   let uploaded = ''
   let posterKey = ''
   let excerptKey = ''
@@ -1540,6 +1521,8 @@ export async function processVideo(mediaId: string): Promise<void> {
   let planRecord: Record<string, unknown> = {}
   let stage = 'prepare'
   try {
+    if (!asset.instance_id) throw new Error('Video has no save')
+    const saveId = asset.instance_id
     const reservation = await mongoColl.mediaUsage().findOne({ _id: asset._id, status: 'reserved' })
     if (!reservation) throw new Error('Video no longer reserved')
     if (!asset.event_id) throw new Error('Video subject missing')
