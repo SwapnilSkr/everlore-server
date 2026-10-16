@@ -9,13 +9,22 @@ export interface VoiceTraits {
   timbre?: string
   temperament?: string
 }
+/** Missing versions are legacy. Failed calls are done at the current version too. */
+export interface VoiceAttribution {
+  status: 'processing' | 'done'
+  claimed_at: Date
+  rule_version?: number
+}
 export interface SpokenLine {
   line_id: string
   start: number
   end: number
+  filmable?: false
   voice?: { status: 'unvoiceable' } | {
     status: 'voiceable'
-    character_id: string
+    character_id?: string
+    model?: string
+    voice_id?: string
     speaker_name: string
     spoken_text: string
     tags: string[]

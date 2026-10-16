@@ -12,7 +12,7 @@ import type { CharacterProfileDoc } from '../../models/character-profile.model'
 import type { MediaAssetDoc, MediaKind, PortraitRef } from '../../models/media.model'
 import type { WorldEventDoc } from '../../models/world-event.model'
 import { storageService } from '../storage.service'
-import { attributeEvent, mediaRevision, resolveVoiceSpeaker } from './attribution'
+import { attributeEvent, mediaRevision, resolveAttributedSpeaker, resolveVoiceSpeaker } from './attribution'
 import { directorModel, imageModel, mediaEnabled, sceneFallbackModel, sceneModel, videoModel, voiceCatalogue } from './config'
 import { detectSpokenLines } from './detection'
 import { directScene, validateDirectorPlan, type DirectorInput, type DirectorPlan } from './director'
@@ -23,7 +23,7 @@ import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from './sc
 import { assembleCut, cutEffects, normalizeShot } from './cut'
 import { duplicateKey, releaseMedia, reserveMedia, settleMedia } from './usage'
 import { mp3DurationMs } from './audio'
-import { failMedia, mediaEffects, sanitizeMediaError } from './service'
+import { failMedia, lineVoice, mediaEffects, sanitizeMediaError } from './service'
 import { log } from '../../utils/logger'
 import { PAINTED_STYLE_KEY, resolveMediaStyle, templateMediaStyle } from '../image.service'
 
@@ -1041,9 +1041,8 @@ export async function ensureVoiceReady(
   const line = lines.find((l) => l.line_id === lineId)
   if (line?.voice?.status !== 'voiceable') throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })
   const cards = await mongoColl.characters().find({ instance_id: iid, player_id: pid }).sort({ first_seen_sequence: 1 }).toArray()
-  const card = resolveVoiceSpeaker(line.voice.speaker_name, cards, template.is_sentient, instance.persona_snapshot?.name)
-  if (!card) throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })
-  const voice = await mediaEffects.cast(instance, card, line.voice.voice_traits ?? {})
+  const card = resolveAttributedSpeaker(line.voice, cards, template.is_sentient, instance.persona_snapshot?.name)
+  const voice = await lineVoice(instance, { ...event!, data: { ...event!.data, spoken_lines: lines } }, line, card)
   const revision = mediaRevision(event!.data.ai_response, event!.data.player_input)
   const key = `${eventId}:${lineId}:${voice.voice_id}:${voice.model}`
   const cached = await mongoColl.mediaAssets().findOne({ cache_key: key, status: 'ready' })
@@ -1070,7 +1069,7 @@ export async function ensureVoiceReady(
     const result = await mediaEffects.upload(audio.data, 'audio/mpeg', { key: s3key })
     const row: MediaAssetDoc = {
       _id: id, player_id: pid, instance_id: iid, event_id: parseObjectId(eventId), kind: 'voice', line_id: lineId,
-      character_id: card._id, source: 'generated', model: voice.model, voice_id: voice.voice_id,
+      ...(card ? { character_id: card._id } : {}), source: 'generated', model: voice.model, voice_id: voice.voice_id,
       cache_key: key, revision, input, cost_usd: cost, cost_source: costSource, status: 'ready',
       asset_key: result.key, url: result.url, duration_ms, created_at: new Date(),
       ...(generationId ? { generation_id: generationId } : {}),
@@ -1099,9 +1098,9 @@ export async function requestVideo(playerId: string, instanceId: string, eventId
   const line = lines.find((l) => l.line_id === lineId)
   if (line?.voice?.status !== 'voiceable') throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })
   const cards = await mongoColl.characters().find({ instance_id: iid, player_id: pid }).sort({ first_seen_sequence: 1 }).toArray()
-  const card = resolveVoiceSpeaker(line.voice.speaker_name, cards, template.is_sentient, instance.persona_snapshot?.name)
-  if (!card) throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })
-  const voice = await mediaEffects.cast(instance, card, line.voice.voice_traits ?? {})
+  const card = resolveAttributedSpeaker(line.voice, cards, template.is_sentient, instance.persona_snapshot?.name)
+  if (line.filmable === false || !card) throw new HttpError(422, 'This moment stays unseen.')
+  const voice = await lineVoice(instance, { ...event!, data: { ...event!.data, spoken_lines: lines } }, line, card)
   const holder = await resolvePortraitHolder(instance, card, {
     isSentient: template.is_sentient, personaName: instance.persona_snapshot?.name,
     ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
@@ -1340,6 +1339,7 @@ export async function processVideo(mediaId: string): Promise<void> {
     if (line?.voice?.status !== 'voiceable') throw new Error('Line no longer voiceable')
     const cards = await mongoColl.characters().find({ instance_id: asset.instance_id, player_id: asset.player_id }).sort({ first_seen_sequence: 1 }).toArray()
     const card = cards.find((c) => c._id.equals(asset.character_id!))
+      || resolveVoiceSpeaker(line.voice.speaker_name, cards, template?.is_sentient ?? false, personaName)
     if (!card) throw new Error('Speaker removed')
     // The face and the exact clip the player heard, made first when missing.
     stage = 'face'

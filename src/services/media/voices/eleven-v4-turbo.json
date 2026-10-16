@@ -32,7 +32,8 @@
           "female"
         ],
         "age_band": [
-          "young"
+          "young",
+          "young_light_adult"
         ],
         "timbre": [
           "soft"
@@ -236,7 +237,8 @@
           "female"
         ],
         "age_band": [
-          "young"
+          "young",
+          "young_light_adult"
         ],
         "timbre": [
           "bright"
@@ -253,7 +255,8 @@
           "female"
         ],
         "age_band": [
-          "young"
+          "young",
+          "young_light_adult"
         ],
         "timbre": [
           "clear"
@@ -270,7 +273,8 @@
           "male"
         ],
         "age_band": [
-          "young"
+          "young",
+          "young_light_adult"
         ],
         "timbre": [
           "clear"
@@ -322,7 +326,8 @@
           "neutral"
         ],
         "age_band": [
-          "young"
+          "young",
+          "young_light_adult"
         ],
         "timbre": [
           "clear"
@@ -356,7 +361,8 @@
           "male"
         ],
         "age_band": [
-          "young"
+          "young",
+          "young_light_adult"
         ],
         "timbre": [
           "bright"
@@ -378,11 +384,12 @@
       "feminine": ["female"],
       "masculine": ["male"],
       "neutral": ["neutral"],
+      "unclear": [],
       "female": ["female"],
       "male": ["male"]
     },
     "age_band": {
-      "child": [],
+      "child": ["young_light_adult"],
       "young": ["young"],
       "adult": ["middle_aged"],
       "older": ["older"],

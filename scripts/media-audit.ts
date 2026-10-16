@@ -1,19 +1,20 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import { writeFile } from 'node:fs/promises'
 import { ObjectId } from 'mongodb'
 import { fixture, readAuditSource as readFileSync } from './media-audit-fixture'
 import { detectSpokenLines } from '../src/services/media/detection'
-import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, resolveVoiceSpeaker, attributionEffects } from '../src/services/media/attribution'
-import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, publicSpokenLines, traitsVoiceable, utcMediaDay } from '../src/services/media/policy'
+import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, resolveVoiceSpeaker, attributionEffects, ATTRIBUTION_RULE_VERSION } from '../src/services/media/attribution'
+import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, publicSpokenLines, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
 import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
-import { makeSceneShot, processPicture, processPortrait, processVideo, ensurePortraitReady, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
+import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
 import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, describeMoment, MEDIA_VISUAL_POLICY, buildSafetyPrompts, visualPolicyLine } from '../src/services/media/safety'
 import { buildCutGraph, cutEffects } from '../src/services/media/cut'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from '../src/services/media/scene-templates'
 import { directScene, directorEffects, validateDirectorPlan, DIRECTOR_SYSTEM_PROMPT, type DirectorInput } from '../src/services/media/director'
-import { foldDelta, newFoldState } from '../src/services/character-codex.service'
+import { foldDelta, newFoldState, characterCodexService } from '../src/services/character-codex.service'
 import { purgeCardPortraits, purgeTemplatePortraits } from '../src/services/media/deletion'
 import { reserveMedia, releaseMedia, settleMedia, mediaUsage } from '../src/services/media/usage'
 import { purgeMedia } from '../src/services/media/deletion'
@@ -24,6 +25,8 @@ import { imageSafetyTolerance } from '../src/services/media/config'
 import { asMediaImageReference, imageExtensionFor, sniffImageContentType, ProviderRefusalError } from '../src/ai/image'
 import { submitVideo } from '../src/ai/video'
 import { env } from '../src/config/env'
+import catalogue from '../src/services/media/voices/eleven-v4-turbo.json'
+import { identityKey } from '../src/services/character-codex.service'
 import { castCharacter } from '../src/services/media/casting'
 import { COMPOSITION, DEFAULT_HINT, PAINTED_RENDER, PAINTED_STYLE_KEY, STYLE_HINT, decorateImagePrompt, resolveMediaStyle, stripServerDecorations, templateMediaStyle } from '../src/services/image.service'
 import { HttpError } from '../src/utils/http-error'
@@ -888,7 +891,7 @@ check('director_verbatim', () => {
   assert.equal(DIRECTOR_SYSTEM_PROMPT, block)
 })
 
-const VIDEO_PROSE = 'Rain hammered the gutter. She watched the door. "Come with me," she whispered. A floorboard sighed beyond the shutters.'
+const VIDEO_PROSE = 'Rain hammered the gutter. Alias watched the door. "Come with me," she whispered. A floorboard sighed beyond the shutters.'
 
 function videoBase() {
   const f = fixture()
@@ -1581,10 +1584,9 @@ check('attribution_traits', () => {
   if (mixed.voice?.status !== 'voiceable') throw new Error('expected voiceable')
   assert.deepEqual(mixed.voice.voice_traits, { age_band: 'older' })
   assert.deepEqual(filterVoiceTraits('not an object'), {})
-  assert.equal(traitsVoiceable({}), true)
-  // A child or unclear-gender speaker stays unvoiceable.
-  assert.equal(acceptAttribution(line, f.prose, { ...good, age_band: 'child' }, () => f.card).voice?.status, 'unvoiceable')
-  assert.equal(acceptAttribution(line, f.prose, { ...good, gender_presentation: 'unclear' }, () => f.card).voice?.status, 'unvoiceable')
+  // Every known trait combination remains voiceable.
+  assert.equal(acceptAttribution(line, f.prose, { ...good, age_band: 'child' }, () => f.card).voice?.status, 'voiceable')
+  assert.equal(acceptAttribution(line, f.prose, { ...good, gender_presentation: 'unclear' }, () => f.card).voice?.status, 'voiceable')
   // An unclear timbre only withholds the timbre vote: still voiceable.
   assert.equal(acceptAttribution(line, f.prose, { ...good, timbre: 'unclear' }, () => f.card).voice?.status, 'voiceable')
 })
@@ -1670,6 +1672,263 @@ check('unknown_image_rejected', async () => {
     globalThis.fetch = realFetch
     env.OPENROUTER_API_KEY = realKey
   }
+})
+
+// Every-line cases drive the actual attribution/codex/casting services with
+// model and storage effects stubbed; no paid endpoint is reachable.
+function spokenFixture(prose: string, rows: Array<Record<string, unknown>>) {
+  const f = fixture()
+  f.db.characters.rows = []
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  event.data.ai_response = prose
+  event.data.spoken_lines = detectSpokenLines(prose)
+  event.data.media_revision = mediaRevision(prose, '')
+  let calls = 0
+  attributionEffects.call = async () => { calls++; await Bun.sleep(5); return JSON.stringify({ lines: rows }) }
+  return { ...f, current: event, attributedCalls: () => calls }
+}
+const speech = (line_id: string, speaker_name: string | null, spoken_text: string, traits = {}) =>
+  ({ line_id, speaker_name, spoken_text, is_speech: true, tags: [], ...traits })
+function stubSpokenVoice() {
+  mediaEffects.cast = castCharacter
+  mediaEffects.synthesize = async () => ({ data: mp3(), contentType: 'audio/mpeg', generationId: null })
+  mediaEffects.upload = async (_bytes, _type, opts) => ({ key: opts?.key || '', url: 'https://example.test/clip.mp3' })
+  mediaEffects.enqueue = async (asset) => { await processVoice(String(asset._id)) }
+}
+function lineVoiceOf(line: import('../src/models/media.model').SpokenLine) {
+  assert.equal(line.voice?.status, 'voiceable')
+  if (line.voice?.status !== 'voiceable') throw new Error('expected voiceable')
+  return line.voice
+}
+function expectedUnhintedVoice(seed: string) {
+  return catalogue.voices.map((voice) => ({ id: voice.id, rank: createHash('sha256').update(JSON.stringify([seed, voice.id])).digest('hex') }))
+    .sort((a, b) => a.rank.localeCompare(b.rank))[0].id
+}
+check('every_description', async () => {
+  const f = spokenFixture('The amber rider says, “Stay beside me.”', [speech('l0', 'the amber rider', 'Stay beside me.')])
+  stubSpokenVoice()
+  assert.equal((await requestVoice(String(f.player), String(f.instance), String(f.event), 'l0')).status, 'ready')
+  assert.equal(f.db.characters.rows.length, 0)
+  assert.equal(f.db.characters.inserts, 0)
+  const line = (await attributeEvent(f.current, false))[0], voice = lineVoiceOf(line)
+  assert.equal(voice.character_id, undefined)
+  assert.equal(voice.model, catalogue.model)
+  assert.equal(voice.voice_id, expectedUnhintedVoice(JSON.stringify([String(f.instance), identityKey('the amber rider')])))
+  const clip = f.db.mediaAssets.rows[0]
+  assert.ok(!('character_id' in clip))
+  assert.equal(clip.cache_key, `${f.event}:l0:${voice.voice_id}:${voice.model}`)
+  visualEffects.download = async () => mp3()
+  assert.equal((await ensureVoiceReady(String(f.player), String(f.instance), String(f.event), 'l0')).asset.voice_id, voice.voice_id)
+  assert.equal(f.db.mediaUsage.inserts, 1, 'the cached speech costs nothing more')
+})
+check('every_seed', async () => {
+  const f = spokenFixture('The amber rider says, “Stay beside me.” The watcher says, “Keep moving now.”', [
+    speech('l0', 'The amber rider', 'Stay beside me.'), speech('l1', 'the watcher', 'Keep moving now.'),
+  ])
+  for (let n = 1; n <= 8; n++) {
+    const current = { ...f.current, _id: new ObjectId(), instance_id: new ObjectId(n.toString(16).padStart(24, '0')),
+      data: { ...f.current.data, voice_attribution: undefined } }
+    f.db.events.rows.push(current as unknown as Record<string, unknown>)
+    const lines = await attributeEvent(current, false)
+    for (const [i, handle] of ['The amber rider', 'the watcher'].entries()) {
+      assert.equal(lineVoiceOf(lines[i]).voice_id, expectedUnhintedVoice(JSON.stringify([String(current.instance_id), identityKey(handle)])))
+    }
+  }
+})
+check('every_later_description', async () => {
+  const f = spokenFixture('The amber rider says, “Stay beside me.”', [speech('l0', 'the amber rider', 'Stay beside me.')])
+  const first = await attributeEvent(f.current, false)
+  for (let n = 1; n <= 8; n++) {
+    const later = { ...f.current, _id: new ObjectId(n.toString(16).padStart(24, '0')), sequence: n + 1,
+      data: { ...f.current.data, spoken_lines: detectSpokenLines(f.current.data.ai_response), voice_attribution: undefined } }
+    f.db.events.rows.push(later as unknown as Record<string, unknown>)
+    assert.deepEqual(await attributeEvent(later, false), first)
+  }
+  assert.equal(f.db.characters.rows.length, 0)
+  assert.equal(f.attributedCalls(), 9)
+})
+check('every_no_handle', async () => {
+  const f = spokenFixture('“Stay beside me.” “Keep moving now.”', [speech('l0', null, 'Stay beside me.'), speech('l1', null, 'Keep moving now.')])
+  stubSpokenVoice()
+  // Check several events so event and line each independently affect the seed.
+  for (let i = 0; i < 8; i++) {
+    const current = { ...f.current, _id: new ObjectId((100 + i).toString(16).padStart(24, '0')), data: { ...f.current.data, spoken_lines: detectSpokenLines(f.current.data.ai_response), voice_attribution: undefined } }
+    f.db.events.rows.push(current as unknown as Record<string, unknown>)
+    const lines = await attributeEvent(current, false)
+    for (const line of lines) {
+      const voice = lineVoiceOf(line)
+      assert.equal(voice.character_id, undefined)
+      assert.equal(voice.voice_id, expectedUnhintedVoice(JSON.stringify([String(current._id), line.line_id])))
+    }
+    assert.deepEqual(await attributeEvent(current, false), lines)
+  }
+  assert.equal((await requestVoice(String(f.player), String(f.instance), String(f.event), 'l0')).status, 'ready')
+  assert.equal(f.db.characters.rows.length, 0)
+  assert.equal(f.db.characters.inserts, 0)
+})
+check('every_later_card', async () => {
+  const f = spokenFixture('The amber rider says, “Stay beside me.”', [speech('l0', 'the amber rider', 'Stay beside me.')])
+  stubSpokenVoice()
+  const first = lineVoiceOf((await attributeEvent(f.current, false))[0])
+  const cardVoice = { model: catalogue.model, voice_id: catalogue.voices.find((v) => v.id !== first.voice_id)!.id }
+  f.db.characters.rows.push({ ...f.card, aliases: ['the amber rider'], voice: cardVoice } as unknown as Record<string, unknown>)
+  const later = { ...f.current, _id: new ObjectId(), data: { ...f.current.data, spoken_lines: detectSpokenLines(f.current.data.ai_response), voice_attribution: undefined } }
+  f.db.events.rows.push(later as unknown as Record<string, unknown>)
+  assert.equal((await requestVoice(String(f.player), String(f.instance), String(later._id), 'l0')).status, 'ready')
+  const attributed = (await attributeEvent(later, false))[0]
+  assert.equal(lineVoiceOf(attributed).character_id, String(f.card._id))
+  assert.equal(lineVoiceOf(attributed).voice_id, cardVoice.voice_id)
+  assert.equal(attributed.filmable, undefined)
+  // Even an old attributed line not played yet keeps its original choice.
+  assert.equal((await requestVoice(String(f.player), String(f.instance), String(f.event), 'l0')).status, 'ready')
+  const old = f.db.mediaAssets.rows.find((a) => String(a.event_id) === String(f.event))!
+  assert.equal(old.voice_id, first.voice_id)
+  assert.ok(!('character_id' in old))
+  assert.equal((await requestVoice(String(f.player), String(f.instance), String(f.event), 'l0')).status, 'ready')
+  assert.equal(f.db.mediaUsage.inserts, 2, 'old line reuses its cache')
+})
+check('every_unclear', async () => {
+  const f = spokenFixture('The watcher says, “Stay beside me.”', [speech('l0', 'the watcher', 'Stay beside me.', { gender_presentation: 'unclear', timbre: 'rough', age_band: 'adult' })])
+  stubSpokenVoice()
+  assert.equal((await requestVoice(String(f.player), String(f.instance), String(f.event), 'l0')).status, 'ready')
+  const selected = catalogue.voices.find((v) => v.id === f.db.mediaAssets.rows[0].voice_id)!
+  assert.ok(selected.traits.age_band.includes('middle_aged'))
+  assert.ok(selected.traits.timbre.some((t) => ['rough', 'gravelly', 'raspy'].includes(t)))
+  for (let n = 0; n < 16; n++) {
+    const row = speech('l0', 'the watcher', 'Stay beside me.', { timbre: 'rough', age_band: 'adult' })
+    const seed = `unclear-${n}`
+    const withGender = acceptAttribution(detectSpokenLines(f.current.data.ai_response)[0], f.current.data.ai_response, { ...row, gender_presentation: 'unclear' }, () => undefined, seed)
+    const withoutGender = acceptAttribution(detectSpokenLines(f.current.data.ai_response)[0], f.current.data.ai_response, row, () => undefined, seed)
+    assert.equal(lineVoiceOf(withGender).voice_id, lineVoiceOf(withoutGender).voice_id, 'unclear gender gives no vote')
+  }
+  assert.equal(f.db.characters.rows.length, 0)
+})
+check('every_child', async () => {
+  const data = JSON.parse(readFileSync(new URL('../src/services/media/voices/eleven-v4-turbo.json', import.meta.url), 'utf8')) as typeof catalogue
+  for (const gender of ['masculine', 'feminine', 'unclear', 'neutral']) {
+    const id = chooseVoice({ age_band: 'child', gender_presentation: gender, timbre: 'rough' }, [])
+    const selected = data.voices.find((v) => v.id === id)!
+    assert.ok(selected.traits.age_band.includes('young'), `${gender}: youngest band`)
+    assert.ok(selected.traits.timbre.some((t) => ['soft', 'clear', 'bright'].includes(t)), `${gender}: light timbre`)
+  }
+  const f = spokenFixture('The child says, “Stay beside me.”', [speech('l0', 'the child', 'Stay beside me.', { gender_presentation: 'masculine', age_band: 'child', timbre: 'rough' })])
+  stubSpokenVoice()
+  assert.equal((await requestVoice(String(f.player), String(f.instance), String(f.event), 'l0')).status, 'ready')
+  const selected = data.voices.find((v) => v.id === f.db.mediaAssets.rows[0].voice_id)!
+  assert.ok(selected.traits.age_band.includes('young'))
+  assert.ok(selected.traits.timbre.some((t) => ['soft', 'clear', 'bright'].includes(t)))
+  assert.equal(f.db.characters.rows.length, 0)
+})
+check('every_refusals', async () => {
+  const f = spokenFixture('The sign reads “Stay beside me.” Player says “Keep moving now.” The watcher says “Take this road.” Then “Hold the gate.”', [
+    { ...speech('l0', 'the sign', 'Stay beside me.'), is_speech: false },
+    speech('l1', 'Player', 'Keep moving now.'), speech('l2', 'the watcher', 'Invented reply.'), speech('l3', 'Imaginary', 'Hold the gate.'),
+  ])
+  f.db.characters.rows = [{ ...f.card, canonical_name: 'Player', name_normalized: 'player', aliases: ['Alias'], is_protagonist: true } as unknown as Record<string, unknown>]
+  assert.ok((await attributeEvent(f.current, false)).every((l) => l.voice?.status === 'unvoiceable'))
+  assert.equal(f.db.characters.rows.length, 1, 'refused lines never write cards')
+  const g = spokenFixture('Persona says, “Stay beside me.”', [speech('l0', 'Persona', 'Stay beside me.')])
+  assert.equal((await attributeEvent(g.current, true, 'Persona'))[0].voice?.status, 'unvoiceable')
+  assert.equal(g.db.characters.rows.length, 0)
+})
+check('every_mature', async () => {
+  const f = spokenFixture('The watcher says, “Stay beside me.”', [speech('l0', 'the watcher', 'Stay beside me.')])
+  f.current.nsfw_intent = true
+  await assert.rejects(requestVoice(String(f.player), String(f.instance), String(f.event), 'l0'), (e: unknown) => e instanceof HttpError && e.statusCode === 422)
+  assert.equal(f.attributedCalls(), 0)
+  assert.equal(f.db.characters.rows.length, 0)
+})
+check('every_rule_version', async () => {
+  assert.equal(ATTRIBUTION_RULE_VERSION, 3)
+  for (const version of [undefined, 1, 2]) {
+    const f = spokenFixture('The watcher says, “Stay beside me.”', [speech('l0', 'the watcher', 'Stay beside me.')])
+    Object.assign(f.current.data, { voice_attribution: { status: 'done', claimed_at: new Date(), ...(version ? { rule_version: version } : {}) } })
+    const [a, b] = await Promise.all([attributeEvent(f.current, false), attributeEvent(f.current, false)])
+    assert.equal(a[0].voice?.status, 'voiceable')
+    assert.deepEqual(a, b)
+    assert.equal(f.attributedCalls(), 1, 'old done result re-runs once even under concurrent taps')
+    await attributeEvent(f.current, false)
+    assert.equal(f.attributedCalls(), 1, 'current done result never re-runs')
+    assert.equal((f.current.data.voice_attribution as { rule_version?: number }).rule_version, ATTRIBUTION_RULE_VERSION)
+  }
+  const f = fixture()
+  Object.assign((f.db.events.rows[0] as unknown as WorldEventDoc).data, { voice_attribution: { status: 'processing', claimed_at: new Date(0) } })
+  await attributeEvent(f.db.events.rows[0] as unknown as WorldEventDoc, false)
+  await attributeEvent(f.db.events.rows[0] as unknown as WorldEventDoc, false)
+  assert.equal(f.calls(), 0, 'an abandoned claim closes without another paid call')
+})
+check('every_upgrade_cache', async () => {
+  const f = fixture()
+  f.db.events.rows[0].data = { ...(f.db.events.rows[0].data as Record<string, unknown>),
+    voice_attribution: { status: 'done', rule_version: 2, claimed_at: new Date() },
+    spoken_lines: [{ ...detectSpokenLines(f.prose)[0], voice: { status: 'voiceable', character_id: String(f.character), speaker_name: 'Speaker', spoken_text: 'Come with me.', tags: [] } }],
+  }
+  const existing = asset(f, { status: 'ready', url: 'https://example.test/clip.mp3', duration_ms: 500, voice_id: 'sarah', cache_key: `${f.event}:l0:sarah:${catalogue.model}` })
+  f.db.mediaAssets.rows.push(existing as unknown as Record<string, unknown>)
+  mediaEffects.cast = async () => { throw new Error('old clip must keep its voice') }
+  assert.equal((await requestVoice(String(f.player), String(f.instance), String(f.event), 'l0')).status, 'ready')
+  assert.equal(f.calls(), 1)
+  assert.equal(f.db.mediaUsage.inserts, 0)
+  assert.equal(f.db.mediaAssets.inserts, 0)
+  assert.equal(lineVoiceOf((await attributeEvent(f.db.events.rows[0] as unknown as WorldEventDoc, false))[0]).voice_id, 'sarah')
+})
+check('every_merge_media', async () => {
+  for (const replay of [false, true]) for (const established of [false, true]) {
+    const f = fixture()
+    stubSpokenVoice()
+    f.card.entity_id = new ObjectId()
+    f.card.appearance = 'Grey eyes and a scar across the cheek.'
+    f.card.appearance_version = 3
+    f.card.voice_traits = { timbre: 'deep' }
+    f.card.last_spoken_at = new Date()
+    f.card.portrait = { asset_key: 'media/portrait/rider.jpg', source: 'generated', appearance_version: 3, painted_at: new Date() }
+    await requestVoice(String(f.player), String(f.instance), String(f.event), 'l0')
+    const source = f.db.characters.rows[0]
+    const target = { ...f.card, _id: new ObjectId(), entity_id: new ObjectId(), canonical_name: 'Aster', name_normalized: 'aster', aliases: [],
+      ...(established ? { voice: { model: catalogue.model, voice_id: 'sarah' }, appearance: 'Dark eyes.', appearance_version: 4,
+        portrait: { ...f.card.portrait, asset_key: 'media/portrait/target.jpg', appearance_version: 4 } } : {}) } as unknown as Record<string, unknown>
+    if (!established) for (const key of ['voice', 'portrait', 'appearance', 'appearance_version', 'voice_traits', 'last_spoken_at']) delete target[key]
+    const expected = established ? { ...target } : { ...source }
+    f.db.characters.rows.push(target)
+    if (replay) {
+      f.db.worldInstances.rows[0].manual_identity_revisions = [{ kind: 'identity_merge', source_name: 'Speaker', target_name: 'Aster' }]
+      await characterCodexService.applyManualIdentityRevisions({ instanceId: String(f.instance), playerId: String(f.player) })
+    } else {
+      await characterCodexService.confirmIdentityMerge({ playerId: String(f.player), sourceEntityId: String(source.entity_id), targetEntityId: String(target.entity_id) })
+      await characterCodexService.finalizeIdentityMerge({ playerId: String(f.player), sourceCharacterId: String(source._id) })
+    }
+    const named = f.db.characters.rows[0]
+    for (const key of ['voice', 'portrait', 'appearance', 'appearance_version']) assert.deepEqual(named[key], expected[key], `merge carries ${key}; replay=${replay}; established=${established}`)
+    assert.ok(f.db.mediaAssets.rows.every((a) => String(a.character_id) === String(named._id)), `asset ownership follows survivor; replay=${replay}`)
+    assert.equal((await requestVoice(String(f.player), String(f.instance), String(f.event), 'l0')).status, 'ready')
+    assert.equal(f.db.mediaUsage.inserts, 1, 'old clip and voice survive even a merge into a different voice')
+  }
+})
+check('every_uncarded_video', async () => {
+  const f = spokenFixture('The amber rider says, “Stay beside me.”', [speech('l0', 'the amber rider', 'Stay beside me.')])
+  let paid = 0
+  mediaEffects.cast = async () => { paid++; throw new Error('uncarded voice must not cast') }
+  attributionEffects.call = async () => JSON.stringify({ lines: [speech('l0', 'the amber rider', 'Stay beside me.')] })
+  safetyEffects.call = async () => { paid++; throw new Error('must not call') }
+  visualEffects.enqueue = async () => { paid++ }
+  await assert.rejects(requestVideo(String(f.player), String(f.instance), String(f.event), 'l0'),
+    (e: unknown) => e instanceof HttpError && e.statusCode === 422 && e.message === 'This moment stays unseen.')
+  const lines = await attributeEvent(f.current, false)
+  assert.deepEqual(publicSpokenLines(lines), [{ line_id: 'l0', start: lines[0].start, end: lines[0].end, filmable: false }])
+  assert.equal(publicMediaEvent(f.current).data.spoken_lines![0].filmable, false)
+  assert.equal(f.db.mediaUsage.inserts, 0)
+  assert.equal(f.db.mediaAssets.inserts, 0)
+  assert.equal(f.db.characters.inserts, 0)
+  assert.equal(paid, 0)
+})
+check('every_carded_video', async () => {
+  const f = fixture()
+  stubVideoRun(f)
+  const queued = await requestVideo(String(f.player), String(f.instance), String(f.event), 'l0')
+  assert.equal(queued.status, 'queued')
+  assert.equal(publicMediaEvent(f.db.events.rows[0] as unknown as WorldEventDoc).data.spoken_lines![0].filmable, undefined)
+  assert.equal(f.db.mediaUsage.rows.filter((r) => r.kind === 'video').length, 1)
+  assert.equal(f.db.mediaAssets.rows[0].character_id, f.character)
 })
 
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }

@@ -755,6 +755,23 @@ async function foldAndPersist(
   }
 }
 
+/** Preserve an established survivor's media; a carried face keeps its look. */
+function identityMergeMedia(source: CharacterProfileDoc, target: CharacterProfileDoc): Partial<CharacterProfileDoc> {
+  return {
+    ...(!target.voice && source.voice ? { voice: source.voice } : {}),
+    ...(!target.voice_traits && source.voice_traits ? { voice_traits: source.voice_traits } : {}),
+    ...((source.last_spoken_at?.getTime() || 0) > (target.last_spoken_at?.getTime() || 0)
+      ? { last_spoken_at: source.last_spoken_at } : {}),
+    ...(!target.portrait && source.portrait ? {
+      portrait: source.portrait,
+      ...(source.appearance ? { appearance: source.appearance } : {}),
+      appearance_version: source.appearance_version ?? source.portrait.appearance_version,
+    } : !target.appearance && source.appearance ? {
+      appearance: source.appearance, appearance_version: source.appearance_version ?? 1,
+    } : {}),
+  }
+}
+
 export const characterCodexService = {
   async listForInstance(instanceId: string, limit: number = 30): Promise<CharacterProfileDoc[]> {
     return characters()
@@ -1046,12 +1063,17 @@ export const characterCodexService = {
           relationship_moments: moments,
           relationship_facts: facts,
           relationship_state: relationshipStateFromFacts(facts),
+          ...identityMergeMedia(source, target),
           mention_count: (target.mention_count || 0) + (source.mention_count || 0),
           first_seen_sequence: Math.min(target.first_seen_sequence || 0, source.first_seen_sequence || 0),
           last_seen_sequence: Math.max(target.last_seen_sequence || 0, source.last_seen_sequence || 0),
           updated_at: new Date(),
         },
       },
+    )
+    await mongoColl.mediaAssets().updateMany(
+      { instance_id: target.instance_id, player_id: pid, character_id: source._id },
+      { $set: { character_id: target._id } },
     )
     const merged = (await characters().findOne({ _id: target._id }))!
     return { source, target: merged }
@@ -1108,12 +1130,17 @@ export const characterCodexService = {
             mutable_state: uniqKeepRecent([...(target.mutable_state || []), ...(source.mutable_state || [])], MUTABLE_STATE_MAX),
             relationship_facts: facts,
             relationship_state: relationshipStateFromFacts(facts),
+            ...identityMergeMedia(source, target),
             mention_count: (target.mention_count || 0) + (source.mention_count || 0),
             first_seen_sequence: Math.min(target.first_seen_sequence || 0, source.first_seen_sequence || 0),
             last_seen_sequence: Math.max(target.last_seen_sequence || 0, source.last_seen_sequence || 0),
             updated_at: new Date(),
           },
         })
+        await mongoColl.mediaAssets().updateMany(
+          { instance_id: target.instance_id, player_id: target.player_id, character_id: source._id },
+          { $set: { character_id: target._id } },
+        )
         await characters().deleteOne({ _id: source._id })
       }
     }

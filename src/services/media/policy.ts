@@ -37,13 +37,6 @@ export function filterVoiceTraits(raw: unknown): VoiceTraits {
   return out
 }
 
-/** A child or an unclear-gender speaker is never cast and stays unvoiceable:
- * no catalogue voice fits either. An unclear timbre only withholds the
- * timbre vote; the line still voices. */
-export function traitsVoiceable(traits: VoiceTraits): boolean {
-  return traits.age_band !== 'child' && traits.gender_presentation !== 'unclear'
-}
-
 export function chooseVoice(traits: VoiceTraits, holders: VoiceHolder[], voices = catalogue.voices): string {
   // Card traits use the attribution vocabulary (feminine, older, …); catalogue
   // voices carry the provider's labels (female, middle_aged, …). The mapping
@@ -64,7 +57,8 @@ export function chooseVoice(traits: VoiceTraits, holders: VoiceHolder[], voices 
   return fitting.reduce((winner, voice) => last(voice.id) < last(winner.id) ? voice : winner).id
 }
 export function publicSpokenLines(lines: SpokenLine[]): SpokenLine[] {
-  return lines.map(({ line_id, start, end, voice }) => ({ line_id, start, end,
+  return lines.map(({ line_id, start, end, voice, filmable }) => ({ line_id, start, end,
+    ...(filmable === false ? { filmable } : {}),
     ...(voice?.status === 'unvoiceable' ? { voice } : {}),
   }))
 }

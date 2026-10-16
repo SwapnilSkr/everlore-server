@@ -1,6 +1,7 @@
 /** Each mutation is loaded in memory in an isolated child; working-tree files are never edited. */
 import { readFile, writeFile, mkdir } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 type Mutation = { name: string; check: string; file: string; path?: string; changes: Array<[string, string]> }
 const root = 'src/services/media/'
@@ -18,7 +19,7 @@ const mutations: Mutation[] = [
   { name: 'player speaker rejected', check: 'speaker', file: 'attribution.ts', changes: [["if (!isSentient && newFoldState(cards.filter((c) => c.is_protagonist)).byName.has(identityKey(name))) return undefined", "// removed player identity guard"], ["if (!card || (!isSentient && card.is_protagonist)) return undefined", "if (!card) return undefined"]] },
   { name: 'one performed tag', check: 'tags', file: 'policy.ts', changes: [[".slice(0, 1) : []", ".slice(0, 2) : []"]] },
   { name: 'allowlisted tags', check: 'tags', file: 'policy.ts', changes: [["(ALLOWED_VOICE_TAGS as readonly string[]).includes(tag)", "true"]] },
-  { name: 'atomic attribution claim', check: 'attribution_once', file: 'attribution.ts', changes: [["{ ...filter, 'data.voice_attribution': { $exists: false } }", "{ ...filter }"]] },
+  { name: 'atomic attribution claim', check: 'attribution_once', file: 'attribution.ts', changes: [["{ ...filter, ...claimable }", "{ ...filter }"]] },
   { name: 'prefer unused voice', check: 'casting', file: 'policy.ts', changes: [["!holders.some((holder) => holder.voice_id === voice.id)", "holders.some((holder) => holder.voice_id === voice.id)"]] },
   { name: 'least-recent reuse', check: 'reuse', file: 'policy.ts', changes: [["last(voice.id) < last(winner.id)", "last(voice.id) > last(winner.id)"]] },
   { name: 'shared-holder recency', check: 'reuse', file: 'policy.ts', changes: [["Math.max(0, ...holders.filter", "Math.min(Infinity, ...holders.filter"]] },
@@ -85,7 +86,7 @@ const mutations: Mutation[] = [
   { name: 'failed rows carry the error', check: 'failed_row_error', file: 'service.ts', changes: [["error: { stage: cause.stage, message },", ""]] },
   { name: 'trait aliases map catalogue labels', check: 'casting_traits', file: 'policy.ts', changes: [["table[key]?.[value] ?? [value]", "[value]"]] },
   { name: 'invalid traits ignored', check: 'attribution_traits', file: 'policy.ts', changes: [["if (typeof value === 'string' && (list as readonly string[]).includes(value)) out[key] = value", "out[key] = value as string"]] },
-  { name: 'child stays unvoiceable', check: 'attribution_traits', file: 'attribution.ts', changes: [["if (!traitsVoiceable(traits)) return no", "if (false) return no"]] },
+
   { name: 'first cast persists traits', check: 'casting_traits_persist', file: 'casting.ts', changes: [["voice, ...(!hasTraits(fresh) && Object.keys(traits).length ? { voice_traits: traits } : {}),", "voice,"]] },
   // ── media-server-2-fix-3 ──
   { name: 'refusal reason kept', check: 'provider_refusal_unseen', file: 'visual.ts', changes: [["await logRejection(asset, stage, reason, asset.model, message)", "await logRejection(asset, stage, reason, asset.model)"]] },
@@ -118,6 +119,39 @@ const mutations: Mutation[] = [
   { name: 'persona deletion removes face rows', check: 'persona_delete_cleans_faces', path: 'src/services/persona.service.ts', changes: [["await mongoColl.mediaAssets().deleteMany({ persona_id: personaOid, player_id: pid })", "// omitted face-row deletion"]] },
   { name: 'persona deletion removes face objects', check: 'persona_delete_cleans_faces', path: 'src/services/persona.service.ts', changes: [["for (const key of new Set(keys)) await storageService.delete(key)", "// omitted face-object deletion"]] },
 
+  // ── media-every-line-fix-1 ──
+  { name: 'uncarded description gets a line voice', check: 'every_description', file: 'attribution.ts', changes: [["if (!card && seed === undefined) return no", "if (!card) return no"]] },
+  { name: 'uncarded speech writes no characters row', check: 'every_description', file: 'attribution.ts', changes: [["      lines[index] = accepted", "      await mongoColl.characters().insertOne({ _id: event._id }); lines[index] = accepted"]] },
+  { name: 'handle seed includes the save', check: 'every_seed', file: 'attribution.ts', changes: [["[event.instance_id.toHexString(), identityKey(handle)]", "['all-saves', identityKey(handle)]"]] },
+  { name: 'handle seed normalizes the handle', check: 'every_seed', file: 'attribution.ts', changes: [["[event.instance_id.toHexString(), identityKey(handle)]", "[event.instance_id.toHexString(), handle]"]] },
+  { name: 'same handle keeps its voice across turns', check: 'every_later_description', file: 'attribution.ts', changes: [["[event.instance_id.toHexString(), identityKey(handle)]", "[event._id.toHexString(), identityKey(handle)]"]] },
+  { name: 'no-handle seed includes event', check: 'every_no_handle', file: 'attribution.ts', changes: [["[event._id.toHexString(), line.line_id]", "['all-events', line.line_id]"]] },
+  { name: 'no-handle seed includes line', check: 'every_no_handle', file: 'attribution.ts', changes: [["[event._id.toHexString(), line.line_id]", "[event._id.toHexString(), 'all-lines']"]] },
+  { name: 'speech accepts voices stored on the line', check: 'every_description', file: 'service.ts', changes: [["  if (line.voice.voice_id && line.voice.model) return", "  if (!card) throw new Error('uncarded voice rejected'); if (line.voice.voice_id && line.voice.model) return"]] },
+  { name: 'later cards supply new lines', check: 'every_later_card', file: 'attribution.ts', changes: [["const speaker = handle ? resolveVoiceSpeaker(handle, cards, isSentient, personaName) : undefined", "const speaker = undefined"]] },
+  { name: 'old lines keep their voice after a card appears', check: 'every_later_card', file: 'service.ts', changes: [["  if (line.voice.voice_id && line.voice.model) return", "  if (!card) card = await mongoColl.characters().findOne({ instance_id: instance._id }); if (card) return mediaEffects.cast(instance, card); if (line.voice.voice_id && line.voice.model) return"]] },
+  { name: 'unclear gender still voices', check: 'every_unclear', file: 'attribution.ts', changes: [["const traits = filterVoiceTraits(r)", "const traits = filterVoiceTraits(r); if (traits.gender_presentation === 'unclear') return no"]] },
+  { name: 'unclear gender withholds its vote', check: 'every_unclear', file: 'voices/eleven-v4-turbo.json', changes: [['"unclear": [],', '"unclear": ["female"],']] },
+  { name: 'child still voices', check: 'every_child', file: 'attribution.ts', changes: [["const traits = filterVoiceTraits(r)", "const traits = filterVoiceTraits(r); if (traits.age_band === 'child') return no"]] },
+  { name: 'child catalogue selects light adults', check: 'every_child', file: 'voices/eleven-v4-turbo.json', changes: [['"child": ["young_light_adult"]', '"child": []']] },
+  { name: 'sign stays refused', check: 'every_refusals', file: 'attribution.ts', changes: [["r.is_speech !== true || ", ""]] },
+  { name: 'player stays refused', check: 'every_refusals', file: 'attribution.ts', changes: [["if (isPlayer || (playerWords && playerWords.includes(spoken))) continue", "if (playerWords && playerWords.includes(spoken)) continue"]] },
+  { name: 'non-verbatim speech stays refused', check: 'every_refusals', file: 'attribution.ts', changes: [["if (!isVerbatim(prose.slice(line.start + 1, line.end - 1), r.spoken_text)) return undefined", "// omitted verbatim gate"]] },
+  { name: 'invented handles stay refused', check: 'every_refusals', file: 'attribution.ts', changes: [["if (handle !== null && !event.data.ai_response.toLowerCase().includes(handle.toLowerCase())) continue", "// omitted handle grounding"]] },
+  { name: 'mature stays refused', check: 'every_mature', file: 'service.ts', changes: [["if (!matureVoiceAllowed(event.nsfw_intent, user?.preferences?.nsfw_enabled === true)) throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })", "// omitted mature gate"]] },
+  { name: 'rule version advances past v2', check: 'every_rule_version', file: 'attribution.ts', changes: [["ATTRIBUTION_RULE_VERSION = 3", "ATTRIBUTION_RULE_VERSION = 2"]] },
+  { name: 'old done results run once', check: 'every_rule_version', file: 'attribution.ts', changes: [["  const revision = mediaRevision(event.data.ai_response, event.data.player_input)", "  if (event.data.voice_attribution?.status === 'done') return event.data.spoken_lines || [];\n  const revision = mediaRevision(event.data.ai_response, event.data.player_input)"]] },
+  { name: 'current done results stay cached', check: 'every_rule_version', file: 'attribution.ts', changes: [["'data.voice_attribution.status': 'done', 'data.voice_attribution.rule_version': { $ne: ATTRIBUTION_RULE_VERSION }", "'data.voice_attribution.status': 'done'"]] },
+  { name: 'upgrading preserves an already heard clip', check: 'every_upgrade_cache', file: 'attribution.ts', changes: [["if (previous?.voice_id && previous.model)", "if (false && previous?.voice_id && previous.model)"]] },
+  ...['voice', 'portrait', 'appearance'].map((key): Mutation => ({ name: `merge carries ${key}`, check: 'every_merge_media', file: '../character-codex.service.ts', changes: [[key === 'voice' ? "...(!target.voice && source.voice ? { voice: source.voice } : {})," : key === 'portrait' ? "portrait: source.portrait," : "...(source.appearance ? { appearance: source.appearance } : {}),", ""]] })),
+  { name: 'merge keeps the established voice', check: 'every_merge_media', file: '../character-codex.service.ts', changes: [["!target.voice && source.voice", "source.voice"]] },
+  { name: 'live merge reassigns asset ownership', check: 'every_merge_media', file: '../character-codex.service.ts', changes: [["instance_id: target.instance_id, player_id: pid, character_id: source._id", "instance_id: target.instance_id, player_id: pid, character_id: target._id"]] },
+  { name: 'replayed merge reassigns asset ownership', check: 'every_merge_media', file: '../character-codex.service.ts', changes: [["instance_id: target.instance_id, player_id: target.player_id, character_id: source._id", "instance_id: target.instance_id, player_id: target.player_id, character_id: target._id"]] },
+  { name: 'uncarded line publishes filmable false', check: 'every_uncarded_video', file: 'policy.ts', changes: [["...(filmable === false ? { filmable } : {}),", ""]] },
+  { name: 'uncarded video refuses before reservation', check: 'every_uncarded_video', file: 'visual.ts', changes: [["if (line.filmable === false || !card) throw new HttpError(422, 'This moment stays unseen.')", "if (line.filmable === false || !card) { await reserveMedia({ _id: new ObjectId(), player_id: pid, instance_id: iid, kind: 'video' }); throw new HttpError(422, 'This moment stays unseen.') }"]] },
+  { name: 'uncarded video uses calm refusal copy', check: 'every_uncarded_video', file: 'visual.ts', changes: [["if (line.filmable === false || !card) throw new HttpError(422, 'This moment stays unseen.')", "if (line.filmable === false || !card) throw new HttpError(422, 'This line stays quiet.')"]] },
+  { name: 'carded lines can still be filmed', check: 'every_carded_video', file: 'visual.ts', changes: [["if (line.filmable === false || !card) throw", "if (true) throw"]] },
+
   // ── media-suggestive-policy ──
   ...['kiss', 'nudity', 'sexual_act', 'underage', 'gore', 'real_person', 'boundary'].flatMap((key): Mutation[] => [
     { name: `text policy ${key}`, check: `visual_text_${key}`, file: 'visual.ts', changes: [["if (pre.verdict !== 'allow') throw new UnseenError('pre', pre.reason_code)", key === 'kiss' ? "throw new UnseenError('pre', 'over_refusal')" : "// omitted pre gate"]] },
@@ -138,13 +172,13 @@ const mutations: Mutation[] = [
 ]
 // Bun's preload loader substitutes only the named module, including legacy
 // checks on paths owned by other tasks. No temporary source mutation or restore.
-const reportDir = resolve('../.agents/reports/media-suggestive-policy')
+const reportDir = resolve(tmpdir(), 'everlore-media-audit-bites')
 await mkdir(reportDir, { recursive: true })
 const preload = resolve(reportDir, 'mutation-loader.ts')
 await writeFile(preload, `import { plugin } from 'bun'
 const mutation = JSON.parse(process.env.MEDIA_AUDIT_MUTATION!)
 plugin({ name: 'media-audit-mutation', setup(build) {
-  build.onLoad({ filter: new RegExp('^' + mutation.path.replaceAll('.', '[.]') + '$') }, () => ({ contents: mutation.contents, loader: 'ts' }))
+  build.onLoad({ filter: new RegExp('^' + mutation.path.replaceAll('.', '[.]') + '$') }, () => ({ contents: mutation.path.endsWith('.json') ? 'export default ' + mutation.contents : mutation.contents, loader: 'ts' }))
 } })
 `)
 for (const mutation of mutations) {
@@ -159,7 +193,9 @@ for (const mutation of mutations) {
     stdout: 'pipe', stderr: 'pipe',
     env: { ...process.env, MEDIA_AUDIT_MUTATION: JSON.stringify({ path: resolve(file), contents: tampered }) },
   })
+  const timer = setTimeout(() => child.kill(), 30000)
   const [out, err, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+  clearTimeout(timer)
   assert.notEqual(status, 0, `DID NOT BITE: ${mutation.name}\n${out}\n${err}`)
   assert.ok(err.includes(`FAIL ${mutation.check}:`), `Must fail the named assertion, not syntax/typechecking: ${mutation.name}\n${err}`)
   console.log(`BITE ${mutation.name}: exit ${status}; ${err.split('\n').find((line) => line.startsWith('FAIL '))}`)

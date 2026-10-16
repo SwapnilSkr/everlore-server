@@ -17,6 +17,7 @@ const get = (row: Row, path: string): unknown => path.split('.').reduce<unknown>
 const same = (a: unknown, b: unknown) => a instanceof ObjectId && b instanceof ObjectId ? a.equals(b) : a === b
 function matches(row: Row, filter: Row): boolean {
   return Object.entries(filter).every(([path, expected]) => {
+    if (path === '$or') return (expected as Row[]).some((part) => matches(row, part))
     const actual = get(row, path)
     if (expected && typeof expected === 'object' && !(expected instanceof ObjectId) && !(expected instanceof Date)) {
       if (!Object.keys(expected).some((key) => key.startsWith('$'))) return JSON.stringify(actual) === JSON.stringify(expected)
@@ -96,7 +97,7 @@ export function fixture() {
   const db = Object.fromEntries(names.map((name) => [name, new MemoryCollection(name)])) as Record<typeof names[number], MemoryCollection>
   for (const name of names) Object.assign(mongoColl, { [name]: () => db[name] })
   const player = new ObjectId(), instance = new ObjectId(), event = new ObjectId(), template = new ObjectId(), character = new ObjectId()
-  const prose = '“Come with me.”'
+  const prose = '“Come with me.” Speaker stands nearby.'
   const revision = mediaRevision(prose, '')
   const card: CharacterProfileDoc = { _id: character, instance_id: instance, player_id: player, canonical_name: 'Speaker', name_normalized: 'speaker', aliases: ['Alias'], immutable_facts: [], mutable_state: [], disposition_to_player: '', hidden_thought: '', first_seen_sequence: 1, last_seen_sequence: 1, mention_count: 1, created_at: new Date(), updated_at: new Date() }
   db.characters.rows = [card as unknown as Row]
@@ -106,7 +107,7 @@ export function fixture() {
   db.events.rows = [{ _id: event, player_id: player, instance_id: instance, data: { ai_response: prose, player_input: '', media_revision: revision, spoken_lines: detectSpokenLines(prose) } }]
   process.env.MEDIA_ENABLED = 'true'; process.env.MEDIA_VOICE_ENABLED = 'true'; process.env.MEDIA_DAILY_VOICE = '2'
   let calls = 0
-  attributionEffects.call = async () => { calls++; await Bun.sleep(5); return JSON.stringify({ lines: [{ line_id: 'l0', is_speech: true, speaker_name: 'Alias', spoken_text: 'Come with me.', tags: [] }] }) }
+  attributionEffects.call = async () => { calls++; await Bun.sleep(5); return JSON.stringify({ lines: [{ line_id: 'l0', is_speech: true, speaker_name: 'Speaker', spoken_text: 'Come with me.', tags: [] }] }) }
   mediaEffects.cast = async () => ({ model: 'elevenlabs/eleven-v4-turbo', voice_id: 'george' })
   mediaEffects.enqueue = async () => {}
   mediaEffects.publish = async () => {}

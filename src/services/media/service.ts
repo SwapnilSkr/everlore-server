@@ -6,10 +6,13 @@ import { synthesizeSpeech } from '../../ai/tts'
 import { env } from '../../config/env'
 import { HttpError } from '../../utils/http-error'
 import { parseObjectId } from '../../utils/mongo-id'
-import type { MediaAssetDoc } from '../../models/media.model'
+import type { CharacterVoice, MediaAssetDoc, SpokenLine } from '../../models/media.model'
+import type { CharacterProfileDoc } from '../../models/character-profile.model'
+import type { WorldInstanceDoc } from '../../models/world-instance.model'
+import type { WorldEventDoc } from '../../models/world-event.model'
 import { storageService } from '../storage.service'
 import { log } from '../../utils/logger'
-import { attributeEvent, mediaRevision, resolveVoiceSpeaker } from './attribution'
+import { attributeEvent, mediaRevision, resolveAttributedSpeaker } from './attribution'
 import { castCharacter, castKey } from './casting'
 import { mediaEnabled, voiceCatalogue } from './config'
 import { matureVoiceAllowed, utcMediaDay } from './policy'
@@ -44,6 +47,26 @@ export const mediaEffects = {
 export const readyReply = (asset: MediaAssetDoc): VoiceReply | undefined => asset.status === 'ready' && asset.url && asset.duration_ms
   ? { status: 'ready', url: asset.url, duration_ms: asset.duration_ms } : undefined
 
+/** Pin a card's first voice on the line too, so merges cannot change its cache identity. */
+export async function lineVoice(instance: WorldInstanceDoc, event: WorldEventDoc, line: SpokenLine, card?: CharacterProfileDoc): Promise<CharacterVoice> {
+  if (line.voice?.status !== 'voiceable') throw new Error('Line is not speech')
+  if (line.voice.voice_id && line.voice.model) return { voice_id: line.voice.voice_id, model: line.voice.model }
+  if (!card) throw new Error('Speaker missing')
+  const voice = await mediaEffects.cast(instance, card, line.voice.voice_traits ?? {})
+  const index = event.data.spoken_lines?.findIndex((l) => l.line_id === line.line_id) ?? -1
+  if (index < 0) throw new Error('Line removed')
+  const path = `data.spoken_lines.${index}.voice`
+  const filter = { _id: event._id, 'data.media_revision': mediaRevision(event.data.ai_response, event.data.player_input),
+    'data.ai_response': event.data.ai_response, 'data.player_input': event.data.player_input }
+  const saved = await mongoColl.events().findOneAndUpdate({ ...filter, [`${path}.model`]: { $exists: false } }, {
+    $set: { [`${path}.model`]: voice.model, [`${path}.voice_id`]: voice.voice_id },
+  }, { returnDocument: 'after' })
+  const current = saved ?? await mongoColl.events().findOne(filter)
+  const pinned = current?.data.spoken_lines?.[index].voice
+  if (pinned?.status !== 'voiceable' || !pinned.model || !pinned.voice_id) throw new Error('Line removed')
+  return { model: pinned.model, voice_id: pinned.voice_id }
+}
+
 export async function requestVoice(playerId: string, instanceId: string, eventId: string, lineId: string): Promise<VoiceReply> {
   if (!mediaEnabled('voice')) throw new HttpError(404, 'That moment could not be found.')
   const pid = parseObjectId(playerId), iid = parseObjectId(instanceId), eid = parseObjectId(eventId)
@@ -62,11 +85,10 @@ export async function requestVoice(playerId: string, instanceId: string, eventId
   const line = lines.find((l) => l.line_id === lineId)
   if (line?.voice?.status !== 'voiceable') throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })
   const cards = await mongoColl.characters().find({ instance_id: iid, player_id: pid }).sort({ first_seen_sequence: 1 }).toArray()
-  const card = resolveVoiceSpeaker(line.voice.speaker_name, cards, template.is_sentient, instance.persona_snapshot?.name)
-  if (!card) throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })
+  const card = resolveAttributedSpeaker(line.voice, cards, template.is_sentient, instance.persona_snapshot?.name)
   let voice: Awaited<ReturnType<typeof castCharacter>>
   try {
-    voice = await mediaEffects.cast(instance, card, line.voice.voice_traits ?? {})
+    voice = await lineVoice(instance, { ...event, data: { ...event.data, spoken_lines: lines } }, line, card)
     voiceCatalogue(voice.model)
   } catch { throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' }) }
   const revision = mediaRevision(event.data.ai_response, event.data.player_input)
@@ -82,7 +104,7 @@ export async function requestVoice(playerId: string, instanceId: string, eventId
   }
   const input = [...line.voice.tags, line.voice.spoken_text].join(' ')
   asset = { _id: new ObjectId(), player_id: pid, instance_id: iid, event_id: eid, kind: 'voice', line_id: lineId,
-    character_id: card._id, source: 'generated', ...voice, cache_key: key, revision, input,
+    ...(card ? { character_id: card._id } : {}), source: 'generated', ...voice, cache_key: key, revision, input,
     cost_usd: input.length * voiceCatalogue(voice.model).rate_usd_per_character, cost_source: 'catalogue', status: 'queued', created_at: new Date() }
   try { await mongoColl.mediaAssets().insertOne(asset) } catch (error) {
     if (!duplicateKey(error)) throw error
