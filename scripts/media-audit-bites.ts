@@ -329,9 +329,19 @@ const mutations: Mutation[] = [
   { name: 'narrator film uses the card face', check: 'sentient_narrator_film', file: 'attribution.ts', changes: [["&& !isNarrator &&", "&&"]] },
   { name: 'empty line name has a subject', check: 'line_prompt_subject', file: 'scene-templates.ts', changes: [["name.trim() || 'The speaker'", "name"]] },
   { name: 'passing face description has a subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["canonical_name: speakerSubject(handle)", "canonical_name: handle"]] },
-  { name: 'passing portrait description has a subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["generatePortraitBytes(appearance, speakerSubject(handle), '', model, style.render)", "generatePortraitBytes(appearance, handle, '', model, style.render)"]] },
+  { name: 'portrait description normalizes the subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["present: [{ name: subject, has_portrait: !!reference }]", "present: [{ name, has_portrait: !!reference }]"], ["generatePortraitBytes(appearance, speakerSubject(handle), '', model, style.render)", "generatePortraitBytes(appearance, handle, '', model, style.render)"]] },
   { name: 'passing look description has a subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["name: speakerSubject(name), prose:", "name, prose:"]] },
   { name: 'director and scene names have a subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["speaker_name: speakerSubject(line.voice.speaker_name)", "speaker_name: line.voice.speaker_name"]] },
+
+  // ── media-portrait-subject ──
+  { name: 'subjectless portrait never paints', check: 'portrait_no_subject', file: 'visual.ts', changes: [["if (!description.startsWith(`${subject},`)) throw new UnseenError('pre', 'portrait_no_subject')", "// subject gate removed"]] },
+  { name: 'subject match is not a name substring', check: 'portrait_no_subject', file: 'visual.ts', changes: [["description.startsWith(`${subject},`)", "description.toLowerCase().includes(subject.toLowerCase())"]] },
+  ...['inline_card', 'queued_card', 'inline_persona', 'queued_persona', 'passing_named', 'passing_unnamed'].map((site): Mutation => ({
+    name: `painted subject survives ${site}`, check: `portrait_subject_${site}`, file: 'visual.ts', changes: [["portraitImagePrompt(description, render),", "portraitImagePrompt(description.slice(description.indexOf(',') + 1), render),"]],
+  })),
+  { name: 'portraits use their own describer', check: 'portrait_subject_inline_card', file: 'safety.ts', changes: [["input.framing === 'portrait' ? buildSafetyPrompts().portraitDescription : buildSafetyPrompts().description", "buildSafetyPrompts().description"]] },
+  { name: 'portrait describer retains the shared safety policy', check: 'visual_shared_policy', file: 'safety.ts', changes: [["      line,\n      'Omit blocked details", "      '',\n      'Omit blocked details"]] },
+  { name: 'scene and wide descriptions keep their instruction', check: 'portrait_scene_descriptions_unchanged', file: 'safety.ts', changes: [["input.framing === 'portrait' ? buildSafetyPrompts().portraitDescription : buildSafetyPrompts().description", "buildSafetyPrompts().portraitDescription"]] },
 
   // ── media-no-look-no-paint ──
   { name: 'no physical description blocks lasting paint', check: 'kept_no_appearance', file: 'visual.ts', changes: [["if (!report.has_appearance) throw new UnseenError('pre', 'no_appearance')", "// evidence gate removed"]] },

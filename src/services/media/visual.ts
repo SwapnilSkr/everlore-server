@@ -129,13 +129,17 @@ export async function generatePortraitBytes(
   render: string,
   reference?: { data: Buffer; contentType: string },
 ): Promise<PortraitBytes> {
+  const subject = speakerSubject(name)
   const description = await describeMoment({
     prose: appearance,
-    present: [{ name, has_portrait: !!reference }],
+    present: [{ name: subject, has_portrait: !!reference }],
     passing_look: '',
     framing: 'portrait',
     place,
   })
+  // The portrait instruction cannot guarantee the person survives rewriting.
+  // Require the exact subject prefix, so a substring in a setting cannot pass.
+  if (!description.startsWith(`${subject},`)) throw new UnseenError('pre', 'portrait_no_subject')
   const pre = await moderateDescription(description)
   if (pre.verdict !== 'allow') throw new UnseenError('pre', pre.reason_code)
   // What is gated is what is painted: the image prompt is the moderated

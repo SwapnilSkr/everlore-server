@@ -390,12 +390,17 @@ function portraitRow(f: ReturnType<typeof fixture>, extra: Partial<MediaAssetDoc
 const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])
 const JPEG_BYTES = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x00])
 const WEBP_BYTES = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50])
+function portraitDescriptionReply(req: Parameters<typeof safetyEffects.call>[0], text: string): string {
+  if (req.purpose !== 'media_describe') return text
+  const input = JSON.parse(String(req.messages[1].content)) as { framing: string; present: Array<{ name: string }> }
+  return input.framing === 'portrait' ? `${input.present[0].name}, ${text}` : text
+}
 function stubPortraitPipeline(f: ReturnType<typeof fixture>, judge: () => unknown) {
   f.card.appearance = 'Grey eyes, dark braids, leather collar'
   f.card.portrait = { asset_key: 'media/portrait/old.png', source: 'generated', appearance_version: 1, painted_at: new Date() }
   safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
     ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
-    : 'A calm head-and-shoulders portrait description.'
+    : portraitDescriptionReply(req, 'A calm head-and-shoulders portrait description.')
   safetyEffects.judge = judge as never
   visualEffects.fill = async () => 'Filled look'
   visualEffects.download = async () => Buffer.from(PNG_BYTES)
@@ -430,7 +435,7 @@ check('pregate_blocks', async () => {
   stubPortraitPipeline(f, async () => { throw new Error('vision must never run after a pre-gate rejection') })
   safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
     ? JSON.stringify({ verdict: 'reject', reason_code: 'explicit_minor' })
-    : 'A portrait description.'
+    : portraitDescriptionReply(req, 'A portrait description.')
   let painted = 0
   visualEffects.image = async () => { painted++; throw new Error('generation must never run after a pre-gate rejection') }
   const published: Array<Record<string, unknown>> = []
@@ -988,9 +993,9 @@ for (const side of ['text', 'vision'] as const) {
       stubPortraitPipeline(f, async () => ({ verdict: side === 'vision' ? verdict : 'allow', reason_code: side === 'vision' ? example.reason : 'ok', people_count: 1, face_close_up: true, text_visible: false }))
       safetyEffects.call = async (req) => {
         const prompt = req.messages[0].content
-        const expected = req.purpose === 'media_describe' ? buildSafetyPrompts().description : buildSafetyPrompts().moderation
+        const expected = req.purpose === 'media_describe' ? buildSafetyPrompts().portraitDescription : buildSafetyPrompts().moderation
         assert.equal(prompt, expected)
-        return req.purpose === 'media_describe' ? example.description : JSON.stringify({ verdict: side === 'text' ? verdict : 'allow', reason_code: side === 'text' ? example.reason : 'ok' })
+        return req.purpose === 'media_describe' ? portraitDescriptionReply(req, example.description) : JSON.stringify({ verdict: side === 'text' ? verdict : 'allow', reason_code: side === 'text' ? example.reason : 'ok' })
       }
       visualEffects.image = async () => { painted++; return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null } }
       visualEffects.upload = async (_data, _type, opts) => { uploaded++; return { key: opts?.key || '', url: 'https://example.test/allowed.jpg' } }
@@ -1025,7 +1030,7 @@ check('visual_shared_policy', async () => {
   const key = env.OPENROUTER_API_KEY
   const seen: string[] = []
   try {
-    // Change both lists, then capture what all three real prompt consumers send.
+    // Change both lists, then capture every real prompt consumer, including portraits.
     MEDIA_VISUAL_POLICY.allowed.push('audit allowed sentinel')
     MEDIA_VISUAL_POLICY.blocked.push({ reason_code: 'audit_block', content: 'audit blocked sentinel' })
     safetyEffects.call = async (req) => {
@@ -1033,6 +1038,7 @@ check('visual_shared_policy', async () => {
       return req.purpose === 'media_describe' ? 'A kiss.' : JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
     }
     await describeMoment({ prose: 'A kiss.', present: [], passing_look: '', framing: 'scene', place: '' })
+    await describeMoment({ prose: 'Grey eyes.', present: [{ name: 'Speaker', has_portrait: false }], passing_look: '', framing: 'portrait', place: '' })
     await moderateDescription('A kiss.')
     env.OPENROUTER_API_KEY = 'audit'
     globalThis.fetch = (async (_url, init) => {
@@ -1042,7 +1048,7 @@ check('visual_shared_policy', async () => {
     }) as typeof fetch
     safetyEffects.judge = realFrameJudge
     await checkImage(Buffer.from(PNG_BYTES), 'image/png')
-    assert.equal(seen.length, 3)
+    assert.equal(seen.length, 4)
     for (const prompt of seen) {
       assert.ok(prompt.includes('audit allowed sentinel'), 'allowed list did not reach every prompt')
       assert.ok(prompt.includes('audit blocked sentinel'), 'blocked list did not reach every prompt')
@@ -1183,7 +1189,7 @@ function stubVideoRun(f: ReturnType<typeof videoBase>, opts: {
       if (opts.moderate) return JSON.stringify(opts.moderate(text))
       return JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
     }
-    return r.purpose === 'media_passing_look' ? 'none' : 'A calm illustrated description naming who is present.'
+    return r.purpose === 'media_passing_look' ? 'none' : portraitDescriptionReply(req, 'A calm illustrated description naming who is present.')
   }
   safetyEffects.judge = (async (image: Buffer) => {
     if (lineFrames.includes(image)) {
@@ -1367,7 +1373,7 @@ check('persona_standalone', async () => {
   } as unknown as Record<string, unknown>)
   safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
     ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
-    : 'A calm head-and-shoulders portrait description.'
+    : portraitDescriptionReply(req, 'A calm head-and-shoulders portrait description.')
   safetyEffects.judge = (async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false })) as never
   visualEffects.image = (async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 })) as never
   visualEffects.upload = (async (_data: Buffer, _type: string, o?: { key?: string }) => ({ key: o?.key || '', url: `https://example.test/${o?.key}` })) as never
@@ -1452,7 +1458,7 @@ function addUnpaintedCards(f: ReturnType<typeof fixture>, names: string[]) {
 function stubPictureFaces(f: ReturnType<typeof fixture>) {
   safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
     ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
-    : 'Faces in a tavern. Wide view, calm mood.'
+    : portraitDescriptionReply(req, 'Faces in a tavern. Wide view, calm mood.')
   safetyEffects.judge = (async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: false, text_visible: false })) as never
   visualEffects.fill = (async () => 'Filled look') as never
   visualEffects.download = (async () => Buffer.from(PNG_BYTES)) as never
@@ -1607,6 +1613,104 @@ check('picture_faces_allowance_edge', async () => {
   }
 })
 // ── media-server-2-fix-2 ──
+check('portrait_no_subject', async () => {
+  for (const name of ['Rin', 'The speaker']) {
+    for (const description of ['', 'No people. The room is softly lit, with warm hues.', 'Bring a lamp into the empty room.', `${name}na, beside a lamp.`]) {
+      const f = fixture()
+      f.card.canonical_name = name
+      stubPortraitPipeline(f, () => { throw new Error('vision must not run') })
+      let paints = 0
+      visualEffects.image = async () => { paints++; throw new Error('image must not run') }
+      safetyEffects.call = async (req) => req.purpose === 'media_safety_pre'
+        ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' }) : description
+      const published: Array<Record<string, unknown>> = []
+      mediaEffects.publish = async (_player, message) => { published.push(message) }
+      const a = portraitRow(f)
+      f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+      await reserveMedia(a)
+      await processPortrait(String(a._id))
+      assert.equal(paints, 0, 'a subjectless description must never paint')
+      assert.equal(f.db.mediaAssets.rows[0].status, 'unseen')
+      assert.equal(f.db.mediaRejections.rows[0].reason, 'portrait_no_subject')
+      assert.equal(f.db.mediaRejections.rows[0].stage, 'pre')
+      assert.equal(f.db.mediaUsage.rows[0].status, 'released')
+      assert.equal('slot' in f.db.mediaUsage.rows[0], false)
+      assert.equal(published.filter((m) => m.type === 'media_unseen').length, 1)
+    }
+  }
+})
+for (const mode of ['inline_card', 'queued_card', 'inline_persona', 'queued_persona', 'passing_named', 'passing_unnamed'] as const) {
+  check(`portrait_subject_${mode}`, async () => {
+    const f = fixture()
+    process.env.MEDIA_PORTRAIT_ENABLED = 'true'
+    process.env.MEDIA_DAILY_PORTRAIT = '20'
+    stubPictureFaces(f)
+    f.card.appearance = 'Raw grey eyes and dark braids.'
+    const subject = mode.includes('persona') ? 'Traveller' : mode === 'passing_named' ? 'the watcher' : mode === 'passing_unnamed' ? 'The speaker' : 'Speaker'
+    const description = `${subject}, one person in a head-and-shoulders illustration. Covered coat.`
+    let gated = '', painted = '', described = 0
+    safetyEffects.call = async (req) => {
+      if (req.purpose === 'media_describe') {
+        described++
+        assert.equal(req.messages[0].content, buildSafetyPrompts().portraitDescription)
+        assert.ok(String(req.messages[0].content).includes('exactly one fictional person'))
+        assert.ok(!String(req.messages[0].content).includes('"No people"'))
+        const input = JSON.parse(String(req.messages[1].content))
+        assert.deepEqual(input.present, [{ name: subject, has_portrait: false }])
+        assert.equal(input.framing, 'portrait')
+        return description
+      }
+      assert.equal(req.purpose, 'media_safety_pre')
+      gated = String(req.messages[1].content)
+      return JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+    }
+    visualEffects.image = async (prompt) => {
+      painted = prompt
+      return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null }
+    }
+    if (mode.includes('persona')) {
+      const personaId = new ObjectId()
+      f.db.personas.rows.push({ _id: personaId, player_id: f.player, name: subject, description: 'Raw grey eyes and dark braids.', appearance_version: 1 })
+      if (mode === 'inline_persona') assert.ok(await ensurePersonaFaceReady(String(f.player), personaId, PAINTED_STYLE_KEY, PAINTED_RENDER))
+      else {
+        const reply = await requestPersonaPortrait(String(f.player), String(personaId))
+        assert.equal(reply.status, 'queued')
+        if (reply.status === 'queued') await processPortrait(reply.media_id)
+        assert.equal(f.db.mediaAssets.rows[0].status, 'ready')
+      }
+    } else if (mode.startsWith('passing')) {
+      const a = asset(f, { kind: 'video', status: 'processing' })
+      f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+      assert.equal((await ensurePassingFaceReady(a, f.db.events.rows[0] as unknown as WorldEventDoc, mode === 'passing_named' ? subject : '')).painted, true)
+    } else if (mode === 'inline_card') {
+      assert.equal((await ensurePortraitReady(String(f.player), String(f.instance), f.card)).painted, true)
+    } else {
+      const a = portraitRow(f)
+      f.db.mediaAssets.rows.push(a as unknown as Record<string, unknown>)
+      await reserveMedia(a)
+      await processPortrait(String(a._id))
+      assert.equal(f.db.mediaAssets.rows[0].status, 'ready')
+    }
+    assert.equal(described, 1)
+    assert.equal(gated, description, 'the content gate sees the complete subject and moderated look')
+    assert.equal(painted, portraitImagePrompt(gated, PAINTED_RENDER))
+    assert.ok(painted.startsWith(`${subject},`), 'the painted prompt must keep its subject')
+    assert.ok(!painted.includes('Raw grey eyes'), 'the raw look never bypasses moderation')
+  })
+}
+check('portrait_scene_descriptions_unchanged', async () => {
+  for (const framing of ['scene', 'wide_still'] as const) {
+    const input = { prose: 'Rain on a window.', present: [], passing_look: '', framing, place: 'A quiet room' }
+    const description = 'No people. Rain on the window in a wide view.'
+    safetyEffects.call = async (req) => {
+      assert.equal(req.messages[0].content, buildSafetyPrompts().description)
+      assert.ok(String(req.messages[0].content).includes('or "No people" for an empty setting'))
+      assert.deepEqual(JSON.parse(String(req.messages[1].content)), { moment: input.prose, present: [], passing_look: '', framing, place: input.place })
+      return description
+    }
+    assert.equal(await describeMoment(input), description)
+  }
+})
 check('portrait_prompt_gated', async () => {
   // What is gated is what is painted: the exact string sent to the image
   // model is the moderated description plus the fixed style suffix — the raw
@@ -2241,7 +2345,9 @@ check('passing_face_gates', async () => {
   for (const stage of ['pre', 'post', 'allowance'] as const) {
     const f = passingVideoFixture()
     if (stage === 'pre') {
-      safetyEffects.call = async () => JSON.stringify({ verdict: 'reject', reason_code: 'nudity' })
+      const describe = safetyEffects.call
+      safetyEffects.call = async (req) => req.purpose === 'media_safety_pre'
+        ? JSON.stringify({ verdict: 'reject', reason_code: 'nudity' }) : describe(req)
     } else if (stage === 'post') {
       safetyEffects.judge = async () => ({ verdict: 'reject', reason_code: 'nudity', people_count: 1, face_close_up: false, text_visible: false })
     } else process.env.MEDIA_DAILY_PORTRAIT = '0'
@@ -2858,7 +2964,7 @@ function stubEvidencePaint(f: ReturnType<typeof fixture>, hasAppearance: unknown
     if (req.purpose === 'media_portrait_look') return req.responseSchema
       ? JSON.stringify({ has_appearance: hasAppearance, look }) : 'An invented face with grey eyes and silver curls.'
     if (req.purpose === 'media_safety_pre') return JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
-    return 'A calm portrait description.'
+    return portraitDescriptionReply(req, 'A calm portrait description.')
   }
   safetyEffects.judge = async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false })
   visualEffects.image = async () => { paints++; return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 } }
@@ -3207,7 +3313,7 @@ check('persona_per_style', async () => {
   assert.equal(personaFaceForStyle(persona() as never, 'anime'), undefined)
   safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
     ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
-    : 'A calm head-and-shoulders portrait description.'
+    : portraitDescriptionReply(req, 'A calm head-and-shoulders portrait description.')
   safetyEffects.judge = (async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false })) as never
   visualEffects.download = (async () => Buffer.from(PNG_BYTES)) as never
   visualEffects.image = (async () => ({ data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 })) as never
@@ -3252,7 +3358,7 @@ check('picture_persona_style', async () => {
   event.data.ai_response = prose
   safetyEffects.call = async (req) => (req as { responseSchema?: unknown }).responseSchema
     ? JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
-    : 'Asha in a neon alley. Wide view, calm mood.'
+    : portraitDescriptionReply(req, 'Asha in a neon alley. Wide view, calm mood.')
   let judges = 0
   safetyEffects.judge = (async () => {
     judges++
