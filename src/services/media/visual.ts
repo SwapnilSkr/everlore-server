@@ -4,7 +4,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
 import { getMediaQueue, QUEUE_RETENTION } from '../../queues'
 import { asMediaImageReference, imageExtensionFor, ProviderRefusalError } from '../../ai/image'
-import { generateMediaImage } from './image'
+import { generateMediaImage, mediaImageReferenceLimit } from './image'
 import { submitVideo, awaitVideo, downloadVideo } from '../../ai/video'
 import { AI_MODELS } from '../../ai/models'
 import { env } from '../../config/env'
@@ -1291,6 +1291,7 @@ export async function makeSceneShot(args: {
   ambient?: string
   shot: DirectorPlan['shots'][number]
   speakerPortrait?: Buffer
+  presentPortraits?: ReadonlyMap<string, Buffer>
   playerId: ObjectId
   instanceId: ObjectId
   /** The world's render style. Defaults to the painted default. */
@@ -1309,15 +1310,15 @@ export async function makeSceneShot(args: {
   }
   try {
     // Before any paid generation, the COMPILED still and motion prompts are
-    // moderated (§7 gate on what we actually send): a rejected shot prompt
+    // moderated except for the compiler-owned policy suffix: a rejected prompt
     // drops that shot, before a cent is spent on it.
     const stillPrompt = compileStillPrompt({ continuity: args.continuity, ambient: args.ambient } as DirectorPlan, args.shot, primary, args.styleRender)
     const motionPrompt = compileMotionPrompt({ continuity: args.continuity, ambient: args.ambient } as DirectorPlan, args.shot, primary)
-    const stillGate = await moderateDescription(stillPrompt)
+    const stillGate = await moderateDescription(stillPrompt.content)
     if (stillGate.verdict !== 'allow') {
       return dropped('still_prompt_rejected', [{ prompt: 'still', reason: stillGate.reason_code }], 0)
     }
-    const motionGate = await moderateDescription(motionPrompt)
+    const motionGate = await moderateDescription(motionPrompt.content)
     if (motionGate.verdict !== 'allow') {
       return dropped('motion_prompt_rejected', [{ prompt: 'motion', reason: motionGate.reason_code }], 0)
     }
@@ -1327,13 +1328,18 @@ export async function makeSceneShot(args: {
     // The speaker face is an older PNG portrait or a new JPEG one: sniffed,
     // never assumed.
     const speakerReference = args.shot.people_in_still.length && args.speakerPortrait ? asMediaImageReference(args.speakerPortrait) : undefined
+    const presentReferences = args.shot.people_in_still
+      .flatMap((person) => {
+        const bytes = args.presentPortraits?.get(person.name)
+        return bytes ? [asMediaImageReference(bytes)] : []
+      }).slice(0, mediaImageReferenceLimit())
     let still: { data: Buffer; contentType: string; costUsd?: number } | null = null
     const stillChecks: unknown[] = []
     try {
       for (let attempt = 0; attempt < 2 && !still; attempt++) {
         const candidate = await visualEffects.image(
-          stillPrompt,
-          { model: imageModel(), aspectRatio: '9:16', ...(speakerReference ? { reference: speakerReference } : {}) },
+          stillPrompt.prompt,
+          { model: imageModel(), aspectRatio: '9:16', ...(speakerReference ? { reference: speakerReference } : presentReferences.length ? { references: presentReferences } : {}) },
         )
         const checks = await checkImage(candidate.data, candidate.contentType)
         stillChecks.push({ attempt, people_count: checks.people_count, face_close_up: checks.face_close_up, text_visible: checks.text_visible, verdict: checks.verdict })
@@ -1371,7 +1377,7 @@ export async function makeSceneShot(args: {
     for (const [model, withAudio] of [[primary, undefined], [fallback, false]] as const) {
       try {
         const submitted = await visualEffects.submit({
-          model, prompt: motionPrompt, firstFrameUrl: stillUp.url,
+          model, prompt: motionPrompt.prompt, firstFrameUrl: stillUp.url,
           duration: args.shot.duration_s, resolution: '480p', aspectRatio: '9:16',
           ...(withAudio === undefined ? {} : { generateAudio: withAudio }),
         })
@@ -1421,9 +1427,12 @@ function startLineShot(args: {
   audioUrl: string
 }): Promise<{ video: Buffer; cost: number }> {
   return (async () => {
+    const prompt = compileLinePrompt(args.speakerName, args.spokenText)
+    const gate = await moderateDescription(prompt.content)
+    if (gate.verdict !== 'allow') throw new UnseenError('pre', gate.reason_code)
     const submitted = await visualEffects.submit({
       model: args.model,
-      prompt: compileLinePrompt(args.speakerName, args.spokenText),
+      prompt: prompt.prompt,
       inputReferences: [
         { type: 'image_url', url: args.portraitUrl },
         { type: 'audio_url', url: args.audioUrl },
@@ -1573,6 +1582,9 @@ export async function processVideo(mediaId: string): Promise<void> {
       portraitUrl: portraitUrlStr,
       audioUrl: clip.url,
     })
+    // Observe a refusal immediately while sibling scene shots are running;
+    // awaiting the original promise below still makes the verdict binding.
+    void lineShot.catch(() => {})
     const shots: ShotOutcome[] = planRecord.shots as ShotOutcome[]
     stage = 'shoot'
     if (plan) {
@@ -1604,6 +1616,7 @@ export async function processVideo(mediaId: string): Promise<void> {
         await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })
         return
       }
+      if (error instanceof UnseenError) throw error
       throw new Error('Line shot failed')
     }
     // The line shot gets the same first/middle/last-frame post-check (§7 says
@@ -1665,7 +1678,7 @@ export async function processVideo(mediaId: string): Promise<void> {
         plan: {
           ...planRecord,
           compiled: {
-            line: compileLinePrompt(line.voice.speaker_name, line.voice.spoken_text),
+            line: compileLinePrompt(line.voice.speaker_name, line.voice.spoken_text).prompt,
             shots: shots.map((s) => ({ role: s.role, model: s.model, status: s.status, reason: s.reason, ...(s.message !== undefined ? { message: s.message } : {}) })),
           },
           shots,
@@ -1700,6 +1713,30 @@ export async function processVideo(mediaId: string): Promise<void> {
   }
 }
 
+/** Read kept faces only: a cut never fills a look, paints a portrait or
+ * creates a passing face. Resolve world-cast portraits through the same
+ * holder as line films, and download only faces that a shot can reference. */
+async function readyPresentPortraits(
+  instance: WorldInstanceDoc,
+  cards: CharacterProfileDoc[],
+  plan: DirectorPlan,
+  isSentient: boolean,
+): Promise<ReadonlyMap<string, Buffer>> {
+  const portraits = new Map<string, PortraitRef>()
+  for (const card of cards) {
+    const holder = await resolvePortraitHolder(instance, card, {
+      isSentient, personaName: instance.persona_snapshot?.name,
+      ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
+    })
+    if (holder.portrait?.asset_key && isReferenceAllowed(holder.portrait.source)) portraits.set(card.canonical_name, holder.portrait)
+  }
+  const names = new Set(plan.shots.flatMap((shot) => shot.people_in_still
+    .filter((person) => portraits.has(person.name))
+    .slice(0, mediaImageReferenceLimit()).map((person) => person.name)))
+  return new Map(await Promise.all([...names].map(async (name) =>
+    [name, await visualEffects.download(portraitUrl(portraits.get(name)!.asset_key))] as const)))
+}
+
 async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
   let uploaded = ''
   let posterKey = ''
@@ -1715,12 +1752,13 @@ async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
     const style = templateMediaStyle(template)
     const cards = await mongoColl.characters().find({ instance_id: instance._id, player_id: asset.player_id }).toArray()
     const prose = event.data.ai_response
+    const present = presentCards(prose, cards, instance.persona_snapshot?.name)
     const input: DirectorInput = {
       mode: 'dialogue_free', art_style: style.render,
       narration_before: prose, narration_after: prose,
       line: { speaker_name: '', spoken_text: '', duration_s: 0 },
       speaker: { appearance: '', passing_look: '' },
-      others_present: presentCards(prose, cards, instance.persona_snapshot?.name).map((c) => ({ name: c.canonical_name, appearance: c.appearance || '' })),
+      others_present: present.map((c) => ({ name: c.canonical_name, appearance: c.appearance || '' })),
       place: await momentPlace(instance, event),
     }
     const pre = await moderateDescription(prose)
@@ -1729,11 +1767,12 @@ async function processDialogueFreeCut(asset: MediaAssetDoc): Promise<void> {
     record = { director_model: directorModel(), input, ...directed }
     if (!directed.plan) throw new Error('No scene shots planned')
     const plan = directed.plan
+    const presentPortraits = await readyPresentPortraits(instance, present, plan, template?.is_sentient === true)
     record.compiled = { shots: plan.shots.map((shot) => ({
-      role: shot.role, still: compileStillPrompt(plan, shot, sceneModel(), style.render), motion: compileMotionPrompt(plan, shot, sceneModel()),
+      role: shot.role, still: compileStillPrompt(plan, shot, sceneModel(), style.render).prompt, motion: compileMotionPrompt(plan, shot, sceneModel()).prompt,
     })) }
     const settled = await Promise.allSettled(plan.shots.map((shot) => makeSceneShot({
-      role: shot.role, continuity: plan.continuity, ambient: plan.ambient, shot, playerId: asset.player_id, instanceId: instance._id, styleRender: style.render,
+      role: shot.role, continuity: plan.continuity, ambient: plan.ambient, shot, presentPortraits, playerId: asset.player_id, instanceId: instance._id, styleRender: style.render,
     })))
     shots = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : [])
     record.shots = shots

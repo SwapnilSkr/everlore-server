@@ -53,27 +53,39 @@ export const SCENE_TEMPLATES: Record<string, SceneModelTemplate> = {
 const templateFor = (model: string): SceneModelTemplate =>
   SCENE_TEMPLATES[model] || SCENE_TEMPLATES['x-ai/grok-imagine-video-1.5-lite']
 
-export function compileStillPrompt(plan: DirectorPlan, shot: DirectorShot, model: string, styleRender: string = PAINTED_RENDER): string {
+// Only this fixed suffix is withheld from the scene-content gate. Model-written
+// text, even an exact copy of this sentence, remains in content and is gated.
+export const POLICY_SENTENCE = ' No nudity, no sexual act, no suggestive depictions of anyone who looks underage, no real people, no graphic gore.'
+
+export interface CompiledMediaPrompt {
+  content: string
+  prompt: string
+}
+
+function withPolicy(content: string): CompiledMediaPrompt {
+  return { content, prompt: content + POLICY_SENTENCE }
+}
+
+export function compileStillPrompt(plan: DirectorPlan, shot: DirectorShot, model: string, styleRender: string = PAINTED_RENDER): CompiledMediaPrompt {
   const t = templateFor(model)
   const c = plan.continuity
-  return [
+  return withPolicy([
     t.stillPrefix,
     `${styleRender}.`,
     `${shot.people_in_still.length ? `Wardrobe: ${c.wardrobe} Hair: ${c.hair} ` : ''}Props: ${c.props}.`,
     `Time: ${c.time_of_day}. Weather: ${c.weather}. Light: ${c.light}. Palette: ${c.palette}.`,
     `${FRAMING_NOTES[shot.framing] || shot.framing}.`,
     shot.still,
-    'No nudity, no sexual act, no suggestive depictions of anyone who looks underage, no real people, no graphic gore.',
     t.stillSuffix,
-  ].join(' ')
+  ].join(' '))
 }
 
-export function compileMotionPrompt(plan: DirectorPlan, shot: DirectorShot, model: string): string {
+export function compileMotionPrompt(plan: DirectorPlan, shot: DirectorShot, model: string): CompiledMediaPrompt {
   const t = templateFor(model)
   const people = shot.people_in_still.length
     ? `Visible people: ${shot.people_in_still.map((p) => `${p.name} (${p.placement})`).join('; ')}.`
     : 'No people visible.'
-  return [
+  return withPolicy([
     t.motionPrefix,
     `${CAMERA_NOTES[shot.camera_move] || shot.camera_move}.`,
     `Subject: ${shot.subject_action}`,
@@ -81,12 +93,11 @@ export function compileMotionPrompt(plan: DirectorPlan, shot: DirectorShot, mode
     people,
     ...(shot.people_in_still.length ? [`Wardrobe stays exactly: ${plan.continuity.wardrobe}`] : []),
     `Sound: ${plan.ambient || 'ambient scene sounds'}. No voices, no spoken words, no music with words.`,
-    'No nudity, no sexual act, no suggestive depictions of anyone who looks underage, no real people, no graphic gore.',
     t.motionSuffix,
-  ].join(' ')
+  ].join(' '))
 }
 
 /** HeyGen line-shot prompt: the portrait says the line. Nothing else. */
-export function compileLinePrompt(speakerName: string, spokenText: string): string {
-  return `${speakerName}, the adult in the portrait, says: "${spokenText.slice(0, 400)}" Natural lip movement matched to the supplied voice recording. Still camera, no nudity, no sexual act, no captions.`
+export function compileLinePrompt(speakerName: string, spokenText: string): CompiledMediaPrompt {
+  return withPolicy(`${speakerName}, the adult in the portrait, says: "${spokenText.slice(0, 400)}" Natural lip movement matched to the supplied voice recording. Still camera, no captions.`)
 }

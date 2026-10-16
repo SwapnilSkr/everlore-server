@@ -2,6 +2,11 @@ import { env } from '../../config/env'
 import { ProviderRefusalError, providerRefusal, sniffImageContentType, type MediaImageReference, type MediaImageResult } from '../../ai/image'
 import { imageModel, imageSafetyTolerance } from './config'
 
+/** Flux 3 Klein accepts ten portraits; other configured models keep the
+ * existing single-reference limit until their transport supports more. */
+export const mediaImageReferenceLimit = (model: string = imageModel()): number =>
+  model === 'black-forest-labs/flux-3-image-klein' ? 10 : 1
+
 /** Media-only transport: provider tolerance never changes the world-cover path. */
 export async function generateMediaImage(
   prompt: string,
@@ -9,6 +14,7 @@ export async function generateMediaImage(
     model?: string
     aspectRatio?: string
     reference?: MediaImageReference
+    references?: MediaImageReference[]
     signal?: AbortSignal
     /** null omits the parameter for a provider-default comparison. */
     safetyTolerance?: number | null
@@ -29,11 +35,12 @@ export async function generateMediaImage(
     if (!Number.isSafeInteger(tolerance) || tolerance < 0 || tolerance > 5) throw new Error('Invalid media image safety tolerance')
     body.safety_tolerance = tolerance
   }
-  if (opts.reference) {
-    body.input_references = [{
+  const references = (opts.references ?? (opts.reference ? [opts.reference] : [])).slice(0, mediaImageReferenceLimit(model))
+  if (references.length) {
+    body.input_references = references.map((reference) => ({
       type: 'image_url',
-      image_url: { url: `data:${opts.reference.contentType};base64,${opts.reference.data.toString('base64')}` },
-    }]
+      image_url: { url: `data:${reference.contentType};base64,${reference.data.toString('base64')}` },
+    }))
   }
   const res = await fetch('https://openrouter.ai/api/v1/images', {
     method: 'POST',

@@ -12,7 +12,7 @@ import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOf
 import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, ensurePersonaFaceReady, ensurePassingFaceReady, passingFaceKey, PASSING_FACE_RULE_VERSION, requestTurnVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
 import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, describeMoment, MEDIA_VISUAL_POLICY, buildSafetyPrompts, visualPolicyLine } from '../src/services/media/safety'
 import { assembleDialogueFreeCut, buildCutGraph, cutEffects } from '../src/services/media/cut'
-import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from '../src/services/media/scene-templates'
+import { compileLinePrompt, compileMotionPrompt, compileStillPrompt, POLICY_SENTENCE, SCENE_TEMPLATES } from '../src/services/media/scene-templates'
 import { directScene, directorEffects, validateDirectorPlan, DIRECTOR_SYSTEM_PROMPT, type DirectorInput, DIRECTOR_DIALOGUE_FREE_PROMPT } from '../src/services/media/director'
 import { foldDelta, newFoldState, characterCodexService } from '../src/services/character-codex.service'
 import { purgeCardPortraits, purgeTemplatePortraits } from '../src/services/media/deletion'
@@ -710,11 +710,11 @@ check('cut_graph', () => {
 })
 check('compile_prompts', () => {  const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
   const shot = { ...plan.shots[0], people_in_still: plan.shots[1].people_in_still }
-  const still = compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite')
+  const still = compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite').prompt
   assert.ok(still.includes('Dark cloak'))
   assert.ok(still.includes('A brass lamp.'))
   assert.ok(still.includes('No text'))
-  const motion = compileMotionPrompt(plan, shot, 'alibaba/wan-3.0')
+  const motion = compileMotionPrompt(plan, shot, 'alibaba/wan-3.0').prompt
   assert.ok(motion.includes('slow_push_in') || motion.includes('drifts slowly closer'))
   assert.ok(motion.includes('No other people appear'))
   assert.ok(motion.includes('Dark cloak'))
@@ -726,8 +726,8 @@ check('peopleless_prompts', () => {
   plan.continuity.hair = 'No hair is visible.'
   for (const model of ['x-ai/grok-imagine-video-1.5-lite', 'alibaba/wan-3.0', 'unknown-model']) {
     const shot = plan.shots[0]
-    const still = compileStillPrompt(plan, shot, model)
-    const motion = compileMotionPrompt(plan, shot, model)
+    const still = compileStillPrompt(plan, shot, model).prompt
+    const motion = compileMotionPrompt(plan, shot, model).prompt
     for (const prompt of [still, motion]) {
       assert.ok(!prompt.includes(plan.continuity.wardrobe), 'empty shot omits wardrobe verbatim')
       assert.ok(!prompt.includes(plan.continuity.hair), 'empty shot omits hair verbatim')
@@ -737,9 +737,116 @@ check('peopleless_prompts', () => {
     for (const value of [plan.continuity.time_of_day, plan.continuity.weather, plan.continuity.light, plan.continuity.palette]) assert.ok(still.includes(value))
     assert.ok(motion.includes(plan.ambient!))
     const people = plan.shots[1]
-    assert.ok(compileStillPrompt(plan, people, model).includes(`Wardrobe: ${plan.continuity.wardrobe} Hair: ${plan.continuity.hair} Props: ${plan.continuity.props}.`))
-    assert.ok(compileMotionPrompt(plan, people, model).includes(`Wardrobe stays exactly: ${plan.continuity.wardrobe}`))
+    assert.ok(compileStillPrompt(plan, people, model).prompt.includes(`Wardrobe: ${plan.continuity.wardrobe} Hair: ${plan.continuity.hair} Props: ${plan.continuity.props}.`))
+    assert.ok(compileMotionPrompt(plan, people, model).prompt.includes(`Wardrobe stays exactly: ${plan.continuity.wardrobe}`))
   }
+})
+check('scene_prompt_content', async () => {
+  const previous = process.env.MEDIA_SCENE_MODEL
+  try {
+    for (const [model, template] of Object.entries(SCENE_TEMPLATES)) {
+      for (const echoPolicy of [false, true]) {
+        process.env.MEDIA_SCENE_MODEL = model
+        const f = turnVideoFixture()
+        const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
+        const shot = structuredClone(plan.shots[1])
+        if (echoPolicy) {
+          shot.still += POLICY_SENTENCE
+          shot.subject_action += POLICY_SENTENCE
+        }
+        const still = compileStillPrompt(plan, shot, model)
+        const motion = compileMotionPrompt(plan, shot, model)
+        assert.ok(still.content.startsWith(template.stillPrefix))
+        assert.ok(still.content.endsWith(template.stillSuffix))
+        assert.ok(motion.content.startsWith(template.motionPrefix))
+        assert.ok(motion.content.endsWith(template.motionSuffix))
+        for (const compiled of [still, motion]) {
+          assert.equal(compiled.content.includes(POLICY_SENTENCE.trim()), echoPolicy, 'only model-authored copies remain in content')
+          assert.equal(compiled.prompt, compiled.content + POLICY_SENTENCE)
+        }
+        const gated: string[] = [], sent: string[] = []
+        safetyEffects.call = async (req) => {
+          gated.push(req.messages.find((m) => m.role === 'user')!.content as string)
+          return JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+        }
+        const image = visualEffects.image, submit = visualEffects.submit
+        visualEffects.image = async (prompt, opts) => {
+          assert.equal(gated.length, 2, 'both gates precede generation')
+          sent.push(prompt)
+          return image(prompt, opts)
+        }
+        visualEffects.submit = async (req) => { sent.push(req.prompt!); return submit(req) }
+        const result = await makeSceneShot({ role: shot.role, shot, continuity: plan.continuity, ambient: plan.ambient, playerId: f.player, instanceId: f.instance })
+        assert.equal(result.status, 'ready', result.reason)
+        assert.deepEqual(gated, [still.content, motion.content])
+        assert.deepEqual(sent, gated.map((content) => content + POLICY_SENTENCE), 'every sent byte except the fixed suffix was gated')
+      }
+    }
+  } finally {
+    if (previous === undefined) delete process.env.MEDIA_SCENE_MODEL
+    else process.env.MEDIA_SCENE_MODEL = previous
+  }
+})
+check('scene_prompt_blocks', async () => {
+  for (const rejectAt of [1, 2]) {
+    const f = turnVideoFixture()
+    const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
+    const shot = plan.shots[1]
+    let gates = 0, paints = 0, submits = 0
+    safetyEffects.call = async () => JSON.stringify(++gates === rejectAt
+      ? { verdict: 'reject', reason_code: 'underage_suggestive' } : { verdict: 'allow', reason_code: 'ok' })
+    visualEffects.image = async () => { paints++; throw new Error('A rejected prompt cannot paint') }
+    visualEffects.submit = async () => { submits++; throw new Error('A rejected prompt cannot animate') }
+    const result = await makeSceneShot({ role: shot.role, shot, continuity: plan.continuity, playerId: f.player, instanceId: f.instance })
+    assert.equal(result.status, 'dropped')
+    assert.equal(result.reason, rejectAt === 1 ? 'still_prompt_rejected' : 'motion_prompt_rejected')
+    assert.equal(gates, rejectAt)
+    assert.equal(paints, 0)
+    assert.equal(submits, 0)
+  }
+})
+check('line_prompt_content', async () => {
+  const f = videoBase()
+  stubVideoRun(f)
+  f.card.portrait = { asset_key: 'media/portrait/kept.png', source: 'generated', appearance_version: 1, painted_at: new Date() }
+  const gated: string[] = [], sent: string[] = []
+  const call = safetyEffects.call, submit = visualEffects.submit
+  safetyEffects.call = async (req) => {
+    if (req.purpose === 'media_safety_pre') gated.push(req.messages.find((m) => m.role === 'user')!.content as string)
+    return call(req)
+  }
+  visualEffects.submit = async (req) => {
+    if (req.model === 'heygen/avatar-iv') {
+      const compiled = compileLinePrompt('Speaker', 'Come with me,')
+      assert.ok(gated.includes(compiled.content), 'line content is gated before submit')
+      assert.ok(!compiled.content.includes(POLICY_SENTENCE.trim()))
+      assert.equal(req.prompt, compiled.content + POLICY_SENTENCE)
+      sent.push(req.prompt!)
+    }
+    return submit(req)
+  }
+  const row = await filmLine(f)
+  assert.equal(row.status, 'ready', JSON.stringify(row.error))
+  assert.equal(sent.length, 1)
+  const echoed = compileLinePrompt('Speaker', POLICY_SENTENCE.trim())
+  assert.ok(echoed.content.includes(POLICY_SENTENCE.trim()), 'model-written policy text is never stripped')
+})
+check('line_prompt_blocks', async () => {
+  const f = videoBase()
+  stubVideoRun(f)
+  f.card.portrait = { asset_key: 'media/portrait/kept.png', source: 'generated', appearance_version: 1, painted_at: new Date() }
+  const call = safetyEffects.call, submit = visualEffects.submit
+  let lineSubmits = 0
+  const content = compileLinePrompt('Speaker', 'Come with me,').content
+  safetyEffects.call = async (req) => req.messages.some((m) => m.role === 'user' && m.content === content)
+    ? JSON.stringify({ verdict: 'reject', reason_code: 'underage_suggestive' }) : call(req)
+  visualEffects.submit = async (req) => { if (req.model === 'heygen/avatar-iv') lineSubmits++; return submit(req) }
+  const asset = await queueVideo(f)
+  await processVideo(String(asset._id))
+  const row = f.db.mediaAssets.rows.find((r) => String(r._id) === String(asset._id))!
+  assert.equal(row.status, 'unseen')
+  assert.equal(lineSubmits, 0)
+  assert.ok(f.db.mediaUsage.rows.filter((r) => r.kind === 'video').every((r) => r.status === 'released'))
 })
 check('peopleless_references', async () => {
   const f = fixture()
@@ -749,11 +856,11 @@ check('peopleless_references', async () => {
     for (const people of [0, 1]) {
       const steps: string[] = []
       const shot = people ? plan.shots[1] : plan.shots[0]
-      const expectedStill = compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite')
-      const expectedMotion = compileMotionPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite')
+      const expectedStill = compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite').prompt
+      const expectedMotion = compileMotionPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite').prompt
       safetyEffects.call = async (req) => {
         const text = req.messages.find((message) => message.role === 'user')?.content
-        assert.equal(text, steps.length ? expectedMotion : expectedStill, 'gate sees the entire compiled prompt')
+        assert.equal(text, (steps.length ? expectedMotion : expectedStill).slice(0, -POLICY_SENTENCE.length), 'gate sees all scene content')
         steps.push('gate')
         return JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
       }
@@ -940,13 +1047,13 @@ check('visual_complete_description', async () => {
 check('visual_prompt_line', () => {
   const portrait = portraitImagePrompt('A covered adult', 'a render')
   const picture = pictureImagePrompt('Two adults kiss', 'a render', 0, '')
-  for (const prompt of [portrait, picture, compileLinePrompt('Speaker', 'Stay close.')]) assert.ok(!/SFW|fully clothed/i.test(prompt))
+  for (const prompt of [portrait, picture, compileLinePrompt('Speaker', 'Stay close.').prompt]) assert.ok(!/SFW|fully clothed/i.test(prompt))
   for (const phrase of ['head-and-shoulders portrait', 'clearly an illustration of a fictional person, never a photograph', 'no text, no lettering, no signage']) assert.ok(portrait.includes(phrase))
   assert.ok(picture.includes('no nudity, no sexual act'))
   const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
   for (const model of ['x-ai/grok-imagine-video-1.5-lite', 'alibaba/wan-3.0']) {
     const shot = plan.shots[0]
-    for (const prompt of [compileStillPrompt(plan, shot, model), compileMotionPrompt(plan, shot, model)]) {
+    for (const prompt of [compileStillPrompt(plan, shot, model).prompt, compileMotionPrompt(plan, shot, model).prompt]) {
       assert.ok(prompt.includes('No nudity, no sexual act'))
       assert.ok(prompt.includes('no suggestive depictions of anyone who looks underage'))
     }
@@ -980,6 +1087,14 @@ check('image_safety_tolerance', async () => {
     await generateMediaImage('A covered adult', { safetyTolerance: 4 })
     assert.equal(bodies.at(-1)?.safety_tolerance, 4)
     await assert.rejects(generateMediaImage('A covered adult', { safetyTolerance: 6 }), /Invalid/)
+    const references = Array.from({ length: 12 }, (_, n) => ({ data: Buffer.concat([Buffer.from(PNG_BYTES), Buffer.from([n])]), contentType: 'image/png' }))
+    for (const [model, limit] of [['black-forest-labs/flux-3-image-klein', 10], ['other-model', 1]] as const) {
+      await generateMediaImage('A group', { model, references })
+      assert.deepEqual(bodies.at(-1)?.input_references, references.slice(0, limit).map((ref) => ({
+        type: 'image_url', image_url: { url: `data:${ref.contentType};base64,${ref.data.toString('base64')}` },
+      })), 'transport preserves reference order and model limit')
+    }
+
   } finally {
     if (saved === undefined) delete process.env.MEDIA_IMAGE_SAFETY_TOLERANCE
     else process.env.MEDIA_IMAGE_SAFETY_TOLERANCE = saved
@@ -2350,6 +2465,95 @@ check('passing_rule_keeps_cards', async () => {
   assert.equal(f.db.mediaAssets.inserts, 0)
 })
 
+check('shot_reference_limit', async () => {
+  const previous = process.env.MEDIA_IMAGE_MODEL
+  try {
+    for (const [model, limit] of [['black-forest-labs/flux-3-image-klein', 10], ['other-model', 1]] as const) {
+      process.env.MEDIA_IMAGE_MODEL = model
+      const f = turnVideoFixture()
+      const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
+      const shot = structuredClone(plan.shots[1])
+      const portraits = new Map(Array.from({ length: 12 }, (_, n) => [`Person${n}`, Buffer.concat([Buffer.from(PNG_BYTES), Buffer.from([n])])]))
+      shot.people_in_still = [...portraits.keys()].reverse().map((name) => ({ name, placement: 'door', facing: 'away' }))
+      const references: Buffer[][] = []
+      visualEffects.image = async (_prompt, opts) => {
+        references.push((opts?.references || []).map((r) => r.data))
+        return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null }
+      }
+      safetyEffects.judge = async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 12, face_close_up: false, text_visible: false, wardrobe_match: true })
+      const result = await makeSceneShot({ role: shot.role, shot, continuity: plan.continuity, presentPortraits: portraits, playerId: f.player, instanceId: f.instance })
+      assert.equal(result.status, 'ready', result.reason)
+      assert.deepEqual(references, [shot.people_in_still.slice(0, limit).map((p) => portraits.get(p.name)!)])
+    }
+  } finally {
+    if (previous === undefined) delete process.env.MEDIA_IMAGE_MODEL
+    else process.env.MEDIA_IMAGE_MODEL = previous
+  }
+})
+check('present_card_references', async () => {
+  const previous = process.env.MEDIA_IMAGE_MODEL
+  process.env.MEDIA_IMAGE_MODEL = 'black-forest-labs/flux-3-image-klein'
+  try {
+    for (const mode of ['ready', 'missing', 'uploaded', 'world', 'empty', 'many'] as const) {
+      const f = turnVideoFixture()
+      const portrait = { asset_key: 'media/portrait/kept.png', source: 'generated' as const, appearance_version: 1, painted_at: new Date() }
+      if (mode !== 'missing') f.card.portrait = { ...portrait, source: mode === 'uploaded' ? 'uploaded' : 'generated' }
+      if (mode === 'world') {
+        delete f.card.portrait
+        f.db.worldTemplates.rows[0].seed_cast = [{ name: 'Alias', appearance: 'Dark braids', portrait: { ...portrait, source: 'authored' } }]
+      }
+      const bytesByKey = new Map<string, Buffer>([[portrait.asset_key, Buffer.from(PNG_BYTES)]])
+      const names = mode === 'empty' ? [] : ['Speaker']
+      if (mode === 'many') {
+        for (let n = 0; n < 3; n++) {
+          const name = `Person${n}`, key = `media/portrait/person${n}.png`
+          f.db.characters.rows.push({ ...f.card, _id: new ObjectId(), canonical_name: name, name_normalized: name.toLowerCase(), aliases: [], portrait: { ...portrait, asset_key: key } } as unknown as Record<string, unknown>)
+          bytesByKey.set(key, Buffer.concat([Buffer.from(PNG_BYTES), Buffer.from([n])]))
+          names.unshift(name) // The shot's order deliberately differs from card order.
+        }
+        const event = f.db.events.rows[0] as unknown as WorldEventDoc
+        event.data.ai_response += ' ' + names.join(' ') + '.'
+      }
+      const direct = directorEffects.call
+      directorEffects.call = async (req) => {
+        const plan = JSON.parse(await direct(req))
+        for (const shot of plan.shots) shot.people_in_still = names.map((name) => ({ name, placement: 'door', facing: 'away' }))
+        return JSON.stringify(plan)
+      }
+      const downloads: string[] = [], imageReferences: Buffer[][] = [], frameReferences: Buffer[] = []
+      visualEffects.download = async (url) => {
+        downloads.push(url)
+        const entry = [...bytesByKey].find(([key]) => url.endsWith(key))
+        assert.ok(entry, 'only kept card portraits are downloaded')
+        return entry[1]
+      }
+      visualEffects.image = async (prompt, opts) => {
+        assert.ok(!prompt.includes('head-and-shoulders portrait'), 'a cut never paints a face')
+        imageReferences.push((opts?.references ?? (opts?.reference ? [opts.reference] : [])).map((r) => r.data))
+        return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null }
+      }
+      safetyEffects.judge = async (_image, _type, reference) => {
+        if (reference) frameReferences.push(reference.data)
+        return { verdict: 'allow', reason_code: 'ok', people_count: names.length, face_close_up: false, text_visible: false, wardrobe_match: true }
+      }
+      const originalCards = JSON.stringify(f.db.characters.rows)
+      const row = await filmTurn(f)
+      assert.equal(row.status, 'ready', JSON.stringify(row.error))
+      const expected = mode === 'many' ? names.map((name) => bytesByKey.get(name === 'Speaker' ? portrait.asset_key : `media/portrait/${name.toLowerCase()}.png`)!)
+        : ['ready', 'world'].includes(mode) ? [Buffer.from(PNG_BYTES)] : []
+      assert.deepEqual(imageReferences, [expected, expected], `still references: ${mode}`)
+      assert.equal(downloads.length, expected.length, `only referenced ready portraits download once: ${mode}`)
+      assert.deepEqual(frameReferences, names.length ? Array.from({ length: 6 }, () => Buffer.from(JPEG_BYTES)) : [], 'populated frames use the generated still as wardrobe reference, just like line films')
+      assert.equal(JSON.stringify(f.db.characters.rows), originalCards, 'no card creation or look changes')
+      assert.ok(f.db.mediaAssets.rows.every((r) => r.kind === 'video'), 'no portrait or passing-face rows')
+      assert.ok(f.db.mediaUsage.rows.every((r) => r.kind === 'video'), 'no portrait allowance spent')
+      assert.deepEqual(f.inputs[0].others_present, f.db.characters.rows.map((c) => ({ name: c.canonical_name, appearance: c.appearance || '' })), 'card appearances reach the director')
+    }
+  } finally {
+    if (previous === undefined) delete process.env.MEDIA_IMAGE_MODEL
+    else process.env.MEDIA_IMAGE_MODEL = previous
+  }
+})
 check('dialogue_free_cut', async () => {
   const f = turnVideoFixture()
   const row = await filmTurn(f)
@@ -2563,7 +2767,7 @@ check('no_mood_in_media', () => {
     const prompts = [
       portraitImagePrompt('A calm face', mediaRender),
       pictureImagePrompt('A tavern scene', mediaRender, 1, ''),
-      compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite', mediaRender),
+      compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite', mediaRender).prompt,
       mediaRender,
     ]
     for (const prompt of prompts) assert.ok(prompt.includes(mediaRender), `${key} render missing`)
@@ -2591,7 +2795,7 @@ check('anime_media_style', () => {
   assert.ok(pictureImagePrompt('A scene', anime.render, 2, '').includes(render))
   const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
   const shot = (goodPlan().shots[0]) as unknown as Parameters<typeof compileStillPrompt>[1]
-  assert.ok(compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite', anime.render).includes(render))
+  assert.ok(compileStillPrompt(plan, shot, 'x-ai/grok-imagine-video-1.5-lite', anime.render).prompt.includes(render))
   assert.equal(templateMediaStyle({ narrative_style: 'anime' }).render, render)
 })
 check('override_ignored', async () => {
