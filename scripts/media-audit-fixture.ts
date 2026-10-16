@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ObjectId, MongoServerError } from 'mongodb'
 import { mongoColl } from '../src/config/mongo'
 import { mediaEffects } from '../src/services/media/service'
@@ -123,4 +126,13 @@ export function fixture() {
   safetyEffects.judge = async () => unstubbed('judge')
   directorEffects.call = async () => unstubbed('director')
   return { db, player, instance, event, template, character, card, prose, revision, calls: () => calls }
+}
+
+/** Match source-text assertions to the module supplied by the bites loader. */
+export function readAuditSource(path: string | URL, _encoding: 'utf8'): string {
+  const file = path instanceof URL ? fileURLToPath(path) : resolve(path)
+  const mutation = process.env.MEDIA_AUDIT_MUTATION
+    ? JSON.parse(process.env.MEDIA_AUDIT_MUTATION) as { path: string; contents: string }
+    : undefined
+  return mutation?.path === file ? mutation.contents : readFileSync(file, 'utf8')
 }

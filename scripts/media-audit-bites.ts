@@ -1,5 +1,6 @@
-/** Each mutation is applied alone to our own new code, run, then restored in finally. */
-import { readFile, writeFile } from 'node:fs/promises'
+/** Each mutation is loaded in memory in an isolated child; working-tree files are never edited. */
+import { readFile, writeFile, mkdir } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import assert from 'node:assert/strict'
 type Mutation = { name: string; check: string; file: string; path?: string; changes: Array<[string, string]> }
 const root = 'src/services/media/'
@@ -75,7 +76,7 @@ const mutations: Mutation[] = [
   { name: 'reference stores the asset key', check: 'reference_key', file: 'visual.ts', changes: [["...(faces[0] ? { reference_asset_key: faces[0].assetKey } : {}),", "...(faces[0] ? { reference_asset_key: faces[0].name } : {}),"]] },
   { name: 'portraits rest silently', check: 'portrait_resting', file: 'visual.ts', changes: [["portrait: '',", "portrait: 'The requested media waits until tomorrow.',"]] },
   // ── media-server-2-fix-2 ──
-  { name: 'portrait paints the moderated description', check: 'portrait_prompt_gated', file: 'visual.ts', changes: [["`${description}. ${render}. SFW head-and-shoulders portrait", "`${appearance}. ${render}. SFW head-and-shoulders portrait"]] },
+  { name: 'portrait paints the moderated description', check: 'portrait_prompt_gated', file: 'visual.ts', changes: [["`${description}. ${render}. head-and-shoulders portrait", "`${appearance}. ${render}. head-and-shoulders portrait"]] },
   { name: 'picture paints the moderated description', check: 'picture_prompt_gated', file: 'visual.ts', changes: [["pictureImagePrompt(description, style.render, faces.length, playerFraming)", "pictureImagePrompt(event.data.ai_response.slice(0, 1500), style.render, faces.length, playerFraming)"]] },
   { name: 'refusal detection is structural', check: 'provider_refusal_detected', path: 'src/ai/image.ts', changes: [["if ((status === 400 || status === 422) && body", "if (false && (status === 400 || status === 422) && body"]] },
   { name: 'portrait refusal is unseen', check: 'provider_refusal_unseen', file: 'visual.ts', changes: [["if (error instanceof ProviderRefusalError) {\n        await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })\n        return\n      }", "// refusal unseen disabled"]] },
@@ -95,7 +96,7 @@ const mutations: Mutation[] = [
   // ── media-world-style ──
   { name: 'cover stays byte-identical', check: 'cover_identical', path: 'src/services/image.service.ts', changes: [["romcom: { render: 'bright modern anime illustration', mood: 'warm and charming' },", "romcom: { render: 'bright modern anime illustration', mood: 'warm and cold' },"]] },
   { name: 'cover decorations strip for screening', check: 'cover_strip', path: 'src/services/image.service.ts', changes: [["[...Object.values(STYLE_HINT).map(hintText), hintText(DEFAULT_HINT), COMPOSITION]", "[...Object.values(STYLE_HINT).map((h) => h.render), hintText(DEFAULT_HINT), COMPOSITION]"]] },
-  { name: 'no mood in any media prompt', check: 'no_mood_in_media', file: 'visual.ts', changes: [["return `${description}. ${render}. SFW head-and-shoulders portrait", "return `${description}. ${render}, warm intimate lighting. SFW head-and-shoulders portrait"]] },
+  { name: 'no mood in any media prompt', check: 'no_mood_in_media', file: 'visual.ts', changes: [["return `${description}. ${render}. head-and-shoulders portrait", "return `${description}. ${render}, warm intimate lighting. head-and-shoulders portrait"]] },
   { name: 'anime worlds paint anime', check: 'anime_media_style', path: 'src/services/image.service.ts', changes: [["if (entry && narrativeStyle) return { key: narrativeStyle, render: entry.media || entry.render }", "if (entry && narrativeStyle) return { key: narrativeStyle, render: PAINTED_RENDER }"]] },
   { name: 'save override never changes art style', check: 'override_ignored', file: 'visual.ts', changes: [["const style = templateMediaStyle(template)\n  if (isPortraitCurrent(holder, style.key) && !opts.repaint) {", "const style = resolveMediaStyle(instance.narrative_style_override || template.narrative_style)\n  if (isPortraitCurrent(holder, style.key) && !opts.repaint) {"]] },
   { name: 'style change makes a portrait out of date', check: 'style_repaint', file: 'portraits.ts', changes: [["&& styleOfPortrait(holder.portrait) === (styleKey || PAINTED_STYLE_KEY)", "&& true"]] },
@@ -115,7 +116,36 @@ const mutations: Mutation[] = [
   { name: 'persona portrait route takes the save', check: 'persona_route_takes_save', path: 'src/routes/media.routes.ts', changes: [["return queued(await requestPersonaPortrait(user.id, params.personaId,\n        { ...(query?.instance_id ? { instanceId: query.instance_id } : {}) }), set)", "return queued(await requestPersonaPortrait(user.id, params.personaId), set)"]] },
   { name: 'persona deletion removes face rows', check: 'persona_delete_cleans_faces', path: 'src/services/persona.service.ts', changes: [["await mongoColl.mediaAssets().deleteMany({ persona_id: personaOid, player_id: pid })", "// omitted face-row deletion"]] },
   { name: 'persona deletion removes face objects', check: 'persona_delete_cleans_faces', path: 'src/services/persona.service.ts', changes: [["for (const key of new Set(keys)) await storageService.delete(key)", "// omitted face-object deletion"]] },
+
+  // ── media-suggestive-policy ──
+  ...['kiss', 'nudity', 'sexual_act', 'underage', 'gore', 'real_person', 'boundary'].flatMap((key): Mutation[] => [
+    { name: `text policy ${key}`, check: `visual_text_${key}`, file: 'visual.ts', changes: [["if (pre.verdict !== 'allow') throw new UnseenError('pre', pre.reason_code)", key === 'kiss' ? "throw new UnseenError('pre', 'over_refusal')" : "// omitted pre gate"]] },
+    { name: `vision policy ${key}`, check: `visual_vision_${key}`, file: 'visual.ts', changes: [["if (post.verdict !== 'allow' || post.text_visible || post.people_count !== 1) {", key === 'kiss' ? "if (true) {" : "if (false) {"]] },
+  ]),
+  ...['moderation', 'vision', 'description'].map((part): Mutation => ({ name: `shared policy reaches ${part}`, check: 'visual_shared_policy', file: 'safety.ts', changes: [[part === 'moderation' ? "      line,\n      verdict," : part === 'vision' ? "      line,\n      'A fictional" : "      line,\n      'Preserve", part === 'moderation' ? "      '',\n      verdict," : part === 'vision' ? "      '',\n      'A fictional" : "      '',\n      'Preserve"]] })),
+  { name: 'description preserves allowed suggestiveness', check: 'visual_shared_policy', file: 'safety.ts', changes: [["Preserve an allowed suggestive moment as suggestive", "Hide every intimate moment"]] },
+  { name: 'missing reference preserves people', check: 'visual_shared_policy', file: 'safety.ts', changes: [["A person without a portrait is still present", "Omit people without portraits"]] },
+  { name: 'description redirects blocked content', check: 'visual_shared_policy', file: 'safety.ts', changes: [["When the moment crosses the BLOCKED line, describe only what surrounds it", "Depict every moment directly"]] },
+  { name: 'gate sees the entire description', check: 'visual_complete_description', file: 'safety.ts', changes: [["{ role: 'user', content: description }", "{ role: 'user', content: description.slice(0, 2000) }"]] },
+  { name: 'portrait no SFW restriction', check: 'visual_prompt_line', file: 'visual.ts', changes: [["head-and-shoulders portrait, plain", "SFW head-and-shoulders portrait, plain"]] },
+  { name: 'picture no fully clothed restriction', check: 'visual_prompt_line', file: 'visual.ts', changes: [["no nudity, no sexual act, vertical", "Fully clothed, SFW, vertical"]] },
+  { name: 'scene content line', check: 'visual_prompt_line', file: 'scene-templates.ts', changes: [["No nudity, no sexual act, no suggestive depictions of anyone who looks underage", "No explicit content"]] },
+  { name: 'director verbatim', check: 'director_verbatim', file: 'director.ts', changes: [["7. Suggestive, never explicit.", "7. Safe for everyone."]] },
+  { name: 'tolerance passthrough', check: 'image_safety_tolerance', file: 'image.ts', changes: [["body.safety_tolerance = tolerance", "// omitted tolerance"]] },
+  { name: 'tolerance env override', check: 'image_safety_tolerance', file: 'config.ts', changes: [["const value = process.env.MEDIA_IMAGE_SAFETY_TOLERANCE", "const value = undefined"]] },
+  { name: 'tolerance default', check: 'image_safety_tolerance', file: 'config.ts', changes: [["value.trim() === '' ? 2 : Number(value)", "value.trim() === '' ? 3 : Number(value)"]] },
 ]
+// Bun's preload loader substitutes only the named module, including legacy
+// checks on paths owned by other tasks. No temporary source mutation or restore.
+const reportDir = resolve('../.agents/reports/media-suggestive-policy')
+await mkdir(reportDir, { recursive: true })
+const preload = resolve(reportDir, 'mutation-loader.ts')
+await writeFile(preload, `import { plugin } from 'bun'
+const mutation = JSON.parse(process.env.MEDIA_AUDIT_MUTATION!)
+plugin({ name: 'media-audit-mutation', setup(build) {
+  build.onLoad({ filter: new RegExp('^' + mutation.path.replaceAll('.', '[.]') + '$') }, () => ({ contents: mutation.contents, loader: 'ts' }))
+} })
+`)
 for (const mutation of mutations) {
   const file = at(mutation)
   const original = await readFile(file, 'utf8')
@@ -124,15 +154,13 @@ for (const mutation of mutations) {
     assert.ok(tampered.includes(from), `Missing mutation anchor: ${mutation.name}`)
     tampered = tampered.replace(from, to)
   }
-  try {
-    await writeFile(file, tampered)
-    const child = Bun.spawn(['bun', 'run', 'scripts/media-audit.ts', '--check', mutation.check], { stdout: 'pipe', stderr: 'pipe' })
-    const [out, err, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
-    assert.notEqual(status, 0, `DID NOT BITE: ${mutation.name}\n${out}\n${err}`)
-    assert.ok(err.includes(`FAIL ${mutation.check}:`), `Must fail the named assertion, not syntax/typechecking: ${mutation.name}\n${err}`)
-    console.log(`BITE ${mutation.name}: exit ${status}; ${err.split('\n').find((line) => line.startsWith('FAIL '))}`)
-  } finally {
-    await writeFile(file, original)
-  }
+  const child = Bun.spawn(['bun', '--preload', preload, './scripts/media-audit.ts', '--check', mutation.check], {
+    stdout: 'pipe', stderr: 'pipe',
+    env: { ...process.env, MEDIA_AUDIT_MUTATION: JSON.stringify({ path: resolve(file), contents: tampered }) },
+  })
+  const [out, err, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+  assert.notEqual(status, 0, `DID NOT BITE: ${mutation.name}\n${out}\n${err}`)
+  assert.ok(err.includes(`FAIL ${mutation.check}:`), `Must fail the named assertion, not syntax/typechecking: ${mutation.name}\n${err}`)
+  console.log(`BITE ${mutation.name}: exit ${status}; ${err.split('\n').find((line) => line.startsWith('FAIL '))}`)
 }
-console.log(`All ${mutations.length} mutations failed their named check; every source restored.`)
+console.log(`All ${mutations.length} mutations failed their named check; working-tree sources unchanged.`)

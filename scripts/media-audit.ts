@@ -1,17 +1,16 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { ObjectId } from 'mongodb'
-import { fixture } from './media-audit-fixture'
+import { fixture, readAuditSource as readFileSync } from './media-audit-fixture'
 import { detectSpokenLines } from '../src/services/media/detection'
 import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, resolveVoiceSpeaker, attributionEffects } from '../src/services/media/attribution'
 import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, traitsVoiceable, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
 import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
 import { makeSceneShot, processPicture, processPortrait, processVideo, ensurePortraitReady, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
-import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, VISION_SYSTEM } from '../src/services/media/safety'
+import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, describeMoment, MEDIA_VISUAL_POLICY, buildSafetyPrompts, visualPolicyLine } from '../src/services/media/safety'
 import { buildCutGraph, cutEffects } from '../src/services/media/cut'
-import { compileMotionPrompt, compileStillPrompt } from '../src/services/media/scene-templates'
+import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from '../src/services/media/scene-templates'
 import { directScene, directorEffects, validateDirectorPlan, DIRECTOR_SYSTEM_PROMPT, type DirectorInput } from '../src/services/media/director'
 import { foldDelta, newFoldState } from '../src/services/character-codex.service'
 import { purgeCardPortraits, purgeTemplatePortraits } from '../src/services/media/deletion'
@@ -19,7 +18,9 @@ import { reserveMedia, releaseMedia, settleMedia, mediaUsage } from '../src/serv
 import { purgeMedia } from '../src/services/media/deletion'
 import { storageService } from '../src/services/storage.service'
 import { publicMediaEvent, wireSpokenLines } from '../src/services/media/events'
-import { generateMediaImage, asMediaImageReference, imageExtensionFor, sniffImageContentType, ProviderRefusalError } from '../src/ai/image'
+import { generateMediaImage } from '../src/services/media/image'
+import { imageSafetyTolerance } from '../src/services/media/config'
+import { asMediaImageReference, imageExtensionFor, sniffImageContentType, ProviderRefusalError } from '../src/ai/image'
 import { submitVideo } from '../src/ai/video'
 import { env } from '../src/config/env'
 import { castCharacter } from '../src/services/media/casting'
@@ -27,6 +28,8 @@ import { COMPOSITION, DEFAULT_HINT, PAINTED_RENDER, PAINTED_STYLE_KEY, STYLE_HIN
 import { HttpError } from '../src/utils/http-error'
 import type { MediaAssetDoc } from '../src/models/media.model'
 import type { WorldEventDoc } from '../src/models/world-event.model'
+
+const realFrameJudge = safetyEffects.judge
 
 const checks: Array<[string, () => unknown | Promise<unknown>]> = []
 const check = (name: string, fn: () => unknown | Promise<unknown>) => checks.push([name, fn])
@@ -675,6 +678,153 @@ check('postgate_malformed', async () => {
   safetyEffects.judge = (async () => ({ verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: false, text_visible: 'no' })) as never
   await assert.rejects(checkImage(Buffer.from('img'), 'image/png'), /malformed frame/)
 })
+// The stub supplies a semantic verdict; the real pipeline must enforce it,
+// release the allowance, and never upload a rejected image, for either opt-in.
+const visualCases = [
+  { key: 'kiss', description: 'Two fictional adults, both 35, kiss and embrace in covered evening clothes.', reason: 'ok' },
+  { key: 'nudity', description: 'An adult with exposed genitals, female nipples and buttocks.', reason: 'nudity' },
+  { key: 'sexual_act', description: 'Two adults engaged in a sexual act.', reason: 'sexual_act' },
+  { key: 'underage', description: 'An anime character who looks adolescent poses suggestively, despite a label claiming age 30.', reason: 'underage_suggestive' },
+  { key: 'gore', description: 'A battlefield with graphic gore.', reason: 'graphic_gore' },
+  { key: 'real_person', description: 'An illustrated likeness of an actual public figure.', reason: 'real_person' },
+  { key: 'boundary', description: 'Adult siblings portrayed romantically.', reason: 'narrative_boundary' },
+] as const
+for (const side of ['text', 'vision'] as const) {
+  for (const example of visualCases) check(`visual_${side}_${example.key}`, async () => {
+    for (const optedIn of [false, true]) {
+      const f = fixture()
+      ;(f.db.users.rows[0].preferences as { nsfw_enabled: boolean }).nsfw_enabled = optedIn
+      const allow = example.reason === 'ok'
+      const verdict = allow ? 'allow' : 'reject'
+      let painted = 0, uploaded = 0
+      stubPortraitPipeline(f, async () => ({ verdict: side === 'vision' ? verdict : 'allow', reason_code: side === 'vision' ? example.reason : 'ok', people_count: 1, face_close_up: true, text_visible: false }))
+      safetyEffects.call = async (req) => {
+        const prompt = req.messages[0].content
+        const expected = req.purpose === 'media_describe' ? buildSafetyPrompts().description : buildSafetyPrompts().moderation
+        assert.equal(prompt, expected)
+        return req.purpose === 'media_describe' ? example.description : JSON.stringify({ verdict: side === 'text' ? verdict : 'allow', reason_code: side === 'text' ? example.reason : 'ok' })
+      }
+      visualEffects.image = async () => { painted++; return { data: Buffer.from(JPEG_BYTES), contentType: 'image/jpeg', generationId: null } }
+      visualEffects.upload = async (_data, _type, opts) => { uploaded++; return { key: opts?.key || '', url: 'https://example.test/allowed.jpg' } }
+      const asset = portraitRow(f)
+      f.db.mediaAssets.rows.push(asset as unknown as Record<string, unknown>)
+      await reserveMedia(asset)
+      await processPortrait(String(asset._id))
+      assert.equal(f.db.mediaAssets.rows[0].status, allow ? 'ready' : 'unseen')
+      assert.equal(painted, allow || side === 'vision' ? 1 : 0)
+      assert.equal(uploaded, allow ? 1 : 0)
+      assert.equal(f.db.mediaUsage.rows[0].status, allow ? 'settled' : 'released')
+      if (!allow) {
+        assert.equal(f.db.mediaRejections.rows[0].reason, example.reason)
+        assert.equal(f.db.mediaRejections.rows[0].stage, side === 'text' ? 'pre' : 'post')
+        assert.equal(f.db.mediaAssets.rows[0].asset_key, undefined)
+      }
+    }
+  })
+}
+check('visual_shared_policy', async () => {
+  const original = buildSafetyPrompts()
+  for (const prompt of Object.values(original)) {
+    assert.ok(prompt.includes(visualPolicyLine()))
+    for (const allowed of MEDIA_VISUAL_POLICY.allowed) assert.ok(prompt.includes(allowed))
+    for (const rule of MEDIA_VISUAL_POLICY.blocked) assert.ok(prompt.includes(rule.content) && prompt.includes(rule.reason_code))
+    assert.ok(!/SFW|fully clothed|reject sexual content|sexualized posing/i.test(prompt))
+  }
+  assert.ok(original.description.includes('Preserve an allowed suggestive moment as suggestive'))
+  assert.ok(original.description.includes('A person without a portrait is still present'))
+  assert.ok(original.description.includes('When the moment crosses the BLOCKED line, describe only what surrounds it'))
+  const realFetch = globalThis.fetch
+  const key = env.OPENROUTER_API_KEY
+  const seen: string[] = []
+  try {
+    // Change both lists, then capture what all three real prompt consumers send.
+    MEDIA_VISUAL_POLICY.allowed.push('audit allowed sentinel')
+    MEDIA_VISUAL_POLICY.blocked.push({ reason_code: 'audit_block', content: 'audit blocked sentinel' })
+    safetyEffects.call = async (req) => {
+      seen.push(req.messages[0].content)
+      return req.purpose === 'media_describe' ? 'A kiss.' : JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+    }
+    await describeMoment({ prose: 'A kiss.', present: [], passing_look: '', framing: 'scene', place: '' })
+    await moderateDescription('A kiss.')
+    env.OPENROUTER_API_KEY = 'audit'
+    globalThis.fetch = (async (_url, init) => {
+      const body = JSON.parse(String(init?.body))
+      seen.push(body.messages[0].content[0].text)
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ verdict: 'allow', reason_code: 'ok', people_count: 2, face_close_up: false, text_visible: false }) } }] }))
+    }) as typeof fetch
+    safetyEffects.judge = realFrameJudge
+    await checkImage(Buffer.from(PNG_BYTES), 'image/png')
+    assert.equal(seen.length, 3)
+    for (const prompt of seen) {
+      assert.ok(prompt.includes('audit allowed sentinel'), 'allowed list did not reach every prompt')
+      assert.ok(prompt.includes('audit blocked sentinel'), 'blocked list did not reach every prompt')
+    }
+  } finally {
+    MEDIA_VISUAL_POLICY.allowed.pop()
+    MEDIA_VISUAL_POLICY.blocked.pop()
+    globalThis.fetch = realFetch
+    env.OPENROUTER_API_KEY = key
+  }
+})
+check('visual_complete_description', async () => {
+  const description = 'A covered adult in a room. '.repeat(100) + 'An adolescent poses suggestively.'
+  safetyEffects.call = async (req) => {
+    assert.equal(req.messages[1].content, description, 'the gate must see the entire description that will be painted')
+    return JSON.stringify({ verdict: 'reject', reason_code: 'underage_suggestive' })
+  }
+  assert.deepEqual(await moderateDescription(description), { verdict: 'reject', reason_code: 'underage_suggestive' })
+})
+check('visual_prompt_line', () => {
+  const portrait = portraitImagePrompt('A covered adult', 'a render')
+  const picture = pictureImagePrompt('Two adults kiss', 'a render', 0, '')
+  for (const prompt of [portrait, picture, compileLinePrompt('Speaker', 'Stay close.')]) assert.ok(!/SFW|fully clothed/i.test(prompt))
+  for (const phrase of ['head-and-shoulders portrait', 'clearly an illustration of a fictional person, never a photograph', 'no text, no lettering, no signage']) assert.ok(portrait.includes(phrase))
+  assert.ok(picture.includes('no nudity, no sexual act'))
+  const plan = goodPlan() as unknown as Parameters<typeof compileStillPrompt>[0]
+  for (const model of ['x-ai/grok-imagine-video-1.5-lite', 'alibaba/wan-3.0']) {
+    const shot = plan.shots[0]
+    for (const prompt of [compileStillPrompt(plan, shot, model), compileMotionPrompt(plan, shot, model)]) {
+      assert.ok(prompt.includes('No nudity, no sexual act'))
+      assert.ok(prompt.includes('no suggestive depictions of anyone who looks underage'))
+    }
+  }
+})
+check('image_safety_tolerance', async () => {
+  const saved = process.env.MEDIA_IMAGE_SAFETY_TOLERANCE
+  const realFetch = globalThis.fetch
+  const key = env.OPENROUTER_API_KEY
+  try {
+    delete process.env.MEDIA_IMAGE_SAFETY_TOLERANCE
+    assert.equal(imageSafetyTolerance(), 2)
+    for (const invalid of ['garbage', '-1', '6', '3.5', '']) {
+      process.env.MEDIA_IMAGE_SAFETY_TOLERANCE = invalid
+      assert.equal(imageSafetyTolerance(), 2)
+    }
+    env.OPENROUTER_API_KEY = 'audit'
+    const bodies: Array<Record<string, unknown>> = []
+    globalThis.fetch = (async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)))
+      return new Response(JSON.stringify({ data: [{ b64_json: Buffer.from(JPEG_BYTES).toString('base64') }], usage: { cost: 0.009 } }))
+    }) as typeof fetch
+    for (const tolerance of [0, 3, 5]) {
+      process.env.MEDIA_IMAGE_SAFETY_TOLERANCE = String(tolerance)
+      assert.equal(imageSafetyTolerance(), tolerance)
+      await generateMediaImage('A covered adult')
+      assert.equal(bodies.at(-1)?.safety_tolerance, tolerance)
+    }
+    await generateMediaImage('A covered adult', { safetyTolerance: null })
+    assert.equal('safety_tolerance' in bodies.at(-1)!, false)
+    await generateMediaImage('A covered adult', { safetyTolerance: 4 })
+    assert.equal(bodies.at(-1)?.safety_tolerance, 4)
+    await assert.rejects(generateMediaImage('A covered adult', { safetyTolerance: 6 }), /Invalid/)
+  } finally {
+    if (saved === undefined) delete process.env.MEDIA_IMAGE_SAFETY_TOLERANCE
+    else process.env.MEDIA_IMAGE_SAFETY_TOLERANCE = saved
+    globalThis.fetch = realFetch
+    env.OPENROUTER_API_KEY = key
+  }
+})
+
 check('director_verbatim', () => {
   // The director prompt is the contract text, byte for byte, so it can't drift.
   const md = readFileSync(new URL('../../everlore-docs/server/MEDIA_DIRECTOR_PROMPT.md', import.meta.url), 'utf8')
@@ -1732,9 +1882,9 @@ check('picture_persona_style', async () => {
 check('vision_drawn_styles', () => {
   // The vision gate must not penalise drawn styles: anime and cartoon faces
   // are allowed illustrations, never photographs.
-  assert.ok(VISION_SYSTEM.includes('anime'))
-  assert.ok(VISION_SYSTEM.includes('cartoon'))
-  assert.ok(VISION_SYSTEM.includes('A fictional illustrated face is ALLOWED'))
+  assert.ok(buildSafetyPrompts().vision.includes('anime'))
+  assert.ok(buildSafetyPrompts().vision.includes('cartoon'))
+  assert.ok(buildSafetyPrompts().vision.includes('A fictional illustrated face is ALLOWED'))
 })
 // ── media-world-style-fix-1 ──
 check('portrait_no_text', async () => {

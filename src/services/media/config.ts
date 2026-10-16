@@ -14,6 +14,13 @@ export function mediaEnabled(kind?: MediaKind): boolean {
 export const voiceModel = () => process.env.MEDIA_VOICE_MODEL || catalogue.model
 /** Portraits, pictures and scene stills (owner, Oct 16 2026). */
 export const imageModel = () => process.env.MEDIA_IMAGE_MODEL || 'black-forest-labs/flux-3-image-klein'
+/** BFL documents 2 as its default. Live adult kiss/embrace checks pass at
+ * that setting; a higher tolerance showed no advantage. Our gates still apply. */
+export function imageSafetyTolerance(): number {
+  const value = process.env.MEDIA_IMAGE_SAFETY_TOLERANCE
+  const n = value === undefined || value.trim() === '' ? 2 : Number(value)
+  return Number.isSafeInteger(n) && n >= 0 && n <= 5 ? n : 2
+}
 /** The line shot: portrait lip-synced to the exact clip the player heard. */
 export const videoModel = () => process.env.MEDIA_VIDEO_MODEL || 'heygen/avatar-iv'
 /** Scene shots, image-to-video from their own wide stills. */

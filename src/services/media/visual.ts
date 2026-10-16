@@ -1,7 +1,8 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
 import { getMediaQueue, QUEUE_RETENTION } from '../../queues'
-import { generateMediaImage, asMediaImageReference, imageExtensionFor, ProviderRefusalError } from '../../ai/image'
+import { asMediaImageReference, imageExtensionFor, ProviderRefusalError } from '../../ai/image'
+import { generateMediaImage } from './image'
 import { submitVideo, awaitVideo, downloadVideo } from '../../ai/video'
 import { AI_MODELS } from '../../ai/models'
 import { env } from '../../config/env'
@@ -99,7 +100,7 @@ interface PortraitBytes {
  * same string the job sends.
  */
 export function portraitImagePrompt(description: string, render: string): string {
-  return `${description}. ${render}. SFW head-and-shoulders portrait, plain dark background, vertical 9:16, clearly an illustration of a fictional person, never a photograph, no text, no lettering, no signage.`
+  return `${description}. ${render}. head-and-shoulders portrait, plain dark background, vertical 9:16, clearly an illustration of a fictional person, never a photograph, no text, no lettering, no signage.`
 }
 
 /**
@@ -108,7 +109,7 @@ export function portraitImagePrompt(description: string, render: string): string
  * the same string the job sends.
  */
 export function pictureImagePrompt(description: string, render: string, faceCount: number, playerFraming: string): string {
-  return `${description}. ${render}. ${faceCount ? `The same ${faceCount === 1 ? 'face' : 'faces'} as the reference portrait${faceCount === 1 ? '' : 's'}.` : ''} Fully clothed, SFW, vertical 9:16. ${playerFraming}`.trim()
+  return `${description}. ${render}. ${faceCount ? `The same ${faceCount === 1 ? 'face' : 'faces'} as the reference portrait${faceCount === 1 ? '' : 's'}.` : ''} no nudity, no sexual act, vertical 9:16. ${playerFraming}`.trim()
 }
 
 /** The portrait generation core: gates then paint. Shared by the queued job
@@ -1449,7 +1450,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       throw new Error('Line shot failed')
     }
     // The line shot gets the same first/middle/last-frame post-check (§7 says
-    // every shot): SFW, no text, exactly one person. (No face rule: the face
+    // every shot): the shared content line, no text, exactly one person. (No face rule: the face
     // belongs to the line shot.) A failure makes the whole video unseen.
     const lineFrames = await checkVideoFrames(lineVideo)
     const linePeople = lineFrames.map((f) => f.people_count)

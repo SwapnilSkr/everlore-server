@@ -63,6 +63,7 @@ export function compileStillPrompt(plan: DirectorPlan, shot: DirectorShot, model
     `Time: ${c.time_of_day}. Weather: ${c.weather}. Light: ${c.light}. Palette: ${c.palette}.`,
     `${FRAMING_NOTES[shot.framing] || shot.framing}.`,
     shot.still,
+    'No nudity, no sexual act, no suggestive depictions of anyone who looks underage, no real people, no graphic gore.',
     t.stillSuffix,
   ].join(' ')
 }
@@ -79,11 +80,12 @@ export function compileMotionPrompt(plan: DirectorPlan, shot: DirectorShot, mode
     `Environment: ${shot.environment_motion}`,
     people,
     `Wardrobe stays exactly: ${plan.continuity.wardrobe}`,
+    'No nudity, no sexual act, no suggestive depictions of anyone who looks underage, no real people, no graphic gore.',
     t.motionSuffix,
   ].join(' ')
 }
 
 /** HeyGen line-shot prompt: the portrait says the line. Nothing else. */
 export function compileLinePrompt(speakerName: string, spokenText: string): string {
-  return `${speakerName}, the adult in the portrait, says: "${spokenText.slice(0, 400)}" Natural lip movement matched to the supplied voice recording. Still camera, SFW, no captions.`
+  return `${speakerName}, the adult in the portrait, says: "${spokenText.slice(0, 400)}" Natural lip movement matched to the supplied voice recording. Still camera, no nudity, no sexual act, no captions.`
 }

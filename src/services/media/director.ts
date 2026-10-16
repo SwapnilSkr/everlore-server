@@ -19,7 +19,7 @@ THE NON-NEGOTIABLE RULES
 4. No faces up close in scene shots. Scene shots use only these framings: establishing wide, wide, medium-wide from behind or in profile, over-the-shoulder from behind, or insert/detail (hands, an object, a door, rain, light). The face belongs to the LINE shot only.
 5. Continuity is fixed before any shot: write the continuity sheet first (wardrobe, hair, carried props, time of day, weather, light source and its direction, colour palette). Every shot obeys it word for word. Wardrobe never changes between shots.
 6. Ground every shot in the prose. Each scene shot cites one sentence from the narration, copied exactly, that it visualises. If the narration has nothing worth showing before the line, the opening is an atmosphere insert of the place itself, citing the sentence that names the place.
-7. Safe for everyone. If the moment is intimate or sexual, show what surrounds it, never the act or the body: hands, a door closing, a candle, rain on glass, two silhouettes at a respectful distance, fully clothed. If it is violent, show tension and aftermath, never gore. Nobody looks underage. No real people, no logos, no text on screen.
+7. Suggestive, never explicit. An intimate moment may be shown as sensual and suggestive: an embrace, a kiss, closeness, a lingering touch, revealing but covered clothing. Never nudity and never a sexual act; if the moment goes further, show what surrounds it: hands, a door closing, a candle, rain on glass. If it is violent, show tension and aftermath, never gore. Nobody who looks underage is ever shown in a sensual or suggestive way. No real people, no logos, no text on screen.
 8. Paint, don't photograph. The world's art style is given; stills are paintings in that style.
 
 PACING
