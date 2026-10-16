@@ -137,9 +137,9 @@ const mutations: Mutation[] = [
   { name: 'sign stays refused', check: 'every_refusals', file: 'attribution.ts', changes: [["r.is_speech !== true || ", ""]] },
   { name: 'player stays refused', check: 'every_refusals', file: 'attribution.ts', changes: [["if (isPlayer || (playerWords && playerWords.includes(spoken))) continue", "if (playerWords && playerWords.includes(spoken)) continue"]] },
   { name: 'non-verbatim speech stays refused', check: 'every_refusals', file: 'attribution.ts', changes: [["if (!isVerbatim(prose.slice(line.start + 1, line.end - 1), r.spoken_text)) return undefined", "// omitted verbatim gate"]] },
-  { name: 'invented handles fall back without card or invented seed', check: 'every_invented_fallback', file: 'attribution.ts', changes: [["if (handle !== null && !event.data.ai_response.toLowerCase().includes(handle.toLowerCase())) handle = null", "// omitted handle grounding"]] },
+  { name: 'invented handles fall back without card or invented seed', check: 'every_invented_fallback', file: 'attribution.ts', changes: [["if (handle !== null && !isNarrator && !event.data.ai_response.toLowerCase().includes(handle.toLowerCase())) handle = null", "// omitted handle grounding"]] },
   { name: 'mature stays refused', check: 'every_mature', file: 'service.ts', changes: [["if (!matureVoiceAllowed(event.nsfw_intent, user?.preferences?.nsfw_enabled === true)) throw new HttpError(422, 'This line stays quiet.', { status: 'unvoiceable' })", "// omitted mature gate"]] },
-  { name: 'rule version advances past v3', check: 'every_rule_version', file: 'attribution.ts', changes: [["ATTRIBUTION_RULE_VERSION = 4", "ATTRIBUTION_RULE_VERSION = 3"]] },
+  { name: 'rule version advances past v4', check: 'every_rule_version', file: 'attribution.ts', changes: [["ATTRIBUTION_RULE_VERSION = 5", "ATTRIBUTION_RULE_VERSION = 4"]] },
   { name: 'old done results run once', check: 'every_rule_version', file: 'attribution.ts', changes: [["  const revision = mediaRevision(event.data.ai_response, event.data.player_input)", "  if (event.data.voice_attribution?.status === 'done') return event.data.spoken_lines || [];\n  const revision = mediaRevision(event.data.ai_response, event.data.player_input)"]] },
   { name: 'current done results stay cached', check: 'every_rule_version', file: 'attribution.ts', changes: [["'data.voice_attribution.status': 'done', 'data.voice_attribution.rule_version': { $ne: ATTRIBUTION_RULE_VERSION }", "'data.voice_attribution.status': 'done'"]] },
   { name: 'upgrading preserves an already heard clip', check: 'every_upgrade_cache', file: 'attribution.ts', changes: [["if (previous?.voice_id && previous.model)", "if (false && previous?.voice_id && previous.model)"]] },
@@ -253,7 +253,7 @@ const mutations: Mutation[] = [
   // ── media-place-not-title ──
   { name: 'inline card portrait has no place', check: 'portrait_places', file: 'visual.ts', changes: [["generatePortraitBytes(appearance, card.canonical_name, '', model, style.render, reference)", "generatePortraitBytes(appearance, card.canonical_name, template?.title || '', model, style.render, reference)"]] },
   { name: 'queued card repaint has no place', check: 'portrait_places', file: 'visual.ts', changes: [["generatePortraitBytes(appearance, card.canonical_name, '', asset.model, style.render, reference)", "generatePortraitBytes(appearance, card.canonical_name, template?.title || '', asset.model, style.render, reference)"]] },
-  { name: 'passing face has no place', check: 'portrait_places', file: 'visual.ts', changes: [["generatePortraitBytes(appearance, handle, '', model, style.render)", "generatePortraitBytes(appearance, handle, template?.title || '', model, style.render)"]] },
+  { name: 'passing face has no place', check: 'portrait_places', file: 'visual.ts', changes: [["generatePortraitBytes(appearance, speakerSubject(handle), '', model, style.render)", "generatePortraitBytes(appearance, speakerSubject(handle), template?.title || '', model, style.render)"]] },
   { name: 'inline persona portrait has no place', check: 'portrait_places', file: 'visual.ts', changes: [["generatePortraitBytes(appearance, persona.name, '', imageModel(), render, reference)", "generatePortraitBytes(appearance, persona.name, 'invented place', imageModel(), render, reference)"]] },
   { name: 'queued persona portrait has no place', check: 'portrait_places', file: 'visual.ts', changes: [["generatePortraitBytes(appearance, persona.name, '', asset.model, render, reference)", "generatePortraitBytes(appearance, persona.name, 'invented place', asset.model, render, reference)"]] },
   { name: 'picture uses the turn place instead of the title', check: 'picture_places', file: 'visual.ts', changes: [["place: await momentPlace(instance, event),", "place: template?.title || '',"]] },
@@ -322,6 +322,16 @@ const mutations: Mutation[] = [
   { name: 'frame rejection never buys fallback', check: 'scene_fallback_provider_only', file: 'visual.ts', changes: [["      return dropShot('shot_rejected')\n    }", "      continue\n    }"]] },
   { name: 'provider failure still buys fallback', check: 'scene_fallback_provider_only', file: 'visual.ts', changes: [["if (model === fallback) return dropShot", "if (true) return dropShot"]] },
   { name: 'player receives no excerpt key', check: 'excerpt_audio', file: 'visual.ts', changes: [["    type: 'media_ready',", "    type: 'media_ready', line_excerpt: asset.plan?.line_excerpt,"]] },
+
+  { name: 'sentient input carries the world narrator', check: 'sentient_narrator_data', file: 'attribution.ts', changes: [["...(narrator ? { narrator_name: narrator.canonical_name } : {}),", ""]] },
+  { name: 'supplied narrator survives prose grounding', check: 'sentient_narrator_data', file: 'attribution.ts', changes: [["&& !isNarrator &&", "&&"]] },
+  { name: 'GM never receives a character narrator', check: 'gm_first_person_player', file: 'attribution.ts', changes: [["const narrator = isSentient ? cards.find((c) => c.is_protagonist) : undefined", "const narrator = cards.find((c) => c.is_protagonist)"]] },
+  { name: 'narrator film uses the card face', check: 'sentient_narrator_film', file: 'attribution.ts', changes: [["&& !isNarrator &&", "&&"]] },
+  { name: 'empty line name has a subject', check: 'line_prompt_subject', file: 'scene-templates.ts', changes: [["name.trim() || 'The speaker'", "name"]] },
+  { name: 'passing face description has a subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["canonical_name: speakerSubject(handle)", "canonical_name: handle"]] },
+  { name: 'passing portrait description has a subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["generatePortraitBytes(appearance, speakerSubject(handle), '', model, style.render)", "generatePortraitBytes(appearance, handle, '', model, style.render)"]] },
+  { name: 'passing look description has a subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["name: speakerSubject(name), prose:", "name, prose:"]] },
+  { name: 'director and scene names have a subject', check: 'unnamed_video_subjects', file: 'visual.ts', changes: [["speaker_name: speakerSubject(line.voice.speaker_name)", "speaker_name: line.voice.speaker_name"]] },
 
 ]
 // Bun's preload loader substitutes only the named module, including legacy

@@ -97,7 +97,9 @@ export function compileMotionPrompt(plan: DirectorPlan, shot: DirectorShot, mode
   ].join(' '))
 }
 
+export const speakerSubject = (name: string): string => name.trim() || 'The speaker'
+
 /** HeyGen line-shot prompt: the portrait says the line. Nothing else. */
 export function compileLinePrompt(speakerName: string, spokenText: string): CompiledMediaPrompt {
-  return withPolicy(`${speakerName}, the adult in the portrait, says: "${spokenText.slice(0, 400)}" Natural lip movement matched to the supplied voice recording. Still camera, no captions.`)
+  return withPolicy(`${speakerSubject(speakerName)}, the adult in the portrait, says: "${spokenText.slice(0, 400)}" Natural lip movement matched to the supplied voice recording. Still camera, no captions.`)
 }

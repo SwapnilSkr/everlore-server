@@ -2097,8 +2097,8 @@ check('every_mature', async () => {
   assert.equal(f.db.characters.rows.length, 0)
 })
 check('every_rule_version', async () => {
-  assert.equal(ATTRIBUTION_RULE_VERSION, 4)
-  for (const version of [undefined, 1, 2, 3]) {
+  assert.equal(ATTRIBUTION_RULE_VERSION, 5)
+  for (const version of [undefined, 1, 2, 3, 4]) {
     const f = spokenFixture('The watcher says, “Stay beside me.”', [speech('l0', 'the watcher', 'Stay beside me.')])
     Object.assign(f.current.data, { voice_attribution: { status: 'done', claimed_at: new Date(), ...(version ? { rule_version: version } : {}) } })
     const [a, b] = await Promise.all([attributeEvent(f.current, false), attributeEvent(f.current, false)])
@@ -2717,6 +2717,123 @@ check('dialogue_free_owner', async () => {
   assert.equal(f.db.mediaAssets.rows.length, 0)
 })
 
+
+check('sentient_narrator_data', async () => {
+  const prose = '*My eyes dart to the can.* “Stay beside me.”'
+  const f = spokenFixture(prose, [])
+  f.card.is_protagonist = true
+  f.db.characters.rows = [
+    { ...f.card, _id: new ObjectId(), canonical_name: 'Other', is_protagonist: false },
+    f.card,
+  ] as unknown as Array<Record<string, unknown>>
+  let input: Record<string, unknown> = {}
+  attributionEffects.call = async (req) => {
+    input = JSON.parse(req.messages.find((m) => m.role === 'user')!.content as string)
+    assert.ok(req.messages[0].content?.includes('narrator_name'))
+    return JSON.stringify({ lines: [speech('l0', 'Speaker', 'Stay beside me.')] })
+  }
+  const voice = lineVoiceOf((await attributeEvent(f.current, true, 'Visitor'))[0])
+  assert.equal(input.narrator_name, 'Speaker')
+  assert.equal(input.player_name, 'Visitor')
+  assert.equal(voice.speaker_name, 'Speaker')
+  assert.equal(voice.character_id, String(f.character), 'supplied identity resolves even when absent from prose')
+  assert.equal(f.db.characters.inserts, 0)
+  // No world character card means no narrator identity may be invented.
+  const missing = spokenFixture(prose, [])
+  attributionEffects.call = async (req) => {
+    const data = JSON.parse(req.messages.find((m) => m.role === 'user')!.content as string)
+    assert.ok(!('narrator_name' in data))
+    return JSON.stringify({ lines: [speech('l0', 'Speaker', 'Stay beside me.')] })
+  }
+  assert.equal(lineVoiceOf((await attributeEvent(missing.current, true))[0]).character_id, undefined)
+  assert.equal(missing.db.characters.inserts, 0)
+})
+check('gm_first_person_player', async () => {
+  const f = spokenFixture('*My eyes dart to the can.* “Stay beside me.”', [])
+  f.card.is_protagonist = true
+  f.db.characters.rows = [f.card as unknown as Record<string, unknown>]
+  let seen = false
+  attributionEffects.call = async (req) => {
+    const input = JSON.parse(req.messages.find((m) => m.role === 'user')!.content as string)
+    assert.ok(!('narrator_name' in input))
+    assert.equal(input.player_name, 'Speaker')
+    seen = true
+    return JSON.stringify({ lines: [{ ...speech('l0', 'Speaker', 'Stay beside me.'), is_speech: false }] })
+  }
+  assert.equal((await attributeEvent(f.current, false))[0].voice?.status, 'unvoiceable')
+  assert.equal(seen, true)
+  // Even an erroneous speech verdict cannot voice the known GM protagonist.
+  delete f.current.data.voice_attribution
+  attributionEffects.call = async () => JSON.stringify({ lines: [speech('l0', 'Speaker', 'Stay beside me.')] })
+  assert.equal((await attributeEvent(f.current, false))[0].voice?.status, 'unvoiceable')
+  assert.equal(f.db.characters.inserts, 0)
+})
+check('sentient_narrator_film', async () => {
+  const f = videoBase()
+  const event = f.db.events.rows[0] as unknown as WorldEventDoc
+  event.data.ai_response = '*My eyes dart to the can.* “Come with me,” *I whisper.*'
+  event.data.spoken_lines = detectSpokenLines(event.data.ai_response)
+  f.card.is_protagonist = true
+  Object.assign(f.db.worldTemplates.rows[0], { is_sentient: true, protagonist: {
+    name: f.card.canonical_name, appearance: f.card.appearance, appearance_version: 1,
+    portrait: { asset_key: 'media/portrait/narrator.png', source: 'authored', appearance_version: 1, painted_at: new Date() },
+  } })
+  stubVideoRun(f)
+  mediaEffects.cast = castCharacter
+  attributionEffects.call = async () => JSON.stringify({ lines: [speech('l0', 'Speaker', 'Come with me,')] })
+  const portraits: string[] = []
+  const submit = visualEffects.submit
+  visualEffects.submit = async (req) => {
+    if (req.model === 'heygen/avatar-iv') portraits.push(JSON.stringify(req.inputReferences))
+    return submit(req)
+  }
+  await filmLine(f)
+  assert.equal(lineVoiceOf((await attributeEvent(event, true))[0]).character_id, String(f.character))
+  assert.ok(portraits[0].includes('media/portrait/narrator.png'), 'film animates the existing world face')
+  assert.equal(f.db.mediaAssets.rows.filter((r) => r.kind === 'passing_face').length, 0)
+  assert.equal(f.db.characters.inserts, 0)
+})
+check('line_prompt_subject', () => {
+  for (const name of ['', '   ', '\t\n', ' Watcher ']) {
+    const subject = name.trim() || 'The speaker'
+    const prompt = compileLinePrompt(name, 'Stay beside me.')
+    assert.ok(prompt.content.startsWith(`${subject}, the adult in the portrait, says:`))
+    assert.equal(prompt.prompt, prompt.content + POLICY_SENTENCE)
+    assert.ok(!/^\s*,/.test(prompt.content))
+  }
+})
+check('unnamed_video_subjects', async () => {
+  for (const handle of [null, 'Alias']) {
+    const f = passingVideoFixture()
+    attributionEffects.call = async () => JSON.stringify({ lines: [speech('l0', handle, 'Come with me,')] })
+    const subject = handle || 'The speaker'
+    const names: string[] = []
+    const fill = visualEffects.fill, safety = safetyEffects.call, director = directorEffects.call, submit = visualEffects.submit
+    visualEffects.fill = async (card, prose) => { names.push(card.canonical_name); return fill(card, prose) }
+    safetyEffects.call = async (req) => {
+      if (req.purpose === 'media_describe' || req.purpose === 'media_passing_look') {
+        const input = JSON.parse(req.messages.find((m) => m.role === 'user')!.content as string)
+        names.push(req.purpose === 'media_describe' ? input.present[0].name : input.name)
+      }
+      return safety(req)
+    }
+    const scenes: string[] = []
+    directorEffects.call = async (req) => {
+      const input = JSON.parse(req.messages.find((m) => m.role === 'user')!.content as string)
+      names.push(input.line.speaker_name)
+      return director(req)
+    }
+    visualEffects.submit = async (req) => {
+      if (req.model === 'heygen/avatar-iv') assert.ok(req.prompt.startsWith(`${subject},`))
+      else scenes.push(req.prompt)
+      return submit(req)
+    }
+    await filmLine(f)
+    assert.deepEqual(names, [subject, subject, subject, subject], 'face, portrait describer, passing look and director all have a subject')
+    assert.ok(scenes.some((p) => p.includes(`Visible people: ${subject} (`)), 'scene motion carries the same subject')
+    assert.equal(f.db.characters.inserts, 0)
+  }
+})
 
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }
 // ── media-world-style: every image in the world's own art style ──

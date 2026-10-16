@@ -22,7 +22,7 @@ import { directScene, plannedFilmSeconds, type DirectorInput, type DirectorPlan 
 import { matureVoiceAllowed, utcMediaDay } from './policy'
 import { isPortraitCurrent, isReferenceAllowed, personaFaceForStyle, personaPortraitCacheKey, portraitCacheKey, resolvePortraitHolder, storePortrait, styleOfPortrait, withStyleKey } from './portraits'
 import { checkImage, checkVideoFrames, describeMoment, judgeShotFrames, logRejection, moderateDescription, safetyEffects } from './safety'
-import { compileLinePrompt, compileMotionPrompt, compileStillPrompt } from './scene-templates'
+import { compileLinePrompt, compileMotionPrompt, compileStillPrompt, speakerSubject } from './scene-templates'
 import { assembleCut, assembleDialogueFreeCut, cutEffects, normalizeShot } from './cut'
 import { duplicateKey, releaseMedia, reserveMedia, settleMedia } from './usage'
 import { audioEffects, LINE_TAIL_S, measureLineSentences, mp3DurationMs } from './audio'
@@ -381,9 +381,9 @@ export async function ensurePassingFaceReady(asset: MediaAssetDoc, event: WorldE
         const oldFilter = { instance_id: instance._id, kind: 'passing_face' as const, passing_key: passingKey, status: 'ready' as const }
         const old = await mongoColl.mediaAssets().findOne({ ...oldFilter, art_style: style.key })
           || await mongoColl.mediaAssets().findOne(oldFilter)
-        const appearance = old?.appearance || await visualEffects.fill({ canonical_name: handle || `The speaker saying: ${asset.input}`, appearance: '' }, event.data.ai_response)
+        const appearance = old?.appearance || await visualEffects.fill({ canonical_name: speakerSubject(handle), appearance: '' }, event.data.ai_response)
         await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, { $set: { appearance, input: appearance } })
-        const image = await generatePortraitBytes(appearance, handle, '', model, style.render)
+        const image = await generatePortraitBytes(appearance, speakerSubject(handle), '', model, style.render)
         const key = `media/passing_face/${asset.player_id}/${instance._id}/${id}${imageExtensionFor(image.contentType)}`
         const staged = await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, { $set: { asset_key: key } })
         if (!staged.matchedCount || !await liveMedia(asset)) throw new Error('Face moment passed')
@@ -1123,7 +1123,7 @@ async function extractPassing(prose: string, name: string): Promise<string> {
         content: 'What is this person wearing right now, and what marks the moment left on them (dirt, blood, rain)? One short phrase from the prose, or "none". Never lasting features. Return the phrase only.',
       }, {
         role: 'user',
-        content: JSON.stringify({ name, prose: prose.slice(0, 1200) }),
+        content: JSON.stringify({ name: speakerSubject(name), prose: prose.slice(0, 1200) }),
       }],
     })
     return raw.trim().slice(0, 300) || 'none'
@@ -1563,7 +1563,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       budget_s: 8,
       art_style: style.render,
       narration_before: narrationBefore,
-      line: { speaker_name: line.voice.speaker_name, spoken_text: line.voice.spoken_text, duration_s: timing.durationS, sentences: timing.sentences },
+      line: { speaker_name: speakerSubject(line.voice.speaker_name), spoken_text: line.voice.spoken_text, duration_s: timing.durationS, sentences: timing.sentences },
       narration_after: narrationAfter,
       speaker: { appearance: card?.appearance || '', passing_look: await extractPassing(prose, line.voice.speaker_name) },
       others_present: others.map((c) => ({ name: c.canonical_name, appearance: c.appearance || '' })),
