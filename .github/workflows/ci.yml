@@ -12,8 +12,21 @@ concurrency:
 jobs:
   typecheck-and-audit:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: everlore-server
     steps:
+      # Same layout as a workstation: the media audit checks the director
+      # prompt against its contract in the sibling everlore-docs repo.
       - uses: actions/checkout@v4
+        with:
+          path: everlore-server
+      - uses: actions/checkout@v4
+        with:
+          repository: SwapnilSkr/everlore-docs
+          path: everlore-docs
+      # The film cut and its audits run ffmpeg/ffprobe, as prod does.
+      - run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: latest
