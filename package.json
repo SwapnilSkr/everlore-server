@@ -12,6 +12,7 @@
     "audit:codex-media-carryover": "bun run scripts/codex-media-carryover-audit.ts",
     "audit:all": "bun run scripts/run-pure-audits.ts && bun run audit:codex-media-carryover",
     "audit:openrouter-routing": "bun run scripts/openrouter-routing-audit.ts",
+    "audit:error-clarity": "bun run scripts/audit-error-clarity.ts",
     "audit:ink-promo": "bun run scripts/ink-promo-audit.ts",
     "test:nsfw": "bun run scripts/test-nsfw-model.ts",
     "probe:nsfw-extraction": "bun run scripts/nsfw-extraction-probe.ts",

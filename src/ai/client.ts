@@ -2,6 +2,7 @@ import { getOpenRouter } from '../config/openai'
 import { env } from '../config/env'
 import { recordLLMUsage, usageFromProvider, isLLMUsageActive } from './usage'
 import { log } from '../utils/logger'
+import { consumeLLMStream, EmptyLLMResponseError, formatLLMResponseReason, llmResponseContent, type LLMResponsePart } from '../utils/llm-response'
 
 const loggedNormalizations = new Set<string>()
 
@@ -116,6 +117,7 @@ export interface LLMFallbackResult {
  * message check for provider wrappers that only preserve the error text.
  */
 export function isRateLimitError(error: unknown): boolean {
+  if (error instanceof EmptyLLMResponseError) return false
   if (typeof error === 'object' && error !== null) {
     const status = (error as { status?: unknown }).status
     if (status === 429) return true
@@ -190,8 +192,6 @@ export async function callLLM(req: LLMRequest): Promise<string> {
     ...(req.timeoutMs ? { maxRetries: 0 } : {}),
     ...(req.signal ? { signal: req.signal } : {}),
   })
-  const content = response.choices[0]?.message?.content
-
   const rawUsage = (response as { usage?: unknown }).usage
   recordLLMUsage({
     purpose: req.purpose,
@@ -199,8 +199,7 @@ export async function callLLM(req: LLMRequest): Promise<string> {
     streamed: false,
     ...usageFromProvider(rawUsage),
   })
-  if (!content) throw new Error('Empty LLM response')
-  return content
+  return llmResponseContent(response)
 }
 
 /**
@@ -233,43 +232,36 @@ export async function callLLMStream(
 
   if (isLLMUsageActive()) params.stream_options = { include_usage: true }
 
-  let full = ''
-  let streamUsage: unknown
+  let result: Awaited<ReturnType<typeof consumeLLMStream>>
   try {
     const stream = await client.chat.completions.create(params, {
       signal: controller.signal,
       timeout: req.timeoutMs ?? 180000,
-    }) as unknown as AsyncIterable<{
-      choices?: Array<{ delta?: { content?: string } }>
-      usage?: unknown
-    }>
+    }) as unknown as AsyncIterable<LLMResponsePart>
     armIdleTimer()
-    for await (const part of stream) {
-      if (part.usage) streamUsage = part.usage
-      const delta = part.choices?.[0]?.delta?.content ?? ''
-      if (delta) {
-        if (firstTokenTimer) {
-          clearTimeout(firstTokenTimer)
-          firstTokenTimer = null
-        }
-        full += delta
-        onDelta(delta)
-        armIdleTimer()
+    result = await consumeLLMStream(stream, (delta) => {
+      if (firstTokenTimer) {
+        clearTimeout(firstTokenTimer)
+        firstTokenTimer = null
       }
-    }
+      onDelta(delta)
+      armIdleTimer()
+    })
   } finally {
     if (idleTimer) clearTimeout(idleTimer)
     if (firstTokenTimer) clearTimeout(firstTokenTimer)
   }
 
-  if (!full) throw new Error('Empty LLM response')
+  if (result.providerError) {
+    log.warn('chat.stream_provider_error', { model: req.model, reason: formatLLMResponseReason(result) })
+  }
   recordLLMUsage({
     purpose: req.purpose ?? 'narration',
     model: req.model,
     streamed: true,
-    ...usageFromProvider(streamUsage),
+    ...usageFromProvider(result.usage),
   })
-  return full
+  return result.content
 }
 
 /**

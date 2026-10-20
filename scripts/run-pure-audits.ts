@@ -5,6 +5,7 @@
 const PURE_AUDITS = [
   'audit:media',
   'audit:openrouter-routing',
+  'audit:error-clarity',
   'audit:ink-promo',
   'audit:review-access',
   'audit:world-review',

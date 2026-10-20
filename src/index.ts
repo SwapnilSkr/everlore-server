@@ -19,6 +19,9 @@ import { webEventRoutes } from './routes/web-event.routes'
 import { setupRedisPubSub } from './services/play-ws.service'
 import { HttpError } from './utils/http-error'
 import { httpLoggerPlugin } from './plugins/http-logger.plugin'
+import { validationResponse } from './utils/validation-response'
+import { internalErrorResponse } from './utils/internal-error-response'
+import { log } from './utils/logger'
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
@@ -37,7 +40,16 @@ async function main() {
   const app = new Elysia()
     .use(cors({ origin: env.CLIENT_ORIGINS }))
     .use(httpLoggerPlugin)
-    .onError(({ error, code, set }) => {
+    .onError(({ error, code, set, route, request }) => {
+      const internal = internalErrorResponse(error)
+      if (internal) {
+        set.status = internal.status
+        log.error('http.llm_empty_response', {
+          route: route ?? '(unmatched)', method: request.method, error: { message: errorMessage(error) },
+        })
+        return internal.body
+      }
+
       if (error instanceof HttpError) {
         set.status = error.statusCode
         return { error: error.message, ...(error.details || {}) }
@@ -45,12 +57,16 @@ async function main() {
 
       if (error instanceof ValidationError) {
         set.status = error.status
-        return { error: error.message }
+        const mapped = validationResponse(error)
+        log.warn('http.validation', { route: route ?? '(unmatched)', method: request.method, ...mapped.details })
+        return mapped.response
       }
 
       if (code === 'VALIDATION') {
         set.status = 422
-        return { error: errorMessage(error) }
+        const mapped = validationResponse(error)
+        log.warn('http.validation', { route: route ?? '(unmatched)', method: request.method, ...mapped.details })
+        return mapped.response
       }
 
       if (error instanceof ParseError) {
