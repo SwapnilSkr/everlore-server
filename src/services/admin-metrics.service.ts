@@ -91,6 +91,7 @@ export const adminMetricsService = {
       },
       installs: {
         available: installs.available, reason: installs.reason, last_updated: installs.last_updated,
+        reason_kind: installs.reason_kind,
         total_user_installs: installs.available ? series.reduce((sum, day) => sum + (day.installs ?? 0), 0) : null,
       },
     }

@@ -9,7 +9,7 @@ import { mergeBillingConfig, effectiveBilling, invalidateBillingConfig, saveBill
 import { billingService } from '../src/services/billing.service'
 import { LAST_ACTIVE_INTERVAL_MS, lastActiveFilter, recordLastActive } from '../src/services/last-active.service'
 import { utcDaySeries, metricsDays } from '../src/services/admin-metrics.service'
-import { createInstallsReader, parseInstallsCsv, loadInstallReports } from '../src/services/play-installs.service'
+import { createInstallsReader, parseInstallsCsv, loadInstallReports, loadReports } from '../src/services/play-installs.service'
 import { STORY_TURN_TYPES, userActivityStages } from '../src/services/admin-activity'
 import { onboardingFacets, userOnboarding, usersSince } from '../src/services/admin-onboarding'
 import { adminService } from '../src/services/admin.service'
@@ -158,19 +158,119 @@ try {
       assert.throws(() => parseInstallsCsv(Buffer.from(invalid, 'utf16le')))
     }
   })
-  await check('installs unavailable never throws and is cached for six hours', async () => {
+  await check('installs failures coalesce, wait fifteen minutes, then recover', async () => {
     let clock = 0, calls = 0
-    const read = createInstallsReader(async () => { calls++; throw new Error('403 with private upstream details') }, () => clock)
+    const read = createInstallsReader(async () => {
+      if (++calls === 1) throw new Error('private upstream details')
+      return { '2026-10-21': 4 }
+    }, () => clock)
     const [one, two] = await Promise.all([read(), read()])
     assert.deepEqual(one, two)
-    assert.deepEqual(one, { available: false, reason: "The service account can't read Play's install reports yet.", last_updated: null, daily: {} })
+    assert.deepEqual(one, { available: false, reason_kind: 'error', reason: "Play's install reports couldn't be read just now.", last_updated: null, daily: {} })
+    assert.equal(calls, 1)
+    clock = 15 * 60_000 - 1
+    await read(); assert.equal(calls, 1)
+    clock++
+    const recovered = await read()
+    assert.equal(calls, 2)
+    assert.deepEqual(recovered, { available: true, reason_kind: null, reason: null, last_updated: new Date(clock).toISOString(), daily: { '2026-10-21': 4 } })
+    clock += 15 * 60_000
+    await read(); assert.equal(calls, 2)
+  })
+  await check('installs successes coalesce and stay cached for six hours', async () => {
+    let clock = 0, calls = 0
+    const read = createInstallsReader(async () => { calls++; return { '2026-10-21': 4 } }, () => clock)
+    const [one, two] = await Promise.all([read(), read()])
+    assert.deepEqual(one, two)
+    assert.deepEqual(one, { available: true, reason_kind: null, reason: null, last_updated: new Date(0).toISOString(), daily: { '2026-10-21': 4 } })
     assert.equal(calls, 1)
     clock = 6 * 60 * 60_000 - 1
     await read(); assert.equal(calls, 1)
     clock++; await read(); assert.equal(calls, 2)
-    const good = await createInstallsReader(async () => ({ '2026-10-21': 4 }), () => 0)()
-    assert.equal(good.available, true)
-    assert.equal(good.daily['2026-10-21'], 4)
+  })
+  const installDate = new Date('2026-10-21T00:00:00Z')
+  const reportListing = () => Response.json({ items: [{ name: 'stats/installs/installs_com.everloreapp_202610_overview.csv' }] })
+  const readWithRequest = (request: typeof fetch) => createInstallsReader(() => loadInstallReports('offline', installDate, request))()
+  env.GOOGLE_PLAY_PACKAGE_NAME = 'com.everloreapp'
+  await check('installs list and object 401 or 403 classify as forbidden', async () => {
+    for (const status of [401, 403]) {
+      for (const object of [false, true]) {
+        let calls = 0
+        const result = await readWithRequest((async () => {
+          if (object && ++calls === 1) return reportListing()
+          return new Response('private upstream body', { status })
+        }) as typeof fetch)
+        assert.equal(result.available, false)
+        assert.equal(result.reason_kind, 'forbidden')
+        assert.equal(result.reason, "Play hasn't given the server's account access to install reports yet.")
+      }
+    }
+  })
+  await check('installs empty or nonmatching listings classify as no_reports', async () => {
+    for (const items of [undefined, [], [
+      { name: 'stats/installs/installs_com.everloreapp_202610_country.csv' },
+      { name: 'stats/installs/installs_com.everloreapp_202001_overview.csv' },
+      { name: 'stats/installs/installs_other.app_202610_overview.csv' },
+    ]]) {
+      const result = await readWithRequest((async () => Response.json({ items })) as typeof fetch)
+      assert.equal(result.available, false)
+      assert.equal(result.reason_kind, 'no_reports')
+      assert.equal(result.reason, "Play hasn't published an install report for this app yet. They usually appear a day or two after launch.")
+    }
+  })
+  await check('installs 500, network and CSV failures classify as error', async () => {
+    const requests = [
+      (async () => new Response('private upstream body', { status: 500 })) as typeof fetch,
+      (async (input) => String(input).includes('alt=media') ? new Response('', { status: 500 }) : reportListing()) as typeof fetch,
+      (async () => { throw new Error('network unavailable') }) as typeof fetch,
+      (async (input) => String(input).includes('alt=media') ? new Response(Buffer.from('not CSV', 'utf16le')) : reportListing()) as typeof fetch,
+    ]
+    for (const request of requests) {
+      const result = await readWithRequest(request)
+      assert.equal(result.available, false)
+      assert.equal(result.reason_kind, 'error')
+      assert.equal(result.reason, "Play's install reports couldn't be read just now.")
+    }
+  })
+  await check('installs token 503 and missing developer ID classify as not_configured', async () => {
+    const originalId = env.PLAY_DEVELOPER_ACCOUNT_ID
+    let tokenCalls = 0, requestCalls = 0
+    const request = (async () => { requestCalls++; return Response.json({}) }) as typeof fetch
+    const getToken = async (scope: string) => {
+      tokenCalls++
+      assert.equal(scope, 'https://www.googleapis.com/auth/devstorage.read_only')
+      throw new HttpError(503, 'private credential details')
+    }
+    try {
+      env.PLAY_DEVELOPER_ACCOUNT_ID = 'offline-developer'
+      const tokenFailure = await createInstallsReader(() => loadReports(getToken, installDate, request))()
+      assert.equal(tokenCalls, 1)
+      env.PLAY_DEVELOPER_ACCOUNT_ID = ''
+      const missingId = await createInstallsReader(() => loadReports(getToken, installDate, request))()
+      assert.equal(tokenCalls, 1)
+      for (const result of [tokenFailure, missingId]) {
+        assert.equal(result.available, false)
+        assert.equal(result.reason_kind, 'not_configured')
+        assert.equal(result.reason, "The server isn't set up to read Play reports.")
+      }
+      assert.equal(requestCalls, 0)
+    } finally { env.PLAY_DEVELOPER_ACCOUNT_ID = originalId }
+  })
+  await check('installs reasons never contain upstream bodies or credential details', async () => {
+    const email = 'fake-reader@example.invalid', token = 'fake-access-token-123'
+    const upstream = `Forbidden for ${email}, token ${token}`
+    const results = [
+      await readWithRequest((async () => new Response(upstream, { status: 403 })) as typeof fetch),
+      await readWithRequest((async (input) => String(input).includes('alt=media') ? new Response(upstream, { status: 403 }) : reportListing()) as typeof fetch),
+      await readWithRequest((async () => { throw new Error(upstream) }) as typeof fetch),
+      await createInstallsReader(async () => { throw new HttpError(503, upstream) })(),
+    ]
+    for (const result of results) {
+      assert(result.reason)
+      assert(!result.reason.includes(email))
+      assert(!result.reason.includes(token))
+      assert(!JSON.stringify(result).includes(upstream))
+    }
   })
   await check('installs fetch discovers existing months and contains network failures', async () => {
     const urls: string[] = []

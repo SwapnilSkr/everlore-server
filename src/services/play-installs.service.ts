@@ -1,14 +1,29 @@
 import { env } from '../config/env'
+import { HttpError } from '../utils/http-error'
 import { googlePlayAccessToken } from './google-play.service'
 
+type InstallReportReason = 'forbidden' | 'no_reports' | 'not_configured' | 'error'
 export type InstallReport = {
   available: boolean
+  reason_kind: InstallReportReason | null
   reason: string | null
   last_updated: string | null
   daily: Record<string, number>
 }
-const CACHE_MS = 6 * 60 * 60_000
-const UNAVAILABLE = "The service account can't read Play's install reports yet."
+const SUCCESS_CACHE_MS = 6 * 60 * 60_000
+const FAILURE_CACHE_MS = 15 * 60_000
+const REASONS: Record<InstallReportReason, string> = {
+  forbidden: "Play hasn't given the server's account access to install reports yet.",
+  no_reports: "Play hasn't published an install report for this app yet. They usually appear a day or two after launch.",
+  not_configured: "The server isn't set up to read Play reports.",
+  error: "Play's install reports couldn't be read just now.",
+}
+
+class InstallReportError extends Error {
+  constructor(readonly kind: InstallReportReason) {
+    super(REASONS[kind])
+  }
+}
 
 function csvRows(text: string): string[][] {
   const rows: string[][] = []
@@ -62,16 +77,17 @@ export function createInstallsReader(load: () => Promise<Record<string, number>>
   let cached: { at: number; value: InstallReport } | null = null
   let pending: Promise<InstallReport> | null = null
   return async (): Promise<InstallReport> => {
-    if (cached && now() - cached.at < CACHE_MS) return cached.value
+    if (cached && now() - cached.at < (cached.value.available ? SUCCESS_CACHE_MS : FAILURE_CACHE_MS)) return cached.value
     if (pending) return pending
     pending = (async () => {
       let value: InstallReport
       try {
         const daily = await load()
-        value = { available: true, reason: null, last_updated: new Date(now()).toISOString(), daily }
-      } catch {
+        value = { available: true, reason_kind: null, reason: null, last_updated: new Date(now()).toISOString(), daily }
+      } catch (error) {
         // Never expose upstream bodies or credential errors to the console.
-        value = { available: false, reason: UNAVAILABLE, last_updated: null, daily: {} }
+        const kind = error instanceof InstallReportError ? error.kind : 'error'
+        value = { available: false, reason_kind: kind, reason: REASONS[kind], last_updated: null, daily: {} }
       }
       cached = { at: now(), value }
       return value
@@ -103,7 +119,7 @@ export async function loadInstallReports(
     const query = new URLSearchParams({ prefix, fields: 'items(name),nextPageToken', maxResults: '1000' })
     if (pageToken) query.set('pageToken', pageToken)
     const response = await request(`${bucket}?${query}`, { headers, signal: AbortSignal.timeout(10_000) })
-    if (!response.ok) throw new Error('Install report list unavailable')
+    if (!response.ok) throw new InstallReportError(response.status === 401 || response.status === 403 ? 'forbidden' : 'error')
     const body = await response.json() as { items?: Array<{ name: string }>; nextPageToken?: string }
     for (const { name } of body.items ?? []) {
       const month = name.slice(prefix.length, prefix.length + 6)
@@ -111,18 +127,29 @@ export async function loadInstallReports(
     }
     pageToken = body.nextPageToken
   } while (pageToken)
-  if (!objects.length) throw new Error('No install reports yet')
+  if (!objects.length) throw new InstallReportError('no_reports')
   const reports = await Promise.all(objects.map(async (object) => {
     const response = await request(`${bucket}/${encodeURIComponent(object)}?alt=media`, { headers, signal: AbortSignal.timeout(10_000) })
-    if (!response.ok) throw new Error('Install report unavailable')
+    if (!response.ok) throw new InstallReportError(response.status === 401 || response.status === 403 ? 'forbidden' : 'error')
     return parseInstallsCsv(new Uint8Array(await response.arrayBuffer()))
   }))
   return Object.assign({}, ...reports)
 }
 
-async function loadReports() {
-  const token = await googlePlayAccessToken('https://www.googleapis.com/auth/devstorage.read_only')
-  return loadInstallReports(token)
+export async function loadReports(
+  getToken: (scope: string) => Promise<string> = googlePlayAccessToken,
+  now = new Date(),
+  request: typeof fetch = fetch,
+) {
+  if (!env.PLAY_DEVELOPER_ACCOUNT_ID) throw new InstallReportError('not_configured')
+  let token: string
+  try {
+    token = await getToken('https://www.googleapis.com/auth/devstorage.read_only')
+  } catch (error) {
+    if (error instanceof HttpError && error.statusCode === 503) throw new InstallReportError('not_configured')
+    throw error
+  }
+  return loadInstallReports(token, now, request)
 }
 
 export const readPlayInstalls = createInstallsReader(loadReports)
