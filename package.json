@@ -24,6 +24,7 @@
     "audit:choices": "bun run scripts/choice-audit.ts",
     "audit:review-access": "bun run scripts/review-access-audit.ts",
     "audit:world-review": "bun run scripts/world-review-audit.ts",
+    "audit:template-privacy": "bun run scripts/template-privacy-audit.ts",
     "audit:moderation": "bun run scripts/moderation-audit.ts",
     "audit:choice-grounding": "bun run scripts/choice-grounding-audit.ts",
     "audit:projection-checkpoint": "bun run scripts/projection-checkpoint-audit.ts",

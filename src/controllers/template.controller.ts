@@ -11,6 +11,7 @@ import { idString } from '../utils/mongo-id'
 import { billingService } from '../services/billing.service'
 import { canForge } from '../utils/can-forge'
 import { isWorldListed } from '../utils/world-review'
+import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
 
 type CreateBody = Static<typeof CreateTemplateBody>
 type UpdateBody = Static<typeof UpdateTemplateBody>
@@ -23,12 +24,13 @@ export const templateController = {
     query: { page?: number; limit?: number; search?: string }
     user: AuthUser | null
   }) => {
-    return templateService.listPublished(
+    const result = await templateService.listPublished(
       Number(query.page) || 1,
       Number(query.limit) || 20,
       query.search,
       user?.id,
     )
+    return { ...result, templates: result.templates.map(publicTemplate) }
   },
 
   getById: async ({
@@ -47,7 +49,7 @@ export const templateController = {
       throw new HttpError(404, 'That world could not be found.')
     }
 
-    return template
+    return canReadTemplateAuthoring(template, user) ? template : publicTemplate(template)
   },
 
   // Generate a preview image from a (creator-edited) prompt → returns CDN url.

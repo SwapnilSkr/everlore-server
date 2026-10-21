@@ -9,6 +9,7 @@ import { toClientError } from '../utils/ws-error'
 import { GENERATION_LOCK_TTL_SECONDS, generationLockKey } from '../utils/generation-lock'
 import { billingService } from './billing.service'
 import { authService } from './auth.service'
+import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
 
 /** Underlying Bun socket — stable identity; Elysia passes a new `ElysiaWS` wrapper per event. */
 type RawWs = { send: (data: string) => void }
@@ -392,7 +393,10 @@ export const playWsService = {
         try {
           const instanceId = (data as { instance_id?: string }).instance_id
           const state = await generationService.loadInstance(instanceId!, user.id)
-          ws.send(JSON.stringify({ type: 'instance_loaded', data: state }))
+          const responseState = state.template && !canReadTemplateAuthoring(state.template, user)
+            ? { ...state, template: publicTemplate(state.template) }
+            : state
+          ws.send(JSON.stringify({ type: 'instance_loaded', data: responseState }))
         } catch (err: unknown) {
           ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.load_instance', userId: user.id }) }))
         }

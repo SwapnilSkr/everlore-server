@@ -10,6 +10,7 @@ const PURE_AUDITS = [
   'audit:admin-ops',
   'audit:review-access',
   'audit:world-review',
+  'audit:template-privacy',
   'audit:choice-grounding',
   'audit:movement',
   'audit:narrated-arrival',

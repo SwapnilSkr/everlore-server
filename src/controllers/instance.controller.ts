@@ -2,6 +2,7 @@ import type { AuthUser } from '../middleware/auth'
 import { instanceService } from '../services/instance.service'
 import { deletionService } from '../services/deletion.service'
 import { HttpError } from '../utils/http-error'
+import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
 
 export const instanceController = {
   list: async ({ user, query }: { user: AuthUser | null; query: { include_archived?: boolean } }) => {
@@ -45,7 +46,10 @@ export const instanceController = {
 
   create: async ({ user, body }: { user: AuthUser | null; body: { template_id: string; persona_id?: string } }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
-    return instanceService.create(user.id, body.template_id, user.tier, body.persona_id)
+    const result = await instanceService.create(user.id, body.template_id, user.tier, body.persona_id)
+    return canReadTemplateAuthoring(result.template, user)
+      ? result
+      : { ...result, template: publicTemplate(result.template) }
   },
 
   archive: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
