@@ -146,9 +146,11 @@ async function liveCases(options: ReturnType<typeof parseCompareOptions>): Promi
     instanceIds.sort((a, b) => idString(a).localeCompare(idString(b)))
     for (const iid of instanceIds.slice(0, options.limit)) {
       const instance = await mongoColl.worldInstances().findOne({ _id: iid })
-      if (!instance) throw new Error(`Memories belong to missing save ${idString(iid)}`)
+      // Leftover rows of a deleted save have no vectors to compare.
+      if (!instance) { console.log(`skip save ${idString(iid)}: save deleted`); continue }
+      // A save whose world was deleted keeps its memories; compare them at recall's defaults.
       const template = await mongoColl.worldTemplates().findOne({ _id: instance.template_id })
-      if (!template) throw new Error(`Missing template for save ${idString(iid)}`)
+      if (!template) console.log(`save ${idString(iid)}: world deleted, comparing at default sizes`)
       const events = await mongoColl.events().find({ instance_id: iid, 'data.player_input': { $type: 'string', $ne: '' } })
         .sort({ sequence: -1 }).limit(options.queries).toArray()
       const texts = events.map((e) => e.data.player_input).filter((s) => s.trim())
@@ -156,8 +158,8 @@ async function liveCases(options: ReturnType<typeof parseCompareOptions>): Promi
         const memories = await mongoColl.memories().find({ instance_id: iid }).sort({ created_at: -1 }).limit(options.queries).toArray()
         texts.push(...memories.map((m) => m.text).filter((s) => s.trim()).slice(0, options.queries - texts.length))
       }
-      cases.push(saveRecallCase({ instanceId: idString(iid), templateId: idString(template._id), texts,
-        loreTopK: template.max_lore_results || 10, memoryTopK: template.max_context_memories || 25,
+      cases.push(saveRecallCase({ instanceId: idString(iid), templateId: idString(instance.template_id), texts,
+        loreTopK: template?.max_lore_results || 10, memoryTopK: template?.max_context_memories || 25,
         timelineId: instance.active_timeline_id || 'main' }))
     }
     // --limit caps saves only. Every authored world with lore is always checked.
