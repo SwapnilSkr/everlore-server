@@ -94,6 +94,7 @@ const optionalEnvVars = {
   // real one off the data itself: query rumPageloadEventsAdaptiveGroups with no
   // siteTag filter and select `dimensions { siteTag }`.
   CLOUDFLARE_RUM_SITE_TAG: '',
+  PLAY_DEVELOPER_ACCOUNT_ID: '7899281946407974865',
   GOOGLE_PLAY_PACKAGE_NAME: '',
   /** JSON service-account credential with Android Publisher API access. */
   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: '',
@@ -148,6 +149,7 @@ export interface Env {
   CLOUDFLARE_API_TOKEN: string
   CLOUDFLARE_ACCOUNT_ID: string
   CLOUDFLARE_RUM_SITE_TAG: string
+  PLAY_DEVELOPER_ACCOUNT_ID: string
   GOOGLE_PLAY_PACKAGE_NAME: string
   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: string
   GOOGLE_PLAY_RTDN_AUDIENCE: string
@@ -222,6 +224,7 @@ function loadEnv(): Env {
     CLOUDFLARE_API_TOKEN: process.env.CLOUDFLARE_API_TOKEN || optionalEnvVars.CLOUDFLARE_API_TOKEN,
     CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID || optionalEnvVars.CLOUDFLARE_ACCOUNT_ID,
     CLOUDFLARE_RUM_SITE_TAG: process.env.CLOUDFLARE_RUM_SITE_TAG || optionalEnvVars.CLOUDFLARE_RUM_SITE_TAG,
+    PLAY_DEVELOPER_ACCOUNT_ID: process.env.PLAY_DEVELOPER_ACCOUNT_ID || optionalEnvVars.PLAY_DEVELOPER_ACCOUNT_ID,
     GOOGLE_PLAY_PACKAGE_NAME: process.env.GOOGLE_PLAY_PACKAGE_NAME || optionalEnvVars.GOOGLE_PLAY_PACKAGE_NAME,
     GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || optionalEnvVars.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON,
     GOOGLE_PLAY_RTDN_AUDIENCE: process.env.GOOGLE_PLAY_RTDN_AUDIENCE || optionalEnvVars.GOOGLE_PLAY_RTDN_AUDIENCE,

@@ -93,6 +93,7 @@ export interface UserDoc {
   blocked_user_ids?: ObjectId[]
   /** Individual worlds hidden by this player, without blocking the creator. */
   blocked_template_ids?: ObjectId[]
+  last_active_at?: Date
   created_at: Date
   updated_at: Date
 }

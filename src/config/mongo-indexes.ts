@@ -120,6 +120,18 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     options: { name: "idx_world_instances_current_location_entity" },
   },
 
+  // Admin operations: UTC metrics and per-player activity fallback.
+  { collection: COLLECTIONS.events, key: { type: 1, created_at: -1, player_id: 1 },
+    options: { name: 'idx_events_type_created_player' } },
+  { collection: COLLECTIONS.events, key: { player_id: 1, type: 1, created_at: -1 },
+    options: { name: 'idx_events_player_type_created' } },
+  { collection: COLLECTIONS.users, key: { last_active_at: -1 },
+    options: { name: 'idx_users_last_active' } },
+  { collection: COLLECTIONS.users, key: { created_at: -1 },
+    options: { name: 'idx_users_created' } },
+  { collection: COLLECTIONS.world_instances, key: { created_at: -1 },
+    options: { name: 'idx_world_instances_created' } },
+
   // events
   {
     collection: COLLECTIONS.events,
@@ -583,8 +595,9 @@ function keysMatch(existingIndex: Document, desired: Document): boolean {
   const ek = Object.keys(existing)
   const dk = Object.keys(desired)
   if (ek.length !== dk.length) return false
-  for (const k of dk) {
-    if (existing[k] !== desired[k]) return false
+  for (let i = 0; i < dk.length; i++) {
+    // Compound index order determines which prefix a query can use.
+    if (ek[i] !== dk[i] || existing[dk[i]] !== desired[dk[i]]) return false
   }
   return true
 }

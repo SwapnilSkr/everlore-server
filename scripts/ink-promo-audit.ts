@@ -3,6 +3,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../src/config/mongo'
 import { env } from '../src/config/env'
 import { billingService } from '../src/services/billing.service'
+import { invalidateBillingConfig } from '../src/services/billing-config.service'
 import { StoryRestingError } from '../src/utils/story-resting-error'
 import { toClientError } from '../src/utils/ws-error'
 
@@ -100,6 +101,7 @@ try {
   check((await billingService.wallet(id, 'free')).balance === 10, 'balance unchanged after 500 promo turns')
 
   env.BILLING_ENFORCEMENT_ENABLED = true
+  invalidateBillingConfig()
   env.INK_PROMO_DAILY_TURN_CAP = 1
   const enforcedPlayer = new ObjectId().toString()
   const enforcedTurn = await billingService.reserve(enforcedPlayer, 'story_turn', 'enforced-1')
@@ -107,6 +109,7 @@ try {
   await resting(() => billingService.reserve(enforcedPlayer, 'story_turn', 'enforced-2'),
     'promo cap applies with billing enforcement on')
 
+  invalidateBillingConfig()
   env.INK_PROMO_UNLIMITED = false
   env.BILLING_ENFORCEMENT_ENABLED = true
   check((await billingService.wallet(paidId, 'free')).unlimited_ink === false, 'wallet marks unlimited Ink off')

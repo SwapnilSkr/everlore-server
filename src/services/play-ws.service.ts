@@ -1,3 +1,4 @@
+import { recordLastActive } from './last-active.service'
 import { getRedisClient, getRedisSubscriber } from '../config/redis'
 import { generationService } from './generation.service'
 import { parsePlayerWorldAction } from '../utils/world-action'
@@ -135,6 +136,7 @@ export const playWsService = {
       ws.close()
       return
     }
+    recordLastActive(tokenUser.id)
     const user = { ...tokenUser, tier: live.tier }
 
     getWsData(ws)._user = user
@@ -175,6 +177,7 @@ export const playWsService = {
         return
       }
       // Keep the cached tier current after an admin promotion/demotion.
+      recordLastActive(user.id)
       user.tier = live.tier
     }
 

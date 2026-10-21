@@ -1,3 +1,4 @@
+import { adminMetricsService } from '../services/admin-metrics.service'
 import { adminService } from '../services/admin.service'
 import { webEventService } from '../services/web-event.service'
 import { cloudflareAnalyticsService } from '../services/cloudflare-analytics.service'
@@ -27,6 +28,7 @@ function pageQuery(query: { page?: number; limit?: number }) {
 }
 
 export const adminController = {
+  metrics: async ({ query }: { query: { days?: string } }) => adminMetricsService.metrics(query.days),
   overview: async () => ({
     ...(await adminService.overview()),
     ...(await moderationService.queueStats()),
@@ -101,8 +103,8 @@ export const adminController = {
     adminUser: string
   }) => adminService.reviewWorld(params.worldId, 'changes_requested', adminUser, body.note),
 
-  listUsers: async ({ query }: { query: { page?: number; limit?: number; search?: string } }) =>
-    adminService.listUsers({ ...pageQuery(query), search: query.search }),
+  listUsers: async ({ query }: { query: { page?: number; limit?: number; search?: string; sort?: string; since?: string } }) =>
+    adminService.listUsers({ ...pageQuery(query), search: query.search, sort: query.sort, since: query.since }),
 
   getUser: async ({ params }: { params: { userId: string } }) => adminService.getUser(params.userId),
 
@@ -182,10 +184,10 @@ export const adminController = {
     return { ...summary, daily, cloudflare: traffic, series, totals }
   },
 
-  getBillingConfig: async () => ({
-    config: await effectiveBilling(),
-    defaults: BILLING_DEFAULTS,
-  }),
+  getBillingConfig: async () => {
+    const config = await effectiveBilling()
+    return { config, defaults: BILLING_DEFAULTS, promo: config.promo }
+  },
 
   putBillingConfig: async ({
     body,
@@ -193,10 +195,10 @@ export const adminController = {
   }: {
     body: Record<string, unknown>
     adminUser: string
-  }) => ({
-    config: await saveBillingConfig(body as never, adminUser),
-    defaults: BILLING_DEFAULTS,
-  }),
+  }) => {
+    const config = await saveBillingConfig(body as never, adminUser)
+    return { config, defaults: BILLING_DEFAULTS, promo: config.promo }
+  },
 
   getUserBilling: async ({ params }: { params: { userId: string } }) =>
     billingService.adminAccountSnapshot(params.userId),

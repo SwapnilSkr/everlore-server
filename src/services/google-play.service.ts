@@ -9,7 +9,7 @@ type ServiceAccount = {
 }
 
 type AccessToken = { value: string; expiresAt: number }
-let accessToken: AccessToken | null = null
+const accessTokens = new Map<string, AccessToken>()
 let googleCerts: { values: Record<string, string>; expiresAt: number } | null = null
 
 function b64url(value: string) {
@@ -17,7 +17,7 @@ function b64url(value: string) {
 }
 
 function credentials(): ServiceAccount {
-  if (!env.GOOGLE_PLAY_PACKAGE_NAME || !env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON) {
+  if (!env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON) {
     throw new HttpError(503, 'Google Play billing is not configured yet')
   }
   try {
@@ -27,13 +27,14 @@ function credentials(): ServiceAccount {
   }
 }
 
-async function publisherToken() {
+export async function googlePlayAccessToken(scope = 'https://www.googleapis.com/auth/androidpublisher') {
+  const accessToken = accessTokens.get(scope)
   if (accessToken && accessToken.expiresAt > Date.now() + 60_000) return accessToken.value
   const credential = credentials()
   const now = Math.floor(Date.now() / 1000)
   const unsigned = `${b64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))}.${b64url(JSON.stringify({
     iss: credential.client_email,
-    scope: 'https://www.googleapis.com/auth/androidpublisher',
+    scope,
     aud: credential.token_uri || 'https://oauth2.googleapis.com/token',
     iat: now,
     exp: now + 3600,
@@ -44,6 +45,7 @@ async function publisherToken() {
   const assertion = `${unsigned}.${signer.sign(credential.private_key, 'base64url')}`
   const response = await fetch(credential.token_uri || 'https://oauth2.googleapis.com/token', {
     method: 'POST',
+    signal: AbortSignal.timeout(10_000),
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body: new URLSearchParams({
       grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
@@ -53,12 +55,12 @@ async function publisherToken() {
   if (!response.ok) throw new HttpError(502, 'Could not authenticate with Google Play')
   const body = await response.json() as { access_token?: string; expires_in?: number }
   if (!body.access_token) throw new HttpError(502, 'Google Play did not return an access token')
-  accessToken = { value: body.access_token, expiresAt: Date.now() + (body.expires_in || 3600) * 1000 }
-  return accessToken.value
+  accessTokens.set(scope, { value: body.access_token, expiresAt: Date.now() + (body.expires_in || 3600) * 1000 })
+  return body.access_token
 }
 
 async function publisherFetch(path: string, init?: RequestInit) {
-  const token = await publisherToken()
+  const token = await googlePlayAccessToken()
   const response = await fetch(`https://androidpublisher.googleapis.com/androidpublisher/v3/${path}`, {
     ...init,
     headers: { Authorization: `Bearer ${token}`, ...(init?.headers || {}) },

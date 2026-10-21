@@ -41,6 +41,8 @@ const TierProfilePatch = t.Object({
 })
 
 const AdminBillingConfigBody = t.Object({
+  // Validated by the service so bad promo values are plain-sentence 400s.
+  promo: t.Optional(t.Unknown()),
   tiers: t.Optional(
     t.Object({
       free: t.Optional(TierProfilePatch),
@@ -62,9 +64,15 @@ const AdminBillingConfigBody = t.Object({
 export const adminRoutes = new Elysia({ prefix: '/admin' })
   .use(requireAdmin)
 
+  .get('/metrics', (ctx) => adminController.metrics(ctx), {
+    query: t.Object({ days: t.Optional(t.String()) }),
+  })
+
   .get('/overview', () => adminController.overview())
 
-  .get('/users', (ctx) => adminController.listUsers(ctx), { query: SearchPageQuery })
+  .get('/users', (ctx) => adminController.listUsers(ctx), {
+    query: t.Composite([SearchPageQuery, t.Object({ sort: t.Optional(t.String()), since: t.Optional(t.String()) })]),
+  })
   .get('/users/:userId', (ctx) => adminController.getUser(ctx))
   .patch('/users/:userId', (ctx) => adminController.patchUser(ctx), { body: AdminPatchBody })
   .patch('/users/:userId/tier', (ctx) => adminController.patchUserTier(ctx), {

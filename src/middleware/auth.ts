@@ -1,6 +1,7 @@
 import { Elysia } from 'elysia'
 import { jwt } from '@elysiajs/jwt'
 import { env } from '../config/env'
+import { recordLastActive } from '../services/last-active.service'
 import { authService } from '../services/auth.service'
 
 export interface AuthUser {
@@ -40,6 +41,7 @@ export const authPlugin = new Elysia({ name: 'auth-plugin' })
     // waiting for the user's existing JWT to expire.
     const live = await authService.getLiveAccess(user.id)
     if (!live || live.account_status === 'banned') return { user: null as AuthUser | null }
+    recordLastActive(user.id)
     return { user: { ...user, tier: live.tier } }
   })
 

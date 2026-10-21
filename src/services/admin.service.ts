@@ -1,3 +1,5 @@
+import { userActivityStages } from './admin-activity'
+import { userOnboarding, usersSince } from './admin-onboarding'
 import { ObjectId, type Document } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import type { UserAccountStatus, UserTier } from '../models/user.model'
@@ -121,8 +123,13 @@ export const adminService = {
     }
   },
 
-  async listUsers(opts: { page?: number; limit?: number; search?: string }) {
+  async listUsers(opts: { page?: number; limit?: number; search?: string; sort?: string; since?: string }) {
+    if (opts.sort !== undefined && opts.sort !== 'created' && opts.sort !== 'last_active') {
+      throw new HttpError(400, 'Sort must be created or last_active.')
+    }
     const filter: Record<string, unknown> = {}
+    const since = usersSince(opts.since)
+    if (since) filter.created_at = { $gte: since }
     if (opts.search) {
       filter.$or = [
         // The display name is searched alongside the handle: an operator
@@ -137,13 +144,28 @@ export const adminService = {
     const { limit, page, skip } = paging(opts)
     const [total, rows] = await Promise.all([
       users().countDocuments(filter),
-      users().find(filter, { projection: { password_hash: 0 } }).sort({ created_at: -1 }).skip(skip).limit(limit).toArray(),
+      users().aggregate([
+        { $match: filter },
+        // Created ordering can page before the lookup. Activity ordering must
+        // include the legacy story fallback before sorting and pagination.
+        ...(opts.sort === 'last_active' ? [
+          ...userActivityStages(),
+          { $sort: { last_active_at: -1, _id: -1 } },
+          { $skip: skip }, { $limit: limit },
+        ] : [
+          { $sort: { created_at: -1, _id: -1 } },
+          { $skip: skip }, { $limit: limit },
+          ...userActivityStages(),
+        ]),
+      ]).toArray(),
     ])
-    return { total, page, limit, items: rows.map((row: Document) => serialize(row)) }
+    return { total, page, limit, items: rows.map((row: Document) => serialize({ ...row, onboarding: userOnboarding(row) })) }
   },
 
   async getUser(userId: string) {
-    const user = await users().findOne({ _id: parseObjectId(userId) }, { projection: { password_hash: 0 } })
+    const [user] = await users().aggregate([
+      { $match: { _id: parseObjectId(userId) } }, ...userActivityStages(),
+    ]).toArray()
     if (!user) throw new HttpError(404, 'User not found')
 
     const uid = parseObjectId(userId)
@@ -155,7 +177,7 @@ export const adminService = {
     ])
 
     return {
-      user: serialize(user),
+      user: serialize({ ...user, onboarding: userOnboarding(user) }),
       counts: {
         own_instances: instances,
         created_worlds: createdWorlds,

@@ -159,7 +159,8 @@ export const billingService = {
   },
 
   async wallet(playerId: string, fallbackTier: string) {
-    if (!env.INK_PROMO_UNLIMITED) await this.ensureWelcomeInk(playerId)
+    const { promo } = await effectiveBilling()
+    if (!promo.unlimited) await this.ensureWelcomeInk(playerId)
     const playerOid = parseObjectId(playerId)
     const now = new Date()
     const active = await entitlements().findOne({
@@ -171,7 +172,7 @@ export const billingService = {
     const tier = player?.admin_tier_override || active?.tier || player?.tier || (fallbackTier as UserTier)
     return {
       tier,
-      unlimited_ink: env.INK_PROMO_UNLIMITED,
+      unlimited_ink: promo.unlimited,
       admin_tier_override: player?.admin_tier_override ?? null,
       balance: await balanceFor(playerOid),
       profile: await profileForPlayer(tier, playerOid),
@@ -186,8 +187,9 @@ export const billingService = {
   },
 
   async reserve(playerId: string, action: BillableAction, requestId: string) {
-    const promo = env.INK_PROMO_UNLIMITED
-    const cost = promo ? 0 : (await effectiveBilling()).costs[action]
+    const config = await effectiveBilling()
+    const promo = config.promo.unlimited
+    const cost = promo ? 0 : config.costs[action]
     if (!requestId.trim()) throw new HttpError(400, 'A billing request id is required')
     if (!promo && !this.enforcementEnabled()) {
       return { reservation_id: null, cost: 0, balance: null }
@@ -203,7 +205,7 @@ export const billingService = {
     // do not consume a second slot for the same request.
     if (action === 'story_turn') {
       const cap = promo
-        ? env.INK_PROMO_DAILY_TURN_CAP
+        ? config.promo.daily_turn_cap
         : (await profileForPlayer(await tierFor(playerOid), playerOid)).daily_story_safety_cap
       const used = await storyTurnsToday(playerOid)
       if (used + 1 > cap) throw new StoryRestingError()
@@ -232,7 +234,7 @@ export const billingService = {
   },
 
   async release(playerId: string, reservationId: string | null) {
-    if (!reservationId || env.INK_PROMO_UNLIMITED || !this.enforcementEnabled()) return
+    if (!reservationId || (await effectiveBilling()).promo.unlimited || !this.enforcementEnabled()) return
     const playerOid = parseObjectId(playerId)
     const reservation = await ledger().findOne({ player_id: playerOid, idempotency_key: reservationId })
     if (!reservation || reservation.delta >= 0) return
@@ -254,7 +256,7 @@ export const billingService = {
   },
 
   async settle(playerId: string, reservationId: string | null) {
-    if (!reservationId || env.INK_PROMO_UNLIMITED || !this.enforcementEnabled()) return
+    if (!reservationId || (await effectiveBilling()).promo.unlimited || !this.enforcementEnabled()) return
     const playerOid = parseObjectId(playerId)
     const reservation = await ledger().findOne({ player_id: playerOid, idempotency_key: reservationId })
     if (!reservation || reservation.delta >= 0) return

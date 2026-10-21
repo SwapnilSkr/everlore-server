@@ -61,6 +61,7 @@ export interface BillingTierProfileDoc {
 export interface BillingConfigDoc {
   _id: string
   tiers?: Partial<Record<UserTier, Partial<BillingTierProfileDoc>>>
+  promo?: { unlimited: boolean; daily_turn_cap: number }
   welcome_ink?: number
   costs?: Partial<Record<'story_turn' | 'character_autofill' | 'world_autofill' | 'image_preview', number>>
   updated_at?: Date

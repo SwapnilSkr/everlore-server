@@ -1,3 +1,4 @@
+import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
 import type { BillingConfigDoc } from '../models/billing.model'
 import type { UserTier } from '../models/user.model'
@@ -12,6 +13,7 @@ const COST_KEYS = ['story_turn', 'character_autofill', 'world_autofill', 'image_
 export type TierProfile = { monthly_ink: number; daily_story_safety_cap: number }
 export type EffectiveBilling = {
   tiers: Record<(typeof TIERS)[number], TierProfile>
+  promo: { unlimited: boolean; daily_turn_cap: number; source: 'config' | 'env'; updated_at: Date | null; updated_by: string | null }
   welcome_ink: number
   costs: Record<(typeof COST_KEYS)[number], number>
 }
@@ -38,14 +40,16 @@ function fallback(): EffectiveBilling {
       premium: { ...BILLING_CATALOG.premium },
       creator: { ...BILLING_CATALOG.creator },
     },
+    promo: { unlimited: env.INK_PROMO_UNLIMITED, daily_turn_cap: env.INK_PROMO_DAILY_TURN_CAP, source: 'env', updated_at: null, updated_by: null },
     welcome_ink: BILLING_CATALOG.welcome_ink,
     costs: { ...BILLING_CATALOG.costs },
   }
 }
 
-function merge(doc: BillingConfigDoc | null): EffectiveBilling {
+export function mergeBillingConfig(doc: BillingConfigDoc | null): EffectiveBilling {
   const base = fallback()
   if (!doc) return base
+  if (doc.promo) base.promo = { ...doc.promo, source: 'config', updated_at: doc.updated_at ?? null, updated_by: doc.updated_by ?? null }
   for (const tier of TIERS) {
     const stored = doc.tiers?.[tier]
     if (!stored) continue
@@ -67,7 +71,7 @@ export async function effectiveBilling(): Promise<EffectiveBilling> {
   if (cache && now - cache.at < CACHE_TTL_MS) return cache.value
   try {
     const doc = await mongoColl.billingConfig().findOne({ _id: SINGLETON })
-    const value = merge(doc)
+    const value = mergeBillingConfig(doc)
     cache = { value, at: now }
     return value
   } catch (error) {
@@ -118,6 +122,7 @@ function assertCount(value: unknown, field: string, max: number): number {
 export async function saveBillingConfig(
   patch: {
     tiers?: Partial<Record<string, Partial<TierProfile>>>
+    promo?: unknown
     welcome_ink?: number
     costs?: Partial<Record<string, number>>
   },
@@ -125,6 +130,13 @@ export async function saveBillingConfig(
 ): Promise<EffectiveBilling> {
   const set: Record<string, unknown> = { updated_at: new Date(), updated_by: adminUser }
 
+  if (patch.promo !== undefined) {
+    const promo = validatePromoPatch(patch.promo)
+    if (Object.keys(promo).length) {
+      if (promo.unlimited !== undefined) set['promo.unlimited'] = promo.unlimited
+      if (promo.daily_turn_cap !== undefined) set['promo.daily_turn_cap'] = promo.daily_turn_cap
+    }
+  }
   for (const tier of TIERS) {
     const stored = patch.tiers?.[tier]
     if (!stored) continue
@@ -151,7 +163,16 @@ export async function saveBillingConfig(
     }
   }
 
-  await mongoColl.billingConfig().updateOne({ _id: SINGLETON }, { $set: set }, { upsert: true })
+  const editsPromo = Object.keys(set).some((key) => key.startsWith('promo.'))
+  // Seed inside the atomic update, rather than copying an effective cached
+  // value: concurrent partial saves must never reset the other promo key.
+  const update = editsPromo ? [
+    { $set: { promo: { $ifNull: ['$promo', {
+      unlimited: env.INK_PROMO_UNLIMITED, daily_turn_cap: env.INK_PROMO_DAILY_TURN_CAP,
+    }] } } },
+    { $set: Object.fromEntries(Object.entries(set).map(([key, value]) => [key, { $literal: value }])) },
+  ] : { $set: set }
+  await mongoColl.billingConfig().updateOne({ _id: SINGLETON }, update, { upsert: true })
   cache = null
   return effectiveBilling()
 }
@@ -162,3 +183,21 @@ export function invalidateBillingConfig() {
 }
 
 export const BILLING_DEFAULTS = fallback()
+
+export function validatePromoPatch(value: unknown): { unlimited?: boolean; daily_turn_cap?: number } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new HttpError(400, 'Promo must be an object.')
+  }
+  const promo = value as Record<string, unknown>
+  if ('unlimited' in promo && typeof promo.unlimited !== 'boolean') {
+    throw new HttpError(400, 'Promo unlimited must be true or false.')
+  }
+  if ('daily_turn_cap' in promo && (typeof promo.daily_turn_cap !== 'number' ||
+      !Number.isInteger(promo.daily_turn_cap) || promo.daily_turn_cap < 1 || promo.daily_turn_cap > 100000)) {
+    throw new HttpError(400, 'Promo daily turn cap must be a whole number between 1 and 100000.')
+  }
+  return {
+    ...(promo.unlimited !== undefined ? { unlimited: promo.unlimited as boolean } : {}),
+    ...(promo.daily_turn_cap !== undefined ? { daily_turn_cap: promo.daily_turn_cap as number } : {}),
+  }
+}

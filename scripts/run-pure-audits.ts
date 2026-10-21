@@ -7,6 +7,7 @@ const PURE_AUDITS = [
   'audit:openrouter-routing',
   'audit:error-clarity',
   'audit:ink-promo',
+  'audit:admin-ops',
   'audit:review-access',
   'audit:world-review',
   'audit:choice-grounding',
