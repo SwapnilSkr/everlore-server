@@ -3,7 +3,7 @@ import { detectSpokenLines } from './media/detection'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { getRedisClient } from '../config/redis'
-import { deletePineconeNamespace } from './pinecone-cleanup.service'
+import { vectorStore } from './vector-store'
 import { removeQueuedJobsForInstance } from '../queues'
 import { characterCodexService } from './character-codex.service'
 import { extractOpeningPlace } from './opening-place.service'
@@ -80,7 +80,7 @@ export const deletionService = {
 
     // Delete the lore vectors from Pinecone
     try {
-      await deletePineconeNamespace(`lore_${tidStr}`)
+      await vectorStore.deleteScope({ kind: 'lore', templateId: tidStr })
     } catch (err) {
       console.warn(`Failed to delete lore vectors for template ${tidStr}:`, (err as Error).message)
       // Continue with deletion even if Pinecone cleanup fails
@@ -350,13 +350,13 @@ export const deletionService = {
    * This is called internally by both deleteTemplate and deleteInstance.
    */
   async deleteInstanceData(instanceId: ObjectId, instanceIdStr: string): Promise<void> {
-    // These namespaces are independent. Failure is logged but does not block
+    // These scopes are independent. Failure is logged but does not block
     // the authoritative Mongo deletion, matching the existing cleanup policy.
     await Promise.all([
-      deletePineconeNamespace(`mem_${instanceIdStr}`).catch((err) => {
+      vectorStore.deleteScope({ kind: 'mem', instanceId: instanceIdStr }).catch((err) => {
         console.warn(`Failed to delete memory vectors for instance ${instanceIdStr}:`, (err as Error).message)
       }),
-      deletePineconeNamespace(`sum_${instanceIdStr}`).catch((err) => {
+      vectorStore.deleteScope({ kind: 'sum', instanceId: instanceIdStr }).catch((err) => {
         console.warn(`Failed to delete summary vectors for instance ${instanceIdStr}:`, (err as Error).message)
       }),
     ])

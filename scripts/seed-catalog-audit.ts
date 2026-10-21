@@ -53,7 +53,7 @@ mock.module('../src/config/env', () => ({ env: new Proxy({ CDN_BASE_URL: 'https:
   get: (target, key) => { if (key === 'CDN_BASE_URL') return target.CDN_BASE_URL; return unavailable() },
 }) }))
 mock.module('../src/config/mongo', () => ({ mongoColl: { users: () => collection(users), worldTemplates: () => collection(worlds) } }))
-mock.module('../src/config/pinecone', () => ({ getPineconeIndex: () => ({ namespace: () => ({ upsert: async () => {} }) }) }))
+mock.module('../src/services/vector-store', () => ({ vectorStore: { replaceLore: async () => {} } }))
 mock.module('../src/ai', () => ({ embed: async () => { embeddings++; return [0.1] }, generateImage: unavailable }))
 mock.module('../src/utils/protagonist', () => ({ deriveProtagonist: unavailable }))
 mock.module('../worker/lib/template-cast-extractor', () => ({ extractTemplateCast: async () => { casts++; return [{ name: 'Fixture Cast', persona: 'An adult traveller.' }] } }))

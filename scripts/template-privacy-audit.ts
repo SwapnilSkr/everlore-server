@@ -79,7 +79,7 @@ mock.module('../src/config/mongo', () => ({ mongoColl: {
   }),
   users: () => ({ findOne: async () => ({ preferences: { interests } }) }),
 } }))
-mock.module('../src/config/pinecone', () => ({ getPineconeIndex: unavailable }))
+mock.module('../src/services/vector-store', () => ({ vectorStore: { replaceLore: unavailable } }))
 mock.module('../src/ai', () => ({ embed: unavailable }))
 mock.module('../src/utils/protagonist', () => ({ deriveProtagonist: unavailable }))
 mock.module('../src/constants/default-cover', () => ({ isDefaultCoverUrl: unavailable, resolveTemplateImageUrl: unavailable }))

@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
-import { getPineconeIndex } from '../../src/config/pinecone'
+import { vectorStore } from '../../src/services/vector-store'
 import { callLLM, embed, AI_MODELS } from '../../src/ai'
 import { parseObjectId, idString } from '../../src/utils/mongo-id'
 import { liveInstanceExists } from '../../src/utils/live-instance'
@@ -29,17 +29,11 @@ async function embedSummary(
   const vecId = `${tier}_${startSequence}_${endSequence}`
   try {
     const values = await embed(text)
-    await getPineconeIndex()
-      .namespace(`sum_${idString(instanceOid)}`)
-      .upsert({
-        records: [
-          {
-            id: vecId,
-            values,
-            metadata: { tier, text, start_sequence: startSequence, end_sequence: endSequence },
-          },
-        ],
-      })
+    await vectorStore.upsert({ kind: 'sum', instanceId: idString(instanceOid) }, [{
+      id: vecId,
+      values,
+      metadata: { tier, text, start_sequence: startSequence, end_sequence: endSequence },
+    }])
     return vecId
   } catch (err) {
     log.warn('summary.embed_failed', { tier, startSequence, endSequence, error: (err as Error).message })

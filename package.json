@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "audit:media": "bun run scripts/media-audit.ts",
     "audit:codex-media-carryover": "bun run scripts/codex-media-carryover-audit.ts",
-    "audit:all": "bun run scripts/run-pure-audits.ts && bun run audit:codex-media-carryover && bun run audit:seed-catalog",
+    "audit:all": "bun run scripts/run-pure-audits.ts && bun run audit:codex-media-carryover && bun run audit:seed-catalog && bun run audit:vector-store",
     "audit:openrouter-routing": "bun run scripts/openrouter-routing-audit.ts",
     "audit:error-clarity": "bun run scripts/audit-error-clarity.ts",
     "audit:admin-ops": "bun run scripts/audit-admin-ops.ts",
@@ -100,7 +100,10 @@
     "corpus:cast-extract": "bun run scripts/corpus-cast-extract.ts",
     "audit:opening-place": "bun run scripts/opening-place-audit.ts",
     "audit:character-lifecycle": "bun run scripts/character-lifecycle-audit.ts",
-    "repair:false-deaths": "bun run scripts/repair-false-deaths.ts"
+    "repair:false-deaths": "bun run scripts/repair-false-deaths.ts",
+    "audit:vector-store": "bun --no-env-file run scripts/vector-store-audit.ts",
+    "vector:migrate": "bun run scripts/vector-migrate.ts",
+    "vector:compare": "bun run scripts/vector-recall-compare.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1057.0",

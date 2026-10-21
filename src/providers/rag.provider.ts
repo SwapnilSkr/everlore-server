@@ -1,4 +1,4 @@
-import { getPineconeIndex } from '../config/pinecone'
+import { vectorStore, type VectorQuery } from '../services/vector-store'
 import { embed, callLLM, AI_MODELS } from '../ai'
 import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
@@ -14,6 +14,18 @@ interface RagResult {
   /** Entity ids linked to the retrieved memories — the hook for memory-driven
    *  codex pinning after RAG (collected from the Mongo-side retrieval paths). */
   retrievedEntityIds: string[]
+}
+
+/** Shared with the read-only migration gate so its requests cannot drift from recall. */
+export function ragVectorQueries(vector: number[], maxLoreResults: number, maxMemoryResults: number, timelineId?: string | null): { lore: VectorQuery; memory: VectorQuery } {
+  return {
+    lore: { vector, topK: maxLoreResults, includeMetadata: true },
+    memory: { vector, topK: timelineId ? Math.max(maxMemoryResults * 2, maxMemoryResults) : maxMemoryResults, includeMetadata: true },
+  }
+}
+
+export function summaryVectorQuery(vector: number[], topK = 4): VectorQuery {
+  return { vector, topK: topK * 2, includeMetadata: true }
 }
 
 /** Reciprocal-rank-fusion constant — standard value, dampens rank-1 dominance. */
@@ -193,7 +205,7 @@ export async function queryRag(
   currentLocationEntityId?: string | null,
 ): Promise<RagResult> {
   const queryEmbedding = await embed(queryText)
-  const index = getPineconeIndex()
+  const vectorQueries = ragVectorQueries(queryEmbedding, maxLoreResults, maxMemoryResults, timelineId)
   const instanceOid = parseObjectId(instanceId)
   const eligibility = await timelineEligibility(instanceId, timelineId)
 
@@ -292,16 +304,8 @@ export async function queryRag(
 
   const [loreResults, memoryResults, keywordMemories, entityMemories, locationMemories, threadMemories] =
     await Promise.all([
-      index.namespace(`lore_${templateId}`).query({
-        vector: queryEmbedding,
-        topK: maxLoreResults,
-        includeMetadata: true,
-      }),
-      index.namespace(`mem_${instanceId}`).query({
-        vector: queryEmbedding,
-        topK: timelineId ? Math.max(maxMemoryResults * 2, maxMemoryResults) : maxMemoryResults,
-        includeMetadata: true,
-      }),
+      vectorStore.query({ kind: 'lore', templateId }, vectorQueries.lore),
+      vectorStore.query({ kind: 'mem', instanceId }, vectorQueries.memory),
       keywordSearch(),
       entityNeighborhoodSearch(),
       locationMemorySearch(),
@@ -493,9 +497,7 @@ export async function querySummaries(
   if (!queryText.trim()) return []
   try {
     const queryEmbedding = await embed(queryText)
-    const res = await getPineconeIndex()
-      .namespace(`sum_${instanceId}`)
-      .query({ vector: queryEmbedding, topK: topK * 2, includeMetadata: true })
+    const res = await vectorStore.query({ kind: 'sum', instanceId }, summaryVectorQuery(queryEmbedding, topK))
     const matches = res.matches || []
     if (matches.length === 0) return []
 

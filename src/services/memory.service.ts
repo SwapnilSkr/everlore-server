@@ -3,7 +3,7 @@ import { spokenLineUpdate, publishSpokenLines, publicMediaEvent, withTurnMedia, 
 import { randomUUID } from 'crypto'
 import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
-import { getPineconeIndex } from '../config/pinecone'
+import { vectorStore } from './vector-store'
 import { getRedisClient } from '../config/redis'
 import { getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../queues'
 import { queryRag } from '../providers/rag.provider'
@@ -1215,11 +1215,11 @@ async function recurateMemoriesForEvent(
   const staleMemories = await memories().find({ instance_id: event.instance_id, source_event_ids: event._id }).toArray()
 
   if (staleMemories.length > 0) {
-    const ns = getPineconeIndex().namespace(`mem_${idString(event.instance_id)}`)
+    const scope = { kind: 'mem' as const, instanceId: idString(event.instance_id) }
     for (const m of staleMemories) {
       if (!m.pinecone_id) continue
       try {
-        await ns.deleteOne({ id: m.pinecone_id })
+        await vectorStore.deleteIds(scope, [m.pinecone_id])
       } catch (err) {
         console.warn('Event recuration: failed to delete vector', m.pinecone_id, (err as Error).message)
       }
@@ -1515,9 +1515,7 @@ export const memoryService = {
 
     if (updates.text) {
       const newEmbedding = await embed(updates.text)
-      const index = getPineconeIndex()
-      const ns = idString(memory.instance_id)
-      const namespace = index.namespace(`mem_${ns}`)
+      const scope = { kind: 'mem' as const, instanceId: idString(memory.instance_id) }
 
       const vectorMetadata: Record<string, string | number | boolean | string[]> = {
         text: updates.text,
@@ -1532,26 +1530,18 @@ export const memoryService = {
         vectorMetadata.subjects = memory.subjects
       }
       if (memory.pinecone_id) {
-        await namespace.upsert({
-          records: [
-            {
-              id: memory.pinecone_id,
-              values: newEmbedding,
-              metadata: vectorMetadata,
-            },
-          ],
-        })
+        await vectorStore.upsert(scope, [{
+          id: memory.pinecone_id,
+          values: newEmbedding,
+          metadata: vectorMetadata,
+        }])
       } else {
         const newVecId = randomUUID()
-        await namespace.upsert({
-          records: [
-            {
-              id: newVecId,
-              values: newEmbedding,
-              metadata: vectorMetadata,
-            },
-          ],
-        })
+        await vectorStore.upsert(scope, [{
+          id: newVecId,
+          values: newEmbedding,
+          metadata: vectorMetadata,
+        }])
         await memories().updateOne(
           { _id: mid },
           {
@@ -1579,9 +1569,7 @@ export const memoryService = {
     if (!memory) throw new Error('Memory not found')
 
     if (memory.pinecone_id) {
-      const index = getPineconeIndex()
-      const ns = idString(memory.instance_id)
-      await index.namespace(`mem_${ns}`).deleteOne({ id: memory.pinecone_id })
+      await vectorStore.deleteIds({ kind: 'mem', instanceId: idString(memory.instance_id) }, [memory.pinecone_id])
     }
 
     await memories().deleteOne({ _id: mid })
@@ -1629,11 +1617,11 @@ export const memoryService = {
         .find({ instance_id: iid, source_event_ids: { $in: doomedIds } }, { projection: { _id: 1, pinecone_id: 1 } })
         .toArray()
       if (mems.length > 0) {
-        const ns = getPineconeIndex().namespace(`mem_${instanceId}`)
+        const scope = { kind: 'mem' as const, instanceId }
         for (const m of mems) {
           if (!m.pinecone_id) continue
           try {
-            await ns.deleteOne({ id: m.pinecone_id })
+            await vectorStore.deleteIds(scope, [m.pinecone_id])
           } catch (err) {
             console.warn('Rewind: failed to delete vector', m.pinecone_id, (err as Error).message)
           }
@@ -1675,9 +1663,7 @@ export const memoryService = {
       .filter((id): id is string => !!id)
     if (summaryVecIds.length > 0) {
       try {
-        await getPineconeIndex()
-          .namespace(`sum_${idString(iid)}`)
-          .deleteMany({ ids: summaryVecIds })
+        await vectorStore.deleteIds({ kind: 'sum', instanceId: idString(iid) }, summaryVecIds)
       } catch (err) {
         console.warn('rewind: summary vector cleanup failed:', (err as Error).message)
       }

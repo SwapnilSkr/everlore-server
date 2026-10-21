@@ -2,7 +2,7 @@ import { repairMediaReservations } from '../../src/services/media/service'
 import { Job } from 'bullmq'
 import type { ObjectId } from 'mongodb'
 import { mongoColl } from '../../src/config/mongo'
-import { getPineconeIndex } from '../../src/config/pinecone'
+import { vectorStore } from '../../src/services/vector-store'
 import { embedBatch } from '../../src/ai'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { getMaintenanceQueue, QUEUE_RETENTION } from '../../src/queues'
@@ -36,9 +36,7 @@ export async function maintenanceProcessor(job: Job) {
       for (const mem of staleMemories) {
         if (mem.pinecone_id) {
           try {
-            const index = getPineconeIndex()
-            const ns = idString(mem.instance_id)
-            await index.namespace(`mem_${ns}`).deleteOne({ id: mem.pinecone_id })
+            await vectorStore.deleteIds({ kind: 'mem', instanceId: idString(mem.instance_id) }, [mem.pinecone_id])
           } catch (err) {
             console.warn(`Failed to delete Pinecone vector ${mem.pinecone_id}:`, (err as Error).message)
           }
@@ -131,12 +129,12 @@ export async function maintenanceProcessor(job: Job) {
       // decisions are unchanged. Only memories missing a vector fall back to a
       // single batched embed.
       const embeddings = new Map<string, number[]>()
-      const dedupNs = getPineconeIndex().namespace(`mem_${instanceId}`)
+      const scope = { kind: 'mem' as const, instanceId }
       const withVec = memories.filter((m) => m.pinecone_id)
       for (let i = 0; i < withVec.length; i += 200) {
         const batch = withVec.slice(i, i + 200)
         try {
-          const res = await dedupNs.fetch({ ids: batch.map((m) => m.pinecone_id as string) })
+          const res = await vectorStore.fetch(scope, batch.map((m) => m.pinecone_id as string))
           for (const m of batch) {
             const values = res.records?.[m.pinecone_id as string]?.values
             if (values) embeddings.set(idString(m._id), values)
@@ -198,8 +196,7 @@ export async function maintenanceProcessor(job: Job) {
 
             if (discard.pinecone_id) {
               try {
-                const index = getPineconeIndex()
-                await index.namespace(`mem_${instanceId}`).deleteOne({ id: discard.pinecone_id })
+                await vectorStore.deleteIds(scope, [discard.pinecone_id])
               } catch {
                 // Best effort
               }

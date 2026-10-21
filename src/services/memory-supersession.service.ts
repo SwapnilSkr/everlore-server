@@ -1,8 +1,7 @@
-import { getPineconeIndex } from '../config/pinecone'
+import { vectorStore } from './vector-store'
 import { embed } from '../ai'
 import { mongoColl } from '../config/mongo'
 import { parseObjectId } from '../utils/mongo-id'
-import { deletePineconeVector } from './pinecone-cleanup.service'
 
 /**
  * Cosine-similarity floor for treating a retrieved memory as "the same fact" as
@@ -41,8 +40,7 @@ export const memorySupersessionService = {
       .filter((f) => f.length >= 4)
     if (!facts.length) return { archived: 0, supersededIds: [] }
 
-    const namespaceName = `mem_${instanceId}`
-    const namespace = getPineconeIndex().namespace(namespaceName)
+    const scope = { kind: 'mem' as const, instanceId }
     const cutoff = (beforeDate ?? new Date()).getTime()
 
     const mongoIds = new Set<string>()
@@ -58,7 +56,7 @@ export const memorySupersessionService = {
 
       let res: { matches?: Array<{ id?: string; score?: number; metadata?: Record<string, unknown> }> }
       try {
-        res = await namespace.query({ topK: TOP_K, vector, includeMetadata: true })
+        res = await vectorStore.query(scope, { topK: TOP_K, vector, includeMetadata: true })
       } catch {
         continue
       }
@@ -84,7 +82,7 @@ export const memorySupersessionService = {
     // Remove the vectors so RAG stops retrieving the stale fact.
     for (const id of vectorIds) {
       try {
-        await deletePineconeVector(namespaceName, id)
+        await vectorStore.deleteIds(scope, [id])
       } catch {
         // best-effort
       }

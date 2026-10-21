@@ -112,6 +112,8 @@ export interface Env {
   OPENROUTER_API_KEY: string
   OPENROUTER_PREFERRED_P90_LATENCY_SECONDS: number
   PINECONE_API_KEY: string
+  VECTOR_LAYOUT: 'namespaced' | 'shared' | 'dual'
+  PINECONE_SHARED_NAMESPACE: string
   PINECONE_INDEX: string
   NARRATION_SFW_MODEL: string
   NARRATION_NSFW_MODEL: string
@@ -167,7 +169,12 @@ function loadEnv(): Env {
 
   const configuredPromoCap = Number(process.env.INK_PROMO_DAILY_TURN_CAP || optionalEnvVars.INK_PROMO_DAILY_TURN_CAP)
 
+  const vectorLayout = process.env.VECTOR_LAYOUT || 'namespaced'
+  if (vectorLayout !== 'namespaced' && vectorLayout !== 'shared' && vectorLayout !== 'dual') throw new Error('Invalid VECTOR_LAYOUT')
+
   return {
+    VECTOR_LAYOUT: vectorLayout,
+    PINECONE_SHARED_NAMESPACE: process.env.PINECONE_SHARED_NAMESPACE || 'everlore',
     PORT: Number(process.env.PORT || optionalEnvVars.PORT),
     JWT_SECRET: process.env.JWT_SECRET || 'dev-secret-change-in-production',
     MONGODB_URI: process.env.MONGODB_URI || 'mongodb://localhost:27017/everlore',

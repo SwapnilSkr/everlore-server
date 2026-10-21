@@ -9,7 +9,7 @@ import { HttpError } from '../utils/http-error'
 import { deletionService } from './deletion.service'
 import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
-import { deletePineconeVector } from './pinecone-cleanup.service'
+import { vectorStore } from './vector-store'
 
 export type AdminUserTier = 'free' | 'premium' | 'creator' | 'inherit'
 
@@ -584,7 +584,7 @@ export const adminService = {
     for (const memory of mems) {
       if (memory.pinecone_id) {
         try {
-          await deletePineconeVector(`mem_${idString(memory.instance_id)}`, memory.pinecone_id)
+          await vectorStore.deleteIds({ kind: 'mem', instanceId: idString(memory.instance_id) }, [memory.pinecone_id])
         } catch {
           // best-effort vector cleanup; Mongo deletion still proceeds
         }
@@ -633,7 +633,7 @@ export const adminService = {
     const memory = await memories().findOne({ _id: mid })
     if (!memory) throw new HttpError(404, 'Memory not found')
     if (memory.pinecone_id) {
-      await deletePineconeVector(`mem_${idString(memory.instance_id)}`, memory.pinecone_id)
+      await vectorStore.deleteIds({ kind: 'mem', instanceId: idString(memory.instance_id) }, [memory.pinecone_id])
     }
     await memories().deleteOne({ _id: mid })
     await worldInstances().updateOne(

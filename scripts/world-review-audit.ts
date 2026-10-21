@@ -6,6 +6,7 @@ import { templateRoutes } from '../src/routes/template.routes'
 import { env } from '../src/config/env'
 import { moderationService } from '../src/services/moderation.service'
 import { templateService } from '../src/services/template.service'
+import { vectorStore } from '../src/services/vector-store'
 import { mongoColl } from '../src/config/mongo'
 import { adminService } from '../src/services/admin.service'
 import { authService } from '../src/services/auth.service'
@@ -111,9 +112,11 @@ check('draft public publish waits for review', publishReviewUpdate({ ...world, i
 // Exercise the service writes with an in-memory collection; no database or
 // authoring call is needed for the fields selected here.
 const originalWorldTemplates = mongoColl.worldTemplates
+const originalReplaceLore = vectorStore.replaceLore
 let stored = { ...world }
 let lastSet: Record<string, unknown> = {}
 try {
+  vectorStore.replaceLore = async () => {}
   ;(mongoColl as unknown as { worldTemplates: () => unknown }).worldTemplates = () => ({
     findOne: async () => stored,
     updateOne: async (_filter: unknown, update: { $set: Record<string, unknown>; $unset?: Record<string, unknown> }) => {
@@ -136,6 +139,7 @@ try {
   check('service publish with absent body is private', published.visibility, 'private')
   check('service private publish clears review status', stored.review_status, undefined)
 } finally {
+  vectorStore.replaceLore = originalReplaceLore
   ;(mongoColl as unknown as { worldTemplates: () => unknown }).worldTemplates = originalWorldTemplates
 }
 

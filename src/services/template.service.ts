@@ -5,7 +5,7 @@ import type {
   StatDefinitionDoc,
   WorldTemplateDoc,
 } from '../models/world-template.model'
-import { getPineconeIndex } from '../config/pinecone'
+import { vectorStore } from './vector-store'
 import { embed } from '../ai'
 import { deriveProtagonist } from '../utils/protagonist'
 import { HttpError } from '../utils/http-error'
@@ -217,9 +217,7 @@ export const templateService = {
     if (!template) throw new Error('Template not found')
 
     const loreKey = idString(template._id)
-    if (template.global_lore) {
-      await embedLore(loreKey, template.global_lore)
-    }
+    await embedLore(loreKey, template.global_lore || '')
 
     const update = publishReviewUpdate(template, visibility)
     const result = await worldTemplates().updateOne(
@@ -345,8 +343,6 @@ export const templateService = {
 
 async function embedLore(namespaceKey: string, loreText: string) {
   const chunks = chunkText(loreText, 500)
-  const index = getPineconeIndex()
-  const namespace = index.namespace(`lore_${namespaceKey}`)
 
   const vectors = await Promise.all(
     chunks.map(async (chunk, i) => {
@@ -365,9 +361,7 @@ async function embedLore(namespaceKey: string, loreText: string) {
     }),
   )
 
-  for (let i = 0; i < vectors.length; i += 100) {
-    await namespace.upsert({ records: vectors.slice(i, i + 100) })
-  }
+  await vectorStore.replaceLore({ kind: 'lore', templateId: namespaceKey }, vectors)
 }
 
 function chunkText(text: string, maxChars: number): string[] {

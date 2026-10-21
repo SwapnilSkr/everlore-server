@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
-import { getPineconeIndex } from '../../src/config/pinecone'
+import { vectorStore, type VectorScope } from '../../src/services/vector-store'
 import { embed, callLLM, AI_MODELS } from '../../src/ai'
 import { randomUUID } from 'crypto'
 import { getRedisClient } from '../../src/config/redis'
@@ -156,9 +156,9 @@ async function supersedeExplicitCorrections(params: {
   instanceOid: ObjectId
   eventOid: ObjectId
   oldTerms: string[]
-  namespaceName: string
+  scope: VectorScope
 }): Promise<number> {
-  const { instanceOid, eventOid, oldTerms, namespaceName } = params
+  const { instanceOid, eventOid, oldTerms, scope } = params
   if (!oldTerms.length) return 0
   const clauses = oldTerms.map((term) => {
     const re = new RegExp(`\\b${escapeRegExp(term)}\\b`, 'i')
@@ -176,11 +176,10 @@ async function supersedeExplicitCorrections(params: {
     .toArray()
   if (!stale.length) return 0
 
-  const namespace = getPineconeIndex().namespace(namespaceName)
   for (const memory of stale) {
     if (!memory.pinecone_id) continue
     try {
-      await namespace.deleteOne({ id: memory.pinecone_id })
+      await vectorStore.deleteIds(scope, [memory.pinecone_id])
     } catch (err) {
       console.warn('Correction vector delete skipped:', (err as Error).message)
     }
@@ -268,13 +267,12 @@ export function closedMemorySetFields(at = new Date()) {
   }
 }
 
-async function evictClosedVectors(docs: Array<{ pinecone_id?: string | null }>, namespaceName: string) {
+async function evictClosedVectors(docs: Array<{ pinecone_id?: string | null }>, scope: VectorScope) {
   if (!docs.length) return
-  const namespace = getPineconeIndex().namespace(namespaceName)
   for (const doc of docs) {
     if (!doc.pinecone_id) continue
     try {
-      await namespace.deleteOne({ id: doc.pinecone_id })
+      await vectorStore.deleteIds(scope, [doc.pinecone_id])
     } catch (err) {
       console.warn('Closed-memory vector delete skipped:', (err as Error).message)
     }
@@ -282,14 +280,14 @@ async function evictClosedVectors(docs: Array<{ pinecone_id?: string | null }>, 
 }
 
 /** Close listed facts and take them out of RAG so they cannot be restaged. */
-async function closeThreadsById(ids: ObjectId[], namespaceName: string): Promise<number> {
+async function closeThreadsById(ids: ObjectId[], scope: VectorScope): Promise<number> {
   if (!ids.length) return 0
   const docs = await mongoColl
     .memories()
     .find({ _id: { $in: ids }, is_archived: false }, { projection: { pinecone_id: 1 } })
     .toArray()
   if (!docs.length) return 0
-  await evictClosedVectors(docs, namespaceName)
+  await evictClosedVectors(docs, scope)
   const result = await mongoColl.memories().updateMany(
     { _id: { $in: docs.map((doc) => doc._id) } },
     { $set: closedMemorySetFields() },
@@ -334,7 +332,7 @@ async function resolveOpenThreads(
       if (!paid.length) continue
       resolved += await closeThreadsById(
         paid.map((row) => row._id),
-        `mem_${idString(instanceOid)}`,
+        { kind: 'mem', instanceId: idString(instanceOid) },
       )
     } catch (err) {
       // Text index may not exist yet on older deployments — never fail the job.
@@ -495,7 +493,7 @@ export async function memoryProcessor(job: Job) {
   //
   // Related live facts for THIS turn are shown first. The ids make closure
   // exact: the curator returns T3, and T3 closes and leaves retrieval.
-  const namespaceName = `mem_${instanceId}`
+  const scope = { kind: 'mem' as const, instanceId }
   const [openThreadDocs, relatedLive] = await Promise.all([
     mongoColl
       .memories()
@@ -537,7 +535,7 @@ export async function memoryProcessor(job: Job) {
   const closedIds = routed.ids.map((id) => openThreadById.get(id)).filter((id): id is ObjectId => !!id)
   const resolvedThreads = routed.prose.slice(0, 3)
   const threadsResolved =
-    (await closeThreadsById(closedIds, namespaceName)) +
+    (await closeThreadsById(closedIds, scope)) +
     (resolvedThreads.length ? await resolveOpenThreads(instanceOid, resolvedThreads) : 0)
   if (threadsResolved > 0) {
     console.log(`[memory] closed ${threadsResolved} open thread(s) on event ${idString(eventOid)}`)
@@ -629,8 +627,6 @@ export async function memoryProcessor(job: Job) {
     return out
   }
 
-  const index = getPineconeIndex()
-  const namespace = index.namespace(namespaceName)
   const newMemories: any[] = []
 
   for (const mem of extracted.memories) {
@@ -668,13 +664,11 @@ export async function memoryProcessor(job: Job) {
     if (eventLocationAnchor?.entity_id) vectorMetadata.location_entity_id = idString(eventLocationAnchor.entity_id)
     if (eventLocationAnchor?.name) vectorMetadata.location_name = eventLocationAnchor.name
 
-    await namespace.upsert({
-      records: [{
-        id: vecId,
-        values: embedding,
-        metadata: vectorMetadata,
-      }],
-    })
+    await vectorStore.upsert(scope, [{
+      id: vecId,
+      values: embedding,
+      metadata: vectorMetadata,
+    }])
 
     const enrichment: Record<string, unknown> = {}
     const emotionalValence = cleanShortText(mem.emotional_valence, 40)
@@ -756,7 +750,7 @@ export async function memoryProcessor(job: Job) {
           instanceOid,
           eventOid,
           oldTerms: explicitOldTerms,
-          namespaceName,
+          scope,
         })
         if (superseded > 0) {
           console.log(
