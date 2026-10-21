@@ -39,6 +39,23 @@ export function sameHits(a: ScoredPineconeRecord[], b: ScoredPineconeRecord[]): 
   return true
 }
 
+/**
+ * How two result lists differ, for the breakdown: the layouts score through
+ * different index paths, so a gap in the fourth decimal is expected and is
+ * reported separately from a different memory or a different order.
+ */
+export function hitDifference(a: ScoredPineconeRecord[], b: ScoredPineconeRecord[]) {
+  const ids = (r: ScoredPineconeRecord[]) => r.map((x) => x.id)
+  const sameOrder = ids(a).join('\0') === ids(b).join('\0')
+  const inB = new Set(ids(b))
+  const missing = a.filter((x) => !inB.has(x.id))
+  const byId = new Map(b.map((x) => [x.id, x.score ?? 0]))
+  const maxDelta = Math.max(0, ...a.filter((x) => byId.has(x.id)).map((x) => Math.abs((x.score ?? 0) - byId.get(x.id)!)))
+  // Rank of the first position that differs, 1-based; 0 when the order is identical.
+  const firstRank = sameOrder ? 0 : ids(a).findIndex((id, i) => id !== ids(b)[i]) + 1
+  return { sameOrder, missing: missing.length, maxDelta, firstRank, size: a.length }
+}
+
 export function saveRecallCase(params: { instanceId: string; templateId: string; texts: string[]; loreTopK: number; memoryTopK: number; timelineId: string }): RecallCase {
   const { instanceId, templateId, texts, loreTopK, memoryTopK, timelineId } = params
   return { label: `save/${instanceId}`, texts, requests: (vector) => {
@@ -75,6 +92,7 @@ export async function compareRecall(cases: RecallCase[], runtime: {
   if (![maxP50Ms, maxP95Ms].every((n) => Number.isFinite(n) && n >= 0)) throw new Error('Invalid latency thresholds')
   const timings = new Map<VectorScope['kind'], { old: number[]; shared: number[] }>()
   let failures = 0, queries = 0, pairs = 0
+  const breakdown = { checks: 0, reordered: 0, differentSet: 0, missing: 0, maxDelta: 0, firstRanks: [] as number[] }
   const pair = async (scope: VectorScope, query: VectorQuery, measured: boolean) => {
     const results: Partial<Record<'old' | 'shared', Awaited<ReturnType<VectorStore['query']>>>> = {}
     // Sequential pairs avoid contention; alternate which layout goes first, including warm-ups.
@@ -101,6 +119,15 @@ export async function compareRecall(cases: RecallCase[], runtime: {
         }
         const [a, b] = await pair(scope, query, true)
         checks++
+        const d = hitDifference(a.matches, b.matches)
+        breakdown.checks++
+        breakdown.maxDelta = Math.max(breakdown.maxDelta, d.maxDelta)
+        if (!d.sameOrder) {
+          breakdown.reordered++
+          breakdown.firstRanks.push(d.firstRank)
+          if (d.missing) { breakdown.differentSet++; breakdown.missing += d.missing }
+          runtime.log(`ORDER ${test.label} ${scope.kind} topK=${query.topK} size=${d.size} first-diff-rank=${d.firstRank} missing=${d.missing}`)
+        }
         if (!sameHits(a.matches, b.matches)) {
           differences++
           runtime.log(`DIFF ${test.label} query=${queries} ${scope.kind}/${scopeId(scope)} topK=${query.topK}`)
@@ -121,6 +148,10 @@ export async function compareRecall(cases: RecallCase[], runtime: {
     if (slow) slowKinds++
     runtime.log(`${kind} | ${samples.old.length} | ${old50.toFixed(2)} | ${shared50.toFixed(2)} | ${old95.toFixed(2)} | ${shared95.toFixed(2)} | ${slow ? 'FAIL' : 'PASS'}`)
   }
+  const ranks = breakdown.firstRanks.sort((x, y) => x - y)
+  runtime.log(`BREAKDOWN: ${breakdown.checks} searches; same memories in the same order ${breakdown.checks - breakdown.reordered}; ` +
+    `order differs ${breakdown.reordered} (of which a different memory set ${breakdown.differentSet}, ${breakdown.missing} memories swapped); ` +
+    `largest score gap ${breakdown.maxDelta.toFixed(6)}; first differing rank min ${ranks[0] ?? '-'} median ${ranks[Math.floor(ranks.length / 2)] ?? '-'}`)
   runtime.log(`${failures || slowKinds ? 'FAIL' : 'PASS'}: ${cases.length} scopes, ${queries} query vectors, ${failures} differences, ${slowKinds} slow kinds`)
   return failures === 0 && slowKinds === 0
 }
