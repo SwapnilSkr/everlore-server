@@ -156,7 +156,7 @@ export async function compareRecall(cases: RecallCase[], runtime: {
   return failures === 0 && slowKinds === 0
 }
 
-async function liveCases(options: ReturnType<typeof parseCompareOptions>): Promise<RecallCase[]> {
+export async function liveCases(options: ReturnType<typeof parseCompareOptions>): Promise<RecallCase[]> {
   const { MongoClient } = await import('mongodb')
   const { env } = await import('../src/config/env')
   const { COLLECTIONS } = await import('../src/models/collections')
