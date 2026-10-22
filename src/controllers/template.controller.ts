@@ -86,7 +86,7 @@ export const templateController = {
 
   // Stores a creator-selected image using the same preview → durable-media
   // lifecycle as generated artwork. The image service validates its real bytes
-  // and creates a lossless WebP derivative before it reaches object storage.
+  // and creates a compressed WebP derivative before it reaches object storage.
   uploadImage: async ({
     user,
     body,

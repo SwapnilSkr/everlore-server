@@ -3,6 +3,7 @@ import sharp from 'sharp'
 import { storageService } from './storage.service'
 import { HttpError } from '../utils/http-error'
 import { screenImagePrompt } from '../utils/input-guard'
+import { encodeUserImage } from '../utils/image-encoding'
 
 /**
  * Generated-media orchestration: decorate a visual-description core with the
@@ -161,7 +162,7 @@ export const imageService = {
 
   /**
    * Validate and normalize a user-selected image for stable, efficient delivery.
-   * After any necessary downscale, WebP encoding is lossless; we also strip
+   * After any necessary downscale, it is encoded as compressed WebP; we also strip
    * private metadata, apply EXIF orientation, and cap the longest edge only
    * when a source exceeds 2048px (avoiding oversized mobile downloads).
    */
@@ -184,10 +185,7 @@ export const imageService = {
     }
 
     try {
-      const data = await image
-        .resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true })
-        .webp({ lossless: true, effort: 6 })
-        .toBuffer()
+      const data = await encodeUserImage(image)
       return storageService.upload(data, 'image/webp', { prefix: 'previews' })
     } catch (error) {
       throw new HttpError(400, `Could not process that image: ${(error as Error).message}`)

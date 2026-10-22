@@ -7,6 +7,7 @@ import { MongoClient, ObjectId } from 'mongodb'
 import sharp from 'sharp'
 import { CreateTemplateBody } from '../src/schemas/template.schema'
 import { NARRATIVE_STYLE_PRESETS } from '../src/utils/narrative-styles'
+import { encodeUserImage } from '../src/utils/image-encoding'
 import type { UserDoc, UserInsertDoc } from '../src/models/user.model'
 import type { WorldTemplateDoc } from '../src/models/world-template.model'
 
@@ -106,7 +107,7 @@ export async function readCatalog(options: Options): Promise<Entry[]> {
       if (!entry.image.length || entry.image.length > 15 * 1024 * 1024) throw new Error(`${entry.slug}: cover must be 1 byte–15 MB`)
       const image = sharp(entry.image, { limitInputPixels: 40_000_000 }).rotate()
       if (!['jpeg', 'png', 'webp', 'heif'].includes((await image.metadata()).format || '')) throw new Error(`${entry.slug}: unsupported image`)
-      entry.normalized = await image.resize({ width: 2048, height: 2048, fit: 'inside', withoutEnlargement: true }).webp({ lossless: true, effort: 6 }).toBuffer()
+      entry.normalized = await encodeUserImage(image)
     }
   }
   for (const slug of options.only || []) if (!slugs.has(slug)) throw new Error(`Unknown --only slug: ${slug}`)
