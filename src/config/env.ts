@@ -169,7 +169,9 @@ function loadEnv(): Env {
 
   const configuredPromoCap = Number(process.env.INK_PROMO_DAILY_TURN_CAP || optionalEnvVars.INK_PROMO_DAILY_TURN_CAP)
 
-  const vectorLayout = process.env.VECTOR_LAYOUT || 'namespaced'
+  // Prod moved to the shared layout on Oct 22 2026 and its per-scope namespaces are gone; a server
+  // without this setting must not write them again (they count against the plan's namespace cap).
+  const vectorLayout = process.env.VECTOR_LAYOUT || 'shared'
   if (vectorLayout !== 'namespaced' && vectorLayout !== 'shared' && vectorLayout !== 'dual') throw new Error('Invalid VECTOR_LAYOUT')
 
   return {
