@@ -12,6 +12,7 @@ import { billingService } from '../services/billing.service'
 import { canForge } from '../utils/can-forge'
 import { isWorldListed } from '../utils/world-review'
 import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
+import type { Genre } from '../utils/genre'
 
 type CreateBody = Static<typeof CreateTemplateBody>
 type UpdateBody = Static<typeof UpdateTemplateBody>
@@ -21,7 +22,15 @@ export const templateController = {
     query,
     user,
   }: {
-    query: { page?: number; limit?: number; search?: string }
+    query: {
+      page?: number
+      limit?: number
+      search?: string
+      kind?: 'world' | 'character'
+      genre?: Genre
+      styles?: string
+      sort?: 'foryou' | 'new'
+    }
     user: AuthUser | null
   }) => {
     const result = await templateService.listPublished(
@@ -29,8 +38,18 @@ export const templateController = {
       Number(query.limit) || 20,
       query.search,
       user?.id,
+      {
+        kind: query.kind,
+        genre: query.genre,
+        styles: query.styles ? query.styles.split(',') : undefined,
+        sort: query.sort,
+      },
     )
     return { ...result, templates: result.templates.map(publicTemplate) }
+  },
+
+  listGenres: async ({ user }: { user: AuthUser | null }) => {
+    return templateService.listGenres(user?.id)
   },
 
   getById: async ({

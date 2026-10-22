@@ -1,4 +1,17 @@
 import { t } from 'elysia'
+import { GENRES } from '../utils/genre'
+import { NARRATIVE_STYLE_PRESETS } from '../utils/narrative-styles'
+
+// Built from the one genre constant so a new shelf needs no second list.
+const GenreLiterals = GENRES.map(({ key }) => t.Literal(key))
+export const GenreSchema = t.Union(
+  GenreLiterals as [typeof GenreLiterals[number], ...typeof GenreLiterals[number][]],
+)
+
+// Comma-separated narration voices. Built from the preset keys, which are all
+// plain identifiers, so the pattern cannot be confused by regex metacharacters.
+const Voice = `(?:${NARRATIVE_STYLE_PRESETS.map(({ key }) => key).join('|')})`
+export const STYLE_LIST_PATTERN = `^${Voice}(?:,${Voice})*$`
 
 const StatDefinition = t.Object({
   default: t.Number(),
@@ -37,6 +50,7 @@ export const CreateTemplateBody = t.Object({
   title: t.String({ minLength: 1, maxLength: FIELD_LIMITS.title }),
   description: t.String({ minLength: 1, maxLength: FIELD_LIMITS.description }),
   kind: t.Optional(t.Union([t.Literal('world'), t.Literal('character')])),
+  genre: t.Optional(GenreSchema),
   is_sentient: t.Boolean(),
   is_nsfw_capable: t.Boolean(),
   seed_prompt: t.String({ minLength: 10, maxLength: FIELD_LIMITS.seedPrompt }),
@@ -95,6 +109,10 @@ export const TemplateQueryParams = t.Object({
   page: t.Optional(t.Numeric()),
   limit: t.Optional(t.Numeric()),
   search: t.Optional(t.String()),
+  kind: t.Optional(t.Union([t.Literal('world'), t.Literal('character')])),
+  genre: t.Optional(GenreSchema),
+  styles: t.Optional(t.String({ pattern: STYLE_LIST_PATTERN })),
+  sort: t.Optional(t.Union([t.Literal('foryou'), t.Literal('new')])),
 })
 
 export const MyTemplateQueryParams = t.Object({

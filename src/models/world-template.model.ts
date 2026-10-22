@@ -71,6 +71,10 @@ export interface WorldTemplateDoc {
   /** 'world' = RPG experience (stats, GM or sentient). 'character' = lightweight
    *  chat-with-a-character (always sentient, stats optional). Defaults to 'world'. */
   kind?: 'world' | 'character'
+  /** The Explore shelf (see utils/genre.ts). Authored data, independent of the
+   *  narration voice. Absent on worlds written before the genre backfill, where
+   *  the server derives it from {@link narrative_style}. */
+  genre?: import('../utils/genre').Genre
   is_published: boolean
   /** Absent on drafts and legacy published worlds (which are public/approved). */
   visibility?: 'private' | 'public'

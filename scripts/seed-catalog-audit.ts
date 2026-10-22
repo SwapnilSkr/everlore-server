@@ -104,7 +104,7 @@ const options = { catalog, covers, apply: true, allowDefaultCover: false }
 const character = {
   slug: 'fixture-character', cover: 'character.png', title: 'Fixture Character', description: 'An adult guide awaits.',
   kind: 'character', is_sentient: true, is_nsfw_capable: false, seed_prompt: 'You are an adult guide to this quiet valley.',
-  global_lore: 'The guide is thirty years old.', narrative_style: 'cozy_comfort',
+  global_lore: 'The guide is thirty years old.', narrative_style: 'cozy_comfort', genre: 'romance',
   protagonist: { name: 'Fixture Guide', persona: 'An adult guide.', appearance: 'A blue cloak.' },
   opening_line: 'Welcome to the valley.', base_stats_template: {}, image_prompt: 'A valley guide.',
 }
@@ -140,7 +140,8 @@ try {
       assert(stored.creator_id.equals(users[0]._id)); assert.equal(stored.is_published, true)
       assert.equal(stored.visibility, 'public'); assert.equal(stored.review_status, 'approved'); assert.equal(stored.reviewed_by, 'catalog-seed')
       assert.equal(stored.seed_cast?.[0].name, 'Fixture Cast'); assert(stored.image_url?.includes('/media/'))
-      assert.equal(Object.hasOwn(stored, 'cover'), false)
+      // An authored genre reaches the world even though its voice is cozy.
+      assert.equal(stored.genre, 'romance'); assert.equal(Object.hasOwn(stored, 'cover'), false)
     }
     assert.equal(uploads, 2); assert(casts >= 2); assert(embeddings >= 2); assert.equal(approvals, 2)
     assert(worlds.some(stored => stored.slug === 'fixture-world' && stored.title === 'Different Initial Title'))
@@ -196,6 +197,7 @@ try {
       { global_lore: 'x'.repeat(3001) }, { opening_line: 'x'.repeat(601) }, { image_prompt: 'x'.repeat(1401) }, { style_notes: 'x'.repeat(501) },
       { protagonist: { name: 'x'.repeat(81) } }, { protagonist: { name: 'Guide', persona: 'x'.repeat(401) } },
       { protagonist: { name: 'Guide', appearance: 'x'.repeat(401) } }, { protagonist: {} }, { narrative_style: 'unknown' },
+      { genre: 'sci-fi' }, { genre: 'Romance' },
       { kind: 'world', is_sentient: false, base_stats_template: {} }, { creator_id: new ObjectId() }, { cover: '../secret.png' },
     ]) assert.throws(() => validateEntry({ ...character, ...patch }, 'fixture'))
     const before = snapshot()
@@ -207,6 +209,11 @@ try {
     await writeFile(join(covers, 'world.png'), 'invalid image')
     await assert.rejects(runCatalog(options, runtime, quiet))
     assert.equal(snapshot(), before)
+  })
+  await check('a catalog file without a genre seeds the one its voice implies', () => {
+    const { genre, ...voiced } = character
+    assert.equal(validateEntry(voiced, 'fixture').body.genre, 'cozy')
+    assert.equal(validateEntry({ ...voiced, genre: 'romance' }, 'fixture').body.genre, 'romance')
   })
   await check('CLI parsing supports Bun separator and rejects typos', () => {
     assert.deepEqual(parseOptions(['--', '--catalog', catalog, '--covers', covers, '--only', 'a,b']).only, ['a', 'b'])

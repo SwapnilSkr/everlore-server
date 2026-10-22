@@ -3,7 +3,7 @@ import type { WorldTemplateDoc } from '../models/world-template.model'
 import { idString } from './mongo-id'
 
 const PUBLIC_TEMPLATE_KEYS = [
-  '_id', 'slug', 'title', 'description', 'kind', 'image_url', 'global_lore',
+  '_id', 'slug', 'title', 'description', 'kind', 'genre', 'image_url', 'global_lore',
   'base_stats_template', 'opening_line', 'narrative_style', 'scene_tags',
   'is_nsfw_capable', 'is_sentient', 'is_published', 'creator_id', 'version',
   'created_at', 'updated_at', 'visibility', 'review_status',

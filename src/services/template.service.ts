@@ -17,9 +17,53 @@ import { extractTemplateCast } from '../../worker/lib/template-cast-extractor'
 import { FIELD_LIMITS } from '../schemas/template.schema'
 import { moderationService } from './moderation.service'
 import { hasMeaningfulWorldEdit, publishReviewUpdate } from '../utils/world-review'
+import {
+  deriveGenre,
+  forYouOrder,
+  GENRES,
+  genreFilter,
+  resolveGenre,
+  type Genre,
+} from '../utils/genre'
 
 const worldTemplates = () => mongoColl.worldTemplates()
 const users = () => mongoColl.users()
+
+/** Explore options beyond paging and search; mirrors the query schema. */
+export interface TemplateListFilters {
+  kind?: 'world' | 'character'
+  genre?: Genre
+  styles?: string[]
+  sort?: 'foryou' | 'new'
+}
+
+/** One narration voice's counts inside a shelf, split by kind. */
+export interface VoiceCount {
+  worlds: number
+  characters: number
+}
+
+export interface GenreCount {
+  key: Genre
+  label: string
+  worlds: number
+  characters: number
+  styles: Record<string, VoiceCount>
+}
+
+/** Counts are per player only because moderation blocks are; everyone else shares. */
+const GENRE_CACHE_TTL_MS = 60_000
+const ANONYMOUS_GENRE_CACHE_KEY = 'anonymous'
+const genreCountCache = new Map<string, { at: number; genres: GenreCount[] }>()
+
+function cloneGenreCounts(genres: GenreCount[]): GenreCount[] {
+  return genres.map((genre) => ({
+    ...genre,
+    styles: Object.fromEntries(
+      Object.entries(genre.styles).map(([voice, counts]) => [voice, { ...counts }]),
+    ),
+  }))
+}
 
 function slugify(text: string): string {
   return text
@@ -99,6 +143,7 @@ export const templateService = {
       slug,
       description: data.description,
       kind,
+      genre: resolveGenre(data.genre, data.narrative_style),
       is_published: false,
       is_sentient: data.is_sentient,
       is_nsfw_capable: data.is_nsfw_capable,
@@ -148,6 +193,14 @@ export const templateService = {
     delete updateFields.creator_id
     delete updateFields._id
     delete updateFields.seed_cast
+
+    // An authored genre always wins. A world from before the backfill has no
+    // stored genre yet, so a new voice re-derives its shelf instead of leaving
+    // it homeless.
+    if (data.genre === undefined && existing.genre === undefined &&
+      data.narrative_style !== undefined && data.narrative_style !== existing.narrative_style) {
+      updateFields.genre = deriveGenre(data.narrative_style)
+    }
 
     const castSourceChanged = [
       'title', 'description', 'seed_prompt', 'global_lore', 'opening_line', 'protagonist',
@@ -248,6 +301,7 @@ export const templateService = {
     limit: number = 20,
     search?: string,
     userId?: string,
+    filters: TemplateListFilters = {},
   ) {
     // Discovery must never surface admin-hidden worlds, nor anything this
     // player has blocked. Merged in before the search terms so both a plain
@@ -256,17 +310,48 @@ export const templateService = {
       is_published: true,
       ...(await moderationService.discoveryFilter(userId)),
     }
+    // Everything that narrows the set goes into $and so it composes with the
+    // discovery filter's own $or.
+    const clauses: Record<string, unknown>[] = []
     if (search) {
-      filter.$and = [{ $or: [
+      clauses.push({ $or: [
         { title: { $regex: search, $options: 'i' } },
         { description: { $regex: search, $options: 'i' } },
-      ] }]
+      ] })
+    }
+    if (filters.kind) {
+      // kind is absent on worlds written before characters existed; the model
+      // treats those as 'world', so the Worlds filter must too.
+      clauses.push(filters.kind === 'world'
+        ? { $or: [{ kind: 'world' }, { kind: null }] }
+        : { kind: 'character' })
+    }
+    if (filters.genre) clauses.push(genreFilter(filters.genre))
+    if (filters.styles?.length) filter.narrative_style = { $in: filters.styles }
+    if (clauses.length > 0) filter.$and = clauses
+
+    // Filters apply before the count, so a tab's badge and its list agree.
+    const total = await worldTemplates().countDocuments(filter)
+    const skip = (page - 1) * limit
+
+    if ((filters.sort ?? 'foryou') === 'new') {
+      const templates = await worldTemplates()
+        .find(filter)
+        .sort({ created_at: -1 })
+        .skip(skip)
+        .limit(limit)
+        .toArray()
+      return { templates, total, page }
     }
 
-    const total = await worldTemplates().countDocuments(filter)
+    // For You is one mixed feed. Narrowing by kind, shelf or voice switches to
+    // the ranked order below instead.
+    if (!filters.kind && !filters.genre && !filters.styles?.length) {
+      return { ...(await this.forYouPage(filter, total, skip, limit, userId)), page }
+    }
 
     // Personalize ordering by the player's interests when signed in. Pure boost,
-    // never a filter: an exact genre match outranks a same-family match, then
+    // never a filter: an exact voice match outranks a same-family match, then
     // recency. Falls back to plain recency when there are no interests.
     const interests = userId ? await this.interestsFor(userId) : []
     if (interests.length > 0) {
@@ -288,7 +373,7 @@ export const templateService = {
             },
           },
           { $sort: { _interest_score: -1, created_at: -1 } },
-          { $skip: (page - 1) * limit },
+          { $skip: skip },
           { $limit: limit },
           { $project: { _interest_score: 0 } },
         ])
@@ -299,11 +384,102 @@ export const templateService = {
     const templates = await worldTemplates()
       .find(filter)
       .sort({ created_at: -1 })
-      .skip((page - 1) * limit)
+      .skip(skip)
       .limit(limit)
       .toArray()
 
     return { templates, total, page }
+  },
+
+  /**
+   * The mixed For You page. Ordering is computed over the whole listed set and
+   * then paged (see forYouOrder), so interests weight the feed without ever
+   * splitting it into one genre.
+   */
+  async forYouPage(
+    filter: Record<string, unknown>,
+    total: number,
+    skip: number,
+    limit: number,
+    userId?: string,
+  ) {
+    const interests = userId ? await this.interestsFor(userId) : []
+    const rows = await worldTemplates()
+      .find(filter, { projection: { genre: 1, narrative_style: 1, created_at: 1 } })
+      .sort({ created_at: -1 })
+      .skip(0)
+      .limit(Math.max(total, 1))
+      .toArray()
+    const ordered = forYouOrder(
+      rows.map((row) => ({
+        id: idString(row._id),
+        genre: row.genre,
+        narrative_style: row.narrative_style,
+        created_at: row.created_at,
+      })),
+      interests,
+    )
+    const pageIds = ordered.slice(skip, skip + limit).map((candidate) => parseObjectId(candidate.id))
+    if (pageIds.length === 0) return { templates: [] as WorldTemplateDoc[], total }
+
+    // The page's documents are fetched in one read and restored to the feed's
+    // order; a database sort cannot reproduce a round-robin.
+    const docs = await worldTemplates().find({ _id: { $in: pageIds } }).toArray()
+    const byId = new Map(docs.map((doc) => [idString(doc._id), doc]))
+    const templates = pageIds
+      .map((id) => byId.get(idString(id)))
+      .filter((doc): doc is WorldTemplateDoc => Boolean(doc))
+    return { templates, total }
+  },
+
+  /**
+   * The shelves and their counts, for the app's tab bar and filter sheet. Counts
+   * use the same discovery gate as the list; a world written before the backfill
+   * counts where its voice derives.
+   */
+  async listGenres(userId?: string | null, now: number = Date.now()) {
+    const cacheKey = userId || ANONYMOUS_GENRE_CACHE_KEY
+    const cached = genreCountCache.get(cacheKey)
+    if (cached && now - cached.at < GENRE_CACHE_TTL_MS) {
+      return { genres: cloneGenreCounts(cached.genres) }
+    }
+
+    const filter: Record<string, unknown> = {
+      is_published: true,
+      ...(await moderationService.discoveryFilter(userId)),
+    }
+    const rows = await worldTemplates()
+      .find(filter, { projection: { genre: 1, narrative_style: 1, kind: 1 } })
+      .toArray()
+
+    const counts = new Map<Genre, GenreCount>()
+    for (const { key, label } of GENRES) {
+      counts.set(key, { key, label, worlds: 0, characters: 0, styles: {} })
+    }
+    for (const row of rows) {
+      const bucket = counts.get(resolveGenre(row.genre, row.narrative_style))!
+      const isCharacter = row.kind === 'character'
+      if (isCharacter) bucket.characters++
+      else bucket.worlds++
+      // A voice carries its own per-kind counts, so the sheet can offer only the
+      // interests that match the Worlds or Characters option on screen.
+      const voice = typeof row.narrative_style === 'string' ? row.narrative_style.trim() : ''
+      if (voice) {
+        const voiceCounts = bucket.styles[voice] ?? { worlds: 0, characters: 0 }
+        bucket.styles[voice] = voiceCounts
+        if (isCharacter) voiceCounts.characters++
+        else voiceCounts.worlds++
+      }
+    }
+
+    const genres = GENRES.map(({ key }) => counts.get(key)!)
+    if (genreCountCache.size > 1000) {
+      for (const [key, entry] of genreCountCache) {
+        if (now - entry.at >= GENRE_CACHE_TTL_MS) genreCountCache.delete(key)
+      }
+    }
+    genreCountCache.set(cacheKey, { at: now, genres })
+    return { genres: cloneGenreCounts(genres) }
   },
 
   /** The signed-in player's saved interest keys (empty if none / not found). */

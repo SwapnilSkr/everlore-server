@@ -7,6 +7,7 @@ import { MongoClient, ObjectId } from 'mongodb'
 import sharp from 'sharp'
 import { CreateTemplateBody } from '../src/schemas/template.schema'
 import { NARRATIVE_STYLE_PRESETS } from '../src/utils/narrative-styles'
+import { deriveGenre } from '../src/utils/genre'
 import { encodeUserImage } from '../src/utils/image-encoding'
 import type { UserDoc, UserInsertDoc } from '../src/models/user.model'
 import type { WorldTemplateDoc } from '../src/models/world-template.model'
@@ -78,6 +79,9 @@ export function validateEntry(raw: unknown, filename: string): Entry {
     stats.add(normalized)
   }
   if (data.opening_line !== undefined) data.opening_line = data.opening_line.trim()
+  // A file without an authored genre seeds the one its voice implies, so a
+  // re-run compares like for like instead of seeing a change every time.
+  data.genre ??= deriveGenre(data.narrative_style)
   return { slug: slug as string, cover: cover as string, body: data }
 }
 
