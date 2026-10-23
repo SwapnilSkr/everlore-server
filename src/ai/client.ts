@@ -47,13 +47,20 @@ function applyCompletionDialect(params: Record<string, any>, model: string): voi
   delete params.temperature
 }
 
+/** Hosts that serve DeepSeek narration with hidden "thinking" on and ignore
+ * `reasoning: { enabled: false }`: measured Oct 23 2026 at 1.7k-3k reasoning
+ * tokens and a 29-43 s first word (GMICloud), against ~1-2 s elsewhere. */
+export const NARRATION_IGNORED_PROVIDERS = ['GMICloud'] as const
+
 /** Narration is short, so favor the first word; JSON passes favor throughput.
  * Keep the p90 preference soft so missing telemetry never excludes a host. */
-function providerPrefsFor(requireParameters: boolean, narration: boolean): Record<string, unknown> {
+function providerPrefsFor(requireParameters: boolean, narration: boolean, prose: boolean): Record<string, unknown> {
   const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
   return {
     provider: {
       sort: narration ? 'latency' : 'throughput',
+      // Replays and regenerations write prose too, so they skip the host as well.
+      ...(prose ? { ignore: [...NARRATION_IGNORED_PROVIDERS] } : {}),
       allow_fallbacks: true,
       ...(requireParameters ? { require_parameters: true } : {}),
       ...(Number.isFinite(p90) && p90 > 0
@@ -123,10 +130,12 @@ export function isRateLimitError(error: unknown): boolean {
 }
 
 function routingParamsFor(req: LLMRequest, stream: boolean): Record<string, unknown> {
+  const prose = !req.responseSchema && (!req.responseFormat || req.responseFormat.type === 'text')
   return {
     ...providerPrefsFor(
       Boolean(req.responseSchema || req.responseFormat?.type === 'json_schema'),
-      stream && !req.responseSchema && (!req.responseFormat || req.responseFormat.type === 'text'),
+      stream && prose,
+      prose,
     ),
     ...(req.sessionId ? { session_id: req.sessionId.slice(0, 256) } : {}),
   }

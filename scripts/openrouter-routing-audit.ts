@@ -65,6 +65,11 @@ for (const [label, request] of [
   const provider = request.params.provider
   check(provider?.sort === (label === 'streamed prose' ? 'latency' : 'throughput')
     && provider?.allow_fallbacks === true, `${label} keeps its intended sorting and fallback routing`)
+  const prose = label === 'streamed prose' || label === 'replay prose'
+  check(prose
+    ? Array.isArray(provider?.ignore) && provider.ignore.includes('GMICloud')
+    : provider?.ignore === undefined,
+  `${label} ${prose ? 'skips' : 'does not filter'} the thinking-only narration host`)
   const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
   check(Number.isFinite(p90) && p90 > 0
     ? provider?.preferred_max_latency?.p90 === p90
