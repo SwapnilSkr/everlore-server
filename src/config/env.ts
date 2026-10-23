@@ -65,6 +65,18 @@ const optionalEnvVars = {
    *  embeddings ignore both. */
   EMBED_HEDGE_MS: '700',
   EMBED_DEADLINE_MS: '2500',
+  /** Keeps this process's Pinecone and embedding connections warm while the box
+   *  is quiet (see services/keep-warm.ts). `off` disables the pinger entirely. */
+  KEEP_WARM: 'on',
+  /** `stats` calls describeIndexStats, which is not billed in read units;
+   *  `query` is a topK-1 search on a scope that cannot exist (0.25 read units). */
+  KEEP_WARM_PINECONE: 'stats',
+  /** A client unused for this long gets one ping. Box probe, Oct 23 2026: Pinecone
+   *  goes cold between 45 and 60 s idle, the embedding connection sooner; a 10 s
+   *  ping kept both fast (the stats ping is free, the embedding one ~2 tokens). */
+  KEEP_WARM_IDLE_MS: '10000',
+  /** How often the idle check runs. */
+  KEEP_WARM_CHECK_MS: '5000',
   /** For BORDERLINE nsfw lexicon scores (1–2) only, defer to a Haiku intent
    *  classifier (risk G). Off ⇒ borderline stays SFW as today. Chat-mode
    *  (Ardent) opt-in is the primary signal and is independent of this flag. */
@@ -144,6 +156,10 @@ export interface Env {
   RAG_RERANK_ENABLED: boolean
   EMBED_HEDGE_MS: number
   EMBED_DEADLINE_MS: number
+  KEEP_WARM: boolean
+  KEEP_WARM_PINECONE: 'stats' | 'query'
+  KEEP_WARM_IDLE_MS: number
+  KEEP_WARM_CHECK_MS: number
   NSFW_INTENT_DEFER_ENABLED: boolean
   ADMIN_USERNAME: string
   ADMIN_PASSWORD: string
@@ -181,6 +197,11 @@ function loadEnv(): Env {
   // without this setting must not write them again (they count against the plan's namespace cap).
   const vectorLayout = process.env.VECTOR_LAYOUT || 'shared'
   if (vectorLayout !== 'namespaced' && vectorLayout !== 'shared' && vectorLayout !== 'dual') throw new Error('Invalid VECTOR_LAYOUT')
+
+  // A typo here silently changes what a quiet process pays per ping, so it fails
+  // loudly at startup instead of defaulting.
+  const keepWarmPinecone = process.env.KEEP_WARM_PINECONE || optionalEnvVars.KEEP_WARM_PINECONE
+  if (keepWarmPinecone !== 'stats' && keepWarmPinecone !== 'query') throw new Error('Invalid KEEP_WARM_PINECONE')
 
   return {
     VECTOR_LAYOUT: vectorLayout,
@@ -226,6 +247,10 @@ function loadEnv(): Env {
     RAG_RERANK_ENABLED: process.env.RAG_RERANK_ENABLED === 'true',
     EMBED_HEDGE_MS: Number(process.env.EMBED_HEDGE_MS || optionalEnvVars.EMBED_HEDGE_MS),
     EMBED_DEADLINE_MS: Number(process.env.EMBED_DEADLINE_MS || optionalEnvVars.EMBED_DEADLINE_MS),
+    KEEP_WARM: (process.env.KEEP_WARM || optionalEnvVars.KEEP_WARM) !== 'off',
+    KEEP_WARM_PINECONE: keepWarmPinecone,
+    KEEP_WARM_IDLE_MS: Number(process.env.KEEP_WARM_IDLE_MS || optionalEnvVars.KEEP_WARM_IDLE_MS),
+    KEEP_WARM_CHECK_MS: Number(process.env.KEEP_WARM_CHECK_MS || optionalEnvVars.KEEP_WARM_CHECK_MS),
     NSFW_INTENT_DEFER_ENABLED: process.env.NSFW_INTENT_DEFER_ENABLED === 'true',
     ADMIN_USERNAME: process.env.ADMIN_USERNAME || optionalEnvVars.ADMIN_USERNAME,
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || optionalEnvVars.ADMIN_PASSWORD,

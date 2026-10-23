@@ -12,6 +12,7 @@ export type VectorQuery = {
   includeValues?: boolean
 }
 export type VectorIndex = Pick<Index, 'namespace' | 'describeIndexStats'>
+export type PineconePingMode = 'stats' | 'query'
 export type VectorStore = {
   upsert(scope: VectorScope, records: PineconeRecord[]): Promise<void>
   query(scope: VectorScope, query: VectorQuery, onDuration?: (ms: number) => void): Promise<QueryResponse>
@@ -20,7 +21,33 @@ export type VectorStore = {
   listIds(scope: VectorScope): Promise<string[]>
   deleteScope(scope: VectorScope): Promise<void>
   replaceLore(scope: Extract<VectorScope, { kind: 'lore' }>, records: PineconeRecord[]): Promise<void>
+  /**
+   * A keep-warm ping. `stats` asks for the index stats, which Pinecone does not
+   * bill in read units; `query` is a topK-1 search scoped to a scope that cannot
+   * exist, so it returns nothing and costs 0.25 read units.
+   */
+  ping(mode: PineconePingMode): Promise<void>
 }
+
+/** Reported to the keep-warm pinger on every call that reaches the index. A
+ *  listener rather than a direct import: keep-warm pulls this module in lazily,
+ *  so an import back from here would be a cycle. */
+let indexUsed: (() => void) | null = null
+
+export function setVectorIndexUseListener(listener: (() => void) | null): void {
+  indexUsed = listener
+}
+
+/** Pinecone validates a query vector's dimension against the index's, which is
+ *  the same 1024 `EMBEDDING_DIMENSIONS` in `src/ai/embedding.ts` uses. */
+const PING_VECTOR = (() => {
+  const vector = new Array<number>(1024).fill(0)
+  vector[0] = 1
+  return vector
+})()
+
+/** Real scope ids are ObjectId hex strings, so this scope can never be authored. */
+const PING_SCOPE: VectorScope = { kind: 'mem', instanceId: 'keep-warm-ping' }
 
 export function scopeId(scope: VectorScope): string {
   if (!scope || !['lore', 'mem', 'sum'].includes(scope.kind)) throw new Error('A complete vector scope is required')
@@ -54,6 +81,9 @@ export function createVectorStore(options: {
     // Finish the shared mutation before touching legacy data; either failure propagates.
     return {
       query: sharedStore.query, fetch: sharedStore.fetch, listIds: sharedStore.listIds,
+      // The shared namespace is the one prod reads, so it is the one to keep warm;
+      // the legacy side is drained and deleted by the migration.
+      ping: sharedStore.ping,
       async upsert(scope, records) { await sharedStore.upsert(scope, records); await oldStore.upsert(scope, records) },
       async deleteIds(scope, ids) { await sharedStore.deleteIds(scope, ids); await oldStore.deleteIds(scope, ids) },
       async deleteScope(scope) { await sharedStore.deleteScope(scope); await oldStore.deleteScope(scope) },
@@ -75,12 +105,19 @@ export function createVectorStore(options: {
     if (!id.startsWith(prefix)) throw new Error('Vector response escaped its scope')
     return id.slice(prefix.length)
   }
+  /** Every call that reaches Pinecone goes through here, so the keep-warm pinger
+   *  sees exactly the calls that touched the index and nothing that was rejected
+   *  or short-circuited first. */
+  const index = () => {
+    indexUsed?.()
+    return options.getIndex()
+  }
 
   const store = {
     async upsert(scope: VectorScope, records: PineconeRecord[]): Promise<void> {
       const a = idsFor(scope, records.map((r) => r.id))
       if (!records.length) return
-      const target = options.getIndex().namespace(a.name)
+      const target = index().namespace(a.name)
       for (let i = 0; i < records.length; i += 100) {
         await target.upsert({ records: records.slice(i, i + 100).map((r) => ({
           ...r,
@@ -93,7 +130,7 @@ export function createVectorStore(options: {
       const a = address(scope)
       const scopedFilter = { scope_kind: { $eq: scope.kind }, scope_id: { $eq: a.id } }
       // Build the request explicitly so a runtime caller cannot override the namespace.
-      const target = options.getIndex().namespace(a.name)
+      const target = index().namespace(a.name)
       const request = {
         vector: query.vector, topK: query.topK,
         includeMetadata: query.includeMetadata, includeValues: query.includeValues,
@@ -109,7 +146,7 @@ export function createVectorStore(options: {
       const a = idsFor(scope, ids)
       const records: FetchResponse['records'] = {}
       for (let i = 0; i < a.ids.length; i += 200) {
-        const res = await options.getIndex().namespace(a.name).fetch({ ids: a.ids.slice(i, i + 200) })
+        const res = await index().namespace(a.name).fetch({ ids: a.ids.slice(i, i + 200) })
         for (const r of Object.values(res.records)) {
           const id = strip(a.prefix, r.id)
           records[id] = { ...r, id }
@@ -120,12 +157,12 @@ export function createVectorStore(options: {
     async deleteIds(scope: VectorScope, ids: string[]): Promise<void> {
       const a = idsFor(scope, ids)
       for (let i = 0; i < a.ids.length; i += 1000) {
-        await options.getIndex().namespace(a.name).deleteMany({ ids: a.ids.slice(i, i + 1000) })
+        await index().namespace(a.name).deleteMany({ ids: a.ids.slice(i, i + 1000) })
       }
     },
     async listIds(scope: VectorScope): Promise<string[]> {
       const a = address(scope)
-      const target = options.getIndex().namespace(a.name)
+      const target = index().namespace(a.name)
       const ids: string[] = []
       let paginationToken: string | undefined
       do {
@@ -140,11 +177,28 @@ export function createVectorStore(options: {
     async deleteScope(scope: VectorScope): Promise<void> {
       const a = address(scope)
       if (!shared) {
-        await options.getIndex().namespace(a.name).deleteAll()
+        await index().namespace(a.name).deleteAll()
         return
       }
       // Snapshot the full listing before deleting: mutation during pagination can skip ids.
       await store.deleteIds(scope, await store.listIds(scope))
+    },
+    async ping(mode: PineconePingMode): Promise<void> {
+      const target = index()
+      if (mode === 'stats') {
+        await target.describeIndexStats()
+        return
+      }
+      // A search with everything off, scoped to a scope that cannot exist: it
+      // cannot return a record, and at topK 1 it bills 0.25 read units.
+      const a = address(PING_SCOPE)
+      await target.namespace(a.name).query({
+        vector: PING_VECTOR,
+        topK: 1,
+        includeMetadata: false,
+        includeValues: false,
+        ...(shared ? { filter: { scope_kind: { $eq: PING_SCOPE.kind }, scope_id: { $eq: a.id } } } : {}),
+      })
     },
     async replaceLore(scope: Extract<VectorScope, { kind: 'lore' }>, records: PineconeRecord[]): Promise<void> {
       if (scope?.kind !== 'lore') throw new Error('Lore scope required')

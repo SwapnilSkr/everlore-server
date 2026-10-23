@@ -46,6 +46,7 @@ const PURE_AUDITS = [
   'audit:stat-mutations',
   'audit:bond-meters',
   'audit:embedding-latency',
+  'audit:keep-warm',
   'audit:narration-hedge',
 ] as const
 

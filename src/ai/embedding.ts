@@ -2,6 +2,7 @@ import { getOpenAI } from '../config/openai'
 import { env } from '../config/env'
 import { AI_MODELS } from './models'
 import { log } from '../utils/logger'
+import { noteClientUse } from '../services/keep-warm'
 
 /** Must match the Pinecone index vector dimension (serverless indexes use 1024). */
 const EMBEDDING_DIMENSIONS = 1024
@@ -78,14 +79,23 @@ function embeddingsClient(): EmbeddingClient {
 
 async function requestEmbedding(
   text: string,
-  options?: { signal: AbortSignal },
+  options?: { signal?: AbortSignal; timeout?: number; maxRetries?: number },
 ): Promise<number[]> {
   const openai = embeddingsClient()
+  // Sent, not cached: this is the moment the connection was used, which is what
+  // the keep-warm pinger reads to decide whether it has gone idle.
+  noteClientUse('embedding')
   const response = await openai.embeddings.create(
     { model: AI_MODELS.embedding, input: text, dimensions: EMBEDDING_DIMENSIONS },
     // No options on the background path: the SDK's own timeout and retries are
     // the right policy when nobody is waiting on the answer.
-    options ? { signal: options.signal, timeout: EMBED_DEADLINE_MS, maxRetries: EMBED_MAX_RETRIES } : undefined,
+    options
+      ? {
+          signal: options.signal,
+          timeout: options.timeout ?? EMBED_DEADLINE_MS,
+          maxRetries: options.maxRetries ?? EMBED_MAX_RETRIES,
+        }
+      : undefined,
   )
   return response.data[0].embedding
 }
@@ -268,10 +278,30 @@ export function embedQuery(text: string): Promise<number[]> {
 export async function embedBatch(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return []
   const openai = getOpenAI()
+  noteClientUse('embedding')
   const response = await openai.embeddings.create({
     model: AI_MODELS.embedding,
     input: texts,
     dimensions: EMBEDDING_DIMENSIONS,
   })
   return response.data.sort((a, b) => a.index - b.index).map((d) => d.embedding)
+}
+
+/** Two tokens: the cheapest request that still opens the connection. */
+const PING_TEXT = 'keep warm'
+/** Short on purpose — a warm-up must never hold a socket the way a turn does. */
+const PING_TIMEOUT_MS = 2_000
+
+/**
+ * One embedding request straight through the client, for the keep-warm pinger.
+ *
+ * Deliberately not `embed` or `embedQuery`: those serve the recent-results cache
+ * and share single flights, so a repeat would return without touching the
+ * network — the one thing a warm-up ping must not do. No hedge and no retries
+ * either; a ping that fails is sent again on the next check.
+ */
+export async function pingEmbedding(): Promise<void> {
+  // The raw request, not `embed`/`embedQuery`: nothing here touches the cache or
+  // a flight, and it carries its own short timeout with no retries.
+  await requestEmbedding(PING_TEXT, { timeout: PING_TIMEOUT_MS, maxRetries: 0 })
 }

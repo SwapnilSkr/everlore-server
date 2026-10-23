@@ -14,6 +14,7 @@ import { getMaintenanceQueue, QUEUE_RETENTION } from '../src/queues'
 import { loadNsfwLexicon } from './lib/nsfw-classifier'
 import { log } from '../src/utils/logger'
 import { billingService } from '../src/services/billing.service'
+import { startKeepWarm } from '../src/services/keep-warm'
 
 /** Billing must never turn an already-visible story result into a worker error.
  * These mutations are idempotent ledger writes, so a later repair can safely
@@ -52,6 +53,12 @@ async function main() {
   // Initialize connections
   await connectMongo()
   await connectRedis()
+
+  // Prod p50 for the first word after a quiet half hour was 6.6 s against 2.6 s
+  // with recent traffic: most of the difference is a cold Pinecone/OpenAI
+  // connection. Warm both now and keep them warm while the box is quiet; this
+  // never blocks startup.
+  const keepWarm = startKeepWarm()
 
   // Warm the NSFW routing lexicon from Mongo (falls back to built-ins if unseeded).
   await loadNsfwLexicon(true)
@@ -182,6 +189,7 @@ async function main() {
   // Graceful shutdown
   const shutdown = async () => {
     console.log('Shutting down workers...')
+    keepWarm.stop()
     await generationWorker.close()
     await mediaWorker.close()
     await memoryWorker.close()
