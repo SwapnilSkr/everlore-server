@@ -139,7 +139,7 @@ await check('(e) dry-run default, strict flags and hard cap before every call', 
   assert.ok(source.includes('budget.reserve(reservation(params, price))'))
   assert.ok(source.includes('if (args.execute) completions.create ='))
   assert.ok(source.includes('const invoke = experimentCall(args.execute, callLLM, plan)'))
-  assert.ok(source.includes('const response = await budgetedSend(budget, params, price,'))
+  assert.ok(source.includes('return budgetedSend(budget, params, price,'))
   let sent = 0, planned = 0
   const params = { max_tokens: 450, messages: [] }
   const price = { prompt: 0, completion: 0, request: .06 }
@@ -151,6 +151,115 @@ await check('(e) dry-run default, strict flags and hard cap before every call', 
   await extractChoiceMetadata(narrative, [], [], opts, { split: true, call: invoke })
   assert.equal(sent, 1, 'default dry-run never sends either model request')
   assert.equal(planned, 2)
+})
+await check('(f) usage.cost replaces the bound and permits a later call under cap', async () => {
+  const b = new SpendBudget(.1)
+  const params = { max_tokens: 450, messages: [] }
+  const price = { prompt: 0, completion: 0, request: .08 }
+  let sent = 0, lookups = 0
+  const send = async () => {
+    sent++
+    assert.equal(b.openReservationUSD, .08, 'reserve before sending')
+    return { id: `gen-${sent}`, usage: { cost: .01 } }
+  }
+  const lookup = async () => { lookups++; return .07 }
+  await budgetedSend(b, params, price, send, lookup)
+  assert.equal(b.reserved, .01, 'provider cost replaces the .08 bound')
+  assert.equal(b.settledUSD, .01)
+  assert.equal(b.openReservationUSD, 0)
+  await budgetedSend(b, params, price, send, lookup)
+  assert.equal(sent, 2, 'second .08 reservation fits after .01 actual settlement')
+  assert.equal(b.reserved, .02)
+  assert.equal(b.actualKnownUSD, .02)
+  assert.equal(b.settledToActual, 2)
+  assert.equal(b.keptAtReservation, 0)
+  assert.equal(b.peakOpenReservationUSD, .08)
+  assert.equal(lookups, 0, 'usage.cost takes precedence over generation details')
+})
+await check('(g) missing/invalid costs and failed sends keep the full bound', async () => {
+  const params = { max_tokens: 450, messages: [] }
+  const price = { prompt: 0, completion: 0, request: .06 }
+  for (const cost of [undefined, null, -1, NaN, Infinity, '0']) {
+    const b = new SpendBudget(.1)
+    await budgetedSend(b, params, price, async () => ({ id: 'missing-cost', usage: { cost } }), async () => cost)
+    await b.finalize(async () => cost)
+    assert.equal(b.reserved, .06)
+    assert.equal(b.settledUSD, .06)
+    assert.equal(b.openReservationUSD, 0)
+    assert.equal(b.actualKnownUSD, 0)
+    assert.equal(b.keptAtReservation, 1)
+    assert.equal(b.settledToActual, 0)
+    await assert.rejects(budgetedSend(b, params, price, async () => assert.fail('must not send')), /STOP/)
+  }
+  const b = new SpendBudget(.1)
+  await assert.rejects(budgetedSend(b, params, price, async () => { throw new Error('transport failure') }), /transport failure/)
+  assert.equal(b.reserved, .06)
+  assert.equal(b.keptAtReservation, 1)
+})
+await check('(h) settled + open + next reservation can never pass the cap', async () => {
+  const b = new SpendBudget(.1)
+  const params = { max_tokens: 450, messages: [] }
+  const price = (request: number) => ({ prompt: 0, completion: 0, request })
+  await budgetedSend(b, params, price(.04), async () => ({ usage: { cost: .01 } }))
+  let release!: () => void
+  const open = budgetedSend(b, params, price(.06), async () => {
+    assert.equal(b.settledUSD, .01)
+    assert.equal(b.openReservationUSD, .06)
+    await new Promise<void>((resolve) => { release = resolve })
+    return { usage: { cost: .02 } }
+  })
+  try {
+    // .01 settled + .06 open + .04 next = .11: blocked before the send.
+    let sent = 0
+    await assert.rejects(budgetedSend(b, params, price(.04), async () => { sent++; return {} }), /STOP/)
+    assert.equal(sent, 0)
+    assert.equal(b.calls, 2)
+    assert.ok(Math.abs(b.reserved - .07) < 1e-12)
+    assert.equal(b.peakOpenReservationUSD, .06)
+    assert.equal(b.stopped, true)
+  } finally { release(); await open }
+  assert.equal(b.reserved, .03)
+  assert.equal(b.stopped, true, 'stop remains sticky after an in-flight settlement')
+  const exact = new SpendBudget(.1)
+  await budgetedSend(exact, params, price(.08), async () => ({ usage: { cost: .02 } }))
+  await budgetedSend(exact, params, price(.08), async () => ({ usage: { cost: 0 } }))
+  assert.equal(exact.reserved, .02, 'exact cap is allowed; zero cost is actual')
+})
+await check('stream final usage, aborted hedge charges and late generation details settle independently', async () => {
+  const params = { stream: true, max_tokens: 450, messages: [] }
+  const price = { prompt: 0, completion: 0, request: .06 }
+  const b = new SpendBudget(.2)
+  const winner = await budgetedSend(b, params, price, async () => (async function* () {
+    yield { id: 'winner', choices: [] }
+    // Final cost can arrive without an id; no per-packet double counting.
+    yield { usage: { cost: .01 } }
+  })())
+  for await (const _ of winner) { assert.equal(b.openReservationUSD, .06) }
+  assert.equal(b.reserved, .01)
+  const abort = new AbortController()
+  const loser = await budgetedSend(b, params, price, async () => (async function* () {
+    yield { id: 'loser' }
+    throw new Error('hedge lost')
+  })(), async (id) => { assert.equal(id, 'loser'); return .005 }, abort.signal)
+  await assert.rejects(async () => { for await (const _ of loser) abort.abort() }, /hedge lost/)
+  assert.equal(b.actualKnownUSD, .015)
+  assert.equal(b.settledToActual, 2)
+  assert.equal(b.openReservationUSD, 0)
+  const unknown = await budgetedSend(b, params, price, async () => (async function* () {
+    yield { id: 'late-loser' }
+    throw new Error('hedge lost')
+  })(), async () => { throw new Error('details not ready') })
+  await assert.rejects(async () => { for await (const _ of unknown) { /* consume */ } }, /hedge lost/)
+  assert.equal(b.keptAtReservation, 1)
+  assert.equal(b.reserved, .075)
+  await b.finalize(async (id) => { assert.equal(id, 'late-loser'); return .003 })
+  assert.equal(b.keptAtReservation, 0)
+  assert.equal(b.settledToActual, 3)
+  assert.equal(b.reserved, .018)
+  const unidentified = await budgetedSend(b, params, price, async () => (async function* () { throw new Error('no id') })())
+  await assert.rejects(async () => { for await (const _ of unidentified) { /* consume */ } }, /no id/)
+  assert.equal(b.keptAtReservation, 1)
+  assert.equal(b.reserved, .078)
 })
 await check('same processor builder, blind judging and randomized labels', async () => {
   const builder = await loadDecisionBuilder()
@@ -178,7 +287,10 @@ if (!process.argv.includes('--no-bites') && !failed) {
     { name: 'choices timing lost in split', file: 'worker/lib/metadata-extractor.ts', before: "opts?.onStage?.('choice_metadata', Date.now() - startedAt)", after: "if (!split) opts?.onStage?.('choice_metadata', Date.now() - startedAt)", expected: 'FAIL parallel launch' },
     { name: '(e) dry-run opt-out', file: 'scripts/beat-ledger-split-ab.ts', before: 'let execute = false, turns = 30', after: 'let execute = true, turns = 30', expected: 'FAIL (e)' },
     { name: '(e) allow overspend', file: 'scripts/beat-ledger-split-ab.ts', before: 'this.reserved + amount > this.cap', after: 'false', expected: 'FAIL (e)' },
-    { name: '(e) bypass transport reservation', file: 'scripts/beat-ledger-split-ab.ts', before: 'budget.reserve(reservation(params, price))', after: 'void params', expected: 'FAIL (e)' },
+    { name: '(f) ignore provider actual cost', file: 'scripts/beat-ledger-split-ab.ts', before: 'if (isCost(cost)) charge.actual = cost', after: 'void cost', expected: 'FAIL (f)' },
+    { name: '(g) refund missing cost', file: 'scripts/beat-ledger-split-ab.ts', before: 'this.settle(charge, cost)\n    const pending', after: 'this.settle(charge, cost ?? 0)\n    const pending', expected: 'FAIL (g)' },
+    { name: '(h) ignore open reservations', file: 'scripts/beat-ledger-split-ab.ts', before: 'this.reserved + amount > this.cap', after: 'this.settledUSD + amount > this.cap', expected: 'FAIL (h)' },
+    { name: '(e) bypass transport reservation', file: 'scripts/beat-ledger-split-ab.ts', before: 'budget.reserve(reservation(params, price))', after: '({ open: true, reservation: 0 })', expected: 'FAIL (e)' },
   ]
   const root = fileURLToPath(new URL('../', import.meta.url))
   const scratch = mkdtempSync(join(tmpdir(), 'beat-split-bites-'))

@@ -34,28 +34,97 @@ export function parseArgs(args: string[]) {
   return { help: false, execute, turns, cap, extraSaves }
 }
 
-/** Reservations never get refunded, including aborted hedge losers and failures.
- * This remains safe when the provider omits its final usage packet. */
+type Charge = { reservation: number; open: boolean; actual?: number; id?: string }
+type CostLookup = (id: string) => Promise<unknown>
+const isCost = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0
+
+/** Unknown charges retain their full bound; only provider costs free budget. */
 export class SpendBudget {
-  reserved = 0
-  calls = 0
+  private charges: Charge[] = []
+  private settlements = new Set<Promise<void>>()
+  peakOpenReservationUSD = 0
   stopped = false
   constructor(readonly cap: number) {
     if (!Number.isFinite(cap) || cap <= 0 || cap > HARD_CAP_USD) throw new Error('Invalid spend cap')
   }
+  get calls() { return this.charges.length }
+  get openReservationUSD() { return this.charges.filter((c) => c.open).reduce((sum, c) => sum + c.reservation, 0) }
+  get settledUSD() { return this.charges.filter((c) => !c.open).reduce((sum, c) => sum + (c.actual ?? c.reservation), 0) }
+  get reserved() { return this.settledUSD + this.openReservationUSD }
+  get actualKnownUSD() { return this.charges.reduce((sum, c) => sum + (c.actual ?? 0), 0) }
+  get settledToActual() { return this.charges.filter((c) => c.actual !== undefined).length }
+  get keptAtReservation() { return this.calls - this.settledToActual }
   reserve(amount: number) {
     if (this.stopped || !Number.isFinite(amount) || amount < 0 || this.reserved + amount > this.cap) {
       this.stopped = true
-      throw new Error(`STOP: call ${this.calls + 1} would exceed $${this.cap.toFixed(2)} (reserved $${this.reserved.toFixed(6)})`)
+      throw new Error(`STOP: call ${this.calls + 1} would exceed $${this.cap.toFixed(2)} (settled + open $${this.reserved.toFixed(6)})`)
     }
-    this.reserved += amount
-    this.calls++
+    const charge: Charge = { reservation: amount, open: true }
+    this.charges.push(charge)
+    this.peakOpenReservationUSD = Math.max(this.peakOpenReservationUSD, this.openReservationUSD)
+    return charge
+  }
+  settle(charge: Charge, cost?: unknown) {
+    if (isCost(cost)) charge.actual = cost
+    charge.open = false
+    // Never hide a provider charge above its advertised bound or send again.
+    if (this.reserved > this.cap) this.stopped = true
+  }
+  async reconcile(charge: Charge, lookup?: CostLookup) {
+    if (charge.actual !== undefined || !charge.id || !lookup) return
+    try { const cost = await lookup(charge.id); if (charge.actual === undefined && isCost(cost)) this.settle(charge, cost) }
+    catch { /* Missing/late generation details remain fully reserved. */ }
+  }
+  finish(charge: Charge, cost: unknown, lookup?: CostLookup) {
+    this.settle(charge, cost)
+    const pending = this.reconcile(charge, lookup)
+    this.settlements.add(pending)
+    void pending.finally(() => this.settlements.delete(pending))
+    return pending
+  }
+  async finalize(lookup: CostLookup) {
+    // Await billing lookups, never a hedge loser's potentially stuck model IO.
+    await Promise.all(this.settlements)
+    for (const charge of this.charges) await this.reconcile(charge, lookup)
   }
 }
 /** Shared by the real SDK wrapper and the fake transport audit. */
-export async function budgetedSend<T>(budget: SpendBudget, params: Record<string, unknown>, price: Price, send: () => Promise<T>): Promise<T> {
-  budget.reserve(reservation(params, price))
-  return send()
+export async function budgetedSend<T>(budget: SpendBudget, params: Record<string, unknown>, price: Price,
+  send: (params: Record<string, unknown>) => Promise<T>, lookup?: CostLookup, signal?: AbortSignal): Promise<T> {
+  const charge = budget.reserve(reservation(params, price))
+  let actual: number | undefined
+  let finishing: Promise<void> | undefined
+  const capture = (part: unknown) => {
+    if (!part || typeof part !== 'object') return
+    const p = part as { id?: unknown; usage?: { cost?: unknown } }
+    if (typeof p.id === 'string' && p.id) charge.id = p.id
+    if (isCost(p.usage?.cost)) {
+      actual = p.usage.cost
+      if (!charge.open) budget.settle(charge, actual)
+    }
+  }
+  const finish = () => {
+    signal?.removeEventListener('abort', onAbort)
+    return finishing ??= budget.finish(charge, actual, lookup)
+  }
+  // A loser can be aborted before the SDK even returns an iterable. Keep its
+  // bound, then reconcile an id/cost if its underlying transport returns later.
+  const onAbort = () => { void finish() }
+  signal?.addEventListener('abort', onAbort, { once: true })
+  try {
+    if (signal?.aborted) throw signal.reason
+    const response = await send(params)
+    if (params.stream) {
+      if (signal?.aborted) { await finish(); return response }
+      return (async function* () {
+        try { for await (const part of response as AsyncIterable<unknown>) { capture(part); yield part } }
+        finally { await finish() }
+      })() as T
+    }
+    capture(response)
+    await finish()
+    return response
+  } catch (error) { await finish(); throw error }
 }
 export function experimentCall(execute: boolean, live: typeof callLLM, plan: (request: Request) => void): typeof callLLM {
   return execute ? (request) => live({ ...request, timeoutMs: 90000 }) : async (request) => { plan(request); return '{}' }
@@ -260,29 +329,20 @@ async function main() {
   const budget = new SpendBudget(args.cap)
   const completions = getOpenRouter().chat.completions
   const originalCreate = completions.create
-  const billing = new Map<string, number | undefined>()
-  let unidentifiable = 0
-  // Wrap the actual SDK transport: EVERY physical request (including hedges)
-  // reserves before sending. callLLM still owns its exact streaming race.
+  const costForGeneration: CostLookup = async (id) => {
+    const response = await fetch(`https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }, signal: AbortSignal.timeout(10000) })
+    if (!response.ok) return undefined
+    const data = await response.json() as { data?: { total_cost?: unknown } }
+    return data.data?.total_cost
+  }
+  // EVERY physical request, including hedges, reserves before sending. The
+  // provider includes usage.cost automatically in responses/final SSE packets.
   if (args.execute) completions.create = (async (params: Record<string, unknown>, options?: Record<string, unknown>) => {
     const price = prices.get(String(params.model))
     if (!price) throw new Error('Unpriced request')
-    let identified = false
-    let sent = false
-    const capture = (part: unknown) => {
-      const p = part as { id?: string; usage?: { cost?: number } }
-      if (p.id) { identified = true; if (!billing.has(p.id)) billing.set(p.id, undefined); if (Number.isFinite(p.usage?.cost)) billing.set(p.id, p.usage!.cost) }
-    }
-    try {
-      const response = await budgetedSend(budget, params, price, async () => { sent = true; return originalCreate.call(completions, params as never, { ...options, maxRetries: 0 } as never) })
-      if (params.stream) return (async function* () {
-        try { for await (const part of response as unknown as AsyncIterable<unknown>) { capture(part); yield part } }
-        finally { if (!identified) unidentifiable++ }
-      })()
-      capture(response)
-      if (!identified) unidentifiable++
-      return response
-    } catch (error) { if (!identified && sent) unidentifiable++; throw error }
+    return budgetedSend(budget, params, price,
+      async (body) => originalCreate.call(completions, body as never, { ...options, maxRetries: 0 } as never),
+      costForGeneration, options?.signal as AbortSignal | undefined)
   }) as unknown as typeof originalCreate
   type Sample = { arm: 'A' | 'B'; run: number; choicesMs: number; outputTokens: number | null; rawCount: number; valid: boolean; repeatsDropped: number; guardDrops: number; repaired: number; count: number; ledgerFilled: string[]; result: SceneMetadata }
   const rows: Array<{ save: string; turn: number; sample: Sample }> = []
@@ -356,16 +416,8 @@ async function main() {
     if (!budget.stopped) process.exitCode = 1
   } finally {
     completions.create = originalCreate
-    // Resolve exact charges for completed or aborted streams whose final usage
-    // was absent. These generation-detail GETs do not invoke a model.
-    if (args.execute) for (const [id, cost] of billing) {
-      if (cost !== undefined) continue
-      try {
-        const response = await fetch(`https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }, signal: AbortSignal.timeout(10000) })
-        const data = await response.json() as { data?: { total_cost?: number } }
-        if (response.ok && Number.isFinite(data.data?.total_cost)) billing.set(id, data.data!.total_cost)
-      } catch { /* Unknown charges stay reserved and explicitly incomplete. */ }
-    }
+    // Retry missing generation details once at the end (they may lag an abort).
+    if (args.execute) await budget.finalize(costForGeneration)
     const percentile = (values: number[], q: number) => values.length ? [...values].sort((a, b) => a - b)[Math.ceil(q * values.length) - 1] : null
     console.table(rows.map(({ save, turn, sample: s }) => ({ save, turn, arm: s.arm, run: s.run, ms: s.choicesMs, tokens: s.outputTokens, raw: s.rawCount, final: s.count, valid: s.valid, repeats: s.repeatsDropped, drops: s.guardDrops, repaired: s.repaired, ledger: s.ledgerFilled.join(',') })))
     const pairedKeys = new Set(rows.filter((r) => rows.filter((other) => other.save === r.save && other.turn === r.turn).length === 4).map((r) => `${r.save}:${r.turn}`))
@@ -381,9 +433,9 @@ async function main() {
       const pair = rows.filter((r) => `${r.save}:${r.turn}` === key && r.sample.run === run)
       return JSON.stringify([...pair[0].sample.ledgerFilled].sort()) === JSON.stringify([...pair[1].sample.ledgerFilled].sort())
     }))
-    const actualKnown = [...billing.values()].reduce<number>((sum, cost) => sum + (cost || 0), 0)
-    const unknownCharges = unidentifiable + [...billing.values()].filter((cost) => cost === undefined).length
-    console.log(JSON.stringify({ summary: { completedTurns, pairedSampleTurns: pairedKeys.size, selectedTurns: turns.length, completedSamples: rows.length, completedJudgments: votes.length, stoppedReason, arms, judges, ledgerFieldPairs: ledgerFieldPairs.length, ledgerFieldMatches: ledgerFieldPairs.filter(Boolean).length, plannedCalls: planned, estimatedUSD: estimate, worstCaseReservedPlanUSD: ceiling, physicalCalls: budget.calls, reservedUSD: budget.reserved, actualUSD: unknownCharges ? null : actualKnown, actualKnownUSD: actualKnown, unknownCharges, actualKnownINR: actualKnown * 125 / 1.5, note: 'Unknown charges remain covered by reservations. Partial samples are printed; arm summaries include only turns with all four samples. Judgments report their own completed counts. Approximate historical context limits generalization; default remains off.' } }))
+    const actualKnown = budget.actualKnownUSD
+    const unknownCharges = budget.keptAtReservation
+    console.log(JSON.stringify({ summary: { completedTurns, pairedSampleTurns: pairedKeys.size, selectedTurns: turns.length, completedSamples: rows.length, completedJudgments: votes.length, stoppedReason, arms, judges, ledgerFieldPairs: ledgerFieldPairs.length, ledgerFieldMatches: ledgerFieldPairs.filter(Boolean).length, plannedCalls: planned, estimatedUSD: estimate, worstCaseReservedPlanUSD: ceiling, physicalCalls: budget.calls, reservedUSD: budget.reserved, settledUSD: budget.settledUSD, openReservationUSD: budget.openReservationUSD, peakOpenReservationUSD: budget.peakOpenReservationUSD, settledToActual: budget.settledToActual, keptAtReservation: budget.keptAtReservation, actualUSD: unknownCharges ? null : actualKnown, actualKnownUSD: actualKnown, unknownCharges, actualKnownINR: actualKnown * 125 / 1.5, note: 'Unknown charges remain covered by reservations. Partial samples are printed; arm summaries include only turns with all four samples. Judgments report their own completed counts. Approximate historical context limits generalization; default remains off.' } }))
   }
 }
 if (import.meta.main) main().catch(() => { console.error('Experiment setup failed; verify flags, read-only data access and model pricing. No secrets are printed.'); process.exitCode = 1 })
