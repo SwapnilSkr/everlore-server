@@ -1,4 +1,5 @@
 import { callLLM, AI_MODELS } from '../../src/ai'
+import { env } from '../../src/config/env'
 import { enforceSchema, type GenerationOutput } from './structured-output'
 
 /** Structured fields derived from a narrative — everything except the prose itself. */
@@ -291,6 +292,8 @@ type MetadataOpts = {
    *  caller cannot time them from outside the pair; each half reports its own
    *  start-to-settle here, failure included. Never changes what is requested. */
   onStage?: (stage: 'scene_witness' | 'choice_metadata', ms: number) => void
+  onChoiceFirstToken?: (ms: number, winner: 'primary' | 'hedge') => void
+  onChoiceHedge?: () => void
   /** Raw player-authored turn. The witness uses this to identify actual travel
    * intent; it never treats narration alone as player authority. */
   playerInput?: string | null
@@ -618,6 +621,12 @@ export async function extractChoiceMetadata(
     const raw = await callLLM({
       model: AI_MODELS.metadata,
       purpose: 'choice_metadata',
+      firstTokenHedge: {
+        delayMs: env.CHOICE_HEDGE_MS,
+        lostPurpose: 'choice_metadata_hedge_lost',
+        onHedge: opts?.onChoiceHedge,
+        onFirstToken: (winner) => opts?.onChoiceFirstToken?.(Date.now() - startedAt, winner),
+      },
       messages: [
         { role: 'system', content: system },
         { role: 'user', content: narrative },

@@ -49,6 +49,7 @@ const PURE_AUDITS = [
   'audit:tail-stages',
   'audit:keep-warm',
   'audit:narration-hedge',
+  'audit:choice-hedge',
 ] as const
 
 const { scripts } = await Bun.file(new URL('../package.json', import.meta.url)).json() as { scripts: Record<string, string> }

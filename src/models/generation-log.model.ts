@@ -51,6 +51,8 @@ export type TailModelCallStage = (typeof TAIL_MODEL_CALL_STAGES)[number]
  */
 export const TAIL_STAGE_KEYS = [
   ...TAIL_MODEL_CALL_STAGES,
+  // A milestone within choice_metadata, not an additional serial wait.
+  'choice_metadata_first_token',
   'extraction_join',
   'interaction_signal_wait',
   'content_intent',
@@ -66,6 +68,22 @@ export const TAIL_STAGE_KEYS = [
 
 export type TailStage = (typeof TAIL_STAGE_KEYS)[number]
 export type TailStages = Partial<Record<TailStage, number>>
+
+export interface ChoiceHedgeRoute {
+  hedged: boolean
+  winner?: 'primary' | 'hedge'
+}
+
+/** Unhedged turns must not look like a recorded hedge with missing data. */
+export function choiceHedgeLogFields(route: ChoiceHedgeRoute): {
+  choice_hedged?: true
+  choice_hedge_winner?: 'primary' | 'hedge'
+} {
+  return route.hedged ? {
+    choice_hedged: true,
+    ...(route.winner ? { choice_hedge_winner: route.winner } : {}),
+  } : {}
+}
 
 /**
  * The gaps between the player's message and the narrator's request, which
@@ -160,6 +178,8 @@ export interface GenerationLogDoc {
   hedged?: boolean
   /** Which of the two requests produced the prose; absent when not hedged. */
   hedge_winner?: 'primary' | 'hedge'
+  choice_hedged?: true
+  choice_hedge_winner?: 'primary' | 'hedge'
   /** Model used for the structured-metadata extraction pass. */
   metadata_model: string
   tokens_in: number

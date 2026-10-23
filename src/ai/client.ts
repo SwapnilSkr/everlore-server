@@ -70,6 +70,13 @@ function providerPrefsFor(requireParameters: boolean, narration: boolean, prose:
   }
 }
 
+export interface LLMFirstTokenHedge {
+  delayMs: number
+  lostPurpose: string
+  onHedge?: () => void
+  onFirstToken?: (winner: 'primary' | 'hedge') => void
+}
+
 interface LLMRequest {
   model: string
   messages: Array<{ role: string; content: string }>
@@ -90,6 +97,8 @@ interface LLMRequest {
   sessionId?: string
   /** Label for per-call token accounting. Optional; omitted on unlabeled paths. */
   purpose?: string
+  /** Opt-in internal JSON streaming; zero keeps the non-streamed transport. */
+  firstTokenHedge?: LLMFirstTokenHedge
 }
 
 export interface LLMStreamResult {
@@ -189,6 +198,23 @@ function clientFor(transport: ReturnType<typeof buildChatRequest>['client']) {
 }
 
 export async function callLLM(req: LLMRequest): Promise<string> {
+  if (req.firstTokenHedge && req.firstTokenHedge.delayMs > 0) {
+    const controller = new AbortController()
+    const timeoutMs = req.timeoutMs ?? 90000
+    const timer = setTimeout(() => controller.abort(new Error(`LLM request timed out after ${timeoutMs}ms`)), timeoutMs)
+    try {
+      const result = await narrationAttempt({
+        ...req,
+        timeoutMs,
+        firstTokenTimeoutMs: timeoutMs,
+        idleTimeoutMs: timeoutMs,
+        signal: req.signal ? AbortSignal.any([req.signal, controller.signal]) : controller.signal,
+      }, () => {}, true, req.firstTokenHedge.onHedge, req.firstTokenHedge)
+      return result.content
+    } finally {
+      clearTimeout(timer)
+    }
+  }
   const built = buildChatRequest(req)
   const { params } = built
   logNormalization(req.model, params.model)
@@ -304,6 +330,7 @@ function narrationAttempt(
   onDelta: (chunk: string) => void,
   allowHedge: boolean,
   onHedge?: () => void,
+  hedge?: LLMFirstTokenHedge,
 ): Promise<{ content: string; provider?: string; hedged: boolean; hedgeWinner?: Contender }> {
   return new Promise((resolve, reject) => {
     const contenders: Partial<Record<Contender, { controller: AbortController; error?: unknown; failed: boolean; usage?: unknown }>> = {}
@@ -331,8 +358,11 @@ function narrationAttempt(
       // snapshots the turn's costs. Never wait for the loser's underlying IO.
       void Promise.allSettled(runs).then(() => {
         for (const [label, contender] of Object.entries(contenders)) {
+          // Without a token winner, account the structured backup as the extra
+          // call; keep narration's existing failure accounting unchanged.
+          const lost = winner ? winner !== label : Boolean(hedge) && label === 'hedge'
           recordLLMUsage({
-            purpose: winner && winner !== label ? 'narration_hedge_lost' : req.purpose ?? 'narration',
+            purpose: lost ? hedge?.lostPurpose ?? 'narration_hedge_lost' : req.purpose ?? 'narration',
             model: req.model, streamed: true, ...usageFromProvider(contender.usage),
           })
         }
@@ -353,6 +383,7 @@ function narrationAttempt(
             clearTimers()
             const loser = contenders[label === 'primary' ? 'hedge' : 'primary']
             loser?.controller.abort(new Error('Narration hedge lost'))
+            hedge?.onFirstToken?.(label)
           }
           if (winner === label) onDelta(delta)
         },
@@ -364,6 +395,9 @@ function narrationAttempt(
         state.failed = true
         state.error = error
         if (settled || (winner && winner !== label)) return
+        // Structured calls have no model fallback: spend their one retry now
+        // rather than dropping choices on an error before the hedge timer.
+        if (hedge && !winner && !hedged) { startHedge(); return }
         if (winner || !hedged) { finish(error); return }
         const other = contenders[label === 'primary' ? 'hedge' : 'primary']
         if (!other?.failed) return
@@ -375,12 +409,19 @@ function narrationAttempt(
     req.signal?.addEventListener('abort', onAbort, { once: true })
     if (req.signal?.aborted) { onAbort(); return }
     start('primary')
-    if (allowHedge) hedgeTimer = setTimeout(() => {
-      if (winner || settled) return
+    const startHedge = () => {
+      if (winner || settled || hedged) return
+      clearTimeout(hedgeTimer)
       hedged = true
       onHedge?.()
       start('hedge')
-    }, NARRATION_HEDGE_MS)
+    }
+    if (allowHedge) {
+      if (hedge) hedgeTimer = setTimeout(startHedge, hedge.delayMs)
+      else hedgeTimer = setTimeout(() => {
+        startHedge()
+      }, NARRATION_HEDGE_MS)
+    }
   })
 }
 

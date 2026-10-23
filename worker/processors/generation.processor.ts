@@ -11,7 +11,9 @@ import {
   buildPreNarratorStages,
   buildPrepStages,
   buildTailStages,
+  choiceHedgeLogFields,
   slowestTailCall,
+  type ChoiceHedgeRoute,
   type TailModelCallStage,
 } from '../../src/models/generation-log.model'
 import { buildPrompt } from '../../src/utils/prompt-builder'
@@ -1311,6 +1313,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // inside the batch and `extraction_join` is the batch. A call its own gate
   // skipped leaves no entry, never a 0.
   const tailCallMs: Partial<Record<TailModelCallStage, number>> = {}
+  const choiceRoute: ChoiceHedgeRoute = { hedged: false }
+  let choiceFirstTokenMs: number | undefined
   const tailExtractionStartedAt = Date.now()
   // This semantic classification is intentionally post-stream and parallel to
   // hygiene + metadata. It can only gate unfamiliar-candidate promotion; it
@@ -1376,6 +1380,11 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       // so measuring outside it would report the join twice.
       onStage: (stage, ms) => {
         tailCallMs[stage] = ms
+      },
+      onChoiceHedge: () => { choiceRoute.hedged = true },
+      onChoiceFirstToken: (ms, winner) => {
+        choiceFirstTokenMs = ms
+        choiceRoute.winner = winner
       },
     },
   )
@@ -3517,6 +3526,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     try {
     const tailStages = buildTailStages({
       ...tailCallMs,
+      choice_metadata_first_token: choiceFirstTokenMs,
       extraction_join: extractionJoinMs,
       interaction_signal_wait: interactionSignalWaitMs,
       content_intent: contentIntentMs,
@@ -3547,6 +3557,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         ...(narrationRoute.provider ? { provider: narrationRoute.provider } : {}),
         hedged: narrationRoute.hedged,
         ...(narrationRoute.hedgeWinner ? { hedge_winner: narrationRoute.hedgeWinner } : {}),
+        ...choiceHedgeLogFields(choiceRoute),
         metadata_model: AI_MODELS.metadata,
         tokens_in: event.data.tokens_in,
         tokens_out: event.data.tokens_out,

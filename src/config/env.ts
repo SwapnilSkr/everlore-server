@@ -64,6 +64,9 @@ const optionalEnvVars = {
    *  retrieval then drops its vector half instead of losing the turn. Background
    *  embeddings ignore both. */
   EMBED_HEDGE_MS: '700',
+  /** Choice metadata usually starts in ~0.8 s (deaths: 0.75–1.6 s).
+   * Hedge only a slow first token; 0 restores the non-streamed call. */
+  CHOICE_HEDGE_MS: '1500',
   EMBED_DEADLINE_MS: '2500',
   /** Keeps this process's Pinecone and embedding connections warm while the box
    *  is quiet (see services/keep-warm.ts). `off` disables the pinger entirely. */
@@ -159,6 +162,7 @@ export interface Env {
   CHEAP_RANK_MODEL: string
   RAG_RERANK_ENABLED: boolean
   EMBED_HEDGE_MS: number
+  CHOICE_HEDGE_MS: number
   EMBED_DEADLINE_MS: number
   KEEP_WARM: boolean
   KEEP_WARM_PINECONE: 'stats' | 'query'
@@ -261,6 +265,7 @@ function loadEnv(): Env {
     CHEAP_RANK_MODEL: process.env.CHEAP_RANK_MODEL || optionalEnvVars.CHEAP_RANK_MODEL,
     RAG_RERANK_ENABLED: process.env.RAG_RERANK_ENABLED === 'true',
     EMBED_HEDGE_MS: Number(process.env.EMBED_HEDGE_MS || optionalEnvVars.EMBED_HEDGE_MS),
+    CHOICE_HEDGE_MS: Number(process.env.CHOICE_HEDGE_MS || optionalEnvVars.CHOICE_HEDGE_MS),
     EMBED_DEADLINE_MS: Number(process.env.EMBED_DEADLINE_MS || optionalEnvVars.EMBED_DEADLINE_MS),
     KEEP_WARM: (process.env.KEEP_WARM || optionalEnvVars.KEEP_WARM) !== 'off',
     KEEP_WARM_PINECONE: keepWarmPinecone,
