@@ -287,6 +287,10 @@ type MetadataOpts = {
   /** Test-only observability hook. Production callers omit it; it never changes
    * request construction or validation. */
   onRaw?: (stage: 'scene_witness' | 'choice_metadata', raw: string) => void
+  /** Where each half's model call went. Both halves run in parallel, so the
+   *  caller cannot time them from outside the pair; each half reports its own
+   *  start-to-settle here, failure included. Never changes what is requested. */
+  onStage?: (stage: 'scene_witness' | 'choice_metadata', ms: number) => void
   /** Raw player-authored turn. The witness uses this to identify actual travel
    * intent; it never treats narration alone as player authority. */
   playerInput?: string | null
@@ -542,6 +546,7 @@ export async function extractSceneWitness(
   opts?: MetadataOpts,
 ): Promise<SceneMetadata> {
   const system = buildMetadataSystem(opts, [], [])
+  const startedAt = Date.now()
   try {
     const raw = await callLLM({
       model: opts?.model || AI_MODELS.metadata,
@@ -580,6 +585,10 @@ export async function extractSceneWitness(
     }
   } catch {
     return WITNESS_FALLBACK
+  } finally {
+    // A failed call is still time the tail waited, so the stage is reported on
+    // both paths; only a call that never happened leaves no stage.
+    opts?.onStage?.('scene_witness', Date.now() - startedAt)
   }
 }
 
@@ -604,6 +613,7 @@ export async function extractChoiceMetadata(
   const system = choiceContext
     ? `${baseSystem}\n\n--- CHOICE DECISION CONTEXT (selected story facts available to the narrator) ---\n${choiceContext}\nUse these facts together with the completed narrative. They are canon for grounding choices, not dialogue to quote or replay.\n--- END CHOICE DECISION CONTEXT ---`
     : baseSystem
+  const startedAt = Date.now()
   try {
     const raw = await callLLM({
       model: AI_MODELS.metadata,
@@ -634,6 +644,8 @@ export async function extractChoiceMetadata(
     }
   } catch {
     return { ...WITNESS_FALLBACK, scene_tag: 'intimate' }
+  } finally {
+    opts?.onStage?.('choice_metadata', Date.now() - startedAt)
   }
 }
 

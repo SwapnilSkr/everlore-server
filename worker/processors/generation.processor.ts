@@ -7,7 +7,13 @@ import { mongoColl } from '../../src/config/mongo'
 import { getRedisClient } from '../../src/config/redis'
 import { callLLMStreamWithFallback, AI_MODELS, narrationTemperature, runWithLLMUsage, isLLMUsageActive, snapshotLLMUsage, embedQuery } from '../../src/ai'
 import { buildContextPacket, ragQueryTextFor } from '../../src/services/context-packet.service'
-import { buildPrepStages } from '../../src/models/generation-log.model'
+import {
+  buildPreNarratorStages,
+  buildPrepStages,
+  buildTailStages,
+  slowestTailCall,
+  type TailModelCallStage,
+} from '../../src/models/generation-log.model'
 import { buildPrompt } from '../../src/utils/prompt-builder'
 import { lengthMaxTokens } from '../../src/utils/narrative-styles'
 import { NSFW_MODE } from '../../src/utils/chat-modes'
@@ -404,6 +410,9 @@ const FATE_SEED_COOLDOWN_TURNS = 8
 
 
 export async function generationProcessor(job: Job): Promise<{ eventId: string; sequence: number } | void> {
+  // Where the queue's job clock starts. `end_to_end_ttft_ms` starts earlier still
+  // (the socket message, in `dispatch`), and the two are not the same instant.
+  const jobStartedAt = Date.now()
   // Replay turns reuse the generation queue/worker but follow a distinct path:
   // they stream an alternative for an existing event instead of appending one.
   if (job.data?.mode === 'replay') {
@@ -452,8 +461,11 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
   const workerStartedAt = Date.now()
   // Separate queue wait, worker context construction, and provider TTFT. The
   // user experiences all three; only the last is model/provider latency.
-  const queueWaitMs = Math.max(0, workerStartedAt - (Number(job.timestamp) || workerStartedAt))
-  const requestStartedAt = Number(job.data?.requestedAt) || Number(job.timestamp) || workerStartedAt
+  const enqueuedAt = Number(job.timestamp) || workerStartedAt
+  const queueWaitMs = Math.max(0, workerStartedAt - enqueuedAt)
+  // Falls back to the enqueue stamp when a caller omits the request time, which
+  // makes `pre_narrator_stages.dispatch` 0 rather than a nonsense negative.
+  const requestStartedAt = Number(job.data?.requestedAt) || enqueuedAt
   // The context packet is deliberately rich, and can take a moment on a cold
   // vector/database path. Tell the client which phase it is in immediately so
   // an otherwise blank first-token wait never looks like a stuck send.
@@ -939,6 +951,17 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // pub/sub channel that the API forwards to the player's WebSocket.
   const channel = `user:${playerId}:events`
   const genStart = Date.now()
+  // `end_to_end_ttft_ms` runs from the player's message to the first token, but
+  // `context_latency_ms` covers only the packet and `ttft_ms` only the host's
+  // wait. These are the intervals that used to leak between them. `prompt_build`
+  // contains `post_packet`: prep_stages answers where PREP went, this answers
+  // what ran between the socket and the narrator.
+  const preNarratorStages = buildPreNarratorStages({
+    dispatch: Math.max(0, enqueuedAt - requestStartedAt),
+    queue_wait: Math.max(0, jobStartedAt - enqueuedAt),
+    job_setup: Math.max(0, liveCheckStartedAt - jobStartedAt),
+    prompt_build: Math.max(0, genStart - packetReturnedAt),
+  })
   let ttftMs = 0
   let firstTokenAt = 0
   // When the narrator emits its own choices, strip the trailing CHOICES block out
@@ -1283,9 +1306,16 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     knownNames: priorCardNamesForPresence,
     exclude: [...knownPlacePresenceKeys, choiceProtagonist?.name || '', ...(choiceProtagonist?.aliases || [])],
   })
+  // ── TAIL CLOCK ───────────────────────────────────────────────────────────
+  // The five post-stream calls run concurrently, so each is timed on its own
+  // inside the batch and `extraction_join` is the batch. A call its own gate
+  // skipped leaves no entry, never a 0.
+  const tailCallMs: Partial<Record<TailModelCallStage, number>> = {}
+  const tailExtractionStartedAt = Date.now()
   // This semantic classification is intentionally post-stream and parallel to
   // hygiene + metadata. It can only gate unfamiliar-candidate promotion; it
   // cannot write prose or alter established cast/canon by itself.
+  const entityAdjudicationStartedAt = Date.now()
   const entityAdjudicationPromise = adjudicateEntityCandidates({
     prose: rawNarrative,
     candidates: entityCandidates,
@@ -1293,6 +1323,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     knownPlaces: knownPlaces.map((place) => place.name),
     worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
     onRaw: extractorRaw.capture('entity_adjudication'),
+  }).finally(() => {
+    // Its own gate: no unfamiliar candidate means no model call at all.
+    if (entityCandidates.length) tailCallMs.entity_adjudication = Date.now() - entityAdjudicationStartedAt
   })
   const metaPromise = extractSceneMetadata(
     rawNarrative,
@@ -1339,6 +1372,11 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       })(),
       choiceContext: choiceDecisionContext,
       onRaw: (stage, raw) => extractorRaw.capture(stage)(raw),
+      // Both halves report their own start-to-settle; the pair runs in parallel,
+      // so measuring outside it would report the join twice.
+      onStage: (stage, ms) => {
+        tailCallMs[stage] = ms
+      },
     },
   )
   // Do not wait for the broad metadata pass just to build a candidate set. The
@@ -1346,6 +1384,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // same gated walk-on candidates the entity judge sees. That is sufficient to
   // verify physical co-location while keeping this call in the post-stream
   // parallel batch rather than adding a second completion-time round trip.
+  const endpointAdjudicationStartedAt = Date.now()
+  // Its own gate: empty prose returns the fallback with no model call.
+  const endpointWillCall = !!rawNarrative.trim()
   const endpointAdjudicationPromise = adjudicateSceneEndpoint({
     prose: rawNarrative,
     playerInput: parsedPlayerInput.raw,
@@ -1355,7 +1396,16 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       ...entityCandidates.map((candidate) => candidate.display),
     ],
     onRaw: extractorRaw.capture('scene_endpoint'),
+  }).finally(() => {
+    if (endpointWillCall) tailCallMs.scene_endpoint = Date.now() - endpointAdjudicationStartedAt
   })
+  // Mirrors the extractor's own gate (character-lifecycle-extractor): no text or
+  // no eligible candidate means it returns [] without ever calling the model.
+  // The roster is already protagonist-free, which is the gate's other condition.
+  const deathWillCall =
+    (!!rawNarrative.trim() || parsedPlayerInput.narrationFacts.some((fact) => String(fact || '').trim())) &&
+    (packet.lifecycleRoster || []).some((card) => !!card.canonical_name)
+  const deathExtractionStartedAt = Date.now()
   const deathExtractionPromise = extractLifecycleChanges({
     prose: rawNarrative,
     // What the player authored inside *asterisks* this turn. It is canon, and
@@ -1369,6 +1419,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     deceasedNames: packet.deceasedCharacterNames || [],
     sequence: nextSequence,
     onRaw: extractorRaw.capture('character_deaths'),
+  }).finally(() => {
+    if (deathWillCall) tailCallMs.deaths = Date.now() - deathExtractionStartedAt
   })
   // All post-stream checks run together. None is allowed to alter visible prose
   // or delay the narrator's first token.
@@ -1378,6 +1430,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     deathExtractionPromise,
     endpointAdjudicationPromise,
   ])
+  const extractionJoinMs = Date.now() - tailExtractionStartedAt
+  const choiceAuditStartedAt = Date.now()
   if (endpointAdjudication.citationVerdicts.length > 0) {
     log.info('presence.citation_advisory', {
       instanceId: idString(instanceId),
@@ -1526,7 +1580,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     )
     choicesReadySent = true
   }
+  const choiceAuditMs = Date.now() - choiceAuditStartedAt
 
+  const locationStartedAt = Date.now()
   const statLimits = Object.fromEntries(
     Object.entries(session.stat_definitions || {}).map(([key, raw]) => {
       const def = raw as any
@@ -1826,7 +1882,13 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     !!currentLocation &&
     !!resolvedLocation &&
     idString(resolvedLocation.entity_id) !== idString(currentLocation.entity_id)
+  const locationMs = Date.now() - locationStartedAt
 
+  // Time arbitration runs in two moments a long way apart — the labels here and
+  // `anchorForNextEvent` below — with the whole presence derivation between
+  // them. Both are one step to the player, so the second half is ADDED to the
+  // first instead of being reported as a stage that overlaps presence.
+  const timeArbitrationStartedAt = Date.now()
   // Narrated time skips advance the calendar on any turn (travel, "weeks
   // passed"), not just the explicit wait/continue tick. The continuation tick's
   // label still wins when present. Deterministic backstop: the extractor reads only
@@ -1878,6 +1940,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       timeConfidence = confidenceFor('narrator')
     }
   }
+  let timeMs = Date.now() - timeArbitrationStartedAt
 
   // Presence carry-forward (deterministic — not left to the model): a continuous
   // scene keeps everyone who was here, minus anyone the model says explicitly
@@ -1893,6 +1956,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // two nulls used to say "same place" even when the names were "the table" and
   // "the solar". Names are enough: if the decided place is not the cursor, the
   // old room's people do not come along.
+  // Everything from here to the participant-stub ensure is the presence, party
+  // and scene-state derivation — one deterministic block, timed as one step.
+  const presenceSceneStartedAt = Date.now()
   const placeNameChanged =
     !!placeName &&
     !!currentLocation?.name &&
@@ -2715,10 +2781,13 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     }
   }
 
+  const presenceSceneMs = Date.now() - presenceSceneStartedAt
+
   // WITNESS → ENTITY-STUB tier: every present person the scene just showed who
   // isn't already a codex card gets a lightweight stub entity before the turn is
   // released. Codex extraction remains async below, but stubs must exist before
   // the next turn can start so kinship/choice/memory graph reads do not race.
+  const stubsStartedAt = Date.now()
   const knownCardNames = new Set<string>()
   for (const c of (characterCodex as any[]) || []) {
     if (!c?.canonical_name) continue
@@ -2881,7 +2950,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     .catch((err) => {
       console.warn('stale stub archival skipped:', (err as Error).message)
     })
+  const stubsMs = Date.now() - stubsStartedAt
 
+  const timeAnchorStartedAt = Date.now()
   const timeAnchor = await timeService.anchorForNextEvent({
     instanceId,
     templateId: String(session.template_id),
@@ -2893,6 +2964,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     eventTimeLabel: effectiveTimeAdvance || undefined,
     timelineId: session.active_timeline_id || currentTimeAnchor?.timeline_id || null,
   })
+  timeMs += Date.now() - timeAnchorStartedAt
 
   // Off the TTFT path (the prose already streamed): for a borderline turn, ask
   // the cheap intent judge whether the PLAYER expressed sexual intent in clean
@@ -2902,7 +2974,10 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // disabled or on any error. Scene momentum and the Ardent preference can select
   // a model for THIS turn, but neither is proof that this particular turn should
   // perpetuate NSFW routing.
+  const contentIntentStartedAt = borderlineForIntent ? Date.now() : undefined
   const judgedNsfwIntent = borderlineForIntent ? (await classifyBorderlineIntent(classifyText)) === 'nsfw' : false
+  const contentIntentMs =
+    contentIntentStartedAt === undefined ? undefined : Date.now() - contentIntentStartedAt
   const nsfwIntent = judgedNsfwIntent || currentTurnScore >= 3
   const nsfwIntentSource: 'direct_explicit' | 'intent_judge' | undefined = judgedNsfwIntent
     ? 'intent_judge'
@@ -2958,10 +3033,17 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // if it was eligible; waiting here can only defer back-office completion, not
   // first token, visible prose, choices, or a completed response. The extractor
   // itself fails closed to [], so this cannot fail the canonical event.
+  const interactionSignalWaitStartedAt = Date.now()
   const interactionSignals = interactionSignalPromise
     ? await interactionSignalPromise
     : []
+  // Only the time the TAIL waited: the call started during context assembly, so
+  // an already-settled signal costs ~0 here.
+  const interactionSignalWaitMs = interactionSignalPromise
+    ? Date.now() - interactionSignalWaitStartedAt
+    : undefined
 
+  const eventInsertStartedAt = Date.now()
   const projectionContext = {
     player_input: parsedPlayerInput.raw,
     ...(session.is_sentient && detectSelfIntroName(parsedPlayerInput.raw)
@@ -3075,7 +3157,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   }
 
   await mongoColl.events().insertOne(event)
+  const eventInsertMs = Date.now() - eventInsertStartedAt
   const eventIdStr = idString(event._id)
+  const postInsertStartedAt = Date.now()
   const sceneTag = parsed.scene_tag
   const currentScene = session.current_scene
   const sameScene = currentScene.tag === sceneTag
@@ -3086,6 +3170,12 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // previously burned an LLM call per turn and piled up overlapping rows).
   const shouldSummarize = sameScene && rawTurnCount >= SCENE_SUMMARY_BLOCK
   const newTurnCount = shouldSummarize ? 0 : rawTurnCount
+
+  // Both are measured inside the block below and both may be missing if it
+  // throws, so they are declared here: a failed tail still writes its log row.
+  let loggedAt: number | undefined
+  let postInsertMs: number | undefined
+  let sessionWriteMs: number | undefined
 
   try {
   await publishSpokenLines(event).catch(() => {})
@@ -3179,43 +3269,11 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   }
 
   // Non-blocking observability log: which model handled this turn + NSFW path.
-  // Fire-and-forget — never let logging affect the player's turn.
-  const loggedAt = Date.now()
-  mongoColl
-    .generationLogs()
-    .insertOne({
-      _id: new ObjectId(),
-      instance_id: instanceOid,
-      player_id: playerOid,
-      sequence: nextSequence,
-      is_nsfw_capable: !!session.is_nsfw_capable,
-      user_nsfw_enabled: !!userNsfwEnabled,
-      scene_classification: sceneClassification,
-      nsfw_path: isNsfwTurn,
-      model_used: modelId,
-      ...(modelId !== requestedModelId ? { requested_model: requestedModelId } : {}),
-      ...(fallbackAttempts.length ? { fallback_attempts: fallbackAttempts } : {}),
-      ...(narrationRoute.provider ? { provider: narrationRoute.provider } : {}),
-      hedged: narrationRoute.hedged,
-      ...(narrationRoute.hedgeWinner ? { hedge_winner: narrationRoute.hedgeWinner } : {}),
-      metadata_model: AI_MODELS.metadata,
-      tokens_in: event.data.tokens_in,
-      tokens_out: event.data.tokens_out,
-      llm_calls: snapshotLLMUsage(),
-      prose_hygiene_issues: proseHygieneIssues,
-      latency_ms: latencyMs,
-      ttft_ms: ttftMs,
-      queue_wait_ms: queueWaitMs,
-      context_latency_ms: contextLatencyMs,
-      embed_ms: packet.embedMs,
-      rag_ms: packet.ragMs,
-      prep_stages: prepStages,
-      stream_ms: streamMs,
-      post_stream_ms: loggedAt - streamEndedAt,
-      end_to_end_ttft_ms: endToEndTtftMs,
-      created_at: new Date(loggedAt),
-    })
-    .catch((err) => console.warn('generation_log insert failed:', (err as Error).message))
+  // Fire-and-forget — never let logging affect the player's turn. The row itself
+  // is written in the `finally` below, once `session_write` is known; `loggedAt`
+  // stays here so `post_stream_ms` keeps the boundary prod is measured against.
+  loggedAt = Date.now()
+  postInsertMs = loggedAt - postInsertStartedAt
 
   mongoColl
     .extractorRaw()
@@ -3234,6 +3292,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     .catch((err) => console.warn('extractor_raw insert failed:', (err as Error).message))
 
 
+  const sessionWriteStartedAt = Date.now()
   // Resolve the travelling-with party to entity-bounded rows (drop any name that
   // doesn't map to a real character entity), to persist on the instance. A departed
   // companion with a stated destination that matches a KNOWN place updates their
@@ -3432,6 +3491,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       },
     }),
   )
+  // The completion publish ends the player's wait, so the stage ends here.
+  sessionWriteMs = Date.now() - sessionWriteStartedAt
 
   if (parsed.milestone) {
     await redis.publish(
@@ -3448,6 +3509,68 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     // write or completion publish must not strand it until delayed recovery.
     startCharacterProjection()
     void dispatchPostProcessOutbox().catch(() => {})
+
+    // Written after the block above rather than before it so the row can carry
+    // `session_write`, the step that ends the player's wait. Still fire-and-forget,
+    // still best-effort, and still written when that block threw. Guarded: a
+    // synchronous throw here would replace the turn's own outcome.
+    try {
+    const tailStages = buildTailStages({
+      ...tailCallMs,
+      extraction_join: extractionJoinMs,
+      interaction_signal_wait: interactionSignalWaitMs,
+      content_intent: contentIntentMs,
+      choice_audit: choiceAuditMs,
+      location: locationMs,
+      time: timeMs,
+      presence_scene: presenceSceneMs,
+      stubs: stubsMs,
+      event_insert: eventInsertMs,
+      post_insert: postInsertMs,
+      session_write: sessionWriteMs,
+    })
+    const slowestCall = slowestTailCall(tailCallMs)
+    mongoColl
+      .generationLogs()
+      .insertOne({
+        _id: new ObjectId(),
+        instance_id: instanceOid,
+        player_id: playerOid,
+        sequence: nextSequence,
+        is_nsfw_capable: !!session.is_nsfw_capable,
+        user_nsfw_enabled: !!userNsfwEnabled,
+        scene_classification: sceneClassification,
+        nsfw_path: isNsfwTurn,
+        model_used: modelId,
+        ...(modelId !== requestedModelId ? { requested_model: requestedModelId } : {}),
+        ...(fallbackAttempts.length ? { fallback_attempts: fallbackAttempts } : {}),
+        ...(narrationRoute.provider ? { provider: narrationRoute.provider } : {}),
+        hedged: narrationRoute.hedged,
+        ...(narrationRoute.hedgeWinner ? { hedge_winner: narrationRoute.hedgeWinner } : {}),
+        metadata_model: AI_MODELS.metadata,
+        tokens_in: event.data.tokens_in,
+        tokens_out: event.data.tokens_out,
+        llm_calls: snapshotLLMUsage(),
+        prose_hygiene_issues: proseHygieneIssues,
+        latency_ms: latencyMs,
+        ttft_ms: ttftMs,
+        queue_wait_ms: queueWaitMs,
+        context_latency_ms: contextLatencyMs,
+        embed_ms: packet.embedMs,
+        rag_ms: packet.ragMs,
+        prep_stages: prepStages,
+        pre_narrator_stages: preNarratorStages,
+        stream_ms: streamMs,
+        ...(loggedAt !== undefined ? { post_stream_ms: loggedAt - streamEndedAt } : {}),
+        tail_stages: tailStages,
+        ...(slowestCall ? { tail_slowest_call: slowestCall } : {}),
+        end_to_end_ttft_ms: endToEndTtftMs,
+        created_at: new Date(loggedAt ?? Date.now()),
+      })
+      .catch((err) => console.warn('generation_log insert failed:', (err as Error).message))
+    } catch (err) {
+      console.warn('generation_log build failed:', (err as Error).message)
+    }
   }
 
   function startCharacterProjection() {
