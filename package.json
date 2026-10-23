@@ -31,6 +31,7 @@
     "audit:moderation": "bun run scripts/moderation-audit.ts",
     "audit:choice-grounding": "bun run scripts/choice-grounding-audit.ts",
     "audit:projection-fence": "bun --no-env-file run scripts/projection-fence-audit.ts",
+    "projection:batch-ab": "bun --no-env-file run scripts/projection-batch-ab.ts",
     "audit:projection-checkpoint": "bun run scripts/projection-checkpoint-audit.ts",
     "audit:location": "bun run scripts/location-audit.ts",
     "audit:location-resolution": "bun run scripts/location-resolution-audit.ts",

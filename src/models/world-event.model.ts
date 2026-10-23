@@ -178,8 +178,19 @@ export interface EventDataDoc {
   codex_projection_status?: 'pending' | 'processing' | 'completed' | 'failed'
   codex_projection_claimed_at?: Date
   codex_projection_completed_at?: Date
-  /** Per-step ms of this turn's character-card update, plus `total`. */
+  /** Per-step ms plus total. Batched turns also carry numeric batch_size and
+   * batch_leader_sequence; those two metadata values are not elapsed times. */
   codex_projection_ms?: Record<string, number>
+  /** Internal ready-to-project inputs; retained per turn for cross-worker tails. */
+  codex_projection_context?: {
+    player_input: string
+    player_self_name?: string
+    anomalies: Pick<import('../../worker/lib/projection-anomaly-detector').AnomalyInput,
+      'stubNames' | 'droppedChoices' | 'locationAnchorName' | 'witnessLocationName' | 'excludeNames'>
+    signals: Omit<import('../../worker/lib/signal-ledger').SignalLedgerInput, 'kinship' | 'missCandidates'>
+  }
+  /** Number dropped by this turn's batch, repeated on its members for diagnosis. */
+  codex_projection_dropped_unattributable?: number
   codex_projection_error?: string
   /** Failed repair attempts. At CHARACTER_PROJECTION_MAX_ATTEMPTS the status
    *  becomes 'failed' so a deterministic error stops being retried forever. */

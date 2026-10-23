@@ -1,4 +1,7 @@
+import { ObjectId } from 'mongodb'
+import { foldDelta, newFoldState } from '../../src/services/character-codex.service'
 import { callLLM, AI_MODELS } from '../../src/ai'
+import { log } from '../../src/utils/logger'
 import { isEphemeralPersonDescriptor, isNonPersonRole, type CharacterCodexDelta } from '../../src/services/character-codex.service'
 import type { CharacterIdentityKind, RelationshipMeterKey } from '../../src/models/character-profile.model'
 import { classifyPresenceCodexGaps, isActionableMention } from './presence-gap-detector'
@@ -10,7 +13,7 @@ import {
   relationshipStateFromEvidence,
 } from '../../src/utils/relationship-baseline'
 
-type ExistingCharacter = {
+export type ExistingCharacter = {
   canonical_name: string
   identity_kind?: CharacterIdentityKind
   /** Label disambiguator + continuity clock, both read by resolveIdentityScope. */
@@ -511,12 +514,14 @@ export function resolveIdentityScope(params: {
 
 function parseJsonObject(raw: string): Record<string, unknown> {
   try {
-    return JSON.parse(raw)
+    const parsed: unknown = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
   } catch {
     const m = raw.match(/\{[\s\S]*\}/)
     if (!m) return {}
     try {
-      return JSON.parse(m[0])
+      const parsed: unknown = JSON.parse(m[0])
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
     } catch {
       return {}
     }
@@ -760,10 +765,13 @@ async function adjudicateRelationshipProposals(params: {
   sourceText: string
   existing: ExistingCharacter[]
   proposed: unknown[]
+  turns?: CodexBatchTurn[]
+  call?: typeof callLLM
 }): Promise<{ rejected: Map<number, Set<RelationshipMeterKey> | 'all'>; supplements: unknown[] }> {
   const candidates = params.proposed
     .map((item, index) => ({
       index,
+      ...(params.turns ? { sequence: (item as Record<string, unknown>)?.sequence } : {}),
       name: (item as any)?.name,
       relationship_initialization: (item as any)?.relationship_initialization,
       relationship_deltas: (item as any)?.relationship_deltas,
@@ -773,26 +781,30 @@ async function adjudicateRelationshipProposals(params: {
     .filter((item) => item.relationship_initialization || item.relationship_deltas || item.relationship_facts)
   let raw = ''
   try {
-    raw = await callLLM({
+    raw = await (params.call ?? callLLM)({
       model: AI_MODELS.metadata,
       temperature: 0,
-      maxTokens: 700,
+      maxTokens: 700 * (params.turns?.length || 1),
       responseFormat: { type: 'json_object' },
       messages: [
         {
           role: 'system',
-          content: 'You are a conservative relationship-event adjudicator. Review only direct player↔character bond changes. Reject a proposal ONLY when the SOURCE does not actually show that named character undergoing that change — a wrong character, an invented interaction, or a change nothing in the source supports. Judge the SUBSTANCE, not the transcription: a quote that is trimmed, lightly re-punctuated, or spliced from two adjacent lines is NOT grounds for rejection so long as the source really shows the interaction, and it is not your job to verify quotes character-by-character. Never reject a well-supported change merely because its excerpt is imprecise. You may add a supplement only for a clearly missed direct interaction, with exact contiguous evidence. Never infer motives, indirect atmosphere, or changes without proof. A proposal may move several meters at once; judge EACH METER SEPARATELY and reject only the ones the source does not support — never discard a well-supported meter because a different meter on the same character is wrong. Return ONLY JSON: {"reject":[{"index":candidate index,"meters":["only the unsupported meter names"]}],"supplements":[{"name":"existing or present character name","relationship_deltas":{"trust":integer,"affection":integer,"fear":integer,"rivalry":integer},"relationship_evidence":{"trust":"exact contiguous quote","affection":"exact contiguous quote","fear":"exact contiguous quote","rivalry":"exact contiguous quote"},"relationship_facts":{"add":[{"statement":"concise bond fact","evidence":"exact quote","tags":["tag"]}],"retire":[]} }]}.' ,
+          content: (params.turns ? 'BATCH: Each candidate has a sequence. Judge ONLY against the source turn with that sequence. Every supplement MUST include its source sequence. Never borrow evidence from another turn. ' : '') + 'You are a conservative relationship-event adjudicator. Review only direct player↔character bond changes. Reject a proposal ONLY when the SOURCE does not actually show that named character undergoing that change — a wrong character, an invented interaction, or a change nothing in the source supports. Judge the SUBSTANCE, not the transcription: a quote that is trimmed, lightly re-punctuated, or spliced from two adjacent lines is NOT grounds for rejection so long as the source really shows the interaction, and it is not your job to verify quotes character-by-character. Never reject a well-supported change merely because its excerpt is imprecise. You may add a supplement only for a clearly missed direct interaction, with exact contiguous evidence. Never infer motives, indirect atmosphere, or changes without proof. A proposal may move several meters at once; judge EACH METER SEPARATELY and reject only the ones the source does not support — never discard a well-supported meter because a different meter on the same character is wrong. Return ONLY JSON: {"reject":[{"index":candidate index,"meters":["only the unsupported meter names"]}],"supplements":[{"name":"existing or present character name","relationship_deltas":{"trust":integer,"affection":integer,"fear":integer,"rivalry":integer},"relationship_evidence":{"trust":"exact contiguous quote","affection":"exact contiguous quote","fear":"exact contiguous quote","rivalry":"exact contiguous quote"},"relationship_facts":{"add":[{"statement":"concise bond fact","evidence":"exact quote","tags":["tag"]}],"retire":[]} }]}.' ,
         },
         {
           role: 'user',
-          content: `EXISTING CHARACTERS:\n${JSON.stringify(params.existing.slice(0, 16).map((c) => ({ name: c.canonical_name, aliases: c.aliases || [], bond: c.relationship_state?.summary || null })))}\n\nPROPOSED:\n${JSON.stringify(candidates)}\n\nSOURCE:\n${params.sourceText.slice(0, 7000)}`,
+          content: `EXISTING CHARACTERS:\n${JSON.stringify(params.existing.slice(0, 16).map((c) => ({ name: c.canonical_name, aliases: c.aliases || [], bond: c.relationship_state?.summary || null })))}\n\nPROPOSED:\n${JSON.stringify(candidates)}\n\nSOURCE:\n${params.turns ? JSON.stringify({ seed: params.sourceText, turns: params.turns }) : params.sourceText.slice(0, 7000)}`,
         },
       ],
     })
-  } catch {
+  } catch (err) {
+    if (params.turns) throw err
     return { rejected: new Map(), supplements: [] }
   }
   const parsed = parseJsonObject(raw) as any
+  if (params.turns && (!Array.isArray(parsed.reject) || !Array.isArray(parsed.supplements))) {
+    throw new Error('Invalid codex batch adjudication')
+  }
   // Accepts both shapes: a bare index rejects the whole bond (the original
   // contract), an { index, meters } object rejects only the meters it names.
   const rejected = new Map<number, Set<RelationshipMeterKey> | 'all'>()
@@ -818,10 +830,10 @@ async function adjudicateRelationshipProposals(params: {
     if (existingEntry) for (const meter of existingEntry) meters.add(meter)
     rejected.set(index, meters)
   }
-  return { rejected, supplements: Array.isArray(parsed.supplements) ? parsed.supplements.slice(0, 2) : [] }
+  return { rejected, supplements: Array.isArray(parsed.supplements) ? parsed.supplements.slice(0, 2 * (params.turns?.length || 1)) : [] }
 }
 
-function toDelta(raw: any, sourceText: string): CharacterCodexDelta | null {
+function toDelta(raw: any, sourceText: string, turnText = sourceText): CharacterCodexDelta | null {
   const name = typeof raw?.name === 'string' ? raw.name.trim() : ''
   if (!name) return null
   const aliases = Array.isArray(raw.aliases) ? raw.aliases.map(String) : []
@@ -829,7 +841,7 @@ function toDelta(raw: any, sourceText: string): CharacterCodexDelta | null {
   const relationshipEvidence = toRelationshipEvidence(
     raw.relationship_evidence,
     relationshipDeltas,
-    sourceText,
+    turnText,
   )
   const evidenceBackedDeltas = relationshipDeltas
     ? Object.fromEntries(
@@ -970,7 +982,7 @@ function canonicalizeCorrectionShape(
  * Extract emergent NPC codex updates from a turn's player input + narration.
  * Returns compact deltas that can be merged into canonical character cards.
  */
-export async function extractCharacterCodexDeltas(params: {
+export type CharacterCodexExtractionParams = {
   playerInput: string
   aiResponse: string
   existing: ExistingCharacter[]
@@ -999,7 +1011,28 @@ export async function extractCharacterCodexDeltas(params: {
   sequence?: number
   /** Test-only raw-response observer; never changes production extraction. */
   onRaw?: (raw: string) => void
-}): Promise<CharacterCodexDelta[]> {
+  /** Read-only comparison runner reserves its budget before EVERY provider call. */
+  call?: typeof callLLM
+}
+
+export async function extractCharacterCodexDeltas(params: CharacterCodexExtractionParams): Promise<CharacterCodexDelta[]> {
+  return extractCodex(params) as Promise<CharacterCodexDelta[]>
+}
+
+export type CodexBatchTurn = { sequence: number; playerInput: string; aiResponse: string; presentCast: string[] }
+export type CodexBatchResult = { deltas: Map<number, CharacterCodexDelta[]>; droppedUnattributable: number }
+
+export async function extractCharacterCodexBatch(params: Omit<CharacterCodexExtractionParams,
+  'sequence' | 'playerInput' | 'aiResponse' | 'presentCast'> & { turns: CodexBatchTurn[] }): Promise<CodexBatchResult> {
+  if (!params.turns.length || params.turns.length > 4 ||
+    new Set(params.turns.map((t) => t.sequence)).size !== params.turns.length ||
+    params.turns.some((t, i) => !Number.isInteger(t.sequence) || (i > 0 && t.sequence <= params.turns[i - 1].sequence))) {
+    throw new Error('Invalid codex batch turns')
+  }
+  return extractCodex({ ...params, ...params.turns[0] }, params.turns) as Promise<CodexBatchResult>
+}
+
+async function extractCodex(params: CharacterCodexExtractionParams, turns?: CodexBatchTurn[]): Promise<CharacterCodexDelta[] | CodexBatchResult> {
   const { playerInput, aiResponse, existing, seedPrompt, isSentient, protagonistName, playerPersonaName, presentCast, knownLocations, promotableRecurringPeople, sequence } = params
 
   const existingText = existing.length
@@ -1034,7 +1067,7 @@ export async function extractCharacterCodexDeltas(params: {
     : '(none yet)'
 
   const presentList = (presentCast || []).map((n) => (n || '').trim()).filter(Boolean)
-  const presentBlock = presentList.length
+  const presentBlock = !turns && presentList.length
     ? `\nPRESENT THIS TURN (these exact people are in the scene now): ${presentList.join(', ')}.\nA bare descriptor in the narration ("the man", "the woman", "the figure", "the stranger", "the boy") almost always refers to one of these present people — resolve it to them, never to a new card.\n`
     : ''
   const promotableRecurringBlock = (promotableRecurringPeople || []).length
@@ -1128,39 +1161,44 @@ Respond ONLY JSON:
 
   let raw: string
   try {
-    raw = await callLLM({
+    raw = await (params.call ?? callLLM)({
       model: AI_MODELS.codexExtraction,
       messages: [
-        { role: 'system', content: system },
+        { role: 'system', content: system + (turns ? '\nBATCH: The roster is BEFORE the first turn. Process each TURN separately in ascending sequence, reconciling earlier changes before later ones. Preserve each turn’s cast, player input and narration. Return {"turns":[{"sequence":integer,"characters":[...same character shape...],"relation_assertions":[]}]} with exactly one entry for EVERY supplied sequence, including empty turns. Every character proposal ALSO needs sequence equal to its enclosing turn. Use only that turn’s source as evidence for its meters. Never combine changes from different turns. A later turn may retire a state added by an earlier turn.' : '') },
         {
           role: 'user',
-          content: `Player input:\n${playerInput || '(none)'}\n\nNarration:\n${aiResponse}`,
+          content: turns ? JSON.stringify({ turns }) : `Player input:\n${playerInput || '(none)'}\n\nNarration:\n${aiResponse}`,
         },
       ],
       temperature: 0.2,
-      maxTokens: 900,
+      maxTokens: 900 * (turns?.length || 1),
       responseFormat: { type: 'json_object' },
     })
-  } catch {
+  } catch (err) {
+    if (turns) throw err
     return []
   }
   params.onRaw?.(raw)
 
   const parsed = parseJsonObject(raw)
-  const rawList: unknown[] = Array.isArray((parsed as any).characters) ? (parsed as any).characters : []
+  if (turns) return validateCodexBatch(params, turns, parsed)
+  return validateCodexTurn(params, parsed)
+}
+
+async function validateCodexTurn(params: CharacterCodexExtractionParams, parsed: Record<string, unknown>,
+  reviewedBatch?: { proposed: unknown[]; supplements: unknown[] }): Promise<CharacterCodexDelta[]> {
+  const { playerInput, aiResponse, existing, seedPrompt, presentCast, knownLocations, promotableRecurringPeople, sequence } = params
+  const rawList: unknown[] = Array.isArray(parsed.characters) ? parsed.characters : []
   const sourceText = `${seedPrompt || ''}\n${playerInput || ''}\n${aiResponse || ''}`
-  const adjudication = await adjudicateRelationshipProposals({
-    sourceText,
-    existing,
-    proposed: rawList,
-  })
+  const adjudication = reviewedBatch ? { rejected: new Map<number, Set<RelationshipMeterKey> | 'all'>(), supplements: reviewedBatch.supplements }
+    : await adjudicateRelationshipProposals({ sourceText, existing, proposed: rawList, call: params.call })
   // A rejection is a verdict on the BOND ONLY, and on only the meters it names.
   // The adjudicator reviews nothing else, so a rejected candidate keeps its card
   // update (appearance, state, hints, facts) and loses just the meters actually
   // faulted — dropping the whole entry threw away unrelated codex work, and
   // dropping every meter threw away well-evidenced ones, every time a single
   // quote looked shaky.
-  const reviewed = rawList.map((item, index) => {
+  const reviewed = reviewedBatch?.proposed ?? rawList.map((item, index) => {
     const verdict = adjudication.rejected.get(index)
     if (!verdict) return item
     return verdict === 'all' ? withoutRelationshipFields(item) : withoutMeters(item, verdict)
@@ -1224,7 +1262,7 @@ Respond ONLY JSON:
 
   const out: CharacterCodexDelta[] = []
   for (const item of list) {
-    let delta = toDelta(item, sourceText)
+    let delta = toDelta(item, sourceText, turnText)
     if (!delta) continue
     delta = promoteProperNameOverRole(delta, knownByName, aiResponse)
     // Enforce the ONE canonical correction shape (resolved_name = existing
@@ -1433,4 +1471,87 @@ Respond ONLY JSON:
     out[0].relation_assertions = relationAssertions
   }
   return out
+}
+
+/** Envelope membership supplies missing turn tags; conflicts are counted,
+ * never resolved from position, character name, or neighboring proposals. */
+async function validateCodexBatch(params: CharacterCodexExtractionParams, turns: CodexBatchTurn[],
+  parsed: Record<string, unknown>): Promise<CodexBatchResult> {
+  if (!Array.isArray(parsed.turns)) throw new Error('Invalid codex batch: missing turns')
+  const rows = new Map<number, Record<string, unknown>>()
+  let droppedUnattributable = Array.isArray(parsed.characters) ? parsed.characters.length : 0
+  for (const value of parsed.turns) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid codex batch turn')
+    const row = value as Record<string, unknown>
+    if (!turns.some((t) => t.sequence === row.sequence)) {
+      droppedUnattributable += Array.isArray(row.characters) ? row.characters.length : 0
+      continue
+    }
+    const sequence = row.sequence as number
+    if (rows.has(sequence) || !Array.isArray(row.characters)) throw new Error('Invalid codex batch turn shape')
+    const characters: unknown[] = []
+    for (const item of row.characters) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error('Invalid codex batch character')
+      const character = item as Record<string, unknown>
+      if (character.sequence != null && character.sequence !== sequence) {
+        droppedUnattributable++
+        continue
+      }
+      if (!validBatchCharacter(item as Record<string, unknown>)) {
+        throw new Error('Invalid codex batch character')
+      }
+      characters.push({ ...character, sequence })
+    }
+    rows.set(sequence, { ...row, characters })
+  }
+  if (rows.size !== turns.length) throw new Error('Invalid codex batch: incomplete turns')
+  const proposed = turns.flatMap((t) => rows.get(t.sequence)!.characters as unknown[])
+  const adjudication = await adjudicateRelationshipProposals({ sourceText: params.seedPrompt || '', existing: params.existing, proposed, turns, call: params.call })
+  const reviewed = proposed.map((item, index) => {
+    const verdict = adjudication.rejected.get(index)
+    return !verdict ? item : verdict === 'all' ? withoutRelationshipFields(item) : withoutMeters(item, verdict)
+  })
+  const supplements = adjudication.supplements.filter((item) => {
+    if (item && typeof item === 'object' && turns.some((t) => t.sequence === (item as Record<string, unknown>).sequence)) {
+      if (!validBatchCharacter(item as Record<string, unknown>)) throw new Error('Invalid codex batch supplement')
+      return true
+    }
+    droppedUnattributable++
+    return false
+  })
+  const proposedCount = proposed.length + supplements.length + droppedUnattributable
+  if (proposedCount > 0 && droppedUnattributable === proposedCount) {
+    log.warn('projection.batch_all_unattributable', {
+      sequence: turns[0].sequence, turn_count: turns.length,
+      proposed_count: proposedCount, dropped_count: droppedUnattributable,
+    })
+    throw new Error('Invalid codex batch: all proposed characters unattributable')
+  }
+  // The real fold supplies subsequent identity/bond validation with the state
+  // each preceding turn would have produced. This state is strictly in memory.
+  const iid = new ObjectId(), pid = new ObjectId(), now = new Date()
+  const state = newFoldState(params.existing.map((c) => ({
+    ...structuredClone(c), _id: new ObjectId(), instance_id: iid, player_id: pid,
+    name_normalized: normForMatch(c.canonical_name), aliases: c.aliases || [],
+    immutable_facts: c.immutable_facts || [], mutable_state: c.mutable_state || [],
+    relationship_moments: c.relationship_moments?.map((m) => ({ ...m, evidence: ('evidence' in m ? String(m.evidence) : '') })),
+    disposition_to_player: c.disposition_to_player || '', hidden_thought: '',
+    first_seen_sequence: 0, last_seen_sequence: c.last_seen_sequence || 0, mention_count: 1, created_at: now, updated_at: now,
+  })))
+  const deltas = new Map<number, CharacterCodexDelta[]>()
+  for (const turn of turns) {
+    const own = (items: unknown[]) => items.filter((item) => (item as Record<string, unknown>).sequence === turn.sequence)
+    const result = await validateCodexTurn({ ...params, ...turn, existing: [...new Set(state.byName.values())] }, rows.get(turn.sequence)!,
+      { proposed: own(reviewed), supplements: own(supplements) })
+    if (!params.isSentient) for (const delta of result) if (delta.is_protagonist) delete delta.relationship_deltas
+    deltas.set(turn.sequence, result)
+    for (const delta of result) foldDelta(state, delta, turn.sequence, { iid, pid, now, prose: turn.aiResponse })
+  }
+  return { deltas, droppedUnattributable }
+}
+
+/** Optional fields use the same tolerant coercion and six-delta cap in
+ * validateCodexTurn/toDelta as a single turn; only identity is required here. */
+function validBatchCharacter(item: Record<string, unknown>): boolean {
+  return typeof item.name === 'string' && !!item.name.trim()
 }

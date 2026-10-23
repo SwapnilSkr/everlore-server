@@ -12,8 +12,6 @@ import { buildPrompt } from '../../src/utils/prompt-builder'
 import { lengthMaxTokens } from '../../src/utils/narrative-styles'
 import { NSFW_MODE } from '../../src/utils/chat-modes'
 import { parsePlayerInput } from '../../src/utils/player-input-parser'
-import { extractKinshipAssertions, mergeRelationAssertions } from '../lib/kinship-pattern-extractor'
-import { extractLifecycleTransitions } from '../lib/kinship-transition-extractor'
 import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-mutator'
 import { countTokens } from '../../src/utils/token-counter'
 import { normalizeNarrationMarkers, validateProseHygiene } from '../../src/utils/prose-hygiene'
@@ -25,8 +23,6 @@ import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output
 import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
 import { extractSceneMetadata, statDescriptors } from '../lib/metadata-extractor'
-import { extractCharacterCodexDeltas, looksLikeUnnamedLabel } from '../lib/character-codex-extractor'
-import { compactImmutableFacts } from '../lib/codex-compactor'
 import { classifyPresenceCodexGaps, isActionableMention, hasSceneParticipationGrammar } from '../lib/presence-gap-detector'
 import {
   adjudicateEntityCandidates,
@@ -41,7 +37,7 @@ import {
   showsParticipationInPassage,
   narrationOnly,
 } from '../lib/scene-endpoint-adjudicator'
-import { characterCodexService, type RelationAssertion } from '../../src/services/character-codex.service'
+import { characterCodexService } from '../../src/services/character-codex.service'
 import { kinshipGraphService } from '../../src/services/kinship-graph.service'
 import { entityGraphService, normalizeEntityName, placesAreTheSameLocation, isVagueLocationLabel, isBareGenericPlaceLabel } from '../../src/services/entity-graph.service'
 import { locationService } from '../../src/services/location.service'
@@ -78,24 +74,17 @@ import {
 import { decidePlacePromotion, classifyPlaceRelation } from '../lib/place-promotion'
 import { auditChoices } from '../lib/choice-grounding-audit'
 import { classifyChoiceGrounding, computeGroundingContext } from '../lib/choice-grounding'
-import { detectProjectionAnomalies } from '../lib/projection-anomaly-detector'
-import { buildSignalLedger } from '../lib/signal-ledger'
 import { detectNarratedTimeSkip } from '../lib/time-skip-signal'
 import { detectCompanionJoins, detectCompanionDepartures, detectSoloTravel } from '../lib/party-signal'
 import { type WorldFactSource, SOURCE_RANK, confidenceFor, isWorldFactSource } from '../../src/utils/world-authority'
-import { memorySupersessionService } from '../../src/services/memory-supersession.service'
-import { relationCandidateService } from '../../src/services/relation-candidate.service'
 import { timeService } from '../../src/services/time.service'
 import { replayProcessor } from './replay.processor'
 import { log } from '../../src/utils/logger'
 import { recordAnomaly } from '../../src/utils/record-anomaly'
 import { projectCharacterEvent } from './character-projection.processor'
-import { fenceOnPriorProjection, withCharacterProjection } from '../lib/character-projection-lease'
+import { fenceOnPriorProjection } from '../lib/character-projection-lease'
 import { deriveNextSceneState, renderSceneStateForPrompt, PRESENCE_TITLE_WORDS, sceneIdentityKey } from '../../src/services/scene-state.service'
 import type { PlayerWorldAction } from '../../src/utils/world-action'
-import { surfaceToKind } from '../../src/utils/kinship-ontology'
-import { detectNarratedRelationCandidates } from '../lib/relation-candidate-detector'
-import { detectCanonRevisionCandidates } from '../lib/canon-revision-detector'
 import { dispatchPostProcessOutbox, stagePostProcess } from '../../src/services/post-process-outbox.service'
 import {
   activeCastInteractionCandidates,
@@ -294,15 +283,6 @@ function narrativeHonorsDestination(narrative: string, destination: string): boo
     .toLowerCase()
     .replace(/[^a-z0-9\s'-]+/g, ' ')
   return meaningful.every((word) => new RegExp(`\\b${escapeRegExp(word)}\\b`).test(text))
-}
-
-/** Normalize a persona/character name for identity comparison. */
-function normalizePersonaName(value: string): string {
-  return (value || '')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s'-]+/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim()
 }
 
 /**
@@ -2982,6 +2962,33 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     ? await interactionSignalPromise
     : []
 
+  const projectionContext = {
+    player_input: parsedPlayerInput.raw,
+    ...(session.is_sentient && detectSelfIntroName(parsedPlayerInput.raw)
+      ? { player_self_name: detectSelfIntroName(parsedPlayerInput.raw)! } : {}),
+    anomalies: { stubNames: stubResult.ensured, droppedChoices: audited.dropped,
+      ...(locationAnchor?.name ? { locationAnchorName: locationAnchor.name } : {}),
+      ...(parsed.current_location ? { witnessLocationName: parsed.current_location } : {}),
+      excludeNames: presenceGapExcludes },
+    signals: {
+      movement: { detected: confirmedWorldAction?.kind === 'travel' || parsed.player_travel_confirmed === true ||
+        parsed.viewpoint_moved === true || locationDecision.transitionCorroborated || !!locationDecision.sceneAnchor,
+        committed: !!locationAnchor?.name && viewpointMoved, source: moveSource, confidence: moveConfidence },
+      time: { detected: !!(witnessTimeLabel || playerTimeLabel || timeAdvanceLabel), committed: !!effectiveTimeAdvance,
+        ...(timeSource ? { source: timeSource } : {}), ...(timeSource ? { confidence: timeConfidence } : {}) },
+      party: { detected: partyJoinsDetected, committedConfidences: freshPartyJoinConfidences },
+      presence: (() => {
+        const verdicts = endpointAdjudication.citationVerdicts
+        const castKeys = new Set((parsed.present_characters || []).map(presenceKeyOf).filter(Boolean))
+        return { detected: verdicts.length,
+          committed: verdicts.filter((v) => citationAdmitsToPresent(v) && castKeys.has(presenceKeyOf(v.name))).length,
+          ...(verdicts.length ? { by_tier: { canon: verdicts.filter((v) => v.a && v.b && v.c).length,
+            hint: verdicts.filter((v) => v.a && !(v.b && v.c)).length, hidden: verdicts.filter((v) => !v.a).length } } : {}) }
+      })(),
+      playerCorrected: parsedPlayerInput.corrections.length > 0,
+    },
+  }
+
   const event = {
     _id: eventId,
     instance_id: instanceOid,
@@ -3056,6 +3063,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       tokens_out: countTokens(parsed.narrative),
       prose_hygiene_issues: proseHygieneIssues,
       codex_projection_status: 'pending' as const,
+      codex_projection_context: projectionContext,
     },
     is_user_edited: false,
     edit_history: [],
@@ -3443,702 +3451,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   }
 
   function startCharacterProjection() {
-    // Self-building character codex: extract NPC deltas from this turn, persist
-    // canonical cards, then push an update to the live client.
-    void withCharacterProjection(
-      { instanceId, playerId, eventId: eventIdStr }, projectCharacterEvent,
-    async (projectionEvent, assertOwned, timing) => {
-      // These reads happen AFTER the sequence barrier, never from the narrator's
-      // packet. Earlier projections can promote/rename cards and graph people.
-      const characterCodex = await timing.step('cards_read', () => mongoColl.characters().find({ instance_id: instanceOid }).toArray())
-      const knownPlaces = await timing.step('known_locations_read', () => entityGraphService.listKnownLocations(instanceId, 30))
-      const knownCardNames = new Set(characterCodex.flatMap((c) =>
-        [c.canonical_name, ...(c.aliases || [])].map(normalizeEntityName).filter(Boolean)))
-      if (session.is_sentient) {
-        for (const name of [session.persona_snapshot?.name, detectSelfIntroName(parsedPlayerInput.raw)]) {
-          if (name) knownCardNames.add(normalizeEntityName(name))
-        }
-      }
-      // Repeated figures the entity/memory graph already corroborates may earn a
-      // codex card on recurrence — off-screen, and named or not. This is
-      // intentionally a small, proven set, not a free pass for every mention.
-      //
-      // Unnamed figures are held to a HIGHER bar than named ones. A name is a
-      // signal a person matters, so a label carries none and must show its own
-      // evidence: the story has to have recorded them DOING or RECEIVING
-      // something (a memory naming them as subject or object) more than once,
-      // not merely mentioned them in passing. So a rider the player duels across
-      // three turns earns a card, while "the crowd" said three times does not.
-      const promotableCandidates = (await timing.step('promotable_candidates_read', () => mongoColl
-        .entities()
-        .find(
-          {
-            instance_id: instanceOid,
-            type: 'character',
-            mention_count: { $gte: 3 },
-            character_id: { $exists: false },
-          },
-          { projection: { _id: 1, canonical_name: 1 } },
-        )
-        .toArray())) as Array<{ _id: ObjectId; canonical_name?: string }>
-
-      const unnamedIds = new Set(
-        promotableCandidates
-          .filter((e) => looksLikeUnnamedLabel(String(e.canonical_name || '')))
-          .map((e) => idString(e._id)),
-      )
-      const unnamedCandidates = promotableCandidates.filter((e) => unnamedIds.has(idString(e._id)))
-      // One scoped count for the unnamed ones only; the named path is unchanged
-      // and costs nothing extra.
-      const involvedEntityIds = new Set<string>()
-      if (unnamedCandidates.length) {
-        const ids = unnamedCandidates.map((e) => e._id)
-        const involvementByEntity = new Map<string, number>()
-        const memRefs = await timing.step('memory_involvement_read', () => mongoColl
-          .memories()
-          .find(
-            {
-              instance_id: instanceOid,
-              $or: [{ subject_entity_ids: { $in: ids } }, { object_entity_ids: { $in: ids } }],
-            },
-            { projection: { subject_entity_ids: 1, object_entity_ids: 1 } },
-          )
-          .limit(200)
-          .toArray())
-        for (const m of memRefs as any[]) {
-          for (const id of [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])]) {
-            const key = idString(id)
-            involvementByEntity.set(key, (involvementByEntity.get(key) || 0) + 1)
-          }
-        }
-        for (const [key, count] of involvementByEntity) {
-          if (count >= 2) involvedEntityIds.add(key)
-        }
-      }
-
-      const promotableRecurringPeople = promotableCandidates
-        .filter((e) =>
-          unnamedIds.has(idString(e._id)) ? involvedEntityIds.has(idString(e._id)) : true,
-        )
-        .map((entity) => String(entity.canonical_name || '').trim())
-        .filter(Boolean)
-        .slice(0, 12)
-      const deltas = projectionEvent.data.codex_deltas ?? await timing.extract((onRaw) => extractCharacterCodexDeltas({
-        onRaw,
-        playerInput: parsedPlayerInput.raw,
-        aiResponse: rawNarrative,
-        sequence: nextSequence,
-        existing: characterCodex.map((c) => ({
-          canonical_name: c.canonical_name,
-          aliases: c.aliases || [],
-          // The prompt renders "(identity kind: role_label)" so the model knows a
-          // card is a PLACEHOLDER still waiting for a name — it was never sent,
-          // so that clause has been dead and label→name promotion was a coin flip.
-          identity_kind: c.identity_kind,
-          identity_scope: c.identity_scope,
-          last_seen_sequence: c.last_seen_sequence,
-          former_labels: c.former_labels || [],
-          role: c.role,
-          appearance: c.appearance,
-          persona: c.persona,
-          disposition_to_player: c.disposition_to_player,
-          relationship: c.relationship,
-          relationship_moments: c.relationship_moments || [],
-          relationship_state: c.relationship_state,
-          relationship_facts: c.relationship_facts || [],
-          mutable_state: c.mutable_state || [],
-          immutable_facts: c.immutable_facts || [],
-        })),
-        seedPrompt: session.seed_prompt,
-        isSentient: session.is_sentient,
-        protagonistName: characterCodex.find((c) => c.is_protagonist)?.canonical_name,
-        playerPersonaName: session.persona_snapshot?.name,
-        presentCast: parsed.present_characters,
-        knownLocations: knownPlaces,
-        promotableRecurringPeople,
-      }))
-      // Sentient worlds: the player is the persona TALKING TO the world's main
-      // character — they are not part of the cast. Drop any delta that would
-      // card them, no matter what the extractor produced. The player's identity
-      // is the UNION of: the authored persona name, the existing player entity's
-      // canonical name + aliases (learned on prior turns), and any name the
-      // player introduces for THEMSELVES THIS turn ("I'm Kael", "call me Alex").
-      // The last one is the gap that minted Alex/Swapnil/Kael cards: sentient
-      // worlds often start with no persona name, so the only signal that "Kael"
-      // is the player is their own self-introduction — which must card nothing.
-      if (session.is_sentient) {
-        const playerNames = new Set<string>()
-        const addName = (n: string | null | undefined) => {
-          const norm = normalizePersonaName(n || '')
-          if (norm) playerNames.add(norm)
-        }
-        addName(session.persona_snapshot?.name)
-        let selfIntroName: string | null = null
-        try {
-          const playerEntity = await timing.step('player_identity_read', () => mongoColl
-            .entities()
-            .findOne({ instance_id: instanceOid, type: 'player' }, { projection: { canonical_name: 1, aliases: 1 } }))
-          if (playerEntity) {
-            // "The Player" / "player" are generic sentinels, not a real name a
-            // card could collide with — skip them so they don't over-match.
-            for (const n of [playerEntity.canonical_name, ...(playerEntity.aliases || [])]) {
-              const norm = normalizePersonaName(n || '')
-              if (norm && norm !== 'the player' && norm !== 'player') playerNames.add(norm)
-            }
-          }
-          selfIntroName = detectSelfIntroName(parsedPlayerInput.raw)
-          if (selfIntroName) addName(selfIntroName)
-        } catch (err) {
-          console.warn('player self-name resolution skipped:', (err as Error).message)
-        }
-
-        if (playerNames.size > 0) {
-          const refersToPlayer = (d: (typeof deltas)[number]) =>
-            [d.name, d.resolved_name, ...(d.aliases || [])]
-              .map((n) => normalizePersonaName(n || ''))
-              .some((n) => n && playerNames.has(n))
-          for (let i = deltas.length - 1; i >= 0; i--) {
-            if (refersToPlayer(deltas[i])) deltas.splice(i, 1)
-          }
-        }
-
-        // Persist a freshly-introduced player name onto the player entity so the
-        // guard still catches it on later turns where the player doesn't restate
-        // it (the extractor would otherwise re-mint the card the moment the main
-        // character addresses them by name).
-        if (selfIntroName) {
-          const norm = normalizePersonaName(selfIntroName)
-          if (norm && norm !== 'the player' && norm !== 'player') {
-            // Finish this alias write before releasing the projection barrier,
-            // so the next extraction sees the player's introduced identity.
-            try {
-              await timing.step('player_alias_write', () => mongoColl.entities().updateOne(
-                { instance_id: instanceOid, type: 'player' },
-                {
-                  $addToSet: { aliases: norm },
-                  $set: { updated_at: new Date() },
-                },
-              ))
-            } catch (err) {
-              console.warn('player self-name persist skipped:', (err as Error).message)
-            }
-          }
-        }
-
-      }
-
-      // GM-world protagonist is the player's OWN character; relationship meters
-      // toward the player are nonsense there (a character has no stance toward
-      // themself). Enforce what the extractor prompt asks for. Sentient worlds
-      // keep protagonist meters — the persona genuinely has a stance.
-      if (!session.is_sentient) {
-        for (const d of deltas) {
-          if (d.is_protagonist) delete d.relationship_deltas
-        }
-      }
-
-      // A reveal candidate must still surface if the smaller extraction model
-      // returned no codex delta. In that case the existing roster is enough to
-      // validate a proposal; no candidate can mint an identity by itself.
-      await assertOwned()
-      const codex = !projectionEvent.data.codex_deltas && deltas.length > 0
-        ? await timing.step('apply_deltas', () => characterCodexService.applyDeltas({
-            instanceId,
-            playerId,
-            sequence: nextSequence,
-            deltas,
-            // Post-stream only: the lasting-look evidence check reads the turn
-            // prose here, never before or during the narrator stream.
-            prose: rawNarrative,
-          }))
-        : characterCodex
-
-      // Ledger the applied deltas on the event so the codex is an exact
-      // rebuildable projection (rewind replays these — no stale facts).
-      if (!projectionEvent.data.codex_deltas) {
-        await timing.step('deltas_ledger_write', () => mongoColl.events().updateOne({ _id: event._id }, { $set: { 'data.codex_deltas': deltas } }))
-      }
-
-      // Entity graph: keep card↔entity links 1:1 and project this turn's
-      // relationship meters onto typed edges. Best-effort — graph failures
-      // never break the codex pipeline.
-      try {
-        const entityMap = await timing.step('entity_graph_sync', () => entityGraphService.syncCodexEntities({
-          instanceId,
-          playerId,
-          sequence: nextSequence,
-          cards: codex,
-        }))
-        const touchedCards = codex.filter((c) => c.last_seen_sequence === nextSequence && c.relationship)
-        if (touchedCards.length > 0) {
-          await timing.step('relationship_sync', () => entityGraphService.syncRelationshipEdges({
-            instanceId,
-            playerId,
-            sequence: nextSequence,
-            eventId: event._id,
-            cards: touchedCards,
-            entitiesByCardName: entityMap,
-            playerName: session.persona_snapshot?.name,
-          }))
-        }
-
-        // Kinship graph: typed relation ties asserted this turn → graph edges
-        // (extract → Stage-1 hygiene → Stage-2 epithet resolver → persist). Post
-        // stream, off TTFT. Self anchor = protagonist card (GM) or player (sentient).
-        // Structural kinship is too consequential to infer from narration. A line
-        // such as "my sister in spirit" or a story-within-a-story must never create
-        // a family edge. Only an explicit player-authored fact or correction can
-        // establish/retcon one; narrator and character claims stay prose until the
-        // player confirms them through an authored narration/correction.
-        const deterministicAssertions = extractKinshipAssertions({
-          corrections: parsedPlayerInput.corrections,
-          narrationFacts: parsedPlayerInput.narrationFacts,
-          claims: [],
-          prose: undefined,
-        })
-        // Narrator prose may suggest a literal family tie, but never establishes
-        // one. Store a quarantined, evidence-backed review candidate instead.
-        // This is intentionally after the stream and outside relationAssertions:
-        // candidates affect neither canon nor the next prompt until the player
-        // explicitly accepts one.
-        try {
-          const proposals = detectNarratedRelationCandidates(rawNarrative)
-          if (proposals.length > 0) {
-            const protagCard = codex.find((c) => c.is_protagonist)
-            let playerEntityId: string | null = null
-            if (!session.is_sentient && protagCard) {
-              const protagEntity = entityMap.get(protagCard.name_normalized)
-              playerEntityId = protagEntity?._id ? idString(protagEntity._id) : null
-            } else {
-              const player = await timing.step('kinship_player_entity', () => entityGraphService.ensurePlayerEntity({
-                instanceId,
-                playerId,
-                name: session.persona_snapshot?.name,
-                sequence: nextSequence,
-              }))
-              playerEntityId = idString(player._id)
-            }
-            if (playerEntityId) {
-              for (const proposal of proposals) {
-                // A review candidate is only useful for an identity the world
-                // already knows. Never mint an entity from prose that merely
-                // *resembles* a relationship assertion; that turned ordinary
-                // narration into garbage candidates such as "on the far".
-                const known = entityMap.get(normalizeEntityName(proposal.characterName))
-                if (!known?._id) continue
-                const characterEntityId = idString(known._id)
-                await timing.step('kinship_candidate_write', () => relationCandidateService.propose({
-                  instanceId,
-                  playerId,
-                  characterName: proposal.characterName,
-                  characterEntityId,
-                  playerEntityId,
-                  relation: proposal.relation,
-                  relationKind: proposal.relationKind,
-                  evidence: proposal.evidence,
-                  sourceEventId: event._id,
-                  sequence: nextSequence,
-                }))
-              }
-            }
-          }
-        } catch (err) {
-          console.warn('relation candidate proposal skipped:', (err as Error).message)
-        }
-
-        // Identity/twist review lane. The detector is intentionally only a
-        // candidate producer: it must resolve every endpoint to the existing
-        // card/entity roster, quote narration evidence, and never changes canon
-        // without an explicit player confirmation in the Chronicle controls.
-        try {
-          const revisions = detectCanonRevisionCandidates(rawNarrative, codex)
-          if (revisions.length > 0) {
-            const protagCard = codex.find((card) => card.is_protagonist)
-            let playerEntityId: string | null = null
-            if (!session.is_sentient && protagCard) {
-              const protagEntity = entityMap.get(protagCard.name_normalized)
-              playerEntityId = protagEntity?._id ? idString(protagEntity._id) : null
-            } else {
-              const player = await timing.step('kinship_player_entity', () => entityGraphService.ensurePlayerEntity({
-                instanceId,
-                playerId,
-                name: session.persona_snapshot?.name,
-                sequence: nextSequence,
-              }))
-              playerEntityId = idString(player._id)
-            }
-            if (playerEntityId) {
-              for (const revision of revisions) {
-                const primary = codex.find((card) => card.canonical_name === revision.characterName)
-                const primaryEntity = primary ? entityMap.get(primary.name_normalized) : null
-                if (!primary || !primaryEntity?._id) continue
-                const counterpart = revision.kind === 'identity_merge'
-                  ? codex.find((card) => card.canonical_name === revision.counterpartCharacterName)
-                  : undefined
-                const counterpartEntity = counterpart ? entityMap.get(counterpart.name_normalized) : undefined
-                if (revision.kind === 'identity_merge' && !counterpartEntity?._id) continue
-                await timing.step('kinship_candidate_write', () => relationCandidateService.propose({
-                  instanceId,
-                  playerId,
-                  characterName: primary.canonical_name,
-                  characterEntityId: idString(primaryEntity._id),
-                  playerEntityId,
-                  kind: revision.kind,
-                  relation: revision.kind === 'kinship_revision' ? revision.relation : 'identity',
-                  evidence: revision.evidence,
-                  sourceEventId: event._id,
-                  sequence: nextSequence,
-                  ...(revision.kind === 'kinship_revision'
-                    ? { replacesRelation: revision.relation }
-                    : { proposedName: revision.proposedName }),
-                  ...(counterpartEntity?._id
-                    ? {
-                        counterpartEntityId: idString(counterpartEntity._id),
-                        counterpartCharacterName: counterpart?.canonical_name,
-                      }
-                    : {}),
-                }))
-              }
-            }
-          }
-        } catch (err) {
-          console.warn('canon revision candidate proposal skipped:', (err as Error).message)
-        }
-        const explicitRelationship =
-          confirmedWorldAction?.kind === 'relationship'
-            ? (() => {
-                const mapped = surfaceToKind(confirmedWorldAction.relation)
-                if (!mapped) return []
-                const source = confirmedWorldAction.correction
-                  ? ('player_correction' as const)
-                  : ('player_narration' as const)
-                const assertions: RelationAssertion[] = [
-                  {
-                    from: confirmedWorldAction.character,
-                    to: 'player',
-                    kind: mapped.kind,
-                    label: confirmedWorldAction.relation,
-                    gender: mapped.gender,
-                    modifier: mapped.modifier,
-                    polarity: 'assert' as const,
-                    source,
-                  },
-                ]
-                // A correction must name what it replaces. Close that prior kind
-                // first, preserving historical provenance. Sibling labels share one
-                // structural kind, so "sister" → "brother" is a label correction on
-                // the same edge and intentionally needs no sever.
-                const replacesRelation = confirmedWorldAction.replacesRelation
-                const replaced = replacesRelation ? surfaceToKind(replacesRelation) : null
-                if (replaced && replaced.kind !== mapped.kind) {
-                  assertions.unshift({
-                    from: confirmedWorldAction.character,
-                    to: 'player',
-                    kind: replaced.kind,
-                    label: replacesRelation,
-                    gender: replaced.gender,
-                    modifier: replaced.modifier,
-                    polarity: 'sever' as const,
-                    source,
-                  })
-                }
-                return assertions
-              })()
-            : []
-        // STEP 0, SELF-HEALING. Premise kinship ("Your sister Neva Vale") is seeded
-        // once, from the authored premise — but the only two callers were instance
-        // creation for SENTIENT worlds and the protagonist-onboarding endpoint. A GM
-        // world whose player never completes that onboarding (the app treats the call
-        // as best-effort and lets the protagonist card "seed emergently on the next
-        // turn") therefore never seeded kinship at all, and nothing ever retried.
-        //
-        // That is why a 15-turn playthrough of a world whose premise literally says
-        // "their sister Neva Vale" produced zero kinship edges: the extractor is told
-        // not to re-list ties that already exist, and the tie was established before
-        // turn 1 — so no turn ever claimed it and no seed ever ran. Retry here, the
-        // moment a protagonist card exists. Idempotent (`meta.kinship_seeded`) and
-        // off the TTFT path.
-        if (codex.some((c) => c.is_protagonist)) {
-          await timing.step('kinship_premise_seed', () => kinshipGraphService
-            .seedPremiseKinship({ instanceId, playerId })
-            .then((res) => {
-              if (res.seeded > 0) {
-                log.info('kinship.premise_seeded_late', {
-                  instanceId: idString(instanceId),
-                  sequence: nextSequence,
-                  seeded: res.seeded,
-                  notes: res.notes.slice(0, 4),
-                })
-              }
-            })
-            .catch(() => undefined))
-        }
-        const relationAssertions = mergeRelationAssertions([], [...deterministicAssertions, ...explicitRelationship])
-        // Committed kinship edge count, hoisted for the FP/FN signal ledger below.
-        let kinWritten = 0
-        // TRANSITION channel — death/disownment/divorce/reveal evolving an EXISTING
-        // tie. Deterministic, off TTFT. Applied even when no new tie is asserted
-        // (e.g. "my father died" carries no assertion, only a transition).
-        const lifecycleTransitions = extractLifecycleTransitions({
-          corrections: parsedPlayerInput.corrections,
-          narrationFacts: parsedPlayerInput.narrationFacts,
-          claims: [],
-          prose: undefined,
-        })
-        if (relationAssertions.length > 0 || lifecycleTransitions.length > 0) {
-          const protagCard = codex.find((c) => c.is_protagonist)
-          let selfAnchorId: string | null = null
-          if (!session.is_sentient && protagCard) {
-            const ent = entityMap.get(protagCard.name_normalized)
-            selfAnchorId = ent?._id ? idString(ent._id) : null
-          } else {
-            const player = await timing.step('kinship_player_entity', () => entityGraphService.ensurePlayerEntity({
-              instanceId,
-              playerId,
-              name: session.persona_snapshot?.name,
-              sequence: nextSequence,
-            }))
-            selfAnchorId = idString(player._id)
-          }
-          const kin = await timing.step('kinship_apply', () => kinshipGraphService.applyRelationAssertions({
-            instanceId,
-            sequence: nextSequence,
-            eventId: event._id,
-            assertions: relationAssertions,
-            cards: codex,
-            entitiesByCardName: entityMap,
-            selfAnchorId,
-            sceneText: rawNarrative,
-            // Stub uncarded endpoints (e.g. a just-named "Mara" the codex didn't
-            // card yet) so the typed tie is written against a stub entity now;
-            // it promotes when the card lands. Closes the "edge disappears
-            // because the endpoint has no card" gap.
-            ensureStub: (name: string) =>
-              entityGraphService
-                .ensureStubEntity({
-                  instanceId,
-                  playerId,
-                  sequence: nextSequence,
-                  name,
-                })
-                .then((id) => id),
-            transitions: lifecycleTransitions,
-          }))
-          kinWritten = kin.written
-          if (kin.written > 0) {
-            log.info('kinship.graph.updated', {
-              instanceId: idString(instanceId),
-              sequence: nextSequence,
-              edges: kin.written,
-              notes: kin.notes.slice(0, 6),
-            })
-          }
-        }
-
-        // Projection anomaly logging (§12): compare the prose against what the
-        // projection recorded and persist any inconsistencies fire-and-forget for
-        // a debug/admin surface. Never affects the turn. `knownCardNames` is the
-        // PRE-turn card set, so deltas naming an absent person are "new this turn".
-        let missCandidates = 0 // FN ground-truth for the signal ledger below.
-        try {
-          const newCardNames = deltas
-            .map((d) => d.resolved_name || d.name)
-            .filter((n) => n && !knownCardNames.has(normalizeEntityName(n)))
-          const findings = detectProjectionAnomalies({
-            prose: rawNarrative,
-            presentNames: parsed.present_characters,
-            codexNames: [...knownCardNames],
-            stubNames: stubResult.ensured,
-            hadRelationAssertion: relationAssertions.length > 0,
-            droppedChoices: audited.dropped,
-            locationAnchorName: locationAnchor?.name ?? null,
-            witnessLocationName: parsed.current_location ?? null,
-            newCardNames,
-            // The same distinctive-token surfaces the live gap path excludes, so
-            // the anomaly log and the presence gate agree on who is tracked.
-            excludeNames: presenceGapExcludes,
-          })
-          // FN candidates = "miss" findings (prose named a person/kin/place the
-          // projection didn't record). Drift findings (ungrounded choice, card with
-          // no prose anchor) are not recall misses, so they don't count here.
-          const MISS_TYPES = new Set(['prose_person_untracked', 'kinship_phrase_no_edge', 'location_phrase_no_anchor'])
-          missCandidates = findings.filter((f) => MISS_TYPES.has(f.type)).length
-          if (findings.length) {
-            await timing.step('projection_anomalies_write', () => mongoColl.projectionAnomalies().insertMany(
-              findings.map((f) => ({
-                _id: new ObjectId(),
-                instance_id: instanceOid,
-                player_id: playerOid,
-                event_id: event._id,
-                sequence: nextSequence,
-                type: f.type,
-                severity: f.severity,
-                details: f.details,
-                created_at: new Date(),
-                resolved_at: null,
-              })),
-            ))
-            log.info('projection.anomalies', {
-              instanceId: idString(instanceId),
-              sequence: nextSequence,
-              count: findings.length,
-              types: findings.map((f) => f.type),
-            })
-          }
-        } catch (err) {
-          console.warn('projection anomaly logging skipped:', (err as Error).message)
-        }
-
-        // FP/FN signal ledger: one compact row per turn recording detected-vs-
-        // committed for every instrumented detector, the tier mix of what committed,
-        // plus the recall (miss_candidates) + precision (player_corrected) ground
-        // truths. Fire-and-forget; aggregations tune enrichment against this data.
-        try {
-          const verdicts = endpointAdjudication.citationVerdicts
-          const castKeys = new Set((parsed.present_characters || []).map((n) => presenceKeyOf(n)).filter(Boolean))
-          let canon = 0
-          let hint = 0
-          let hidden = 0
-          let endpointCommitted = 0
-          for (const verdict of verdicts) {
-            if (verdict.a && verdict.b && verdict.c) canon++
-            else if (verdict.a) hint++
-            else hidden++
-            if (citationAdmitsToPresent(verdict) && castKeys.has(presenceKeyOf(verdict.name))) endpointCommitted++
-          }
-          const ledger = buildSignalLedger({
-            movement: {
-              // `detected` is every CLAIM that the viewpoint moved this turn,
-              // from any of the four arbiters — not just the structured travel
-              // control and the witness's booleans. Instrumenting only two of
-              // them made the channel unreadable: a cursor move admitted by the
-              // citation stack committed with nothing recorded as detected.
-              detected:
-                confirmedWorldAction?.kind === 'travel' ||
-                parsed.player_travel_confirmed === true ||
-                parsed.viewpoint_moved === true ||
-                locationDecision.transitionCorroborated ||
-                !!locationDecision.sceneAnchor,
-              committed: !!locationAnchor?.name && viewpointMoved,
-              source: moveSource,
-              confidence: moveConfidence,
-            },
-            time: {
-              detected: !!(witnessTimeLabel || playerTimeLabel || timeAdvanceLabel),
-              committed: !!effectiveTimeAdvance,
-              source: timeSource ?? undefined,
-              confidence: timeSource ? timeConfidence : undefined,
-            },
-            party: {
-              detected: partyJoinsDetected,
-              committedConfidences: freshPartyJoinConfidences,
-            },
-            kinship: {
-              detected: relationAssertions.length,
-              committed: kinWritten,
-            },
-            presence: {
-              detected: verdicts.length,
-              committed: endpointCommitted,
-              ...(verdicts.length
-                ? { by_tier: { canon, hint, hidden } }
-                : {}),
-            },
-            playerCorrected: parsedPlayerInput.corrections.length > 0,
-            missCandidates,
-          })
-          await timing.step('signal_ledger_write', () => mongoColl.signalLedger().insertOne({
-            _id: new ObjectId(),
-            instance_id: instanceOid,
-            player_id: playerOid,
-            event_id: event._id,
-            sequence: nextSequence,
-            player_corrected: ledger.player_corrected,
-            miss_candidates: ledger.miss_candidates,
-            signals: ledger.signals,
-            created_at: new Date(),
-          }))
-        } catch (err) {
-          console.warn('signal ledger logging skipped:', (err as Error).message)
-        }
-      } catch (err) {
-        console.warn('entity graph sync failed:', (err as Error).message)
-      }
-
-      // Memory-vector supersession: when a status was retired this turn, evict
-      // the stale memory vectors so RAG can't resurface the now-false fact.
-      const retiredFacts = deltas.flatMap((d) => d.retire_state || [])
-      if (retiredFacts.length > 0) {
-        memorySupersessionService
-          .supersedeMemories({
-            instanceId,
-            retiredFacts,
-            beforeDate: new Date(genStart),
-            eventId: idString(event._id),
-          })
-          .catch((err) => console.warn('memory supersession failed:', (err as Error).message))
-      }
-
-      // Compaction mutates cards, so finish it before releasing the sequence barrier.
-      for (const c of codex) {
-        if ((c.immutable_facts?.length || 0) >= 24) {
-          try {
-            const compacted = await timing.step('fact_compaction_model', () =>
-              compactImmutableFacts(c.canonical_name, c.immutable_facts, 16))
-            if (compacted?.length) {
-              await timing.step('fact_compaction_write', () =>
-                characterCodexService.setImmutableFacts(idString(c._id), compacted))
-            }
-          } catch {}
-        }
-      }
-
-      await timing.step('codex_publish', () => redis.publish(
-        `user:${playerId}:events`,
-        JSON.stringify({
-          type: 'character_codex_updated',
-          instanceId,
-          focused_character_id: session.focus_character_id || null,
-          characters: codex.map((c) => ({
-            id: idString(c._id),
-            canonical_name: c.canonical_name,
-            aliases: c.aliases,
-            role: c.role,
-            appearance: c.appearance,
-            persona: c.persona,
-            immutable_facts: c.immutable_facts,
-            mutable_state: c.mutable_state,
-            interaction_hints: c.interaction_hints || [],
-            disposition_to_player: c.disposition_to_player,
-            hidden_thought: c.hidden_thought,
-            relationship: c.relationship || null,
-            relationship_state: c.relationship_state || null,
-            mention_count: c.mention_count,
-            is_protagonist: c.is_protagonist === true,
-          })),
-        }),
-      ))
-      // RE-APPLY the turn's lifecycle deltas now that the codex has minted this
-      // turn's cards.
-      //
-      // Cards are created LAZILY, by this projection, when someone first acts in
-      // prose — the authored seed cast sits in the template snapshot until then.
-      // So a death on an early turn was written to the ledger and then applied
-      // to a `characters` row that did not exist yet, and quietly matched
-      // nothing. `applyLifecycleDeltas` is a `$set` keyed on the name, so running
-      // it twice costs one no-op update and closes the window.
-      const lifecycleForTurn = projectionEvent.data.character_lifecycle_deltas
-      if (Array.isArray(lifecycleForTurn) && lifecycleForTurn.length) {
-        await timing.step('lifecycle_reprojection', () => characterCodexService
-          .applyLifecycleDeltas({ instanceId, deltas: lifecycleForTurn })
-          .catch((err) => {
-            log.warn('character.lifecycle_reprojection_failed', { instanceId, error: (err as Error).message })
-          }))
-      }
-    },
-  ).catch((err: unknown) => {
-    log.warn('projection.codex_failed', { instanceId, sequence: nextSequence, reason: String(err) })
-  })
+    void projectCharacterEvent({ instanceId, playerId, eventId: eventIdStr }).catch((err: unknown) => {
+      log.warn('projection.codex_failed', { instanceId, sequence: nextSequence, reason: String(err) })
+    })
   }
 
   if (shouldSummarize) {
