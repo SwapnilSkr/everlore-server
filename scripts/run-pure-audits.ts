@@ -44,6 +44,8 @@ const PURE_AUDITS = [
   'audit:input-guard',
   'audit:stat-mutations',
   'audit:bond-meters',
+  'audit:embedding-latency',
+  'audit:narration-hedge',
 ] as const
 
 let failed = 0

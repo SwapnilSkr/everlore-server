@@ -2,6 +2,7 @@
 import { readFileSync } from 'node:fs'
 import { buildChatRequest } from '../src/ai/client'
 import { AI_MODELS } from '../src/ai/models'
+import { env } from '../src/config/env'
 
 const failures: string[] = []
 function check(condition: boolean, label: string): void {
@@ -53,6 +54,23 @@ check(schemaOnly.params.response_format?.json_schema?.schema === schema
 const plain = buildChatRequest({ model: 'deepseek/deepseek-v3.2', messages: [], sessionId: 'story-1' }, true)
 check(plain.params.session_id === 'story-1' && plain.params.provider?.require_parameters === undefined,
   'streaming sticky route does not require schema parameters')
+
+for (const [label, request] of [
+  ['streamed prose', plain],
+  ['structured', structured],
+  ['streamed schema', buildChatRequest({ model: 'gpt-4o-mini', messages: [], responseSchema: schema }, true)],
+  ['streamed JSON', buildChatRequest({ model: 'gpt-4o-mini', messages: [], responseFormat: { type: 'json_object' } }, true)],
+  ['replay prose', buildChatRequest({ model: 'gpt-4o-mini', messages: [] })],
+] as const) {
+  const provider = request.params.provider
+  check(provider?.sort === (label === 'streamed prose' ? 'latency' : 'throughput')
+    && provider?.allow_fallbacks === true, `${label} keeps its intended sorting and fallback routing`)
+  const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
+  check(Number.isFinite(p90) && p90 > 0
+    ? provider?.preferred_max_latency?.p90 === p90
+    : provider?.preferred_max_latency === undefined,
+  `${label} retains the configured soft p90 latency preference`)
+}
 
 // The embedding module is deliberately outside this task's editable paths.
 const embedding = readFileSync(new URL('../src/ai/embedding.ts', import.meta.url), 'utf8')

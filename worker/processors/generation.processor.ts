@@ -5,8 +5,9 @@ import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { getRedisClient } from '../../src/config/redis'
-import { callLLMStreamWithFallback, AI_MODELS, narrationTemperature, runWithLLMUsage, isLLMUsageActive, snapshotLLMUsage } from '../../src/ai'
-import { buildContextPacket } from '../../src/services/context-packet.service'
+import { callLLMStreamWithFallback, AI_MODELS, narrationTemperature, runWithLLMUsage, isLLMUsageActive, snapshotLLMUsage, embedQuery } from '../../src/ai'
+import { buildContextPacket, ragQueryTextFor } from '../../src/services/context-packet.service'
+import { buildPrepStages } from '../../src/models/generation-log.model'
 import { buildPrompt } from '../../src/utils/prompt-builder'
 import { lengthMaxTokens } from '../../src/utils/narrative-styles'
 import { NSFW_MODE } from '../../src/utils/chat-modes'
@@ -543,7 +544,28 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
     session,
     userNsfwEnabled,
   } = job.data
+
+  // The query embedding is the slowest thing prep waits on (p50 539 ms, p90
+  // 3.5 s against 2 ms for a Mongo read), and nothing about it depends on the
+  // live check, the fence or the recent-events read. So it starts first and
+  // settles on its own: RAG's own call lands on this flight and costs nothing.
+  // Deliberately not awaited — and its rejection is swallowed here, so a dropped
+  // embedding can never surface as an unhandled rejection.
+  let earlyEmbedStarted = false
+  const startQueryEmbedding = (text: string) => {
+    if (earlyEmbedStarted) return
+    earlyEmbedStarted = true
+    void embedQuery(text).catch(() => {})
+  }
+  // A continuation searches its own previous narration, which only the packet
+  // has in hand, so those turns keep starting the embed inside the packet.
+  if (!isContinuation && !worldAction) {
+    startQueryEmbedding(ragQueryTextFor({ isContinuation, userMessage }))
+  }
+
+  const liveCheckStartedAt = Date.now()
   if (!(await liveInstanceExists(parseObjectId(instanceId)))) return
+  const liveCheckMs = Date.now() - liveCheckStartedAt
   let confirmedWorldAction = worldAction as PlayerWorldAction | undefined
   const actionTimeAdvance = confirmedWorldAction?.kind === 'travel' ? confirmedWorldAction.timeAdvance : undefined
   const actionTimeAdvanceLabel = actionTimeAdvance ? TIME_ADVANCE_LABELS[actionTimeAdvance] : undefined
@@ -645,6 +667,13 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
   // On a "continue" turn the player says nothing — the world advances on its
   // own. We feed the model a directive (but store no player input on the event).
   const actionNarration = worldActionNarration(confirmedWorldAction)
+  // A world action's query text is its narration, which exists only after the
+  // travel party has been validated above — start it here, still before the
+  // fence and the recent-events read. Same expression the packet is given below,
+  // through the same helper, so the two can never disagree.
+  if (!isContinuation) {
+    startQueryEmbedding(ragQueryTextFor({ isContinuation, userMessage: actionNarration || userMessage }))
+  }
   const parsedPlayerInput = isContinuation
     ? {
         raw: '',
@@ -733,6 +762,14 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   let settledInteractionSignals: PlayerInteractionSignalDoc[] = []
   let interactionSignalSettled = false
 
+  // Both of these depend only on the instance, not on the packet, but are used
+  // just after it — so they run alongside context assembly instead of queueing
+  // behind it. Same `.catch` fallbacks; awaited only where they are read.
+  const allKnownPlacesPromise = entityGraphService
+    .listKnownLocations(instanceId, 30)
+    .catch(() => [] as { name: string; aliases: string[]; entityId?: string; lastSeenSequence?: number; parentId?: string | null; placeKind?: string | null }[])
+  const graphPeoplePromise = entityGraphService.listCharacterLastPlaces(instanceId).catch(() => [])
+
   // ── FENCE ───────────────────────────────────────────────────────────────
   // Never generate on top of a turn whose projection did not complete. When the
   // previous turn's codex/scene projection is missing, the cards and scene state
@@ -745,7 +782,9 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // repaired in time we still generate (the player is waiting, and a late turn
   // is worse than a slightly stale one) but the degradation is recorded rather
   // than invisible.
+  const fenceStartedAt = Date.now()
   await fenceOnPriorProjection({ instanceId, playerId, instanceOid, playerOid })
+  const fenceMs = Date.now() - fenceStartedAt
 
   // Explicit context packet, assembled here in the worker so RETRIEVAL RUNS
   // BEFORE CODEX SELECTION: cards pin both for names in the player's input and
@@ -772,7 +811,8 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       })
     },
   })
-  const contextLatencyMs = Date.now() - workerStartedAt
+  const packetReturnedAt = Date.now()
+  const contextLatencyMs = packetReturnedAt - workerStartedAt
   const {
     recentEvents,
     characterCodex,
@@ -784,9 +824,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     currentLocation,
     locationContext: packetLocationContext,
   } = packet
-  const allKnownPlaces = await entityGraphService
-    .listKnownLocations(instanceId, 30)
-    .catch(() => [] as { name: string; aliases: string[]; entityId?: string; lastSeenSequence?: number; parentId?: string | null; placeKind?: string | null }[])
+  const allKnownPlaces = await allKnownPlacesPromise
   const knownPlaces = mergeSceneHistoryIntoPlaces(
     allKnownPlaces.filter((place) => isSafeWitnessLocationCandidate(place.name)),
     recentEvents.map((event: any) => ({
@@ -800,7 +838,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
       playerInput: String(event.data?.player_input || event.userMessage || ''),
     })),
   )
-  const graphPeople = await entityGraphService.listCharacterLastPlaces(instanceId).catch(() => [])
+  const graphPeople = await graphPeoplePromise
   const scenePresence = recentEvents.map((event: any) => ({
     locationName: event.location_anchor?.name || event.data?.location_anchor?.name || null,
     locationEntityId: event.location_anchor?.entity_id
@@ -945,6 +983,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // heading with its prefilled value. The structured choice pass below is now
   // authoritative and receives a bounded equivalent of the narrator's story
   // context, so it stays grounded without depending on tail syntax.
+  const promptStartedAt = Date.now()
   const prompt = buildPrompt({
     seedPrompt: session.seed_prompt,
     isSentient: session.is_sentient,
@@ -990,6 +1029,14 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     // Structured fields (stats/flags/scene tag) are derived in a cheap pass below.
     proseOnly: true,
     emitChoices: false,
+  })
+  // Packet return to prompt start is the only prep time between the two phases
+  // that is not already staged by the packet itself.
+  const prepStages = buildPrepStages({
+    live_check: liveCheckMs,
+    fence: fenceMs,
+    ...packet.prepStages,
+    post_packet: promptStartedAt - packetReturnedAt,
   })
 
   const choicePlayerName = session.is_sentient
@@ -1106,6 +1153,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
 
   let streamFailure: unknown = null
   let fallbackAttempts: Array<{ from: string; to: string }> = []
+  let narrationRoute: { provider?: string; hedged: boolean; hedgeWinner?: 'primary' | 'hedge' } = { hedged: false }
   try {
     const narration = await callLLMStreamWithFallback(
       {
@@ -1141,6 +1189,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     )
     modelId = narration.model
     fallbackAttempts = narration.fallbackAttempts
+    narrationRoute = { provider: narration.provider, hedged: narration.hedged, hedgeWinner: narration.hedgeWinner }
   } catch (err) {
     streamFailure = err
   }
@@ -1169,7 +1218,11 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       error: (streamFailure as Error).message,
     })
   }
-  const latencyMs = Date.now() - genStart
+  // The last streamed token, not the end of the turn: everything after this
+  // (persistence, post-stream extraction) is the tail the composer waits on.
+  const streamEndedAt = Date.now()
+  const latencyMs = streamEndedAt - genStart
+  const streamMs = firstTokenAt > 0 ? streamEndedAt - firstTokenAt : 0
   const endToEndTtftMs = firstTokenAt > 0 ? firstTokenAt - requestStartedAt : 0
 
   log.info('generation.stream', {
@@ -3109,6 +3162,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       model_used: modelId,
       ...(modelId !== requestedModelId ? { requested_model: requestedModelId } : {}),
       ...(fallbackAttempts.length ? { fallback_attempts: fallbackAttempts } : {}),
+      ...(narrationRoute.provider ? { provider: narrationRoute.provider } : {}),
+      hedged: narrationRoute.hedged,
+      ...(narrationRoute.hedgeWinner ? { hedge_winner: narrationRoute.hedgeWinner } : {}),
       tokens_in: countTokens(JSON.stringify(prompt.messages)),
       tokens_out: countTokens(parsed.narrative),
       prose_hygiene_issues: proseHygieneIssues,
@@ -3217,6 +3273,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
 
   // Non-blocking observability log: which model handled this turn + NSFW path.
   // Fire-and-forget — never let logging affect the player's turn.
+  const loggedAt = Date.now()
   mongoColl
     .generationLogs()
     .insertOne({
@@ -3240,8 +3297,13 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       ttft_ms: ttftMs,
       queue_wait_ms: queueWaitMs,
       context_latency_ms: contextLatencyMs,
+      embed_ms: packet.embedMs,
+      rag_ms: packet.ragMs,
+      prep_stages: prepStages,
+      stream_ms: streamMs,
+      post_stream_ms: loggedAt - streamEndedAt,
       end_to_end_ttft_ms: endToEndTtftMs,
-      created_at: new Date(),
+      created_at: new Date(loggedAt),
     })
     .catch((err) => console.warn('generation_log insert failed:', (err as Error).message))
 

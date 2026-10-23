@@ -1,9 +1,11 @@
 import { vectorStore, type VectorQuery } from '../services/vector-store'
-import { embed, callLLM, AI_MODELS } from '../ai'
+import type { QueryResponse } from '@pinecone-database/pinecone'
+import { callLLM, AI_MODELS, embedQuery, isEmbedTimeout } from '../ai'
 import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import type { MemoryDoc } from '../models/memory.model'
+import type { PrepStages } from '../models/generation-log.model'
 
 interface RagResult {
   loreTexts: string[]
@@ -14,6 +16,14 @@ interface RagResult {
   /** Entity ids linked to the retrieved memories — the hook for memory-driven
    *  codex pinning after RAG (collected from the Mongo-side retrieval paths). */
   retrievedEntityIds: string[]
+  /** Wall-clock ms this turn waited for the query embedding, shared flight and
+   *  cache hits included. 0 when the embedding was skipped or timed out — the
+   *  timeout logs its own `embed.query_timeout` line. */
+  embedMs: number
+  /** Prep-stage split of this phase, for the turn's `prep_stages` row: the wait
+   *  for the embedding, the Pinecone half, and everything else (timeline scope,
+   *  keyword/entity/location/thread reads, fusion, re-rank, access bump). */
+  stageMs: Pick<PrepStages, 'embed_wait' | 'vector' | 'rag_mongo'>
 }
 
 /** Shared with the read-only migration gate so its requests cannot drift from recall. */
@@ -204,8 +214,27 @@ export async function queryRag(
   /** Current place entity; adds "what happened here before?" retrieval. */
   currentLocationEntityId?: string | null,
 ): Promise<RagResult> {
-  const queryEmbedding = await embed(queryText)
-  const vectorQueries = ragVectorQueries(queryEmbedding, maxLoreResults, maxMemoryResults, timelineId)
+  const ragStartedAt = Date.now()
+  // The vector search is one of four retrieval routes, not a precondition for
+  // the turn. When the query embedding blows its deadline we keep the keyword,
+  // entity-neighbourhood, location and open-thread reads and answer without the
+  // vector half, instead of losing the whole call to an optional one.
+  //
+  // The worker usually starts this embedding before it even reads the recent
+  // events, so this wait is near zero on a warm turn: the flight is already in
+  // the air and both searches land on it.
+  const embedStartedAt = Date.now()
+  let queryEmbedding: number[] | null = null
+  try {
+    queryEmbedding = await embedQuery(queryText)
+  } catch (err) {
+    if (!isEmbedTimeout(err)) throw err
+  }
+  const embedWaitMs = Date.now() - embedStartedAt
+  const embedMs = queryEmbedding ? embedWaitMs : 0
+  const vectorQueries = queryEmbedding
+    ? ragVectorQueries(queryEmbedding, maxLoreResults, maxMemoryResults, timelineId)
+    : null
   const instanceOid = parseObjectId(instanceId)
   const eligibility = await timelineEligibility(instanceId, timelineId)
 
@@ -302,10 +331,25 @@ export async function queryRag(
       .limit(OPEN_THREADS_LIMIT)
       .toArray() as Promise<MemoryDoc[]>
 
-  const [loreResults, memoryResults, keywordMemories, entityMemories, locationMemories, threadMemories] =
+  const noVectorMatches: QueryResponse = { matches: [], namespace: '' }
+  // The two Pinecone calls are timed as their own prep stage, so the block below
+  // records when they settle rather than when the whole Promise.all does.
+  const vectorStartedAt = Date.now()
+  let vectorMs = 0
+  const vectorPart = Promise.all([
+    vectorQueries
+      ? vectorStore.query({ kind: 'lore', templateId }, vectorQueries.lore)
+      : Promise.resolve(noVectorMatches),
+    vectorQueries
+      ? vectorStore.query({ kind: 'mem', instanceId }, vectorQueries.memory)
+      : Promise.resolve(noVectorMatches),
+  ]).then(([lore, memory]) => {
+    vectorMs = Date.now() - vectorStartedAt
+    return [lore, memory] as const
+  })
+  const [[loreResults, memoryResults], keywordMemories, entityMemories, locationMemories, threadMemories] =
     await Promise.all([
-      vectorStore.query({ kind: 'lore', templateId }, vectorQueries.lore),
-      vectorStore.query({ kind: 'mem', instanceId }, vectorQueries.memory),
+      vectorPart,
       keywordSearch(),
       entityNeighborhoodSearch(),
       locationMemorySearch(),
@@ -469,7 +513,22 @@ export async function queryRag(
     )
   }
 
-  return { loreTexts, memoryTexts, openThreads, retrievedMemoryMongoIds, retrievedEntityIds }
+  return {
+    loreTexts,
+    memoryTexts,
+    openThreads,
+    retrievedMemoryMongoIds,
+    retrievedEntityIds,
+    embedMs,
+    // The whole call, minus the two halves already timed above: timeline scope,
+    // the keyword/entity/location/thread reads, fusion, re-rank and the access
+    // bump all land here.
+    stageMs: {
+      embed_wait: embedWaitMs,
+      vector: vectorMs,
+      rag_mongo: Date.now() - ragStartedAt - embedWaitMs - vectorMs,
+    },
+  }
 }
 
 export interface SummaryHit {
@@ -496,7 +555,7 @@ export async function querySummaries(
 ): Promise<SummaryHit[]> {
   if (!queryText.trim()) return []
   try {
-    const queryEmbedding = await embed(queryText)
+    const queryEmbedding = await embedQuery(queryText)
     const res = await vectorStore.query({ kind: 'sum', instanceId }, summaryVectorQuery(queryEmbedding, topK))
     const matches = res.matches || []
     if (matches.length === 0) return []

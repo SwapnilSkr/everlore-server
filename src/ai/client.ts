@@ -47,23 +47,13 @@ function applyCompletionDialect(params: Record<string, any>, model: string): voi
   delete params.temperature
 }
 
-/**
- * OpenRouter-only provider routing preferences.
- *
- * OpenRouter's default routing can land a request on the cheapest backend host,
- * which under load has a poor mid-stream token rate ("one word every 3s" stalls)
- * even when TTFT looks fine — old budget hosts (e.g. mythomax 13B) are the worst
- * offenders. `sort: 'throughput'` tells OpenRouter to prefer high-throughput
- * providers; `allow_fallbacks` keeps reliability if the fastest host is down.
- * The p90 preference deprioritizes hosts with a recently poor tail-latency
- * record, without turning a temporary telemetry gap into a hard outage.
- *
- */
-function providerPrefsFor(requireParameters: boolean): Record<string, unknown> {
+/** Narration is short, so favor the first word; JSON passes favor throughput.
+ * Keep the p90 preference soft so missing telemetry never excludes a host. */
+function providerPrefsFor(requireParameters: boolean, narration: boolean): Record<string, unknown> {
   const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
   return {
     provider: {
-      sort: 'throughput',
+      sort: narration ? 'latency' : 'throughput',
       allow_fallbacks: true,
       ...(requireParameters ? { require_parameters: true } : {}),
       ...(Number.isFinite(p90) && p90 > 0
@@ -101,6 +91,11 @@ export interface LLMStreamResult {
   model: string
   /** Primary-model 429s that were bypassed before any prose was visible. */
   fallbackAttempts: Array<{ from: string; to: string }>
+  provider?: string
+  /** True if any model attempt sent a hedge, including a failed 429 attempt. */
+  hedged: boolean
+  /** Winning request on the successful model; absent when no hedge was sent. */
+  hedgeWinner?: 'primary' | 'hedge'
 }
 
 /** Result shape shared by streaming and non-streaming pre-response reroutes. */
@@ -127,9 +122,12 @@ export function isRateLimitError(error: unknown): boolean {
   )
 }
 
-function routingParamsFor(req: LLMRequest): Record<string, unknown> {
+function routingParamsFor(req: LLMRequest, stream: boolean): Record<string, unknown> {
   return {
-    ...providerPrefsFor(Boolean(req.responseSchema || req.responseFormat?.type === 'json_schema')),
+    ...providerPrefsFor(
+      Boolean(req.responseSchema || req.responseFormat?.type === 'json_schema'),
+      stream && !req.responseSchema && (!req.responseFormat || req.responseFormat.type === 'text'),
+    ),
     ...(req.sessionId ? { session_id: req.sessionId.slice(0, 256) } : {}),
   }
 }
@@ -148,7 +146,7 @@ export function buildChatRequest(req: LLMRequest, stream = false): {
     temperature: req.temperature ?? 0.8,
     max_tokens: req.maxTokens ?? 600,
     ...(stream ? { stream: true } : {}),
-    ...routingParamsFor(req),
+    ...routingParamsFor(req, stream),
   }
 
   if (req.responseSchema) {
@@ -202,66 +200,187 @@ export async function callLLM(req: LLMRequest): Promise<string> {
   return llmResponseContent(response)
 }
 
-/**
- * Streaming chat completion. Invokes [onDelta] for each text chunk as it arrives
- * and resolves with the full concatenated text. Plain-text only — used for
- * narration prose; structured metadata is derived in a separate pass.
- */
-export async function callLLMStream(
+export const NARRATION_HEDGE_MS = 3500
+
+type StreamPart = LLMResponsePart & { provider?: unknown }
+export interface NarrationStreamingClient {
+  create(
+    params: Record<string, unknown>,
+    options: { signal: AbortSignal; timeout: number; maxRetries: number },
+  ): PromiseLike<AsyncIterable<StreamPart>>
+}
+
+let streamingClientForAudit: NarrationStreamingClient | null = null
+
+/** Audit seam: null restores the real transport. No non-streaming calls use it. */
+export function setNarrationStreamingClientForAudit(client: NarrationStreamingClient | null): void {
+  streamingClientForAudit = client
+}
+
+async function requestLLMStream(
   req: LLMRequest,
   onDelta: (chunk: string) => void,
-): Promise<string> {
+  controller: AbortController,
+  onUsage: (usage: unknown) => void,
+): Promise<{ content: string; provider?: string }> {
   const built = buildChatRequest(req, true)
   const { params } = built
   logNormalization(req.model, params.model)
-  const client = clientFor(built.client)
-  const controller = new AbortController()
-  const firstTokenTimeoutMs = req.firstTokenTimeoutMs ?? 30000
+  const client: NarrationStreamingClient = streamingClientForAudit ?? {
+    create: (body, options) => clientFor(built.client).chat.completions.create(
+      body as typeof params, options,
+    ) as unknown as PromiseLike<AsyncIterable<StreamPart>>,
+  }
   const idleTimeoutMs = req.idleTimeoutMs ?? 45000
-  let idleTimer: ReturnType<typeof setTimeout> | null = null
-  let firstTokenTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
-    controller.abort(new Error(`LLM stream did not produce a first token within ${firstTokenTimeoutMs}ms`))
-  }, firstTokenTimeoutMs)
-
+  let idleTimer: ReturnType<typeof setTimeout> | undefined
+  let provider: string | undefined
+  let usage: unknown
   const armIdleTimer = () => {
-    if (idleTimer) clearTimeout(idleTimer)
+    clearTimeout(idleTimer)
     idleTimer = setTimeout(() => {
       controller.abort(new Error(`LLM stream stalled for ${idleTimeoutMs}ms`))
     }, idleTimeoutMs)
   }
-
   if (isLLMUsageActive()) params.stream_options = { include_usage: true }
 
-  let result: Awaited<ReturnType<typeof consumeLLMStream>>
-  try {
-    const stream = await client.chat.completions.create(params, {
+  // An abort must settle even if a transport is stuck opening a stream. The
+  // chunk gate also drops buffered parts from a transport that ignores abort.
+  let onAbort = () => {}
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(controller.signal.reason)
+    controller.signal.addEventListener('abort', onAbort, { once: true })
+    if (controller.signal.aborted) onAbort()
+  })
+  const consume = async () => {
+    if (controller.signal.aborted) throw controller.signal.reason
+    const stream = await client.create(params, {
       signal: controller.signal,
       timeout: req.timeoutMs ?? 180000,
-    }) as unknown as AsyncIterable<LLMResponsePart>
-    armIdleTimer()
-    result = await consumeLLMStream(stream, (delta) => {
-      if (firstTokenTimer) {
-        clearTimeout(firstTokenTimer)
-        firstTokenTimer = null
-      }
-      onDelta(delta)
-      armIdleTimer()
+      // A hedge is the retry; SDK retries would send uncounted extra requests.
+      maxRetries: 0,
     })
+    if (controller.signal.aborted) throw controller.signal.reason
+    armIdleTimer()
+    async function* observedParts() {
+      for await (const part of stream) {
+        if (controller.signal.aborted) break
+        if (typeof part.provider === 'string') provider = part.provider
+        if (part.usage) usage = part.usage
+        yield part
+      }
+    }
+    const result = await consumeLLMStream(observedParts(), (delta) => {
+      if (controller.signal.aborted) return
+      onDelta(delta)
+      if (!controller.signal.aborted) armIdleTimer()
+    })
+    if (result.providerError) {
+      log.warn('chat.stream_provider_error', { model: req.model, reason: formatLLMResponseReason(result) })
+    }
+    return { content: result.content, provider }
+  }
+  try {
+    return await Promise.race([aborted, consume()])
   } finally {
-    if (idleTimer) clearTimeout(idleTimer)
-    if (firstTokenTimer) clearTimeout(firstTokenTimer)
+    clearTimeout(idleTimer)
+    controller.signal.removeEventListener('abort', onAbort)
+    onUsage(usage)
   }
+}
 
-  if (result.providerError) {
-    log.warn('chat.stream_provider_error', { model: req.model, reason: formatLLMResponseReason(result) })
-  }
-  recordLLMUsage({
-    purpose: req.purpose ?? 'narration',
-    model: req.model,
-    streamed: true,
-    ...usageFromProvider(result.usage),
+type Contender = 'primary' | 'hedge'
+
+function narrationAttempt(
+  req: LLMRequest,
+  onDelta: (chunk: string) => void,
+  allowHedge: boolean,
+  onHedge?: () => void,
+): Promise<{ content: string; provider?: string; hedged: boolean; hedgeWinner?: Contender }> {
+  return new Promise((resolve, reject) => {
+    const contenders: Partial<Record<Contender, { controller: AbortController; error?: unknown; failed: boolean; usage?: unknown }>> = {}
+    const runs: Array<Promise<unknown>> = []
+    let winner: Contender | undefined
+    let hedged = false
+    let settled = false
+    let hedgeTimer: ReturnType<typeof setTimeout> | undefined
+    const firstTokenTimeoutMs = req.firstTokenTimeoutMs ?? 30000
+    const firstTokenTimer = setTimeout(() => {
+      finish(new Error(`LLM stream did not produce a first token within ${firstTokenTimeoutMs}ms`))
+    }, firstTokenTimeoutMs)
+    const clearTimers = () => {
+      clearTimeout(firstTokenTimer)
+      clearTimeout(hedgeTimer)
+    }
+    const onAbort = () => finish(req.signal?.reason ?? new Error('LLM stream aborted'))
+    const finish = (error?: unknown, result?: { content: string; provider?: string }) => {
+      if (settled) return
+      settled = true
+      clearTimers()
+      req.signal?.removeEventListener('abort', onAbort)
+      for (const contender of Object.values(contenders)) contender.controller.abort(error ?? new Error('Narration race finished'))
+      // Abortable runners settle promptly, including usage, before the caller
+      // snapshots the turn's costs. Never wait for the loser's underlying IO.
+      void Promise.allSettled(runs).then(() => {
+        for (const [label, contender] of Object.entries(contenders)) {
+          recordLLMUsage({
+            purpose: winner && winner !== label ? 'narration_hedge_lost' : req.purpose ?? 'narration',
+            model: req.model, streamed: true, ...usageFromProvider(contender.usage),
+          })
+        }
+        if (result) resolve({ ...result, hedged, hedgeWinner: hedged ? winner : undefined })
+        else reject(error)
+      })
+    }
+    const start = (label: Contender) => {
+      const state = { controller: new AbortController(), failed: false, error: undefined as unknown, usage: undefined as unknown }
+      contenders[label] = state
+      const run = requestLLMStream(
+        label === 'hedge' ? { ...req, sessionId: undefined } : req,
+        (delta) => {
+          if (settled) return
+          // No await between observing the first text and claiming the race.
+          if (!winner) {
+            winner = label
+            clearTimers()
+            const loser = contenders[label === 'primary' ? 'hedge' : 'primary']
+            loser?.controller.abort(new Error('Narration hedge lost'))
+          }
+          if (winner === label) onDelta(delta)
+        },
+        state.controller,
+        (usage) => { state.usage = usage },
+      )
+      runs.push(run)
+      void run.then((result) => finish(undefined, result), (error: unknown) => {
+        state.failed = true
+        state.error = error
+        if (settled || (winner && winner !== label)) return
+        if (winner || !hedged) { finish(error); return }
+        const other = contenders[label === 'primary' ? 'hedge' : 'primary']
+        if (!other?.failed) return
+        // Either 429 permits a pre-prose model fallback, regardless of which
+        // contender failed first. Once text wins, this branch is unreachable.
+        finish(isRateLimitError(error) ? error : isRateLimitError(other.error) ? other.error : error)
+      })
+    }
+    req.signal?.addEventListener('abort', onAbort, { once: true })
+    if (req.signal?.aborted) { onAbort(); return }
+    start('primary')
+    if (allowHedge) hedgeTimer = setTimeout(() => {
+      if (winner || settled) return
+      hedged = true
+      onHedge?.()
+      start('hedge')
+    }, NARRATION_HEDGE_MS)
   })
-  return result.content
+}
+
+/** Plain prose streaming without model fallback. */
+export async function callLLMStream(
+  req: LLMRequest,
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  return (await narrationAttempt(req, onDelta, false)).content
 }
 
 /**
@@ -281,12 +400,13 @@ export async function callLLMStreamWithFallback(
     .filter((model, index, all) => model.length > 0 && all.indexOf(model) === index)
   const fallbackAttempts: Array<{ from: string; to: string }> = []
   let lastError: unknown
+  let hedged = false
 
   for (let index = 0; index < models.length; index += 1) {
     const model = models[index]
     let streamed = false
     try {
-      const content = await callLLMStream(
+      const result = await narrationAttempt(
         {
           ...req,
           model,
@@ -298,8 +418,13 @@ export async function callLLMStreamWithFallback(
           streamed = true
           onDelta(chunk)
         },
+        true,
+        () => { hedged = true },
       )
-      return { content, model, fallbackAttempts }
+      return {
+        ...result, model, fallbackAttempts, hedged,
+        hedgeWinner: hedged ? result.hedgeWinner ?? 'primary' : undefined,
+      }
     } catch (error) {
       lastError = error
       const nextModel = models[index + 1]

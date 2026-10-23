@@ -10,7 +10,7 @@ const unavailable = (): never => { throw new Error('External dependency reached 
 // No environment file, client, model endpoint, storage service or queue is used.
 const env = { VECTOR_LAYOUT: 'shared', PINECONE_SHARED_NAMESPACE: 'everlore', RAG_RERANK_ENABLED: false }
 mock.module('../src/config/env', () => ({ env }))
-mock.module('../src/ai', () => ({ embed: async () => [1, 0], callLLM: unavailable, AI_MODELS: {} }))
+mock.module('../src/ai', () => ({ embed: async () => [1, 0], embedQuery: async () => [1, 0], isEmbedTimeout: () => false, callLLM: unavailable, AI_MODELS: {} }))
 
 function matches(meta: Record<string, unknown>, filter?: object): boolean {
   if (!filter) return true

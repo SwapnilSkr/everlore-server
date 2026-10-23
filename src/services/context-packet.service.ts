@@ -13,6 +13,7 @@ import type { LocationAnchorDoc } from '../models/location.model'
 import { type WorldFactSource, confidenceTier } from '../utils/world-authority'
 import { loadCurrentSceneState } from './scene-state.service'
 import type { SceneStateDoc } from '../models/scene-state.model'
+import type { PrepStages } from '../models/generation-log.model'
 
 /** Injected codex size (recency-ranked top-K before pinning). */
 const CODEX_INJECT_LIMIT = 16
@@ -58,6 +59,11 @@ export interface ContextPacket {
   openThreads: string[]
   /** Entity ids linked to retrieved memories (provenance of the memory pins). */
   retrievedEntityIds: string[]
+  /** Ms this turn waited for the query embedding — shared flight and cache hits
+   *  included, 0 when the deadline dropped the vector half. */
+  embedMs: number
+  /** Ms the whole RAG phase took, embedding included. */
+  ragMs: number
   /** CANON BRIEF (relationships) — compact, always-on kinship facts for the turn's
    *  active cast, incl. lifecycle state ("father (deceased)"). Surfaces the kinship
    *  graph to the NARRATOR, not just the choice guard. */
@@ -80,6 +86,9 @@ export interface ContextPacket {
   timeContext: string | null
   currentLocation: LocationAnchorDoc | null
   locationContext: string | null
+  /** Wall-clock ms of each prep step that ran while this packet was built. The
+   *  worker adds its own (live check, fence, post-packet) before logging. */
+  prepStages: PrepStages
 }
 
 /** The session fields the packet builder reads (subset of the cached session). */
@@ -132,6 +141,26 @@ function normalizeLocationAnchor(raw: any): LocationAnchorDoc | null {
 }
 
 /**
+ * The text retrieval searches for, derived in ONE place.
+ *
+ * The worker starts the query embedding from this before it reads anything (see
+ * generation.processor), and the packet asks RAG with it. Two derivations would
+ * mean two different embeddings for one turn, which is the cost this exists to
+ * avoid.
+ *
+ * A continuation has no player text — its query is the previous narration, which
+ * only the packet has in hand — so those turns keep starting the embed here.
+ */
+export function ragQueryTextFor(params: {
+  isContinuation: boolean
+  userMessage: string
+  lastNarration?: string | null
+}): string {
+  if (!params.isContinuation) return params.userMessage
+  return String(params.lastNarration || '') || 'Continue the current scene.'
+}
+
+/**
  * Build the context packet for one generated turn. Runs in the WORKER (not at
  * dispatch) so retrieval results can shape codex selection — the
  * codex-after-RAG ordering the memory architecture calls for.
@@ -153,6 +182,10 @@ export async function buildContextPacket(params: {
 }): Promise<ContextPacket> {
   const { instanceId, playerId, session, userMessage, isContinuation } = params
   const iid = parseObjectId(instanceId)
+  // Each step below records from its own start to its settle, so a slow turn
+  // says which read owned the wait. No step adds an await of its own.
+  const prepStages: PrepStages = {}
+  const packetStartedAt = Date.now()
 
   const recentEvents = await mongoColl
     .events()
@@ -162,6 +195,7 @@ export async function buildContextPacket(params: {
     .toArray() as WorldEventDoc[]
   recentEvents.reverse()
   const currentSequence = recentEvents[recentEvents.length - 1]?.sequence || 0
+  prepStages.recent_events = Date.now() - packetStartedAt
 
   // Scene state is read from the event ledger, so it is rewind-safe for free.
   // Started here and awaited at the return so it never adds serial latency.
@@ -251,6 +285,7 @@ export async function buildContextPacket(params: {
   let mentionedEntityIds: string[] = []
   let mentionPinnedCards: CharacterProfileDoc[] = []
   if (!isContinuation && userMessage) {
+    const mentionsStartedAt = Date.now()
     try {
       const resolved = await entityGraphService.findMentionedCharacterCards(
         instanceId,
@@ -262,12 +297,14 @@ export async function buildContextPacket(params: {
     } catch (err) {
       console.warn('Context packet: mention resolution skipped:', (err as Error).message)
     }
+    prepStages.mentions = Date.now() - mentionsStartedAt
 
     // Wake long-dormant uncarded characters that THIS turn's cues make relevant —
     // named in the input, tied by a kin/relationship edge to someone present, or
     // tied to the current place — so a character last seen thousands of turns ago
     // resurfaces exactly when it matters (not injected wholesale). Woken stub ids
     // join the RAG entity neighbourhood below so their memories are retrievable.
+    const stubWakeStartedAt = Date.now()
     try {
       const nameCues = (userMessage.match(/\b[A-Z][a-zà-ÿ'’-]+\b/g) || []).slice(0, 16)
       const woken = await entityGraphService.wakeStubsByCues({
@@ -282,13 +319,15 @@ export async function buildContextPacket(params: {
     } catch (err) {
       console.warn('Context packet: stub wake skipped:', (err as Error).message)
     }
+    prepStages.stub_wake = Date.now() - stubWakeStartedAt
   }
 
   // ── 2. Retrieval (vector + keyword + entity neighborhood + open threads) ──
-  const ragQueryText = isContinuation
-    ? String(recentEvents[recentEvents.length - 1]?.data?.ai_response || '') ||
-      'Continue the current scene.'
-    : userMessage
+  const ragQueryText = ragQueryTextFor({
+    isContinuation,
+    userMessage,
+    lastNarration: recentEvents[recentEvents.length - 1]?.data?.ai_response,
+  })
   let loreTexts: string[] = []
   let memoryTexts: string[] = []
   let openThreads: string[] = []
@@ -296,14 +335,22 @@ export async function buildContextPacket(params: {
 
   // Long-horizon recall runs CONCURRENTLY with the main RAG query so it adds no
   // extra serial latency to TTFT. Skipped on a continue (no query to match).
+  const summariesStartedAt = Date.now()
   const summariesPromise: Promise<Awaited<ReturnType<typeof querySummaries>>> =
     !isContinuation && ragQueryText.trim()
-      ? querySummaries(instanceId, ragQueryText, 3).catch((err) => {
-          console.warn('Context packet: summary retrieval skipped:', (err as Error).message)
-          return []
-        })
+      ? querySummaries(instanceId, ragQueryText, 3)
+          .catch((err) => {
+            console.warn('Context packet: summary retrieval skipped:', (err as Error).message)
+            return []
+          })
+          .then((hits) => {
+            prepStages.summaries = Date.now() - summariesStartedAt
+            return hits
+          })
       : Promise.resolve([])
 
+  const ragStartedAt = Date.now()
+  let ragEmbedMs = 0
   try {
     const rag = await queryRag(
       String(session.template_id),
@@ -319,12 +366,19 @@ export async function buildContextPacket(params: {
     memoryTexts = rag.memoryTexts
     openThreads = rag.openThreads
     retrievedEntityIds = rag.retrievedEntityIds
+    ragEmbedMs = rag.embedMs
+    // The embedding wait is usually near zero here: the worker started it before
+    // the recent-events read, so queryRag inherits a flight already in the air.
+    Object.assign(prepStages, rag.stageMs)
   } catch (err) {
     console.warn(
       'RAG query failed, proceeding without retrieved memories:',
       (err as Error).message,
     )
   }
+  // The whole retrieval phase as the turn waited for it. The two searches above
+  // share one embedding request, so this is not two embed waits stacked.
+  const ragMs = Date.now() - ragStartedAt
 
   // ── 2b. Long-horizon recall: exclude anything the recent raw window or the
   //    injected scene summary already covers so we don't double-narrate.
@@ -336,6 +390,9 @@ export async function buildContextPacket(params: {
     .map((h) => h.text)
 
   // ── 3. Codex selection (AFTER retrieval, so memories can shape it) ──
+  // Pool read through the memory-driven pins: the pool itself was started above
+  // and has had the whole retrieval phase to settle.
+  const codexStartedAt = Date.now()
   const codexPool = await codexPoolPromise
   const ranked = rankCodexForInjection(codexPool, currentSequence, CODEX_INJECT_LIMIT)
 
@@ -360,6 +417,7 @@ export async function buildContextPacket(params: {
       console.warn('Context packet: memory-driven pinning skipped:', (err as Error).message)
     }
   }
+  prepStages.codex = Date.now() - codexStartedAt
 
   // Assembly order = prompt priority: direct mentions first (the player is
   // asking about them NOW), then memory pins, then the ranked set. The codex
@@ -506,6 +564,9 @@ export async function buildContextPacket(params: {
         return []
       })
 
+  // The tail: the four canon/time/location briefs, then the two reads that were
+  // started at the top of the packet. Same awaits as before, now timed together.
+  const packetTailStartedAt = Date.now()
   const [relationshipFacts, positionFacts, timeContext, locationContext] =
     await Promise.all([
       relationshipFactsPromise,
@@ -513,14 +574,17 @@ export async function buildContextPacket(params: {
       timeContextPromise,
       locationContextPromise,
     ])
+  const sceneState = await sceneStatePromise
+  const lifecycleCards = await lifecycleRosterPromise
+  prepStages.packet_tail = Date.now() - packetTailStartedAt
 
   return {
     recentEvents,
-    sceneState: await sceneStatePromise,
+    sceneState,
     sceneSummary: summaryDoc?.summary_text || null,
     relevantSummaries,
     characterCodex,
-    deceasedCharacterNames: (await lifecycleRosterPromise)
+    deceasedCharacterNames: lifecycleCards
       .filter((card) => (card as any).life_state === 'deceased')
       .map((card) => card.canonical_name)
       .filter(Boolean),
@@ -547,12 +611,14 @@ export async function buildContextPacket(params: {
         roster.push({ canonical_name: name, aliases: (seed?.aliases || []) as string[] })
       }
       return roster
-    })(await lifecycleRosterPromise),
+    })(lifecycleCards),
     mentionedEntityIds,
     loreTexts,
     memoryTexts,
     openThreads,
     retrievedEntityIds,
+    embedMs: ragEmbedMs,
+    ragMs,
     relationshipFacts,
     positionFacts,
     companionFacts,
@@ -561,5 +627,6 @@ export async function buildContextPacket(params: {
     timeContext,
     currentLocation,
     locationContext,
+    prepStages,
   }
 }

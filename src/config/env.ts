@@ -59,6 +59,12 @@ const optionalEnvVars = {
   /** Re-rank the fused RAG candidate pool for true relevance before the final
    *  top-K slice (risk A). Off ⇒ existing fused order is used unchanged. */
   RAG_RERANK_ENABLED: 'false',
+  /** Query embedding timing, ms. A player is waiting on it, so a stalled call is
+   *  duplicated once after EMBED_HEDGE_MS and abandoned at EMBED_DEADLINE_MS —
+   *  retrieval then drops its vector half instead of losing the turn. Background
+   *  embeddings ignore both. */
+  EMBED_HEDGE_MS: '700',
+  EMBED_DEADLINE_MS: '2500',
   /** For BORDERLINE nsfw lexicon scores (1–2) only, defer to a Haiku intent
    *  classifier (risk G). Off ⇒ borderline stays SFW as today. Chat-mode
    *  (Ardent) opt-in is the primary signal and is independent of this flag. */
@@ -136,6 +142,8 @@ export interface Env {
   REVIEW_DEMO_OTP: string
   CHEAP_RANK_MODEL: string
   RAG_RERANK_ENABLED: boolean
+  EMBED_HEDGE_MS: number
+  EMBED_DEADLINE_MS: number
   NSFW_INTENT_DEFER_ENABLED: boolean
   ADMIN_USERNAME: string
   ADMIN_PASSWORD: string
@@ -216,6 +224,8 @@ function loadEnv(): Env {
     REVIEW_DEMO_OTP: process.env.REVIEW_DEMO_OTP || optionalEnvVars.REVIEW_DEMO_OTP,
     CHEAP_RANK_MODEL: process.env.CHEAP_RANK_MODEL || optionalEnvVars.CHEAP_RANK_MODEL,
     RAG_RERANK_ENABLED: process.env.RAG_RERANK_ENABLED === 'true',
+    EMBED_HEDGE_MS: Number(process.env.EMBED_HEDGE_MS || optionalEnvVars.EMBED_HEDGE_MS),
+    EMBED_DEADLINE_MS: Number(process.env.EMBED_DEADLINE_MS || optionalEnvVars.EMBED_DEADLINE_MS),
     NSFW_INTENT_DEFER_ENABLED: process.env.NSFW_INTENT_DEFER_ENABLED === 'true',
     ADMIN_USERNAME: process.env.ADMIN_USERNAME || optionalEnvVars.ADMIN_USERNAME,
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || optionalEnvVars.ADMIN_PASSWORD,
