@@ -24,8 +24,9 @@ import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-m
 import { countTokens } from '../../src/utils/token-counter'
 import { normalizeNarrationMarkers, validateProseHygiene } from '../../src/utils/prose-hygiene'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
+import { instanceService } from '../../src/services/instance.service'
 import { liveInstanceExists } from '../../src/utils/live-instance'
-import { generationLockKey, releaseGenerationLock } from '../../src/utils/generation-lock'
+import { generationLockKey, finishGenerationTurn, markGenerationStreamEnd, waitForPriorGeneration } from '../../src/utils/generation-lock'
 import { scoreScene, classifyBorderlineIntent } from '../lib/nsfw-classifier'
 import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
 import { makeChoiceTailFilter } from '../lib/choice-tail'
@@ -431,7 +432,7 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
     isContinuation = false,
     timeAdvance,
     worldAction,
-    session,
+    session: dispatchedSession,
     userNsfwEnabled,
   } = job.data
 
@@ -472,7 +473,18 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
   // vector/database path. Tell the client which phase it is in immediately so
   // an otherwise blank first-token wait never looks like a stuck send.
   const redis = getRedisClient()
-  redis.publish(`user:${playerId}:events`, JSON.stringify({ type: 'generation_started', instanceId }))
+  await redis.publish(`user:${playerId}:events`, JSON.stringify({ type: 'generation_started', instanceId }))
+
+  // Only the live check and the input-only query embedding precede this gate.
+  // In particular, dispatch's session can predate the prior tail's cache write.
+  const priorTurnWaitMs = await waitForPriorGeneration(
+    redis, generationLockKey(playerId, instanceId), String(job.id), job.data.priorTurnId,
+  )
+  let session = dispatchedSession
+  if (job.data.priorTurnId) {
+    await redis.del(`session:${instanceId}`)
+    session = await instanceService.loadSession(instanceId, playerId)
+  }
 
   // A journey can take only established characters physically in the last
   // settled scene. The UI applies the same rule, but this server-side gate is
@@ -918,6 +930,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // that is not already staged by the packet itself.
   const prepStages = buildPrepStages({
     live_check: liveCheckMs,
+    prior_turn_wait: priorTurnWaitMs,
     fence: fenceMs,
     ...packet.prepStages,
     post_packet: promptStartedAt - packetReturnedAt,
@@ -1016,17 +1029,20 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // there), not after the model finishes writing the hidden choices tail. Guarded
   // so it's published exactly once.
   let streamEnded = false
+  let streamEndPublish: Promise<void> | undefined
   const publishStreamEnd = (narrative: string) => {
     if (streamEnded) return
     streamEnded = true
-    redis.publish(
-      channel,
+    streamEndPublish = markGenerationStreamEnd(
+      redis, lockKey, String(job.id), channel,
       JSON.stringify({
         type: 'generation_stream_end',
         instanceId,
         narrative: narrative.trim(),
       }),
     )
+    // Awaited at the end of narration; attach a handler now for early failures.
+    void streamEndPublish.catch(() => {})
   }
   // Reset only when no usable prose ever reached the player. Once a turn has
   // visibly started, its output is an interaction contract: quality and length
@@ -1225,6 +1241,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // completion guard has processed it. This never swaps out visible prose for
   // a fresh generation just because it missed a quality target.
   publishStreamEnd(rawNarrative)
+  await streamEndPublish
 
   const previousOpeningName = openingCharacterName(recentEvents || [], characterNames)
   // A live stream is an interaction contract: once prose is visible, no
@@ -3462,10 +3479,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   }
   await redis.set(`session:${instanceId}`, JSON.stringify(updatedSession), 'EX', 3600)
 
-  await releaseGenerationLock(redis, lockKey, String(job.id))
-
-  await redis.publish(
-    `user:${playerId}:events`,
+  await finishGenerationTurn(
+    redis, lockKey, String(job.id), true, `user:${playerId}:events`,
     JSON.stringify({
       type: 'generation_complete',
       instanceId,

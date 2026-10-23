@@ -31,6 +31,28 @@ import {
 type EditEvent = Static<typeof EditEventBody>
 type EditMemory = Static<typeof EditMemoryBody>
 
+/** Resolve ownership before acquiring the same exclusive slot used by rewind.
+ * Keep the entire edit/rebuild inside the lease so dispatch cannot race a read. */
+async function withChronicleEdit<T>(
+  playerId: string,
+  row: Promise<{ instance_id: ObjectId } | null>,
+  work: () => Promise<T>,
+): Promise<T> {
+  const target = await row
+  if (!target) throw new HttpError(404, 'Not found')
+  const redis = getRedisClient()
+  const lockKey = generationLockKey(playerId, idString(target.instance_id))
+  const token = `edit:${randomUUID()}`
+  if (!await redis.set(lockKey, token, 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')) {
+    throw new HttpError(409, 'Another story operation is still in progress. Please wait for it to finish.')
+  }
+  const stopHeartbeat = startGenerationLockHeartbeat(redis, lockKey, token)
+  try { return await work() } finally {
+    stopHeartbeat()
+    await releaseGenerationLock(redis, lockKey, token)
+  }
+}
+
 export const chronicleController = {
   getEvents: async ({
     params,
@@ -491,13 +513,15 @@ export const chronicleController = {
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return timeService.updateEventTimeAnchor({
+    return withChronicleEdit(user.id, mongoColl.events().findOne({
+      _id: parseObjectId(params.eventId), player_id: parseObjectId(user.id),
+    }), () => timeService.updateEventTimeAnchor({
       eventId: params.eventId,
       playerId: user.id,
       storyCalendar: body.story_calendar,
       eventTimeLabel: body.event_time_label,
       timelineId: body.timeline_id,
-    })
+    }))
   },
 
   editMemory: async ({
@@ -510,12 +534,16 @@ export const chronicleController = {
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return memoryService.editMemory(params.memoryId, user.id, body)
+    return withChronicleEdit(user.id, mongoColl.memories().findOne({
+      _id: parseObjectId(params.memoryId), player_id: parseObjectId(user.id),
+    }), () => memoryService.editMemory(params.memoryId, user.id, body))
   },
 
   deleteMemory: async ({ params, user }: { params: { memoryId: string }; user: AuthUser | null }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return memoryService.deleteMemory(params.memoryId, user.id)
+    return withChronicleEdit(user.id, mongoColl.memories().findOne({
+      _id: parseObjectId(params.memoryId), player_id: parseObjectId(user.id),
+    }), () => memoryService.deleteMemory(params.memoryId, user.id))
   },
 
   editEvent: async ({
@@ -528,7 +556,9 @@ export const chronicleController = {
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return memoryService.editEvent(params.eventId, user.id, body)
+    return withChronicleEdit(user.id, mongoColl.events().findOne({
+      _id: parseObjectId(params.eventId), player_id: parseObjectId(user.id),
+    }), () => memoryService.editEvent(params.eventId, user.id, body))
   },
 
   editCharacter: async ({
@@ -551,57 +581,61 @@ export const chronicleController = {
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    const result = await characterCodexService.editCharacter({
-      playerId: user.id,
-      characterId: params.characterId,
-      updates: body,
-    })
-    // A rename changes presentation, never identity. Synchronize the one
-    // card's existing entity row now (rather than waiting for the next turn),
-    // so all typed edges and alias lookup immediately resolve to the new name.
-    try {
-      await entityGraphService.syncCodexEntities({
-        instanceId: result.instanceId,
+    return withChronicleEdit(user.id, mongoColl.characters().findOne({
+      _id: parseObjectId(params.characterId), player_id: parseObjectId(user.id),
+    }), async () => {
+      const result = await characterCodexService.editCharacter({
         playerId: user.id,
-        sequence: result.character.last_seen_sequence,
-        cards: [result.character],
+        characterId: params.characterId,
+        updates: body,
       })
-    } catch {
-      // Generation also syncs cards to entities. A temporary graph hiccup must
-      // not reject an otherwise valid character edit.
-    }
-    // Facts this edit removed → evict matching memory vectors so RAG can't
-    // resurface them and contradict the player's edit.
-    if (result.retiredFacts.length > 0) {
-      memorySupersessionService
-        .supersedeMemories({ instanceId: result.instanceId, retiredFacts: result.retiredFacts })
-        .catch(() => {})
-    }
-    const c = result.character
-    return {
-      character: {
-        id: idString(c._id),
-        canonical_name: c.canonical_name,
-        identity_kind: c.identity_kind,
-        aliases: c.aliases,
-        role: c.role,
-        appearance: c.appearance,
-        persona: c.persona,
-        immutable_facts: c.immutable_facts,
-        mutable_state: c.mutable_state,
-        interaction_hints: c.interaction_hints || [],
-        disposition_to_player: c.disposition_to_player,
-        hidden_thought: c.hidden_thought,
-        mention_count: c.mention_count,
-        is_protagonist: c.is_protagonist === true,
-        // Dead-or-alive travels with the card, WITH the sentence it was decided
-        // from. A death nobody can see is a death nobody catches — the last wrong
-        // one hid for thirty turns behind a room that just read empty.
-        life_state: c.life_state || 'alive',
-        life_state_evidence: c.life_state_evidence || null,
-        life_state_source: c.life_state_source || null,
-      },
-    }
+      // A rename changes presentation, never identity. Synchronize the one
+      // card's existing entity row now (rather than waiting for the next turn),
+      // so all typed edges and alias lookup immediately resolve to the new name.
+      try {
+        await entityGraphService.syncCodexEntities({
+          instanceId: result.instanceId,
+          playerId: user.id,
+          sequence: result.character.last_seen_sequence,
+          cards: [result.character],
+        })
+      } catch {
+        // Generation also syncs cards to entities. A temporary graph hiccup must
+        // not reject an otherwise valid character edit.
+      }
+      // Facts this edit removed → evict matching memory vectors so RAG can't
+      // resurface them and contradict the player's edit.
+      if (result.retiredFacts.length > 0) {
+        memorySupersessionService
+          .supersedeMemories({ instanceId: result.instanceId, retiredFacts: result.retiredFacts })
+          .catch(() => {})
+      }
+      const c = result.character
+      return {
+        character: {
+          id: idString(c._id),
+          canonical_name: c.canonical_name,
+          identity_kind: c.identity_kind,
+          aliases: c.aliases,
+          role: c.role,
+          appearance: c.appearance,
+          persona: c.persona,
+          immutable_facts: c.immutable_facts,
+          mutable_state: c.mutable_state,
+          interaction_hints: c.interaction_hints || [],
+          disposition_to_player: c.disposition_to_player,
+          hidden_thought: c.hidden_thought,
+          mention_count: c.mention_count,
+          is_protagonist: c.is_protagonist === true,
+          // Dead-or-alive travels with the card, WITH the sentence it was decided
+          // from. A death nobody can see is a death nobody catches — the last wrong
+          // one hid for thirty turns behind a room that just read empty.
+          life_state: c.life_state || 'alive',
+          life_state_evidence: c.life_state_evidence || null,
+          life_state_source: c.life_state_source || null,
+        },
+      }
+    })
   },
 
   rewind: async ({
@@ -647,7 +681,9 @@ export const chronicleController = {
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return memoryService.replayEvent(params.eventId, user.id)
+    return withChronicleEdit(user.id, mongoColl.events().findOne({
+      _id: parseObjectId(params.eventId), player_id: parseObjectId(user.id),
+    }), () => memoryService.replayEvent(params.eventId, user.id))
   },
 
   selectReplayVariant: async ({
@@ -660,7 +696,9 @@ export const chronicleController = {
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return memoryService.selectReplayVariant(params.eventId, user.id, Number(body.variant_index))
+    return withChronicleEdit(user.id, mongoColl.events().findOne({
+      _id: parseObjectId(params.eventId), player_id: parseObjectId(user.id),
+    }), () => memoryService.selectReplayVariant(params.eventId, user.id, Number(body.variant_index)))
   },
 
   /**

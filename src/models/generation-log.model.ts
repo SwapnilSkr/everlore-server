@@ -11,6 +11,7 @@ import type { LLMCallUsage } from '../ai/usage'
  */
 export const PREP_STAGE_KEYS = [
   'live_check',
+  'prior_turn_wait',
   'fence',
   'recent_events',
   'mentions',

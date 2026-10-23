@@ -33,6 +33,8 @@ export const generationService = {
     /** A structured, player-confirmed action such as travel or a relationship fact. */
     worldAction?: PlayerWorldAction
     billingReservationId?: string | null
+    turnId?: string
+    priorTurnId?: string
   }) {
     const { instanceId, playerId, userMessage, isContinuation = false, timeAdvance, worldAction, billingReservationId } = params
 
@@ -72,8 +74,10 @@ export const generationService = {
         session,
         userNsfwEnabled,
         billingReservationId,
+        priorTurnId: params.priorTurnId,
       },
       {
+        jobId: params.turnId,
         priority: 1,
         // A turn is a visible interaction, not a background task. Retrying a
         // failed generation can replace the scene the player just started
@@ -90,13 +94,14 @@ export const generationService = {
 
 
   /** Enqueue a streaming replay (alternative response) for an existing event. */
-  async dispatchReplay(params: { instanceId: string; playerId: string; eventId: string; billingReservationId?: string | null }) {
+  async dispatchReplay(params: { instanceId: string; playerId: string; eventId: string; billingReservationId?: string | null; turnId?: string }) {
     const { instanceId, playerId, eventId, billingReservationId } = params
     const queue = getGenerationQueue()
     const job = await queue.add(
       'replay',
       { mode: 'replay', instanceId, playerId, eventId, billingReservationId },
       {
+        jobId: params.turnId,
         priority: 1,
         attempts: 1,
         removeOnComplete: QUEUE_RETENTION.generation.removeOnComplete,

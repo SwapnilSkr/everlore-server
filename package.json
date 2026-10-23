@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "audit:media": "bun run scripts/media-audit.ts",
     "audit:codex-media-carryover": "bun run scripts/codex-media-carryover-audit.ts",
+    "audit:metadata-overlap": "bun --no-env-file run scripts/metadata-overlap-audit.ts",
     "audit:all": "bun --no-env-file run scripts/run-pure-audits.ts && bun --no-env-file run scripts/codex-media-carryover-audit.ts && bun --no-env-file run scripts/seed-catalog-audit.ts && bun --no-env-file run scripts/vector-store-audit.ts",
     "audit:narration-hedge": "bun --no-env-file run scripts/narration-hedge-audit.ts",
     "audit:beat-ledger-split": "bun --no-env-file run scripts/beat-ledger-split-audit.ts",

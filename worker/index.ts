@@ -6,7 +6,7 @@ import { connectMongo } from '../src/config/mongo'
 import { connectRedis, getQueueRedisClient, getRedisClient } from '../src/config/redis'
 import { env } from '../src/config/env'
 import { generationProcessor } from './processors/generation.processor'
-import { generationLockKey, startGenerationLockHeartbeat } from '../src/utils/generation-lock'
+import { generationLockKey, releaseGenerationLock, startGenerationLockHeartbeat } from '../src/utils/generation-lock'
 import { memoryProcessor } from './processors/memory.processor'
 import { summaryProcessor } from './processors/summary.processor'
 import { maintenanceProcessor } from './processors/maintenance.processor'
@@ -81,6 +81,9 @@ async function main() {
       return await generationProcessor(job)
     } finally {
       stopHeartbeat()
+      // Success has already promoted the successor atomically. Failure (also
+      // a pickup/live-check exit) must fail its barrier without deleting it.
+      await releaseGenerationLock(getRedisClient(), generationLockKey(playerId, instanceId), String(job.id))
     }
   }
 
@@ -246,7 +249,7 @@ async function main() {
           instanceId: job.data.instanceId,
           error: err.message,
         })
-        await redis.del(generationLockKey(job.data.playerId, job.data.instanceId))
+        await releaseGenerationLock(redis, generationLockKey(job.data.playerId, job.data.instanceId), String(job.id))
         await settleGenerationReservation(job)
         return
       }
@@ -305,7 +308,7 @@ async function main() {
           error: err.message,
         })
         await settleGenerationReservation(job)
-        await redis.del(generationLockKey(job.data.playerId, job.data.instanceId))
+        await releaseGenerationLock(redis, generationLockKey(job.data.playerId, job.data.instanceId), String(job.id))
         return
       }
 
@@ -334,7 +337,7 @@ async function main() {
         }),
       )
 
-      await redis.del(generationLockKey(job.data.playerId, job.data.instanceId))
+      await releaseGenerationLock(redis, generationLockKey(job.data.playerId, job.data.instanceId), String(job.id))
     } catch (dlqErr) {
       console.error('Failed to handle dead letter:', (dlqErr as Error).message)
     }

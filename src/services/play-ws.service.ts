@@ -6,7 +6,7 @@ import { verifyWsToken, type AuthUser } from '../middleware/auth'
 import { rateLimit } from '../middleware/rate-limit'
 import { log } from '../utils/logger'
 import { toClientError } from '../utils/ws-error'
-import { GENERATION_LOCK_TTL_SECONDS, generationLockKey } from '../utils/generation-lock'
+import { acquireGenerationTurn, releaseGenerationLock, generationLockKey } from '../utils/generation-lock'
 import { billingService } from './billing.service'
 import { authService } from './auth.service'
 import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
@@ -15,7 +15,6 @@ import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-publ
 type RawWs = { send: (data: string) => void }
 
 const activeConnections = new Map<string, Set<RawWs>>()
-const REPLAY_LOCK_TTL_SECONDS = GENERATION_LOCK_TTL_SECONDS
 
 /** Closes all WebSocket connections for a user (e.g. after account deletion). */
 export function disconnectUserSockets(userId: string): void {
@@ -212,7 +211,8 @@ export const playWsService = {
         }
 
         const lockKey = generationLockKey(user.id, instanceId)
-        const locked = await redis.set(lockKey, 'pending', 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')
+        const turnId = crypto.randomUUID()
+        const locked = await acquireGenerationTurn(redis, lockKey, turnId, true)
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
@@ -223,7 +223,7 @@ export const playWsService = {
           const payload = (data as { payload?: { message?: string } }).payload
           const message = payload?.message
           if (!message || typeof message !== 'string' || message.length === 0 || message.length > 4000) {
-            await redis.del(lockKey)
+            await releaseGenerationLock(redis, lockKey, turnId)
             ws.send(JSON.stringify({ type: 'error', message: 'Invalid message' }))
             return
           }
@@ -236,14 +236,14 @@ export const playWsService = {
             playerId: user.id,
             userMessage: message,
             billingReservationId: reservation.reservation_id,
+            turnId,
+            priorTurnId: locked.priorTurnId,
           })
-
-          await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
 
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
           await billingService.release(user.id, reservationId)
-          await redis.del(lockKey)
+          await releaseGenerationLock(redis, lockKey, turnId)
           ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.send', userId: user.id, instanceId }) }))
         }
         break
@@ -265,7 +265,8 @@ export const playWsService = {
         }
 
         const lockKey = generationLockKey(user.id, instanceId)
-        const locked = await redis.set(lockKey, 'pending', 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')
+        const turnId = crypto.randomUUID()
+        const locked = await acquireGenerationTurn(redis, lockKey, turnId, true)
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
@@ -289,12 +290,13 @@ export const playWsService = {
             isContinuation: true,
             timeAdvance,
             billingReservationId: reservation.reservation_id,
+            turnId,
+            priorTurnId: locked.priorTurnId,
           })
-          await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
           await billingService.release(user.id, reservationId)
-          await redis.del(lockKey)
+          await releaseGenerationLock(redis, lockKey, turnId)
           ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.continue', userId: user.id }) }))
         }
         break
@@ -313,7 +315,8 @@ export const playWsService = {
           return
         }
         const lockKey = generationLockKey(user.id, instanceId)
-        const locked = await redis.set(lockKey, 'pending', 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')
+        const turnId = crypto.randomUUID()
+        const locked = await acquireGenerationTurn(redis, lockKey, turnId, true)
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
@@ -328,12 +331,13 @@ export const playWsService = {
             userMessage: '',
             worldAction,
             billingReservationId: reservation.reservation_id,
+            turnId,
+            priorTurnId: locked.priorTurnId,
           })
-          await redis.set(lockKey, jobId!, 'EX', GENERATION_LOCK_TTL_SECONDS)
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
           await billingService.release(user.id, reservationId)
-          await redis.del(lockKey)
+          await releaseGenerationLock(redis, lockKey, turnId)
           ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.world_action', userId: user.id }) }))
         }
         break
@@ -356,7 +360,8 @@ export const playWsService = {
         }
 
         const lockKey = generationLockKey(user.id, instanceId)
-        const locked = await redis.set(lockKey, 'pending', 'EX', REPLAY_LOCK_TTL_SECONDS, 'NX')
+        const turnId = crypto.randomUUID()
+        const locked = await acquireGenerationTurn(redis, lockKey, turnId, false)
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return
@@ -371,14 +376,13 @@ export const playWsService = {
             playerId: user.id,
             eventId,
             billingReservationId: reservation.reservation_id,
+            turnId,
           })
-          // Replays widen retrieval and can run a touch longer than a normal turn.
-          await redis.set(lockKey, jobId!, 'EX', REPLAY_LOCK_TTL_SECONDS)
           log.info('ws.replay.dispatched', { userId: user.id, instanceId, eventId, jobId })
           ws.send(JSON.stringify({ type: 'ack', jobId }))
         } catch (err: unknown) {
           await billingService.release(user.id, reservationId)
-          await redis.del(lockKey)
+          await releaseGenerationLock(redis, lockKey, turnId)
           ws.send(
             JSON.stringify({
               type: 'error',
