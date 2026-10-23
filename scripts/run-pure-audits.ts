@@ -37,6 +37,7 @@ const PURE_AUDITS = [
   'audit:opening-place',
   'audit:time-evidence',
   'audit:durability',
+  'audit:projection-fence',
   'audit:place-promotion',
   'audit:carding-routing',
   'audit:entity-adjudication',
@@ -48,10 +49,14 @@ const PURE_AUDITS = [
   'audit:narration-hedge',
 ] as const
 
+const { scripts } = await Bun.file(new URL('../package.json', import.meta.url)).json() as { scripts: Record<string, string> }
+
 let failed = 0
 for (const script of PURE_AUDITS) {
   console.log(`\n──────── ${script} ────────`)
-  const proc = Bun.spawn(['bun', 'run', script], {
+  const command = scripts[script].match(/^bun (?:--no-env-file )?run (scripts\/[\w-]+\.ts)$/)
+  if (!command) throw new Error(`Not a pure audit entry: ${script}`)
+  const proc = Bun.spawn(['bun', '--no-env-file', 'run', command[1]], {
     stdout: 'inherit',
     stderr: 'inherit',
     stdin: 'ignore',

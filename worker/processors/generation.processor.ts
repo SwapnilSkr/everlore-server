@@ -90,6 +90,7 @@ import { replayProcessor } from './replay.processor'
 import { log } from '../../src/utils/logger'
 import { recordAnomaly } from '../../src/utils/record-anomaly'
 import { projectCharacterEvent } from './character-projection.processor'
+import { fenceOnPriorProjection, withCharacterProjection } from '../lib/character-projection-lease'
 import { deriveNextSceneState, renderSceneStateForPrompt, PRESENCE_TITLE_WORDS, sceneIdentityKey } from '../../src/services/scene-state.service'
 import type { PlayerWorldAction } from '../../src/utils/world-action'
 import { surfaceToKind } from '../../src/utils/kinship-ontology'
@@ -422,108 +423,6 @@ function worldActionDirective(action: PlayerWorldAction): string {
 const FATE_SEED_COOLDOWN_TURNS = 8
 
 
-/** How long the fence will spend repairing the previous turn before giving up
- *  and generating anyway. The player is waiting on this — a stale-but-prompt
- *  turn beats a correct one that never arrives. */
-const PROJECTION_FENCE_BUDGET_MS = 4_000
-
-/**
- * Refuse to read the previous turn's state while it is known to be incomplete.
- *
- * Projections are asynchronous, so a turn can finish streaming before its codex
- * deltas land — and if that projection then FAILS, every later turn silently
- * reads the turn-before-last as though it were current. Repair it inline when
- * we can, and record the degradation when we cannot, so a desynchronised
- * session is a visible event rather than an inexplicable run of bad prose.
- */
-async function fenceOnPriorProjection(params: {
-  instanceId: string
-  playerId: string
-  instanceOid: ObjectId
-  playerOid: ObjectId
-}): Promise<void> {
-  const { instanceId, playerId, instanceOid, playerOid } = params
-  try {
-    const prior = await mongoColl
-      .events()
-      .find(
-        { instance_id: instanceOid, type: { $ne: 'side_chat' } },
-        { projection: { _id: 1, sequence: 1, 'data.codex_projection_status': 1, 'data.ai_response': 1, 'data.model_used': 1 } },
-      )
-      .sort({ sequence: -1 })
-      .limit(1)
-      .next()
-    if (!prior) return
-    const status = (prior as any).data?.codex_projection_status
-    // The authored opening has no extraction pass and never will; only a
-    // generated turn can be unprojected in the sense that matters here.
-    if ((prior as any).data?.model_used === 'seed') return
-    if (!status || status === 'completed') return
-
-    const startedAt = Date.now()
-    let repaired = false
-
-    // 'processing' with a live claim is the NORMAL case, not a fault: projections
-    // run asynchronously on the turn tail, so the previous one is often still in
-    // flight when the next turn starts. The correctness requirement is simply to
-    // WAIT for it. Treating this as staleness (the first version did) fires an
-    // error on every healthy turn and drowns the real signal.
-    if (status === 'processing') {
-      while (Date.now() - startedAt < PROJECTION_FENCE_BUDGET_MS) {
-        await new Promise((resolve) => setTimeout(resolve, 120))
-        const now = await mongoColl
-          .events()
-          .findOne({ _id: prior._id }, { projection: { 'data.codex_projection_status': 1 } })
-        const nowStatus = (now as any)?.data?.codex_projection_status
-        if (!nowStatus || nowStatus === 'completed') {
-          repaired = true
-          break
-        }
-        if (nowStatus !== 'processing') break
-      }
-      if (repaired) return
-    }
-
-    if (status !== 'failed') {
-      try {
-        const result = (await Promise.race([
-          projectCharacterEvent({ instanceId, playerId, eventId: idString(prior._id) }),
-          new Promise((resolve) => setTimeout(() => resolve({ timedOut: true }), PROJECTION_FENCE_BUDGET_MS)),
-        ])) as Record<string, unknown>
-        repaired =
-          result?.projected === true ||
-          result?.skipped === 'already_projected' ||
-          // Another worker holds a live claim and is still applying it. That is
-          // progress, not staleness.
-          result?.skipped === 'claimed_by_active_worker'
-      } catch {
-        repaired = false
-      }
-    }
-    if (repaired) {
-      log.info('projection.fence_repaired', {
-        instanceId,
-        sequence: (prior as any).sequence,
-        ms: Date.now() - startedAt,
-      })
-      return
-    }
-    await recordAnomaly({
-      instanceId: instanceOid,
-      playerId: playerOid,
-      eventId: prior._id,
-      sequence: (prior as any).sequence,
-      type: 'stale_scene_state',
-      severity: 'error',
-      details: `generated on top of turn ${(prior as any).sequence} whose projection is '${status}'`,
-    })
-    log.warn('projection.fence_degraded', { instanceId, sequence: (prior as any).sequence, status })
-  } catch (err) {
-    // The fence is a safety net, never a new failure mode.
-    log.warn('projection.fence_error', { instanceId, reason: (err as Error).message })
-  }
-}
-
 export async function generationProcessor(job: Job): Promise<{ eventId: string; sequence: number } | void> {
   // Replay turns reuse the generation queue/worker but follow a distinct path:
   // they stream an alternative for an existing event instead of appending one.
@@ -771,19 +670,10 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const graphPeoplePromise = entityGraphService.listCharacterLastPlaces(instanceId).catch(() => [])
 
   // ── FENCE ───────────────────────────────────────────────────────────────
-  // Never generate on top of a turn whose projection did not complete. When the
-  // previous turn's codex/scene projection is missing, the cards and scene state
-  // this turn reads are silently the turn-BEFORE-last's: a released grip is
-  // still gripped, someone who left is still in the room. That is not a rare
-  // edge — one dropped projection is enough to desynchronise the rest of a
-  // session, because every later turn compounds the stale reading.
-  //
-  // Repair it inline, bounded, before assembling context. If it cannot be
-  // repaired in time we still generate (the player is waiting, and a late turn
-  // is worse than a slightly stale one) but the degradation is recorded rather
-  // than invisible.
+  // Healthy in-flight extraction never holds up the narrator. Repair missing
+  // work in the background; the projection tail enforces sequence ordering.
   const fenceStartedAt = Date.now()
-  await fenceOnPriorProjection({ instanceId, playerId, instanceOid, playerOid })
+  await fenceOnPriorProjection({ instanceId, playerId }, projectCharacterEvent)
   const fenceMs = Date.now() - fenceStartedAt
 
   // Explicit context packet, assembled here in the worker so RETRIEVAL RUNS
@@ -3177,6 +3067,19 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   }
 
   await mongoColl.events().insertOne(event)
+  const eventIdStr = idString(event._id)
+  const sceneTag = parsed.scene_tag
+  const currentScene = session.current_scene
+  const sameScene = currentScene.tag === sceneTag
+  const rawTurnCount = sameScene ? currentScene.turn_count + 1 : 1
+  // Summarize a scene in NON-OVERLAPPING blocks: once a same-type scene reaches
+  // the block size, fold those turns into one recap and RESET the counter — so
+  // we don't re-summarize the trailing window on every subsequent turn (which
+  // previously burned an LLM call per turn and piled up overlapping rows).
+  const shouldSummarize = sameScene && rawTurnCount >= SCENE_SUMMARY_BLOCK
+  const newTurnCount = shouldSummarize ? 0 : rawTurnCount
+
+  try {
   await publishSpokenLines(event).catch(() => {})
   // Materialize only after the event is durable; the ledger remains source of
   // truth and rewind/replay reconstructs this projection from surviving rows.
@@ -3186,7 +3089,6 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   }).catch((err) => {
     log.warn('character.lifecycle_projection_failed', { instanceId, error: (err as Error).message })
   })
-  const eventIdStr = idString(event._id)
   try {
   await stagePostProcess({
     instanceId,
@@ -3323,16 +3225,6 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     })
     .catch((err) => console.warn('extractor_raw insert failed:', (err as Error).message))
 
-  const sceneTag = parsed.scene_tag
-  const currentScene = session.current_scene
-  const sameScene = currentScene.tag === sceneTag
-  const rawTurnCount = sameScene ? currentScene.turn_count + 1 : 1
-  // Summarize a scene in NON-OVERLAPPING blocks: once a same-type scene reaches
-  // the block size, fold those turns into one recap and RESET the counter — so
-  // we don't re-summarize the trailing window on every subsequent turn (which
-  // previously burned an LLM call per turn and piled up overlapping rows).
-  const shouldSummarize = sameScene && rawTurnCount >= SCENE_SUMMARY_BLOCK
-  const newTurnCount = shouldSummarize ? 0 : rawTurnCount
 
   // Resolve the travelling-with party to entity-bounded rows (drop any name that
   // doesn't map to a real character entity), to persist on the instance. A departed
@@ -3543,28 +3435,30 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       }),
     )
   }
-  // Best-effort immediate dispatch; the recurring dispatcher repairs a crash or
-  // Redis outage without holding the completed player turn open.
-  void dispatchPostProcessOutbox().catch(() => {})
+  } finally {
+    // The event is durable and metadata is ready. Even a failed instance/cache
+    // write or completion publish must not strand it until delayed recovery.
+    startCharacterProjection()
+    void dispatchPostProcessOutbox().catch(() => {})
+  }
 
-  // Self-building character codex: extract NPC deltas from this turn, persist
-  // canonical cards, then push an update to the live client.
-  ;(async () => {
-    try {
-      const claimed = await mongoColl.events().updateOne(
-        {
-          _id: event._id,
-          'data.codex_deltas': { $exists: false },
-          'data.codex_projection_claimed_at': { $exists: false },
-        },
-        {
-          $set: {
-            'data.codex_projection_claimed_at': new Date(),
-            'data.codex_projection_status': 'processing',
-          },
-        },
-      )
-      if (claimed.modifiedCount !== 1) return
+  function startCharacterProjection() {
+    // Self-building character codex: extract NPC deltas from this turn, persist
+    // canonical cards, then push an update to the live client.
+    void withCharacterProjection(
+      { instanceId, playerId, eventId: eventIdStr }, projectCharacterEvent,
+    async (projectionEvent, assertOwned, timing) => {
+      // These reads happen AFTER the sequence barrier, never from the narrator's
+      // packet. Earlier projections can promote/rename cards and graph people.
+      const characterCodex = await timing.step('cards_read', () => mongoColl.characters().find({ instance_id: instanceOid }).toArray())
+      const knownPlaces = await timing.step('known_locations_read', () => entityGraphService.listKnownLocations(instanceId, 30))
+      const knownCardNames = new Set(characterCodex.flatMap((c) =>
+        [c.canonical_name, ...(c.aliases || [])].map(normalizeEntityName).filter(Boolean)))
+      if (session.is_sentient) {
+        for (const name of [session.persona_snapshot?.name, detectSelfIntroName(parsedPlayerInput.raw)]) {
+          if (name) knownCardNames.add(normalizeEntityName(name))
+        }
+      }
       // Repeated figures the entity/memory graph already corroborates may earn a
       // codex card on recurrence — off-screen, and named or not. This is
       // intentionally a small, proven set, not a free pass for every mention.
@@ -3575,7 +3469,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       // something (a memory naming them as subject or object) more than once,
       // not merely mentioned them in passing. So a rider the player duels across
       // three turns earns a card, while "the crowd" said three times does not.
-      const promotableCandidates = (await mongoColl
+      const promotableCandidates = (await timing.step('promotable_candidates_read', () => mongoColl
         .entities()
         .find(
           {
@@ -3586,7 +3480,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
           },
           { projection: { _id: 1, canonical_name: 1 } },
         )
-        .toArray()) as Array<{ _id: ObjectId; canonical_name?: string }>
+        .toArray())) as Array<{ _id: ObjectId; canonical_name?: string }>
 
       const unnamedIds = new Set(
         promotableCandidates
@@ -3600,7 +3494,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       if (unnamedCandidates.length) {
         const ids = unnamedCandidates.map((e) => e._id)
         const involvementByEntity = new Map<string, number>()
-        const memRefs = await mongoColl
+        const memRefs = await timing.step('memory_involvement_read', () => mongoColl
           .memories()
           .find(
             {
@@ -3610,7 +3504,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
             { projection: { subject_entity_ids: 1, object_entity_ids: 1 } },
           )
           .limit(200)
-          .toArray()
+          .toArray())
         for (const m of memRefs as any[]) {
           for (const id of [...(m.subject_entity_ids || []), ...(m.object_entity_ids || [])]) {
             const key = idString(id)
@@ -3629,11 +3523,12 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         .map((entity) => String(entity.canonical_name || '').trim())
         .filter(Boolean)
         .slice(0, 12)
-      const deltas = await extractCharacterCodexDeltas({
+      const deltas = projectionEvent.data.codex_deltas ?? await timing.extract((onRaw) => extractCharacterCodexDeltas({
+        onRaw,
         playerInput: parsedPlayerInput.raw,
         aiResponse: rawNarrative,
         sequence: nextSequence,
-        existing: (characterCodex || []).map((c: any) => ({
+        existing: characterCodex.map((c) => ({
           canonical_name: c.canonical_name,
           aliases: c.aliases || [],
           // The prompt renders "(identity kind: role_label)" so the model knows a
@@ -3656,12 +3551,12 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         })),
         seedPrompt: session.seed_prompt,
         isSentient: session.is_sentient,
-        protagonistName: (characterCodex as any[]).find((c) => c.is_protagonist)?.canonical_name,
+        protagonistName: characterCodex.find((c) => c.is_protagonist)?.canonical_name,
         playerPersonaName: session.persona_snapshot?.name,
         presentCast: parsed.present_characters,
         knownLocations: knownPlaces,
         promotableRecurringPeople,
-      })
+      }))
       // Sentient worlds: the player is the persona TALKING TO the world's main
       // character — they are not part of the cast. Drop any delta that would
       // card them, no matter what the extractor produced. The player's identity
@@ -3680,9 +3575,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         addName(session.persona_snapshot?.name)
         let selfIntroName: string | null = null
         try {
-          const playerEntity = await mongoColl
+          const playerEntity = await timing.step('player_identity_read', () => mongoColl
             .entities()
-            .findOne({ instance_id: instanceOid, type: 'player' }, { projection: { canonical_name: 1, aliases: 1 } })
+            .findOne({ instance_id: instanceOid, type: 'player' }, { projection: { canonical_name: 1, aliases: 1 } }))
           if (playerEntity) {
             // "The Player" / "player" are generic sentinels, not a real name a
             // card could collide with — skip them so they don't over-match.
@@ -3714,20 +3609,16 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         if (selfIntroName) {
           const norm = normalizePersonaName(selfIntroName)
           if (norm && norm !== 'the player' && norm !== 'player') {
-            // AWAIT (not fire-and-forget): the per-instance turn lock serializes
-            // turns, so persisting the player's self-intro alias BEFORE this turn
-            // releases its lock guarantees the next turn's guard reads it. A
-            // fire-and-forget write raced the following extractions — "I'm
-            // Swapnil" at seq 2 still let seq 6 mint a "Swapnil" codex card
-            // because the alias hadn't landed when seq 6's guard read the entity.
+            // Finish this alias write before releasing the projection barrier,
+            // so the next extraction sees the player's introduced identity.
             try {
-              await mongoColl.entities().updateOne(
+              await timing.step('player_alias_write', () => mongoColl.entities().updateOne(
                 { instance_id: instanceOid, type: 'player' },
                 {
                   $addToSet: { aliases: norm },
                   $set: { updated_at: new Date() },
                 },
-              )
+              ))
             } catch (err) {
               console.warn('player self-name persist skipped:', (err as Error).message)
             }
@@ -3749,8 +3640,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       // A reveal candidate must still surface if the smaller extraction model
       // returned no codex delta. In that case the existing roster is enough to
       // validate a proposal; no candidate can mint an identity by itself.
-      const codex = deltas.length > 0
-        ? await characterCodexService.applyDeltas({
+      await assertOwned()
+      const codex = !projectionEvent.data.codex_deltas && deltas.length > 0
+        ? await timing.step('apply_deltas', () => characterCodexService.applyDeltas({
             instanceId,
             playerId,
             sequence: nextSequence,
@@ -3758,28 +3650,28 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
             // Post-stream only: the lasting-look evidence check reads the turn
             // prose here, never before or during the narrator stream.
             prose: rawNarrative,
-          })
+          }))
         : characterCodex
 
       // Ledger the applied deltas on the event so the codex is an exact
       // rebuildable projection (rewind replays these — no stale facts).
-      if (deltas.length > 0) {
-        await mongoColl.events().updateOne({ _id: event._id }, { $set: { 'data.codex_deltas': deltas } })
+      if (!projectionEvent.data.codex_deltas) {
+        await timing.step('deltas_ledger_write', () => mongoColl.events().updateOne({ _id: event._id }, { $set: { 'data.codex_deltas': deltas } }))
       }
 
       // Entity graph: keep card↔entity links 1:1 and project this turn's
       // relationship meters onto typed edges. Best-effort — graph failures
       // never break the codex pipeline.
       try {
-        const entityMap = await entityGraphService.syncCodexEntities({
+        const entityMap = await timing.step('entity_graph_sync', () => entityGraphService.syncCodexEntities({
           instanceId,
           playerId,
           sequence: nextSequence,
           cards: codex,
-        })
+        }))
         const touchedCards = codex.filter((c) => c.last_seen_sequence === nextSequence && c.relationship)
         if (touchedCards.length > 0) {
-          await entityGraphService.syncRelationshipEdges({
+          await timing.step('relationship_sync', () => entityGraphService.syncRelationshipEdges({
             instanceId,
             playerId,
             sequence: nextSequence,
@@ -3787,7 +3679,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
             cards: touchedCards,
             entitiesByCardName: entityMap,
             playerName: session.persona_snapshot?.name,
-          })
+          }))
         }
 
         // Kinship graph: typed relation ties asserted this turn → graph edges
@@ -3818,12 +3710,12 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
               const protagEntity = entityMap.get(protagCard.name_normalized)
               playerEntityId = protagEntity?._id ? idString(protagEntity._id) : null
             } else {
-              const player = await entityGraphService.ensurePlayerEntity({
+              const player = await timing.step('kinship_player_entity', () => entityGraphService.ensurePlayerEntity({
                 instanceId,
                 playerId,
                 name: session.persona_snapshot?.name,
                 sequence: nextSequence,
-              })
+              }))
               playerEntityId = idString(player._id)
             }
             if (playerEntityId) {
@@ -3835,7 +3727,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
                 const known = entityMap.get(normalizeEntityName(proposal.characterName))
                 if (!known?._id) continue
                 const characterEntityId = idString(known._id)
-                await relationCandidateService.propose({
+                await timing.step('kinship_candidate_write', () => relationCandidateService.propose({
                   instanceId,
                   playerId,
                   characterName: proposal.characterName,
@@ -3846,7 +3738,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
                   evidence: proposal.evidence,
                   sourceEventId: event._id,
                   sequence: nextSequence,
-                })
+                }))
               }
             }
           }
@@ -3867,12 +3759,12 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
               const protagEntity = entityMap.get(protagCard.name_normalized)
               playerEntityId = protagEntity?._id ? idString(protagEntity._id) : null
             } else {
-              const player = await entityGraphService.ensurePlayerEntity({
+              const player = await timing.step('kinship_player_entity', () => entityGraphService.ensurePlayerEntity({
                 instanceId,
                 playerId,
                 name: session.persona_snapshot?.name,
                 sequence: nextSequence,
-              })
+              }))
               playerEntityId = idString(player._id)
             }
             if (playerEntityId) {
@@ -3885,7 +3777,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
                   : undefined
                 const counterpartEntity = counterpart ? entityMap.get(counterpart.name_normalized) : undefined
                 if (revision.kind === 'identity_merge' && !counterpartEntity?._id) continue
-                await relationCandidateService.propose({
+                await timing.step('kinship_candidate_write', () => relationCandidateService.propose({
                   instanceId,
                   playerId,
                   characterName: primary.canonical_name,
@@ -3905,7 +3797,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
                         counterpartCharacterName: counterpart?.canonical_name,
                       }
                     : {}),
-                })
+                }))
               }
             }
           }
@@ -3967,7 +3859,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         // moment a protagonist card exists. Idempotent (`meta.kinship_seeded`) and
         // off the TTFT path.
         if (codex.some((c) => c.is_protagonist)) {
-          await kinshipGraphService
+          await timing.step('kinship_premise_seed', () => kinshipGraphService
             .seedPremiseKinship({ instanceId, playerId })
             .then((res) => {
               if (res.seeded > 0) {
@@ -3979,7 +3871,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
                 })
               }
             })
-            .catch(() => undefined)
+            .catch(() => undefined))
         }
         const relationAssertions = mergeRelationAssertions([], [...deterministicAssertions, ...explicitRelationship])
         // Committed kinship edge count, hoisted for the FP/FN signal ledger below.
@@ -4000,15 +3892,15 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
             const ent = entityMap.get(protagCard.name_normalized)
             selfAnchorId = ent?._id ? idString(ent._id) : null
           } else {
-            const player = await entityGraphService.ensurePlayerEntity({
+            const player = await timing.step('kinship_player_entity', () => entityGraphService.ensurePlayerEntity({
               instanceId,
               playerId,
               name: session.persona_snapshot?.name,
               sequence: nextSequence,
-            })
+            }))
             selfAnchorId = idString(player._id)
           }
-          const kin = await kinshipGraphService.applyRelationAssertions({
+          const kin = await timing.step('kinship_apply', () => kinshipGraphService.applyRelationAssertions({
             instanceId,
             sequence: nextSequence,
             eventId: event._id,
@@ -4031,7 +3923,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
                 })
                 .then((id) => id),
             transitions: lifecycleTransitions,
-          })
+          }))
           kinWritten = kin.written
           if (kin.written > 0) {
             log.info('kinship.graph.updated', {
@@ -4072,7 +3964,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
           const MISS_TYPES = new Set(['prose_person_untracked', 'kinship_phrase_no_edge', 'location_phrase_no_anchor'])
           missCandidates = findings.filter((f) => MISS_TYPES.has(f.type)).length
           if (findings.length) {
-            await mongoColl.projectionAnomalies().insertMany(
+            await timing.step('projection_anomalies_write', () => mongoColl.projectionAnomalies().insertMany(
               findings.map((f) => ({
                 _id: new ObjectId(),
                 instance_id: instanceOid,
@@ -4085,7 +3977,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
                 created_at: new Date(),
                 resolved_at: null,
               })),
-            )
+            ))
             log.info('projection.anomalies', {
               instanceId: idString(instanceId),
               sequence: nextSequence,
@@ -4155,7 +4047,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
             playerCorrected: parsedPlayerInput.corrections.length > 0,
             missCandidates,
           })
-          await mongoColl.signalLedger().insertOne({
+          await timing.step('signal_ledger_write', () => mongoColl.signalLedger().insertOne({
             _id: new ObjectId(),
             instance_id: instanceOid,
             player_id: playerOid,
@@ -4165,7 +4057,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
             miss_candidates: ledger.miss_candidates,
             signals: ledger.signals,
             created_at: new Date(),
-          })
+          }))
         } catch (err) {
           console.warn('signal ledger logging skipped:', (err as Error).message)
         }
@@ -4187,22 +4079,21 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
           .catch((err) => console.warn('memory supersession failed:', (err as Error).message))
       }
 
-      // Async fact-cap compaction: distill any character whose permanent-fact
-      // list has grown large, so long-lived characters stay bounded + accurate
-      // over thousands of turns without losing recent or important facts.
+      // Compaction mutates cards, so finish it before releasing the sequence barrier.
       for (const c of codex) {
         if ((c.immutable_facts?.length || 0) >= 24) {
-          compactImmutableFacts(c.canonical_name, c.immutable_facts, 16)
-            .then((compacted) => {
-              if (compacted && compacted.length) {
-                return characterCodexService.setImmutableFacts(idString(c._id), compacted)
-              }
-            })
-            .catch(() => {})
+          try {
+            const compacted = await timing.step('fact_compaction_model', () =>
+              compactImmutableFacts(c.canonical_name, c.immutable_facts, 16))
+            if (compacted?.length) {
+              await timing.step('fact_compaction_write', () =>
+                characterCodexService.setImmutableFacts(idString(c._id), compacted))
+            }
+          } catch {}
         }
       }
 
-      await redis.publish(
+      await timing.step('codex_publish', () => redis.publish(
         `user:${playerId}:events`,
         JSON.stringify({
           type: 'character_codex_updated',
@@ -4226,7 +4117,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
             is_protagonist: c.is_protagonist === true,
           })),
         }),
-      )
+      ))
       // RE-APPLY the turn's lifecycle deltas now that the codex has minted this
       // turn's cards.
       //
@@ -4236,44 +4127,19 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       // to a `characters` row that did not exist yet, and quietly matched
       // nothing. `applyLifecycleDeltas` is a `$set` keyed on the name, so running
       // it twice costs one no-op update and closes the window.
-      const lifecycleForTurn = (event.data as any)?.character_lifecycle_deltas
+      const lifecycleForTurn = projectionEvent.data.character_lifecycle_deltas
       if (Array.isArray(lifecycleForTurn) && lifecycleForTurn.length) {
-        await characterCodexService
+        await timing.step('lifecycle_reprojection', () => characterCodexService
           .applyLifecycleDeltas({ instanceId, deltas: lifecycleForTurn })
           .catch((err) => {
             log.warn('character.lifecycle_reprojection_failed', { instanceId, error: (err as Error).message })
-          })
+          }))
       }
-      await mongoColl.events().updateOne(
-        { _id: event._id },
-        {
-          $set: { 'data.codex_projection_status': 'completed', 'data.codex_projection_completed_at': new Date() },
-          $unset: { 'data.codex_projection_claimed_at': '' },
-        },
-      )
-    } catch (err) {
-      await mongoColl.events().updateOne(
-        { _id: event._id },
-        { $unset: { 'data.codex_projection_claimed_at': '' }, $set: { 'data.codex_projection_status': 'pending', 'data.codex_projection_error': (err as Error).message } },
-      ).catch(() => {})
-      // A silent console.warn was the whole visibility budget for a failure that
-      // freezes the world. It now leaves a durable, queryable trace.
-      await recordAnomaly({
-        instanceId: instanceOid,
-        playerId: playerOid,
-        eventId: event._id,
-        sequence: nextSequence,
-        type: 'projection_failed',
-        severity: 'error',
-        details: `inline codex projection: ${(err as Error).message}`,
-      })
-      log.warn('projection.codex_failed', {
-        instanceId: idString(instanceId),
-        sequence: nextSequence,
-        reason: (err as Error).message,
-      })
-    }
-  })()
+    },
+  ).catch((err: unknown) => {
+    log.warn('projection.codex_failed', { instanceId, sequence: nextSequence, reason: String(err) })
+  })
+  }
 
   if (shouldSummarize) {
     const startSequence = nextSequence - (SCENE_SUMMARY_BLOCK - 1)

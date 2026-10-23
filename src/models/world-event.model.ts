@@ -178,6 +178,8 @@ export interface EventDataDoc {
   codex_projection_status?: 'pending' | 'processing' | 'completed' | 'failed'
   codex_projection_claimed_at?: Date
   codex_projection_completed_at?: Date
+  /** Per-step ms of this turn's character-card update, plus `total`. */
+  codex_projection_ms?: Record<string, number>
   codex_projection_error?: string
   /** Failed repair attempts. At CHARACTER_PROJECTION_MAX_ATTEMPTS the status
    *  becomes 'failed' so a deterministic error stops being retried forever. */

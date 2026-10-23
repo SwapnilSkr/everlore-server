@@ -69,9 +69,11 @@ export async function dispatchPostProcessOutbox(limit = 50) {
         const task = row.kind === 'projection_checkpoint' ? 'create_projection_checkpoint' : row.kind
         await getMaintenanceQueue().add('post-process', { task, ...row.payload }, {
           jobId: `${row.kind}-${eventId}`, priority: 20,
-          ...(row.kind === 'character_projection' ? { delay: 90_000 } : {}),
+          // Active claims are retried, so recovery can probe sooner without
+          // duplicating extraction. Retries must extend past the 2-minute lease.
+          ...(row.kind === 'character_projection' ? { delay: 30_000 } : {}),
           attempts: 5,
-          backoff: { type: 'exponential', delay: 5000 },
+          backoff: { type: 'exponential', delay: row.kind === 'character_projection' ? 30_000 : 5000 },
           removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
           removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
         })
