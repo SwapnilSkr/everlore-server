@@ -71,6 +71,10 @@ const optionalEnvVars = {
   /** `stats` calls describeIndexStats, which is not billed in read units;
    *  `query` is a topK-1 search on a scope that cannot exist (0.25 read units). */
   KEEP_WARM_PINECONE: 'stats',
+  /** How many Pinecone requests one ping sends at once, 1–6. A turn runs its
+   *  lore, memory and summaries searches in parallel and each needs its own
+   *  connection, so a single ping would keep only one of the three warm. */
+  KEEP_WARM_PINECONE_WIDTH: '3',
   /** A client unused for this long gets one ping. Box probe, Oct 23 2026: Pinecone
    *  goes cold between 45 and 60 s idle, the embedding connection sooner; a 10 s
    *  ping kept both fast (the stats ping is free, the embedding one ~2 tokens). */
@@ -158,6 +162,7 @@ export interface Env {
   EMBED_DEADLINE_MS: number
   KEEP_WARM: boolean
   KEEP_WARM_PINECONE: 'stats' | 'query'
+  KEEP_WARM_PINECONE_WIDTH: number
   KEEP_WARM_IDLE_MS: number
   KEEP_WARM_CHECK_MS: number
   NSFW_INTENT_DEFER_ENABLED: boolean
@@ -202,6 +207,16 @@ function loadEnv(): Env {
   // loudly at startup instead of defaulting.
   const keepWarmPinecone = process.env.KEEP_WARM_PINECONE || optionalEnvVars.KEEP_WARM_PINECONE
   if (keepWarmPinecone !== 'stats' && keepWarmPinecone !== 'query') throw new Error('Invalid KEEP_WARM_PINECONE')
+
+  // A turn searches lore, memory and summaries at once and each parallel request
+  // needs its own connection, so that many pings have to go out together. Clamped
+  // rather than rejected: a typo must not turn a free ping into a burst of reads.
+  const configuredWidth = Number(
+    process.env.KEEP_WARM_PINECONE_WIDTH || optionalEnvVars.KEEP_WARM_PINECONE_WIDTH,
+  )
+  const keepWarmPineconeWidth = Number.isSafeInteger(configuredWidth)
+    ? Math.min(6, Math.max(1, configuredWidth))
+    : Number(optionalEnvVars.KEEP_WARM_PINECONE_WIDTH)
 
   return {
     VECTOR_LAYOUT: vectorLayout,
@@ -249,6 +264,7 @@ function loadEnv(): Env {
     EMBED_DEADLINE_MS: Number(process.env.EMBED_DEADLINE_MS || optionalEnvVars.EMBED_DEADLINE_MS),
     KEEP_WARM: (process.env.KEEP_WARM || optionalEnvVars.KEEP_WARM) !== 'off',
     KEEP_WARM_PINECONE: keepWarmPinecone,
+    KEEP_WARM_PINECONE_WIDTH: keepWarmPineconeWidth,
     KEEP_WARM_IDLE_MS: Number(process.env.KEEP_WARM_IDLE_MS || optionalEnvVars.KEEP_WARM_IDLE_MS),
     KEEP_WARM_CHECK_MS: Number(process.env.KEEP_WARM_CHECK_MS || optionalEnvVars.KEEP_WARM_CHECK_MS),
     NSFW_INTENT_DEFER_ENABLED: process.env.NSFW_INTENT_DEFER_ENABLED === 'true',

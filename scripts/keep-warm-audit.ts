@@ -15,7 +15,10 @@
  *     flights that serve turns cannot swallow it;
  *   - `stats` asks for index stats, `query` sends a scoped topK-1 search that
  *     cannot return a real record;
- *   - a failed ping never throws and never stops later pings;
+ *   - one ping sends `KEEP_WARM_PINECONE_WIDTH` requests at once (3 by default),
+ *     because a turn runs three parallel searches and each needs its connection;
+ *   - a ping that partly fails — one request of several — logs one line carrying
+ *     the failed count, never throws, and never stops later pings;
  *   - `KEEP_WARM=off` sends nothing and schedules nothing;
  *   - real use moves the last-use time and a cache hit does not.
  *
@@ -55,8 +58,8 @@ function fromSource(source: string, pattern: RegExp, what: string): string {
   if (!match) throw new Error(`${what} not found in its source file`)
   return match[1]
 }
-function shippedDefault(name: string): string {
-  return fromSource(envSource, new RegExp(`${name}: '([^']*)'`), `${name} default`)
+function shippedDefault(name: string, source: string = envSource): string {
+  return fromSource(source, new RegExp(`${name}: '([^']*)'`), `${name} default`)
 }
 function mutate(source: string, before: string, after: string): string {
   if (!source.includes(before)) throw new Error(`Mutation target missing: ${before}`)
@@ -69,6 +72,21 @@ const PING_TIMEOUT_MS = Number(
 )
 const PING_SCOPE_ID = fromSource(vectorSource, /instanceId: '([^']*)' \}/, 'the keep-warm ping scope')
 
+/** The whole warn line a failed ping logs, and the one field inside it that says
+ *  how many of the ping's requests failed. Bites replace or remove them. */
+const PING_FAILED_LOG = [
+  '      const failedRequests = (error as { failed?: unknown }).failed',
+  "      log.warn('keep_warm.ping_failed', {",
+  '        client,',
+  "        ...(typeof failedRequests === 'number' ? { failed: failedRequests } : {}),",
+  '        error: (error as Error).message,',
+  '      })',
+].join('\n')
+const FAILED_COUNT_LINE = "        ...(typeof failedRequests === 'number' ? { failed: failedRequests } : {}),\n"
+
+/** The line that fans a ping's requests out; a serial loop bites it. */
+const FAN_OUT_LINE = '      const settled = await Promise.allSettled(Array.from({ length: count }, send))'
+
 // ── Boundaries ────────────────────────────────────────────────────────────────
 const env = {
   VECTOR_LAYOUT: 'shared' as const,
@@ -76,6 +94,7 @@ const env = {
   PINECONE_INDEX: 'audit-index',
   KEEP_WARM: true,
   KEEP_WARM_PINECONE: 'stats' as 'stats' | 'query',
+  KEEP_WARM_PINECONE_WIDTH: 3,
   KEEP_WARM_IDLE_MS: 10_000,
   KEEP_WARM_CHECK_MS: 5_000,
   EMBED_HEDGE_MS: 100,
@@ -96,16 +115,38 @@ interface PingRequest {
 class FakeIndex {
   stats = 0
   queries: PingRequest[] = []
+  /** Held open while a check measures how many requests reached the index at the
+   *  same time; null means each request returns as soon as it is made. */
+  gate: Promise<void> | null = null
+  inFlight = 0
+  maxInFlight = 0
+  /** How many of the next describeIndexStats calls reject, for a partial ping. */
+  failures = 0
+  private async hold(): Promise<void> {
+    this.inFlight++
+    this.maxInFlight = Math.max(this.maxInFlight, this.inFlight)
+    try {
+      if (this.gate) await this.gate
+    } finally {
+      this.inFlight--
+    }
+  }
   namespace(name: string) {
     return {
       query: async (query: Record<string, unknown>) => {
         this.queries.push({ name, query })
+        await this.hold()
         return { matches: [], namespace: name }
       },
     }
   }
   async describeIndexStats() {
     this.stats++
+    await this.hold()
+    if (this.failures > 0) {
+      this.failures--
+      throw new Error('stats unavailable')
+    }
     return { namespaces: {} }
   }
 }
@@ -199,7 +240,7 @@ function loadVectorStore(source: string): typeof vectors {
     .transformSync(source)
     .replace(/^import .*$/gm, '')
     .replace(/\bexport /g, '')
-  return new Function('env', 'getPineconeIndex', `${js}\n return { createVectorStore }`)(env, () => index) as typeof vectors
+  return new Function('env', 'getPineconeIndex', `${js}\n return { createVectorStore, setVectorIndexUseListener }`)(env, () => index) as typeof vectors
 }
 
 function countingPings() {
@@ -227,11 +268,48 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 
 // ── The knobs that ship ───────────────────────────────────────────────────────
 console.log('\nthe knobs ship with the defaults this check assumes:')
-await check('defaults are on / stats / 10000 / 5000', () => {
+await check('defaults are on / stats / width 3 / 10000 / 5000', () => {
   assert.equal(shippedDefault('KEEP_WARM'), 'on')
   assert.equal(shippedDefault('KEEP_WARM_PINECONE'), 'stats')
+  assert.equal(Number(shippedDefault('KEEP_WARM_PINECONE_WIDTH')), env.KEEP_WARM_PINECONE_WIDTH)
   assert.equal(Number(shippedDefault('KEEP_WARM_IDLE_MS')), env.KEEP_WARM_IDLE_MS)
   assert.equal(Number(shippedDefault('KEEP_WARM_CHECK_MS')), env.KEEP_WARM_CHECK_MS)
+})
+
+// ── (i) the width knob ────────────────────────────────────────────────────────
+/** `env.ts` reads `process.env` as it loads, so the shipped parser is run as its
+ *  own module against a fake process rather than against this process's env. */
+function loadEnvModule(source: string, raw: Record<string, string> = {}): { KEEP_WARM_PINECONE_WIDTH: number } {
+  const js = new Bun.Transpiler({ loader: 'ts' })
+    .transformSync(source)
+    .replace(/^import .*$/gm, '')
+    .replace(/\bexport /g, '')
+  const processEnv = {
+    JWT_SECRET: 'audit', MONGODB_URI: 'audit', REDIS_URL: 'audit',
+    OPENAI_API_KEY: 'audit', OPENROUTER_API_KEY: 'audit', PINECONE_API_KEY: 'audit',
+    ...raw,
+  }
+  return new Function('process', `${js}\n return { env }`)({ env: processEnv }).env
+}
+
+async function widthKnob(source: string): Promise<void> {
+  const width = (raw?: Record<string, string>) => loadEnvModule(source, raw).KEEP_WARM_PINECONE_WIDTH
+  assert.equal(Number(shippedDefault('KEEP_WARM_PINECONE_WIDTH', source)), 3, 'the shipped default must be 3')
+  assert.equal(width(), 3, 'an unset width must be the default')
+  assert.equal(width({ KEEP_WARM_PINECONE_WIDTH: '2' }), 2, 'a width in range must be kept')
+  assert.equal(width({ KEEP_WARM_PINECONE_WIDTH: '0' }), 1, '0 must clamp up to 1')
+  assert.equal(width({ KEEP_WARM_PINECONE_WIDTH: '-2' }), 1, 'a negative must clamp up to 1')
+  assert.equal(width({ KEEP_WARM_PINECONE_WIDTH: '9' }), 6, 'above the range must clamp to 6')
+  assert.equal(width({ KEEP_WARM_PINECONE_WIDTH: 'wide' }), 3, 'a non-number must fall back to 3')
+  assert.equal(width({ KEEP_WARM_PINECONE_WIDTH: '2.5' }), 3, 'a non-integer must fall back to 3')
+}
+
+console.log('\n(i) the width ships as 3 and cannot leave 1–6:')
+await check('3 by default, a valid width kept, out-of-range clamped, a non-number back to 3', () => widthKnob(envSource))
+await check('bite (i) width clamp: dropping the clamp fails it', async () => {
+  const broken = mutate(envSource, 'Math.min(6, Math.max(1, configuredWidth))', 'configuredWidth')
+  await assert.rejects(() => widthKnob(broken), /clamp up to 1/)
+  await widthKnob(envSource)
 })
 
 // ── (a) startup warm ──────────────────────────────────────────────────────────
@@ -409,11 +487,11 @@ async function scopedPingShape(createStore: typeof vectors.createVectorStore): P
     getIndex: () => fake as unknown as VectorIndex,
   })
   await store.ping('stats')
-  assert.equal(fake.stats, 1, 'stats must ask for the index stats')
+  assert.equal(fake.stats, env.KEEP_WARM_PINECONE_WIDTH, 'one stats ping must send its whole width')
   assert.equal(fake.queries.length, 0, 'stats must not search')
 
   await store.ping('query')
-  assert.equal(fake.queries.length, 1, 'query must search exactly once')
+  assert.equal(fake.queries.length, env.KEEP_WARM_PINECONE_WIDTH, 'one query ping must send its whole width')
   const request = fake.queries[0]
   assert.equal(request.name, 'everlore', 'the search must hit the shared namespace prod reads')
   assert.equal(request.query.topK, 1, 'one match is the cheapest legal search')
@@ -440,7 +518,7 @@ async function endToEndModes(): Promise<void> {
   let keeper = keepWarm.startKeepWarm({ schedule: () => 0 })
   await keeper.ready
   keeper.stop()
-  assert.equal(index.stats, 1, 'stats mode must call describeIndexStats at startup')
+  assert.equal(index.stats, env.KEEP_WARM_PINECONE_WIDTH, 'stats mode must send a whole width of stats asks at startup')
   assert.equal(index.queries.length, 0, 'stats mode must not search')
 
   keepWarm.resetKeepWarmForAudit()
@@ -451,7 +529,7 @@ async function endToEndModes(): Promise<void> {
   keeper.stop()
   env.KEEP_WARM_PINECONE = 'stats'
   assert.equal(index.stats, 0, 'query mode must not ask for index stats')
-  assert.equal(index.queries.length, 1, 'query mode must send exactly one scoped search')
+  assert.equal(index.queries.length, env.KEEP_WARM_PINECONE_WIDTH, 'query mode must send a whole width of scoped searches')
   assert.equal((index.queries[0].query.vector as number[]).length, 1024)
 }
 
@@ -476,6 +554,91 @@ await check('bite (e) search shape: topK 5 instead of 1 fails the scoped-ping ch
   await assert.rejects(() => scopedPingShape(broken.createVectorStore))
   await scopedPingShape(vectors.createVectorStore)
 })
+
+// ── (j)/(k) one ping, `width` requests in flight ──────────────────────────────
+/** What the fan-out must never become, used as a bite: each request is started
+ *  and awaited in turn, so the second and third connections stay cold. */
+const SERIAL_FAN_OUT = [
+  '      const settled: PromiseSettledResult<unknown>[] = []',
+  '      for (let i = 0; i < count; i++) {',
+  '        try {',
+  "          settled.push({ status: 'fulfilled', value: await send() })",
+  '        } catch (reason) {',
+  "          settled.push({ status: 'rejected', reason })",
+  '        }',
+  '      }',
+].join('\n')
+
+async function fanOut(api: typeof vectors, mode: 'stats' | 'query'): Promise<void> {
+  const fake = new FakeIndex()
+  const store = api.createVectorStore({
+    layout: 'shared',
+    sharedNamespace: 'everlore',
+    getIndex: () => fake as unknown as VectorIndex,
+  })
+  const uses = { count: 0 }
+  api.setVectorIndexUseListener(() => {
+    uses.count++
+  })
+  // Held open: a request can only be counted as in flight while it waits here.
+  const held = deferred()
+  fake.gate = held.promise
+  const ping = store.ping(mode, 3)
+  try {
+    await Bun.sleep(0)
+    const reached = mode === 'stats' ? fake.stats : fake.queries.length
+    assert.equal(reached, 3, `one ${mode} ping must send all three requests, not wait for one`)
+    assert.equal(fake.maxInFlight, 3, `all three must be in flight together (max ${fake.maxInFlight})`)
+    assert.equal(uses.count, 1, 'one ping must report the index as used once, not once per request')
+    if (mode === 'stats') assert.equal(fake.queries.length, 0, 'a stats ping must not search')
+    else assert.equal(fake.stats, 0, 'a query ping must not ask for index stats')
+  } finally {
+    held.resolve()
+    await ping
+    api.setVectorIndexUseListener(() => keepWarm.noteClientUse('pinecone'))
+  }
+  if (mode !== 'query') return
+  for (const request of fake.queries) {
+    assert.equal(request.name, 'everlore', 'every scoped search must hit the shared namespace prod reads')
+    assert.equal(request.query.topK, 1, 'every scoped search must ask for one match')
+    assert.deepEqual(
+      request.query.filter,
+      { scope_kind: { $eq: 'mem' }, scope_id: { $eq: PING_SCOPE_ID } },
+      'every scoped search must be scoped to a scope that cannot exist',
+    )
+  }
+}
+
+async function widthReachesTheWire(): Promise<void> {
+  keepWarm.resetKeepWarmForAudit()
+  now = 0
+  useClock(keepWarm)
+  index = new FakeIndex()
+  env.KEEP_WARM_PINECONE_WIDTH = 4
+  try {
+    const keeper = keepWarm.startKeepWarm({ schedule: () => 0 })
+    await keeper.ready
+    keeper.stop()
+  } finally {
+    env.KEEP_WARM_PINECONE_WIDTH = 3
+  }
+  assert.equal(index.stats, 4, 'the env width must be how many requests one ping sends')
+}
+
+console.log('\n(j)/(k) one ping sends a whole width of requests, all in flight at once:')
+await check('(j) a stats ping reaches the index width times with max in flight == width', () => fanOut(vectors, 'stats'))
+await check('bite (j) stats fan-out: a serial loop fails it', async () => {
+  const broken = loadVectorStore(mutate(vectorSource, FAN_OUT_LINE, SERIAL_FAN_OUT))
+  await assert.rejects(() => fanOut(broken, 'stats'), /must send all three requests/)
+  await fanOut(vectors, 'stats')
+})
+await check('(k) a query ping sends width scoped topK-1 searches at once', () => fanOut(vectors, 'query'))
+await check('bite (k) query fan-out: a serial loop fails it', async () => {
+  const broken = loadVectorStore(mutate(vectorSource, FAN_OUT_LINE, SERIAL_FAN_OUT))
+  await assert.rejects(() => fanOut(broken, 'query'), /must send all three requests/)
+  await fanOut(vectors, 'query')
+})
+await check('the knob reaches the wire: a width of 4 sends four stats asks', widthReachesTheWire)
 
 // ── (f) a failing ping never throws and never stops later pings ───────────────
 async function failureIsolation(kw: KeepWarmModule): Promise<void> {
@@ -520,15 +683,80 @@ async function failureIsolation(kw: KeepWarmModule): Promise<void> {
 console.log('\n(f) a failing ping is logged, never thrown, and later pings still run:')
 await check('a failure does not reject, stop the other client, or stop the next window', () => failureIsolation(keepWarm))
 await check('bite (f) failure isolation: rethrowing the ping error fails it', async () => {
-  const broken = loadKeepWarm(
-    mutate(
-      keepWarmSource,
-      "log.warn('keep_warm.ping_failed', { client, error: (error as Error).message })",
-      'throw error',
-    ),
-  )
+  const broken = loadKeepWarm(mutate(keepWarmSource, PING_FAILED_LOG, '      throw error'))
   await assert.rejects(() => failureIsolation(broken))
   await failureIsolation(keepWarm)
+})
+
+// ── (l) a partly failed ping is one logged line, and never a throw ────────────
+async function partialFailureAtTheStore(api: typeof vectors): Promise<void> {
+  const fake = new FakeIndex()
+  const store = api.createVectorStore({
+    layout: 'shared',
+    sharedNamespace: 'everlore',
+    getIndex: () => fake as unknown as VectorIndex,
+  })
+  fake.failures = 1
+  let error: unknown
+  try {
+    await store.ping('stats', 3)
+  } catch (err) {
+    error = err
+  }
+  assert.ok(error, 'a partly failed ping must reject once')
+  assert.equal((error as { failed?: unknown }).failed, 1, 'the error must carry how many requests failed')
+  assert.equal((error as { total?: unknown }).total, 3, 'and how many were sent')
+  assert.equal(fake.stats, 3, 'every request must be sent and settled, not abandoned at the first failure')
+}
+
+async function partialFailure(kw: KeepWarmModule): Promise<void> {
+  kw.resetKeepWarmForAudit()
+  now = 0
+  useClock(kw)
+  warnings.length = 0
+  index = new FakeIndex()
+  index.failures = 1
+  const keeper = kw.startKeepWarm({
+    // The shipped pinger's wire call, injected so a mutated copy of keep-warm
+    // still exercises the real store.
+    pings: { pinecone: () => vectors.vectorStore.ping('stats'), embedding: async () => {} },
+    schedule: () => 0,
+  })
+  await keeper.ready
+  assert.equal(index.stats, env.KEEP_WARM_PINECONE_WIDTH, 'every request must still be sent')
+  const logged = warnings.filter((entry) => entry.msg === 'keep_warm.ping_failed')
+  assert.equal(logged.length, 1, 'a partly failed ping must log exactly one line')
+  assert.equal(logged[0].fields.client, 'pinecone')
+  assert.equal(logged[0].fields.failed, 1, 'the line must say how many requests failed')
+  assert.ok(
+    !JSON.stringify(logged[0].fields).toLowerCase().includes('api_key'),
+    'a ping log line must never carry a key',
+  )
+
+  now += env.KEEP_WARM_IDLE_MS
+  index.failures = 0
+  const before = index.stats
+  await keeper.tick()
+  assert.equal(index.stats - before, env.KEEP_WARM_PINECONE_WIDTH, 'the next idle window must ping again')
+  keeper.stop()
+}
+
+console.log('\n(l) one failing request of width is one logged failure, never thrown:')
+await check('(l) the store rejects once with the count, after every request has settled', () =>
+  partialFailureAtTheStore(vectors),
+)
+await check('bite (l) allSettled: Promise.all loses the failed count', async () => {
+  const broken = loadVectorStore(mutate(vectorSource, 'await Promise.allSettled(', 'await Promise.all('))
+  await assert.rejects(() => partialFailureAtTheStore(broken), /must carry how many requests failed/)
+  await partialFailureAtTheStore(vectors)
+})
+await check('(l) through the pinger: one warn line with the count, and later pings still run', () =>
+  partialFailure(keepWarm),
+)
+await check('bite (l) partial failure: dropping the failed count from the warn line fails it', async () => {
+  const broken = loadKeepWarm(mutate(keepWarmSource, FAILED_COUNT_LINE, ''))
+  await assert.rejects(() => partialFailure(broken), /must say how many requests failed/)
+  await partialFailure(keepWarm)
 })
 
 // ── (g) KEEP_WARM=off ─────────────────────────────────────────────────────────

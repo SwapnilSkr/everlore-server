@@ -15,6 +15,15 @@ import { log } from '../utils/logger'
  * has been idle for `KEEP_WARM_IDLE_MS`. Under steady traffic nothing is ever
  * idle and the pings stop by themselves.
  *
+ * One connection is not enough. A turn searches Pinecone three times at once —
+ * lore, memory and summaries — and each parallel request needs its own
+ * connection. Box probe, one process: serial searches on saves unread for 58
+ * days took 0.19 s, but three parallel searches with a single warm connection
+ * took 0.94 s until the other two opened. So a ping sends
+ * `KEEP_WARM_PINECONE_WIDTH` requests at once (3 by default), and three
+ * concurrent stats pings every 10 s kept three connections at 0.38–0.47 s after
+ * 30–60 s idle, where one warm connection had left two of them cold.
+ *
  * Last use is reported by the modules that own each client — `ai/embedding`
  * directly, `services/vector-store` through the listener below — against a
  * monotonic clock, so a cache hit or a call that never left the process cannot
@@ -139,8 +148,15 @@ export function startKeepWarm(options: KeepWarmOptions = {}): KeepWarm {
       return 'pinged'
     } catch (error) {
       // Logged, never thrown: a failed warm-up must not take the worker down or
-      // stop later pings. The message carries no key and no payload.
-      log.warn('keep_warm.ping_failed', { client, error: (error as Error).message })
+      // stop later pings. A ping that sent several requests says how many of them
+      // failed, and still produces this one line. The message carries no key and
+      // no payload.
+      const failedRequests = (error as { failed?: unknown }).failed
+      log.warn('keep_warm.ping_failed', {
+        client,
+        ...(typeof failedRequests === 'number' ? { failed: failedRequests } : {}),
+        error: (error as Error).message,
+      })
       return 'failed'
     } finally {
       inFlight.delete(client)

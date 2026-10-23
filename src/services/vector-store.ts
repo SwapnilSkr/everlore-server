@@ -22,11 +22,27 @@ export type VectorStore = {
   deleteScope(scope: VectorScope): Promise<void>
   replaceLore(scope: Extract<VectorScope, { kind: 'lore' }>, records: PineconeRecord[]): Promise<void>
   /**
-   * A keep-warm ping. `stats` asks for the index stats, which Pinecone does not
-   * bill in read units; `query` is a topK-1 search scoped to a scope that cannot
-   * exist, so it returns nothing and costs 0.25 read units.
+   * A keep-warm ping: `width` requests at once, because each concurrent request
+   * a turn makes needs its own connection. `stats` asks for the index stats,
+   * which Pinecone does not bill in read units; `query` is a topK-1 search
+   * scoped to a scope that cannot exist, so it returns nothing and costs
+   * width × 0.25 read units.
    */
-  ping(mode: PineconePingMode): Promise<void>
+  ping(mode: PineconePingMode, width?: number): Promise<void>
+}
+
+/** A keep-warm ping where some of its requests failed. Carries the count so the
+ *  pinger's single warn line can say how many did. */
+export class WarmPingError extends Error {
+  readonly failed: number
+  readonly total: number
+
+  constructor(failed: number, total: number, cause: unknown) {
+    super(`keep-warm ping: ${failed} of ${total} requests failed: ${(cause as Error)?.message ?? String(cause)}`)
+    this.name = 'WarmPingError'
+    this.failed = failed
+    this.total = total
+  }
 }
 
 /** Reported to the keep-warm pinger on every call that reaches the index. A
@@ -183,22 +199,33 @@ export function createVectorStore(options: {
       // Snapshot the full listing before deleting: mutation during pagination can skip ids.
       await store.deleteIds(scope, await store.listIds(scope))
     },
-    async ping(mode: PineconePingMode): Promise<void> {
+    async ping(mode: PineconePingMode, width: number = env.KEEP_WARM_PINECONE_WIDTH): Promise<void> {
+      const count = Math.max(1, Math.floor(width))
+      // Resolved once, so the pinger hears about this ping once however many
+      // requests it sends.
       const target = index()
-      if (mode === 'stats') {
-        await target.describeIndexStats()
-        return
-      }
       // A search with everything off, scoped to a scope that cannot exist: it
-      // cannot return a record, and at topK 1 it bills 0.25 read units.
-      const a = address(PING_SCOPE)
-      await target.namespace(a.name).query({
-        vector: PING_VECTOR,
-        topK: 1,
-        includeMetadata: false,
-        includeValues: false,
-        ...(shared ? { filter: { scope_kind: { $eq: PING_SCOPE.kind }, scope_id: { $eq: a.id } } } : {}),
-      })
+      // cannot return a record, and at topK 1 each request bills 0.25 read units.
+      const scope = mode === 'stats' ? null : address(PING_SCOPE)
+      const namespaced = scope ? target.namespace(scope.name) : null
+      const send = (): Promise<unknown> => {
+        if (!scope || !namespaced) return target.describeIndexStats()
+        return namespaced.query({
+          vector: PING_VECTOR,
+          topK: 1,
+          includeMetadata: false,
+          includeValues: false,
+          ...(shared ? { filter: { scope_kind: { $eq: PING_SCOPE.kind }, scope_id: { $eq: scope.id } } } : {}),
+        })
+      }
+      // Every request is started before any is awaited: this is a fan-out, and a
+      // serial loop would leave the other connections cold, which is exactly what
+      // the ping exists to prevent.
+      const settled = await Promise.allSettled(Array.from({ length: count }, send))
+      const failed = settled.filter((result) => result.status === 'rejected')
+      // Settle them all before reporting: one failure must not leave the other
+      // requests' outcome unknown, and the caller logs one line per ping.
+      if (failed.length > 0) throw new WarmPingError(failed.length, count, (failed[0] as PromiseRejectedResult).reason)
     },
     async replaceLore(scope: Extract<VectorScope, { kind: 'lore' }>, records: PineconeRecord[]): Promise<void> {
       if (scope?.kind !== 'lore') throw new Error('Lore scope required')
