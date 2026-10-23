@@ -186,6 +186,18 @@ const CHOICE_META_SCHEMA = {
   required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'beat_ledger', 'choices', 'milestone'],
 }
 
+// Preserve property order in the legacy schema: the ledger precedes choices.
+const { beat_ledger: ledgerSchema, ...choiceProperties } = CHOICE_META_SCHEMA.properties
+const CHOICES_ONLY_SCHEMA = {
+  ...CHOICE_META_SCHEMA,
+  properties: choiceProperties,
+  required: CHOICE_META_SCHEMA.required.filter((key) => key !== 'beat_ledger'),
+}
+const LEDGER_ONLY_SCHEMA = {
+  type: 'object', additionalProperties: false,
+  properties: { beat_ledger: ledgerSchema }, required: ['beat_ledger'],
+}
+
 /** Default for the WITNESS half — used when its call fails so a witness outage
  *  never throws or pollutes the choice half. Presence/location stay empty/unchanged. */
 const WITNESS_FALLBACK: SceneMetadata = {
@@ -281,7 +293,7 @@ Rules:
  * choice viewpoint can't drift in third-person prose. Falls back to a no-op
  * (scene stays `intimate` to preserve NSFW momentum) if extraction fails.
  */
-type MetadataOpts = {
+export type MetadataOpts = {
   /** Model override. Production omits it and gets `AI_MODELS.metadata`; the
    *  corpus tier experiment uses it to run the same prompt on another tier. */
   model?: string
@@ -532,7 +544,7 @@ export function dropRepeatedChoices<T extends { label?: string }>(
 /** Reuse enforceSchema's field validation on a raw half-response by injecting a
  *  placeholder narrative (enforceSchema requires one) and returning the full
  *  validated GenerationOutput; each half picks its own fields. */
-function validateHalf(raw: string): GenerationOutput {
+export function validateHalf(raw: string): GenerationOutput {
   return enforceSchema(JSON.stringify({ narrative: 'placeholder', ...safeParseObject(raw) }))
 }
 
@@ -595,6 +607,13 @@ export async function extractSceneWitness(
   }
 }
 
+/** Explicit execution controls let the read-only experiment use the production
+ * request builder, validator and fallback without changing process-global flags. */
+export interface ChoiceMetadataExecution {
+  split?: boolean
+  call?: typeof callLLM
+}
+
 /**
  * CHOICE/STAT half — suggested player moves, scene tag, tone, milestone, and
  * stat/flag mutations. Kept together (they share one JSON pass) but isolated
@@ -606,6 +625,7 @@ export async function extractChoiceMetadata(
   stats: StatInput,
   flagKeys: string[],
   opts?: MetadataOpts,
+  execution?: ChoiceMetadataExecution,
 ): Promise<SceneMetadata> {
   const baseSystem = buildMetadataSystem(opts, normalizeStats(stats), flagKeys)
   const choiceContext = String(opts?.choiceContext || '')
@@ -616,46 +636,79 @@ export async function extractChoiceMetadata(
   const system = choiceContext
     ? `${baseSystem}\n\n--- CHOICE DECISION CONTEXT (selected story facts available to the narrator) ---\n${choiceContext}\nUse these facts together with the completed narrative. They are canon for grounding choices, not dialogue to quote or replay.\n--- END CHOICE DECISION CONTEXT ---`
     : baseSystem
-  const startedAt = Date.now()
-  try {
-    const raw = await callLLM({
-      model: AI_MODELS.metadata,
-      purpose: 'choice_metadata',
-      firstTokenHedge: {
-        delayMs: env.CHOICE_HEDGE_MS,
-        lostPurpose: 'choice_metadata_hedge_lost',
-        onHedge: opts?.onChoiceHedge,
-        onFirstToken: (winner) => opts?.onChoiceFirstToken?.(Date.now() - startedAt, winner),
-      },
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: narrative },
-      ],
-      temperature: 0.2,
-      // The beat ledger adds a handful of short semantic fields to this
-      // existing post-stream pass. It never sits on the narrator's first-token
-      // path, but leave enough room that a valid ledger cannot crowd out the
-      // core choices/state metadata.
-      maxTokens: 450,
-      responseSchema: CHOICE_META_SCHEMA,
-    })
-    opts?.onRaw?.('choice_metadata', raw)
-    const v = validateHalf(raw)
-    return {
-      ...WITNESS_FALLBACK,
-      state_mutations: v.state_mutations,
-      flag_mutations: v.flag_mutations,
-      scene_tag: v.scene_tag,
-      emotional_tone: v.emotional_tone,
-      beat_ledger: v.beat_ledger,
-      choices: dropRepeatedChoices(v.choices || [], opts?.recentChoiceLabels || []),
-      milestone: v.milestone,
+  const split = execution?.split ?? env.CHOICE_LEDGER_SPLIT === 'on'
+  const ledgerRule = METADATA_RULES.split('\n').find((line) => line.startsWith('- beat_ledger:'))!
+  const choicesSystem = split ? system.replace(ledgerRule + '\n', '') : system
+  const invoke = execution?.call || callLLM
+  // Launch before awaiting choices, and catch independently: a ledger outage
+  // must never discard successful choices (or vice versa).
+  const ledgerPromise = split ? (async () => {
+    try {
+      const raw = await invoke({
+        model: AI_MODELS.metadata,
+        purpose: 'beat_ledger',
+        firstTokenHedge: {
+          delayMs: env.CHOICE_HEDGE_MS,
+          lostPurpose: 'beat_ledger_hedge_lost',
+        },
+        messages: [
+          { role: 'system', content: system.replace(METADATA_RULES,
+            METADATA_RULES.slice(0, METADATA_RULES.indexOf('\n\nRules:')) + '\n\nRules:\n' + ledgerRule + '\n') },
+          { role: 'user', content: narrative },
+        ],
+        temperature: 0.2,
+        maxTokens: 450,
+        responseSchema: LEDGER_ONLY_SCHEMA,
+      })
+      return validateHalf(raw).beat_ledger
+    } catch {
+      return WITNESS_FALLBACK.beat_ledger
     }
-  } catch {
-    return { ...WITNESS_FALLBACK, scene_tag: 'intimate' }
-  } finally {
-    opts?.onStage?.('choice_metadata', Date.now() - startedAt)
-  }
+  })() : undefined
+  const startedAt = Date.now()
+  const choicePromise = (async () => {
+    try {
+      const raw = await invoke({
+        model: AI_MODELS.metadata,
+        purpose: 'choice_metadata',
+        firstTokenHedge: {
+          delayMs: env.CHOICE_HEDGE_MS,
+          lostPurpose: 'choice_metadata_hedge_lost',
+          onHedge: opts?.onChoiceHedge,
+          onFirstToken: (winner) => opts?.onChoiceFirstToken?.(Date.now() - startedAt, winner),
+        },
+        messages: [
+          { role: 'system', content: choicesSystem },
+          { role: 'user', content: narrative },
+        ],
+        temperature: 0.2,
+        // The beat ledger adds a handful of short semantic fields to this
+        // existing post-stream pass. It never sits on the narrator's first-token
+        // path, but leave enough room that a valid ledger cannot crowd out the
+        // core choices/state metadata.
+        maxTokens: 450,
+        responseSchema: split ? CHOICES_ONLY_SCHEMA : CHOICE_META_SCHEMA,
+      })
+      opts?.onRaw?.('choice_metadata', raw)
+      const v = validateHalf(raw)
+      return {
+        ...WITNESS_FALLBACK,
+        state_mutations: v.state_mutations,
+        flag_mutations: v.flag_mutations,
+        scene_tag: v.scene_tag,
+        emotional_tone: v.emotional_tone,
+        beat_ledger: v.beat_ledger,
+        choices: dropRepeatedChoices(v.choices || [], opts?.recentChoiceLabels || []),
+        milestone: v.milestone,
+      }
+    } catch {
+      return { ...WITNESS_FALLBACK, scene_tag: 'intimate' }
+    } finally {
+      opts?.onStage?.('choice_metadata', Date.now() - startedAt)
+    }
+  })()
+  const choices = await choicePromise
+  return ledgerPromise ? { ...choices, beat_ledger: await ledgerPromise } : choices
 }
 
 /**
