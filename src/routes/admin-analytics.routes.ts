@@ -22,7 +22,10 @@ const DaysQuery = t.Object({
 const SessionQuery = t.Object({
   user_id: t.Optional(t.String()),
   install_id: t.Optional(t.String()),
+  /** A funnel step key (§4.6a), never a screen name. Validated in the service. */
   dropped_at: t.Optional(t.String()),
+  days: t.Optional(t.String()),
+  version: t.Optional(t.String()),
   limit: t.Optional(t.String()),
   before: t.Optional(t.String()),
 })
@@ -57,6 +60,8 @@ export const adminAnalyticsRoutes = new Elysia({ prefix: '/analytics' })
     user_id?: string
     install_id?: string
     dropped_at?: string
+    days?: string
+    version?: string
     limit?: string
     before?: string
   } }) => analyticsService.sessions(ctx.query), { query: SessionQuery })

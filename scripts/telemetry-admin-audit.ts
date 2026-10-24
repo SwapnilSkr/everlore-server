@@ -12,6 +12,8 @@
  *   - the funnel arithmetic holds on a cohort that signed up and behaved
  *     differently — including a player who never opened a world, one who came
  *     back the next day, and a session that predates sign-in;
+ *   - `dropped_at` on the sessions list answers the funnel's own drop sets, one
+ *     per stage, and cursor paging over them returns every match exactly once;
  *   - the daily row is a correct, idempotent fold of one day's raw rows: screen
  *     views, players, median and exit rate, next screens, actions, counters,
  *     versions and the funnel;
@@ -128,6 +130,9 @@ function compareValues(left: unknown, right: unknown): number {
 
 function matches(doc: Doc, filter: Doc): boolean {
   return Object.entries(filter).every(([key, cond]) => {
+    // The session list composes its filters under `$and`, so narrow and drop-off
+    // conditions can both apply.
+    if (key === '$and') return (cond as Doc[]).every((inner) => matches(doc, inner))
     const value = getPath(doc, key)
     if (isOperator(cond)) {
       if ('$exists' in cond) return (value !== undefined) === cond.$exists
@@ -902,12 +907,224 @@ await check('§4.6a: sessions list paginates on started_at and names the player'
   assert.equal(second.body.items[0].user, null, 'a session that never signed in has no user')
 })
 
-await check('§4.6a: dropped_at keeps the sessions that ended on that screen', async () => {
+// ─────────────────────────────────────────────────────────────────────────────
+// §4.6a — `dropped_at` is a funnel step: the same cohort `/funnel` counts
+// ─────────────────────────────────────────────────────────────────────────────
+
+const DROP_USER = ['64b7f0c2a1b2c3d4e5f60721', '64b7f0c2a1b2c3d4e5f60722', '64b7f0c2a1b2c3d4e5f60723', '64b7f0c2a1b2c3d4e5f60724']
+const DROP_INSTALL = [
+  'a1111111-1111-4111-8111-111111111111',
+  'a1111111-1111-4111-8111-222222222222',
+  'a1111111-1111-4111-8111-333333333333',
+  'a1111111-1111-4111-8111-444444444444',
+  'a1111111-1111-4111-8111-555555555555',
+]
+const sid = (n: number): string => `c1111111-1111-4111-8111-${String(n).padStart(12, '0')}`
+
+/**
+ * A seven-day cohort where one player stopped at each funnel step:
+ *   mira — signed up, opened a world, played a turn, came back on day 1
+ *   arun — signed up, never opened a world            → drops at opened_world
+ *   zoe  — opened a world (a save), never played       → drops at first_turn
+ *   liam — played a turn, never came back              → drops at returned_d1
+ * and one install that never signed in                 → drops at signed_up
+ *
+ * The sessions are deliberately interleaved: mira's four newest match no step, so
+ * a filter applied after a bounded query would return a short page and end the
+ * cursor while matching sessions were still unread.
+ */
+function seedDropCohort(): void {
+  const [MIRA, ARUN, ZOE, LIAM] = DROP_USER.map(ID)
+  const [MIRA_INSTALL, ARUN_INSTALL, ZOE_INSTALL, LIAM_INSTALL, ANON_INSTALL] = DROP_INSTALL
+
+  store.users.push(
+    { _id: MIRA, username: 'mira', created_at: dayMoment(-3, 9) },
+    { _id: ARUN, username: 'arun', created_at: dayMoment(-3, 9) },
+    { _id: ZOE, username: 'zoe', created_at: dayMoment(-3, 9) },
+    { _id: LIAM, username: 'liam', created_at: dayMoment(-3, 9) },
+  )
+  const install = (id: string, userIds?: ObjectId[]) => ({
+    _id: id,
+    first_seen: dayMoment(-3, 8),
+    last_seen: dayMoment(-1, 8),
+    first_version: '1.0.11',
+    build: 14,
+    device: { ...DEVICE },
+    ...(userIds ? { user_ids: userIds } : {}),
+  })
+  store.app_installs.push(
+    install(MIRA_INSTALL, [MIRA]),
+    install(ARUN_INSTALL, [ARUN]),
+    install(ZOE_INSTALL, [ZOE]),
+    install(LIAM_INSTALL, [LIAM]),
+    // No `user_ids` key at all: this install never signed in.
+    install(ANON_INSTALL),
+  )
+
+  // Server truth: mira and liam viewed a world, zoe's world is a save, mira and
+  // liam played a turn. Only mira was active on the day after her sign-up.
+  store.app_events.push(
+    seedEvent({ name: 'world_viewed', props: { world_id: '0123456789abcdef01234567' }, user_id: MIRA, install_id: MIRA_INSTALL, session_id: sid(0), at: dayMoment(-3, 10) }),
+    seedEvent({ name: 'world_viewed', props: { world_id: '0123456789abcdef01234567' }, user_id: LIAM, install_id: LIAM_INSTALL, session_id: sid(0), at: dayMoment(-3, 10) }),
+  )
+  store.world_instances.push({ _id: new ObjectId(), player_id: ZOE })
+  store.events.push(
+    { _id: new ObjectId(), player_id: MIRA, type: 'narration', created_at: dayMoment(-3, 10) },
+    { _id: new ObjectId(), player_id: LIAM, type: 'narration', created_at: dayMoment(-3, 10) },
+  )
+
+  const appSession = (id: string, installId: string, userId: ObjectId | null, startedAt: Date, version = '1.0.11') => ({
+    _id: id,
+    install_id: installId,
+    ...(userId ? { user_id: userId } : {}),
+    started_at: startedAt,
+    last_at: new Date(startedAt.getTime() + 60_000),
+    app_version: version,
+    build: 14,
+    device: { ...DEVICE },
+    screen_path: [{ screen: 'home', duration_ms: 60_000, at: startedAt }],
+    counts: { events: 1, errors: 0, actions: 1 },
+  })
+
+  store.app_sessions.push(
+    // The four newest sessions belong to a player who dropped nowhere.
+    appSession(sid(1), MIRA_INSTALL, MIRA, dayMoment(-1, 18)),
+    appSession(sid(2), MIRA_INSTALL, MIRA, dayMoment(-1, 17)),
+    appSession(sid(3), MIRA_INSTALL, MIRA, dayMoment(-1, 16)),
+    appSession(sid(4), MIRA_INSTALL, MIRA, dayMoment(-1, 15)),
+    // arun, dropped at opened_world: three sessions, the middle one older.
+    appSession(sid(5), ARUN_INSTALL, ARUN, dayMoment(-1, 14)),
+    appSession(sid(6), ARUN_INSTALL, ARUN, dayMoment(-1, 13), '1.0.10'),
+    appSession(sid(7), ARUN_INSTALL, ARUN, dayMoment(-1, 12)),
+    // zoe, dropped at first_turn.
+    appSession(sid(8), ZOE_INSTALL, ZOE, dayMoment(-1, 11)),
+    // liam, dropped at returned_d1.
+    appSession(sid(9), LIAM_INSTALL, LIAM, dayMoment(-1, 10)),
+    appSession(sid(10), LIAM_INSTALL, LIAM, dayMoment(-1, 9)),
+    // The install that never signed in, dropped at signed_up.
+    appSession(sid(11), ANON_INSTALL, null, dayMoment(-1, 8)),
+    appSession(sid(12), ANON_INSTALL, null, dayMoment(-1, 7)),
+    // mira's day-1 return — the reason she drops nowhere — and an earlier session.
+    appSession(sid(13), MIRA_INSTALL, MIRA, dayMoment(-2, 9)),
+    appSession(sid(14), MIRA_INSTALL, MIRA, dayMoment(-3, 9)),
+  )
+}
+
+await check('§4.6a: dropped_at is a funnel step, never a screen name', async () => {
   reset()
-  seedSessions()
-  const response = await get('/admin/analytics/sessions?dropped_at=play')
-  assert.equal(response.status, 200)
-  assert.deepEqual(response.body.items.map((item: Doc) => item.id), [SESSION[1]])
+  seedDropCohort()
+
+  for (const bad of ['play', 'discover', 'first_open', 'signed', 'OPENED_WORLD', '']) {
+    const response = await get(`/admin/analytics/sessions?dropped_at=${encodeURIComponent(bad)}`)
+    assert.equal(response.status, 400, `dropped_at=${bad} was accepted`)
+    assert.match(response.body.error, /signed_up, opened_world, first_turn or returned_d1/)
+  }
+})
+
+await check('§4.6a: the session cohort takes days 7–90, like the funnel', async () => {
+  reset()
+  seedDropCohort()
+
+  for (const bad of ['6', '91', 'thirty', '7.5', '']) {
+    const response = await get(`/admin/analytics/sessions?dropped_at=opened_world&days=${bad}`)
+    assert.equal(response.status, 400, `days=${bad} was accepted`)
+    assert.match(response.body.error, /between 7 and 90/)
+  }
+  for (const good of ['7', '30', '90']) {
+    const response = await get(`/admin/analytics/sessions?dropped_at=opened_world&days=${good}`)
+    assert.equal(response.status, 200, JSON.stringify(response.body))
+    assert.equal(response.body.items.length, 3, `days=${good}`)
+  }
+})
+
+await check('§4.6a: each drop-off stage returns the sessions the funnel samples', async () => {
+  reset()
+  seedDropCohort()
+
+  const funnel = await get('/admin/analytics/funnel?days=7')
+  assert.equal(funnel.status, 200)
+  const samples = Object.fromEntries(funnel.body.steps.map((step: Doc) => [step.key, step.dropped_sessions]))
+
+  const expected: Record<string, string[]> = {
+    signed_up: [sid(11), sid(12)],
+    opened_world: [sid(5), sid(6), sid(7)],
+    first_turn: [sid(8)],
+    returned_d1: [sid(9), sid(10)],
+  }
+
+  for (const [step, ids] of Object.entries(expected)) {
+    assert.deepEqual(samples[step], ids, `the funnel samples ${step} in this order`)
+
+    const response = await get(`/admin/analytics/sessions?dropped_at=${step}&days=7`)
+    assert.equal(response.status, 200, JSON.stringify(response.body))
+    const returned = response.body.items.map((item: Doc) => item.id)
+    assert.deepEqual(returned, ids, `${step} sessions`)
+    assert.equal(response.body.next_before, response.body.items[response.body.items.length - 1].started_at)
+    // The complete session shape is unchanged by the filter.
+    for (const item of response.body.items) {
+      keys(item, ['id', 'user', 'install_id', 'app_version', 'build', 'device', 'started_at', 'last_at',
+        'duration_ms', 'path', 'actions', 'errors'], 'session item')
+    }
+  }
+
+  // A player who reached every step is in none of the drop sets.
+  const all = await get('/admin/analytics/sessions?days=7')
+  assert(all.body.items.some((item: Doc) => item.id === sid(1)), 'mira still appears unfiltered')
+})
+
+await check('§4.6a: version narrows the sessions, with or without a drop-off step', async () => {
+  reset()
+  seedDropCohort()
+
+  const all = await get('/admin/analytics/sessions?version=1.0.10')
+  assert.equal(all.status, 200, JSON.stringify(all.body))
+  assert.deepEqual(all.body.items.map((item: Doc) => item.id), [sid(6)])
+  assert(all.body.items.every((item: Doc) => item.app_version === '1.0.10'))
+
+  const dropped = await get('/admin/analytics/sessions?dropped_at=opened_world&days=7&version=1.0.11')
+  assert.deepEqual(dropped.body.items.map((item: Doc) => item.id), [sid(5), sid(7)])
+
+  const none = await get('/admin/analytics/sessions?dropped_at=first_turn&days=7&version=1.0.10')
+  assert.deepEqual(none.body.items, [])
+  assert.equal(none.body.next_before, null, 'an empty page has no cursor')
+})
+
+await check('§4.6a: cursor paging past non-matches returns every matching session once', async () => {
+  reset()
+  seedDropCohort()
+
+  const seen: string[] = []
+  let before: string | null = null
+  for (let page = 0; page < 10; page++) {
+    const cursor = before ? `&before=${encodeURIComponent(before)}` : ''
+    const response = await get(`/admin/analytics/sessions?dropped_at=opened_world&days=7&limit=1${cursor}`)
+    assert.equal(response.status, 200)
+    assert(response.body.items.length <= 1, 'a page never exceeds the limit')
+    for (const item of response.body.items) seen.push(item.id)
+    before = response.body.next_before
+    if (seen.length === 3) break
+    assert(before, `the cursor ended after ${seen.length} of 3 matches`)
+  }
+
+  assert.deepEqual(seen, [sid(5), sid(6), sid(7)], 'newest first, each exactly once')
+
+  // One more page is empty and ends the cursor.
+  const after = await get(`/admin/analytics/sessions?dropped_at=opened_world&days=7&limit=1&before=${encodeURIComponent(before!)}`)
+  assert.deepEqual(after.body.items, [])
+  assert.equal(after.body.next_before, null)
+})
+
+await check('§4.6: the drop-off session query is behind the admin guard', async () => {
+  reset()
+  seedDropCohort()
+
+  const anonymous = await get('/admin/analytics/sessions?dropped_at=signed_up', { authorization: '' })
+  assert.equal(anonymous.status, 401)
+  assert.deepEqual(anonymous.body, { error: 'Unauthorized' })
+
+  const signedIn = await get('/admin/analytics/sessions?dropped_at=signed_up')
+  assert.equal(signedIn.status, 200)
+  assert.equal(signedIn.body.items.length, 2)
 })
 
 await check('§4.6a: a session timeline is every event and error in order', async () => {
