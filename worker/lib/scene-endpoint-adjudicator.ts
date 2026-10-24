@@ -341,6 +341,9 @@ export async function adjudicateSceneEndpoint(params: {
   /** Model override for the corpus tier experiment. Production omits it. */
   model?: string
   onRaw?: (raw: string) => void
+  /** Where this call's own wait went. Reported only when there was prose to
+   *  judge, from a `finally` — a failed call is still a wait. */
+  onStage?: (stage: 'scene_endpoint', ms: number) => void
 }): Promise<SceneEndpointAdjudication> {
   const candidates = [...new Map(
     params.candidates
@@ -359,6 +362,7 @@ export async function adjudicateSceneEndpoint(params: {
   }
   if (!String(params.prose || '').trim()) return fallback
 
+  const startedAt = Date.now()
   const prompt = `You are a strict end-of-scene continuity verifier for an RPG. Inspect the completed prose and decide ONLY what is true at its FINAL MOMENT from the PLAYER'S viewpoint.
 
 Return only JSON exactly in this shape:
@@ -436,6 +440,8 @@ ${compact(params.prose, 18000)}`
     }
   } catch {
     return fallback
+  } finally {
+    params.onStage?.('scene_endpoint', Date.now() - startedAt)
   }
 }
 

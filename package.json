@@ -17,6 +17,7 @@
     "audit:choice-hedge": "bun --no-env-file run scripts/choice-hedge-audit.ts",
     "audit:embedding-latency": "bun --no-env-file run scripts/embedding-latency-audit.ts",
     "audit:tail-stages": "bun --no-env-file run scripts/tail-stages-audit.ts",
+    "audit:turn-wire-fields": "bun --no-env-file run scripts/turn-wire-fields-audit.ts",
     "audit:keep-warm": "bun --no-env-file run scripts/keep-warm-audit.ts",
     "audit:openrouter-routing": "bun run scripts/openrouter-routing-audit.ts",
     "audit:error-clarity": "bun run scripts/audit-error-clarity.ts",

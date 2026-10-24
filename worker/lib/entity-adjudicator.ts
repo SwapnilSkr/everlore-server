@@ -62,9 +62,13 @@ export async function adjudicateEntityCandidates(params: {
   knownPlaces: string[]
   worldContext?: string
   onRaw?: (raw: string) => void
+  /** Where this call's own wait went. Reported only when the judge actually
+   *  called, from a `finally` — a failed call is still a wait. */
+  onStage?: (stage: 'entity_adjudication', ms: number) => void
 }): Promise<EntityAdjudicationResult> {
   if (params.candidates.length === 0) return { available: true, decisions: [] }
 
+  const startedAt = Date.now()
   const payload = params.candidates.map((candidate) => ({
     key: candidate.key,
     display: candidate.display,
@@ -118,6 +122,8 @@ CANDIDATES: ${JSON.stringify(payload)}`
     // Availability must never make a valid story turn disappear. Callers retain
     // their prior deterministic decision when this optional judge is unavailable.
     return { available: false, decisions: [] }
+  } finally {
+    params.onStage?.('entity_adjudication', Date.now() - startedAt)
   }
 }
 

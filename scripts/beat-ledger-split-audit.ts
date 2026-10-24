@@ -118,7 +118,7 @@ await check('parallel launch and choices timing exclude the ledger join', async 
   assert.equal(settled, false)
   releaseLedger!()
   assert.deepEqual((await promise).beat_ledger, ledger)
-  assert.deepEqual(stages, ['choice_metadata'])
+  assert.deepEqual(stages, ['choice_metadata', 'beat_ledger'])
 })
 await check('(e) dry-run default, strict flags and hard cap before every call', async () => {
   assert.equal(parseArgs([]).execute, false)

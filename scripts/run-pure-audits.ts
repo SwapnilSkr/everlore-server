@@ -47,6 +47,7 @@ const PURE_AUDITS = [
   'audit:bond-meters',
   'audit:embedding-latency',
   'audit:tail-stages',
+  'audit:turn-wire-fields',
   'audit:metadata-overlap',
   'audit:keep-warm',
   'audit:narration-hedge',

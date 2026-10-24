@@ -1326,17 +1326,18 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     exclude: [...knownPlacePresenceKeys, choiceProtagonist?.name || '', ...(choiceProtagonist?.aliases || [])],
   })
   // ── TAIL CLOCK ───────────────────────────────────────────────────────────
-  // The five post-stream calls run concurrently, so each is timed on its own
-  // inside the batch and `extraction_join` is the batch. A call its own gate
-  // skipped leaves no entry, never a 0.
+  // The post-stream calls run concurrently, so each is timed on its own inside
+  // the batch and `extraction_join` is the batch. Each call reports from its own
+  // gate, inside its own lib, so a skipped call leaves no entry and never a 0 —
+  // and if a lib's gate changes, its timing follows without a second copy here.
   const tailCallMs: Partial<Record<TailModelCallStage, number>> = {}
+  const recordTailStage = (stage: TailModelCallStage, ms: number) => { tailCallMs[stage] = ms }
   const choiceRoute: ChoiceHedgeRoute = { hedged: false }
   let choiceFirstTokenMs: number | undefined
   const tailExtractionStartedAt = Date.now()
   // This semantic classification is intentionally post-stream and parallel to
   // hygiene + metadata. It can only gate unfamiliar-candidate promotion; it
   // cannot write prose or alter established cast/canon by itself.
-  const entityAdjudicationStartedAt = Date.now()
   const entityAdjudicationPromise = adjudicateEntityCandidates({
     prose: rawNarrative,
     candidates: entityCandidates,
@@ -1344,9 +1345,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     knownPlaces: knownPlaces.map((place) => place.name),
     worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
     onRaw: extractorRaw.capture('entity_adjudication'),
-  }).finally(() => {
-    // Its own gate: no unfamiliar candidate means no model call at all.
-    if (entityCandidates.length) tailCallMs.entity_adjudication = Date.now() - entityAdjudicationStartedAt
+    onStage: recordTailStage,
   })
   const metaPromise = extractSceneMetadata(
     rawNarrative,
@@ -1393,11 +1392,10 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       })(),
       choiceContext: choiceDecisionContext,
       onRaw: (stage, raw) => extractorRaw.capture(stage)(raw),
-      // Both halves report their own start-to-settle; the pair runs in parallel,
-      // so measuring outside it would report the join twice.
-      onStage: (stage, ms) => {
-        tailCallMs[stage] = ms
-      },
+      // Each call reports its own start-to-settle; the pair runs in parallel, so
+      // measuring outside it would report the join twice. `beat_ledger` appears
+      // only when the choices pass is split.
+      onStage: recordTailStage,
       onChoiceHedge: () => { choiceRoute.hedged = true },
       onChoiceFirstToken: (ms, winner) => {
         choiceFirstTokenMs = ms
@@ -1410,9 +1408,6 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // same gated walk-on candidates the entity judge sees. That is sufficient to
   // verify physical co-location while keeping this call in the post-stream
   // parallel batch rather than adding a second completion-time round trip.
-  const endpointAdjudicationStartedAt = Date.now()
-  // Its own gate: empty prose returns the fallback with no model call.
-  const endpointWillCall = !!rawNarrative.trim()
   const endpointAdjudicationPromise = adjudicateSceneEndpoint({
     prose: rawNarrative,
     playerInput: parsedPlayerInput.raw,
@@ -1422,16 +1417,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       ...entityCandidates.map((candidate) => candidate.display),
     ],
     onRaw: extractorRaw.capture('scene_endpoint'),
-  }).finally(() => {
-    if (endpointWillCall) tailCallMs.scene_endpoint = Date.now() - endpointAdjudicationStartedAt
+    onStage: recordTailStage,
   })
-  // Mirrors the extractor's own gate (character-lifecycle-extractor): no text or
-  // no eligible candidate means it returns [] without ever calling the model.
-  // The roster is already protagonist-free, which is the gate's other condition.
-  const deathWillCall =
-    (!!rawNarrative.trim() || parsedPlayerInput.narrationFacts.some((fact) => String(fact || '').trim())) &&
-    (packet.lifecycleRoster || []).some((card) => !!card.canonical_name)
-  const deathExtractionStartedAt = Date.now()
   const deathExtractionPromise = extractLifecycleChanges({
     prose: rawNarrative,
     // What the player authored inside *asterisks* this turn. It is canon, and
@@ -1445,8 +1432,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     deceasedNames: packet.deceasedCharacterNames || [],
     sequence: nextSequence,
     onRaw: extractorRaw.capture('character_deaths'),
-  }).finally(() => {
-    if (deathWillCall) tailCallMs.deaths = Date.now() - deathExtractionStartedAt
+    onStage: recordTailStage,
   })
   // All post-stream checks run together. None is allowed to alter visible prose
   // or delay the narrator's first token.

@@ -29,12 +29,20 @@ export type PrepStage = (typeof PREP_STAGE_KEYS)[number]
 export type PrepStages = Partial<Record<PrepStage, number>>
 
 /**
- * The post-reply tail's five concurrent model calls. Each is measured on its
- * own even though they run at the same time, so a slow `extraction_join` can
- * name the call that set its pace instead of only reporting that it was slow.
+ * The post-reply tail's concurrent model calls. Each is measured on its own
+ * even though they run at the same time, so a slow `extraction_join` can name
+ * the call that set its pace instead of only reporting that it was slow.
+ *
+ * `beat_ledger` is only there when the choices pass is split in two; unsplit,
+ * the ledger rides inside `choice_metadata` and has no stage of its own. It
+ * belongs on this list because `extractSceneMetadata` resolves only after the
+ * ledger promise is joined, so the ledger alone can hold `extraction_join` open
+ * after every other call has settled — reporting one of those instead would
+ * name the wrong call.
  */
 export const TAIL_MODEL_CALL_STAGES = [
   'scene_witness',
+  'beat_ledger',
   'choice_metadata',
   'entity_adjudication',
   'scene_endpoint',
@@ -46,9 +54,9 @@ export type TailModelCallStage = (typeof TAIL_MODEL_CALL_STAGES)[number]
 /**
  * Every step the tail takes after the last streamed token, in the order the
  * player waits for it. `post_stream_ms` says a turn spent 3.6 s after the prose;
- * these say where. Steps are wall-clock ms from start to settle, so the five
- * model calls overlap each other and `extraction_join` is their batch: the serial
- * steps plus the join are what add up, never the five individually.
+ * these say where. Steps are wall-clock ms from start to settle, so the model
+ * calls overlap each other and `extraction_join` is their batch: the serial
+ * steps plus the join are what add up, never the calls individually.
  */
 export const TAIL_STAGE_KEYS = [
   ...TAIL_MODEL_CALL_STAGES,
@@ -129,9 +137,9 @@ export function buildPreNarratorStages(input: Partial<Record<string, number | un
 }
 
 /**
- * Which of the five concurrent calls set the pace of the join — the one to look
- * at when `extraction_join` is slow. Absent when none ran; ties go to the
- * earliest in the list, which is also the one that started first.
+ * Which of the concurrent calls set the pace of the join — the one to look at
+ * when `extraction_join` is slow. Absent when none ran; ties go to the earliest
+ * in the list, which is also the one that started first.
  */
 export function slowestTailCall(
   calls: Partial<Record<TailModelCallStage, number | undefined>>,

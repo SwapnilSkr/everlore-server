@@ -9,12 +9,15 @@
  * player's first word belonged to no stage at all.
  *
  * Both are now broken down on `generation_logs`, and this pins the breakdown:
- *   - `tail_stages` names every step of the tail; the five post-stream model
- *     calls run CONCURRENTLY, so each is timed on its own inside the batch and
+ *   - `tail_stages` names every step of the tail; the post-stream model calls
+ *     run CONCURRENTLY, so each is timed on its own inside the batch and
  *     `extraction_join` is the batch — only the serial steps are summed;
- *   - a call its own gate skipped leaves NO key, so "skipped" never reads as
- *     "instant";
- *   - `tail_slowest_call` says which of the five set the pace;
+ *   - each call reports from inside its own lib, so its own gate decides whether
+ *     there is a stage at all, and a call its own gate skipped leaves NO key —
+ *     "skipped" never reads as "instant";
+ *   - `beat_ledger` exists only when the choices pass is split, and is timed
+ *     around the ledger call, never inside `choice_metadata`;
+ *   - `tail_slowest_call` says which call set the pace;
  *   - `pre_narrator_stages` closes the gap between the socket message and the
  *     narrator's request, so prep + host + gaps equal `end_to_end_ttft_ms`.
  *
@@ -46,8 +49,16 @@ async function check(label: string, fn: () => Promise<void>) {
 // `extractSceneMetadata` runs its two halves in parallel against one client. The
 // fake answers each purpose after a DIFFERENT sleep, so a timing taken around
 // the pair (~60 ms for both) is distinguishable from a timing taken around each
-// call (60 ms and 12 ms).
-const CALL_MS: Record<string, number> = { scene_witness: 60, choice_metadata: 12 }
+// call (60 ms and 12 ms). The ledger's sleep is deliberately long: a choices
+// stage that swallowed the ledger join would read ≥120 ms instead of ~12.
+const CALL_MS: Record<string, number> = {
+  scene_witness: 60,
+  choice_metadata: 12,
+  beat_ledger: 120,
+  entity_adjudication: 30,
+  scene_endpoint: 20,
+  character_deaths: 8,
+}
 const calls: Array<{ purpose: string; ms: number }> = []
 let failPurpose: string | null = null
 
@@ -63,7 +74,10 @@ mock.module('../src/ai', () => ({
   },
 }))
 
-const { extractSceneMetadata } = await import('../worker/lib/metadata-extractor')
+const { extractSceneMetadata, extractChoiceMetadata } = await import('../worker/lib/metadata-extractor')
+const { adjudicateEntityCandidates, entityAdjudicationCandidates } = await import('../worker/lib/entity-adjudicator')
+const { adjudicateSceneEndpoint } = await import('../worker/lib/scene-endpoint-adjudicator')
+const { extractLifecycleChanges } = await import('../worker/lib/character-lifecycle-extractor')
 const {
   PRE_NARRATOR_STAGE_KEYS,
   TAIL_MODEL_CALL_STAGES,
@@ -80,6 +94,7 @@ const processorSource = readFileSync(
 const modelSource = readFileSync(new URL('../src/models/generation-log.model.ts', import.meta.url), 'utf8')
 
 const PROSE = 'The steward sets the key down on the counting-house table and says nothing.'
+const PERSON_PROSE = 'Mara steps into the hall and sets her wet coat aside.'
 
 console.log('\nthe tail says where the seconds after the prose went:')
 
@@ -156,33 +171,160 @@ await check('a call that fails is still a wait; only a skipped call has no key',
   assert.equal(typeof stages.choice_metadata, 'number', 'the other half is unaffected')
 })
 
+await check('a split choices pass times its ledger on its own, and an unsplit one has no ledger stage', async () => {
+  calls.length = 0
+  const splitStages: Record<string, number> = {}
+  await extractChoiceMetadata(
+    PROSE, [], [],
+    { onStage: (stage, ms) => { splitStages[stage] = ms } },
+    { split: true },
+  )
+  assert.deepEqual(
+    calls.map((call) => call.purpose).sort(),
+    ['beat_ledger', 'choice_metadata'],
+    'a split pass must make both calls',
+  )
+  assert.equal(typeof splitStages.beat_ledger, 'number', 'the ledger call must be timed')
+  assert.ok(
+    Math.abs(splitStages.beat_ledger - 120) <= 60,
+    `beat_ledger must report its own ~120ms (${splitStages.beat_ledger}ms)`,
+  )
+  // The ledger sleeps 120ms and the choices 12ms. A stage taken around the pair
+  // would report the ledger's wait inside `choice_metadata`; this must not.
+  assert.ok(
+    splitStages.choice_metadata <= 80,
+    `choice_metadata must cover only the choices request, never the ledger join (${splitStages.choice_metadata}ms)`,
+  )
+  // The join waits on `extractChoiceMetadata`, which does not settle until the
+  // ledger does — so the ledger can pace it and must be nameable.
+  assert.ok(
+    (TAIL_MODEL_CALL_STAGES as readonly string[]).includes('beat_ledger'),
+    'the ledger can hold extraction_join open, so tail_slowest_call must be able to name it',
+  )
+
+  calls.length = 0
+  const unsplitStages: Record<string, number> = {}
+  await extractChoiceMetadata(
+    PROSE, [], [],
+    { onStage: (stage, ms) => { unsplitStages[stage] = ms } },
+    { split: false },
+  )
+  assert.deepEqual(calls.map((call) => call.purpose), ['choice_metadata'], 'an unsplit pass makes one call')
+  assert.equal('beat_ledger' in unsplitStages, false, 'unsplit there is no ledger call, so no ledger stage')
+  assert.equal(typeof unsplitStages.choice_metadata, 'number', 'the unsplit call is still timed')
+  console.log(
+    `       fixture: a 120ms ledger beside a 12ms choices call read ${splitStages.beat_ledger}ms/${splitStages.choice_metadata}ms`,
+  )
+})
+
+await check('each lib times its own call, and reports nothing when its own gate skips it', async () => {
+  const reported: Record<string, number> = {}
+  const report = (stage: string, ms: number) => { reported[stage] = ms }
+  const mara = entityAdjudicationCandidates({ prose: PERSON_PROSE, knownNames: [] })
+  assert.equal(mara.length, 1, 'fixture: the prose must yield one unfamiliar candidate')
+
+  // The identity judge: no unfamiliar candidate means no model call at all.
+  await adjudicateEntityCandidates({ prose: PERSON_PROSE, candidates: [], knownCast: [], knownPlaces: [], onStage: report })
+  assert.equal('entity_adjudication' in reported, false, 'no candidate means no call, so no stage')
+  await adjudicateEntityCandidates({ prose: PERSON_PROSE, candidates: mara, knownCast: [], knownPlaces: [], onStage: report })
+  assert.ok(typeof reported.entity_adjudication === 'number', 'a judge that ran must be timed')
+  assert.ok(
+    Math.abs(reported.entity_adjudication - 30) <= 40,
+    `entity_adjudication must report its own ~30ms (${reported.entity_adjudication}ms)`,
+  )
+
+  // The endpoint judge: empty prose returns its fallback with no model call.
+  await adjudicateSceneEndpoint({ prose: '   ', candidates: [], onStage: report })
+  assert.equal('scene_endpoint' in reported, false, 'no prose means no call, so no stage')
+  await adjudicateSceneEndpoint({ prose: PERSON_PROSE, candidates: ['Mara'], onStage: report })
+  assert.ok(typeof reported.scene_endpoint === 'number', 'an endpoint judge that ran must be timed')
+
+  // The death extractor: no text, or no ELIGIBLE candidate, means no call.
+  await extractLifecycleChanges({ prose: '', playerNarration: [], candidates: [], sequence: 1, onStage: report })
+  assert.equal('deaths' in reported, false, 'no text and no roster leaves nothing to judge')
+  await extractLifecycleChanges({
+    prose: '', playerNarration: [], candidates: [{ canonical_name: 'Mara' }], sequence: 1, onStage: report,
+  })
+  assert.equal('deaths' in reported, false, 'a roster with no text is still no call')
+  // The protagonist is filtered out of the eligible roster. The processor used
+  // to decide this itself, and its copy only asked for a canonical name — so a
+  // protagonist-only roster would have been labelled a call that never happened.
+  await extractLifecycleChanges({
+    prose: PERSON_PROSE, candidates: [{ canonical_name: 'Mara', is_protagonist: true }], sequence: 1, onStage: report,
+  })
+  assert.equal('deaths' in reported, false, 'the protagonist is not an eligible candidate, so no call and no stage')
+  await extractLifecycleChanges({
+    prose: PERSON_PROSE, candidates: [{ canonical_name: 'Mara' }], sequence: 1, onStage: report,
+  })
+  assert.ok(typeof reported.deaths === 'number', 'a death extractor that ran must be timed')
+})
+
+await check('a lib call that fails is still a wait, so its stage is still reported', async () => {
+  const reported: Record<string, number> = {}
+  const report = (stage: string, ms: number) => { reported[stage] = ms }
+  const mara = entityAdjudicationCandidates({ prose: PERSON_PROSE, knownNames: [] })
+
+  failPurpose = 'entity_adjudication'
+  await adjudicateEntityCandidates({ prose: PERSON_PROSE, candidates: mara, knownCast: [], knownPlaces: [], onStage: report })
+  failPurpose = 'scene_endpoint'
+  await adjudicateSceneEndpoint({ prose: PERSON_PROSE, candidates: ['Mara'], onStage: report })
+  failPurpose = 'character_deaths'
+  await extractLifecycleChanges({
+    prose: PERSON_PROSE, candidates: [{ canonical_name: 'Mara' }], sequence: 1, onStage: report,
+  })
+  failPurpose = null
+
+  for (const stage of ['entity_adjudication', 'scene_endpoint', 'deaths']) {
+    assert.ok(typeof reported[stage] === 'number', `${stage} must be reported even when its call threw`)
+  }
+})
+
+await check('the processor does not decide for itself whether a lib called', async () => {
+  // The three mirrored gates and their copies of the libs' conditions are gone.
+  for (const stale of [
+    'tailCallMs.entity_adjudication =',
+    'tailCallMs.scene_endpoint =',
+    'tailCallMs.deaths =',
+    'entityCandidates.length) tailCallMs',
+    'endpointWillCall',
+    'deathWillCall',
+  ]) {
+    assert.equal(processorSource.includes(stale), false, `the processor must not mirror a lib's gate ("${stale}")`)
+  }
+  // …and each lib reports its own stage from its own gate.
+  for (const [file, stage] of [
+    ['entity-adjudicator.ts', 'entity_adjudication'],
+    ['scene-endpoint-adjudicator.ts', 'scene_endpoint'],
+    ['character-lifecycle-extractor.ts', 'deaths'],
+  ] as const) {
+    const source = readFileSync(new URL(`../worker/lib/${file}`, import.meta.url), 'utf8')
+    assert.ok(source.includes(`onStage?.('${stage}'`), `${file} must report ${stage} from its own gate`)
+  }
+  const passes = processorSource.match(/onStage: recordTailStage/g) || []
+  assert.equal(passes.length, 4, `one recorder must reach all four staging calls (found ${passes.length})`)
+  assert.ok(
+    processorSource.includes('const recordTailStage = (stage: TailModelCallStage, ms: number) => { tailCallMs[stage] = ms }'),
+    'the processor must record whatever stage a lib reports, under the lib\'s own name',
+  )
+})
+
 await check('a gated-off call leaves no key at all', async () => {
-  // No unfamiliar candidate and no eligible roster: the entity judge and the
-  // death extractor return without calling a model, so they are absent — never 0.
+  // The builder drops an absent stage rather than writing 0, so "skipped" and
+  // "instant" stay distinguishable. WHICH calls are skipped is decided inside
+  // each lib, from its own gate, and pinned by the two checks below.
   const gated = buildTailStages({
     scene_witness: 40,
+    beat_ledger: undefined,
     entity_adjudication: undefined,
     deaths: undefined,
   })
   assert.deepEqual(gated, { scene_witness: 40 }, 'a skipped call must be absent, never written as 0')
-  // …and the processor decides each omission from that call's own gate.
-  assert.ok(
-    processorSource.includes('if (entityCandidates.length) tailCallMs.entity_adjudication'),
-    'the entity judge must be recorded only when it had a candidate',
-  )
-  assert.ok(
-    processorSource.includes('if (endpointWillCall) tailCallMs.scene_endpoint'),
-    'the endpoint judge must be recorded only when there was prose to judge',
-  )
-  assert.ok(
-    processorSource.includes('if (deathWillCall) tailCallMs.deaths'),
-    'the death extractor must be recorded only when its own gate let it call',
-  )
 })
 
-await check('the slowest call names one of the five, and nothing when none ran', async () => {
+await check('the slowest call names one of the tail calls, and nothing when none ran', async () => {
   assert.equal(slowestTailCall({ scene_witness: 400, choice_metadata: 90, deaths: 40 }), 'scene_witness')
   assert.equal(slowestTailCall({ scene_endpoint: 1_020, choice_metadata: 990 }), 'scene_endpoint')
+  assert.equal(slowestTailCall({ scene_witness: 900, beat_ledger: 1_500 }), 'beat_ledger', 'a slow ledger can pace the join')
   assert.equal(slowestTailCall({ scene_witness: 50, choice_metadata: 50 }), 'scene_witness', 'ties go to the first')
   assert.equal(slowestTailCall({}), undefined)
   assert.equal(slowestTailCall({ scene_witness: Number.NaN, deaths: Number.POSITIVE_INFINITY }), undefined)

@@ -300,10 +300,12 @@ export type MetadataOpts = {
   /** Test-only observability hook. Production callers omit it; it never changes
    * request construction or validation. */
   onRaw?: (stage: 'scene_witness' | 'choice_metadata', raw: string) => void
-  /** Where each half's model call went. Both halves run in parallel, so the
-   *  caller cannot time them from outside the pair; each half reports its own
-   *  start-to-settle here, failure included. Never changes what is requested. */
-  onStage?: (stage: 'scene_witness' | 'choice_metadata', ms: number) => void
+  /** Where each model call went. Both halves run in parallel, so the caller
+   *  cannot time them from outside the pair; each half reports its own
+   *  start-to-settle here, failure included. `beat_ledger` is reported only when
+   *  the split is on — unsplit there is no ledger call to time. Never changes
+   *  what is requested. */
+  onStage?: (stage: 'scene_witness' | 'choice_metadata' | 'beat_ledger', ms: number) => void
   onChoiceFirstToken?: (ms: number, winner: 'primary' | 'hedge') => void
   onChoiceHedge?: () => void
   /** Raw player-authored turn. The witness uses this to identify actual travel
@@ -641,8 +643,11 @@ export async function extractChoiceMetadata(
   const choicesSystem = split ? system.replace(ledgerRule + '\n', '') : system
   const invoke = execution?.call || callLLM
   // Launch before awaiting choices, and catch independently: a ledger outage
-  // must never discard successful choices (or vice versa).
+  // must never discard successful choices (or vice versa). Timed around this
+  // call alone: the ledger runs beside the choices request, so a reading taken
+  // around the pair would charge the ledger's wait to `choice_metadata`.
   const ledgerPromise = split ? (async () => {
+    const ledgerStartedAt = Date.now()
     try {
       const raw = await invoke({
         model: AI_MODELS.metadata,
@@ -663,8 +668,15 @@ export async function extractChoiceMetadata(
       return validateHalf(raw).beat_ledger
     } catch {
       return WITNESS_FALLBACK.beat_ledger
+    } finally {
+      // A failed ledger call is still time the join waited. Only an unsplit
+      // choice pass — no ledger call at all — leaves no stage.
+      opts?.onStage?.('beat_ledger', Date.now() - ledgerStartedAt)
     }
   })() : undefined
+  // Starts at the choices request, and settles when it does: the join with the
+  // ledger happens after this stage is recorded, so `choice_metadata` never
+  // includes the ledger's wait.
   const startedAt = Date.now()
   const choicePromise = (async () => {
     try {

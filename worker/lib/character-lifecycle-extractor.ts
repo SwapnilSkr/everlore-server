@@ -193,6 +193,9 @@ export async function extractLifecycleChanges(params: {
   deceasedNames?: string[]
   sequence: number
   onRaw?: (raw: string) => void
+  /** Where this call's own wait went. Reported only when the extractor actually
+   *  called, from a `finally` — a failed call is still a wait. */
+  onStage?: (stage: 'deaths', ms: number) => void
 }): Promise<CharacterLifecycleDeltaDoc[]> {
   const prose = String(params.prose || '').trim()
   const authored = (params.playerNarration || []).map((f) => String(f || '').trim()).filter(Boolean)
@@ -209,6 +212,7 @@ export async function extractLifecycleChanges(params: {
     })
     return []
   }
+  const startedAt = Date.now()
   try {
     const raw = await callLLM({
       model: AI_MODELS.metadata,
@@ -316,6 +320,8 @@ export async function extractLifecycleChanges(params: {
     return out
   } catch {
     return []
+  } finally {
+    params.onStage?.('deaths', Date.now() - startedAt)
   }
 }
 

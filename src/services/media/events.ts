@@ -5,7 +5,7 @@ import { detectSpokenLines } from './detection'
 import { publicSpokenLines } from './policy'
 import { mediaEnabled } from './config'
 import type { MediaAssetDoc, SpokenLine, VoiceAttribution } from '../../models/media.model'
-import type { WorldEventDoc } from '../../models/world-event.model'
+import type { EventDataDoc, WorldEventDoc } from '../../models/world-event.model'
 
 export function spokenLineUpdate(prose: string, playerSpoken = '', playerInput = playerSpoken) {
   return { 'data.spoken_lines': detectSpokenLines(prose, playerSpoken), 'data.media_revision': mediaRevision(prose, playerInput) }
@@ -18,17 +18,42 @@ export async function publishSpokenLines(event: WorldEventDoc): Promise<void> {
   if (!mediaEnabled('voice')) return
   await getRedisClient().publish(`user:${event.player_id}:events`, JSON.stringify({ type: 'spoken_lines', instanceId: String(event.instance_id), eventId: String(event._id), lines: wireSpokenLines(event.data.spoken_lines, event.data.voice_attribution as VoiceAttribution | undefined) }))
 }
-/** Player responses expose offsets and unvoiceable status, never attribution internals. */
+/**
+ * Per-turn bookkeeping that belongs to the server, never to a player.
+ *
+ * `codex_projection_context` is the worst of them: it carries the player's raw
+ * input a second time plus the internal signal and anomaly inputs the card
+ * projection is built from, so shipping it hands out the machinery of the turn.
+ * The rest are the projection's own diagnostics and lifecycle stamps. None is
+ * read by the app (grepped across `everlore/lib`), and no route needs them: the
+ * projection runs in the worker, off its own read of the document.
+ */
+function stripInternalTurnFields(data: EventDataDoc): void {
+  delete data.voice_attribution
+  delete data.media_revision
+  delete data.codex_projection_context
+  delete data.codex_projection_dropped_unattributable
+  delete data.codex_projection_ms
+  delete data.codex_projection_claimed_at
+  delete data.codex_projection_error
+  delete data.codex_projection_attempts
+  delete data.codex_projection_status
+  delete data.codex_projection_completed_at
+}
+
+/** Player responses expose offsets and unvoiceable status, never attribution
+ *  internals or per-turn bookkeeping. Edits in place, as it always has: every
+ *  caller sends the document it read and none writes it back to Mongo. */
 export function publicMediaEvent<T extends WorldEventDoc>(event: T): T {
   if (mediaEnabled('voice')) {
     event.data.spoken_lines = wireSpokenLines(event.data.spoken_lines || detectSpokenLines(event.data.ai_response, event.data.player_spoken_input ?? event.data.player_input), event.data.voice_attribution as VoiceAttribution | undefined)
   } else delete event.data.spoken_lines
-  delete event.data.voice_attribution
-  delete event.data.media_revision
+  stripInternalTurnFields(event.data)
   for (const edit of event.edit_history || []) {
+    // An edit snapshot never carries lines: they belong to the prose it was
+    // replaced by, and the offsets would point into the wrong text.
     delete edit.previous_data.spoken_lines
-    delete edit.previous_data.voice_attribution
-    delete edit.previous_data.media_revision
+    stripInternalTurnFields(edit.previous_data)
   }
   return event
 }
