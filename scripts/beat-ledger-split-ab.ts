@@ -327,7 +327,12 @@ async function main() {
   console.log(JSON.stringify({ mode: args.execute ? 'EXECUTE' : 'DRY-RUN', judge, prices: Object.fromEntries(prices), capUSD: args.cap, capINR: args.cap * 125 / 1.5 }))
   const turns = await readTurns(args.turns, args.extraSaves)
   const budget = new SpendBudget(args.cap)
-  const completions = getOpenRouter().chat.completions
+  const openRouter = getOpenRouter()
+  // Since the call traces (81ac463) every request goes through
+  // `withOptions({ fetch })`, a NEW client whose `create` is not the one patched
+  // below — the cap would silently stop applying. Keep requests on this client.
+  openRouter.withOptions = (() => openRouter) as typeof openRouter.withOptions
+  const completions = openRouter.chat.completions
   const originalCreate = completions.create
   const costForGeneration: CostLookup = async (id) => {
     const response = await fetch(`https://openrouter.ai/api/v1/generation?id=${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}` }, signal: AbortSignal.timeout(10000) })
