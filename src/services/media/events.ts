@@ -18,19 +18,49 @@ export async function publishSpokenLines(event: WorldEventDoc): Promise<void> {
   if (!mediaEnabled('voice')) return
   await getRedisClient().publish(`user:${event.player_id}:events`, JSON.stringify({ type: 'spoken_lines', instanceId: String(event.instance_id), eventId: String(event._id), lines: wireSpokenLines(event.data.spoken_lines, event.data.voice_attribution as VoiceAttribution | undefined) }))
 }
+/** The per-turn keys the server owns, on a turn, in an edit snapshot, or on a
+ *  replay variant. */
+type InternalTurnFields = Pick<EventDataDoc,
+  | 'voice_attribution'
+  | 'media_revision'
+  | 'interaction_signals'
+  | 'beat_ledger'
+  | 'codex_projection_context'
+  | 'codex_projection_dropped_unattributable'
+  | 'codex_projection_ms'
+  | 'codex_projection_claimed_at'
+  | 'codex_projection_error'
+  | 'codex_projection_attempts'
+  | 'codex_projection_status'
+  | 'codex_projection_completed_at'
+  | 'replay_variants'>
+
 /**
  * Per-turn bookkeeping that belongs to the server, never to a player.
  *
  * `codex_projection_context` is the worst of them: it carries the player's raw
  * input a second time plus the internal signal and anomaly inputs the card
  * projection is built from, so shipping it hands out the machinery of the turn.
- * The rest are the projection's own diagnostics and lifecycle stamps. None is
- * read by the app (grepped across `everlore/lib`), and no route needs them: the
- * projection runs in the worker, off its own read of the document.
+ * The rest are the projection's own diagnostics and lifecycle stamps.
+ *
+ * `interaction_signals` and `beat_ledger` are the narrator's notes, not the
+ * player's story: the signals judge the player's own words (warmth, hostility,
+ * threat) with an evidence quote, and the ledger is the handoff note for the
+ * next turn. The narrator reads both straight from the events collection in
+ * `prompt-builder` and the processor, never through this function.
+ *
+ * None is read by the app (grepped across `everlore/lib`), and no route needs
+ * them: the projection runs in the worker, off its own read of the document.
+ *
+ * A replay variant is the turn's alternate prose, not a second copy of the
+ * notes, so it is stripped the same way — hence the recursion: one call covers
+ * a turn, its edit snapshots and their variants.
  */
-function stripInternalTurnFields(data: EventDataDoc): void {
+function stripInternalTurnFields(data: InternalTurnFields): void {
   delete data.voice_attribution
   delete data.media_revision
+  delete data.interaction_signals
+  delete data.beat_ledger
   delete data.codex_projection_context
   delete data.codex_projection_dropped_unattributable
   delete data.codex_projection_ms
@@ -39,6 +69,7 @@ function stripInternalTurnFields(data: EventDataDoc): void {
   delete data.codex_projection_attempts
   delete data.codex_projection_status
   delete data.codex_projection_completed_at
+  for (const variant of data.replay_variants || []) stripInternalTurnFields(variant)
 }
 
 /** Player responses expose offsets and unvoiceable status, never attribution
