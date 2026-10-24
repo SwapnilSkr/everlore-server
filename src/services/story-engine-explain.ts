@@ -10,6 +10,7 @@ export const STORY_LABELS: Record<string, string> = {
   embedding_query: 'Search embedding', embedding_memory: 'Memory embedding', embedding_summary: 'Summary embedding',
   embedding_batch: 'Index embeddings', content_intent: 'Content intent check',
   rag_rerank: 'Memory re-ranking', calendar_derivation: 'Calendar setup',
+  choice_metadata_hedge_lost: 'Choices (backup copy, not used)', beat_ledger_hedge_lost: 'Continuity notes (backup copy, not used)',
   rate_limited: 'the model was busy', timeout: 'the request timed out', no_first_token: 'no first word arrived',
   stalled: 'the response stopped arriving', provider_error: 'the host returned an error',
   empty_response: 'the host returned no text', bad_json: 'the response was invalid JSON', aborted: 'the request was cancelled', other: 'a request error',
@@ -38,12 +39,14 @@ export function explainStoryTurn(turn: Partial<GenerationLogDoc>, calls: LLMCall
   const prepEntries = Object.entries({ ...turn.prep_stages, ...turn.pre_narrator_stages })
     .filter(([key]) => key !== 'vector_prefetch')
     .sort((a, b) => b[1] - a[1])
-  const prepName = prepEntries[0] ? storyLabel(prepEntries[0][0]) : 'Preparation'
   const headline = first < 2000 && after < 2000
     ? `A normal turn: first word in ${seconds(first)}, done ${seconds(after)} after the reply.`
     : host >= preparation
       ? `The narrator's host took ${seconds(host)} to start writing — ${percent(host, first)}% of the ${seconds(first)} wait for the first word.`
-      : `${prepName} led our ${seconds(preparation)} preparation — ${percent(preparation, first)}% of the ${seconds(first)} wait for the first word.`
+      // Older logs carry no stage timings: name the total, not a stage we can't see.
+      : prepEntries[0]
+        ? `${storyLabel(prepEntries[0][0])} led our ${seconds(preparation)} preparation — ${percent(preparation, first)}% of the ${seconds(first)} wait for the first word.`
+        : `Our own preparation took ${seconds(preparation)} — ${percent(preparation, first)}% of the ${seconds(first)} wait for the first word.`
   const points: string[] = []
   const narrator = winningNarrator(calls)
   const narratorHedge = calls.find(call => call.purpose === 'narration' && call.role === 'hedge')
