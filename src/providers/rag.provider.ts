@@ -153,6 +153,7 @@ async function rerankFused(
       (c, i) => `${i}: ${c.text.slice(0, RERANK_SNIPPET_CHARS).replace(/\s+/g, ' ').trim()}`,
     )
     const raw = await callLLM({
+      purpose: 'rag_rerank',
       model: AI_MODELS.cheapRank,
       temperature: 0,
       maxTokens: 700,

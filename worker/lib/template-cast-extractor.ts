@@ -80,6 +80,7 @@ async function extractStartingRelationships(
   let raw = ''
   try {
     raw = await callLLM({
+      purpose: 'template_cast',
       model: AI_MODELS.metadata,
       temperature: 0,
       maxTokens: 700,
@@ -155,6 +156,7 @@ export async function extractTemplateCast(input: TemplateCastInput): Promise<Tem
   let raw = ''
   try {
     raw = await callLLM({
+      purpose: 'template_cast',
       model: AI_MODELS.metadata,
       temperature: 0,
       maxTokens: 1000,

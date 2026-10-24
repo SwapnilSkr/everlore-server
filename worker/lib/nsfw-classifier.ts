@@ -192,6 +192,7 @@ export async function classifyBorderlineIntent(
   if (!text) return 'sfw'
   try {
     const raw = await callLLM({
+      purpose: 'content_intent',
       model: AI_MODELS.cheapRank,
       temperature: 0,
       maxTokens: 16,

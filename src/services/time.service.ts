@@ -118,6 +118,7 @@ async function deriveCalendarSpec(template: {
       .trim()
     if (!premise) return null
     const raw = await callLLM({
+      purpose: 'calendar_derivation',
       model: AI_MODELS.metadata,
       temperature: 0.4,
       maxTokens: 500,

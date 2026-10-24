@@ -232,5 +232,12 @@ export interface GenerationLogDoc {
   tail_slowest_call?: TailModelCallStage
   /** Full request-to-first-visible-token measurement, including dispatch and queue. */
   end_to_end_ttft_ms?: number
+  dispatched_at?: Date
+  narrator_started_at?: Date
+  first_word_at?: Date
+  reply_ended_at?: Date
+  turn_cost_usd?: number
+  call_count?: number
+  failed_call_count?: number
   created_at: Date
 }

@@ -50,6 +50,7 @@ ${rosterLines}`
   let raw: string
   try {
     raw = await callLLM({
+      purpose: 'kinship_epithet',
       model: AI_MODELS.metadata,
       messages: [
         { role: 'system', content: system },

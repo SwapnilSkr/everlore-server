@@ -14,6 +14,7 @@ import { telemetryService } from './telemetry/ingest.service'
 import { timeService } from './time.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
+import { traceStore } from './llm-trace.service'
 import type { WorldEventDoc } from '../models/world-event.model'
 
 const users = () => mongoColl.users()
@@ -336,6 +337,8 @@ export const deletionService = {
       mongoColl.locationStats().deleteMany({ instance_id: instanceId }),
       mongoColl.placeCandidates().deleteMany({ instance_id: instanceId }),
       mongoColl.generationLogs().deleteMany({ instance_id: instanceId }),
+      traceStore().calls.deleteMany({ instance_id: instanceId }),
+      traceStore().bodies.deleteMany({ instance_id: instanceId }),
       mongoColl.extractorRaw().deleteMany({ instance_id: instanceId }),
       mongoColl.projectionAnomalies().deleteMany({ instance_id: instanceId }),
       mongoColl.signalLedger().deleteMany({ instance_id: instanceId }),

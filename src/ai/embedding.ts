@@ -1,3 +1,5 @@
+import * as traceUsage from './usage'
+import type { LLMTraceRecord } from '../models/llm-call.model'
 import { getOpenAI } from '../config/openai'
 import { env } from '../config/env'
 import { AI_MODELS } from './models'
@@ -6,6 +8,9 @@ import { noteClientUse } from '../services/keep-warm'
 
 /** Must match the Pinecone index vector dimension (serverless indexes use 1024). */
 const EMBEDDING_DIMENSIONS = 1024
+// The keep-warm audit executes this file's source with imports stripped. Its
+// transport-only harness has no collector; normal module execution always does.
+const tracing = typeof traceUsage === 'undefined' ? undefined : traceUsage
 
 /**
  * Two kinds of embedding call, because they are paid for by different parties.
@@ -58,7 +63,7 @@ export interface EmbeddingClient {
     create(
       body: { model: string; input: string; dimensions: number },
       options?: { signal?: AbortSignal; timeout?: number; maxRetries?: number },
-    ): Promise<{ data: Array<{ index: number; embedding: number[] }> }>
+    ): Promise<{ data: Array<{ index: number; embedding: number[] }>; usage?: unknown }>
   }
 }
 
@@ -73,31 +78,51 @@ export function setEmbeddingClientForAudit(client: EmbeddingClient | null): void
  *  the real one cannot drift apart. */
 function embeddingsClient(): EmbeddingClient {
   if (injectedClient) return injectedClient
-  const openai = getOpenAI()
+  const openai = getOpenAI().withOptions?.({ fetch: tracing?.traceFetch }) ?? getOpenAI()
   return openai as unknown as EmbeddingClient
 }
 
 async function requestEmbedding(
   text: string,
   options?: { signal?: AbortSignal; timeout?: number; maxRetries?: number },
+  purpose = 'embedding_memory',
+  role: 'primary' | 'hedge' = 'primary',
+  onTrace?: (trace: LLMTraceRecord | undefined) => void,
 ): Promise<number[]> {
   const openai = embeddingsClient()
   // Sent, not cached: this is the moment the connection was used, which is what
   // the keep-warm pinger reads to decide whether it has gone idle.
   noteClientUse('embedding')
-  const response = await openai.embeddings.create(
-    { model: AI_MODELS.embedding, input: text, dimensions: EMBEDDING_DIMENSIONS },
-    // No options on the background path: the SDK's own timeout and retries are
-    // the right policy when nobody is waiting on the answer.
-    options
-      ? {
-          signal: options.signal,
-          timeout: options.timeout ?? EMBED_DEADLINE_MS,
-          maxRetries: options.maxRetries ?? EMBED_MAX_RETRIES,
-        }
-      : undefined,
-  )
-  return response.data[0].embedding
+  const trace = tracing?.beginLLMTrace({ model: AI_MODELS.embedding, purpose, streamed: false,
+    messages: [{ role: 'user', content: text }], params: {}, role })
+  if (trace) trace.call.provider = 'OpenAI'
+  onTrace?.(trace)
+  try {
+    const response = await (tracing?.withTraceAttempts ?? ((_trace, send) => send()))(trace, () => openai.embeddings.create(
+      { model: AI_MODELS.embedding, input: text, dimensions: EMBEDDING_DIMENSIONS },
+      // No options on the background path: the SDK's own timeout and retries are
+      // the right policy when nobody is waiting on the answer.
+      options
+        ? {
+            signal: options.signal,
+            timeout: options.timeout ?? EMBED_DEADLINE_MS,
+            maxRetries: options.maxRetries ?? EMBED_MAX_RETRIES,
+          }
+        : undefined,
+    ))
+    tracing?.traceProvider(trace, response)
+    if (trace) {
+      const usage = response.usage as { prompt_tokens?: number; total_tokens?: number } | undefined
+      trace.call.prompt_tokens = usage?.prompt_tokens ?? 0
+      trace.call.total_tokens = usage?.total_tokens ?? 0
+      delete trace.call.cost_usd
+    }
+    tracing?.settleLLMTrace(trace)
+    return response.data[0].embedding
+  } catch (error) {
+    if (trace?.call.status !== 'timeout') tracing?.settleLLMTrace(trace, error, options?.signal?.aborted)
+    throw error
+  }
 }
 
 interface CachedEmbedding {
@@ -182,6 +207,8 @@ function hedgedEmbed(text: string): Promise<number[]> {
     let hedgeTimer: ReturnType<typeof setTimeout> | undefined
     const timers: Array<ReturnType<typeof setTimeout>> = []
     const controllers: AbortController[] = []
+    const callTraces: Array<LLMTraceRecord | undefined> = []
+    const completed = new Set<number>()
 
     const finish = (complete: () => void) => {
       if (settled) return
@@ -190,7 +217,14 @@ function hedgedEmbed(text: string): Promise<number[]> {
       for (const timer of timers) clearTimeout(timer)
       // Abort whatever is still running so a stuck request cannot hold a socket
       // after the turn has moved on.
-      for (const controller of controllers) controller.abort()
+      for (const [index, controller] of controllers.entries()) {
+        const trace = callTraces[index]
+        if (trace && started > 1) trace.call.won ??= false
+        if (!completed.has(index) && trace?.call.status === 'ok') {
+          tracing?.settleLLMTrace(trace, new Error('Query embedding hedge lost'), true)
+        }
+        controller.abort()
+      }
       complete()
     }
 
@@ -199,6 +233,7 @@ function hedgedEmbed(text: string): Promise<number[]> {
         const ms = Date.now() - startedAt
         // Never the text: it is the player's own story.
         log.warn('embed.query_timeout', { ms })
+        for (const trace of callTraces) tracing?.settleLLMTrace(trace, new EmbedTimeoutError(ms))
         finish(() => reject(new EmbedTimeoutError(ms)))
       }, EMBED_DEADLINE_MS),
     )
@@ -208,9 +243,16 @@ function hedgedEmbed(text: string): Promise<number[]> {
       live++
       const controller = new AbortController()
       controllers.push(controller)
-      requestEmbedding(text, { signal: controller.signal }).then(
-        (embedding) => finish(() => resolve(embedding)),
+      const index = started - 1
+      requestEmbedding(text, { signal: controller.signal }, 'embedding_query', index === 0 ? 'primary' : 'hedge',
+        (trace) => { callTraces[index] = trace }).then(
+        (embedding) => {
+          completed.add(index)
+          if (!settled && started > 1) callTraces.forEach((trace, i) => { if (trace) trace.call.won = i === index })
+          finish(() => resolve(embedding))
+        },
         (err) => {
+          completed.add(index)
           live--
           if (settled) return
           // A failure before the hedge window is not worth waiting for: the
@@ -240,12 +282,12 @@ function hedgedEmbed(text: string): Promise<number[]> {
  * on the answer, and an abandoned call would drop the memory it was making.
  * Concurrent callers with the same text still share one request.
  */
-export function embed(text: string): Promise<number[]> {
+export function embed(text: string, purpose = 'embedding_memory'): Promise<number[]> {
   const key = flightKey('embed', text)
   const existing = inFlight.get(key)
   if (existing) return existing
 
-  const promise = requestEmbedding(text)
+  const promise = requestEmbedding(text, undefined, purpose)
   inFlight.set(key, promise)
   trackFlight(key, promise)
   return promise
@@ -277,14 +319,22 @@ export function embedQuery(text: string): Promise<number[]> {
  *  hedge, since nothing a player waits on is behind it. */
 export async function embedBatch(texts: string[]): Promise<number[][]> {
   if (texts.length === 0) return []
-  const openai = getOpenAI()
+  const openai = getOpenAI().withOptions?.({ fetch: tracing?.traceFetch }) ?? getOpenAI()
   noteClientUse('embedding')
-  const response = await openai.embeddings.create({
-    model: AI_MODELS.embedding,
-    input: texts,
-    dimensions: EMBEDDING_DIMENSIONS,
-  })
-  return response.data.sort((a, b) => a.index - b.index).map((d) => d.embedding)
+  const trace = tracing?.beginLLMTrace({ model: AI_MODELS.embedding, purpose: 'embedding_batch', streamed: false,
+    messages: texts.map(content => ({ role: 'user', content })), params: {} })
+  if (trace) trace.call.provider = 'OpenAI'
+  try {
+    const response = await (tracing?.withTraceAttempts ?? ((_trace, send) => send()))(trace, () => openai.embeddings.create({
+      model: AI_MODELS.embedding,
+      input: texts,
+      dimensions: EMBEDDING_DIMENSIONS,
+    }))
+    tracing?.traceProvider(trace, response)
+    if (trace) delete trace.call.cost_usd
+    tracing?.settleLLMTrace(trace)
+    return response.data.sort((a, b) => a.index - b.index).map((d) => d.embedding)
+  } catch (error) { tracing?.settleLLMTrace(trace, error); throw error }
 }
 
 /** Two tokens: the cheapest request that still opens the connection. */

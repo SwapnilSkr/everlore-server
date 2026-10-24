@@ -1,3 +1,5 @@
+import { runBackgroundLLMTrace } from '../../src/services/llm-trace.service'
+import { setLLMTraceSequence } from '../../src/ai/usage'
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
@@ -113,6 +115,10 @@ async function extractionInputs(instanceId: string, characterCodex: CharacterPro
 /** Generation and recovery run the identical per-turn tail, under one batch's
  * leases. Inputs and graph/canon writes always carry their OWN event sequence. */
 export async function projectCharacterEvent(params: { instanceId: string; playerId: string; eventId: string }) {
+  return runBackgroundLLMTrace({ instance_id: params.instanceId, player_id: params.playerId,
+    event_id: params.eventId }, () => projectCharacterWork(params))
+}
+async function projectCharacterWork(params: { instanceId: string; playerId: string; eventId: string }) {
   const { instanceId, playerId } = params
   const instanceOid = parseObjectId(instanceId)
   const timing = new CharacterProjectionTiming()
@@ -125,6 +131,7 @@ export async function projectCharacterEvent(params: { instanceId: string; player
   return withCharacterProjection(params, projectCharacterEvent, async (projectionEvent, assertOwned, timing, prepared) => {
     const event = projectionEvent
     const nextSequence = event.sequence
+    setLLMTraceSequence(nextSequence)
     const rawNarrative = event.data.ai_response
     const parsedPlayerInput = parsePlayerInput(turnInputs(event).playerInput)
     const confirmedWorldAction = event.data.world_action

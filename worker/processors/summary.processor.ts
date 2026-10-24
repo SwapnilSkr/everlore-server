@@ -1,3 +1,4 @@
+import { runBackgroundLLMTrace } from '../../src/services/llm-trace.service'
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
@@ -28,7 +29,7 @@ async function embedSummary(
 ): Promise<string | null> {
   const vecId = `${tier}_${startSequence}_${endSequence}`
   try {
-    const values = await embed(text)
+    const values = await embed(text, 'embedding_summary')
     await vectorStore.upsert({ kind: 'sum', instanceId: idString(instanceOid) }, [{
       id: vecId,
       values,
@@ -42,6 +43,10 @@ async function embedSummary(
 }
 
 export async function summaryProcessor(job: Job) {
+  return runBackgroundLLMTrace({ instance_id: job.data.instanceId, player_id: job.data.playerId,
+    sequence: job.data.endSequence }, () => summaryWork(job))
+}
+async function summaryWork(job: Job) {
   // The 'scene-summary' worker handles both tiers; chapter jobs are discriminated
   // by `kind` so we don't need a second queue/worker registration.
   if (job.data.kind === 'chapter') {
@@ -94,6 +99,7 @@ export async function summaryProcessor(job: Job) {
     .join('\n\n')
 
   const summaryResult = await callLLM({
+    purpose: 'scene_summary',
     model: AI_MODELS.sceneSummary,
     messages: [
       {
@@ -233,6 +239,7 @@ async function chapterRollup(job: Job) {
     .join('\n\n')
 
   const summaryText = await callLLM({
+    purpose: 'chapter_summary',
     model: AI_MODELS.sceneSummary,
     messages: [
       {
@@ -364,6 +371,7 @@ async function arcRollup(job: Job) {
     .join('\n\n')
 
   const summaryText = await callLLM({
+    purpose: 'arc_summary',
     model: AI_MODELS.sceneSummary,
     messages: [
       {

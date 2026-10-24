@@ -58,6 +58,7 @@ Respond ONLY JSON: { "ties": [ { "from": "...", "to": "...", "kind": "...", "mod
   let raw: string
   try {
     raw = await callLLM({
+      purpose: 'premise_kinship',
       model: AI_MODELS.metadata,
       messages: [
         { role: 'system', content: system },

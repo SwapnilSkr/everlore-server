@@ -22,6 +22,7 @@ Respond ONLY with JSON: {"facts":["fact one","fact two", ...]}`
   let raw: string
   try {
     raw = await callLLM({
+      purpose: 'codex_compaction',
       model: AI_MODELS.codexCompaction,
       messages: [
         { role: 'system', content: system },

@@ -1,3 +1,4 @@
+import { runBackgroundLLMTrace } from '../../src/services/llm-trace.service'
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
@@ -409,6 +410,7 @@ export function buildMemoryCurationRequest(params: {
     ? `\nIdentity boundary:\n- This is a sentient/character conversation. The protagonist/main character${params.protagonistName ? ` is "${params.protagonistName}"` : ''}; the human player${params.playerPersonaName ? ` may be called "${params.playerPersonaName}"` : ''} is separate.\n- Any fact in Player input using "I", "me", or "my" belongs to the player. Use subject "player" for those facts, NEVER the protagonist/main character.\n- The narration speaks to/for the player ("you"/first person). A first-person sensation, feeling, or perception in the NARRATION ("a shiver runs through me", "my heart races", "I notice…") is the PLAYER's — use subject "player", NEVER attribute it to the main character. The main character is the subject only when the prose shows THEM acting or feeling by their own name.\n- Player-mentioned off-screen relatives or possessions are facts about the player, not new present characters.\n`
     : `\nIdentity boundary:\n- This is a GM world: the player speaks as the protagonist. Use "player" for the player's own first-person facts in memory subjects unless a specific other character acted.\n`
   return {
+    purpose: 'memory_curation',
     model: AI_MODELS.memoryCuration, temperature: 0.3, maxTokens: 900,
     responseFormat: { type: 'json_object' },
     messages: [
@@ -419,6 +421,10 @@ export function buildMemoryCurationRequest(params: {
 }
 
 export async function memoryProcessor(job: Job) {
+  return runBackgroundLLMTrace({ instance_id: job.data.instanceId, player_id: job.data.playerId,
+    event_id: job.data.eventId }, () => memoryWork(job))
+}
+async function memoryWork(job: Job) {
   const {
     instanceId,
     playerId,

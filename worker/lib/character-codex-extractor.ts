@@ -782,6 +782,7 @@ async function adjudicateRelationshipProposals(params: {
   let raw = ''
   try {
     raw = await (params.call ?? callLLM)({
+      purpose: 'codex_extraction',
       model: AI_MODELS.metadata,
       temperature: 0,
       maxTokens: 700 * (params.turns?.length || 1),
@@ -1162,6 +1163,7 @@ Respond ONLY JSON:
   let raw: string
   try {
     raw = await (params.call ?? callLLM)({
+      purpose: 'codex_extraction',
       model: AI_MODELS.codexExtraction,
       messages: [
         { role: 'system', content: system + (turns ? '\nBATCH: The roster is BEFORE the first turn. Process each TURN separately in ascending sequence, reconciling earlier changes before later ones. Preserve each turn’s cast, player input and narration. Return {"turns":[{"sequence":integer,"characters":[...same character shape...],"relation_assertions":[]}]} with exactly one entry for EVERY supplied sequence, including empty turns. Every character proposal ALSO needs sequence equal to its enclosing turn. Use only that turn’s source as evidence for its meters. Never combine changes from different turns. A later turn may retire a state added by an earlier turn.' : '') },

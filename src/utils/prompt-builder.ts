@@ -636,7 +636,14 @@ function finalNarratorContract(input: PromptInput, protagonistName: string, pov:
 7. Narrative boundaries hold: no child or adolescent is ever portrayed sexually, and sexual content never involves family members. If the scene drifts there, redirect within the fiction — no refusal, no commentary, no break in voice.`
 }
 
-export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
+export function buildPrompt(input: PromptInput): { messages: PromptMessage[]; sections: Array<{ name: string; chars: number }> } {
+  const sections: Array<{ name: string; chars: number }> = []
+  let measured = 0
+  const mark = (name: string, end: number) => {
+    if (end > measured) sections.push({ name, chars: end - measured })
+    measured = end
+  }
+  const messageChars = () => messages.reduce((sum, message) => sum + message.content.length, 0)
   const messages: PromptMessage[] = []
 
   // ── STATIC SYSTEM PROMPT (cacheable prefix) ─────
@@ -668,6 +675,8 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
 
   staticContent += `${NARRATIVE_BOUNDARIES}\n\n`
 
+  mark('world_and_rules', staticContent.length)
+
   // Narrative VOICE / STYLE — the single biggest lever on how it sounds.
   // World-stable (per instance) so it stays in the cacheable prefix and costs ~0
   // extra TTFT after turn 1. Placed high so it frames everything that follows.
@@ -679,6 +688,8 @@ export function buildPrompt(input: PromptInput): { messages: PromptMessage[] } {
   // genre style so its wording priority is explicit, but is stable per session
   // and therefore remains inside the cacheable static prefix.
   staticContent += `${buildNarrationToneDirective(input.narrationTone, input.toneExampleSeed)}\n\n`
+
+  mark('style', staticContent.length)
 
   // Global lore — typically the largest block, hence the biggest caching payoff
   staticContent += `WORLD LORE:\n${input.globalLore}\n\n`
@@ -755,6 +766,7 @@ You MUST respond with valid JSON containing these fields:
 Do NOT break character in the narrative. State mutations and flags are metadata the player does not see.`
   }
 
+  mark('world_and_rules', staticContent.length)
   messages.push({ role: 'system', content: staticContent })
 
   // Reference-section budgets allocated from what the static prefix left over,
@@ -771,6 +783,8 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
   const modeDirective = buildModeDirective(input.chatMode)
   if (modeDirective) dynamicContent += `${modeDirective}\n\n`
   dynamicContent += `${buildLengthDirective(input.messageLength)}\n\n`
+
+  mark('directives', staticContent.length + dynamicContent.length)
 
   // The locked protagonist is handled separately from side-character NPCs.
   const protagonistCard = (input.characterCodex || []).find((c) => c.is_protagonist)
@@ -986,6 +1000,8 @@ ${personaLine}
     dynamicContent += `\n`
   }
 
+  mark('canon', staticContent.length + dynamicContent.length)
+
   if (input.retrievedLore.length > 0) {
     dynamicContent += `RELEVANT LORE DETAILS (reference only — use only if it directly applies to the current turn; do not introduce these as active scene elements by default):\n`
     for (const lore of withinTokenBudget(input.retrievedLore, sectionBudget.lore)) {
@@ -1015,6 +1031,8 @@ ${personaLine}
     dynamicContent += `\n`
   }
 
+  mark('memories', staticContent.length + dynamicContent.length)
+
   if (input.relevantSummaries && input.relevantSummaries.length > 0) {
     dynamicContent += `RELEVANT PAST CHAPTERS (compressed recall of earlier, possibly distant parts of the story that bear on this turn — reference only, for continuity; do not replay them as current action):\n`
     for (const summary of withinTokenBudget(input.relevantSummaries, sectionBudget.summaries)) {
@@ -1023,6 +1041,7 @@ ${personaLine}
     dynamicContent += `\n`
   }
 
+  mark('summaries', staticContent.length + dynamicContent.length)
   messages.push({ role: 'system', content: dynamicContent })
 
   // ── SCENE SUMMARY ──────────────────────────────
@@ -1033,6 +1052,8 @@ ${personaLine}
     })
   }
 
+  mark('summaries', messageChars())
+
   const openingCanon = input.proseOnly ? openingSceneCanon(input.recentEvents) : null
   if (openingCanon) {
     messages.push({
@@ -1040,6 +1061,8 @@ ${personaLine}
       content: `AUTHORED OPENING SCENE CANON (first generated turn only):\n${openingCanon}\n\nThis is source canon for the current setting and people present, not a prose example. Continue directly from it with a new reaction or consequence. Do not quote, imitate, or restage its wording.`,
     })
   }
+
+  mark('canon', messageChars())
 
   // ── RECENT EVENTS (continuity ledger, not style examples) ───────
   // HARD floor: recent-turn continuity is the one section the story cannot
@@ -1113,6 +1136,8 @@ ${personaLine}
 ${continuityTurns.join('\n\n')}${immediateBeat}`,
     })
   }
+
+  mark('recent_turns', messageChars())
 
   const interactionSignals = activeInteractionSignals(input)
   if (interactionSignals.length > 0) {
@@ -1203,11 +1228,14 @@ ${continuityTurns.join('\n\n')}${immediateBeat}`,
     ),
   })
 
+  mark('directives', messageChars())
+
   // ── CURRENT USER MESSAGE ───────────────────────
   messages.push({
     role: 'user',
     content: currentTurnUserMessage(input),
   })
 
-  return { messages }
+  mark('player_input', messageChars())
+  return { messages, sections }
 }

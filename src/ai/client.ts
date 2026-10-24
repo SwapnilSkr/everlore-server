@@ -1,6 +1,8 @@
 import { getOpenRouter } from '../config/openai'
 import { env } from '../config/env'
-import { recordLLMUsage, usageFromProvider, isLLMUsageActive } from './usage'
+import { recordLLMUsage, usageFromProvider, isLLMUsageActive, beginLLMTrace, settleLLMTrace, traceProvider, traceFetch, withTraceAttempts } from './usage'
+import type { LLMTraceRecord } from '../models/llm-call.model'
+import type OpenAI from 'openai'
 import { log } from '../utils/logger'
 import { consumeLLMStream, EmptyLLMResponseError, formatLLMResponseReason, llmResponseContent, type LLMResponsePart } from '../utils/llm-response'
 
@@ -97,6 +99,9 @@ interface LLMRequest {
   sessionId?: string
   /** Label for per-call token accounting. Optional; omitted on unlabeled paths. */
   purpose?: string
+  /** Trace-only metadata; never copied into the provider body. */
+  promptSections?: Array<{ name: string; chars: number }>
+  traceRole?: 'primary' | 'hedge' | 'fallback'
   /** Opt-in internal JSON streaming; zero keeps the non-streamed transport. */
   firstTokenHedge?: LLMFirstTokenHedge
 }
@@ -192,10 +197,18 @@ export function buildChatRequest(req: LLMRequest, stream = false): {
 
 function clientFor(transport: ReturnType<typeof buildChatRequest>['client']) {
   switch (transport) {
-    case 'openrouter': return getOpenRouter()
+    case 'openrouter': {
+      if (nonStreamingClientForAudit) return nonStreamingClientForAudit
+      const client = getOpenRouter()
+      // Existing audits supply only the narrow transport, without SDK helpers.
+      return typeof client.withOptions === 'function' ? client.withOptions({ fetch: traceFetch }) : client
+    }
     default: throw new Error(`Unsupported chat transport: ${transport}`)
   }
 }
+
+let nonStreamingClientForAudit: OpenAI | null = null
+export function setLLMClientForAudit(client: OpenAI | null): void { nonStreamingClientForAudit = client }
 
 export async function callLLM(req: LLMRequest): Promise<string> {
   if (req.firstTokenHedge && req.firstTokenHedge.delayMs > 0) {
@@ -220,19 +233,25 @@ export async function callLLM(req: LLMRequest): Promise<string> {
   logNormalization(req.model, params.model)
   const client = clientFor(built.client)
 
-  const response = await client.chat.completions.create(params, {
-    timeout: req.timeoutMs ?? 90000,
-    ...(req.timeoutMs ? { maxRetries: 0 } : {}),
-    ...(req.signal ? { signal: req.signal } : {}),
-  })
-  const rawUsage = (response as { usage?: unknown }).usage
-  recordLLMUsage({
-    purpose: req.purpose,
-    model: req.model,
-    streamed: false,
-    ...usageFromProvider(rawUsage),
-  })
-  return llmResponseContent(response)
+  const trace = beginLLMTrace({ model: params.model, purpose: req.purpose, streamed: false,
+    messages: req.messages, params, sections: req.promptSections, role: req.traceRole })
+  try {
+    const response = await withTraceAttempts(trace, () => client.chat.completions.create(params, {
+      timeout: req.timeoutMs ?? 90000,
+      ...(req.timeoutMs ? { maxRetries: 0 } : {}),
+      ...(req.signal ? { signal: req.signal } : {}),
+    }))
+    traceProvider(trace, response)
+    const rawUsage = (response as { usage?: unknown }).usage
+    recordLLMUsage({ purpose: req.purpose, model: req.model, streamed: false, ...usageFromProvider(rawUsage) })
+    const content = llmResponseContent(response)
+    if (trace) trace.response = content
+    settleLLMTrace(trace)
+    return content
+  } catch (error) {
+    settleLLMTrace(trace, error, req.signal?.aborted)
+    throw error
+  }
 }
 
 export const NARRATION_HEDGE_MS = 3500
@@ -257,6 +276,7 @@ async function requestLLMStream(
   onDelta: (chunk: string) => void,
   controller: AbortController,
   onUsage: (usage: unknown) => void,
+  onTrace: (trace: LLMTraceRecord | undefined) => void,
 ): Promise<{ content: string; provider?: string }> {
   const built = buildChatRequest(req, true)
   const { params } = built
@@ -266,6 +286,9 @@ async function requestLLMStream(
       body as typeof params, options,
     ) as unknown as PromiseLike<AsyncIterable<StreamPart>>,
   }
+  const trace = beginLLMTrace({ model: params.model, purpose: req.purpose, streamed: true,
+    messages: req.messages, params, sections: req.promptSections, role: req.traceRole })
+  onTrace(trace)
   const idleTimeoutMs = req.idleTimeoutMs ?? 45000
   let idleTimer: ReturnType<typeof setTimeout> | undefined
   let provider: string | undefined
@@ -288,17 +311,18 @@ async function requestLLMStream(
   })
   const consume = async () => {
     if (controller.signal.aborted) throw controller.signal.reason
-    const stream = await client.create(params, {
+    const stream = await withTraceAttempts(trace, () => client.create(params, {
       signal: controller.signal,
       timeout: req.timeoutMs ?? 180000,
       // A hedge is the retry; SDK retries would send uncounted extra requests.
       maxRetries: 0,
-    })
+    }))
     if (controller.signal.aborted) throw controller.signal.reason
     armIdleTimer()
     async function* observedParts() {
       for await (const part of stream) {
         if (controller.signal.aborted) break
+        traceProvider(trace, part)
         if (typeof part.provider === 'string') provider = part.provider
         if (part.usage) usage = part.usage
         yield part
@@ -306,16 +330,26 @@ async function requestLLMStream(
     }
     const result = await consumeLLMStream(observedParts(), (delta) => {
       if (controller.signal.aborted) return
+      if (trace) {
+        trace.call.first_token_ms ??= Date.now() - trace.call.started_at.getTime()
+        trace.response += delta
+      }
       onDelta(delta)
       if (!controller.signal.aborted) armIdleTimer()
     })
     if (result.providerError) {
+      if (trace) settleLLMTrace(trace, new Error(`Provider error: ${result.providerError}`))
       log.warn('chat.stream_provider_error', { model: req.model, reason: formatLLMResponseReason(result) })
     }
     return { content: result.content, provider }
   }
   try {
-    return await Promise.race([aborted, consume()])
+    const result = await Promise.race([aborted, consume()])
+    settleLLMTrace(trace)
+    return result
+  } catch (error) {
+    settleLLMTrace(trace, error, controller.signal.aborted)
+    throw error
   } finally {
     clearTimeout(idleTimer)
     controller.signal.removeEventListener('abort', onAbort)
@@ -333,7 +367,7 @@ function narrationAttempt(
   hedge?: LLMFirstTokenHedge,
 ): Promise<{ content: string; provider?: string; hedged: boolean; hedgeWinner?: Contender }> {
   return new Promise((resolve, reject) => {
-    const contenders: Partial<Record<Contender, { controller: AbortController; error?: unknown; failed: boolean; usage?: unknown }>> = {}
+    const contenders: Partial<Record<Contender, { controller: AbortController; error?: unknown; failed: boolean; usage?: unknown; trace?: LLMTraceRecord }>> = {}
     const runs: Array<Promise<unknown>> = []
     let winner: Contender | undefined
     let hedged = false
@@ -361,6 +395,7 @@ function narrationAttempt(
           // Without a token winner, account the structured backup as the extra
           // call; keep narration's existing failure accounting unchanged.
           const lost = winner ? winner !== label : Boolean(hedge) && label === 'hedge'
+          if (hedged && contender.trace) contender.trace.call.won = winner === label
           recordLLMUsage({
             purpose: lost ? hedge?.lostPurpose ?? 'narration_hedge_lost' : req.purpose ?? 'narration',
             model: req.model, streamed: true, ...usageFromProvider(contender.usage),
@@ -371,10 +406,10 @@ function narrationAttempt(
       })
     }
     const start = (label: Contender) => {
-      const state = { controller: new AbortController(), failed: false, error: undefined as unknown, usage: undefined as unknown }
+      const state = { controller: new AbortController(), failed: false, error: undefined as unknown, usage: undefined as unknown, trace: undefined as LLMTraceRecord | undefined }
       contenders[label] = state
       const run = requestLLMStream(
-        label === 'hedge' ? { ...req, sessionId: undefined } : req,
+        { ...req, ...(label === 'hedge' ? { sessionId: undefined } : {}), traceRole: label === 'hedge' ? 'hedge' : req.traceRole ?? 'primary' },
         (delta) => {
           if (settled) return
           // No await between observing the first text and claiming the race.
@@ -389,6 +424,7 @@ function narrationAttempt(
         },
         state.controller,
         (usage) => { state.usage = usage },
+        (trace) => { state.trace = trace },
       )
       runs.push(run)
       void run.then((result) => finish(undefined, result), (error: unknown) => {
@@ -460,6 +496,7 @@ export async function callLLMStreamWithFallback(
         {
           ...req,
           model,
+          traceRole: index > 0 ? 'fallback' : 'primary',
           // Keep the same sampling profile across a pre-stream reroute so the
           // scene's voice does not abruptly change just because a provider is
           // saturated.
@@ -507,7 +544,7 @@ export async function callLLMWithFallback(
   for (let index = 0; index < models.length; index += 1) {
     const model = models[index]
     try {
-      const content = await callLLM({ ...req, model })
+      const content = await callLLM({ ...req, model, traceRole: index > 0 ? 'fallback' : 'primary' })
       return { content, model, fallbackAttempts }
     } catch (error) {
       lastError = error

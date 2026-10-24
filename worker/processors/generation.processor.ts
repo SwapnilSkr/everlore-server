@@ -1,3 +1,5 @@
+import { runWithLLMTrace, snapshotLLMTrace, setLLMTraceSequence } from '../../src/ai/usage'
+import { flushLLMTracesLater, traceLogFields } from '../../src/services/llm-trace.service'
 import { env } from '../../src/config/env'
 import { startVectorPrefetch } from '../../src/providers/rag.provider'
 import { detectSpokenLines } from '../../src/services/media/detection'
@@ -424,7 +426,11 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
     return replayProcessor(job)
   }
   if (!isLLMUsageActive()) {
-    return runWithLLMUsage(() => generationProcessor(job))
+    return runWithLLMTrace({ instance_id: job.data.instanceId, player_id: job.data.playerId },
+      () => runWithLLMUsage(() => generationProcessor(job).catch((error: unknown) => {
+        flushLLMTracesLater(snapshotLLMTrace())
+        throw error
+      })))
   }
 
   const {
@@ -819,6 +825,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       : packetLocationContext
   const activeSummary = packet.sceneSummary
   const nextSequence = packet.currentSequence + 1
+  setLLMTraceSequence(nextSequence)
 
   // Fate seeding: on a calendar tick, the highest-importance open thread may
   // come due — but only past the cooldown, so the world doesn't feel like a
@@ -996,6 +1003,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   })
   let ttftMs = 0
   let firstTokenAt = 0
+  let lastTokenAt = 0
   // When the narrator emits its own choices, strip the trailing CHOICES block out
   // of the player-facing delta stream so the marker/choices never render as prose.
   // Always filter choice-protocol syntax, even when narrator-owned choices are
@@ -1089,6 +1097,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         model: modelId,
         purpose: 'narration',
         messages: prompt.messages,
+        promptSections: prompt.sections,
         temperature: narrationTemperature(modelId),
         maxTokens: lengthMaxTokens(session.message_length),
         sessionId: instanceId,
@@ -1100,6 +1109,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
           firstTokenAt = Date.now()
           ttftMs = firstTokenAt - genStart
         }
+        lastTokenAt = Date.now()
         publishVisibleDelta(proseFilter.push(chunk))
         // Once the sentinel arrives, all prose is in and the rest is hidden choices —
         // close the visible stream now so the indicator doesn't hang through them.
@@ -3562,6 +3572,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       session_write: sessionWriteMs,
     })
     const slowestCall = slowestTailCall(tailCallMs)
+    const traceRecords = snapshotLLMTrace()
+    const narratorStartedAt = traceRecords.find(record => record.call.purpose === 'narration')?.call.started_at ?? new Date(genStart)
     mongoColl
       .generationLogs()
       .insertOne({
@@ -3584,6 +3596,11 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         tokens_in: event.data.tokens_in,
         tokens_out: event.data.tokens_out,
         llm_calls: snapshotLLMUsage(),
+        ...traceLogFields(traceRecords),
+        dispatched_at: new Date(requestStartedAt),
+        narrator_started_at: narratorStartedAt,
+        ...(firstTokenAt > 0 ? { first_word_at: new Date(firstTokenAt) } : {}),
+        reply_ended_at: new Date(lastTokenAt || streamEndedAt),
         prose_hygiene_issues: proseHygieneIssues,
         latency_ms: latencyMs,
         ttft_ms: ttftMs,
@@ -3601,9 +3618,14 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         end_to_end_ttft_ms: endToEndTtftMs,
         created_at: new Date(loggedAt ?? Date.now()),
       })
-      .catch((err) => console.warn('generation_log insert failed:', (err as Error).message))
+      .then(() => { flushLLMTracesLater(traceRecords, nextSequence, narratorStartedAt) })
+      .catch((err) => {
+        console.warn('generation_log insert failed:', (err as Error).message)
+        flushLLMTracesLater(traceRecords, nextSequence, narratorStartedAt)
+      })
     } catch (err) {
       console.warn('generation_log build failed:', (err as Error).message)
+      flushLLMTracesLater(snapshotLLMTrace(), nextSequence)
     }
   }
 

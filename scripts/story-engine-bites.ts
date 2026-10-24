@@ -1,0 +1,26 @@
+import { runTraceAuditBites } from './story-engine-fixtures'
+
+await runTraceAuditBites('scripts/story-engine-audit.ts', [
+  { name: 'local route auth guard', file: 'src/routes/admin-story-engine.routes.ts', before: '.use(requireAdmin)', after: '// auth removed' },
+  { name: 'authenticated turn list', file: 'src/controllers/admin-story-engine.controller.ts', before: 'turns: (query: StoryTurnQuery) => listStoryTurns(query)', after: "turns: (_query: StoryTurnQuery) => { throw new Error('Broken list') }" },
+  { name: 'authenticated turn detail', file: 'src/controllers/admin-story-engine.controller.ts', before: 'turn: (id: string) => storyTurnDetail(id)', after: 'turn: (_id: string) => null' },
+  { name: 'authenticated call body', file: 'src/controllers/admin-story-engine.controller.ts', before: 'body: (id: string) => storyCallBody(id)', after: 'body: (_id: string) => null' },
+  { name: 'authenticated summary', file: 'src/controllers/admin-story-engine.controller.ts', before: 'summary: (days: number) => storySummary(days)', after: "summary: (_days: number) => { throw new Error('Broken summary') }" },
+  { name: 'page size', file: 'src/services/story-engine.service.ts', before: '{ $limit: limit },', after: '{ $limit: limit + 1 },' },
+  { name: 'failed filter', file: 'src/services/story-engine.service.ts', before: "if (query.failed === 'true')", after: "if (query.failed === 'false')" },
+  { name: 'world metadata', file: 'src/services/story-engine.service.ts', before: 'world_title: row.template.title', after: "world_title: 'wrong'" },
+  { name: 'detail costs', file: 'src/services/story-engine.service.ts', before: 'phases[call.phase] += usd', after: 'phases[call.phase] += 0' },
+  { name: 'legacy turn fallback', file: 'src/services/story-engine.service.ts', before: '{ legacy: true }', after: '{ legacy: false }' },
+  { name: 'expired body read', file: 'src/services/story-engine.service.ts', before: 'body.created_at.getTime() + BODY_TTL_SECONDS * 1000 <= Date.now()', after: 'false' },
+  { name: 'query limit validation', file: 'src/routes/admin-story-engine.routes.ts', before: 'maximum: 100,', after: 'maximum: 1000,' },
+  { name: 'summary aggregate costs', file: 'src/services/story-engine.service.ts', before: 'total_usd: sumCost(calls)', after: 'total_usd: 0' },
+  { name: 'background cost per turn', file: 'src/services/story-engine.service.ts', before: 'backgroundCost.get(turnKey(turn.instance_id, turn.sequence)) ?? 0', after: '0' },
+  { name: 'host explanation', file: 'src/services/story-engine-explain.ts', before: 'host >= preparation', after: 'host < preparation' },
+  { name: 'prep explanation label', file: 'src/services/story-engine-explain.ts', before: "vector: 'Memory search'", after: "vector: 'wrong'" },
+  { name: 'hedge explanation', file: 'src/services/story-engine-explain.ts', before: "? 'second' : 'first'", after: "? 'first' : 'first'" },
+  { name: 'retry explanation', file: 'src/services/story-engine-explain.ts', before: 'if (call.attempts > 1)', after: 'if (false)' },
+  { name: 'normal headline', file: 'src/services/story-engine-explain.ts', before: 'A normal turn:', after: 'Wrong turn:' },
+  { name: 'lookup index', file: 'src/services/llm-trace.service.ts', before: 'store.calls.createIndex({ instance_id: 1, sequence: 1 })', after: 'store.calls.createIndex({ unused: 1 })' },
+  { name: 'log ordering index', file: 'src/services/llm-trace.service.ts', before: "mongo.coll('generation_logs').createIndex({ created_at: -1, _id: -1 })", after: "mongo.coll('generation_logs').createIndex({ unused: 1 })" },
+  { name: 'private body isolation', file: 'src/routes/instance.routes.ts', before: '', after: "// llm_call_bodies must never be used here\n" },
+])
