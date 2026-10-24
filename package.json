@@ -36,6 +36,7 @@
     "test:tts": "bun run scripts/test-tts-model.ts",
     "audit:choices": "bun run scripts/choice-audit.ts",
     "audit:review-access": "bun run scripts/review-access-audit.ts",
+    "audit:admin-route-guard": "bun --no-env-file run scripts/admin-route-guard-audit.ts",
     "audit:phone-verify-errors": "bun --no-env-file run scripts/phone-verify-errors-audit.ts",
     "audit:world-review": "bun run scripts/world-review-audit.ts",
     "audit:genre": "bun --no-env-file run scripts/genre-audit.ts",

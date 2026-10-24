@@ -9,6 +9,7 @@ const PURE_AUDITS = [
   'audit:phone-verify-errors',
   'audit:ink-promo',
   'audit:admin-ops',
+  'audit:admin-route-guard',
   'audit:review-access',
   'audit:world-review',
   'audit:genre',
