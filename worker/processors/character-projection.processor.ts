@@ -17,7 +17,7 @@ import { extractKinshipAssertions, mergeRelationAssertions } from '../lib/kinshi
 import { extractLifecycleTransitions } from '../lib/kinship-transition-extractor'
 import { detectNarratedRelationCandidates } from '../lib/relation-candidate-detector'
 import { detectCanonRevisionCandidates } from '../lib/canon-revision-detector'
-import { detectProjectionAnomalies } from '../lib/projection-anomaly-detector'
+import { detectProjectionAnomalies, kinRelationGroup } from '../lib/projection-anomaly-detector'
 import { buildSignalLedger } from '../lib/signal-ledger'
 import { compactImmutableFacts } from '../lib/codex-compactor'
 import { extractCharacterCodexDeltas, extractCharacterCodexBatch, looksLikeUnnamedLabel } from '../lib/character-codex-extractor'
@@ -40,6 +40,42 @@ export async function characterProjectionProcessor(job: Job) {
 
 function normalizePersonaName(value: string): string {
   return (value || '').toLowerCase().replace(/[^a-z0-9\s'-]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+/**
+ * Relation groups the save's relationship graph already holds for the
+ * player/protagonist side — one indexed read of the kinship edges pointing AT the
+ * self entity (every "X is your <kin>" tie is written that way, both directions
+ * of a symmetric kind included).
+ *
+ * Returns `undefined` on any failure, so the anomaly detector falls back to its
+ * fail-toward-logging behaviour rather than going quiet.
+ */
+async function knownKinRelationGroups(
+  instanceOid: ObjectId,
+  selfType: 'player' | 'protagonist',
+): Promise<string[] | undefined> {
+  try {
+    const self = await mongoColl.entities().findOne(
+      { instance_id: instanceOid, type: selfType, status: { $ne: 'archived' } },
+      { projection: { _id: 1 } },
+    )
+    if (!self?._id) return []
+    const rows = await mongoColl.entityEdges().find(
+      {
+        instance_id: instanceOid,
+        target_entity_id: self._id,
+        type: 'kinship',
+        status: 'active',
+      },
+      { projection: { relation_kind: 1, gender_hint: 1, relation_modifier: 1 } },
+    ).toArray()
+    return rows
+      .map((row) => kinRelationGroup(row.relation_kind, row.gender_hint, row.relation_modifier))
+      .filter((group): group is string => !!group)
+  } catch {
+    return undefined
+  }
 }
 
 async function extractionInputs(instanceId: string, characterCodex: CharacterProfileDoc[], timing: CharacterProjectionTiming) {
@@ -537,9 +573,16 @@ async function projectCharacterWork(params: { instanceId: string; playerId: stri
       const context = event.data.codex_projection_context
       let missCandidates = 0
       if (context) {
+        // Read AFTER the entity-graph sync above, so this turn's own edges are in
+        // the graph: a tie the prose establishes now is not reported as missing.
+        const knownKinRelations = await knownKinRelationGroups(
+          instanceOid,
+          session.is_sentient ? 'player' : 'protagonist',
+        )
         const findings = detectProjectionAnomalies({
           ...context.anomalies, prose: rawNarrative, presentNames: event.data.present_characters || [],
           codexNames: [...knownCardNames], hadRelationAssertion: relationAssertions.length > 0,
+          knownKinRelations,
           newCardNames: deltas.map((d) => d.resolved_name || d.name).filter((n) => !knownCardNames.has(normalizeEntityName(n))),
         })
         missCandidates = findings.filter((f) => ['prose_person_untracked', 'kinship_phrase_no_edge', 'location_phrase_no_anchor'].includes(f.type)).length

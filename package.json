@@ -82,6 +82,7 @@
     "corpus:location-ab": "bun run scripts/corpus-location-ab.ts",
     "audit:codex-dedup": "bun run scripts/codex-dedup-audit.ts",
     "audit:kinship": "bun run scripts/kinship-audit.ts",
+    "audit:kinship-anomaly": "bun --no-env-file run scripts/kinship-anomaly-audit.ts",
     "audit:scene-state": "bun run scripts/scene-state-audit.ts",
     "audit:presence-codex-gap": "bun run scripts/presence-codex-gap-audit.ts",
     "audit:presence-evidence": "bun run scripts/presence-evidence-audit.ts",

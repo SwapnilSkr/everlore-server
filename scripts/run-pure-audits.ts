@@ -33,6 +33,7 @@ const PURE_AUDITS = [
   'audit:time-skip',
   'audit:signal-ledger',
   'audit:kinship',
+  'audit:kinship-anomaly',
   'audit:scene-state',
   'audit:presence-codex-gap',
   'audit:presence-evidence',
