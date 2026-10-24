@@ -89,8 +89,18 @@ export const authService = {
       updated_at: new Date(),
     }
 
-    const { insertedId } = await users().insertOne(doc)
-    return { ...doc, _id: insertedId } as UserDoc
+    try {
+      const { insertedId } = await users().insertOne(doc)
+      return { ...doc, _id: insertedId } as UserDoc
+    } catch (error) {
+      if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 11000) throw error
+      const existing = await users().findOne({ $or: [{ email }, { username }] })
+      if (!existing) throw error
+      throw new HttpError(
+        409,
+        existing.email === email ? 'Email already registered' : 'Username taken',
+      )
+    }
   },
 
   async authenticatePassword(input: { email: string; password: string }): Promise<UserDoc> {
@@ -130,10 +140,19 @@ export const authService = {
         created_at: new Date(),
         updated_at: new Date(),
       }
-      const { insertedId } = await users().insertOne(doc)
-      userDoc = { ...doc, _id: insertedId } as UserDoc
-      newAccount = true
-    } else {
+      try {
+        const { insertedId } = await users().insertOne(doc)
+        userDoc = { ...doc, _id: insertedId } as UserDoc
+        newAccount = true
+      } catch (error) {
+        if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 11000) throw error
+        userDoc = await users().findOne({
+          $or: [{ google_sub: profile.googleSubject }, { email: profile.email }],
+        })
+        if (!userDoc) throw error
+      }
+    }
+    if (!newAccount) {
       if (userDoc.account_status === 'banned') throw new HttpError(403, 'This account is banned')
       const prov = Array.isArray(userDoc.providers)
         ? new Set<string>(userDoc.providers)
@@ -188,10 +207,17 @@ export const authService = {
         created_at: new Date(),
         updated_at: new Date(),
       }
-      const { insertedId } = await users().insertOne(doc)
-      userDoc = { ...doc, _id: insertedId } as UserDoc
-      newAccount = true
-    } else {
+      try {
+        const { insertedId } = await users().insertOne(doc)
+        userDoc = { ...doc, _id: insertedId } as UserDoc
+        newAccount = true
+      } catch (error) {
+        if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 11000) throw error
+        userDoc = await users().findOne({ phone })
+        if (!userDoc) throw error
+      }
+    }
+    if (!newAccount) {
       if (userDoc.account_status === 'banned') throw new HttpError(403, 'This account is banned')
       const prov = Array.isArray(userDoc.providers)
         ? new Set<string>(userDoc.providers)

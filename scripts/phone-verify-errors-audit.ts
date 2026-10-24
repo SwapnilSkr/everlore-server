@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { mock } from 'bun:test'
 import { Elysia } from 'elysia'
 import { HttpError } from '../src/utils/http-error'
-import type { UserInsertDoc } from '../src/models/user.model'
+import type { UserDoc, UserInsertDoc } from '../src/models/user.model'
 
 if (process.argv.includes('--bites')) {
   const path = new URL('../src/providers/auth.provider.ts', import.meta.url)
@@ -87,19 +87,43 @@ try {
       _id: 'phone-audit-user', phone, username: 'phone_audit', tier: 'free',
       providers: ['phone'], preferences: { theme: 'dark' }, token_balance: 15000,
     }
-    let storedUser: typeof user | null = user
+    type AuditUser = typeof user & { account_status?: UserDoc['account_status'] }
+    let storedUser: AuditUser | null = user
     let inserts = 0
+    let finds = 0
+    let updates = 0
+    let insertFailure: { error: unknown; winner: AuditUser | null } | null = null
+    let updateError: unknown = null
+    const writtenUpdates: { $set: Partial<UserDoc> }[] = []
     mock.module('../src/config/mongo', () => ({
       mongoColl: { users: () => ({
-        findOne: async () => { dbCalls++; return storedUser },
+        findOne: async (query: unknown) => {
+          dbCalls++
+          finds++
+          assert.deepEqual(query, { phone }, 'initial lookup and duplicate-key re-read use the same phone')
+          return storedUser
+        },
         insertOne: async (doc: UserInsertDoc) => {
           dbCalls++
           assert.equal(storedUser, null)
           inserts++
+          if (insertFailure) {
+            storedUser = insertFailure.winner
+            throw insertFailure.error
+          }
           storedUser = { ...doc, _id: user._id, phone }
           return { insertedId: user._id }
         },
-        updateOne: async () => { dbCalls++; return { matchedCount: 1 } },
+        updateOne: async (query: unknown, update: { $set: Partial<UserDoc> }) => {
+          dbCalls++
+          updates++
+          assert.ok(storedUser)
+          assert.deepEqual(query, { _id: storedUser._id })
+          writtenUpdates.push(update)
+          if (updateError) throw updateError
+          Object.assign(storedUser, update.$set)
+          return { matchedCount: 1 }
+        },
       }) },
     }))
     mock.module('../src/services/deletion.service', () => ({ deletionService: {} }))
@@ -240,6 +264,63 @@ try {
     assert.equal(dbCalls, 6)
     passed++
     console.log('PASS first phone sign-in returns new_account: true; second omits it')
+
+    const winner: AuditUser = { ...user, username: 'phone_race_winner', providers: ['password'], token_balance: 7321 }
+    function race(error: unknown, row: AuditUser | null) {
+      storedUser = null
+      finds = inserts = updates = 0
+      counts.clear()
+      writtenUpdates.length = 0
+      updateError = null
+      insertFailure = { error, winner: row ? { ...row } : null }
+    }
+    const verifyDirect = () => authController.verifyOtp({ body: { phone, code: enteredCode }, jwt })
+    race({ code: 11000 }, winner)
+    const raced = await request('verify')
+    assert.equal(raced.status, 200, 'phone race: succeeds')
+    const racedBody = await raced.json()
+    assert.equal(Object.hasOwn(racedBody, 'new_account'), false, 'phone race: new_account omitted')
+    assert.deepEqual(racedBody, { token: 'phone-audit-token', user: {
+      id: winner._id, email: '', phone, username: winner.username, tier: winner.tier,
+      can_forge: false, preferences: winner.preferences, token_balance: winner.token_balance,
+    } }, 'phone race: winner returned')
+    const [racedUpdate] = writtenUpdates
+    assert.deepEqual(racedUpdate, { $set: {
+      phone, providers: ['password', 'phone'], updated_at: racedUpdate?.$set.updated_at,
+    } }, 'phone race: exact returning-user update')
+    assert.ok(racedUpdate?.$set.updated_at instanceof Date, 'phone race: updated_at refreshed')
+    assert.deepEqual([finds, inserts, updates], [2, 1, 1], 'phone race: one re-read, no second insert')
+    passed++
+    console.log('PASS phone duplicate-key race returns winner, omits new_account and applies returning-user updates')
+
+    race({ code: 11000 }, { ...winner, account_status: 'banned' })
+    await assert.rejects(verifyDirect, (error: unknown) => error instanceof HttpError && error.statusCode === 403 && error.message === 'This account is banned', 'phone banned race: must reject')
+    assert.deepEqual([finds, inserts, updates], [2, 1, 0], 'phone banned race: no update')
+    passed++
+    console.log('PASS phone duplicate-key race still refuses a banned winner')
+
+    race({ code: 11000 }, winner)
+    const updateFailure = { code: 11000, source: 'update' }
+    updateError = updateFailure
+    await assert.rejects(verifyDirect, (caught: unknown) => caught === updateFailure, 'phone update error: original error propagates')
+    assert.deepEqual([finds, inserts, updates], [2, 1, 1], 'phone race: update error not retried')
+    passed++
+    console.log('PASS phone race preserves returning-user update errors')
+
+    const unrelated = { code: 11000 }
+    race(unrelated, null)
+    await assert.rejects(verifyDirect, (caught: unknown) => caught === unrelated, 'phone unrelated conflict: original error propagates')
+    assert.deepEqual([finds, inserts, updates], [2, 1, 0], 'phone unrelated conflict: one re-read')
+    passed++
+    console.log('PASS phone unrelated duplicate-key conflict rethrows the original error')
+
+    for (const error of [{ code: 91 }, { code: '11000' }, new Error('insert failed'), null, 'insert failed']) {
+      race(error, winner)
+      await assert.rejects(verifyDirect, (caught: unknown) => caught === error, 'phone non-11000 insert: original error propagates')
+      assert.deepEqual([finds, inserts, updates], [1, 1, 0], 'phone non-11000 insert: no re-read')
+    }
+    passed++
+    console.log('PASS phone non-11000 insert errors propagate unchanged without a re-read')
 
     const proc = Bun.spawn([process.execPath, '--no-env-file', 'run', import.meta.path, '--mock'], {
       stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
