@@ -24,6 +24,11 @@ const LIMITS: Record<string, { max: number; windowSeconds: number }> = {
   // Marketing-site beacon, keyed by address. A real visitor fires a handful of
   // events a minute; this only stops a script from writing the collection full.
   web_event: { max: 120, windowSeconds: 60 },
+  // App telemetry (§4.4). Two keys on purpose: the install id is the honest
+  // sender's identity and caps one device, the address caps a script that mints
+  // install ids in a loop. The address is spent on the limit and never stored.
+  telemetry_install: { max: 60, windowSeconds: 600 },
+  telemetry_ip: { max: 300, windowSeconds: 600 },
   otp_send: { max: 5, windowSeconds: 600 },
   otp_verify: { max: 10, windowSeconds: 600 },
 }

@@ -39,6 +39,13 @@ export const COLLECTIONS = {
   content_reports: 'content_reports',
   web_events: 'web_events',
   web_traffic_daily: 'web_traffic_daily',
+  app_events: 'app_events',
+  app_sessions: 'app_sessions',
+  app_installs: 'app_installs',
+  app_errors: 'app_errors',
+  app_error_groups: 'app_error_groups',
+  app_error_counters: 'app_error_counters',
+  app_daily: 'app_daily',
 } as const
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS]

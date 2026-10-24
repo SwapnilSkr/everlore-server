@@ -550,6 +550,94 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { created_at: 1 },
     options: { name: "ttl_web_events_180d", expireAfterSeconds: 60 * 60 * 24 * 180 },
   },
+
+  // App telemetry (analytics.md §6). Raw rows expire on their own; the daily
+  // rollup is what keeps the history. The unique keys are the idempotency keys —
+  // every row is written with its id, never with a null, so neither index can
+  // ever see the null case (AGENTS.md §3).
+  //
+  // The raw TTLs run on when the server got the row (`received_at`, or the
+  // session's `last_at`), never on `at`/`started_at`: those are the phone's
+  // clock and may be up to seven days old on arrival, so a TTL on them would
+  // keep the row for less than the retention we promise.
+  {
+    collection: COLLECTIONS.app_events,
+    key: { event_id: 1 },
+    options: { unique: true, name: "uniq_app_events_event_id" },
+  },
+  {
+    collection: COLLECTIONS.app_events,
+    key: { session_id: 1, seq: 1 },
+    options: { name: "idx_app_events_session_seq" },
+  },
+  {
+    collection: COLLECTIONS.app_events,
+    key: { user_id: 1, at: -1 },
+    options: { name: "idx_app_events_user_at" },
+  },
+  {
+    collection: COLLECTIONS.app_events,
+    key: { name: 1, at: -1 },
+    options: { name: "idx_app_events_name_at" },
+  },
+  {
+    collection: COLLECTIONS.app_events,
+    key: { received_at: 1 },
+    options: { name: "ttl_app_events_90d", expireAfterSeconds: 60 * 60 * 24 * 90 },
+  },
+  // app_sessions — `_id` is the session id, so the per-batch upsert is single-key.
+  {
+    collection: COLLECTIONS.app_sessions,
+    key: { user_id: 1, started_at: -1 },
+    options: { name: "idx_app_sessions_user_started" },
+  },
+  {
+    collection: COLLECTIONS.app_sessions,
+    key: { started_at: -1 },
+    options: { name: "idx_app_sessions_started" },
+  },
+  {
+    collection: COLLECTIONS.app_sessions,
+    key: { last_at: 1 },
+    options: { name: "ttl_app_sessions_90d", expireAfterSeconds: 60 * 60 * 24 * 90 },
+  },
+  // app_installs — `_id` is the install id; multikey over the accounts it held.
+  // Kept forever: it is the funnel's denominator, and one install can hold
+  // several users (shared phone) and one user several installs.
+  {
+    collection: COLLECTIONS.app_installs,
+    key: { user_ids: 1 },
+    options: { name: "idx_app_installs_users" },
+  },
+  {
+    collection: COLLECTIONS.app_errors,
+    key: { error_id: 1 },
+    options: { unique: true, name: "uniq_app_errors_error_id" },
+  },
+  {
+    collection: COLLECTIONS.app_errors,
+    key: { fingerprint: 1, at: -1 },
+    options: { name: "idx_app_errors_fingerprint_at" },
+  },
+  {
+    collection: COLLECTIONS.app_errors,
+    key: { received_at: 1 },
+    options: { name: "ttl_app_errors_30d", expireAfterSeconds: 60 * 60 * 24 * 30 },
+  },
+  // app_error_groups — `_id` is the fingerprint; groups hold counts, not people,
+  // and are never deleted by a retention rule.
+  {
+    collection: COLLECTIONS.app_error_groups,
+    key: { status: 1, last_seen: -1 },
+    options: { name: "idx_app_error_groups_status_last_seen" },
+  },
+  // app_error_counters — the three counter classes, kept per day so the hourly
+  // rollup can fold them into `app_daily` without touching raw errors.
+  {
+    collection: COLLECTIONS.app_error_counters,
+    key: { day: -1, class: 1 },
+    options: { name: "idx_app_error_counters_day_class" },
+  },
 ]
 
 /**

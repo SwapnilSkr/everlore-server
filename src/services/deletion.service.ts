@@ -10,6 +10,7 @@ import { extractOpeningPlace } from './opening-place.service'
 import { kinshipGraphService } from './kinship-graph.service'
 import { isDefaultCoverUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
+import { telemetryService } from './telemetry/ingest.service'
 import { timeService } from './time.service'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
@@ -392,6 +393,11 @@ export const deletionService = {
     }
 
     await purgeMedia({ player_id: pid })
+    // Telemetry carries the only other rows keyed by player: events, sessions
+    // and error samples. Error groups and per-day counters hold counts rather
+    // than people and stay; an install shared with another account just loses
+    // this id (analytics.md §6).
+    await telemetryService.purgeUser(userId)
     await deadLetterJobs().deleteMany({
       $or: [
         { 'data.playerId': userId },
