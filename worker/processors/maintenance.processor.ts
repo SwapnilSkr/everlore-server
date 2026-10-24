@@ -42,15 +42,18 @@ export async function maintenanceProcessor(job: Job) {
           }
         }
 
+        // `$unset`, never `pinecone_id: null`: idx_memories_pinecone_id is
+        // unique + sparse, so an explicit null is indexed and only one memory
+        // may hold it. A second archive then fails the whole job with E11000.
         await mongoColl.memories().updateOne(
           { _id: mem._id },
           {
             $set: {
               is_archived: true,
               status: 'archived',
-              pinecone_id: null,
               updated_at: new Date(),
             },
+            $unset: { pinecone_id: '' },
           },
         )
       }
@@ -204,8 +207,9 @@ export async function maintenanceProcessor(job: Job) {
 
             await mongoColl.memories().updateOne(
               { _id: discard._id },
-              // 'superseded': the keeper row replaced this near-duplicate.
-              { $set: { is_archived: true, status: 'superseded', pinecone_id: null } },
+              // 'superseded': the keeper row replaced this near-duplicate. The
+              // vector id is unset, not nulled (see importance_decay).
+              { $set: { is_archived: true, status: 'superseded' }, $unset: { pinecone_id: '' } },
             )
 
             processed.add(idString(discard._id))
