@@ -48,6 +48,7 @@ const PURE_AUDITS = [
   'audit:embedding-latency',
   'audit:tail-stages',
   'audit:turn-wire-fields',
+  'audit:turn-frame-ids',
   'audit:metadata-overlap',
   'audit:overlap-prefetch',
   'audit:keep-warm',

@@ -477,7 +477,7 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
   // vector/database path. Tell the client which phase it is in immediately so
   // an otherwise blank first-token wait never looks like a stuck send.
   const redis = getRedisClient()
-  await redis.publish(`user:${playerId}:events`, JSON.stringify({ type: 'generation_started', instanceId }))
+  await redis.publish(`user:${playerId}:events`, JSON.stringify({ type: 'generation_started', instanceId, jobId: String(job.id) }))
 
   const vectorPrefetch = env.OVERLAP_PREFETCH === 'on' && earlyEmbedding ? startVectorPrefetch({
     priorTurnId: job.data.priorTurnId, isContinuation, worldAction,
@@ -1024,7 +1024,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   }
   const publishDelta = (delta: string) => {
     if (!delta) return
-    redis.publish(channel, JSON.stringify({ type: 'generation_delta', instanceId, delta }))
+    redis.publish(channel, JSON.stringify({ type: 'generation_delta', instanceId, jobId: String(job.id), delta }))
   }
   let streamedVisibleProse = ''
   const publishVisibleDelta = (delta: string) => {
@@ -1055,6 +1055,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       JSON.stringify({
         type: 'generation_stream_end',
         instanceId,
+        jobId: String(job.id),
         narrative: narrative.trim(),
       }),
     )
@@ -1069,7 +1070,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     if (resetPublished) return
     resetPublished = true
     try {
-      await redis.publish(channel, JSON.stringify({ type: 'generation_reset', instanceId }))
+      await redis.publish(channel, JSON.stringify({ type: 'generation_reset', instanceId, jobId: String(job.id) }))
     } catch (resetErr) {
       log.warn('generation.reset_publish_failed', {
         jobId: job.id,
@@ -1604,6 +1605,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       JSON.stringify({
         type: 'choices_ready',
         instanceId,
+        jobId: String(job.id),
         choices: parsed.choices,
       }),
     )
@@ -3487,6 +3489,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     JSON.stringify({
       type: 'generation_complete',
       instanceId,
+      jobId: String(job.id),
       event: {
         id: eventIdStr,
         sequence: event.sequence,
@@ -3527,6 +3530,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       JSON.stringify({
         type: 'milestone_unlocked',
         instanceId,
+        jobId: String(job.id),
         milestone: { label: parsed.milestone, sequence: nextSequence },
       }),
     )

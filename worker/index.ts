@@ -268,6 +268,7 @@ async function main() {
           JSON.stringify({
             type: 'generation_reset',
             instanceId: job.data.instanceId,
+            jobId: String(job.id),
           }),
         )
         await redis.publish(
@@ -275,6 +276,7 @@ async function main() {
           JSON.stringify({
             type: 'generation_retrying',
             instanceId: job.data.instanceId,
+            jobId: String(job.id),
             attempt: job.attemptsMade,
             maxAttempts: attemptsAllowed,
           }),
@@ -328,6 +330,7 @@ async function main() {
           // for canon when the final error arrives.
           type: 'generation_reset',
           instanceId: job.data.instanceId,
+          jobId: String(job.id),
         }),
       )
 
@@ -336,6 +339,7 @@ async function main() {
         JSON.stringify({
           type: 'generation_failed',
           instanceId: job.data.instanceId,
+          jobId: String(job.id),
           message: 'The world could not respond. Please try again.',
         }),
       )
