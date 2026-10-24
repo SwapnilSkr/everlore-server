@@ -20,6 +20,7 @@ import { mongoColl } from '../src/config/mongo'
 import { SESSION_COOKIE } from '../src/services/admin-session.service'
 import { adminRoutes } from '../src/routes/admin.routes'
 import { adminPersonaRoutes } from '../src/routes/admin-persona.routes'
+import { adminOverviewRoutes } from '../src/routes/admin-overview.routes'
 
 /** Any 24-hex id satisfies every `:param` in the admin table. */
 const PLACEHOLDER_ID = '6a1b2c3d4e5f60718293a4b5'
@@ -81,7 +82,7 @@ try {
     ),
   )
 
-  const app = new Elysia().use(adminRoutes).use(adminPersonaRoutes)
+  const app = new Elysia().use(adminRoutes).use(adminPersonaRoutes).use(adminOverviewRoutes)
   const routes: TableRoute[] = [
     ...new Map(
       (app.routes as Array<{ method: string; path: string }>).map((route) => {

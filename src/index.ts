@@ -13,6 +13,7 @@ import { personaRoutes } from './routes/persona.routes'
 import { chronicleRoutes } from './routes/chronicle.routes'
 import { adminRoutes } from './routes/admin.routes'
 import { adminPersonaRoutes } from './routes/admin-persona.routes'
+import { adminOverviewRoutes } from './routes/admin-overview.routes'
 import { adminSessionRoutes } from './routes/admin-session.routes'
 import { wsRoutes } from './routes/ws.routes'
 import { billingRoutes } from './routes/billing.routes'
@@ -136,6 +137,7 @@ async function main() {
     .use(adminSessionRoutes)
     .use(adminRoutes)
     .use(adminPersonaRoutes)
+    .use(adminOverviewRoutes)
     .use(templateRoutes)
     .use(moderationRoutes)
     .use(instanceRoutes)

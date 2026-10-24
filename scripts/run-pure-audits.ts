@@ -10,6 +10,7 @@ const PURE_AUDITS = [
   'audit:ink-promo',
   'audit:admin-ops',
   'audit:admin-route-guard',
+  'audit:admin-overview',
   'audit:telemetry',
   'audit:telemetry-admin',
   'audit:review-access',
