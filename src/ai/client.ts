@@ -1,7 +1,7 @@
 import { getOpenRouter } from '../config/openai'
 import { env } from '../config/env'
 import { recordLLMUsage, usageFromProvider, isLLMUsageActive, beginLLMTrace, settleLLMTrace, traceProvider, traceFetch, withTraceAttempts } from './usage'
-import type { LLMTraceRecord } from '../models/llm-call.model'
+import type { LLMTraceRecord, PromptPart } from '../models/llm-call.model'
 import type OpenAI from 'openai'
 import { log } from '../utils/logger'
 import { consumeLLMStream, EmptyLLMResponseError, formatLLMResponseReason, llmResponseContent, type LLMResponsePart } from '../utils/llm-response'
@@ -101,6 +101,8 @@ interface LLMRequest {
   purpose?: string
   /** Trace-only metadata; never copied into the provider body. */
   promptSections?: Array<{ name: string; chars: number }>
+  /** Trace-only per-block fingerprints; never copied into the provider body. */
+  promptParts?: PromptPart[]
   traceRole?: 'primary' | 'hedge' | 'fallback'
   /** Opt-in internal JSON streaming; zero keeps the non-streamed transport. */
   firstTokenHedge?: LLMFirstTokenHedge
@@ -234,7 +236,7 @@ export async function callLLM(req: LLMRequest): Promise<string> {
   const client = clientFor(built.client)
 
   const trace = beginLLMTrace({ model: params.model, purpose: req.purpose, streamed: false,
-    messages: req.messages, params, sections: req.promptSections, role: req.traceRole })
+    messages: req.messages, params, sections: req.promptSections, parts: req.promptParts, role: req.traceRole })
   try {
     const response = await withTraceAttempts(trace, () => client.chat.completions.create(params, {
       timeout: req.timeoutMs ?? 90000,
@@ -287,7 +289,7 @@ async function requestLLMStream(
     ) as unknown as PromiseLike<AsyncIterable<StreamPart>>,
   }
   const trace = beginLLMTrace({ model: params.model, purpose: req.purpose, streamed: true,
-    messages: req.messages, params, sections: req.promptSections, role: req.traceRole })
+    messages: req.messages, params, sections: req.promptSections, parts: req.promptParts, role: req.traceRole })
   onTrace(trace)
   const idleTimeoutMs = req.idleTimeoutMs ?? 45000
   let idleTimer: ReturnType<typeof setTimeout> | undefined

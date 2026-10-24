@@ -55,7 +55,7 @@ export function usageFromProvider(raw: unknown): Pick<LLMCallUsage, 'prompt_toke
 
 // The rich collector is separate so the historical usage snapshot stays exact.
 import { ObjectId } from 'mongodb'
-import type { LLMTraceRecord, TraceMessage } from '../models/llm-call.model'
+import type { LLMTraceRecord, PromptPart, TraceMessage } from '../models/llm-call.model'
 
 export interface LLMTraceScope {
   instance_id?: string | ObjectId
@@ -98,6 +98,7 @@ export function beginLLMTrace(input: {
   model: string; purpose?: string; streamed: boolean; messages: TraceMessage[]
   params: Record<string, unknown>; role?: 'primary' | 'hedge' | 'fallback'
   sections?: Array<{ name: string; chars: number }>
+  parts?: PromptPart[]
 }): LLMTraceRecord | undefined {
   const collector = traces.getStore()
   if (!collector) return undefined
@@ -123,6 +124,7 @@ export function beginLLMTrace(input: {
         ? { reasoning_effort: (params.reasoning as { effort: string }).effort } : {}),
       response_format: ((params.response_format as { type?: 'text' | 'json_schema' | 'json_object' })?.type ?? 'text'),
       prompt_sections: sections.filter(s => s.chars > 0).map(s => ({ ...s, tokens_est: s.chars / 4 })),
+      ...(input.parts?.length ? { prompt_parts: input.parts } : {}),
       has_body: true, created_at: new Date(),
     }, request: input.messages.map(m => ({ ...m })), response: '',
   }

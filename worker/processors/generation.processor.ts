@@ -1098,6 +1098,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         purpose: 'narration',
         messages: prompt.messages,
         promptSections: prompt.sections,
+        promptParts: prompt.parts,
         temperature: narrationTemperature(modelId),
         maxTokens: lengthMaxTokens(session.message_length),
         sessionId: instanceId,

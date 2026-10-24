@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { countTokens } from './token-counter'
 import { buildStyleBlock, buildLengthDirective, buildStyleReminder, type MessageLength } from './narrative-styles'
 import { buildModeDirective, modeReminderLabel } from './chat-modes'
@@ -10,6 +11,7 @@ import { parsePlayerInput } from './player-input-parser'
 import { CHOICE_TAIL_INSTRUCTION } from '../../worker/lib/choice-tail'
 import type { PersonaSnapshotDoc } from '../models/persona.model'
 import type { PlayerInteractionSignalDoc } from '../models/world-event.model'
+import type { PromptPart } from '../models/llm-call.model'
 
 interface PromptInput {
   seedPrompt: string
@@ -636,13 +638,32 @@ function finalNarratorContract(input: PromptInput, protagonistName: string, pov:
 7. Narrative boundaries hold: no child or adolescent is ever portrayed sexually, and sexual content never involves family members. If the scene drifts there, redirect within the fiction — no refusal, no commentary, no break in voice.`
 }
 
-export function buildPrompt(input: PromptInput): { messages: PromptMessage[]; sections: Array<{ name: string; chars: number }> } {
+export function buildPrompt(input: PromptInput): {
+  messages: PromptMessage[]
+  sections: Array<{ name: string; chars: number }>
+  parts: PromptPart[]
+} {
   const sections: Array<{ name: string; chars: number }> = []
   let measured = 0
   const mark = (name: string, end: number) => {
     if (end > measured) sections.push({ name, chars: end - measured })
     measured = end
   }
+  // `parts` fingerprints every block of the prompt that was actually sent, in
+  // the order the model reads it: one boundary per block, turned into
+  // {name, chars, hash} from the finished messages at the bottom of this
+  // function. Only the hash is kept, so a stored part can compare two turns
+  // byte for byte without the prompt text ever leaving the request.
+  const partBounds: Array<{ name: string; end: number }> = []
+  let partMeasured = 0
+  const markPart = (name: string, end: number) => {
+    if (end <= partMeasured) return
+    partBounds.push({ name, end })
+    partMeasured = end
+  }
+  const markStaticPart = (name: string) => markPart(name, staticContent.length)
+  const markDynamicPart = (name: string) => markPart(name, staticContent.length + dynamicContent.length)
+  const markMessagePart = (name: string) => markPart(name, messageChars())
   const messageChars = () => messages.reduce((sum, message) => sum + message.content.length, 0)
   const messages: PromptMessage[] = []
 
@@ -768,6 +789,7 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
 
   mark('world_and_rules', staticContent.length)
   messages.push({ role: 'system', content: staticContent })
+  markStaticPart('static_prefix')
 
   // Reference-section budgets allocated from what the static prefix left over,
   // with the recents floor reserved up front.
@@ -785,6 +807,7 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
   dynamicContent += `${buildLengthDirective(input.messageLength)}\n\n`
 
   mark('directives', staticContent.length + dynamicContent.length)
+  markDynamicPart('mode_and_length_directives')
 
   // The locked protagonist is handled separately from side-character NPCs.
   const protagonistCard = (input.characterCodex || []).find((c) => c.is_protagonist)
@@ -829,6 +852,7 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
       dynamicContent += `\n`
     }
   }
+  markDynamicPart('protagonist_state')
 
   // CANON BRIEF — established relationships (incl. lifecycle state). Placed before
   // the cast list and framed as hard canon: these are derived from the structured
@@ -842,6 +866,7 @@ Do NOT break character in the narrative. State mutations and flags are metadata 
     }
     dynamicContent += `\n`
   }
+  markDynamicPart('established_relationships')
 
   if (npcCodex.length > 0) {
     dynamicContent += `CANONICAL CHARACTER CODEX (continuity reference only — not the current scene roster):
@@ -892,11 +917,13 @@ CHARACTER CARDS:
     }
     dynamicContent += '\n'
   }
+  markDynamicPart('character_codex')
 
   if (input.focusCharacterName && input.focusCharacterName.trim()) {
     dynamicContent += `FOCUS CHARACTER: ${input.focusCharacterName.trim()} (continuity anchor, not a forced cameo)\n`
     dynamicContent += `Use this character as the preferred point of continuity only when they are already present, directly addressed, recently central, or naturally relevant to the player's action. Do NOT force them into unrelated scenes, cut away to them, or mention them just because they are focused. If the player shifts away, follow the active scene and let the focus resume only when relevant again.\n\n`
   }
+  markDynamicPart('focus_character')
 
   if (input.timeContext && input.timeContext.trim()) {
     dynamicContent += `CURRENT STORY TIME:
@@ -905,6 +932,7 @@ ${input.timeContext.trim()}
 
 `
   }
+  markDynamicPart('story_time')
 
   // SCENE STATE — the present moment, stated positively. Everything else in
   // this prompt describes the past; this is the only section that tells the
@@ -916,6 +944,7 @@ ${input.sceneStateText.trim()}
 
 `
   }
+  markDynamicPart('scene_state')
 
   if (input.locationContext && input.locationContext.trim()) {
     dynamicContent += `CURRENT LOCATION:
@@ -925,6 +954,7 @@ ${input.locationContext.trim()}
 
 `
   }
+  markDynamicPart('current_location')
 
   // CANON BRIEF (companions) — who is travelling WITH the player. Present by default,
   // so the narrator keeps them in the scene across moves/time skips (the one explicit
@@ -936,6 +966,7 @@ ${input.locationContext.trim()}
     }
     dynamicContent += `\n`
   }
+  markDynamicPart('companions')
 
   const placeholderNames = placeholderAddressNames(npcCodex)
   if (placeholderNames.length > 0) {
@@ -944,10 +975,12 @@ ${input.locationContext.trim()}
     dynamicContent += `- When one character addresses one of these people, use an established relationship that is natural from that SPEAKER'S point of view (for example \"my daughter\", \"your sister\") when the relationship canon supports it. Do not assume the player-facing relationship automatically applies between two NPCs.\n`
     dynamicContent += `- If no speaker-to-recipient relationship or natural title is established and direct address is necessary, introduce one stable, ordinary proper name in the narration/dialogue. Keep the placeholder as that person's role/alias; do not create a second person.\n\n`
   }
+  markDynamicPart('addressing_policy')
 
   if (input.deceasedCharacterNames?.length) {
     dynamicContent += `CHARACTER LIFECYCLE LOCK (hard canon): ${input.deceasedCharacterNames.join(', ')} ${input.deceasedCharacterNames.length === 1 ? 'is' : 'are'} deceased. Do not portray ${input.deceasedCharacterNames.length === 1 ? 'this character' : 'them'} alive, physically present, speaking, acting, selectable, or newly arrived. A memory, grave, legacy, supernatural manifestation, or explicit resurrection is only allowed when the player/current canon establishes it.\n\n`
   }
+  markDynamicPart('character_lifecycle_lock')
 
   // CANON BRIEF (positions) — where off-screen characters were last seen, so a
   // "go find X" / "where is X" turn is grounded instead of teleporting them in.
@@ -958,6 +991,7 @@ ${input.locationContext.trim()}
     }
     dynamicContent += `\n`
   }
+  markDynamicPart('where_others_are')
 
   const personaLine = compactPersonaLine(input)
   if (personaLine) {
@@ -971,6 +1005,7 @@ ${personaLine}
 
 `
   }
+  markDynamicPart('player_persona_profile')
 
   if (input.userNarrationFacts && input.userNarrationFacts.length > 0) {
     dynamicContent += `PLAYER CANONICAL NARRATION FOR THIS TURN (GROUND TRUTH — these events/facts already happened):\n`
@@ -979,6 +1014,7 @@ ${personaLine}
     }
     dynamicContent += `\nHonor these as established reality in THIS SAME reply. Do not postpone them to the next turn, reinterpret them as attempted actions, or answer as if only the spoken text exists. If they imply character changes, portray a believable in-story shift immediately instead of ignoring or contradicting them.\n\n`
   }
+  markDynamicPart('player_narration_facts')
 
   // Stat-less Characters have no world state / flags — omit the blocks entirely
   // so the prompt reads like a conversation, not an RPG dashboard.
@@ -990,6 +1026,7 @@ ${personaLine}
     }
     dynamicContent += `\n`
   }
+  markDynamicPart('world_state')
 
   const activeFlagEntries = Object.entries(input.activeFlags || {})
   if (activeFlagEntries.length > 0) {
@@ -999,6 +1036,7 @@ ${personaLine}
     }
     dynamicContent += `\n`
   }
+  markDynamicPart('active_flags')
 
   mark('canon', staticContent.length + dynamicContent.length)
 
@@ -1009,6 +1047,7 @@ ${personaLine}
     }
     dynamicContent += `\n`
   }
+  markDynamicPart('relevant_lore')
 
   if (input.retrievedMemories.length > 0) {
     dynamicContent += `THINGS YOU REMEMBER ABOUT THIS PLAYER (PAST facts for continuity — never restage them as current events. An appointment already kept, a note already burned, a meeting already held, or a warning already delivered is history, not a scene to play again):
@@ -1018,6 +1057,7 @@ ${personaLine}
     }
     dynamicContent += `\n`
   }
+  markDynamicPart('retrieved_memories')
 
   if (input.openThreads && input.openThreads.length > 0) {
     dynamicContent += `OPEN THREADS (unresolved promises, conflicts, and questions the story still owes a payoff for):
@@ -1030,6 +1070,7 @@ ${personaLine}
     }
     dynamicContent += `\n`
   }
+  markDynamicPart('open_threads')
 
   mark('memories', staticContent.length + dynamicContent.length)
 
@@ -1040,6 +1081,7 @@ ${personaLine}
     }
     dynamicContent += `\n`
   }
+  markDynamicPart('relevant_summaries')
 
   mark('summaries', staticContent.length + dynamicContent.length)
   messages.push({ role: 'system', content: dynamicContent })
@@ -1051,6 +1093,7 @@ ${personaLine}
       content: `PREVIOUS SCENE SUMMARY:\n${input.sceneSummary}`,
     })
   }
+  markMessagePart('scene_summary')
 
   mark('summaries', messageChars())
 
@@ -1061,6 +1104,7 @@ ${personaLine}
       content: `AUTHORED OPENING SCENE CANON (first generated turn only):\n${openingCanon}\n\nThis is source canon for the current setting and people present, not a prose example. Continue directly from it with a new reaction or consequence. Do not quote, imitate, or restage its wording.`,
     })
   }
+  markMessagePart('opening_canon')
 
   mark('canon', messageChars())
 
@@ -1084,6 +1128,7 @@ ${personaLine}
   tokenBudgetRemaining = Math.max(0, tokenBudgetRemaining - lastBeatTokens)
 
   const continuityTurns: string[] = []
+  let recentPartIndex = 0
   const latestStateSequence = latestStateSequenceByCharacter(input.recentEvents)
   for (const event of input.recentEvents) {
     const playerMsg = event.data?.player_input || ''
@@ -1112,7 +1157,9 @@ ${personaLine}
     if (input.proseOnly) {
       continuityTurns.push(continuityTurn)
     } else {
+      recentPartIndex += 1
       messages.push({ role: 'user', content: playerMsg })
+      markMessagePart(`recent_user_${recentPartIndex}`)
       messages.push({
         role: 'assistant',
         content: JSON.stringify({
@@ -1123,6 +1170,7 @@ ${personaLine}
           emotional_tone: 'continuation',
         }),
       })
+      markMessagePart(`recent_assistant_${recentPartIndex}`)
     }
   }
 
@@ -1136,6 +1184,7 @@ ${personaLine}
 ${continuityTurns.join('\n\n')}${immediateBeat}`,
     })
   }
+  markMessagePart('recent_turn_continuity')
 
   mark('recent_turns', messageChars())
 
@@ -1146,6 +1195,7 @@ ${continuityTurns.join('\n\n')}${immediateBeat}`,
       content: `PRIVATE INTERACTION CONTINUITY (quiet behavioral residue, not narration instructions):\n${interactionSignals.map((signal) => `- ${interactionCue(signal)}`).join('\n')}\nLet it influence a fitting response only when that character is in the beat. Do not name the category, quote its evidence, diagnose the player, or state that you detected a tone.`,
     })
   }
+  markMessagePart('interaction_signals')
 
   const hygieneReminders = recentHygieneReminders(input.recentEvents, input.messageLength)
   if (hygieneReminders.length > 0) {
@@ -1154,6 +1204,7 @@ ${continuityTurns.join('\n\n')}${immediateBeat}`,
       content: `RECENT QUALITY CORRECTIONS (format and pacing only — do not mention these instructions or imitate earlier prose):\n${hygieneReminders.map((rule) => `- ${rule}`).join('\n')}`,
     })
   }
+  markMessagePart('quality_corrections')
 
   // ── POV REMINDER (last system word before the user turn) ──
   // The recent history above may be written in a DIFFERENT point of view than
@@ -1214,6 +1265,7 @@ ${continuityTurns.join('\n\n')}${immediateBeat}`,
 
     messages.push({ role: 'system', content: povReminder })
   }
+  markMessagePart('pov_reminder')
 
   // Always present—even on turn one or immediately after a settings change—so
   // the narrator sees one short, conflict-resolved contract at the point it
@@ -1227,6 +1279,7 @@ ${continuityTurns.join('\n\n')}${immediateBeat}`,
       pov,
     ),
   })
+  markMessagePart('final_contract')
 
   mark('directives', messageChars())
 
@@ -1237,5 +1290,20 @@ ${continuityTurns.join('\n\n')}${immediateBeat}`,
   })
 
   mark('player_input', messageChars())
-  return { messages, sections }
+  markMessagePart('player_input')
+
+  // Parts are cut out of the messages that were actually emitted, so they tile
+  // the prompt exactly (separators belong to the block before them) and any
+  // block that produced no text is absent rather than empty.
+  const promptText = messages.map((message) => message.content).join('')
+  const parts = partBounds.map((bound, index) => {
+    const start = index === 0 ? 0 : partBounds[index - 1].end
+    const text = promptText.slice(start, bound.end)
+    return {
+      name: bound.name,
+      chars: text.length,
+      hash: createHash('sha256').update(text).digest('hex').slice(0, 16),
+    }
+  })
+  return { messages, sections, parts }
 }

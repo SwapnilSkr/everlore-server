@@ -1,6 +1,8 @@
 import type { ObjectId } from 'mongodb'
 
 export interface PromptSection { name: string; chars: number; tokens_est: number }
+/** A fingerprint of one block of the prompt as it was sent: no prompt text. */
+export interface PromptPart { name: string; chars: number; hash: string }
 export interface LLMCallDoc {
   _id: ObjectId
   instance_id?: ObjectId
@@ -32,6 +34,8 @@ export interface LLMCallDoc {
   reasoning_effort?: string
   response_format: 'text' | 'json_schema' | 'json_object'
   prompt_sections: PromptSection[]
+  /** Narration only: one short hash per prompt block, in reading order. */
+  prompt_parts?: PromptPart[]
   error?: { kind: string; message: string }
   has_body: boolean
   created_at: Date

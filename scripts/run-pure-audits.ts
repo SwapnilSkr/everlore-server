@@ -13,6 +13,7 @@ const PURE_AUDITS = [
   'audit:admin-overview',
   'audit:telemetry',
   'audit:telemetry-admin',
+  'audit:prompt-part-hash',
   'audit:review-access',
   'audit:world-review',
   'audit:genre',

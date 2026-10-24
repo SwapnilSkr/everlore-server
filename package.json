@@ -41,6 +41,7 @@
     "audit:telemetry": "bun --no-env-file run scripts/telemetry-audit.ts",
     "audit:telemetry-admin": "bun --no-env-file run scripts/telemetry-admin-audit.ts",
     "audit:llm-trace": "bun --no-env-file run scripts/llm-trace-audit.ts",
+    "audit:prompt-part-hash": "bun --no-env-file run scripts/prompt-part-hash-audit.ts",
     "audit:llm-trace-bites": "bun --no-env-file run scripts/llm-trace-bites.ts",
     "audit:story-engine": "bun --no-env-file run scripts/story-engine-audit.ts",
     "audit:story-engine-bites": "bun --no-env-file run scripts/story-engine-bites.ts",
