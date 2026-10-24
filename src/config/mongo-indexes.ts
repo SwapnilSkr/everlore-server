@@ -179,10 +179,19 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { last_accessed_at: 1, importance: 1 },
     options: { name: "idx_memories_access_importance" },
   },
+  // Uniqueness only — memories are never queried by pinecone_id. Partial on a
+  // string id, not sparse: sparse skips a MISSING key but still indexes an
+  // explicit null, so one stray `pinecone_id: null` made every archive fail
+  // with E11000. Only real vector ids are indexed now; null or missing never
+  // participates.
   {
     collection: COLLECTIONS.memories,
     key: { pinecone_id: 1 },
-    options: { unique: true, sparse: true, name: "idx_memories_pinecone_id" },
+    options: {
+      unique: true,
+      partialFilterExpression: { pinecone_id: { $type: "string" } },
+      name: "idx_memories_pinecone_id",
+    },
   },
   // Keyword half of hybrid retrieval: exact names, places, promises, artifacts —
   // the recall mode pure vector search is weakest at. One text index max per
@@ -602,7 +611,31 @@ function keysMatch(existingIndex: Document, desired: Document): boolean {
   return true
 }
 
-function optionsMatch(
+/**
+ * Key-order-independent deep equality. `listIndexes` returns
+ * `partialFilterExpression` as a Document and makes no promise about its key
+ * order, so a literal JSON comparison would drop + recreate on every boot.
+ */
+function documentsEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) {
+    return false
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
+    return a.every((value, i) => documentsEqual(value, b[i]))
+  }
+  const left = a as Document
+  const right = b as Document
+  const keys = Object.keys(left)
+  return (
+    keys.length === Object.keys(right).length &&
+    keys.every((key) => Object.hasOwn(right, key) && documentsEqual(left[key], right[key]))
+  )
+}
+
+/** Exported for `scripts/mongo-index-partial-audit.ts`. */
+export function optionsMatch(
   existing: Document,
   desired: EverloreIndexDef["options"],
 ): boolean {
@@ -613,6 +646,11 @@ function optionsMatch(
     if (existing.expireAfterSeconds !== d.expireAfterSeconds) return false
   }
   if (d.name !== undefined && existing.name !== d.name) return false
+  // Present must deep-equal present; absent equals absent.
+  if (!documentsEqual(
+    existing.partialFilterExpression ?? null,
+    d.partialFilterExpression ?? null,
+  )) return false
   return true
 }
 

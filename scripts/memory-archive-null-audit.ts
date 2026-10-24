@@ -1,11 +1,15 @@
 /**
  * Pure audit: archiving a memory never writes an explicit `pinecone_id: null`.
  *
- * `idx_memories_pinecone_id` is unique + sparse. Sparse skips a document that
- * LACKS the key, but indexes an explicit null like any value, so only one
- * memory may ever hold it. The maintenance job's `importance_decay` and
+ * `idx_memories_pinecone_id` is unique + PARTIAL on `{ pinecone_id: { $type:
+ * 'string' } }`. Partial, not sparse: sparse skips a document that LACKS the
+ * key but indexes an explicit null like any value, so only one memory could
+ * ever hold it, and the maintenance job's `importance_decay` and
  * `dedup_memories` used to `$set` the key to null when they dropped a vector:
  * the second archive failed the whole job with E11000 (prod, Oct 24 2026).
+ * The simulated index below models the partial filter, so two archived memories
+ * without a vector never collide; the literal-null rule still holds because it
+ * is the template every future writer would copy.
  *
  * Runs the real `maintenanceProcessor` against an in-memory `memories`
  * collection that enforces the index the way Mongo does, then runs the same
@@ -39,12 +43,13 @@ function matches(doc: Doc, filter: Doc): boolean {
   })
 }
 
-// Mongo's unique + sparse semantics: a document without the key is skipped,
-// an explicit null is indexed and collides with the next one.
+// Mongo's unique + partial (`$type: 'string'`) semantics: only a document whose
+// pinecone_id is a STRING is indexed. Two memories with no vector (missing key
+// or explicit null) never collide; two with the same string id still do.
 function assertIndex(candidate: Doc[]) {
   const seen = new Set<string>()
   for (const doc of candidate) {
-    if (!Object.hasOwn(doc, 'pinecone_id')) continue
+    if (typeof doc.pinecone_id !== 'string') continue
     const key = JSON.stringify(doc.pinecone_id)
     if (seen.has(key)) {
       throw new DuplicateKeyError(`E11000 duplicate key error collection: everlore.memories index: idx_memories_pinecone_id dup key: { pinecone_id: ${key} }`)
@@ -133,6 +138,22 @@ await check('importance_decay archives three memories without a null vector id',
 // Memory 1 supersedes 2 and 3, then the more important memory 4 supersedes 1.
 await check('dedup_memories supersedes three duplicates without a null vector id', async () => {
   assert.deepEqual(await runCase(maintenanceProcessor, 'dedup_memories'), { merged: 3 })
+})
+
+// The partial filter is what makes archiving structurally safe: without it a
+// second vector-less memory would collide with the first.
+await check('simulated partial index: two archived memories without a vector never collide', () => {
+  assert.doesNotThrow(() => assertIndex([
+    { is_archived: true, status: 'archived' },
+    { is_archived: true, status: 'archived', pinecone_id: null },
+    { is_archived: false, status: 'active', pinecone_id: 'vec-9' },
+  ]))
+})
+await check('bites: the same simulated partial index still rejects duplicate string ids', () => {
+  assert.throws(
+    () => assertIndex([{ pinecone_id: 'vec-1' }, { pinecone_id: 'vec-1' }]),
+    DuplicateKeyError,
+  )
 })
 
 // Each mutant is the writer exactly as it was before the fix. Imports are made

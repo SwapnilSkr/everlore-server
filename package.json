@@ -16,6 +16,7 @@
     "audit:narration-hedge": "bun --no-env-file run scripts/narration-hedge-audit.ts",
     "audit:beat-ledger-split": "bun --no-env-file run scripts/beat-ledger-split-audit.ts",
     "audit:memory-archive-null": "bun --no-env-file run scripts/memory-archive-null-audit.ts",
+    "audit:mongo-index-partial": "bun --no-env-file run scripts/mongo-index-partial-audit.ts",
     "audit:choice-hedge": "bun --no-env-file run scripts/choice-hedge-audit.ts",
     "audit:embedding-latency": "bun --no-env-file run scripts/embedding-latency-audit.ts",
     "audit:tail-stages": "bun --no-env-file run scripts/tail-stages-audit.ts",

@@ -1,9 +1,10 @@
 /**
  * Remove explicit `pinecone_id: null` from memories.
  *
- * `idx_memories_pinecone_id` is unique + sparse. A sparse index skips documents
+ * `idx_memories_pinecone_id` was unique + sparse. A sparse index skips documents
  * that LACK the key, but an explicit null is indexed like any other value, so
- * only one memory in the whole collection may carry it. The maintenance job's
+ * only one memory in the whole collection could carry it (the index is now
+ * partial on a string id, so a null no longer collides). The maintenance job's
  * archive paths (`importance_decay`, `dedup_memories`) used to `$set` the key
  * to null when they dropped a memory's vector: the first archive succeeded, and
  * every later one failed the job with E11000.

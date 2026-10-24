@@ -56,6 +56,7 @@ const PURE_AUDITS = [
   'audit:choice-hedge',
   'audit:beat-ledger-split',
   'audit:memory-archive-null',
+  'audit:mongo-index-partial',
 ] as const
 
 const { scripts } = await Bun.file(new URL('../package.json', import.meta.url)).json() as { scripts: Record<string, string> }
