@@ -15,6 +15,7 @@ import { loadNsfwLexicon } from './lib/nsfw-classifier'
 import { log } from '../src/utils/logger'
 import { billingService } from '../src/services/billing.service'
 import { startKeepWarm } from '../src/services/keep-warm'
+import { startVectorFreshnessFloorRecovery } from '../src/services/vector-store'
 
 /** Billing must never turn an already-visible story result into a worker error.
  * These mutations are idempotent ledger writes, so a later repair can safely
@@ -53,6 +54,7 @@ async function main() {
   // Initialize connections
   await connectMongo()
   await connectRedis()
+  const stopFloorRecovery = startVectorFreshnessFloorRecovery()
 
   // Prod p50 for the first word after a quiet half hour was 6.6 s against 2.6 s
   // with recent traffic: most of the difference is a cold Pinecone/OpenAI
@@ -193,6 +195,7 @@ async function main() {
   const shutdown = async () => {
     console.log('Shutting down workers...')
     keepWarm.stop()
+    stopFloorRecovery()
     await generationWorker.close()
     await mediaWorker.close()
     await memoryWorker.close()

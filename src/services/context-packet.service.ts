@@ -1,7 +1,9 @@
+import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
 import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { WorldEventDoc } from '../models/world-event.model'
-import { queryRag, querySummaries } from '../providers/rag.provider'
+import { queryRag, querySummaries, type VectorPrefetch } from '../providers/rag.provider'
+import * as ragPrefetch from '../providers/rag.provider'
 import { rankCodexForInjection } from './character-codex.service'
 import { entityGraphService } from './entity-graph.service'
 import { kinshipGraphService } from './kinship-graph.service'
@@ -86,6 +88,8 @@ export interface ContextPacket {
   timeContext: string | null
   currentLocation: LocationAnchorDoc | null
   locationContext: string | null
+  /** Speculative search reuse, absent unless this was a successor chat turn. */
+  prefetchOutcome?: string
   /** Wall-clock ms of each prep step that ran while this packet was built. The
    *  worker adds its own (live check, fence, post-packet) before logging. */
   prepStages: PrepStages
@@ -171,6 +175,7 @@ export async function buildContextPacket(params: {
   session: PacketSession
   userMessage: string
   isContinuation: boolean
+  vectorPrefetch?: VectorPrefetch
   /** Optional sidecar hook. Called as soon as the active cast is assembled;
    * never awaited by packet construction or the narration TTFT path. */
   onActiveCastReady?: (args: {
@@ -185,6 +190,7 @@ export async function buildContextPacket(params: {
   // Each step below records from its own start to its settle, so a slow turn
   // says which read owned the wait. No step adds an await of its own.
   const prepStages: PrepStages = {}
+  let prefetchOutcome: string | undefined
   const packetStartedAt = Date.now()
 
   const recentEvents = await mongoColl
@@ -333,12 +339,28 @@ export async function buildContextPacket(params: {
   let openThreads: string[] = []
   let retrievedEntityIds: string[] = []
 
+  const prefetched = env.OVERLAP_PREFETCH === 'on' && params.vectorPrefetch?.startedAt !== undefined
+    ? await ragPrefetch.reusableVectorPrefetch(params.vectorPrefetch, {
+        queryText: ragQueryText,
+        maxLoreResults: session.max_lore_results || 10,
+        maxMemoryResults: session.max_context_memories || 25,
+        templateId: String(session.template_id), instanceId,
+        timelineId: currentTimeAnchor?.timeline_id || 'main',
+      })
+    : undefined
+  if (prefetched) {
+    prefetchOutcome = prefetched.outcome
+    const prefetch = params.vectorPrefetch!
+    // For unfinished searches this is elapsed time at selection, never a wait.
+    prepStages.vector_prefetch = prefetch.durationMs ?? Date.now() - prefetch.startedAt!
+  }
+
   // Long-horizon recall runs CONCURRENTLY with the main RAG query so it adds no
   // extra serial latency to TTFT. Skipped on a continue (no query to match).
   const summariesStartedAt = Date.now()
   const summariesPromise: Promise<Awaited<ReturnType<typeof querySummaries>>> =
     !isContinuation && ragQueryText.trim()
-      ? querySummaries(instanceId, ragQueryText, 3)
+      ? querySummaries(instanceId, ragQueryText, 3, prefetched?.responses.summary)
           .catch((err) => {
             console.warn('Context packet: summary retrieval skipped:', (err as Error).message)
             return []
@@ -361,6 +383,7 @@ export async function buildContextPacket(params: {
       mentionedEntityIds,
       currentTimeAnchor?.timeline_id || 'main',
       currentLocation?.entity_id ? idString(currentLocation.entity_id) : null,
+      prefetched?.responses,
     )
     loreTexts = rag.loreTexts
     memoryTexts = rag.memoryTexts
@@ -628,5 +651,6 @@ export async function buildContextPacket(params: {
     currentLocation,
     locationContext,
     prepStages,
+    ...(prefetchOutcome === undefined ? {} : { prefetchOutcome }),
   }
 }

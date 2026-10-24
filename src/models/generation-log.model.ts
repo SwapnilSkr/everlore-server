@@ -18,6 +18,7 @@ export const PREP_STAGE_KEYS = [
   'stub_wake',
   'embed_wait',
   'vector',
+  'vector_prefetch',
   'rag_mongo',
   'summaries',
   'codex',
@@ -214,6 +215,7 @@ export interface GenerationLogDoc {
   /** Split of `context_latency_ms` (+ `post_packet`) by prep step, so a slow turn
    *  says WHICH read or wait owned it instead of only how long it was. */
   prep_stages?: PrepStages
+  prefetch_outcome?: string
   /** The gaps `end_to_end_ttft_ms` spans but prep and the host's `ttft_ms` do
    *  not: dispatch, queue, job setup and prompt assembly. */
   pre_narrator_stages?: PreNarratorStages

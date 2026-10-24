@@ -1,4 +1,5 @@
-import { vectorStore, type VectorQuery } from '../services/vector-store'
+import { vectorStore, type VectorQueryResponse, type VectorQuery } from '../services/vector-store'
+import * as vectorWrites from '../services/vector-store'
 import type { QueryResponse } from '@pinecone-database/pinecone'
 import { callLLM, AI_MODELS, embedQuery, isEmbedTimeout } from '../ai'
 import { env } from '../config/env'
@@ -36,6 +37,84 @@ export function ragVectorQueries(vector: number[], maxLoreResults: number, maxMe
 
 export function summaryVectorQuery(vector: number[], topK = 4): VectorQuery {
   return { vector, topK: topK * 2, includeMetadata: true }
+}
+
+export interface VectorPrefetchInputs {
+  queryText: string
+  maxLoreResults: number
+  maxMemoryResults: number
+  templateId: string
+  instanceId: string
+  timelineId: string
+}
+type PrefetchSearch = 'lore' | 'memory' | 'summary'
+export interface VectorPrefetch {
+  inputs: VectorPrefetchInputs
+  responses: Partial<Record<PrefetchSearch, VectorQueryResponse>>
+  startedAt?: number
+  durationMs?: number
+  settled?: true
+}
+
+/** Returns immediately; nothing here is a prerequisite for the saved-turn gate.
+ * Responses are published independently so one slow/failed search cannot hold up
+ * either the gate or the other two searches. Late results are simply abandoned. */
+export function startVectorPrefetch(params: {
+  priorTurnId?: string
+  isContinuation: boolean
+  worldAction?: unknown
+  replay?: boolean
+  inputs: VectorPrefetchInputs
+  embedding: Promise<number[]>
+}): VectorPrefetch | undefined {
+  if (env.VECTOR_LAYOUT !== 'shared' || env.OVERLAP_PREFETCH !== 'on' || !params.priorTurnId || params.isContinuation || params.worldAction || params.replay) return
+  const prefetch: VectorPrefetch = { inputs: { ...params.inputs }, responses: {} }
+  void (async () => {
+    const vector = await params.embedding
+    prefetch.startedAt = Date.now()
+    const queries = ragVectorQueries(vector, params.inputs.maxLoreResults, params.inputs.maxMemoryResults, params.inputs.timelineId)
+    const search = async (name: PrefetchSearch, scope: Parameters<typeof vectorStore.query>[0], query: VectorQuery) => {
+      try { prefetch.responses[name] = await vectorStore.query(scope, query) }
+      catch { /* A speculative failure leaves this search to the packet. */ }
+    }
+    await Promise.all([
+      search('lore', { kind: 'lore', templateId: params.inputs.templateId }, queries.lore),
+      search('memory', { kind: 'mem', instanceId: params.inputs.instanceId }, queries.memory),
+      search('summary', { kind: 'sum', instanceId: params.inputs.instanceId }, summaryVectorQuery(vector, 3)),
+    ])
+  })().catch(() => {}).finally(() => {
+    prefetch.settled = true
+    if (prefetch.startedAt !== undefined) prefetch.durationMs = Date.now() - prefetch.startedAt
+  })
+  return prefetch
+}
+
+export async function reusableVectorPrefetch(prefetch: VectorPrefetch, inputs: VectorPrefetchInputs): Promise<{
+  responses: VectorPrefetch['responses']
+  outcome: string
+}> {
+  const responses: VectorPrefetch['responses'] = {}
+  if (env.VECTOR_LAYOUT !== 'shared') return { responses, outcome: 'rerun:layout' }
+  // Snapshot settled results before reading write state: a query finishing after its
+  // validating read must never sneak into this packet.
+  const settled = { ...prefetch.responses }
+  const mismatch = (Object.keys(inputs) as Array<keyof VectorPrefetchInputs>)
+    .find((key) => prefetch.inputs[key] !== inputs[key])
+  if (mismatch) return { responses, outcome: `rerun:inputs:${mismatch}` }
+  const { states, floor } = await vectorWrites.readVectorFreshness(inputs.instanceId, inputs.templateId)
+  const reasons: string[] = []
+  for (const name of ['lore', 'memory', 'summary'] as const) {
+    const kind = name === 'lore' ? 'lore' : name === 'memory' ? 'mem' : 'sum'
+    const state = states[kind], indexedLsn = settled[name]?.indexedLsn
+    if (!settled[name]) reasons.push(`${name}:unsettled`)
+    else if (floor === undefined) reasons.push(`${name}:no_floor`)
+    else if (indexedLsn !== undefined && BigInt(indexedLsn) < BigInt(floor)) reasons.push(`${name}:below_floor`)
+    else if (state?.inFlight) reasons.push(`${name}:in_flight`)
+    else if (indexedLsn === undefined || !state || (!state.absent && state.highestLsn === undefined)) reasons.push(`${name}:lsn_unknown`)
+    else if (state.highestLsn !== undefined && BigInt(indexedLsn) < BigInt(state.highestLsn)) reasons.push(`${name}:lsn_behind`)
+    else responses[name] = settled[name]
+  }
+  return { responses, outcome: reasons.length ? `rerun:${reasons.join(',')}` : 'reused' }
 }
 
 /** Reciprocal-rank-fusion constant — standard value, dampens rank-1 dominance. */
@@ -213,6 +292,7 @@ export async function queryRag(
   timelineId?: string | null,
   /** Current place entity; adds "what happened here before?" retrieval. */
   currentLocationEntityId?: string | null,
+  prefetched?: { lore?: QueryResponse; memory?: QueryResponse },
 ): Promise<RagResult> {
   const ragStartedAt = Date.now()
   // The vector search is one of four retrieval routes, not a precondition for
@@ -337,12 +417,12 @@ export async function queryRag(
   const vectorStartedAt = Date.now()
   let vectorMs = 0
   const vectorPart = Promise.all([
-    vectorQueries
+    prefetched?.lore ?? (vectorQueries
       ? vectorStore.query({ kind: 'lore', templateId }, vectorQueries.lore)
-      : Promise.resolve(noVectorMatches),
-    vectorQueries
+      : Promise.resolve(noVectorMatches)),
+    prefetched?.memory ?? (vectorQueries
       ? vectorStore.query({ kind: 'mem', instanceId }, vectorQueries.memory)
-      : Promise.resolve(noVectorMatches),
+      : Promise.resolve(noVectorMatches)),
   ]).then(([lore, memory]) => {
     vectorMs = Date.now() - vectorStartedAt
     return [lore, memory] as const
@@ -552,11 +632,13 @@ export async function querySummaries(
   instanceId: string,
   queryText: string,
   topK = 4,
+  prefetched?: QueryResponse,
 ): Promise<SummaryHit[]> {
   if (!queryText.trim()) return []
   try {
-    const queryEmbedding = await embedQuery(queryText)
-    const res = await vectorStore.query({ kind: 'sum', instanceId }, summaryVectorQuery(queryEmbedding, topK))
+    const res = prefetched ?? await vectorStore.query(
+      { kind: 'sum', instanceId }, summaryVectorQuery(await embedQuery(queryText), topK),
+    )
     const matches = res.matches || []
     if (matches.length === 0) return []
 

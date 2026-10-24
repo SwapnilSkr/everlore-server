@@ -1,3 +1,5 @@
+import { env } from '../../src/config/env'
+import { startVectorPrefetch } from '../../src/providers/rag.provider'
 import { detectSpokenLines } from '../../src/services/media/detection'
 import { mediaRevision } from '../../src/services/media/attribution'
 import { publishSpokenLines, wireSpokenLines } from '../../src/services/media/events'
@@ -442,11 +444,13 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
   // settles on its own: RAG's own call lands on this flight and costs nothing.
   // Deliberately not awaited — and its rejection is swallowed here, so a dropped
   // embedding can never surface as an unhandled rejection.
+  let earlyEmbedding: Promise<number[]> | undefined
   let earlyEmbedStarted = false
   const startQueryEmbedding = (text: string) => {
     if (earlyEmbedStarted) return
     earlyEmbedStarted = true
-    void embedQuery(text).catch(() => {})
+    earlyEmbedding = embedQuery(text)
+    void earlyEmbedding.catch(() => {})
   }
   // A continuation searches its own previous narration, which only the packet
   // has in hand, so those turns keep starting the embed inside the packet.
@@ -475,7 +479,19 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
   const redis = getRedisClient()
   await redis.publish(`user:${playerId}:events`, JSON.stringify({ type: 'generation_started', instanceId }))
 
-  // Only the live check and the input-only query embedding precede this gate.
+  const vectorPrefetch = env.OVERLAP_PREFETCH === 'on' && earlyEmbedding ? startVectorPrefetch({
+    priorTurnId: job.data.priorTurnId, isContinuation, worldAction,
+    inputs: {
+      queryText: ragQueryTextFor({ isContinuation, userMessage }),
+      maxLoreResults: dispatchedSession.max_lore_results || 10,
+      maxMemoryResults: dispatchedSession.max_context_memories || 25,
+      templateId: String(dispatchedSession.template_id), instanceId,
+      timelineId: dispatchedSession.current_time_anchor?.timeline_id || 'main',
+    },
+    embedding: earlyEmbedding,
+  }) : undefined
+
+  // Only the live check, input-only embedding and raw vector searches precede this gate.
   // In particular, dispatch's session can predate the prior tail's cache write.
   const priorTurnWaitMs = await waitForPriorGeneration(
     redis, generationLockKey(playerId, instanceId), String(job.id), job.data.priorTurnId,
@@ -686,6 +702,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   // BEFORE CODEX SELECTION: cards pin both for names in the player's input and
   // for characters the retrieved memories are about (indirect references).
   const packet = await buildContextPacket({
+    vectorPrefetch,
     instanceId,
     playerId,
     session,
@@ -3571,6 +3588,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         embed_ms: packet.embedMs,
         rag_ms: packet.ragMs,
         prep_stages: prepStages,
+        ...(packet.prefetchOutcome === undefined ? {} : { prefetch_outcome: packet.prefetchOutcome }),
         pre_narrator_stages: preNarratorStages,
         stream_ms: streamMs,
         ...(loggedAt !== undefined ? { post_stream_ms: loggedAt - streamEndedAt } : {}),

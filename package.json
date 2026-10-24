@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "audit:media": "bun run scripts/media-audit.ts",
     "audit:codex-media-carryover": "bun run scripts/codex-media-carryover-audit.ts",
+    "audit:overlap-prefetch": "bun --no-env-file run scripts/overlap-prefetch-audit.ts",
     "audit:metadata-overlap": "bun --no-env-file run scripts/metadata-overlap-audit.ts",
     "audit:all": "bun --no-env-file run scripts/run-pure-audits.ts && bun --no-env-file run scripts/codex-media-carryover-audit.ts && bun --no-env-file run scripts/seed-catalog-audit.ts && bun --no-env-file run scripts/vector-store-audit.ts",
     "audit:narration-hedge": "bun --no-env-file run scripts/narration-hedge-audit.ts",
@@ -115,6 +116,7 @@
     "audit:character-lifecycle": "bun run scripts/character-lifecycle-audit.ts",
     "repair:false-deaths": "bun run scripts/repair-false-deaths.ts",
     "audit:vector-store": "bun --no-env-file run scripts/vector-store-audit.ts",
+    "vector:freshness-floor": "bun --no-env-file run scripts/vector-freshness-floor.ts",
     "vector:migrate": "bun run scripts/vector-migrate.ts",
     "vector:compare": "bun run scripts/vector-recall-compare.ts"
   },
