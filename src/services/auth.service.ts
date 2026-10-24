@@ -3,7 +3,7 @@ import { mongoColl } from '../config/mongo'
 import type { UserAccountStatus, UserDoc, UserInsertDoc, UserTier } from '../models/user.model'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
-import { sendPhoneOtp, verifyPhoneOtp } from '../providers/auth.provider'
+import { phoneVerifyError, sendPhoneOtp, verifyPhoneOtp } from '../providers/auth.provider'
 import { verifyFirebaseIdToken } from '../providers/firebase-auth.provider'
 import { canForge } from '../utils/can-forge'
 
@@ -167,7 +167,7 @@ export const authService = {
 
   async signInWithPhoneOtp(phone: string, code: string): Promise<UserDoc> {
     const approved = await verifyPhoneOtp(phone, code)
-    if (!approved) throw new HttpError(400, 'Invalid verification code')
+    if (!approved) throw phoneVerifyError('code_invalid')
 
     let userDoc: UserDoc | null = await users().findOne({ phone })
 

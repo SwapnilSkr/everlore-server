@@ -1,5 +1,48 @@
 import { timingSafeEqual } from 'node:crypto'
 import { env } from '../config/env'
+import { HttpError } from '../utils/http-error'
+
+type PhoneVerifyReason = 'code_invalid' | 'code_locked' | 'code_expired'
+  | 'verify_limited' | 'send_limited' | 'phone_invalid' | 'verify_unavailable'
+
+const PHONE_VERIFY_ERRORS: Record<PhoneVerifyReason, { status: number; message: string; retryAfter?: number }> = {
+  code_invalid: { status: 400, message: "That code isn't right. Check it and try again." },
+  code_locked: { status: 429, message: 'Too many tries. Send a new code.' },
+  code_expired: { status: 410, message: 'That code has expired. Send a new code.' },
+  verify_limited: { status: 429, message: 'Too many tries. Wait a few minutes, then send a new code.', retryAfter: 600 },
+  send_limited: { status: 429, message: "You've asked for a lot of codes. Wait 10 minutes, then try again.", retryAfter: 600 },
+  phone_invalid: { status: 400, message: "That number doesn't look right. Check it and try again." },
+  verify_unavailable: { status: 503, message: "We couldn't send or check codes just now. Try again in a moment." },
+}
+
+/** Fixed player copy is shared by provider failures, wrong codes and local limits. */
+export function phoneVerifyError(reason: PhoneVerifyReason, retryAfter?: number): HttpError {
+  const error = PHONE_VERIFY_ERRORS[reason]
+  const retry = retryAfter ?? error.retryAfter
+  return new HttpError(error.status, error.message, {
+    code: reason,
+    ...(retry === undefined ? {} : { retryAfter: retry }),
+  })
+}
+
+type VerifyEndpoint = 'send' | 'verify'
+
+function twilioCode(payload: unknown): number | null {
+  if (!payload || typeof payload !== 'object' || !('code' in payload)) return null
+  return typeof payload.code === 'number' && Number.isInteger(payload.code) ? payload.code : null
+}
+
+/** Provider messages are deliberately never used to classify or build a response. */
+export function classifyTwilioError(endpoint: VerifyEndpoint, payload: unknown): HttpError {
+  switch (twilioCode(payload)) {
+    case 60200: return phoneVerifyError(endpoint === 'send' ? 'phone_invalid' : 'code_invalid')
+    case 60202: return phoneVerifyError(endpoint === 'send' ? 'send_limited' : 'code_locked')
+    case 20404: return phoneVerifyError(endpoint === 'send' ? 'phone_invalid' : 'code_expired')
+    case 60203:
+      if (endpoint === 'send') return phoneVerifyError('send_limited')
+  }
+  return phoneVerifyError('verify_unavailable')
+}
 
 /**
  * The one phone number Google Play's reviewers are allowed to sign in with.
@@ -102,14 +145,41 @@ function twilioAuthHeader(): string {
   return `Basic ${credentials}`
 }
 
-async function parseJsonSafely(response: Response): Promise<any> {
-  const text = await response.text()
-  if (!text) return {}
+async function requestPhoneVerification(
+  endpoint: VerifyEndpoint,
+  params: Record<string, string>,
+): Promise<Record<string, unknown>> {
+  let status: number | null = null
+  let response: Response
+  let payload: unknown
   try {
-    return JSON.parse(text)
+    const path = endpoint === 'send' ? 'Verifications' : 'VerificationCheck'
+    response = await fetch(
+      `https://verify.twilio.com/v2/Services/${env.TWILIO_VERIFY_SERVICE_SID}/${path}`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: twilioAuthHeader(),
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: new URLSearchParams(params),
+      },
+    )
+    status = response.status
+    payload = await response.json()
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw phoneVerifyError('verify_unavailable')
+    }
   } catch {
-    return { message: text }
+    console.warn('auth.phone_verify_failed', { endpoint, status, code: null })
+    throw phoneVerifyError('verify_unavailable')
   }
+
+  if (!response.ok) {
+    console.warn('auth.phone_verify_failed', { endpoint, status, code: twilioCode(payload) })
+    throw classifyTwilioError(endpoint, payload)
+  }
+  return payload as Record<string, unknown>
 }
 
 /*
@@ -140,25 +210,7 @@ export async function sendPhoneOtp(phone: string): Promise<void> {
 
   if (isMockTwilioMode()) return
 
-  const response = await fetch(
-    `https://verify.twilio.com/v2/Services/${env.TWILIO_VERIFY_SERVICE_SID}/Verifications`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: twilioAuthHeader(),
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        To: phone,
-        Channel: 'sms',
-      }),
-    },
-  )
-
-  if (!response.ok) {
-    const payload = await parseJsonSafely(response)
-    throw new Error(payload.message || 'Failed to send OTP')
-  }
+  await requestPhoneVerification('send', { To: phone, Channel: 'sms' })
 }
 
 export async function verifyPhoneOtp(
@@ -174,25 +226,6 @@ export async function verifyPhoneOtp(
     return code === '123456'
   }
 
-  const response = await fetch(
-    `https://verify.twilio.com/v2/Services/${env.TWILIO_VERIFY_SERVICE_SID}/VerificationCheck`,
-    {
-      method: 'POST',
-      headers: {
-        Authorization: twilioAuthHeader(),
-        'Content-Type': 'application/x-www-form-urlencoded',
-      },
-      body: new URLSearchParams({
-        To: phone,
-        Code: code,
-      }),
-    },
-  )
-
-  const payload = await parseJsonSafely(response)
-  if (!response.ok) {
-    throw new Error(payload.message || 'Failed to verify OTP')
-  }
-
+  const payload = await requestPhoneVerification('verify', { To: phone, Code: code })
   return payload.status === 'approved'
 }

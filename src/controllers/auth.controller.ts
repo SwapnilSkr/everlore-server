@@ -4,7 +4,7 @@ import { disconnectUserSockets } from '../services/play-ws.service'
 import { rateLimit } from '../middleware/rate-limit'
 import type { AuthUser } from '../middleware/auth'
 import { HttpError } from '../utils/http-error'
-import { mockOtpCode } from '../providers/auth.provider'
+import { mockOtpCode, phoneVerifyError } from '../providers/auth.provider'
 
 type JwtApi = { sign: (payload: ReturnType<typeof authService.toJwtPayload>) => Promise<string> }
 
@@ -45,7 +45,7 @@ export const authController = {
     const phone = body.phone.trim()
     const rl = await rateLimit(phone, 'otp_send')
     if (!rl.allowed) {
-      throw new HttpError(429, 'Too many codes requested. Please try again later.')
+      throw phoneVerifyError('send_limited', rl.retryAfter)
     }
 
     await authService.sendPhoneOtp(phone)
@@ -59,7 +59,7 @@ export const authController = {
 
     const rl = await rateLimit(phone, 'otp_verify')
     if (!rl.allowed) {
-      throw new HttpError(429, 'Too many tries at that code. Please try again later.')
+      throw phoneVerifyError('verify_limited', rl.retryAfter)
     }
 
     const userDoc = await authService.signInWithPhoneOtp(phone, code)
