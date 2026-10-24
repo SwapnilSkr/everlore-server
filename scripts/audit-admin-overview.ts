@@ -1,10 +1,17 @@
 /** Offline checks for the Overview and System routes. Fakes only, no network. */
 import assert from 'node:assert/strict'
+import type { Queue } from 'bullmq'
 import { Elysia } from 'elysia'
 import { env } from '../src/config/env'
 import { mongoColl } from '../src/config/mongo'
 import { adminOverviewRoutes } from '../src/routes/admin-overview.routes'
-import { createAdminHealthService, type HealthDependencies, type QueueReader } from '../src/services/admin-health.service'
+import {
+  createAdminHealthService,
+  readQueue,
+  type HealthDependencies,
+  type QueueHealth,
+  type QueueReader,
+} from '../src/services/admin-health.service'
 import { adminOverviewSummaryService, utcDayStart } from '../src/services/admin-overview-summary.service'
 import { STORY_TURN_TYPES } from '../src/services/admin-activity'
 
@@ -23,24 +30,41 @@ const answer = async () => undefined
 const healthy: HealthDependencies = {
   pingMongo: answer,
   pingRedis: answer,
-  describePinecone: answer,
+  pingPinecone: answer,
   countGenerationWorkers: async () => 2,
 }
 
-const queueOf = (name: string, label: string, row: { waiting: number; active: number; failed_24h: number; oldest_waiting_s: number | null }): QueueReader =>
+type QueueRow = Omit<QueueHealth, 'name' | 'label'>
+
+const queueOf = (name: string, label: string, row: QueueRow): QueueReader =>
   ({ name, label, read: async () => row })
 
 const queues: QueueReader[] = [
-  queueOf('generation', 'Story turns', { waiting: 0, active: 1, failed_24h: 0, oldest_waiting_s: null }),
-  queueOf('media', 'Pictures and voices', { waiting: 3, active: 0, failed_24h: 2, oldest_waiting_s: 41 }),
+  queueOf('generation', 'Story turns', { waiting: 0, active: 1, failed_24h: 0, failing_now: 0, oldest_waiting_s: null }),
+  queueOf('media', 'Pictures and voices', { waiting: 3, active: 0, failed_24h: 2, failing_now: 1, oldest_waiting_s: 41 }),
 ]
+
+type FinishedFixture = { name: string; finishedOn: number }
+
+/** A BullMQ queue reduced to what readQueue reads: two newest-first scans, counts and the oldest waiting job. */
+const finishedQueue = (failed: FinishedFixture[], completed: FinishedFixture[]) => {
+  const scans: { failed: Array<[number, number]>; completed: Array<[number, number]> } = { failed: [], completed: [] }
+  const queue = {
+    getJobCounts: async () => ({ waiting: 0, active: 0, delayed: 0, failed: failed.length }),
+    getFailed: async (start: number, end: number) => { scans.failed.push([start, end]); return failed.slice(start, end + 1) },
+    getCompleted: async (start: number, end: number) => { scans.completed.push([start, end]); return completed.slice(start, end + 1) },
+    getJobs: async () => [],
+  }
+  return { queue: queue as unknown as Queue, scans }
+}
 
 const byKey = (checks: Array<{ key: string }>) => Object.fromEntries(checks.map((c) => [c.key, c as Record<string, unknown>]))
 
 const originalEnv = { ...env }
 const originalCollections = { ...mongoColl }
-const originalPineconeKey = env.PINECONE_API_KEY
-env.PINECONE_API_KEY = 'offline-fixture'
+/** Set for the whole run; only the not-configured check turns it off, and it puts this back. */
+const FIXTURE_PINECONE_KEY = 'offline-fixture'
+env.PINECONE_API_KEY = FIXTURE_PINECONE_KEY
 
 try {
   await check('health payload carries the contract shape and all four checks', async () => {
@@ -65,8 +89,8 @@ try {
     assert.deepEqual(Object.keys(body.checks[3]).sort(), ['detail', 'key', 'label', 'status'])
     assert.equal(body.checks[3].detail, '2 connected')
     assert.deepEqual(body.queues, [
-      { name: 'generation', label: 'Story turns', waiting: 0, active: 1, failed_24h: 0, oldest_waiting_s: null },
-      { name: 'media', label: 'Pictures and voices', waiting: 3, active: 0, failed_24h: 2, oldest_waiting_s: 41 },
+      { name: 'generation', label: 'Story turns', waiting: 0, active: 1, failed_24h: 0, failing_now: 0, oldest_waiting_s: null },
+      { name: 'media', label: 'Pictures and voices', waiting: 3, active: 0, failed_24h: 2, failing_now: 1, oldest_waiting_s: 41 },
     ])
   })
 
@@ -87,7 +111,7 @@ try {
     const secret = 'mongodb://admin:hunter2@db.internal:27017 refused'
     const refuse = async () => { throw new Error(secret) }
     const body = await createAdminHealthService({
-      dependencies: { pingMongo: refuse, pingRedis: refuse, describePinecone: refuse, countGenerationWorkers: refuse },
+      dependencies: { pingMongo: refuse, pingRedis: refuse, pingPinecone: refuse, countGenerationWorkers: refuse },
       queues: [{ name: 'generation', label: 'Story turns', read: refuse }],
     }).health()
     const serialized = JSON.stringify(body)
@@ -99,12 +123,13 @@ try {
   await check('a slow dependency is degraded while a fast one stays ok', async () => {
     const slow = async () => { await new Promise((resolve) => setTimeout(resolve, 520)) }
     const body = await createAdminHealthService({
-      dependencies: { ...healthy, pingMongo: slow, describePinecone: slow },
+      dependencies: { ...healthy, pingMongo: slow, pingPinecone: slow },
       queues: [],
     }).health()
     const checks = byKey(body.checks)
     assert.equal(checks.mongo.status, 'degraded')
-    // The vector search is allowed 1500 ms, so the same 520 ms is still healthy.
+    // The vector search is allowed 1500 ms, so the same 520 ms — and only the
+    // second of its two pings is graded — is still healthy.
     assert.equal(checks.pinecone.status, 'ok')
     assert.equal(checks.redis.status, 'ok')
   })
@@ -126,14 +151,81 @@ try {
     let calls = 0
     try {
       const body = await createAdminHealthService({
-        dependencies: { ...healthy, describePinecone: async () => { calls++ } },
+        dependencies: { ...healthy, pingPinecone: async () => { calls++ } },
         queues: [],
       }).health()
       assert.equal(byKey(body.checks).pinecone.status, 'down')
       assert.equal(byKey(body.checks).pinecone.detail, 'Search is not configured on this server.')
       assert.equal(byKey(body.checks).pinecone.latency_ms, undefined)
       assert.equal(calls, 0, 'an unconfigured dependency must not be called')
-    } finally { env.PINECONE_API_KEY = originalPineconeKey }
+    } finally { env.PINECONE_API_KEY = FIXTURE_PINECONE_KEY }
+  })
+
+  await check('a cold first pinecone ping does not make the check down', async () => {
+    let calls = 0
+    const ping = async () => {
+      calls++
+      await new Promise((resolve) => setTimeout(resolve, calls === 1 ? 1800 : 200))
+    }
+    const body = await createAdminHealthService({ dependencies: { ...healthy, pingPinecone: ping }, queues: [] }).health()
+    const pinecone = byKey(body.checks).pinecone as { status: string; detail: string; latency_ms: number }
+    assert.equal(calls, 2, 'the connection is opened once before the graded call')
+    assert.equal(pinecone.status, 'ok')
+    // Timers overshoot by a millisecond or two; what matters is that the graded
+    // figure is the warm call's and not the pair's.
+    assert(pinecone.latency_ms >= 180 && pinecone.latency_ms <= 400, `graded latency was ${pinecone.latency_ms} ms`)
+    assert.equal(pinecone.detail, `${pinecone.latency_ms} ms`)
+  })
+
+  await check('a throwing pinecone ping is down with the fixed sentence', async () => {
+    for (const throwOn of [1, 2]) {
+      let calls = 0
+      const body = await createAdminHealthService({
+        dependencies: {
+          ...healthy,
+          pingPinecone: async () => {
+            calls++
+            if (calls === throwOn) throw new Error('pinecone 503 from internal-host')
+          },
+        },
+        queues: [],
+      }).health()
+      const pinecone = byKey(body.checks).pinecone
+      assert.equal(pinecone.status, 'down', `throw on call ${throwOn}`)
+      assert.equal(pinecone.detail, 'Did not answer.')
+      assert.equal(pinecone.latency_ms, undefined)
+    }
+  })
+
+  await check('a pinecone pair over its deadline is down', async () => {
+    const service = createAdminHealthService({
+      dependencies: { ...healthy, pingPinecone: () => new Promise<void>((resolve) => setTimeout(resolve, 40)) },
+      queues: [],
+      pineconeTimeoutMs: 60,
+    })
+    const started = performance.now()
+    const body = await service.health()
+    const pinecone = byKey(body.checks).pinecone
+    assert.equal(pinecone.status, 'down')
+    assert.equal(pinecone.detail, 'Did not answer.')
+    assert(performance.now() - started < 500, 'the pair deadline must bound the route')
+  })
+
+  await check('a warm pinecone ping over 1.5 s is degraded', async () => {
+    let calls = 0
+    const body = await createAdminHealthService({
+      dependencies: {
+        ...healthy,
+        pingPinecone: async () => {
+          calls++
+          if (calls === 2) await new Promise((resolve) => setTimeout(resolve, 1600))
+        },
+      },
+      queues: [],
+    }).health()
+    const pinecone = byKey(body.checks).pinecone as { status: string; latency_ms: number }
+    assert.equal(pinecone.status, 'degraded')
+    assert(pinecone.latency_ms >= 1500, `graded latency was ${pinecone.latency_ms} ms`)
   })
 
   await check('no connected worker is down', async () => {
@@ -146,11 +238,45 @@ try {
     const body = await createAdminHealthService({
       dependencies: healthy,
       queues: [
-        queueOf('generation', 'Story turns', { waiting: 1, active: 0, failed_24h: 0, oldest_waiting_s: 5 }),
+        queueOf('generation', 'Story turns', { waiting: 1, active: 0, failed_24h: 0, failing_now: 0, oldest_waiting_s: 5 }),
         { name: 'media', label: 'Pictures and voices', read: async () => { throw new Error('redis down') } },
       ],
     }).health()
     assert.deepEqual(body.queues.map((q) => q.name), ['generation'])
+  })
+
+  // ── Queue failure history vs what is failing now ────────────────────────────
+  await check('a job name that completed again is not failing now', async () => {
+    const failedAt = Date.now() - 2 * hour
+    const { queue, scans } = finishedQueue([{ name: 'decay', finishedOn: failedAt }], [{ name: 'decay', finishedOn: failedAt + hour }])
+    const row = await readQueue(queue)
+    assert.equal(row.failing_now, 0)
+    // The failure is still the history the console shows.
+    assert.equal(row.failed_24h, 1)
+    // Completed jobs are read the way failed ones are: newest first, bounded.
+    assert.deepEqual(scans.completed, [[0, 199]])
+    assert.deepEqual(scans.failed, [[0, 199]])
+  })
+
+  await check('a job name whose newest run failed is failing now', async () => {
+    const completedAt = Date.now() - 2 * hour
+    const { queue } = finishedQueue([{ name: 'decay', finishedOn: completedAt + hour }], [{ name: 'decay', finishedOn: completedAt }])
+    const row = await readQueue(queue)
+    assert.equal(row.failing_now, 1)
+    assert.equal(row.failed_24h, 1)
+  })
+
+  await check('failing now counts names, not failures', async () => {
+    const base = Date.now() - 3 * hour
+    const { queue } = finishedQueue(
+      // Newest first, like BullMQ: media failed most recently, decay failed twice
+      // and then completed.
+      [{ name: 'media', finishedOn: base + 2 * hour }, { name: 'decay', finishedOn: base + hour }, { name: 'decay', finishedOn: base }],
+      [{ name: 'decay', finishedOn: base + 2 * hour }],
+    )
+    const row = await readQueue(queue)
+    assert.equal(row.failing_now, 1)
+    assert.equal(row.failed_24h, 3)
   })
 
   // ── Overview summary ────────────────────────────────────────────────────────
