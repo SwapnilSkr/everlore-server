@@ -96,7 +96,8 @@ const collections = new Proxy({}, { get: (_target, name) => () => ({
   deleteMany: async () => ({}),
   deleteOne: async (query: { _id?: ObjectId }) => { if (name === 'worldInstances') instances.delete(String(query._id)); return {} },
 }) })
-mock.module('../src/config/mongo', () => ({ mongoColl: collections }))
+// The trace purge reaches its collections by name (`coll`), not through mongoColl.
+mock.module('../src/config/mongo', () => ({ mongoColl: collections, coll: (name: string) => (collections as Record<string, () => unknown>)[name]() }))
 mock.module('../src/utils/protagonist', () => ({ deriveProtagonist: unavailable }))
 mock.module('../src/constants/default-cover', () => ({ isDefaultCoverUrl: () => true, resolveTemplateImageUrl: unavailable }))
 mock.module('../src/services/storage.service', () => ({ storageService: {} }))
