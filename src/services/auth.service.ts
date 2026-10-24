@@ -36,6 +36,8 @@ export type JwtUserPayload = {
   tier: string
 }
 
+type SignInResult = { userDoc: UserDoc; newAccount: boolean }
+
 const users = () => mongoColl.users()
 
 export const authService = {
@@ -102,12 +104,13 @@ export const authService = {
     return userDoc
   },
 
-  async signInWithGoogle(idToken: string): Promise<UserDoc> {
+  async signInWithGoogle(idToken: string): Promise<SignInResult> {
     // A Firebase ID token now, not a raw Google one. `googleSubject` is the
     // original Google `sub` lifted out of the Firebase token, so the lookup
     // below is unchanged and every account that existed before the migration
     // still matches on its first sign-in afterwards.
     const profile = await verifyFirebaseIdToken(idToken)
+    let newAccount = false
 
     let userDoc: UserDoc | null = await users().findOne({
       $or: [{ google_sub: profile.googleSubject }, { email: profile.email }],
@@ -129,6 +132,7 @@ export const authService = {
       }
       const { insertedId } = await users().insertOne(doc)
       userDoc = { ...doc, _id: insertedId } as UserDoc
+      newAccount = true
     } else {
       if (userDoc.account_status === 'banned') throw new HttpError(403, 'This account is banned')
       const prov = Array.isArray(userDoc.providers)
@@ -158,16 +162,17 @@ export const authService = {
       }
     }
 
-    return userDoc
+    return { userDoc, newAccount }
   },
 
   async sendPhoneOtp(phone: string) {
     await sendPhoneOtp(phone)
   },
 
-  async signInWithPhoneOtp(phone: string, code: string): Promise<UserDoc> {
+  async signInWithPhoneOtp(phone: string, code: string): Promise<SignInResult> {
     const approved = await verifyPhoneOtp(phone, code)
     if (!approved) throw phoneVerifyError('code_invalid')
+    let newAccount = false
 
     let userDoc: UserDoc | null = await users().findOne({ phone })
 
@@ -185,6 +190,7 @@ export const authService = {
       }
       const { insertedId } = await users().insertOne(doc)
       userDoc = { ...doc, _id: insertedId } as UserDoc
+      newAccount = true
     } else {
       if (userDoc.account_status === 'banned') throw new HttpError(403, 'This account is banned')
       const prov = Array.isArray(userDoc.providers)
@@ -210,7 +216,7 @@ export const authService = {
       }
     }
 
-    return userDoc
+    return { userDoc, newAccount }
   },
 
   async getUserById(userId: string): Promise<UserDoc> {

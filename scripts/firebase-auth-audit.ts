@@ -8,8 +8,15 @@
  *
  *   bun run audit:firebase-auth
  */
-import { profileFromFirebaseClaims, type FirebaseTokenPayload } from '../src/providers/firebase-auth.provider'
+import assert from 'node:assert/strict'
+import { mock } from 'bun:test'
+import { ObjectId } from 'mongodb'
+import type { FirebaseTokenPayload } from '../src/providers/firebase-auth.provider'
+import type { UserDoc, UserInsertDoc } from '../src/models/user.model'
 import { HttpError } from '../src/utils/http-error'
+
+mock.module('../src/config/env', () => ({ env: { FORGE_OPEN_TO_ALL_TIERS: false } }))
+const { profileFromFirebaseClaims } = await import('../src/providers/firebase-auth.provider')
 
 type Case = { name: string; payload: FirebaseTokenPayload; expect: 'accept' | 'reject' }
 
@@ -75,6 +82,68 @@ for (const testCase of cases) {
   passed++
 }
 
-console.log(`firebase-auth audit: ${passed}/${cases.length} passed`)
+try {
+  let stored: UserDoc | null = null
+  let inserts = 0
+  let updates = 0
+  mock.module('../src/config/mongo', () => ({
+    mongoColl: { users: () => ({
+      findOne: async (query: unknown) => {
+        assert.deepEqual(query, { $or: [{ google_sub: '109876543210987654321' }, { email: 'player@example.com' }] })
+        return stored
+      },
+      insertOne: async (doc: UserInsertDoc) => {
+        assert.equal(stored, null)
+        inserts++
+        const insertedId = new ObjectId('64b7f0c2a1b2c3d4e5f60718')
+        stored = { ...doc, _id: insertedId } as UserDoc
+        return { insertedId }
+      },
+      updateOne: async (_query: unknown, update: { $set: Partial<UserDoc> }) => {
+        assert.ok(stored)
+        updates++
+        Object.assign(stored, update.$set)
+        return { matchedCount: 1 }
+      },
+    }) },
+  }))
+  mock.module('../src/providers/firebase-auth.provider', () => ({
+    profileFromFirebaseClaims,
+    verifyFirebaseIdToken: async (token: string) => {
+      assert.equal(token, 'firebase-audit-token')
+      return profileFromFirebaseClaims(googleToken())
+    },
+  }))
+  mock.module('../src/services/deletion.service', () => ({ deletionService: {} }))
+  mock.module('../src/services/play-ws.service', () => ({ disconnectUserSockets: () => {} }))
+  const { authController } = await import('../src/controllers/auth.controller')
+  let jwtCalls = 0
+  const jwt = { sign: async (payload: { id: string; email: string; username: string; tier: string }) => {
+    jwtCalls++
+    assert.deepEqual(payload, { id: '64b7f0c2a1b2c3d4e5f60718', email: 'player@example.com', username: stored!.username, tier: 'free' })
+    return 'firebase-audit-jwt'
+  } }
+  const first = await authController.google({ body: { id_token: 'firebase-audit-token' }, jwt })
+  assert.equal(first.new_account, true, 'first Google sign-in: new_account true')
+  assert.deepEqual(Object.keys(first).sort(), ['new_account', 'token', 'user'])
+  assert.equal(first.token, 'firebase-audit-jwt')
+  assert.deepEqual(first.user, {
+    id: '64b7f0c2a1b2c3d4e5f60718', email: 'player@example.com', phone: null,
+    username: stored!.username, tier: 'free', can_forge: false,
+    preferences: stored!.preferences, token_balance: 15000,
+  })
+  const second = await authController.google({ body: { id_token: 'firebase-audit-token' }, jwt })
+  assert.equal(Object.hasOwn(second, 'new_account'), false, 'second Google sign-in: new_account omitted')
+  assert.deepEqual(second, { token: first.token, user: first.user }, 'returning Google sign-in: other fields unchanged')
+  assert.equal(inserts, 1)
+  assert.equal(updates, 1)
+  assert.equal(jwtCalls, 2)
+  passed++
+  console.log('PASS first Google sign-in returns new_account: true; second omits it (real service/controller, fake identity/Mongo/JWT)')
+} catch (error) {
+  failures.push(`Google new-account response — ${error}`)
+}
+
+console.log(`firebase-auth audit: ${passed}/${cases.length + 1} passed`)
 for (const failure of failures) console.error('  FAIL', failure)
 process.exit(failures.length === 0 ? 0 : 1)

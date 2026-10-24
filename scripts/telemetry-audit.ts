@@ -351,6 +351,7 @@ const { scrubMessage } = (await import('../src/services/telemetry/scrub')) as ty
 const { classifyError } = (await import('../src/services/telemetry/classify')) as typeof import('../src/services/telemetry/classify')
 const { fingerprintError } = (await import('../src/services/telemetry/fingerprint')) as typeof import('../src/services/telemetry/fingerprint')
 const { telemetryService } = (await import('../src/services/telemetry/ingest.service')) as typeof import('../src/services/telemetry/ingest.service')
+const { normalizeEvent } = await import('../src/services/telemetry/schema')
 
 const app = new Elysia().use(telemetryRoutes)
 
@@ -480,6 +481,83 @@ function assertNoNullish(value: unknown, path: string): void {
 // ─────────────────────────────────────────────────────────────────────────────
 // §4.1 — the route itself
 // ─────────────────────────────────────────────────────────────────────────────
+
+type CoverageCase = { name: string; enums: Record<string, string[]>; required?: string[] }
+const coverageCases: CoverageCase[] = [
+  { name: 'turn_sent', enums: { input: ['typed', 'choice', 'choice_edited', 'continue'] } },
+  { name: 'sheet_opened', enums: { sheet: [
+    'realm_menu', 'protagonist', 'filters', 'paywall', 'chat_menu', 'timeline', 'thoughts',
+    'bond_actions', 'world_actions', 'travel', 'relationships', 'advance_time', 'create_chooser',
+    'world_options', 'story_options', 'keepsake_options', 'report', 'content_actions',
+    'persona_editor', 'interests_editor', 'autofill', 'publish', 'story_intro',
+  ] } },
+  { name: 'paywall_shown', enums: { source: ['ink', 'media', 'profile', 'top_bar', 'story'] } },
+  { name: 'story_action', required: ['action'], enums: { action: [
+    'retry', 'rewind', 'edit_reply', 'replay_reply', 'pick_variant', 'reset', 'delete', 'travel',
+    'relationship_set', 'time_advanced', 'protagonist_set', 'protagonist_reused',
+    'protagonist_skipped', 'character_edited', 'character_tracked', 'relation_resolved',
+    'milestone_cleared', 'history_loaded', 'voice_played',
+  ] } },
+  { name: 'story_settings_changed', required: ['setting'], enums: { setting: ['pov', 'mode', 'length', 'voice', 'tone', 'focus', 'persona'] } },
+  { name: 'chronicle_tab', required: ['tab'], enums: { tab: ['recap', 'timeline', 'memories', 'calendar', 'places', 'bonds', 'threads'] } },
+  { name: 'chronicle_action', required: ['action'], enums: { action: ['memory_edited', 'memory_deleted', 'event_edited', 'timeline_switched'] } },
+  { name: 'keepsakes_action', required: ['action'], enums: {
+    action: ['filtered', 'mode_changed', 'opened', 'removed'], filter: ['all', 'pictures', 'films', 'faces'], mode: ['feed', 'grid'],
+  } },
+  { name: 'library_action', required: ['action'], enums: {
+    action: ['story_deleted', 'world_deleted', 'world_forge_opened', 'character_creation_opened'], mode: ['new', 'edit'],
+  } },
+  { name: 'creator_action', required: ['action'], enums: { action: ['autofill_used', 'character_created', 'world_saved'] } },
+  { name: 'report_submitted', required: ['target'], enums: { target: ['world', 'message', 'character', 'keepsake', 'other'] } },
+  { name: 'account_action', required: ['action'], enums: { action: ['signed_out', 'account_deleted', 'interests_updated'] } },
+  { name: 'guide_arc', required: ['arc', 'outcome'], enums: {
+    arc: ['arrival', 'chronicle', 'explore_genres', 'home', 'ink', 'keepsakes', 'my_worlds', 'personas', 'realm', 'scene_settings', 'world_detail'],
+    outcome: ['completed', 'skipped'],
+  } },
+]
+const coverageContext = {
+  installId: INSTALL, sessionId: SESSION, app: APP,
+  device: { os: 'android', form: 'phone' } as const, now: new Date(now),
+}
+
+for (const { name, enums, required = [] } of coverageCases) {
+  await check(`§3.1: ${name} accepts its vocabulary, requires its keys and drops text`, () => {
+    const props = Object.fromEntries(Object.entries(enums).map(([key, values]) => [key, values[0]]))
+    const normalized = normalizeEvent(event(name, { ...props, text: marker }), coverageContext)
+    assert.ok(normalized, `${name}: valid example accepted`)
+    assert.deepEqual(normalized.props, props, `${name}: free-text prop dropped`)
+    for (const [key, values] of Object.entries(enums)) {
+      for (const value of values) {
+        const valid = { ...props, [key]: value }
+        assert.deepEqual(normalizeEvent(event(name, valid), coverageContext)?.props, valid, `${name}.${key}: ${value} accepted`)
+      }
+      assert.equal(normalizeEvent(event(name, { ...props, [key]: 'outside_contract' }), coverageContext), null, `${name}.${key}: unknown enum dropped`)
+    }
+    for (const key of required) {
+      const missing = { ...props }
+      delete missing[key]
+      assert.equal(normalizeEvent(event(name, missing), coverageContext), null, `${name}.${key}: required`)
+    }
+  })
+}
+
+await check('§3.1: account_action count is an optional integer from 0 to 200', () => {
+  for (const count of [undefined, 0, 200]) {
+    const props = { action: 'interests_updated', ...(count === undefined ? {} : { count }) }
+    assert.deepEqual(normalizeEvent(event('account_action', props), coverageContext)?.props, props)
+  }
+  for (const count of [-1, 201, 1.5, '2', null]) {
+    assert.equal(normalizeEvent(event('account_action', { action: 'interests_updated', count }), coverageContext), null, `count ${count}: dropped`)
+  }
+})
+
+await check('§3.1: sign_in_completed accepts only boolean new_account', () => {
+  for (const new_account of [true, false]) {
+    const props = { method: 'google', new_account }
+    assert.deepEqual(normalizeEvent(event('sign_in_completed', props), coverageContext)?.props, props)
+  }
+  assert.equal(normalizeEvent(event('sign_in_completed', { new_account: 'true' }), coverageContext), null)
+})
 
 await check('§4.1: 202 and a kept count; bad items are dropped, the batch is not', async () => {
   reset()

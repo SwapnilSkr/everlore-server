@@ -33,11 +33,12 @@ export const authController = {
   },
 
   google: async ({ body, jwt }: { body: { id_token: string }; jwt: JwtApi }) => {
-    const userDoc = await authService.signInWithGoogle(body.id_token)
+    const { userDoc, newAccount } = await authService.signInWithGoogle(body.id_token)
     const token = await jwt.sign(authService.toJwtPayload(userDoc))
     return {
       token,
       user: authService.serializeUser(userDoc),
+      ...(newAccount ? { new_account: true } : {}),
     }
   },
 
@@ -62,11 +63,12 @@ export const authController = {
       throw phoneVerifyError('verify_limited', rl.retryAfter)
     }
 
-    const userDoc = await authService.signInWithPhoneOtp(phone, code)
+    const { userDoc, newAccount } = await authService.signInWithPhoneOtp(phone, code)
     const token = await jwt.sign(authService.toJwtPayload(userDoc))
     return {
       token,
       user: authService.serializeUser(userDoc),
+      ...(newAccount ? { new_account: true } : {}),
     }
   },
 

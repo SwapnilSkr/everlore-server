@@ -4,6 +4,7 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { mock } from 'bun:test'
 import { Elysia } from 'elysia'
 import { HttpError } from '../src/utils/http-error'
+import type { UserInsertDoc } from '../src/models/user.model'
 
 if (process.argv.includes('--bites')) {
   const path = new URL('../src/providers/auth.provider.ts', import.meta.url)
@@ -86,9 +87,18 @@ try {
       _id: 'phone-audit-user', phone, username: 'phone_audit', tier: 'free',
       providers: ['phone'], preferences: { theme: 'dark' }, token_balance: 15000,
     }
+    let storedUser: typeof user | null = user
+    let inserts = 0
     mock.module('../src/config/mongo', () => ({
       mongoColl: { users: () => ({
-        findOne: async () => { dbCalls++; return user },
+        findOne: async () => { dbCalls++; return storedUser },
+        insertOne: async (doc: UserInsertDoc) => {
+          dbCalls++
+          assert.equal(storedUser, null)
+          inserts++
+          storedUser = { ...doc, _id: user._id, phone }
+          return { insertedId: user._id }
+        },
         updateOne: async () => { dbCalls++; return { matchedCount: 1 } },
       }) },
     }))
@@ -207,6 +217,29 @@ try {
     assert.equal(jwtCalls, 1)
     assert.equal(dbCalls, 2)
     passed++
+
+    storedUser = null
+    counts.clear()
+    const first = await request('verify')
+    assert.equal(first.status, 200)
+    const firstBody = await first.json()
+    assert.equal(firstBody.new_account, true, 'first phone sign-in: new_account true')
+    assert.deepEqual(Object.keys(firstBody).sort(), ['new_account', 'token', 'user'])
+    assert.equal(firstBody.token, 'phone-audit-token')
+    assert.deepEqual(firstBody.user, {
+      id: user._id, email: '', phone, username: storedUser!.username, tier: 'free',
+      can_forge: false, preferences: storedUser!.preferences, token_balance: 15000,
+    })
+    const second = await request('verify')
+    assert.equal(second.status, 200)
+    const secondBody = await second.json()
+    assert.equal(Object.hasOwn(secondBody, 'new_account'), false, 'second phone sign-in: new_account omitted')
+    assert.deepEqual(secondBody, { token: firstBody.token, user: firstBody.user }, 'returning phone sign-in: other fields unchanged')
+    assert.equal(inserts, 1)
+    assert.equal(jwtCalls, 3)
+    assert.equal(dbCalls, 6)
+    passed++
+    console.log('PASS first phone sign-in returns new_account: true; second omits it')
 
     const proc = Bun.spawn([process.execPath, '--no-env-file', 'run', import.meta.path, '--mock'], {
       stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',

@@ -108,17 +108,87 @@ export const EVENT_SCHEMA: Record<string, { props: Record<string, PropDef> }> = 
     },
   },
   story_opened: { props: { world_id: { rule: { kind: 'world_id' } } } },
-  turn_sent: { props: { input: { rule: oneOf('typed', 'choice', 'continue') } } },
+  turn_sent: { props: { input: { rule: oneOf('typed', 'choice', 'choice_edited', 'continue') } } },
   turn_failed: { props: { reason: { rule: oneOf('network', 'ink', 'server', 'rest') } } },
-  sheet_opened: { props: { sheet: { rule: oneOf('realm_menu', 'protagonist', 'filters', 'paywall') } } },
+  sheet_opened: {
+    props: {
+      sheet: {
+        rule: oneOf(
+          'realm_menu', 'protagonist', 'filters', 'paywall', 'chat_menu', 'timeline', 'thoughts',
+          'bond_actions', 'world_actions', 'travel', 'relationships', 'advance_time', 'create_chooser',
+          'world_options', 'story_options', 'keepsake_options', 'report', 'content_actions',
+          'persona_editor', 'interests_editor', 'autofill', 'publish', 'story_intro',
+        ),
+      },
+    },
+  },
   explore_filtered: { props: { genre: { rule: { kind: 'genre' } } } },
-  paywall_shown: { props: { source: { rule: oneOf('ink', 'media', 'profile') } } },
+  paywall_shown: { props: { source: { rule: oneOf('ink', 'media', 'profile', 'top_bar', 'story') } } },
   purchase_started: { props: { product: { rule: { kind: 'product' } } } },
   purchase_completed: { props: { product: { rule: { kind: 'product' } } } },
   media_requested: { props: { kind: { rule: oneOf('picture', 'voice', 'film', 'portrait') } } },
   world_published: { props: { visibility: { rule: oneOf('private', 'public') } } },
   review_prompt_shown: { props: {} },
   analytics_opted_out: { props: {} },
+  story_action: {
+    props: {
+      action: {
+        rule: oneOf(
+          'retry', 'rewind', 'edit_reply', 'replay_reply', 'pick_variant', 'reset', 'delete', 'travel',
+          'relationship_set', 'time_advanced', 'protagonist_set', 'protagonist_reused',
+          'protagonist_skipped', 'character_edited', 'character_tracked', 'relation_resolved',
+          'milestone_cleared', 'history_loaded', 'voice_played',
+        ),
+        required: true,
+      },
+    },
+  },
+  story_settings_changed: {
+    props: { setting: { rule: oneOf('pov', 'mode', 'length', 'voice', 'tone', 'focus', 'persona'), required: true } },
+  },
+  chronicle_tab: {
+    props: { tab: { rule: oneOf('recap', 'timeline', 'memories', 'calendar', 'places', 'bonds', 'threads'), required: true } },
+  },
+  chronicle_action: {
+    props: { action: { rule: oneOf('memory_edited', 'memory_deleted', 'event_edited', 'timeline_switched'), required: true } },
+  },
+  keepsakes_action: {
+    props: {
+      action: { rule: oneOf('filtered', 'mode_changed', 'opened', 'removed'), required: true },
+      filter: { rule: oneOf('all', 'pictures', 'films', 'faces') },
+      mode: { rule: oneOf('feed', 'grid') },
+    },
+  },
+  library_action: {
+    props: {
+      action: { rule: oneOf('story_deleted', 'world_deleted', 'world_forge_opened', 'character_creation_opened'), required: true },
+      mode: { rule: oneOf('new', 'edit') },
+    },
+  },
+  creator_action: {
+    props: { action: { rule: oneOf('autofill_used', 'character_created', 'world_saved'), required: true } },
+  },
+  report_submitted: {
+    props: { target: { rule: oneOf('world', 'message', 'character', 'keepsake', 'other'), required: true } },
+  },
+  account_action: {
+    props: {
+      action: { rule: oneOf('signed_out', 'account_deleted', 'interests_updated'), required: true },
+      count: { rule: int(0, 200) },
+    },
+  },
+  guide_arc: {
+    props: {
+      arc: {
+        rule: oneOf(
+          'arrival', 'chronicle', 'explore_genres', 'home', 'ink', 'keepsakes', 'my_worlds',
+          'personas', 'realm', 'scene_settings', 'world_detail',
+        ),
+        required: true,
+      },
+      outcome: { rule: oneOf('completed', 'skipped'), required: true },
+    },
+  },
 }
 
 export const EVENT_NAMES: readonly string[] = Object.keys(EVENT_SCHEMA)
