@@ -183,6 +183,110 @@ export type AppErrorGroupDoc = {
   versions?: Record<string, number>
   /** Version the admin marked it resolved in; a newer sample regresses it. */
   resolved_in_version?: string
+  /**
+   * §4.7. Written only by the triage job, never when the group is created: a
+   * group with no `triage` key is one whose note has not been attempted yet, and
+   * the console derives `pending` from that.
+   */
+  triage?: ErrorTriage
+  /** §4.5a: the admin's own plain sentence, once they confirmed one. */
+  explanation?: string
+  /** §4.6 PATCH: a free note the admin leaves for themselves. */
+  note?: string
+  verified_by?: string
+  verified_at?: Date
+}
+
+/** §4.6a `triage_state`. `done` carries the model's answer. */
+export type TriageState = 'done' | 'pending' | 'capped' | 'failed' | 'off' | 'not_applicable'
+
+export type ErrorTriage = {
+  state: TriageState
+  /** §4.7: ≤ 300 chars, plain words for a non-engineer owner. */
+  likely_cause?: string
+  suggested_owner?: 'app-ui' | 'app-logic' | 'server' | 'integration' | 'platform'
+  confidence?: 'low' | 'medium' | 'high'
+  model?: string
+  at?: Date
+  /** What this call is recorded as costing in `app_triage_calls`. */
+  cost_usd?: number
+}
+
+/**
+ * One row per model call (§4.7), the ledger the caps are counted from. Kept 90
+ * days: a month is all a cap needs, and the row names a group rather than a
+ * player.
+ */
+export type AppTriageCallDoc = {
+  _id: ObjectId
+  at: Date
+  fingerprint: string
+  cost_usd: number
+}
+
+/**
+ * `app_daily` — one permanent row per UTC day (§6).
+ *
+ * Everything here is a count or a sum, so a day outlives the 90-day raw rows it
+ * was folded from. The screen timings keep a histogram as well as the median,
+ * because a window's median cannot be recovered from a list of per-day medians.
+ */
+export type AppDailyScreen = {
+  views: number
+  /** Distinct players that day; summed across days it is an upper bound. */
+  players: number
+  total_ms: number
+  /** Whole seconds: the lower bound of the histogram bucket holding the middle view. */
+  median_ms: number
+  /** Sessions whose last screen this was. */
+  exits: number
+  next: Record<string, number>
+  /** Whole-second bucket → views, so a window can merge medians exactly. */
+  hist: Record<string, number>
+}
+
+export type AppDailyAction = {
+  count: number
+  players: number
+  props: Record<string, Record<string, number>>
+}
+
+export type AppDailyDoc = {
+  /** The UTC day itself, `YYYY-MM-DD`, so a roll is a single-key write. */
+  _id: string
+  day: string
+  updated_at: Date
+  /** Sessions whose last activity fell on this day; the exit-rate denominator. */
+  sessions: number
+  funnel: {
+    /** Installs first seen this day. */
+    first_opens: number
+    sessions_started: number
+    sign_ins: number
+    /** Server truth: `users.created_at`. */
+    signups: number
+    opened_world: number
+    first_turn: number
+    /** Settles a day later; the hourly re-roll of the last three days fills it. */
+    returned_d1: number
+  }
+  screens: Record<string, AppDailyScreen>
+  actions: Record<string, AppDailyAction>
+  counters: {
+    offline: number
+    expected_4xx: number
+    image_load: number
+    /** `"<route>|<status>"` → count. */
+    top_4xx: Record<string, number>
+  }
+  errors: {
+    samples: number
+    players: number
+    groups_new: number
+    by_class: Record<string, number>
+  }
+  /** App version → events, which is the version filter's denominator. */
+  versions: Record<string, number>
 }
 
 export type AppErrorCounterDoc = {

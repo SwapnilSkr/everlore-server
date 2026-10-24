@@ -123,6 +123,14 @@ export const EVENT_SCHEMA: Record<string, { props: Record<string, PropDef> }> = 
 
 export const EVENT_NAMES: readonly string[] = Object.keys(EVENT_SCHEMA)
 
+/**
+ * Lifecycle events are what a session *is*, not something the player did. They
+ * are counted as events and kept out of the action count, so "actions" in the
+ * console means presses rather than arrivals — and the daily rollup uses the same
+ * set, so a session's action count and the day's agree.
+ */
+export const NON_ACTION_EVENTS: ReadonlySet<string> = new Set(['first_open', 'session_start', 'screen_view'])
+
 export function isScreenName(value: unknown): value is string {
   return typeof value === 'string' && SCREEN_NAME.test(value)
 }

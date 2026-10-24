@@ -35,6 +35,13 @@ export function compareVersions(a: string, b: string): number {
   return 0
 }
 
+/** `{ "1_0_11": 3 }` → `[{ version: "1.0.11", count: 3 }]`, newest first (§4.6a). */
+export function versionEntries(versions?: Record<string, number>): Array<{ version: string; count: number }> {
+  return Object.entries(versions ?? {})
+    .map(([key, count]) => ({ version: key.replace(/_/g, '.'), count }))
+    .sort((left, right) => compareVersions(right.version, left.version))
+}
+
 export type ErrorGroupSample = {
   fingerprint: string
   cls: AppErrorClass

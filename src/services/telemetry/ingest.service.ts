@@ -4,7 +4,8 @@ import { log } from '../../utils/logger'
 import { classifyError, isGroupClass } from './classify'
 import { fingerprintError, topFrameOf } from './fingerprint'
 import { upsertErrorGroup } from './groups.service'
-import { normalizeError, normalizeEvent, type ItemContext } from './schema'
+import { normalizeError, normalizeEvent, NON_ACTION_EVENTS, type ItemContext } from './schema'
+import { triageService } from './triage.service'
 import type {
   AppErrorClass,
   AppErrorDoc,
@@ -38,13 +39,6 @@ export const MAX_UNAUTHENTICATED_EVENTS = 20
 
 /** §6: the session keeps the last 100 screen steps, so a long session stays bounded. */
 const MAX_SCREEN_STEPS = 100
-
-/**
- * Lifecycle events are what a session *is*, not something the player did. They
- * are counted as events and kept out of the action count, so "actions" in the
- * console means presses rather than arrivals.
- */
-const NON_ACTION_EVENTS: ReadonlySet<string> = new Set(['first_open', 'session_start', 'screen_view'])
 
 const events = () => mongoColl.appEvents()
 const errors = () => mongoColl.appErrors()
@@ -314,6 +308,11 @@ async function recordErrors(
       topFrame: topFrameOf(error, cls),
       at: error.at,
       appVersion: batch.app.version,
+    }).then((group) => {
+      // §4.7: the note is written once per group, never per event. The job is
+      // deduplicated by fingerprint, so a burst of samples cannot fan out into a
+      // burst of model calls.
+      if (group.created) void triageService.onGroupCreated(group.fingerprint, cls)
     }).catch((err: unknown) => {
       log.error('telemetry: group upsert failed', { fingerprint, error: errorMessage(err) })
     })

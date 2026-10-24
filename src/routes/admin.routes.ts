@@ -1,5 +1,6 @@
 import { Elysia, t } from 'elysia'
 import { adminStoryEngineRoutes } from './admin-story-engine.routes'
+import { adminAnalyticsRoutes } from './admin-analytics.routes'
 import { AdminSetTierBody, AdminSetUserStatusBody } from '../schemas/user.schema'
 import { adminController } from '../controllers/admin.controller'
 import { requireAdmin } from '../middleware/admin-auth'
@@ -65,6 +66,7 @@ const AdminBillingConfigBody = t.Object({
 export const adminRoutes = new Elysia({ prefix: '/admin' })
   .use(requireAdmin)
   .use(adminStoryEngineRoutes)
+  .use(adminAnalyticsRoutes)
 
   .get('/metrics', (ctx) => adminController.metrics(ctx), {
     query: t.Object({ days: t.Optional(t.String()) }),

@@ -184,6 +184,14 @@ async function main() {
     removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
     removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
   })
+  // §6: the app's own history. Hourly, and re-rolling the two days behind it is
+  // what lets a day's "came back the next day" settle.
+  await maintenanceQueue.add('app-daily-rollup', { task: 'rollup_app_daily' }, {
+    repeat: { pattern: '45 * * * *' },
+    priority: 45,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+  })
   await maintenanceQueue.add('projection-checkpoint-scheduler', { task: 'schedule_projection_checkpoints' }, {
     repeat: { pattern: '15 * * * *' },
     priority: 30,

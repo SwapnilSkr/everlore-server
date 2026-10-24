@@ -638,6 +638,19 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     key: { day: -1, class: 1 },
     options: { name: "idx_app_error_counters_day_class" },
   },
+  // app_triage_calls — one row per model call (§4.7). The daily and monthly caps
+  // are counted from this ledger, so the read is "since a point in time"; the
+  // TTL keeps a month's worth and no more — a cap only ever looks back that far.
+  {
+    collection: COLLECTIONS.app_triage_calls,
+    key: { at: -1 },
+    options: { name: "idx_app_triage_calls_at" },
+  },
+  {
+    collection: COLLECTIONS.app_triage_calls,
+    key: { at: 1 },
+    options: { name: "ttl_app_triage_calls_90d", expireAfterSeconds: 60 * 60 * 24 * 90 },
+  },
 ]
 
 /**

@@ -11,6 +11,7 @@ const PURE_AUDITS = [
   'audit:admin-ops',
   'audit:admin-route-guard',
   'audit:telemetry',
+  'audit:telemetry-admin',
   'audit:review-access',
   'audit:world-review',
   'audit:genre',

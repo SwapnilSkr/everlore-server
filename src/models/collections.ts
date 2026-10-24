@@ -45,6 +45,7 @@ export const COLLECTIONS = {
   app_errors: 'app_errors',
   app_error_groups: 'app_error_groups',
   app_error_counters: 'app_error_counters',
+  app_triage_calls: 'app_triage_calls',
   app_daily: 'app_daily',
 } as const
 

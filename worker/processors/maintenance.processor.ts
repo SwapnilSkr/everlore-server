@@ -10,6 +10,8 @@ import { MANAGED_QUEUES, pruneExpiredCompletedQueueJobs } from '../../src/servic
 import { log } from '../../src/utils/logger'
 import { dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
 import { webTrafficRollupService } from '../../src/services/web-traffic-rollup.service'
+import { appDailyRollupService } from '../../src/services/telemetry/rollup.service'
+import { triageService } from '../../src/services/telemetry/triage.service'
 import { characterProjectionProcessor } from './character-projection.processor'
 import { CHARACTER_PROJECTION_CLAIM_LEASE_MS } from '../lib/character-projection-lease'
 
@@ -85,9 +87,26 @@ export async function maintenanceProcessor(job: Job) {
       return { rolled, backfilled }
     }
 
+    // The app's own history. Raw telemetry expires (90 days for events, 30 for
+    // error samples); the daily row is what keeps the funnel, screen times and
+    // error counts after that.
+    case 'rollup_app_daily': {
+      const rolled = await appDailyRollupService.rollupRecent(3)
+      const backfilled = await appDailyRollupService.backfillMissing()
+      log.info('maintenance.app_daily_rolled', { days: rolled.length, backfilled })
+      return { rolled, backfilled }
+    }
+
+    // §4.7: one cheap model call per new error group, capped. The job id is the
+    // fingerprint, so a burst of samples is one call.
+    case 'triage_error_group': {
+      const fingerprint = String(job.data.fingerprint)
+      const state = await triageService.run(fingerprint)
+      return { fingerprint, state }
+    }
+
     case 'character_projection':
       return characterProjectionProcessor(job)
-
     case 'repair_character_projections': {
       const staleBefore = new Date(Date.now() - CHARACTER_PROJECTION_CLAIM_LEASE_MS)
       const pending = await mongoColl.events()

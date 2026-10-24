@@ -128,6 +128,11 @@ const optionalEnvVars = {
   /** OIDC audience and sender configured on the Google Cloud Pub/Sub push subscription. */
   GOOGLE_PLAY_RTDN_AUDIENCE: '',
   GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL: '',
+  /** §4.7 error triage. On by default: the owner wants every group explained.
+   * The caps are checked against `app_triage_calls` before each model call. */
+  ERROR_TRIAGE_ENABLED: 'true',
+  ERROR_TRIAGE_DAILY_CAP: '20',
+  ERROR_TRIAGE_MONTHLY_USD_CAP: '1',
 } as const
 
 export interface Env {
@@ -193,6 +198,9 @@ export interface Env {
   GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: string
   GOOGLE_PLAY_RTDN_AUDIENCE: string
   GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL: string
+  ERROR_TRIAGE_ENABLED: boolean
+  ERROR_TRIAGE_DAILY_CAP: number
+  ERROR_TRIAGE_MONTHLY_USD_CAP: number
 }
 
 function loadEnv(): Env {
@@ -205,6 +213,14 @@ function loadEnv(): Env {
   }
 
   const configuredPromoCap = Number(process.env.INK_PROMO_DAILY_TURN_CAP || optionalEnvVars.INK_PROMO_DAILY_TURN_CAP)
+
+  // A cap is a spend limit, so a typo must not silently mean "no cap": a value
+  // that is not a non-negative number falls back to the committed default, and
+  // a cap of 0 is honoured (it means "do not triage").
+  const triageNumber = (value: string | undefined, fallback: string): number => {
+    const parsed = Number(value || fallback)
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : Number(fallback)
+  }
 
   // Prod moved to the shared layout on Oct 22 2026 and its per-scope namespaces are gone; a server
   // without this setting must not write them again (they count against the plan's namespace cap).
@@ -300,6 +316,9 @@ function loadEnv(): Env {
     GOOGLE_PLAY_SERVICE_ACCOUNT_JSON: process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON || optionalEnvVars.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON,
     GOOGLE_PLAY_RTDN_AUDIENCE: process.env.GOOGLE_PLAY_RTDN_AUDIENCE || optionalEnvVars.GOOGLE_PLAY_RTDN_AUDIENCE,
     GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL: process.env.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL || optionalEnvVars.GOOGLE_PLAY_RTDN_SERVICE_ACCOUNT_EMAIL,
+    ERROR_TRIAGE_ENABLED: (process.env.ERROR_TRIAGE_ENABLED || optionalEnvVars.ERROR_TRIAGE_ENABLED) !== 'false',
+    ERROR_TRIAGE_DAILY_CAP: triageNumber(process.env.ERROR_TRIAGE_DAILY_CAP, optionalEnvVars.ERROR_TRIAGE_DAILY_CAP),
+    ERROR_TRIAGE_MONTHLY_USD_CAP: triageNumber(process.env.ERROR_TRIAGE_MONTHLY_USD_CAP, optionalEnvVars.ERROR_TRIAGE_MONTHLY_USD_CAP),
   }
 }
 
