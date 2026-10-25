@@ -48,13 +48,22 @@ class SafeError extends Error {}
 function requireSafe(condition: unknown, message: string): asserts condition {
   if (!condition) throw new SafeError(message)
 }
-type Options = { selfTest: boolean; dryRun: boolean; hosts: boolean; quality: boolean; adult: boolean; samplesOut?: string; instances: string[]; owners: string[]; cap: number }
+type Options = { selfTest: boolean; dryRun: boolean; hosts: boolean; quality: boolean; adult: boolean; skipNormal: boolean; models?: string[]; samplesOut?: string; instances: string[]; owners: string[]; cap: number }
 function ids(raw: string | undefined): string[] {
   requireSafe(raw && raw.split(',').every(id => /^[a-f\d]{24}$/i.test(id)), 'Explicit comma-separated ObjectIds required')
   return [...new Set(raw.toLowerCase().split(','))]
 }
+// OpenRouter model ids are `vendor/name`; a bare name or a path would silently
+// discover nothing, so it is refused before any request.
+const MODEL_ID = /^[a-z\d][a-z\d._:-]*\/[a-z\d][a-z\d._:-]*$/i
+function modelIds(raw: string | undefined): string[] {
+  const list = (raw ?? '').split(',').map(id => id.trim())
+  requireSafe(list.some(Boolean), '--models requires comma-separated vendor/name ids')
+  requireSafe(list.every(id => MODEL_ID.test(id)), '--models takes comma-separated vendor/name ids')
+  return [...new Set(list)]
+}
 export function parseArgs(args: string[]): Options {
-  const o: Options = { selfTest: false, dryRun: false, hosts: false, quality: false, adult: false, instances: [], owners: [], cap: NaN }
+  const o: Options = { selfTest: false, dryRun: false, hosts: false, quality: false, adult: false, skipNormal: false, instances: [], owners: [], cap: NaN }
   const seen = new Set<string>()
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]
@@ -64,6 +73,8 @@ export function parseArgs(args: string[]): Options {
     else if (flag === '--hosts') o.hosts = true
     else if (flag === '--quality') o.quality = true
     else if (flag === '--adult') o.adult = true
+    else if (flag === '--skip-normal') o.skipNormal = true
+    else if (flag === '--models') o.models = modelIds(args[++i])
     else if (flag === '--samples-out') {
       const path = args[++i]
       requireSafe(path && !path.startsWith('--') && !/^\.env(?:\.|$)/.test(basename(path)), '--samples-out requires an output path outside environment files')
@@ -78,6 +89,8 @@ export function parseArgs(args: string[]): Options {
     requireSafe(args.length === 1, '--self-test is exclusive'); return o
   }
   requireSafe(!o.adult || !o.hosts && !o.quality, '--adult is exclusive with --hosts/--quality')
+  requireSafe(!o.models || o.adult, '--models requires --adult')
+  requireSafe(!o.skipNormal || o.adult, '--skip-normal requires --adult')
   requireSafe(!o.samplesOut || o.hosts || o.quality || o.adult, '--samples-out requires --hosts, --quality or --adult')
   requireSafe(o.instances.length, 'Refusing: --instances is required')
   requireSafe(o.owners.length, 'Refusing: --owner-users is required')
@@ -89,9 +102,9 @@ export function parseArgs(args: string[]): Options {
 type Message = { role: string; content: string }
 type Lane = 'sfw' | 'nsfw'
 const laneFor = (model: string): Lane => model === NSFW ? 'nsfw' : 'sfw'
-function corpusFilter(adult: boolean): Filter<LLMCallDoc> {
+function corpusFilter(adult: boolean, nsfwOnly = false): Filter<LLMCallDoc> {
   return { purpose: 'narration', phase: 'reply', response_format: 'text', has_body: true, status: 'ok', won: { $ne: false },
-    ...(adult ? { model: { $in: [...new Set([BASELINE, NORMAL_ARMS[0].model, NSFW])] } }
+    ...(adult ? { model: { $in: nsfwOnly ? [NSFW] : [...new Set([BASELINE, NORMAL_ARMS[0].model, NSFW])] } }
       : { model: BASELINE, temperature: .68, max_tokens: MAX_OUTPUT }) }
 }
 type Turn = { lane: Lane; sampling?: { temperature?: number; maxTokens: number }; instance: string; sequence: number; genre: string; messages: Message[]; promptTokens: number; fingerprint: string }
@@ -165,7 +178,7 @@ async function loadTurns(o: Options): Promise<Turn[]> {
       requireSafe(template && typeof template.genre === 'string', 'Missing template or genre')
       const rebuilt = rebuildPrefix(saved, template)
       const calls = await db.collection<LLMCallDoc>('llm_calls').find({ instance_id: iid, player_id: { $in: o.owners.map(id => new ObjectId(id)) },
-        ...corpusFilter(o.adult),
+        ...corpusFilter(o.adult, o.skipNormal),
       }).sort({ sequence: -1, started_at: -1, _id: -1 }).toArray()
       const pool: Turn[] = [], seen = new Set<number>(); let rejected = 0, unreconstructable = 0
       const refusals: Record<string, number> = {}
@@ -315,8 +328,8 @@ function selectHosts(model: string, endpoints: Endpoint[], limit = 4): Host[] {
   for (const h of hosts.filter(h => h.endpoints.every(e => goodQuant(e.quantization))).sort((a, b) => expected(a) - expected(b) || a.host.localeCompare(b.host))) add(h)
   return result
 }
-async function discover(model: string): Promise<Endpoint[]> {
-  requireSafe(MODELS.includes(model) || ADULT_MODELS.includes(model) || model === JUDGE, 'Model is outside experiment allowlist')
+async function discover(model: string, alsoAllowed: readonly string[] = []): Promise<Endpoint[]> {
+  requireSafe(MODELS.includes(model) || ADULT_MODELS.includes(model) || alsoAllowed.includes(model) || model === JUDGE, 'Model is outside experiment allowlist')
   const response = await fetch(`${API}/models/${model}/endpoints`, { signal: AbortSignal.timeout(20000) })
   if ([404, 410].includes(response.status)) { out({ stage: 'discovery', model, dropped: 'model no longer exists' }); return [] }
   requireSafe(response.ok, `Endpoint discovery failed for ${model} (HTTP ${response.status})`)
@@ -617,9 +630,9 @@ function adultCallCost(turn: Turn, host: Host) {
   return { bound: reservation(narratorRequest(turn, host), host.price),
     estimate: expected(host, turn.promptTokens, Math.min(121, turn.sampling.maxTokens)) }
 }
-function fitAdultPlan(turns: Turn[], hosts: Host[], normal: Host[], cap: number, screening: Host[] = [], screened: Screen[] = []): AdultPlan {
+function fitAdultPlan(turns: Turn[], hosts: Host[], normal: Host[], cap: number, requested: readonly string[], screening: Host[] = [], screened: Screen[] = []): AdultPlan {
   const nsfw = turns.filter(t => t.lane === 'nsfw'), sfw = turns.filter(t => t.lane === 'sfw')
-  const models = ADULT_MODELS.filter(m => hosts.some(h => h.model === m))
+  const models = requested.filter(m => hosts.some(h => h.model === m))
   const screenPrompts = screening.length ? screenTurns(nsfw) : []
   const screenCosts = screening.flatMap(h => screenPrompts.map(t => adultCallCost(t, h)))
   const normalCosts = normal.flatMap(h => sfw.map(t => adultCallCost(t, h)))
@@ -646,8 +659,8 @@ function fitAdultPlan(turns: Turn[], hosts: Host[], normal: Host[], cap: number,
   }
   return { turns: [], models: [], reservationUSD: bound, planningUSD: planningFixed, estimateUSD: estimate, reusedScreenReplies: 0, fitsCap: false }
 }
-function printAdultPlan(stage: string, turns: Turn[], hosts: Host[], normal: Host[], cap: number, screening: Host[] = [], screened: Screen[] = []) {
-  const plan = fitAdultPlan(turns, hosts, normal, cap, screening, screened)
+function printAdultPlan(stage: string, turns: Turn[], hosts: Host[], normal: Host[], cap: number, requested: readonly string[], screening: Host[] = [], screened: Screen[] = []) {
+  const plan = fitAdultPlan(turns, hosts, normal, cap, requested, screening, screened)
   const nsfw = turns.filter(t => t.lane === 'nsfw'), sfw = turns.filter(t => t.lane === 'sfw')
   const screenPrompts = screening.length ? screenTurns(nsfw) : []
   out({ stage, maxUSD: cap, maxINR: cap * INR, judgeCalls: 0,
@@ -657,18 +670,18 @@ function printAdultPlan(stage: string, turns: Turn[], hosts: Host[], normal: Hos
       calls: plan.models.length * plan.turns.length, reusedScreenReplies: plan.reusedScreenReplies,
       newCalls: plan.models.length * plan.turns.length - plan.reusedScreenReplies, hostsConditionalOnScreen: screening.length > 0 },
     cutPrompts: nsfw.filter(t => !plan.turns.includes(t)).map(t => ({ instance: t.instance, sequence: t.sequence })),
-    cutModels: ADULT_MODELS.filter(m => hosts.some(h => h.model === m) && !plan.models.includes(m)),
-    unavailableModels: ADULT_MODELS.filter(m => !hosts.some(h => h.model === m)),
-    unavailableNormalArms: NORMAL_ARMS.filter(a => !normal.some(h => h.model === a.model && h.host === a.host)),
+    cutModels: requested.filter(m => hosts.some(h => h.model === m) && !plan.models.includes(m)),
+    unavailableModels: requested.filter(m => !hosts.some(h => h.model === m)),
+    unavailableNormalArms: sfw.length ? NORMAL_ARMS.filter(a => !normal.some(h => h.model === a.model && h.host === a.host)) : [],
     screenCalls: screening.length * 3, normalCalls: normal.length * sfw.length,
     reservationUSD: plan.reservationUSD, planningUSD: plan.planningUSD, listedPriceEstimateUSD: plan.estimateUSD, estimateINR: plan.estimateUSD * INR, fitsCap: plan.fitsCap,
     sampling: turns.map(t => ({ instance: t.instance, sequence: t.sequence, lane: t.lane, ...t.sampling })),
     note: 'No judge. Screen planned at listed uncached prices; normal/reading at listed prices × 1.5, worst possible winning host per model. Reuse chosen-host screen replies. Reduce N before reading models. Replan using remaining budget after screen. Per-call full reservation always gates transport; unknown costs retain bounds and may stop early. Full corpus retained. No paid call in dry-run.' })
   return plan
 }
-async function adultReading(turns: Turn[], winners: Screen[], normal: Host[], budget: Budget, key: string, samples?: Samples, invoke = call) {
+async function adultReading(turns: Turn[], winners: Screen[], normal: Host[], models: readonly string[], budget: Budget, key: string, samples?: Samples, invoke = call) {
   const hosts = winners.map(r => r.host)
-  const plan = printAdultPlan('plan-adult-resolved', turns, hosts, normal, budget.cap - budget.held, [], winners)
+  const plan = printAdultPlan('plan-adult-resolved', turns, hosts, normal, budget.cap - budget.held, models, [], winners)
   requireSafe(plan.fitsCap, 'Adult reading plus all normal turns cannot fit remaining cap; no further calls')
   const jobs = [...turns.filter(t => t.lane === 'sfw').flatMap(turn => normal.map(host => ({ turn, host }))),
     ...plan.turns.flatMap(turn => hosts.filter(h => plan.models.includes(h.model)).map(host => ({ turn, host })))]
@@ -683,37 +696,51 @@ async function adultReading(turns: Turn[], winners: Screen[], normal: Host[], bu
   }
   budget.print('adult-reading-spend')
 }
+// Discovery is the authority on which requested ids exist: a requested model
+// with no endpoints was not listed, and one with endpoints but no selected host
+// cannot be called. Both are reported instead of silently disappearing.
+function reportDrops(requested: readonly string[], hosts: Host[], endpoints: ReadonlyMap<string, Endpoint[]>): Array<{ model: string; reason: string }> {
+  return requested.filter(model => !hosts.some(h => h.model === model)).map(model => ({
+    model, reason: endpoints.get(model)?.length ? 'no selectable host' : 'not listed by endpoint discovery' }))
+}
 async function adultMode(o: Options, budget: Budget) {
-  out({ stage: 'method-adult', models: ADULT_MODELS, normalArms: NORMAL_ARMS, judge: null, judgeCalls: 0,
+  const models = o.models ?? ADULT_MODELS
+  out({ stage: 'method-adult', models, normalArms: o.skipNormal ? [] : NORMAL_ARMS, skipNormal: o.skipNormal, judge: null, judgeCalls: 0,
     screenPrompts: 3, hostsPerModel: 3, ignored: IGNORED, sampling: 'exact stored temperature/max_tokens',
     reasoning: { enabled: false }, hedges: false, retries: 0, maxUSD: o.cap, maxINR: o.cap * INR,
     limitations: ['structural refusal only; owner reads prose', 'independent exact-prompt replay, no long-session drift', 'no downstream extractor effects'] })
   const hosts: Host[] = [], normal: Host[] = []
-  for (const model of ADULT_MODELS) {
-    const endpoints = await discover(model)
+  const endpointsByModel = new Map<string, Endpoint[]>()
+  for (const model of models) {
+    const endpoints = await discover(model, models)
+    endpointsByModel.set(model, endpoints)
     hosts.push(...selectHosts(model, endpoints, 3))
-    for (const arm of NORMAL_ARMS.filter(a => a.model === model)) {
+    for (const arm of o.skipNormal ? [] : NORMAL_ARMS.filter(a => a.model === model)) {
       const es = endpoints.filter(e => e.host === arm.host)
       if (es.length) normal.push({ ...arm, endpoints: es, price: maxPrice(es.map(e => e.price)) })
     }
   }
+  out({ stage: 'dropped-adult-models', dropped: reportDrops(models, hosts, endpointsByModel) })
   out({ stage: 'selected-adult-hosts', hosts: hosts.map(h => ({ model: h.model, host: h.host, price: h.price })) })
   if (o.dryRun && !process.env.MONGODB_URI) {
     out({ stage: 'provisional-estimate', corpusValidated: false, assumedTurnsPerSave: 10, assumedNSFWPerSave: 5,
       assumedTemperature: .9, assumedMaxTokens: 260, assumedPromptTokens: 6600,
       note: 'Public-price envelope only. No story read; real ownership, lane counts, parameters and hashes require the supplied corpus.' })
-    const turns = o.instances.flatMap(instance => Array.from({ length: 10 }, (_, i): Turn => ({ instance, sequence: i + 1,
-      genre: 'unknown', lane: i < 5 ? 'sfw' : 'nsfw', sampling: { temperature: i < 5 ? .68 : .9, maxTokens: 260 },
-      messages: [{ role: 'system', content: 'x'.repeat(26400) }, { role: 'user', content: 'estimate' }],
-      promptTokens: 6600, fingerprint: 'ESTIMATE-NOT-A-STORY' })))
-    printAdultPlan('plan-adult', turns, hosts, normal, o.cap, hosts)
+    const turns = o.instances.flatMap(instance => Array.from({ length: 10 }, (_, i): Turn => {
+      const nsfw = o.skipNormal || i >= 5
+      return { instance, sequence: i + 1, genre: 'unknown', lane: nsfw ? 'nsfw' : 'sfw',
+        sampling: { temperature: nsfw ? .9 : .68, maxTokens: 260 },
+        messages: [{ role: 'system', content: 'x'.repeat(26400) }, { role: 'user', content: 'estimate' }],
+        promptTokens: 6600, fingerprint: 'ESTIMATE-NOT-A-STORY' }
+    }))
+    printAdultPlan('plan-adult', turns, hosts, normal, o.cap, models, hosts)
     return
   }
   const turns = await loadTurns(o)
   out({ stage: 'selected-corpus', count: turns.length, prompts: turns.map(t => ({ instance: t.instance, sequence: t.sequence,
     lane: t.lane, fingerprint: t.fingerprint, ...t.sampling })) })
   const screening = turns.some(t => t.lane === 'nsfw') ? hosts : []
-  const plan = printAdultPlan('plan-adult', turns, hosts, normal, o.cap, screening)
+  const plan = printAdultPlan('plan-adult', turns, hosts, normal, o.cap, models, screening)
   if (o.dryRun) return
   requireSafe(plan.fitsCap, 'Adult screen plus minimum reading set exceeds cap; no paid calls made')
   requireSafe(normal.length === NORMAL_ARMS.length || !turns.some(t => t.lane === 'sfw'), 'Required normal narrator host unavailable')
@@ -721,11 +748,11 @@ async function adultMode(o: Options, budget: Budget) {
   const samples = o.samplesOut ? new Samples(o.samplesOut, turns) : undefined
   await samples?.flush()
   const rows = screening.length ? await screen(turns.filter(t => t.lane === 'nsfw'), screening, budget, process.env.OPENROUTER_API_KEY, samples) : []
-  const winners = ADULT_MODELS.flatMap(m => {
+  const winners = models.flatMap(m => {
     const best = rows.filter(r => r.host.model === m && !r.bans.length).sort(rankScreens)[0]
     return best ? [best] : []
   })
-  await adultReading(turns, winners, normal, budget, process.env.OPENROUTER_API_KEY, samples)
+  await adultReading(turns, winners, normal, models, budget, process.env.OPENROUTER_API_KEY, samples)
 }
 type Arm = { name: string; host: Host; replies: Reply[] }
 type Comparison = { arm: string; win: number; tie: number; loss: number; flips: number; aOK: number; bOK: number; invalid: number; losses: Record<string, number> }
@@ -883,17 +910,17 @@ async function selfTest() {
     const turns: Turn[] = Array.from({ length: 4 }, (_, i) => ({ ...turn, instance: String(i % 3), sequence: i,
       lane: 'nsfw', sampling: { temperature: .9, maxTokens: 260 } }))
     turns.push({ ...turn, sampling: { temperature: .68, maxTokens: 260 } })
-    const full = fitAdultPlan(turns, hs, normal, .4, hs)
+    const full = fitAdultPlan(turns, hs, normal, .4, ADULT_MODELS, hs)
     assert.equal(full.turns.length, 4); assert.equal(full.models.length, 2); assert(full.fitsCap)
     assert(Math.abs(full.planningUSD - .12) < 1e-12)
     assert.equal(full.reusedScreenReplies, 6)
-    const reduced = fitAdultPlan(turns, hs, normal, .065)
+    const reduced = fitAdultPlan(turns, hs, normal, .065, ADULT_MODELS)
     assert.equal(reduced.turns.length, 1); assert.equal(reduced.models.length, 2)
     assert(Math.abs(reduced.planningUSD - .06) < 1e-12)
-    const one = fitAdultPlan(turns, hs, normal, .05)
+    const one = fitAdultPlan(turns, hs, normal, .05, ADULT_MODELS)
     assert.equal(one.turns.length, 1); assert.equal(one.models.length, 1)
-    assert.equal(fitAdultPlan(turns, hs, normal, .04).fitsCap, false)
-    const banned = fitAdultPlan(turns, [], normal, .03)
+    assert.equal(fitAdultPlan(turns, hs, normal, .04, ADULT_MODELS).fitsCap, false)
+    const banned = fitAdultPlan(turns, [], normal, .03, ADULT_MODELS)
     assert(banned.fitsCap); assert.equal(banned.models.length, 0); assert.equal(banned.turns.length, 0)
   })
   await test('adult dry-run keeps 10 explicit prompts across all 7 models when listed-price headroom fits', () => {
@@ -905,13 +932,52 @@ async function selfTest() {
     const log = console.log, captured: Record<string, unknown>[] = []
     console.log = (line: string) => { captured.push(obj(JSON.parse(line))) }
     try {
-      const plan = printAdultPlan('plan-adult', turns, hs, normal, .47, hs)
+      const plan = printAdultPlan('plan-adult', turns, hs, normal, .47, ADULT_MODELS, hs)
       assert(plan.fitsCap); assert.equal(plan.turns.length, 10); assert.equal(plan.models.length, 7)
       assert(plan.reservationUSD > .47); assert(plan.planningUSD < .47)
       const screenEstimate = hs.reduce((s, host) => s + screenTurns(turns.filter(t => t.lane === 'nsfw')).reduce((n, t) => n + adultCallCost(t, host).estimate, 0), 0)
       assert(Math.abs(plan.planningUSD - (screenEstimate + 1.5 * (plan.estimateUSD - screenEstimate))) < 1e-12)
       assert.equal(obj(captured[0].reading).calls, 70); assert.equal(obj(captured[0].reading).newCalls, 49)
       assert.equal(captured[0].normalCalls, 30); assert.deepEqual(captured[0].cutPrompts, []); assert.deepEqual(captured[0].cutModels, [])
+    } finally { console.log = log }
+  })
+  await test('--models replaces the adult list and --skip-normal leaves only the nsfw lane', () => {
+    const adultArgv = ['--adult', ...argv]
+    const chosen = parseArgs([...adultArgv, '--models', 'vendor/one,vendor/two', '--skip-normal'])
+    assert.deepEqual(chosen.models, ['vendor/one', 'vendor/two']); assert.equal(chosen.skipNormal, true)
+    assert.deepEqual(parseArgs([...adultArgv, '--models', ' vendor/one , vendor/one ']).models, ['vendor/one'])
+    assert.equal(parseArgs(adultArgv).models, undefined); assert.equal(parseArgs(adultArgv).skipNormal, false)
+    // Both flags are adult-only, wherever they appear on the line.
+    assert.throws(() => parseArgs(['--models', 'vendor/one', ...argv]), /requires --adult/)
+    assert.throws(() => parseArgs([...argv, '--skip-normal']), /requires --adult/)
+    assert.throws(() => parseArgs(['--hosts', ...argv.slice(1), '--models', 'vendor/one']), /requires --adult/)
+    // A malformed id is refused before any discovery request; a missing value too.
+    for (const bad of ['', 'one', 'vendor/', '/one', 'a/b/c', 'vendor/one two', 'vendor/one,']) {
+      assert.throws(() => parseArgs([...adultArgv, '--models', bad]), /vendor\/name/)
+    }
+    assert.throws(() => parseArgs([...adultArgv, '--models']), /vendor\/name/)
+    // Skipping the normal arms narrows the corpus query to the mature model only.
+    assert.deepEqual(corpusFilter(true, true).model, { $in: [NSFW] })
+    assert.deepEqual(corpusFilter(true).model, { $in: [BASELINE, NORMAL_ARMS[0].model, NSFW] })
+    // Requested-but-unlisted ids are reported, not silently dropped or called.
+    const ep = (host: string): Endpoint => ({ model: 'vendor/one', host, tag: host, quantization: 'fp8', price, pricing: {}, supported: [] })
+    const one: Host = { model: 'vendor/one', host: 'A', endpoints: [ep('A')], price }
+    assert.deepEqual(reportDrops(['vendor/one', 'vendor/two', 'vendor/three'], [one],
+      new Map([['vendor/one', [ep('A')]], ['vendor/two', []], ['vendor/three', [ep('GMICloud')]]])),
+      [{ model: 'vendor/two', reason: 'not listed by endpoint discovery' }, { model: 'vendor/three', reason: 'no selectable host' }])
+    // The plan covers exactly the requested list, with no normal arms.
+    const turns: Turn[] = Array.from({ length: 3 }, (_, i) => ({ ...turn, instance: String(i), sequence: i,
+      lane: 'nsfw', sampling: { temperature: .9, maxTokens: 260 } }))
+    const hs = ['vendor/one', 'vendor/two'].map((model, i) => ({ ...h, model, host: `Host${i}`, price: { prompt: 0, completion: 0, request: .01 } }))
+    const log = console.log, captured: Record<string, unknown>[] = []
+    console.log = (line: string) => { captured.push(obj(JSON.parse(line))) }
+    try {
+      const plan = printAdultPlan('plan-adult', turns, hs, [], .2, ['vendor/one', 'vendor/two', 'vendor/missing'], hs)
+      assert(plan.fitsCap); assert.deepEqual(plan.models, ['vendor/one', 'vendor/two']); assert.equal(plan.turns.length, 3)
+      assert.deepEqual(captured[0].normal, []); assert.equal(captured[0].normalCalls, 0)
+      assert.deepEqual(captured[0].unavailableModels, ['vendor/missing']); assert.deepEqual(captured[0].unavailableNormalArms, [])
+      assert.equal(obj(captured[0].reading).calls, 6)
+      assert.deepEqual(printAdultPlan('plan-adult', turns, hs, [], .2, ['vendor/one'], hs).models, ['vendor/one'])
     } finally { console.log = log }
   })
   await test('adult screen/read path has no judge, exact lanes, deterministic fields and full prose samples', async () => {
@@ -940,7 +1006,7 @@ async function selfTest() {
       const rows = await screen(turns.filter(t => t.lane === 'nsfw'), hs, budget, 'fixture', samples, invoke)
       assert(rows.every(r => !r.bans.length))
       const beforeReading = budget.charges.length
-      await adultReading(turns, rows, normal, budget, 'fixture', samples, invoke)
+      await adultReading(turns, rows, normal, ADULT_MODELS, budget, 'fixture', samples, invoke)
       assert.equal(requests.length, 10); assert.equal(budget.charges.length - beforeReading, 4)
       for (const row of rows) for (const screened of row.turns) {
         assert.equal(requests.filter(req => req.model === row.host.model && req.messages === screened.messages).length, 1)
@@ -1226,6 +1292,8 @@ async function main() {
     console.log('bun --no-env-file run scripts/narrator-model-ab.ts --self-test\n' +
       'bun --no-env-file run scripts/narrator-model-ab.ts --dry-run --instances <ids> --owner-users <ids> --max-usd <cap>\n' +
       '--hosts screens only; --quality runs host screen then quality; --adult runs both narrator lanes without a judge (exclusive with hosts/quality).\n' +
+      '--adult --models vendor/name,... replaces the adult model list (unlisted ids are dropped and reported);\n' +
+      '--adult --skip-normal skips the normal-lane arms, so only mature-lane turns run.\n' +
       '--samples-out <path> saves full replies as JSON. Add --dry-run for a free plan.\n' +
       'Bun may load MONGODB_URI normally; OPENROUTER_API_KEY is needed only for paid modes. Results are text-free JSON lines on stdout.')
     return
