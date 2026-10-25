@@ -16,7 +16,7 @@ const optionalEnvVars = {
   OPENROUTER_PREFERRED_P90_LATENCY_SECONDS: '3',
   PINECONE_INDEX: 'nexus-memories',
   // Narration models — swap freely for A/B (narration is prose-only, no JSON/tools needed).
-  NARRATION_SFW_MODEL: 'deepseek/deepseek-v3.2',
+  NARRATION_SFW_MODEL: 'deepseek/deepseek-v4.1-flash-1017',
   NARRATION_NSFW_MODEL: 'thedrummer/cydonia-24b-v4.1',
   // Comma-separated fallbacks used only after a pre-stream provider 429. Keep
   // the NSFW list to models suitable for mature narration; it must never fall

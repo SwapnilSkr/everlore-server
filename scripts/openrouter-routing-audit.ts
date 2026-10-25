@@ -1,5 +1,7 @@
 /** Pure regression checks for the chat transport boundary. No provider calls. */
-import { readFileSync } from 'node:fs'
+import assert from 'node:assert/strict'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
 import { buildChatRequest } from '../src/ai/client'
 import { AI_MODELS } from '../src/ai/models'
 import { env } from '../src/config/env'
@@ -77,6 +79,74 @@ for (const [label, request] of [
   `${label} retains the configured soft p90 latency preference`)
 }
 
+const orderedModel = 'deepseek/deepseek-v4.1-flash-1017'
+const hostOrder = ['InferenceNet', 'Relace', 'Reka']
+const ordered = buildChatRequest({ model: orderedModel, messages: [] }, true)
+check(JSON.stringify(ordered.params.provider?.order) === JSON.stringify(hostOrder)
+  && ordered.params.provider?.allow_fallbacks === true
+  && !('sort' in ordered.params.provider)
+  && JSON.stringify(ordered.params.provider?.ignore) === JSON.stringify(['GMICloud']),
+  '(a) v4.1 narration uses exact host order, automatic fallbacks, no sort and the global ban')
+check(JSON.stringify(ordered.params.reasoning) === JSON.stringify({ enabled: false }),
+  '(a) v4.1 streamed narration disables thinking')
+check(JSON.stringify(plain.params.provider?.ignore) === JSON.stringify(['GMICloud', 'AtlasCloud', 'SiliconFlow'])
+  && plain.params.provider?.sort === 'latency' && !('order' in plain.params.provider),
+  '(b) v3.2 narration merges model bans and retains latency sorting without order')
+
+for (const model of ['deepseek/deepseek-v4-flash-0731', 'xiaomi/mimo-v2.6-flash']) {
+  for (const stream of [false, true]) {
+    const { params } = buildChatRequest({ model, messages: [] }, stream)
+    check(JSON.stringify(params.provider?.ignore) === JSON.stringify(['GMICloud', 'DeepInfra'])
+      && params.provider?.sort === (stream ? 'latency' : 'throughput')
+      && !('order' in params.provider),
+    `${model} ${stream ? 'stream' : 'replay'} applies only its measured host bans`)
+  }
+}
+const replay = buildChatRequest({ model: orderedModel, messages: [] })
+check(JSON.stringify(replay.params.provider?.order) === JSON.stringify(hostOrder)
+  && replay.params.provider?.allow_fallbacks === true && !('sort' in replay.params.provider)
+  && JSON.stringify(replay.params.provider?.ignore) === JSON.stringify(['GMICloud'])
+  && !('reasoning' in replay.params),
+  'v4.1 replay retains host order and bans without a thinking override')
+const unruled = buildChatRequest({ model: 'gpt-4o-mini', messages: [] }, true)
+check(JSON.stringify(unruled.params.provider?.ignore) === JSON.stringify(['GMICloud'])
+  && unruled.params.provider?.sort === 'latency' && !('order' in unruled.params.provider)
+  && JSON.stringify(unruled.params.reasoning) === JSON.stringify({ enabled: false }),
+  'unlisted prose models keep only the global ban and streamed thinking override')
+const text = buildChatRequest({ model: orderedModel, messages: [], responseFormat: { type: 'text' } }, true)
+check(JSON.stringify(text.params.provider) === JSON.stringify(ordered.params.provider)
+  && JSON.stringify(text.params.reasoning) === JSON.stringify(ordered.params.reasoning),
+  'explicit text format uses the same streamed prose routing')
+
+for (const model of [orderedModel, 'deepseek/deepseek-v3.2', 'deepseek/deepseek-v4-flash-0731', 'xiaomi/mimo-v2.6-flash', 'gpt-4o-mini']) {
+  for (const stream of [false, true]) {
+    for (const [format, options] of [
+      ['schema', { responseSchema: schema }],
+      ['JSON schema', { responseFormat: { type: 'json_schema', json_schema: { name: 'audit', schema } } }],
+      ['JSON object', { responseFormat: { type: 'json_object' } }],
+    ] as const) {
+      const { params } = buildChatRequest({ model, messages: [], reasoningEffort: 'low', ...options }, stream)
+      check(!('order' in params.provider) && !('ignore' in params.provider)
+        && !('reasoning' in params) && params.provider?.sort === 'throughput'
+        && params.provider?.allow_fallbacks === true
+        && params.provider?.require_parameters === (format === 'JSON object' ? undefined : true),
+      `(c) ${model} ${stream ? 'stream' : 'chat'} ${format} has structured routing without prose overrides`)
+    }
+  }
+}
+for (const model of ['gpt-5.6-luna', 'openai/gpt-5.6-luna']) {
+  for (const stream of [false, true]) {
+    for (const structuredCall of [false, true]) {
+      const request = { model, messages: [], ...(structuredCall ? { responseSchema: schema } : {}) }
+      const { params } = buildChatRequest({ ...request, reasoningEffort: 'low' }, stream)
+      check(JSON.stringify(params.reasoning) === JSON.stringify({ effort: 'low' }),
+        `(d) ${model} ${stream ? 'stream' : 'chat'} ${structuredCall ? 'schema' : 'prose'} keeps effort-only reasoning`)
+      check(!('reasoning' in buildChatRequest(request, stream).params),
+        `(d) ${model} ${stream ? 'stream' : 'chat'} ${structuredCall ? 'schema' : 'prose'} adds no reasoning without effort`)
+    }
+  }
+}
+
 // The embedding module is deliberately outside this task's editable paths.
 const embedding = readFileSync(new URL('../src/ai/embedding.ts', import.meta.url), 'utf8')
 check(embedding.includes("import { getOpenAI } from '../config/openai'")
@@ -91,3 +161,46 @@ if (failures.length) {
   process.exit(1)
 }
 console.log('OpenRouter routing audit passed')
+
+// Opt-in production mutations: no provider calls, and exact restoration even
+// when an assertion fails. Only the client file owned by this brief is touched.
+if (process.argv.includes('--bites')) {
+  const path = new URL('../src/ai/client.ts', import.meta.url)
+  const original = readFileSync(path, 'utf8')
+  const mutations: Array<{ name: string; before: string; after: string; expected: string }> = [
+    { name: 'host order', before: "['InferenceNet', 'Relace', 'Reka']", after: "['Relace', 'InferenceNet', 'Reka']", expected: 'FAIL (a) v4.1 narration uses exact host order' },
+    { name: 'ordered fallbacks', before: 'allow_fallbacks: true', after: 'allow_fallbacks: false', expected: 'FAIL (a) v4.1 narration uses exact host order' },
+    { name: 'ordered sort omitted', before: '{ order: [...rules.order] }', after: "{ order: [...rules.order], sort: 'latency' }", expected: 'FAIL (a) v4.1 narration uses exact host order' },
+    { name: 'global prose ban', before: "['GMICloud'] as const", after: '[] as const', expected: 'FAIL (a) v4.1 narration uses exact host order' },
+    { name: 'thinking disabled', before: '{ reasoning: { enabled: false } }', after: '{ reasoning: { enabled: true } }', expected: 'FAIL (a) v4.1 streamed narration disables thinking' },
+    { name: 'AtlasCloud ban', before: "['AtlasCloud', 'SiliconFlow']", after: "['SiliconFlow']", expected: 'FAIL (b)' },
+    { name: 'SiliconFlow ban', before: "['AtlasCloud', 'SiliconFlow']", after: "['AtlasCloud']", expected: 'FAIL (b)' },
+    { name: 'unordered latency sort', before: "sort: narration ? 'latency' : 'throughput'", after: "sort: 'throughput'", expected: 'FAIL (b)' },
+    { name: 'v4-flash ban', before: "'deepseek/deepseek-v4-flash-0731': { ignore: ['DeepInfra'] }", after: "'deepseek/deepseek-v4-flash-0731': {}", expected: 'FAIL deepseek/deepseek-v4-flash-0731 stream' },
+    { name: 'MiMo ban', before: "'xiaomi/mimo-v2.6-flash': { ignore: ['DeepInfra'] }", after: "'xiaomi/mimo-v2.6-flash': {}", expected: 'FAIL xiaomi/mimo-v2.6-flash stream' },
+    { name: 'replay host rules', before: 'const rules = prose ?', after: 'const rules = narration ?', expected: 'FAIL v4.1 replay' },
+    { name: 'replay thinking unchanged', before: 'stream && prose && !isNextGenOpenAIModel(model)', after: 'prose && !isNextGenOpenAIModel(model)', expected: 'FAIL v4.1 replay' },
+    { name: 'model ban scope', before: 'NARRATION_HOST_RULES[model] : undefined', after: "NARRATION_HOST_RULES['deepseek/deepseek-v3.2'] : undefined", expected: 'FAIL unlisted prose models' },
+    { name: 'explicit text prose', before: "(!req.responseFormat || req.responseFormat.type === 'text')", after: '!req.responseFormat', expected: 'FAIL explicit text format' },
+    { name: 'structured order isolation', before: 'const rules = prose ?', after: 'const rules = true ?', expected: 'FAIL (c) deepseek/deepseek-v4.1-flash-1017' },
+    { name: 'structured ignore isolation', before: '...(prose ? { ignore:', after: '...(true ? { ignore:', expected: 'FAIL (c)' },
+    { name: 'structured thinking isolation', before: 'stream && prose && !isNextGenOpenAIModel(model)', after: 'stream && !isNextGenOpenAIModel(model)', expected: 'FAIL (c)' },
+    { name: 'structured throughput sort', before: "sort: narration ? 'latency' : 'throughput'", after: "sort: 'latency'", expected: 'FAIL (c)' },
+    { name: 'structured parameter requirement', before: 'require_parameters: true', after: 'require_parameters: false', expected: 'FAIL (c)' },
+    { name: 'OpenAI effort-only reasoning', before: 'params.reasoning = { effort: req.reasoningEffort }', after: 'params.reasoning = { effort: req.reasoningEffort, enabled: false }', expected: 'FAIL (d)' },
+    { name: 'OpenAI no-effort isolation', before: 'stream && prose && !isNextGenOpenAIModel(model)', after: 'stream && prose', expected: 'FAIL (d) gpt-5.6-luna stream prose adds no reasoning without effort' },
+  ]
+  for (const mutation of mutations) {
+    try {
+      assert.equal(original.split(mutation.before).length, 2, `one mutation target: ${mutation.name}`)
+      writeFileSync(path, original.replace(mutation.before, mutation.after))
+      const child = spawnSync('bun', ['--no-env-file', 'run', import.meta.path], { encoding: 'utf8', timeout: 10000 })
+      assert.equal(child.error, undefined, `child executed: ${mutation.name}`)
+      assert.equal(child.status, 1, `mutation must fail: ${mutation.name}`)
+      assert.ok((child.stdout + child.stderr).includes(mutation.expected), `intended failure: ${mutation.name}\n${child.stdout}${child.stderr}`)
+      console.log(`BITE ${mutation.name}: exit ${child.status}; ${mutation.expected}`)
+    } finally { writeFileSync(path, original) }
+  }
+  assert.equal(readFileSync(path, 'utf8'), original)
+  console.log(`${mutations.length}/${mutations.length} mutations rejected; client restored byte for byte`)
+}

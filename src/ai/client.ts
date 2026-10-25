@@ -54,15 +54,28 @@ function applyCompletionDialect(params: Record<string, any>, model: string): voi
  * tokens and a 29-43 s first word (GMICloud), against ~1-2 s elsewhere. */
 export const NARRATION_IGNORED_PROVIDERS = ['GMICloud'] as const
 
+const NARRATION_HOST_RULES: Record<string, { order?: readonly string[]; ignore?: readonly string[] }> = {
+  // Oct 25 2026: InferenceNet/Relace gave a 0.7 s first word at ~108 tok/s; Reka is the third preference.
+  'deepseek/deepseek-v4.1-flash-1017': { order: ['InferenceNet', 'Relace', 'Reka'] },
+  // Oct 25 2026: AtlasCloud/SiliconFlow took 4.0/3.0 s to the first word.
+  'deepseek/deepseek-v3.2': { ignore: ['AtlasCloud', 'SiliconFlow'] },
+  // Oct 25 2026: DeepInfra errored or returned empty replies.
+  'deepseek/deepseek-v4-flash-0731': { ignore: ['DeepInfra'] },
+  // Oct 25 2026: DeepInfra took 55 s to the first word.
+  'xiaomi/mimo-v2.6-flash': { ignore: ['DeepInfra'] },
+}
+
 /** Narration is short, so favor the first word; JSON passes favor throughput.
  * Keep the p90 preference soft so missing telemetry never excludes a host. */
-function providerPrefsFor(requireParameters: boolean, narration: boolean, prose: boolean): Record<string, unknown> {
+function providerPrefsFor(model: string, requireParameters: boolean, narration: boolean, prose: boolean): Record<string, unknown> {
   const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
+  const rules = prose ? NARRATION_HOST_RULES[model] : undefined
   return {
     provider: {
-      sort: narration ? 'latency' : 'throughput',
+      // An explicit order must take precedence over automatic sorting.
+      ...(rules?.order ? { order: [...rules.order] } : { sort: narration ? 'latency' : 'throughput' }),
       // Replays and regenerations write prose too, so they skip the host as well.
-      ...(prose ? { ignore: [...NARRATION_IGNORED_PROVIDERS] } : {}),
+      ...(prose ? { ignore: [...new Set([...NARRATION_IGNORED_PROVIDERS, ...(rules?.ignore ?? [])])] } : {}),
       allow_fallbacks: true,
       ...(requireParameters ? { require_parameters: true } : {}),
       ...(Number.isFinite(p90) && p90 > 0
@@ -145,14 +158,17 @@ export function isRateLimitError(error: unknown): boolean {
   )
 }
 
-function routingParamsFor(req: LLMRequest, stream: boolean): Record<string, unknown> {
+function routingParamsFor(req: LLMRequest, model: string, stream: boolean): Record<string, unknown> {
   const prose = !req.responseSchema && (!req.responseFormat || req.responseFormat.type === 'text')
   return {
     ...providerPrefsFor(
+      model,
       Boolean(req.responseSchema || req.responseFormat?.type === 'json_schema'),
       stream && prose,
       prose,
     ),
+    // Hybrid narrators must emit words immediately, including hedge/fallback attempts.
+    ...(stream && prose && !isNextGenOpenAIModel(model) ? { reasoning: { enabled: false } } : {}),
     ...(req.sessionId ? { session_id: req.sessionId.slice(0, 256) } : {}),
   }
 }
@@ -171,7 +187,7 @@ export function buildChatRequest(req: LLMRequest, stream = false): {
     temperature: req.temperature ?? 0.8,
     max_tokens: req.maxTokens ?? 600,
     ...(stream ? { stream: true } : {}),
-    ...routingParamsFor(req, stream),
+    ...routingParamsFor(req, model, stream),
   }
 
   if (req.responseSchema) {
