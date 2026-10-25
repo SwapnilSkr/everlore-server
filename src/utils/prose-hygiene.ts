@@ -605,10 +605,267 @@ export function validateProseHygiene(
   return issues;
 }
 
+/**
+ * HOUSE PROSE FORMAT, ENFORCED STRUCTURALLY.
+ *
+ * The narrator is asked for exactly one shape (`RESPONSE FORMAT` in
+ * `prompt-builder`): only the words spoken ALOUD sit in double quotes, and every
+ * other word — scene, action, body language, and the dialogue attribution
+ * itself — sits in single-asterisk italics. Models drift from it in two ways,
+ * and both keep the marker counts BALANCED and keep quoted speech OUTSIDE the
+ * markers, which is why `validateProseHygiene` never saw them:
+ *
+ *   *My grip tightens, pulling your head back. "You're eager, aren't you?"*
+ *   *I hiss, my fangs grazing your skin. "Mine,"* I snarl, my eyes on yours.
+ *
+ * In the first, speech is inside the italic run (so a renderer paints it as
+ * narration). In the second, the attribution is left as plain text (so it is
+ * painted as speech) — and the run closes through the quote. Neither is a word
+ * problem, so neither can be fixed by asking the model again: the markers are
+ * moved here, deterministically, around words that are never rewritten.
+ *
+ * The rules are structural, not a phrase list:
+ *   - while an italic run is open, an opening quote closes the run first and the
+ *     run reopens after the quote (whitespace goes OUTSIDE the markers);
+ *   - any word left outside markers and not inside quotes is narration, so it is
+ *     wrapped in italics;
+ *   - a `**`/`***` run counts as ONE marker, curly quotes become `"`;
+ *   - two adjacent markers never collapse into an empty `**` pair.
+ *
+ * It runs incrementally so the live stream can use the very same rules: the
+ * streaming caller gets the fix as the words arrive instead of after the turn,
+ * and a chunk boundary can never change the result.
+ */
+type ProseFormatState =
+  /** Between runs: separators, or the start of a plain narration stretch. */
+  | "outside"
+  /** Inside a run the model opened itself. */
+  | "italics"
+  /** Inside the italic run this normaliser opened around plain narration. */
+  | "auto"
+  /** Inside quoted speech. */
+  | "speech"
+  /** Right after a quote that interrupted an italic run; decides the reopen. */
+  | "pending";
+
+export interface ProseFormatNormalizer {
+  /** Feed the next piece of prose; returns the text safe to show so far. */
+  push(chunk: string): string;
+  /** Close any run this normaliser opened; returns the remaining text. */
+  end(): string;
+}
+
+const FORMAT_SPACE = /\s/u;
+const FORMAT_WORD = /[\p{L}\p{N}\p{M}]/u;
+
+export function makeProseFormatNormalizer(): ProseFormatNormalizer {
+  let out = "";
+  let published = 0;
+  let state: ProseFormatState = "outside";
+  /** Whitespace whose side of the next marker is not decided yet. */
+  let held = "";
+  /** A `*` waiting for its neighbour, so a run of asterisks is ONE marker. */
+  let starHeld = false;
+  /** The quote we are inside began inside an italic run. */
+  let reopenAfterQuote = false;
+  let closed = false;
+
+  const take = (): string => {
+    const delta = out.slice(published);
+    published = out.length;
+    return delta;
+  };
+  const flushHeld = (): void => {
+    if (!held) return;
+    out += held;
+    held = "";
+  };
+
+  const marker = (): void => {
+    // Asterisks inside a spoken line are literal text, not narration markers.
+    if (state === "speech") {
+      out += "*";
+      return;
+    }
+    if (state === "outside") {
+      out += "*";
+      state = "italics";
+      return;
+    }
+    if (state === "italics") {
+      out += "*";
+      flushHeld();
+      state = "outside";
+      return;
+    }
+    if (state === "auto") {
+      // The model's own run continues the narration we already wrapped: absorb
+      // it rather than closing and reopening, which would emit an empty `**`.
+      flushHeld();
+      state = "italics";
+      return;
+    }
+    // The run the quote interrupted ends here; its close marker is this one.
+    flushHeld();
+    state = "outside";
+  };
+
+  const step = (c: string): void => {
+    const quote = c === '"' || c === "“" || c === "”";
+
+    if (state === "speech") {
+      if (quote) {
+        out += '"';
+        state = reopenAfterQuote ? "pending" : "outside";
+      } else {
+        out += c;
+      }
+      return;
+    }
+
+    if (state === "pending") {
+      if (FORMAT_SPACE.test(c)) {
+        held += c;
+        return;
+      }
+      if (quote) {
+        // Two quoted lines in a row stay speech; nothing to reopen between them.
+        flushHeld();
+        out += '"';
+        state = "speech";
+        return;
+      }
+      if (FORMAT_WORD.test(c)) {
+        flushHeld();
+        out += "*";
+        state = "italics";
+        out += c;
+        return;
+      }
+      flushHeld();
+      out += c;
+      return;
+    }
+
+    if (state === "italics") {
+      if (FORMAT_SPACE.test(c)) {
+        held += c;
+        return;
+      }
+      if (quote) {
+        out += "*";
+        flushHeld();
+        out += '"';
+        state = "speech";
+        reopenAfterQuote = true;
+        return;
+      }
+      flushHeld();
+      out += c;
+      return;
+    }
+
+    if (state === "auto") {
+      // A line break ends a plain narration stretch, so no marker can ever sit
+      // across one (the choices sentinel arrives on its own line).
+      if (c === "\n") {
+        out += "*";
+        flushHeld();
+        out += c;
+        state = "outside";
+        return;
+      }
+      if (FORMAT_SPACE.test(c)) {
+        held += c;
+        return;
+      }
+      if (quote) {
+        out += "*";
+        flushHeld();
+        out += '"';
+        state = "speech";
+        reopenAfterQuote = false;
+        return;
+      }
+      flushHeld();
+      out += c;
+      return;
+    }
+
+    // outside
+    if (FORMAT_SPACE.test(c)) {
+      out += c;
+      return;
+    }
+    if (quote) {
+      out += '"';
+      state = "speech";
+      reopenAfterQuote = false;
+      return;
+    }
+    if (FORMAT_WORD.test(c)) {
+      out += "*";
+      state = "auto";
+      out += c;
+      return;
+    }
+    out += c;
+  };
+
+  const feed = (c: string): void => {
+    if (c === "*") {
+      if (!starHeld) {
+        starHeld = true;
+        return;
+      }
+      starHeld = false;
+      marker();
+      return;
+    }
+    if (starHeld) {
+      starHeld = false;
+      marker();
+    }
+    step(c);
+  };
+
+  return {
+    push(chunk: string): string {
+      if (closed) return "";
+      for (const c of String(chunk || "")) feed(c);
+      return take();
+    },
+    end(): string {
+      if (!closed) {
+        closed = true;
+        if (starHeld) {
+          starHeld = false;
+          marker();
+        }
+        // Close only the run we opened. An unbalanced run the model wrote is
+        // left exactly as it was: inventing a close would change its meaning.
+        if (state === "auto") {
+          out += "*";
+          state = "outside";
+        }
+        flushHeld();
+      }
+      return take();
+    },
+  };
+}
+
+export function normalizeProseFormat(narrative: string): string {
+  const normalizer = makeProseFormatNormalizer();
+  return normalizer.push(String(narrative || "")) + normalizer.end();
+}
+
+/**
+ * One name for "make these markers say what they mean": straight quotes, one
+ * marker per asterisk run, quotes out of italic runs, plain narration italicised.
+ */
 export function normalizeNarrationMarkers(narrative: string): string {
-  return String(narrative || "")
-    .replace(/[“”]/g, '"')
-    .replace(/\*\*([\s\S]*?)\*\*/g, (_m, inner) => `*${String(inner).trim()}*`);
+  return normalizeProseFormat(narrative);
 }
 
 /**

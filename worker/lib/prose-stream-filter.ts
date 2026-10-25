@@ -1,6 +1,16 @@
 /**
- * Guards the player-facing narration stream against the occasional provider
- * that ignores the prose-only instruction and emits the old JSON envelope.
+ * Guards the player-facing narration stream against two things the narrator
+ * gets wrong often enough to be a pattern, not an accident:
+ *
+ * 1. a provider that ignores the prose-only instruction and emits the old JSON
+ *    envelope instead of prose (below);
+ * 2. the house prose format itself — only spoken words in double quotes, every
+ *    other word in single-asterisk italics. The adult narrator in particular
+ *    writes `*I hiss. "Mine,"* I snarl,` and `*I hiss. "Keep still."*`, which
+ *    paints speech as narration and narration as speech. Those markers are
+ *    moved by {@link makeProseFormatNormalizer} as the words arrive, so the
+ *    player never sees the broken form even for a moment, and the prose the
+ *    turn is persisted with is the prose that was shown.
  *
  * Normal prose passes through immediately. A completion whose opening is a
  * JSON object containing `narrative` is held until it is complete, then only
@@ -8,6 +18,8 @@
  * story that starts with `{` must not be discarded merely because it is not
  * valid JSON with the expected field.
  */
+import { makeProseFormatNormalizer, normalizeProseFormat } from '../../src/utils/prose-hygiene'
+
 export interface ProseStreamFilter {
   push(chunk: string): string
   end(): string
@@ -31,11 +43,33 @@ function looksLikeNarrativeEnvelope(value: string): boolean {
   return /^\s*\{\s*["']narrative["']\s*:/i.test(value)
 }
 
+/**
+ * The choices tail is hidden metadata, not prose: `choice-tail.ts` parses it out
+ * of exactly this stream (a `===CHOICES===` heading, or a bare `[act]`/`[say]`
+ * row as its backstop). Prose formatting must therefore never touch it — an
+ * asterisk inside that heading would stop it matching, and the tail would leak
+ * to the player as narration. Both shapes are protocol syntax, not wording: a
+ * `=` heading is punctuation no story sentence uses, and a row opens the line
+ * with a bracket.
+ */
+function startsChoicesProtocol(c: string, lineClean: boolean): boolean {
+  return c === '=' || (c === '[' && lineClean)
+}
+
+function isLineFiller(c: string): boolean {
+  return c === ' ' || c === '\t' || c === '\r'
+}
+
 export function makeProseStreamFilter(): ProseStreamFilter {
   let raw = ''
   let mode: 'undecided' | 'prose' | 'json' = 'undecided'
   let visible = ''
   let malformedEnvelope = false
+  const format = makeProseFormatNormalizer()
+  /** Only spaces/tabs seen since this line began. */
+  let lineClean = true
+  /** Past the prose: the choices tail and anything after it pass through as-is. */
+  let protocol = false
 
   return {
     push(chunk: string): string {
@@ -52,15 +86,32 @@ export function makeProseStreamFilter(): ProseStreamFilter {
       }
 
       if (mode === 'json') return ''
-      visible += chunk
-      return chunk
+
+      let delta = ''
+      for (const c of chunk) {
+        if (!protocol && startsChoicesProtocol(c, lineClean)) {
+          protocol = true
+          // Ends the formatter, closing only a run it opened itself; text it
+          // was still holding belongs before the protocol line.
+          delta += format.end()
+        }
+        delta += protocol ? c : format.push(c)
+        if (c === '\n') lineClean = true
+        else if (!isLineFiller(c)) lineClean = false
+      }
+      visible += delta
+      return delta
     },
 
     end(): string {
-      if (mode !== 'json') return ''
+      if (mode !== 'json') {
+        const rest = format.end()
+        visible += rest
+        return rest
+      }
       const narrative = narrativeFromJson(raw)
       if (narrative != null) {
-        visible = narrative
+        visible = normalizeProseFormat(narrative)
         return visible
       }
       // Do not ever render an incomplete legacy envelope as if it were prose.
@@ -72,7 +123,7 @@ export function makeProseStreamFilter(): ProseStreamFilter {
         visible = ''
         return ''
       }
-      visible = raw
+      visible = normalizeProseFormat(raw)
       return visible
     },
 

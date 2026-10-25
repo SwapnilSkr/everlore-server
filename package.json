@@ -15,6 +15,7 @@
     "audit:all": "bun --no-env-file run scripts/run-pure-audits.ts && bun --no-env-file run scripts/codex-media-carryover-audit.ts && bun --no-env-file run scripts/seed-catalog-audit.ts && bun --no-env-file run scripts/vector-store-audit.ts",
     "audit:narration-hedge": "bun --no-env-file run scripts/narration-hedge-audit.ts",
     "audit:beat-ledger-split": "bun --no-env-file run scripts/beat-ledger-split-audit.ts",
+    "audit:prose-format": "bun --no-env-file run scripts/prose-format-audit.ts",
     "audit:memory-archive-null": "bun --no-env-file run scripts/memory-archive-null-audit.ts",
     "audit:mongo-index-partial": "bun --no-env-file run scripts/mongo-index-partial-audit.ts",
     "audit:choice-hedge": "bun --no-env-file run scripts/choice-hedge-audit.ts",
