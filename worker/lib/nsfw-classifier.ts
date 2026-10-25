@@ -170,6 +170,22 @@ export function scoreScene(
   }
 }
 
+/** Shared verbatim with the measured content_intent request. */
+export function contentIntentMessages(text: string): Array<{ role: string; content: string }> {
+  return [
+    {
+      role: 'system',
+      content:
+        'You decide if a single roleplay turn expresses unambiguous SEXUAL INTENT — ' +
+        'a clear move to initiate or continue a sex act — even when phrased in clean, ' +
+        'non-explicit language (e.g. "take me", "I give myself to you", "I want you inside me"). ' +
+        'Romance, flirting, kissing, affection, or tension WITHOUT a clear move to sex is NOT sexual intent. ' +
+        'When unsure, answer false. Return ONLY JSON: {"sexual_intent": true|false}.',
+    },
+    { role: 'user', content: text.slice(0, 600) },
+  ]
+}
+
 /**
  * Borderline-intent deferral (risk G). The lexicon catches explicit VOCABULARY
  * but misses explicit INTENT in clean language ("take me", "I give myself to
@@ -198,18 +214,7 @@ export async function classifyBorderlineIntent(
       maxTokens: 16,
       timeoutMs: 6000,
       responseFormat: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You decide if a single roleplay turn expresses unambiguous SEXUAL INTENT — ' +
-            'a clear move to initiate or continue a sex act — even when phrased in clean, ' +
-            'non-explicit language (e.g. "take me", "I give myself to you", "I want you inside me"). ' +
-            'Romance, flirting, kissing, affection, or tension WITHOUT a clear move to sex is NOT sexual intent. ' +
-            'When unsure, answer false. Return ONLY JSON: {"sexual_intent": true|false}.',
-        },
-        { role: 'user', content: text.slice(0, 600) },
-      ],
+      messages: contentIntentMessages(text),
     })
     const parsed = JSON.parse(raw) as { sexual_intent?: boolean }
     return parsed?.sexual_intent === true ? 'nsfw' : 'sfw'

@@ -22,7 +22,6 @@ import {
 } from '../../src/models/generation-log.model'
 import { buildPrompt } from '../../src/utils/prompt-builder'
 import { lengthMaxTokens } from '../../src/utils/narrative-styles'
-import { NSFW_MODE } from '../../src/utils/chat-modes'
 import { parsePlayerInput } from '../../src/utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-mutator'
 import { countTokens } from '../../src/utils/token-counter'
@@ -31,7 +30,8 @@ import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { instanceService } from '../../src/services/instance.service'
 import { liveInstanceExists } from '../../src/utils/live-instance'
 import { generationLockKey, finishGenerationTurn, markGenerationStreamEnd, waitForPriorGeneration } from '../../src/utils/generation-lock'
-import { scoreScene, classifyBorderlineIntent } from '../lib/nsfw-classifier'
+import { classifyBorderlineIntent } from '../lib/nsfw-classifier'
+import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
 import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
 import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
@@ -444,6 +444,14 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
     userNsfwEnabled,
   } = job.data
 
+  // Input-only work starts at pickup, ahead of the live check and prior tail.
+  // The routing snapshot is read synchronously immediately before narration.
+  const intentRouter = startIntentRouter({
+    capable: !!dispatchedSession.is_nsfw_capable, enabled: !!userNsfwEnabled,
+    mode: dispatchedSession.mode,
+    text: isContinuation ? '' : worldActionNarration(worldAction) || userMessage,
+  })
+  try {
   // The query embedding is the slowest thing prep waits on (p50 539 ms, p90
   // 3.5 s against 2 ms for a Mongo read), and nothing about it depends on the
   // live check, the fence or the recent-events read. So it starts first and
@@ -497,7 +505,7 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
     embedding: earlyEmbedding,
   }) : undefined
 
-  // Only the live check, input-only embedding and raw vector searches precede this gate.
+  // Only the live check and input-only speculation precede this gate.
   // In particular, dispatch's session can predate the prior tail's cache write.
   const priorTurnWaitMs = await waitForPriorGeneration(
     redis, generationLockKey(playerId, instanceId), String(job.id), job.data.priorTurnId,
@@ -856,48 +864,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       }]`
     : undefined
 
-  // Decide routing first so the prompt asks for the right output shape.
-  // NSFW routing requires BOTH the world being mature-capable AND the player
-  // having opted in via their account preference. Either alone keeps it SFW.
-  let modelId = session.model_preferences?.narration_sfw || AI_MODELS.narrationSfw
-  let isNsfwTurn = false
-
-  // 'Ardent' chat mode is the structured NSFW on-ramp and the PRIMARY intent
-  // signal: when the world allows it and the player opted in, it forces the
-  // explicit path. Otherwise THIS turn routes on the deterministic lexicon score
-  // alone — pure regex/string work, no network — so NOTHING is added to TTFT.
-  // Clean-language intent the word list misses (score 1–2) can't be judged here
-  // without an LLM call, and that call would sit on the critical path before the
-  // first token. Instead we flag the turn as borderline and run the intent check
-  // AFTER the stream (see `nsfwIntent` below), persisting a signal that arms the
-  // NEXT turn's momentum. Cost: a one-turn lag on the first clean escalation —
-  // the irreducible floor under a zero-TTFT constraint.
-  const modeWantsNsfw = session.mode === NSFW_MODE
-  let sceneClassification: 'sfw' | 'nsfw' = 'sfw'
-  let borderlineForIntent = false
-  let currentTurnScore = 0
-  if (session.is_nsfw_capable && userNsfwEnabled) {
-    if (modeWantsNsfw) {
-      sceneClassification = 'nsfw'
-    } else {
-      // Keep the current turn's score separate from scene momentum. Only a
-      // current, verified sexual signal may arm the following turn; otherwise a
-      // prior false-positive can keep Free Play permanently on the NSFW route.
-      currentTurnScore = scoreScene(classifyText, []).score
-      const scored = scoreScene(classifyText, recentEvents)
-      sceneClassification = scored.decision
-      borderlineForIntent = currentTurnScore >= 1 && currentTurnScore <= 2
-    }
-  }
-  if (sceneClassification === 'nsfw') {
-    modelId = session.model_preferences?.narration_nsfw || AI_MODELS.narrationNsfw
-    isNsfwTurn = true
-  }
-  const requestedModelId = modelId
-  const narrationFallbackModels = isNsfwTurn
-    ? AI_MODELS.narrationNsfwFallbacks
-    : AI_MODELS.narrationSfwFallbacks
-
+  // Prompt/choice construction is route-independent (always plain prose).
+  // Decide only after it is built to give the input-only check all prep headroom.
   // Choices are deliberately NOT authored in a prose-model tail. Different
   // narrators treat markdown/quotes inconsistently, which can mix the chip
   // heading with its prefilled value. The structured choice pass below is now
@@ -1091,6 +1059,25 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   let streamFailure: unknown = null
   let fallbackAttempts: Array<{ from: string; to: string }> = []
   let narrationRoute: { provider?: string; hedged: boolean; hedgeWinner?: 'primary' | 'hedge' } = { hedged: false }
+  const routingDecidedAt = Date.now()
+  const { trace: sameTurnRouterTrace, routerSettled, sceneClassification,
+    currentTurnScore, borderlineForIntent } = decideIntentRoute({
+    router: intentRouter, capable: !!session.is_nsfw_capable,
+    enabled: !!userNsfwEnabled, mode: session.mode, text: classifyText, recentEvents,
+  })
+  const intentRouterLogFields = {
+    same_turn_router: sameTurnRouterTrace,
+    routing_decided_at: new Date(routingDecidedAt),
+    pickup_to_routing_ms: routingDecidedAt - jobStartedAt,
+  }
+  const isNsfwTurn = sceneClassification === 'nsfw'
+  let modelId = isNsfwTurn
+    ? session.model_preferences?.narration_nsfw || AI_MODELS.narrationNsfw
+    : session.model_preferences?.narration_sfw || AI_MODELS.narrationSfw
+  const requestedModelId = modelId
+  const narrationFallbackModels = isNsfwTurn
+    ? AI_MODELS.narrationNsfwFallbacks
+    : AI_MODELS.narrationSfwFallbacks
   try {
     const narration = await callLLMStreamWithFallback(
       {
@@ -3008,7 +2995,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   })
   timeMs += Date.now() - timeAnchorStartedAt
 
-  // Off the TTFT path (the prose already streamed): for a borderline turn, ask
+  // A valid same-turn result has already answered this question; its negative
+  // also zeroed currentTurnScore, preventing the lexicon from rearming momentum.
+  // Off the TTFT path (the prose already streamed): for a fallback borderline turn, ask
   // the cheap intent judge whether the PLAYER expressed sexual intent in clean
   // language the lexicon missed. This does NOT change the turn that just streamed;
   // it persists `nsfw_intent` so scoreScene's momentum routes the NEXT turn to the
@@ -3020,8 +3009,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   const judgedNsfwIntent = borderlineForIntent ? (await classifyBorderlineIntent(classifyText)) === 'nsfw' : false
   const contentIntentMs =
     contentIntentStartedAt === undefined ? undefined : Date.now() - contentIntentStartedAt
-  const nsfwIntent = judgedNsfwIntent || currentTurnScore >= 3
-  const nsfwIntentSource: 'direct_explicit' | 'intent_judge' | undefined = judgedNsfwIntent
+  const sameTurnNsfwIntent = routerSettled && sameTurnRouterTrace.sexual === true
+  const nsfwIntent = sameTurnNsfwIntent || judgedNsfwIntent || currentTurnScore >= 3
+  const nsfwIntentSource: 'direct_explicit' | 'intent_judge' | undefined = sameTurnNsfwIntent || judgedNsfwIntent
     ? 'intent_judge'
     : currentTurnScore >= 3
       ? 'direct_explicit'
@@ -3193,6 +3183,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     edit_history: [],
     scene_tag: parsed.scene_tag,
     ...(nsfwIntent ? { nsfw_intent: true, nsfw_intent_source: nsfwIntentSource } : {}),
+    ...(sameTurnNsfwIntent ? { nsfw_intent_router_source: 'same_turn_router' as const } : {}),
     time_anchor: timeAnchor,
     location_anchor: locationAnchor,
     created_at: eventCreatedAt,
@@ -3586,6 +3577,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         user_nsfw_enabled: !!userNsfwEnabled,
         scene_classification: sceneClassification,
         nsfw_path: isNsfwTurn,
+        ...intentRouterLogFields,
         model_used: modelId,
         ...(modelId !== requestedModelId ? { requested_model: requestedModelId } : {}),
         ...(fallbackAttempts.length ? { fallback_attempts: fallbackAttempts } : {}),
@@ -3667,4 +3659,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   void dispatchPostProcessOutbox().catch(() => {})
 
   return { eventId: eventIdStr, sequence: nextSequence }
+  } finally {
+    intentRouter.cancel()
+  }
 }

@@ -22,7 +22,7 @@ const optionalEnvVars = {
   // the NSFW list to models suitable for mature narration; it must never fall
   // back into a SFW provider simply because capacity is tight.
   NARRATION_SFW_FALLBACK_MODELS: 'mistralai/mistral-small-3.2-24b-instruct,meta-llama/llama-3.1-70b-instruct,mistralai/mistral-nemo',
-  NARRATION_NSFW_FALLBACK_MODELS: 'thedrummer/skyfall-36b-v2,thedrummer/unslopnemo-12b',
+  NARRATION_NSFW_FALLBACK_MODELS: 'meta-llama/llama-4-maverick,thedrummer/skyfall-36b-v2,thedrummer/unslopnemo-12b',
   // OpenRouter image-generation model (avatars + chat backgrounds).
   IMAGE_MODEL: 'bytedance-seed/seedream-4.5',
   // One-shot creation autofill (drafts a whole world/character). Cheap, strong JSON + creative.
@@ -90,6 +90,9 @@ const optionalEnvVars = {
    *  classifier (risk G). Off ⇒ borderline stays SFW as today. Chat-mode
    *  (Ardent) opt-in is the primary signal and is independent of this flag. */
   NSFW_INTENT_DEFER_ENABLED: 'false',
+  NSFW_SAME_TURN_ROUTER: 'on',
+  NSFW_SAME_TURN_ROUTER_MODEL: 'deepseek/deepseek-v4.1-flash-1017',
+  NSFW_SAME_TURN_ROUTER_HOST: 'Relace',
   ADMIN_USERNAME: '',
   ADMIN_PASSWORD: '',
   // Throughput knobs — defaults are the safe production values. Crank these via
@@ -179,6 +182,9 @@ export interface Env {
   KEEP_WARM_IDLE_MS: number
   KEEP_WARM_CHECK_MS: number
   NSFW_INTENT_DEFER_ENABLED: boolean
+  NSFW_SAME_TURN_ROUTER: 'on' | 'off'
+  NSFW_SAME_TURN_ROUTER_MODEL: string
+  NSFW_SAME_TURN_ROUTER_HOST: string
   ADMIN_USERNAME: string
   ADMIN_PASSWORD: string
   GENERATION_CONCURRENCY: number
@@ -211,6 +217,9 @@ function loadEnv(): Env {
   if (missing.length > 0) {
     console.warn(`Warning: Missing env vars: ${missing.join(', ')}. Using defaults for development.`)
   }
+
+  const sameTurnRouter = process.env.NSFW_SAME_TURN_ROUTER || optionalEnvVars.NSFW_SAME_TURN_ROUTER
+  if (sameTurnRouter !== 'on' && sameTurnRouter !== 'off') throw new Error('Invalid NSFW_SAME_TURN_ROUTER')
 
   const configuredPromoCap = Number(process.env.INK_PROMO_DAILY_TURN_CAP || optionalEnvVars.INK_PROMO_DAILY_TURN_CAP)
 
@@ -295,6 +304,9 @@ function loadEnv(): Env {
     KEEP_WARM_IDLE_MS: Number(process.env.KEEP_WARM_IDLE_MS || optionalEnvVars.KEEP_WARM_IDLE_MS),
     KEEP_WARM_CHECK_MS: Number(process.env.KEEP_WARM_CHECK_MS || optionalEnvVars.KEEP_WARM_CHECK_MS),
     NSFW_INTENT_DEFER_ENABLED: process.env.NSFW_INTENT_DEFER_ENABLED === 'true',
+    NSFW_SAME_TURN_ROUTER: sameTurnRouter,
+    NSFW_SAME_TURN_ROUTER_MODEL: process.env.NSFW_SAME_TURN_ROUTER_MODEL || optionalEnvVars.NSFW_SAME_TURN_ROUTER_MODEL,
+    NSFW_SAME_TURN_ROUTER_HOST: process.env.NSFW_SAME_TURN_ROUTER_HOST || optionalEnvVars.NSFW_SAME_TURN_ROUTER_HOST,
     ADMIN_USERNAME: process.env.ADMIN_USERNAME || optionalEnvVars.ADMIN_USERNAME,
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || optionalEnvVars.ADMIN_PASSWORD,
     GENERATION_CONCURRENCY: Number(process.env.GENERATION_CONCURRENCY || optionalEnvVars.GENERATION_CONCURRENCY),
