@@ -15,6 +15,7 @@ import { loadNsfwLexicon } from './lib/nsfw-classifier'
 import { log } from '../src/utils/logger'
 import { billingService } from '../src/services/billing.service'
 import { startKeepWarm } from '../src/services/keep-warm'
+import { warmTokenEncoder } from '../src/utils/token-counter'
 import { startVectorFreshnessFloorRecovery } from '../src/services/vector-store'
 
 /** Billing must never turn an already-visible story result into a worker error.
@@ -61,6 +62,9 @@ async function main() {
   // connection. Warm both now and keep them warm while the box is quiet; this
   // never blocks startup.
   const keepWarm = startKeepWarm()
+  // The token encoder is CPU work, not a connection: build it before taking
+  // jobs so the first turn after a restart doesn't pay ~600 ms in prompt build.
+  warmTokenEncoder()
 
   // Warm the NSFW routing lexicon from Mongo (falls back to built-ins if unseeded).
   await loadNsfwLexicon(true)

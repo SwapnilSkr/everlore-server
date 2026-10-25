@@ -30,7 +30,7 @@
  */
 import assert from 'node:assert/strict'
 import { mock } from 'bun:test'
-import { readFileSync } from 'node:fs'
+import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import type { VectorIndex } from '../src/services/vector-store'
 
 let pass = 0
@@ -850,6 +850,56 @@ await check('bite (h) last use: dropping the note in requestEmbedding fails it',
   )
   await assert.rejects(() => embeddingUseCounts(broken))
   await embeddingUseCounts(loadEmbedding(embeddingSource))
+})
+
+// ── (j) the token encoder is built at worker startup, before any job ───────
+// Building it took ~600 ms on the prod box and landed in the first turn's
+// prompt build after every restart; no network ping can warm CPU work.
+const workerSource = read('../worker/index.ts')
+function encoderWarmProblems(source: string): string[] {
+  const problems: string[] = []
+  const warm = source.indexOf('\n  warmTokenEncoder()')
+  const firstWorker = source.indexOf('new Worker(')
+  if (!/import \{ warmTokenEncoder \} from '\.\.\/src\/utils\/token-counter'/.test(source)) problems.push('worker does not import warmTokenEncoder')
+  if (warm < 0) problems.push('worker never builds the token encoder')
+  else if (firstWorker >= 0 && warm > firstWorker) problems.push('the encoder is built after the workers start taking jobs')
+  return problems
+}
+await check('(j) the worker builds the token encoder before it takes jobs', () => {
+  assert.deepEqual(encoderWarmProblems(workerSource), [])
+})
+await check('bite (j) startup encoder: dropping the call fails it', () => {
+  const late = mutate(workerSource, '\n  warmTokenEncoder()', '')
+  assert.ok(encoderWarmProblems(late).length > 0)
+  const moved = late.replace(/(\n\s*const memoryWorker = new Worker\()/, '\n  warmTokenEncoder()$1')
+  assert.notEqual(moved, late, 'the memory worker anchor moved; update this audit')
+  assert.ok(encoderWarmProblems(moved).length > 0)
+})
+
+// ── (k) warming really builds it ─────────────────────────────────────────────
+const tokenCounter = await import('../src/utils/token-counter')
+await check('(k) warmTokenEncoder leaves the encoder built', () => {
+  assert.equal(tokenCounter.warmTokenEncoder(), true)
+  assert.equal(tokenCounter.isTokenEncoderReady(), true)
+  const started = performance.now()
+  tokenCounter.countTokens('a warm encoder answers at once')
+  assert.ok(performance.now() - started < 20, 'a warm count took 20 ms or more')
+})
+await check('bite (k) a warm function that builds nothing fails it', () => {
+  const tokenSource = read('../src/utils/token-counter.ts')
+  const broken = mutate(tokenSource, '    getEncoder()\n    return true', '    return true')
+  // The broken copy sits beside the original so it resolves the same packages,
+  // and runs in a fresh process so its encoder starts unbuilt.
+  const file = new URL(`../src/utils/.token-counter-bite-${process.pid}.ts`, import.meta.url).pathname
+  try {
+    writeFileSync(file, broken)
+    const out = Bun.spawnSync(['bun', '--no-env-file', '-e',
+      `const m = await import(${JSON.stringify(file)}); m.warmTokenEncoder(); console.log(m.isTokenEncoderReady())`],
+      { cwd: new URL('..', import.meta.url).pathname })
+    assert.equal(out.stdout.toString().trim(), 'false', out.stderr.toString())
+  } finally {
+    rmSync(file, { force: true })
+  }
 })
 
 console.log(`\nkeep-warm audit: ${pass} passed, ${fail} failed`)
