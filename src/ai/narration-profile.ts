@@ -9,5 +9,8 @@ export function narrationTemperature(model: string): number {
   const normalized = String(model || '').trim().toLowerCase()
   if (normalized === 'meta-llama/llama-3.1-8b-instruct') return 0.55
   if (normalized === 'thedrummer/cydonia-24b-v4.1') return 0.62
+  // Oct 25 2026: the adult narrators were chosen from replies sampled at 0.62.
+  if (normalized === 'cognitivecomputations/dolphin-mistral-24b-venice-edition') return 0.62
+  if (normalized === 'thedrummer/skyfall-36b-v2') return 0.62
   return 0.68
 }

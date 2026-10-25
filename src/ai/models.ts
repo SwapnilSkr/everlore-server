@@ -16,7 +16,7 @@ import { env } from '../config/env'
  *  PURPOSE              MODEL (default)              STREAMED?  PROVIDER   ENV OVERRIDE
  *  ───────────────────────────────────────────────────────────────────────────────────
  *  narrationSfw         deepseek/deepseek-v4.1-flash-1017 yes    OpenRouter NARRATION_SFW_MODEL
- *  narrationNsfw        thedrummer/cydonia-24b-v4.1  yes        OpenRouter NARRATION_NSFW_MODEL
+ *  narrationNsfw        cognitivecomputations/dolphin-mistral-24b-venice-edition yes OpenRouter NARRATION_NSFW_MODEL
  *  metadata             gpt-4o-mini                  no         OpenRouter MODEL_METADATA
  *  memoryCuration       gpt-4o-mini                  no         OpenRouter MODEL_MEMORY_CURATION
  *  sceneSummary         gpt-4o-mini                  no         OpenRouter MODEL_SCENE_SUMMARY

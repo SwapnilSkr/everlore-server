@@ -17,12 +17,12 @@ const optionalEnvVars = {
   PINECONE_INDEX: 'nexus-memories',
   // Narration models — swap freely for A/B (narration is prose-only, no JSON/tools needed).
   NARRATION_SFW_MODEL: 'deepseek/deepseek-v4.1-flash-1017',
-  NARRATION_NSFW_MODEL: 'thedrummer/cydonia-24b-v4.1',
+  NARRATION_NSFW_MODEL: 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
   // Comma-separated fallbacks used only after a pre-stream provider 429. Keep
   // the NSFW list to models suitable for mature narration; it must never fall
   // back into a SFW provider simply because capacity is tight.
   NARRATION_SFW_FALLBACK_MODELS: 'mistralai/mistral-small-3.2-24b-instruct,meta-llama/llama-3.1-70b-instruct,mistralai/mistral-nemo',
-  NARRATION_NSFW_FALLBACK_MODELS: 'thedrummer/unslopnemo-12b,aion-labs/aion-2.0',
+  NARRATION_NSFW_FALLBACK_MODELS: 'thedrummer/skyfall-36b-v2,thedrummer/unslopnemo-12b',
   // OpenRouter image-generation model (avatars + chat backgrounds).
   IMAGE_MODEL: 'bytedance-seed/seedream-4.5',
   // One-shot creation autofill (drafts a whole world/character). Cheap, strong JSON + creative.
