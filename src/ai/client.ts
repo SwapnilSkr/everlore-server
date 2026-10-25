@@ -63,6 +63,9 @@ const NARRATION_HOST_RULES: Record<string, { order?: readonly string[]; ignore?:
   'deepseek/deepseek-v4-flash-0731': { ignore: ['DeepInfra'] },
   // Oct 25 2026: DeepInfra took 55 s to the first word.
   'xiaomi/mimo-v2.6-flash': { ignore: ['DeepInfra'] },
+  // Oct 25 2026, adult fallback: Parasail gave a 0.97 s first word at ~92 tok/s;
+  // DigitalOcean also served; Google's host failed the adult turns.
+  'meta-llama/llama-4-maverick': { order: ['Parasail', 'DigitalOcean'], ignore: ['Google'] },
 }
 
 /** Narration is short, so favor the first word; JSON passes favor throughput.

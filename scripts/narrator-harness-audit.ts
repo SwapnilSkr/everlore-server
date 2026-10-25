@@ -131,7 +131,7 @@ const deathContext = deathPrompt.messages.filter((message) => message.role === '
 check('deceased character receives a hard lifecycle prompt lock', deathContext.includes('Mara is deceased') && deathContext.includes('Do not portray this character alive, physically present, speaking, acting, selectable'))
 check('llama profile is conservative', narrationTemperature('meta-llama/llama-3.1-8b-instruct') === 0.55)
 check('cydonia profile preserves controlled variety', narrationTemperature('thedrummer/cydonia-24b-v4.1') === 0.62)
-check('adult narrators keep the 0.62 they were chosen at', narrationTemperature('cognitivecomputations/dolphin-mistral-24b-venice-edition') === 0.62 && narrationTemperature('thedrummer/skyfall-36b-v2') === 0.62)
+check('adult narrators keep the 0.62 they were chosen at', narrationTemperature('cognitivecomputations/dolphin-mistral-24b-venice-edition') === 0.62 && narrationTemperature('thedrummer/skyfall-36b-v2') === 0.62 && narrationTemperature('meta-llama/llama-4-maverick') === 0.62)
 const closeFriend = relationshipInitializationFromEvidence(
   { kind: 'close_friend', evidence: 'my close friend' },
   'Haise says, "This is my close friend, Otto."',

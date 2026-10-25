@@ -12,5 +12,6 @@ export function narrationTemperature(model: string): number {
   // Oct 25 2026: the adult narrators were chosen from replies sampled at 0.62.
   if (normalized === 'cognitivecomputations/dolphin-mistral-24b-venice-edition') return 0.62
   if (normalized === 'thedrummer/skyfall-36b-v2') return 0.62
+  if (normalized === 'meta-llama/llama-4-maverick') return 0.62
   return 0.68
 }
