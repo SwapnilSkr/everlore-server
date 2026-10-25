@@ -474,7 +474,11 @@ check('(f4) the legacy JSON envelope is still recovered, in house format', () =>
 
 const FORMAT_PUSH = 'delta += protocol ? c : format.push(c)'
 
-function wiringProblems(streamSource: string, processorSource: string): string[] {
+function wiringProblems(
+  streamSource: string,
+  processorSource: string,
+  replaySource: string = replaySourceText,
+): string[] {
   const problems: string[] = []
   if (!/from ['"]\.\.\/\.\.\/src\/utils\/prose-hygiene['"]/.test(streamSource)) {
     problems.push('prose-stream-filter does not import the format normaliser')
@@ -494,11 +498,18 @@ function wiringProblems(streamSource: string, processorSource: string): string[]
   if (!/publishVisibleDelta\(proseFilter\.end\(\)\)/.test(processorSource)) {
     problems.push('the processor never flushes the filter at stream end')
   }
+  if (!/replayEvent\([^)]*\(chunk\) =>\s*publishReplayDelta\(proseFilter\.push\(chunk\)\)/.test(replaySource)) {
+    problems.push('regenerate streams the raw chunk instead of the filtered one')
+  }
+  if (!/publishReplayDelta\(proseFilter\.end\(\)\)/.test(replaySource)) {
+    problems.push('regenerate never flushes the filter at stream end')
+  }
   return problems
 }
 
 const streamSource = readFileSync(join(root, 'worker/lib/prose-stream-filter.ts'), 'utf8')
 const processorSource = readFileSync(join(root, 'worker/processors/generation.processor.ts'), 'utf8')
+const replaySourceText = readFileSync(join(root, 'worker/processors/replay.processor.ts'), 'utf8')
 
 check('(g) the fix is wired into the player-facing stream', () => {
   const problems = wiringProblems(streamSource, processorSource)
@@ -515,6 +526,14 @@ check('bite: (g) rejects the wiring as it was before the fix', () => {
   const noImport = streamSource.replace(/from ['"]\.\.\/\.\.\/src\/utils\/prose-hygiene['"]/, "from './nothing'")
   assert.notEqual(noImport, streamSource, 'the filter import anchor moved; update this audit')
   assert.ok(wiringProblems(noImport, processorSource).length > 0)
+})
+
+check('bite: (g) rejects a regenerate that streams the raw chunk', () => {
+  const raw = replaySourceText.replace('publishReplayDelta(proseFilter.push(chunk))', 'publishReplayDelta(chunk)')
+  assert.notEqual(raw, replaySourceText, 'the replay anchor moved; update this audit')
+  assert.ok(wiringProblems(streamSource, processorSource, raw).length > 0)
+  const unflushed = replaySourceText.replace('publishReplayDelta(proseFilter.end())', '')
+  assert.ok(wiringProblems(streamSource, processorSource, unflushed).length > 0)
 })
 
 // A normaliser that is built and closed but never actually applied would leave

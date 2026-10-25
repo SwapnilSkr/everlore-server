@@ -5,6 +5,7 @@ import { generationLockKey, releaseGenerationLock } from '../../src/utils/genera
 import { liveInstanceExists } from '../../src/utils/live-instance'
 import { wireSpokenLines } from '../../src/services/media/events'
 import { parseObjectId } from '../../src/utils/mongo-id'
+import { makeProseStreamFilter } from '../lib/prose-stream-filter'
 
 /**
  * Streaming replay: generates an alternative response for an existing turn and
@@ -33,13 +34,21 @@ export async function replayProcessor(job: Job) {
     if (!(await liveInstanceExists(parseObjectId(instanceId)))) {
       return
     }
-    const result = await memoryService.replayEvent(eventId, playerId, (chunk) => {
-      if (chunk) markVisibleAttempt()
+    // The same filter as a primary turn, so a regenerate never streams speech
+    // inside italics (or a JSON envelope) that the persisted variant then fixes.
+    const proseFilter = makeProseStreamFilter()
+    const publishReplayDelta = (delta: string) => {
+      if (!delta) return
+      markVisibleAttempt()
       redis.publish(
         channel,
-        JSON.stringify({ type: 'replay_delta', instanceId, eventId, delta: chunk }),
+        JSON.stringify({ type: 'replay_delta', instanceId, eventId, delta }),
       )
-    })
+    }
+    const result = await memoryService.replayEvent(eventId, playerId, (chunk) =>
+      publishReplayDelta(proseFilter.push(chunk)),
+    )
+    publishReplayDelta(proseFilter.end())
 
     const ev: any = result.event
     redis.publish(
