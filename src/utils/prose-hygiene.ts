@@ -701,7 +701,8 @@ export function makeProseFormatNormalizer(): ProseFormatNormalizer {
     if (state === "auto") {
       // The model's own run continues the narration we already wrapped: absorb
       // it rather than closing and reopening, which would emit an empty `**`.
-      flushHeld();
+      // Held whitespace stays held: if the run closes next, its marker must sit
+      // before that space (`purr,* "`), never after it (`purr, *"`).
       state = "italics";
       return;
     }

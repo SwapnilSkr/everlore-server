@@ -149,6 +149,14 @@ const EDGES: Edge[] = [
     expected: '*I hiss, my fangs grazing your skin.* "Mine," *I snarl, my eyes locked on yours.*',
   },
   {
+    // Live, Oct 25 2026 (Dolphin): the model closes after the quote and reopens
+    // just before the next one. The close must land before the space, or no
+    // renderer reads it as a close and a second pass would move it.
+    name: 'plain attribution, then the model reopens right before the next quote',
+    input: '*A glint in them. "What I want,"* I say, a low purr, *"is to feel you tremble."*',
+    expected: '*A glint in them.* "What I want," *I say, a low purr,* "is to feel you tremble."',
+  },
+  {
     name: 'apostrophes inside words survive',
     input: '*I don\'t move, my grip tightening. "You\'re not going anywhere," I say.*',
     expected: '*I don\'t move, my grip tightening.* "You\'re not going anywhere," *I say.*',
