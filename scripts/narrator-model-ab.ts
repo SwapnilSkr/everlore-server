@@ -4,7 +4,7 @@
  */
 import assert from 'node:assert/strict'
 import { randomInt, createHash } from 'node:crypto'
-import { MongoClient, ObjectId } from 'mongodb'
+import { MongoClient, ObjectId, type Filter } from 'mongodb'
 import { writeFile, rename, unlink, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -15,6 +15,13 @@ import type { WorldTemplateDoc } from '../src/models/world-template.model'
 import type { LLMCallDoc, LLMCallBodyDoc } from '../src/models/llm-call.model'
 
 const BASELINE = 'deepseek/deepseek-v3.2'
+const NSFW = 'thedrummer/cydonia-24b-v4.1'
+const NORMAL_ARMS = [
+  { model: 'deepseek/deepseek-v4.1-flash-1017', host: 'InferenceNet' },
+  { model: BASELINE, host: 'DeepInfra' },
+]
+const ADULT_MODELS = [NSFW, 'thedrummer/unslopnemo-12b', 'cognitivecomputations/dolphin-mistral-24b-venice-edition',
+  'thedrummer/skyfall-36b-v2', 'sao10k/l3.1-euryale-70b', NORMAL_ARMS[0].model, BASELINE]
 const JUDGE = 'openai/gpt-6-luna'
 const MODELS = [BASELINE, 'deepseek/deepseek-v4.1-flash-1017', 'deepseek/deepseek-v4-flash-0731',
   'z-ai/glm-5.3-flash', 'xiaomi/mimo-v2.6-flash', 'minimax/minimax-m3.1-flash', 'anthropic/claude-haiku-5.5']
@@ -41,13 +48,13 @@ class SafeError extends Error {}
 function requireSafe(condition: unknown, message: string): asserts condition {
   if (!condition) throw new SafeError(message)
 }
-type Options = { selfTest: boolean; dryRun: boolean; hosts: boolean; quality: boolean; samplesOut?: string; instances: string[]; owners: string[]; cap: number }
+type Options = { selfTest: boolean; dryRun: boolean; hosts: boolean; quality: boolean; adult: boolean; samplesOut?: string; instances: string[]; owners: string[]; cap: number }
 function ids(raw: string | undefined): string[] {
   requireSafe(raw && raw.split(',').every(id => /^[a-f\d]{24}$/i.test(id)), 'Explicit comma-separated ObjectIds required')
   return [...new Set(raw.toLowerCase().split(','))]
 }
 export function parseArgs(args: string[]): Options {
-  const o: Options = { selfTest: false, dryRun: false, hosts: false, quality: false, instances: [], owners: [], cap: NaN }
+  const o: Options = { selfTest: false, dryRun: false, hosts: false, quality: false, adult: false, instances: [], owners: [], cap: NaN }
   const seen = new Set<string>()
   for (let i = 0; i < args.length; i++) {
     const flag = args[i]
@@ -56,6 +63,7 @@ export function parseArgs(args: string[]): Options {
     else if (flag === '--dry-run') o.dryRun = true
     else if (flag === '--hosts') o.hosts = true
     else if (flag === '--quality') o.quality = true
+    else if (flag === '--adult') o.adult = true
     else if (flag === '--samples-out') {
       const path = args[++i]
       requireSafe(path && !path.startsWith('--') && !/^\.env(?:\.|$)/.test(basename(path)), '--samples-out requires an output path outside environment files')
@@ -69,22 +77,33 @@ export function parseArgs(args: string[]): Options {
   if (o.selfTest) {
     requireSafe(args.length === 1, '--self-test is exclusive'); return o
   }
-  requireSafe(!o.samplesOut || o.hosts || o.quality, '--samples-out requires --hosts or --quality')
+  requireSafe(!o.adult || !o.hosts && !o.quality, '--adult is exclusive with --hosts/--quality')
+  requireSafe(!o.samplesOut || o.hosts || o.quality || o.adult, '--samples-out requires --hosts, --quality or --adult')
   requireSafe(o.instances.length, 'Refusing: --instances is required')
   requireSafe(o.owners.length, 'Refusing: --owner-users is required')
   requireSafe(Number.isFinite(o.cap) && o.cap > 0, '--max-usd is required and must be positive')
-  requireSafe(o.dryRun || o.hosts || o.quality, 'Choose --dry-run, --hosts, or --quality')
+  requireSafe(o.dryRun || o.hosts || o.quality || o.adult, 'Choose --dry-run, --hosts, --quality or --adult')
   return o
 }
 
 type Message = { role: string; content: string }
-type Turn = { instance: string; sequence: number; genre: string; messages: Message[]; promptTokens: number; fingerprint: string }
+type Lane = 'sfw' | 'nsfw'
+const laneFor = (model: string): Lane => model === NSFW ? 'nsfw' : 'sfw'
+function corpusFilter(adult: boolean): Filter<LLMCallDoc> {
+  return { purpose: 'narration', phase: 'reply', response_format: 'text', has_body: true, status: 'ok', won: { $ne: false },
+    ...(adult ? { model: { $in: [...new Set([BASELINE, NORMAL_ARMS[0].model, NSFW])] } }
+      : { model: BASELINE, temperature: .68, max_tokens: MAX_OUTPUT }) }
+}
+type Turn = { lane: Lane; sampling?: { temperature?: number; maxTokens: number }; instance: string; sequence: number; genre: string; messages: Message[]; promptTokens: number; fingerprint: string }
 function verifyOwner(instance: string, player: unknown, owners: string[]) {
   requireSafe(typeof player === 'string' && owners.includes(player), `Refusing unowned or missing instance ${instance}`)
 }
 const hashPrefix = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 16)
 function rebuildPrefix(instance: Pick<WorldInstanceDoc, '_id' | 'narrative_style_override' | 'narration_pov' | 'narration_tone'>,
   template: Pick<WorldTemplateDoc, 'seed_prompt' | 'is_sentient' | 'global_lore' | 'narrative_style' | 'style_notes'>): string {
+  // loadSession and generation.processor supply these same static inputs in
+  // both lanes; mature routing adds no prefix. Historical setting/lore drift
+  // must still fail exactMessages' fingerprint gate rather than be guessed.
   const inherits = instance.narrative_style_override === null || instance.narrative_style_override === undefined
   return buildPrompt({
     seedPrompt: template.seed_prompt, isSentient: template.is_sentient, globalLore: template.global_lore,
@@ -146,33 +165,37 @@ async function loadTurns(o: Options): Promise<Turn[]> {
       requireSafe(template && typeof template.genre === 'string', 'Missing template or genre')
       const rebuilt = rebuildPrefix(saved, template)
       const calls = await db.collection<LLMCallDoc>('llm_calls').find({ instance_id: iid, player_id: { $in: o.owners.map(id => new ObjectId(id)) },
-        purpose: 'narration', phase: 'reply', model: BASELINE, response_format: 'text', has_body: true, status: 'ok', won: { $ne: false },
-        temperature: 0.68, max_tokens: MAX_OUTPUT,
+        ...corpusFilter(o.adult),
       }).sort({ sequence: -1, started_at: -1, _id: -1 }).toArray()
       const pool: Turn[] = [], seen = new Set<number>(); let rejected = 0, unreconstructable = 0
       const refusals: Record<string, number> = {}
+      const lanes = { sfw: { eligible: 0, unavailable: 0, unreconstructable: 0, hashGateFailed: 0 }, nsfw: { eligible: 0, unavailable: 0, unreconstructable: 0, hashGateFailed: 0 } }
       for (const call of calls) {
-        if (!Number.isInteger(call.sequence) || seen.has(call.sequence!) || pool.length >= 15) continue
+        if (!Number.isInteger(call.sequence) || seen.has(call.sequence!) || !o.adult && pool.length >= 15) continue
+        const lane = laneFor(call.model), counts = lanes[lane]
         const body = await db.collection<LLMCallBodyDoc>('llm_call_bodies').findOne({ _id: call._id, instance_id: iid, sequence: call.sequence }, { projection: { request: 1 } })
-        if (!body) { rejected++; continue }
+        if (!body) { rejected++; counts.unavailable++; continue }
         let messages: Message[]
         try { messages = exactMessages(body.request, rebuilt, call.prompt_parts) } catch (error) {
-          unreconstructable++
+          unreconstructable++; counts.unreconstructable++
           const reason = error instanceof SafeError ? error.message : 'Invalid stored prompt'
+          if (reason === 'Unreconstructable static prefix') counts.hashGateFailed++
           refusals[reason] = (refusals[reason] ?? 0) + 1
-          if (unreconstructable === 1) out({ stage: 'prefix-validation', instance, stored: call.prompt_parts?.find(p => p.name === 'static_prefix'),
+          if (unreconstructable === 1) out({ stage: 'prefix-validation', instance, lane, stored: call.prompt_parts?.find(p => p.name === 'static_prefix'),
             rebuilt: { chars: rebuilt.length, hash: hashPrefix(rebuilt) },
             messages: body.request.map(m => ({ role: m.role, chars: m.content.length, truncated_chars: m.truncated_chars })), refusal: reason })
           continue
         }
-        seen.add(call.sequence!)
-        pool.push({ instance, genre: template.genre, sequence: call.sequence!, messages, promptTokens: call.prompt_tokens,
+        const sampling = o.adult ? storedSampling(call) : undefined
+        seen.add(call.sequence!); counts.eligible++
+        pool.push({ lane, ...(sampling ? { sampling } : {}), instance, genre: template.genre, sequence: call.sequence!, messages, promptTokens: call.prompt_tokens,
           fingerprint: createHash('sha256').update(JSON.stringify(messages)).digest('hex') })
       }
-      out({ stage: 'corpus', instance, exactEligible: pool.length, unavailable: rejected, unreconstructable, refusals })
+      out({ stage: 'corpus', instance, exactEligible: pool.length, unavailable: rejected, unreconstructable, refusals, lanes })
       pools.push(pool.reverse())
     }
-    requireSafe(pools.every(pool => pool.length), 'At least one requested save has no reconstructable exact SFW narrator prompts')
+    requireSafe(pools.every(pool => pool.length), 'At least one requested save has no reconstructable exact narrator prompts')
+    if (o.adult) return roundRobin(pools, Infinity, Math.max(...pools.map(p => p.length)))
     const selected = roundRobin(pools, 60, 15)
     screenTurns(selected) // Three different saves, not three turns of one save.
     return selected
@@ -197,8 +220,14 @@ function screenTurns(turns: Turn[]): Turn[] {
   return selected
 }
 
-type SampleReply = { label: string; text: string; first_token_ms: number | null; total_ms: number; output_tokens: number | null; cost_usd: number | null; error?: string }
-type SampleTurn = { instance_id: string; sequence: number; genre: string; player_input: string; prior_reply: string;
+function storedSampling(call: Pick<LLMCallDoc, 'temperature' | 'max_tokens'>): NonNullable<Turn['sampling']> {
+  requireSafe(Number.isInteger(call.max_tokens) && call.max_tokens! > 0, 'Stored narration has no bounded max_tokens')
+  requireSafe(call.temperature === undefined || Number.isFinite(call.temperature) && call.temperature >= 0 && call.temperature <= 2, 'Invalid stored temperature')
+  return { maxTokens: call.max_tokens!, ...(call.temperature === undefined ? {} : { temperature: call.temperature }) }
+}
+
+type SampleReply = { label: string; text: string; first_token_ms: number | null; total_ms: number; output_tokens: number | null; cost_usd: number | null; words?: number; finish_reason?: string | null; refusal?: boolean; error?: string | null; fromScreen?: true }
+type SampleTurn = { lane: Lane; instance_id: string; sequence: number; genre: string; player_input: string; prior_reply: string;
   replies: SampleReply[]; judge: Array<{ vs: string; better: string; flipped: boolean; category: string }> }
 class Samples {
   readonly data: { generated_at: string; arms: Array<{ label: string; model: string; host: string }>; turns: SampleTurn[] } = {
@@ -210,7 +239,7 @@ class Samples {
     let row = this.data.turns.find(t => t.instance_id === turn.instance && t.sequence === turn.sequence)
     if (!row) {
       const last = turn.messages.findLastIndex(m => m.role === 'user')
-      row = { instance_id: turn.instance, sequence: turn.sequence, genre: turn.genre,
+      row = { lane: turn.lane, instance_id: turn.instance, sequence: turn.sequence, genre: turn.genre,
         player_input: turn.messages[last].content, prior_reply: turn.messages.slice(0, last).findLast(m => m.role === 'assistant')?.content.slice(0, 600) ?? '', replies: [], judge: [] }
       this.data.turns.push(row)
     }
@@ -222,11 +251,12 @@ class Samples {
     try { await writeFile(temporary, JSON.stringify(this.data, null, 2) + '\n', { mode: 0o600, flag: 'wx' }); await rename(temporary, this.path) }
     finally { await unlink(temporary).catch(() => {}) }
   }
-  async reply(turn: Turn, label: string, host: Host, reply: Reply) {
+  async reply(turn: Turn, label: string, host: Host, reply: Reply, fromScreen = false) {
     const row = this.turn(turn)
     if (!this.data.arms.some(a => a.label === label)) this.data.arms.push({ label, model: host.model, host: host.host })
     row.replies.push({ label, text: reply.text, first_token_ms: reply.firstMs, total_ms: reply.fullMs, output_tokens: reply.tokens,
-      cost_usd: reply.charge.actual ?? null, ...(reply.error ? { error: reply.error } : {}) })
+      cost_usd: reply.charge.actual ?? null, ...(fromScreen ? { fromScreen: true as const } : {}), ...(turn.sampling ? { words: wordCount(reply.text), finish_reason: reply.finish,
+        refusal: checks(reply, turn).structuralRefusalOrMeta, error: reply.error } : {}), ...(reply.error ? { error: reply.error } : {}) })
     await this.flush()
   }
   async judgment(turn: Turn, label: string, verdict: ReturnType<typeof reconcile> | null) {
@@ -270,7 +300,7 @@ const expected = (h: Host, input = 6600, output = 121) => {
 }
 const normHost = (s: string) => s.toLowerCase().replace(/[^a-z\d]/g, '')
 function goodQuant(q: string): boolean { return /^(?:unknown|fp(?:8|16|32|64)|bf16|int(?:8|16|32))$/i.test(q) }
-function selectHosts(model: string, endpoints: Endpoint[]): Host[] {
+function selectHosts(model: string, endpoints: Endpoint[], limit = 4): Host[] {
   const groups = new Map<string, Endpoint[]>()
   for (const e of endpoints) {
     if (IGNORED.some(h => normHost(h) === normHost(e.host))) continue
@@ -278,14 +308,15 @@ function selectHosts(model: string, endpoints: Endpoint[]): Host[] {
   }
   const hosts = [...groups].map(([host, es]) => ({ model, host, endpoints: es, price: maxPrice(es.map(e => e.price)) }))
   const result: Host[] = []
-  const add = (h: Host | undefined) => { if (h && !result.some(v => v.host === h.host) && result.length < 4) result.push(h) }
-  add(hosts.find(h => normHost(h.host) === normHost(MAKERS[model.split('/')[0]])))
+  const add = (h: Host | undefined) => { if (h && !result.some(v => v.host === h.host) && result.length < limit) result.push(h) }
+  const maker = MAKERS[model.split('/')[0]]
+  if (maker) add(hosts.find(h => normHost(h.host) === normHost(maker)))
   if (model === BASELINE) add(hosts.find(h => h.host === 'DeepInfra'))
   for (const h of hosts.filter(h => h.endpoints.every(e => goodQuant(e.quantization))).sort((a, b) => expected(a) - expected(b) || a.host.localeCompare(b.host))) add(h)
   return result
 }
 async function discover(model: string): Promise<Endpoint[]> {
-  requireSafe(MODELS.includes(model) || model === JUDGE, 'Model is outside experiment allowlist')
+  requireSafe(MODELS.includes(model) || ADULT_MODELS.includes(model) || model === JUDGE, 'Model is outside experiment allowlist')
   const response = await fetch(`${API}/models/${model}/endpoints`, { signal: AbortSignal.timeout(20000) })
   if ([404, 410].includes(response.status)) { out({ stage: 'discovery', model, dropped: 'model no longer exists' }); return [] }
   requireSafe(response.ok, `Endpoint discovery failed for ${model} (HTTP ${response.status})`)
@@ -303,10 +334,15 @@ async function discover(model: string): Promise<Endpoint[]> {
 }
 
 type Params = { model: string; messages: Message[]; [key: string]: unknown }
+// Unknown capabilities count as thinking, so thinking-off stays proven by default.
+const thinks = (h: Host) => !h.endpoints.length || h.endpoints.some(e => e.supported.includes('reasoning'))
 function narratorRequest(turn: Turn, h: Host): Params {
   return { model: h.model, messages: turn.messages, stream: true, stream_options: { include_usage: true },
-    ...(h.endpoints.every(e => e.supported.includes('temperature')) ? { temperature: 0.68 } : {}),
-    max_tokens: MAX_OUTPUT, reasoning: { enabled: false }, provider: { only: [h.host], allow_fallbacks: false, require_parameters: true } }
+    ...(turn.sampling ? turn.sampling.temperature === undefined ? {} : { temperature: turn.sampling.temperature }
+      : h.endpoints.every(e => e.supported.includes('temperature')) ? { temperature: 0.68 } : {}),
+    max_tokens: turn.sampling?.maxTokens ?? MAX_OUTPUT,
+    // Models without a thinking switch would match no host under require_parameters.
+    ...(thinks(h) ? { reasoning: { enabled: false } } : {}), provider: { only: [h.host], allow_fallbacks: false, require_parameters: true } }
 }
 function reservation(params: Params, price: Price): number {
   const n = Number(params.max_tokens ?? params.max_completion_tokens)
@@ -443,11 +479,12 @@ export function checks(reply: Reply, turn: Turn) {
   }
 }
 const throughput = (r: Reply) => r.tokens !== null && r.firstMs !== null && r.fullMs > r.firstMs ? r.tokens / ((r.fullMs - r.firstMs) / 1000) : null
-export function banReasons(replies: Reply[], turns: Turn[]): string[] {
+export function banReasons(replies: Reply[], turns: Turn[], thinking = true): string[] {
   const reasons: string[] = []
   const c = replies.map((r, i) => checks(r, turns[i]))
   if (replies.some(r => (r.reasoning ?? 0) > 0)) reasons.push('reasoning tokens with thinking off')
-  if (replies.some(r => r.reasoning === null)) reasons.push('reasoning telemetry missing; thinking-off unverified')
+  // Only a model that can think needs proof that it didn't.
+  if (thinking && replies.some(r => r.reasoning === null)) reasons.push('reasoning telemetry missing; thinking-off unverified')
   if ((pct(replies.map(r => r.firstMs ?? Infinity), .5) ?? Infinity) > 2500) reasons.push('first-token p50 > 2.5s')
   if (replies.some(r => r.error)) reasons.push('request error')
   if (c.some(v => v.empty)) reasons.push('empty reply')
@@ -455,7 +492,11 @@ export function banReasons(replies: Reply[], turns: Turn[]): string[] {
   if (c.some(v => v.structuralRefusalOrMeta)) reasons.push('structural refusal/meta reply')
   return reasons
 }
-type Screen = { host: Host; replies: Reply[]; bans: string[] }
+type Screen = { host: Host; turns: Turn[]; replies: Reply[]; bans: string[] }
+function screenReply(turn: Turn, host: Host, rows: Screen[]): Reply | undefined {
+  const row = rows.find(r => r.host.model === host.model && r.host.host === host.host)
+  return row?.replies[row.turns.indexOf(turn)]
+}
 function metrics(replies: Reply[]) {
   const first = replies.flatMap(r => r.firstMs === null ? [] : [r.firstMs])
   return { calls: replies.length, firstP50ms: pct(first, .5), firstP90ms: pct(first, .9), firstMaxMs: first.length ? Math.max(...first) : null,
@@ -548,25 +589,143 @@ function printPlan(turns: Turn[], hosts: Host[], judge: Host | undefined, qualit
   return plan
 }
 async function screen(turns: Turn[], hosts: Host[], budget: Budget, key: string, samples?: Samples, invoke = call): Promise<Screen[]> {
-  const rows: Screen[] = hosts.map(host => ({ host, replies: [], bans: [] }))
   const selected = screenTurns(turns)
+  const rows: Screen[] = hosts.map(host => ({ host, turns: selected, replies: [], bans: [] }))
   for (const turn of selected) for (const row of shuffle(rows)) {
     const reply = await invoke(budget, narratorRequest(turn, row.host), row.host.price, key)
     row.replies.push(reply)
     await samples?.reply(turn, `${row.host.model}@${row.host.host}`, row.host, reply)
-    out({ stage: 'host-sample', model: row.host.model, host: row.host.host, instance: turn.instance, sequence: turn.sequence,
-      ...metrics([reply]), reasoningTokens: reply.reasoning, error: reply.error, ...checks(reply, turn) })
+    out({ stage: 'host-sample', model: row.host.model, host: row.host.host, instance: turn.instance, sequence: turn.sequence, lane: turn.lane,
+      ...metrics([reply]), finish_reason: reply.finish, reasoningTokens: reply.reasoning, error: reply.error, ...checks(reply, turn) })
   }
   for (const row of rows) {
-    row.bans = banReasons(row.replies, selected)
+    row.bans = banReasons(row.replies, selected, thinks(row.host))
     out({ stage: 'host-result', model: row.host.model, host: row.host.host, ...metrics(row.replies), bans: row.bans,
-      temperature: row.host.endpoints.every(e => e.supported.includes('temperature')) ? .68 : 'default (not advertised)',
+      ...(selected.some(t => t.sampling) ? { sampling: selected.map(t => t.sampling) }
+        : { temperature: row.host.endpoints.every(e => e.supported.includes('temperature')) ? .68 : 'default (not advertised)' }),
       reasoningTokens: row.replies.map(r => r.reasoning), errors: row.replies.filter(r => r.error).length,
       empty: row.replies.filter(r => !r.text.trim()).length, cutOff: row.replies.filter((r, i) => checks(r, selected[i]).cutOff).length })
   }
   out({ stage: 'host-ranking', survivors: rows.filter(r => !r.bans.length).sort(rankScreens).map(r => ({ model: r.host.model, host: r.host.host })) })
   budget.print('hosts-spend')
   return rows
+}
+
+type AdultPlan = { turns: Turn[]; models: string[]; reservationUSD: number; planningUSD: number; estimateUSD: number; reusedScreenReplies: number; fitsCap: boolean }
+function adultCallCost(turn: Turn, host: Host) {
+  requireSafe(turn.sampling, 'Adult replay requires stored request parameters')
+  return { bound: reservation(narratorRequest(turn, host), host.price),
+    estimate: expected(host, turn.promptTokens, Math.min(121, turn.sampling.maxTokens)) }
+}
+function fitAdultPlan(turns: Turn[], hosts: Host[], normal: Host[], cap: number, screening: Host[] = [], screened: Screen[] = []): AdultPlan {
+  const nsfw = turns.filter(t => t.lane === 'nsfw'), sfw = turns.filter(t => t.lane === 'sfw')
+  const models = ADULT_MODELS.filter(m => hosts.some(h => h.model === m))
+  const screenPrompts = screening.length ? screenTurns(nsfw) : []
+  const screenCosts = screening.flatMap(h => screenPrompts.map(t => adultCallCost(t, h)))
+  const normalCosts = normal.flatMap(h => sfw.map(t => adultCallCost(t, h)))
+  const fixed = [...screenCosts, ...normalCosts]
+  const bound = fixed.reduce((s, c) => s + c.bound, 0), estimate = fixed.reduce((s, c) => s + c.estimate, 0)
+  // Plan reading coverage at listed prices with headroom; the transport still
+  // reserves full byte bounds and can stop early on unknown or higher costs.
+  const planningFixed = screenCosts.reduce((s, c) => s + c.estimate, 0) + 1.5 * normalCosts.reduce((s, c) => s + c.estimate, 0)
+  const reused = (t: Turn, h: Host) => !!screenReply(t, h, screened) ||
+    screenPrompts.includes(t) && screening.some(s => s.model === h.model && s.host === h.host)
+  for (let k = models.length; k >= (nsfw.length && models.length ? 1 : 0); k--) {
+    for (let n = models.length ? nsfw.length : 0; n >= (nsfw.length && models.length ? 1 : 0); n--) {
+      const selected = spread(nsfw, n, Infinity), kept = models.slice(0, k)
+      const costs = kept.flatMap(m => selected.map(t => {
+        const alternatives = hosts.filter(h => h.model === m).map(h => reused(t, h) ? { bound: 0, estimate: 0 } : adultCallCost(t, h))
+        return { bound: Math.max(...alternatives.map(c => c.bound)), estimate: Math.max(...alternatives.map(c => c.estimate)) }
+      }))
+      const reservationUSD = bound + costs.reduce((s, c) => s + c.bound, 0)
+      const planningUSD = planningFixed + 1.5 * costs.reduce((s, c) => s + c.estimate, 0)
+      if (planningUSD <= cap) return { turns: selected, models: kept, reservationUSD, planningUSD,
+        estimateUSD: estimate + costs.reduce((s, c) => s + c.estimate, 0),
+        reusedScreenReplies: kept.reduce((s, m) => s + selected.filter(t => hosts.filter(h => h.model === m).every(h => reused(t, h))).length, 0), fitsCap: true }
+    }
+  }
+  return { turns: [], models: [], reservationUSD: bound, planningUSD: planningFixed, estimateUSD: estimate, reusedScreenReplies: 0, fitsCap: false }
+}
+function printAdultPlan(stage: string, turns: Turn[], hosts: Host[], normal: Host[], cap: number, screening: Host[] = [], screened: Screen[] = []) {
+  const plan = fitAdultPlan(turns, hosts, normal, cap, screening, screened)
+  const nsfw = turns.filter(t => t.lane === 'nsfw'), sfw = turns.filter(t => t.lane === 'sfw')
+  const screenPrompts = screening.length ? screenTurns(nsfw) : []
+  out({ stage, maxUSD: cap, maxINR: cap * INR, judgeCalls: 0,
+    screen: screening.map(h => ({ label: `${h.model}@${h.host}`, prompts: screenPrompts.map(t => ({ instance: t.instance, sequence: t.sequence, ...t.sampling })) })),
+    normal: normal.map(h => ({ label: `${h.model}@${h.host}`, calls: sfw.length })),
+    reading: { models: plan.models, prompts: plan.turns.map(t => ({ instance: t.instance, sequence: t.sequence })),
+      calls: plan.models.length * plan.turns.length, reusedScreenReplies: plan.reusedScreenReplies,
+      newCalls: plan.models.length * plan.turns.length - plan.reusedScreenReplies, hostsConditionalOnScreen: screening.length > 0 },
+    cutPrompts: nsfw.filter(t => !plan.turns.includes(t)).map(t => ({ instance: t.instance, sequence: t.sequence })),
+    cutModels: ADULT_MODELS.filter(m => hosts.some(h => h.model === m) && !plan.models.includes(m)),
+    unavailableModels: ADULT_MODELS.filter(m => !hosts.some(h => h.model === m)),
+    unavailableNormalArms: NORMAL_ARMS.filter(a => !normal.some(h => h.model === a.model && h.host === a.host)),
+    screenCalls: screening.length * 3, normalCalls: normal.length * sfw.length,
+    reservationUSD: plan.reservationUSD, planningUSD: plan.planningUSD, listedPriceEstimateUSD: plan.estimateUSD, estimateINR: plan.estimateUSD * INR, fitsCap: plan.fitsCap,
+    sampling: turns.map(t => ({ instance: t.instance, sequence: t.sequence, lane: t.lane, ...t.sampling })),
+    note: 'No judge. Screen planned at listed uncached prices; normal/reading at listed prices × 1.5, worst possible winning host per model. Reuse chosen-host screen replies. Reduce N before reading models. Replan using remaining budget after screen. Per-call full reservation always gates transport; unknown costs retain bounds and may stop early. Full corpus retained. No paid call in dry-run.' })
+  return plan
+}
+async function adultReading(turns: Turn[], winners: Screen[], normal: Host[], budget: Budget, key: string, samples?: Samples, invoke = call) {
+  const hosts = winners.map(r => r.host)
+  const plan = printAdultPlan('plan-adult-resolved', turns, hosts, normal, budget.cap - budget.held, [], winners)
+  requireSafe(plan.fitsCap, 'Adult reading plus all normal turns cannot fit remaining cap; no further calls')
+  const jobs = [...turns.filter(t => t.lane === 'sfw').flatMap(turn => normal.map(host => ({ turn, host }))),
+    ...plan.turns.flatMap(turn => hosts.filter(h => plan.models.includes(h.model)).map(host => ({ turn, host })))]
+  for (const { turn, host } of shuffle(jobs)) {
+    const reused = turn.lane === 'nsfw' ? screenReply(turn, host, winners) : undefined
+    const reply = reused ?? await invoke(budget, narratorRequest(turn, host), host.price, key)
+    const label = `${host.model}@${host.host}`
+    await samples?.reply(turn, label, host, reply, !!reused)
+    out({ stage: 'adult-sample', label, lane: turn.lane, instance: turn.instance, sequence: turn.sequence,
+      ...(reused ? { fromScreen: true } : {}), first_token_ms: reply.firstMs, total_ms: reply.fullMs, words: wordCount(reply.text), cost_usd: reply.charge.actual ?? null,
+      error: reply.error, finish_reason: reply.finish, refusal: checks(reply, turn).structuralRefusalOrMeta })
+  }
+  budget.print('adult-reading-spend')
+}
+async function adultMode(o: Options, budget: Budget) {
+  out({ stage: 'method-adult', models: ADULT_MODELS, normalArms: NORMAL_ARMS, judge: null, judgeCalls: 0,
+    screenPrompts: 3, hostsPerModel: 3, ignored: IGNORED, sampling: 'exact stored temperature/max_tokens',
+    reasoning: { enabled: false }, hedges: false, retries: 0, maxUSD: o.cap, maxINR: o.cap * INR,
+    limitations: ['structural refusal only; owner reads prose', 'independent exact-prompt replay, no long-session drift', 'no downstream extractor effects'] })
+  const hosts: Host[] = [], normal: Host[] = []
+  for (const model of ADULT_MODELS) {
+    const endpoints = await discover(model)
+    hosts.push(...selectHosts(model, endpoints, 3))
+    for (const arm of NORMAL_ARMS.filter(a => a.model === model)) {
+      const es = endpoints.filter(e => e.host === arm.host)
+      if (es.length) normal.push({ ...arm, endpoints: es, price: maxPrice(es.map(e => e.price)) })
+    }
+  }
+  out({ stage: 'selected-adult-hosts', hosts: hosts.map(h => ({ model: h.model, host: h.host, price: h.price })) })
+  if (o.dryRun && !process.env.MONGODB_URI) {
+    out({ stage: 'provisional-estimate', corpusValidated: false, assumedTurnsPerSave: 10, assumedNSFWPerSave: 5,
+      assumedTemperature: .9, assumedMaxTokens: 260, assumedPromptTokens: 6600,
+      note: 'Public-price envelope only. No story read; real ownership, lane counts, parameters and hashes require the supplied corpus.' })
+    const turns = o.instances.flatMap(instance => Array.from({ length: 10 }, (_, i): Turn => ({ instance, sequence: i + 1,
+      genre: 'unknown', lane: i < 5 ? 'sfw' : 'nsfw', sampling: { temperature: i < 5 ? .68 : .9, maxTokens: 260 },
+      messages: [{ role: 'system', content: 'x'.repeat(26400) }, { role: 'user', content: 'estimate' }],
+      promptTokens: 6600, fingerprint: 'ESTIMATE-NOT-A-STORY' })))
+    printAdultPlan('plan-adult', turns, hosts, normal, o.cap, hosts)
+    return
+  }
+  const turns = await loadTurns(o)
+  out({ stage: 'selected-corpus', count: turns.length, prompts: turns.map(t => ({ instance: t.instance, sequence: t.sequence,
+    lane: t.lane, fingerprint: t.fingerprint, ...t.sampling })) })
+  const screening = turns.some(t => t.lane === 'nsfw') ? hosts : []
+  const plan = printAdultPlan('plan-adult', turns, hosts, normal, o.cap, screening)
+  if (o.dryRun) return
+  requireSafe(plan.fitsCap, 'Adult screen plus minimum reading set exceeds cap; no paid calls made')
+  requireSafe(normal.length === NORMAL_ARMS.length || !turns.some(t => t.lane === 'sfw'), 'Required normal narrator host unavailable')
+  requireSafe(process.env.OPENROUTER_API_KEY, 'OPENROUTER_API_KEY is required (Bun may load it normally)')
+  const samples = o.samplesOut ? new Samples(o.samplesOut, turns) : undefined
+  await samples?.flush()
+  const rows = screening.length ? await screen(turns.filter(t => t.lane === 'nsfw'), screening, budget, process.env.OPENROUTER_API_KEY, samples) : []
+  const winners = ADULT_MODELS.flatMap(m => {
+    const best = rows.filter(r => r.host.model === m && !r.bans.length).sort(rankScreens)[0]
+    return best ? [best] : []
+  })
+  await adultReading(turns, winners, normal, budget, process.env.OPENROUTER_API_KEY, samples)
 }
 type Arm = { name: string; host: Host; replies: Reply[] }
 type Comparison = { arm: string; win: number; tie: number; loss: number; flips: number; aOK: number; bOK: number; invalid: number; losses: Record<string, number> }
@@ -667,7 +826,7 @@ async function selfTest() {
   const test = async (name: string, fn: () => unknown) => { await fn(); passed++; out({ test: name, result: 'PASS' }) }
   const iid = '6adaf82e6c50f1762cda6c69', uid = '000000000000000000000001'
   const argv = ['--dry-run', '--instances', iid, '--owner-users', uid, '--max-usd', '.2']
-  const turn: Turn = { instance: iid, sequence: 1, genre: 'horror', messages: [{ role: 'system', content: 'Write 2–8 words.' }, { role: 'user', content: 'Wait.' }], promptTokens: 100, fingerprint: 'fixture' }
+  const turn: Turn = { lane: 'sfw', instance: iid, sequence: 1, genre: 'horror', messages: [{ role: 'system', content: 'Write 2–8 words.' }, { role: 'user', content: 'Wait.' }], promptTokens: 100, fingerprint: 'fixture' }
   const price = { prompt: .000001, completion: .000002, request: 0 }
   const h: Host = { model: BASELINE, host: 'DeepInfra', endpoints: [], price }
   const p = narratorRequest(turn, h)
@@ -682,6 +841,133 @@ async function selfTest() {
   })
   await test('privacy: unowned and missing save refuse before body loading', () => {
     assert.throws(() => verifyOwner(iid, '000000000000000000000002', [uid])); assert.throws(() => verifyOwner(iid, undefined, [uid])); verifyOwner(iid, uid, [uid])
+  })
+  await test('adult mode keeps privacy guards and is exclusive with hosts/quality', () => {
+    const args = ['--adult', ...argv, '--samples-out', '/private/tmp/adult-fixture.json']
+    assert.equal(parseArgs(args).adult, true)
+    for (const mode of ['--hosts', '--quality']) assert.throws(() => parseArgs([...args, mode]), /exclusive/)
+    for (const flag of ['--instances', '--owner-users', '--max-usd']) {
+      const copy = [...args], i = copy.indexOf(flag); copy.splice(i, 2); assert.throws(() => parseArgs(copy))
+    }
+  })
+  await test('lane is stored-model based; only adult corpus widens model and sampling filters', () => {
+    assert.equal(laneFor(NSFW), 'nsfw')
+    for (const model of [BASELINE, NORMAL_ARMS[0].model, ADULT_MODELS[1]]) assert.equal(laneFor(model), 'sfw')
+    const normal = corpusFilter(false), adult = corpusFilter(true)
+    assert.equal(normal.model, BASELINE); assert.equal(normal.temperature, .68); assert.equal(normal.max_tokens, 260)
+    assert.deepEqual(adult.model, { $in: [BASELINE, NORMAL_ARMS[0].model, NSFW] })
+    assert(!('temperature' in adult)); assert(!('max_tokens' in adult))
+    for (const filter of [normal, adult]) {
+      assert.equal(filter.purpose, 'narration'); assert.equal(filter.phase, 'reply'); assert.equal(filter.status, 'ok')
+      assert.deepEqual(filter.won, { $ne: false }); assert.equal(filter.has_body, true); assert.equal(filter.response_format, 'text')
+    }
+  })
+  await test('adult requests preserve stored messages and sampling even without advertised temperature', () => {
+    for (const model of ADULT_MODELS) {
+      const t = { ...turn, lane: 'nsfw' as const, sampling: storedSampling({ temperature: .91, max_tokens: 512 }) }
+      const quiet: Endpoint = { model, host: h.host, tag: h.host, quantization: 'fp8', price, pricing: {}, supported: ['max_tokens', 'temperature'] }
+      const req = narratorRequest(t, { ...h, model, endpoints: [quiet] })
+      assert.equal(req.messages, t.messages); assert.equal(req.temperature, .91); assert.equal(req.max_tokens, 512)
+      assert.equal(req.reasoning, undefined); assert.equal(req.model, model)
+      const thinking = narratorRequest(t, { ...h, model, endpoints: [{ ...quiet, supported: ['reasoning'] }] })
+      assert.deepEqual(thinking.reasoning, { enabled: false })
+    }
+    // (thinking-telemetry ban scope is asserted beside the other ban rules)
+    assert(!('temperature' in narratorRequest({ ...turn, sampling: storedSampling({ max_tokens: 500 }) }, h)))
+    for (const max_tokens of [undefined, 0, -1, Infinity, 2.5]) assert.throws(() => storedSampling({ max_tokens }))
+    assert.throws(() => storedSampling({ temperature: NaN, max_tokens: 260 }))
+  })
+  await test('adult listed-price planning uses 1.5 headroom, cuts N before models and retains normal turns', () => {
+    const hs = ADULT_MODELS.slice(0, 2).map(model => ({ ...h, model, price: { prompt: 0, completion: 0, request: .01 } }))
+    const normal = NORMAL_ARMS.map(arm => ({ ...hs[0], ...arm }))
+    const turns: Turn[] = Array.from({ length: 4 }, (_, i) => ({ ...turn, instance: String(i % 3), sequence: i,
+      lane: 'nsfw', sampling: { temperature: .9, maxTokens: 260 } }))
+    turns.push({ ...turn, sampling: { temperature: .68, maxTokens: 260 } })
+    const full = fitAdultPlan(turns, hs, normal, .4, hs)
+    assert.equal(full.turns.length, 4); assert.equal(full.models.length, 2); assert(full.fitsCap)
+    assert(Math.abs(full.planningUSD - .12) < 1e-12)
+    assert.equal(full.reusedScreenReplies, 6)
+    const reduced = fitAdultPlan(turns, hs, normal, .065)
+    assert.equal(reduced.turns.length, 1); assert.equal(reduced.models.length, 2)
+    assert(Math.abs(reduced.planningUSD - .06) < 1e-12)
+    const one = fitAdultPlan(turns, hs, normal, .05)
+    assert.equal(one.turns.length, 1); assert.equal(one.models.length, 1)
+    assert.equal(fitAdultPlan(turns, hs, normal, .04).fitsCap, false)
+    const banned = fitAdultPlan(turns, [], normal, .03)
+    assert(banned.fitsCap); assert.equal(banned.models.length, 0); assert.equal(banned.turns.length, 0)
+  })
+  await test('adult dry-run keeps 10 explicit prompts across all 7 models when listed-price headroom fits', () => {
+    const turns: Turn[] = Array.from({ length: 25 }, (_, i) => ({ ...turn, instance: String(i % 3), sequence: i,
+      lane: i < 10 ? 'nsfw' : 'sfw', sampling: { temperature: .9, maxTokens: 260 },
+      messages: [{ role: 'system', content: 'x'.repeat(26400) }, ...turn.messages.slice(1)] }))
+    const hs = ADULT_MODELS.map(model => ({ ...h, model }))
+    const normal = NORMAL_ARMS.map(arm => ({ ...h, ...arm }))
+    const log = console.log, captured: Record<string, unknown>[] = []
+    console.log = (line: string) => { captured.push(obj(JSON.parse(line))) }
+    try {
+      const plan = printAdultPlan('plan-adult', turns, hs, normal, .47, hs)
+      assert(plan.fitsCap); assert.equal(plan.turns.length, 10); assert.equal(plan.models.length, 7)
+      assert(plan.reservationUSD > .47); assert(plan.planningUSD < .47)
+      const screenEstimate = hs.reduce((s, host) => s + screenTurns(turns.filter(t => t.lane === 'nsfw')).reduce((n, t) => n + adultCallCost(t, host).estimate, 0), 0)
+      assert(Math.abs(plan.planningUSD - (screenEstimate + 1.5 * (plan.estimateUSD - screenEstimate))) < 1e-12)
+      assert.equal(obj(captured[0].reading).calls, 70); assert.equal(obj(captured[0].reading).newCalls, 49)
+      assert.equal(captured[0].normalCalls, 30); assert.deepEqual(captured[0].cutPrompts, []); assert.deepEqual(captured[0].cutModels, [])
+    } finally { console.log = log }
+  })
+  await test('adult screen/read path has no judge, exact lanes, deterministic fields and full prose samples', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'everlore-adult-e2e-'))
+    const log = console.log, captured: Record<string, unknown>[] = []
+    console.log = (line: string) => { captured.push(obj(JSON.parse(line))) }
+    try {
+      const turns: Turn[] = Array.from({ length: 4 }, (_, i) => ({ ...turn, instance: String(i % 3), sequence: i + 1, lane: 'nsfw',
+        messages: turn.messages.map(m => ({ ...m })),
+        sampling: { temperature: .92, maxTokens: 510 } }))
+      turns.push({ ...turn, sampling: { temperature: .68, maxTokens: 260 } })
+      const hs = ADULT_MODELS.slice(0, 2).map(model => ({ ...h, model }))
+      const normal = NORMAL_ARMS.map(a => ({ ...h, ...a }))
+      const samples = new Samples(join(directory, 'samples.json'), turns), budget = new Budget(1)
+      const requests: Params[] = []
+      const invoke: typeof call = async (b, req, price, key) => {
+        requests.push(req)
+        const source = turns.find(t => t.messages === req.messages)!
+        assert(source); assert.equal(req.temperature, source.sampling!.temperature); assert.equal(req.max_tokens, source.sampling!.maxTokens)
+        assert.notEqual(req.model, JUDGE); assert.equal(req.stream, true); assert(!('response_format' in req))
+        const pinned = String((obj(req.provider).only as string[])[0])
+        const r = await call(b, req, price, key, async () => response([{ ...finish, provider: pinned }]))
+        r.firstMs = 500; r.fullMs = 1000
+        return r
+      }
+      const rows = await screen(turns.filter(t => t.lane === 'nsfw'), hs, budget, 'fixture', samples, invoke)
+      assert(rows.every(r => !r.bans.length))
+      const beforeReading = budget.charges.length
+      await adultReading(turns, rows, normal, budget, 'fixture', samples, invoke)
+      assert.equal(requests.length, 10); assert.equal(budget.charges.length - beforeReading, 4)
+      for (const row of rows) for (const screened of row.turns) {
+        assert.equal(requests.filter(req => req.model === row.host.model && req.messages === screened.messages).length, 1)
+        assert.equal(screenReply(screened, { ...row.host, host: 'OtherHost' }, rows), undefined)
+      }
+      const resolved = captured.find(v => v.stage === 'plan-adult-resolved')!
+      assert.equal(resolved.maxUSD, budget.cap - beforeReading * .0001)
+      assert.equal(obj(resolved.reading).reusedScreenReplies, 6); assert.equal(obj(resolved.reading).newCalls, 2)
+      const saved = JSON.parse(await readFile(samples.path, 'utf8')) as Samples['data']
+      assert.equal(saved.turns.length, 5); assert(saved.turns.every(t => t.judge.length === 0))
+      assert.equal(saved.turns.find(t => t.lane === 'sfw')!.replies.length, 2)
+      assert.equal(saved.turns.flatMap(t => t.replies).filter(r => r.fromScreen).length, 6)
+      for (const row of rows) for (const screened of row.turns) {
+        const copies = saved.turns.find(t => t.instance_id === screened.instance && t.sequence === screened.sequence)!.replies
+          .filter(r => r.label === `${row.host.model}@${row.host.host}`)
+        assert.equal(copies.length, 2); assert.deepEqual(copies[1], { ...copies[0], fromScreen: true })
+      }
+      for (const t of saved.turns) for (const r of t.replies) {
+        assert(r.label.includes('@')); assert.equal(r.text, 'The door opens.'); assert.equal(r.words, 3)
+        assert.equal(r.finish_reason, 'stop'); assert.equal(r.refusal, false); assert.equal(r.cost_usd, .0001)
+      }
+      assert(!JSON.stringify(captured).includes('The door opens.'))
+      assert(captured.filter(v => v.stage === 'adult-sample').every(v => v.finish_reason === 'stop' && v.refusal === false))
+      const native = await call(new Budget(1), p, price, 'fixture', async () => response([{ ...finish,
+        choices: [{ delta: { refusal: 'native refusal' }, finish_reason: 'stop' }] }]))
+      assert.equal(checks(native, turn).structuralRefusalOrMeta, true)
+    } finally { console.log = log; await rm(directory, { recursive: true, force: true }) }
   })
   await test('exact replay rejects trace truncation and omitted messages', () => {
     assert.throws(() => exactMessages([{ role: 'system', content: 'cut', truncated_chars: 4 }]))
@@ -767,7 +1053,7 @@ async function selfTest() {
       assert.deepEqual(Object.keys(first).sort(), ['arms', 'generated_at', 'turns'])
       assert(!Number.isNaN(Date.parse(first.generated_at)))
       assert.deepEqual(first.arms, [{ label: `${h.model}@${h.host}`, model: h.model, host: h.host }])
-      assert.deepEqual(first.turns[0], { instance_id: iid, sequence: 1, genre: 'horror', player_input: 'Latest input.', prior_reply: 'Prior context.'.repeat(100).slice(0, 600),
+      assert.deepEqual(first.turns[0], { lane: 'sfw', instance_id: iid, sequence: 1, genre: 'horror', player_input: 'Latest input.', prior_reply: 'Prior context.'.repeat(100).slice(0, 600),
         replies: [{ label: `${h.model}@${h.host}`, text: r.text, first_token_ms: r.firstMs, total_ms: r.fullMs, output_tokens: r.tokens, cost_usd: .0001 }], judge: [] })
       await samples.reply(next, 'A1', h, { ...r, text: 'Partial reply.', error: 'network_timeout_or_invalid_response', charge: { bound: .1 } })
       const second = await read()
@@ -846,6 +1132,8 @@ async function selfTest() {
     const ep = (host: string, q: string, n: number): Endpoint => ({ model: BASELINE, host, quantization: q, price: { prompt: n, completion: n, request: 0 }, pricing: { prompt: n, completion: n }, tag: host, supported: [] })
     const hs = selectHosts(BASELINE, [ep('GMICloud', 'fp8', 0), ep('DeepSeek', 'fp16', 10), ep('DeepInfra', 'fp4', 1), ep('Low', 'fp4', 0), ep('A', 'fp8', 1), ep('B', 'unknown', 2), ep('C', 'fp16', 3)])
     assert.deepEqual(hs.map(h => h.host), ['DeepSeek', 'DeepInfra', 'A', 'B'])
+    assert.deepEqual(selectHosts(BASELINE, hs.flatMap(h => h.endpoints), 3).map(h => h.host), ['DeepSeek', 'DeepInfra', 'A'])
+    assert.deepEqual(selectHosts(NSFW, [ep('GMICloud', 'fp8', 0), ep('Parasail', 'bf16', 1)], 3).map(h => h.host), ['Parasail'])
   })
   await test('swapped preferences, ties, flips, and conservative ok consensus', () => {
     const a: Judgment = { better: 'X', x_ok: true, y_ok: false, category: 'prose' }
@@ -861,6 +1149,8 @@ async function selfTest() {
     for (const change of [{ reasoning: 1 }, { firstMs: 2501 }, { error: 'bad' }, { text: '' }, { text: '<think>private</think>Prose.' }, { reasoning: null }]) {
       assert(banReasons([{ ...r, ...change }], [turn]).length)
     }
+    // A model with no thinking switch can't report thinking tokens; that alone never bans it.
+    assert.deepEqual(banReasons([{ ...r, reasoning: null }], [turn], false), [])
   })
   await test('structural refusals, length, truncation and story vocabulary', async () => {
     const r = await reply()
@@ -935,7 +1225,8 @@ async function main() {
   if (process.argv.includes('--help')) {
     console.log('bun --no-env-file run scripts/narrator-model-ab.ts --self-test\n' +
       'bun --no-env-file run scripts/narrator-model-ab.ts --dry-run --instances <ids> --owner-users <ids> --max-usd <cap>\n' +
-      '--hosts screens only; --quality runs host screen then quality. --samples-out <path> saves full replies as JSON.\n' +
+      '--hosts screens only; --quality runs host screen then quality; --adult runs both narrator lanes without a judge (exclusive with hosts/quality).\n' +
+      '--samples-out <path> saves full replies as JSON. Add --dry-run for a free plan.\n' +
       'Bun may load MONGODB_URI normally; OPENROUTER_API_KEY is needed only for paid modes. Results are text-free JSON lines on stdout.')
     return
   }
@@ -943,6 +1234,7 @@ async function main() {
   if (o.selfTest) { await selfTest(); return }
   const budget = new Budget(o.cap)
   try {
+    if (o.adult) { await adultMode(o, budget); return }
     out({ stage: 'method', instances: o.instances, maxUSD: o.cap, thinkingOffByModel: Object.fromEntries(MODELS.map(m => [m, { reasoning: { enabled: false } }])),
       screenPrompts: 3, maxQualityPrompts: 32, maxQualityPerSave: 8, maxCandidates: 2, temperature: .68, maxTokens: MAX_OUTPUT, hedges: false, retries: 0,
       judge: JUDGE, judgeTemperature: 'default', judgeCompletionLimit: 1460,
@@ -967,7 +1259,7 @@ async function main() {
       // These are explicitly NOT a validated corpus or the actual replay plan.
       out({ stage: 'provisional-estimate', corpusValidated: false, assumedPrompts: 32, assumedPromptTokens: 6600,
         note: 'No Mongo credential injected. Public-price envelope only; ownership and actual call counts remain unverified.' })
-      const estimated = Array.from({ length: Math.min(32, o.instances.length * 8) }, (_, i): Turn => ({ instance: o.instances[i % o.instances.length], sequence: i, genre: 'unknown',
+      const estimated = Array.from({ length: Math.min(32, o.instances.length * 8) }, (_, i): Turn => ({ instance: o.instances[i % o.instances.length], sequence: i, genre: 'unknown', lane: 'sfw',
         messages: [{ role: 'system', content: 'x'.repeat(26400) }, { role: 'user', content: 'estimate' }], promptTokens: 6600, fingerprint: 'ESTIMATE-NOT-A-STORY' }))
       printPlan(estimated, hosts, judge, qualityRequested, o.cap)
       return
