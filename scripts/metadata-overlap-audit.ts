@@ -80,7 +80,7 @@ const eventCollection = collection(() => eventRows)
 const target = { instance_id: iid, player_id: pid, _id: eid }
 const empty = collection(() => [])
 let characterTarget = false
-const mongo = { events: () => eventCollection, characters: () => collection(() => characterTarget ? [target] : []), sceneSummaries: () => empty,
+const mongo = { worldInstances: () => collection(() => [{ _id: iid, player_id: pid }]), events: () => eventCollection, characters: () => collection(() => characterTarget ? [target] : []), sceneSummaries: () => empty,
   entities: () => empty, users: () => ({ findOne: async () => ({ preferences: {} }) }),
   memories: () => ({ findOne: async () => target }) }
 mock.module('../src/config/mongo', () => ({ mongoColl: mongo }))

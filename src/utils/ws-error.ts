@@ -44,6 +44,7 @@ export function toClientError(err: unknown, context: Record<string, unknown> = {
     return { code: 'STORY_RESTING', message: err.message, resets_at: err.resetsAt }
   }
   if (err instanceof HttpError) {
+    if (err.statusCode === 403 && err.details?.code === 'sign_in_required') return { code: 'SIGN_IN_REQUIRED', message: err.message }
     const code = CODE_BY_STATUS[err.statusCode]
     if (code) return { code, message: err.message }
   }

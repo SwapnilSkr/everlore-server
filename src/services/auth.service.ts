@@ -6,6 +6,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { phoneVerifyError, sendPhoneOtp, verifyPhoneOtp } from '../providers/auth.provider'
 import { verifyFirebaseIdToken } from '../providers/firebase-auth.provider'
 import { canForge } from '../utils/can-forge'
+import { guestService } from './guest.service'
 
 /** Ceiling on stored guide arcs; the app declares roughly a dozen. */
 const MAX_GUIDE_FLOWS = 64
@@ -57,7 +58,10 @@ export const authService = {
       phone: user.phone || null,
       username: user.username,
       tier: user.tier,
-      can_forge: canForge(user),
+      guest: user.guest === true,
+      ...(user.guest ? { guest_turns: user.guest_turns || 0 } : {}),
+      can_forge: !user.guest && canForge(user),
+      ...(user.age_confirmed_at ? { age_confirmed_at: user.age_confirmed_at.toISOString() } : {}),
       preferences: user.preferences,
       token_balance: user.token_balance,
     }
@@ -114,135 +118,59 @@ export const authService = {
     return userDoc
   },
 
-  async signInWithGoogle(idToken: string): Promise<SignInResult> {
-    // A Firebase ID token now, not a raw Google one. `googleSubject` is the
-    // original Google `sub` lifted out of the Firebase token, so the lookup
-    // below is unchanged and every account that existed before the migration
-    // still matches on its first sign-in afterwards.
+  async signInWithGoogle(idToken: string, guestId?: string): Promise<SignInResult> {
     const profile = await verifyFirebaseIdToken(idToken)
-    let newAccount = false
-
-    let userDoc: UserDoc | null = await users().findOne({
-      $or: [{ google_sub: profile.googleSubject }, { email: profile.email }],
-    })
-
-    if (!userDoc) {
-      const doc: UserInsertDoc = {
-        email: profile.email,
-        google_sub: profile.googleSubject,
-        firebase_uid: profile.firebaseUid,
-        username: usernameFromSeed(profile.email.split('@')[0] || profile.name || 'player'),
-        password_hash: '',
-        tier: 'free' as UserTier,
-        providers: ['google'],
-        preferences: defaultUserPreferences(),
-        token_balance: 15000,
-        created_at: new Date(),
-        updated_at: new Date(),
-      }
-      try {
-        const { insertedId } = await users().insertOne(doc)
-        userDoc = { ...doc, _id: insertedId } as UserDoc
-        newAccount = true
-      } catch (error) {
-        if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 11000) throw error
-        userDoc = await users().findOne({
-          $or: [{ google_sub: profile.googleSubject }, { email: profile.email }],
-        })
-        if (!userDoc) throw error
-      }
-    }
-    if (!newAccount) {
-      if (userDoc.account_status === 'banned') throw new HttpError(403, 'This account is banned')
-      const prov = Array.isArray(userDoc.providers)
-        ? new Set<string>(userDoc.providers)
-        : new Set<string>()
-      prov.add('google')
-
-      await users().updateOne(
-        { _id: userDoc._id },
-        {
-          $set: {
-            email: profile.email,
-            google_sub: profile.googleSubject,
-            firebase_uid: profile.firebaseUid,
-            providers: [...prov],
-            updated_at: new Date(),
-          },
-        },
-      )
-
-      userDoc = {
-        ...userDoc,
-        email: profile.email,
-        google_sub: profile.googleSubject,
-        firebase_uid: profile.firebaseUid,
-        providers: [...prov],
-      }
-    }
-
-    return { userDoc, newAccount }
+    return this.signInVerifiedIdentity({ email: profile.email, google_sub: profile.googleSubject,
+      firebase_uid: profile.firebaseUid }, 'google', profile.email.split('@')[0] || profile.name || 'player', guestId)
   },
 
   async sendPhoneOtp(phone: string) {
     await sendPhoneOtp(phone)
   },
 
-  async signInWithPhoneOtp(phone: string, code: string): Promise<SignInResult> {
+  async signInWithPhoneOtp(phone: string, code: string, guestId?: string): Promise<SignInResult> {
     const approved = await verifyPhoneOtp(phone, code)
     if (!approved) throw phoneVerifyError('code_invalid')
+    return this.signInVerifiedIdentity({ phone }, 'phone', phone, guestId)
+  },
+
+  /** Called only after the existing provider has verified the credential. */
+  async signInVerifiedIdentity(identity: { email?: string; google_sub?: string; firebase_uid?: string; phone?: string },
+    provider: string, seed: string, guestId?: string): Promise<SignInResult> {
+    const filter = identity.phone ? { phone: identity.phone } : {
+      $or: [{ google_sub: identity.google_sub }, { email: identity.email }],
+    }
+    let userDoc = await users().findOne(filter)
     let newAccount = false
-
-    let userDoc: UserDoc | null = await users().findOne({ phone })
-
     if (!userDoc) {
-      const doc: UserInsertDoc = {
-        phone,
-        username: usernameFromSeed(phone),
-        password_hash: '',
-        tier: 'free' as UserTier,
-        providers: ['phone'],
-        preferences: defaultUserPreferences(),
-        token_balance: 15000,
-        created_at: new Date(),
-        updated_at: new Date(),
-      }
       try {
+        const claimed = await guestService.claim(guestId, identity, provider)
+        if (claimed) return { userDoc: claimed, newAccount: true }
+        // A fenced transfer must finish at its original destination.
+        const guest = await guestService.eligible(guestId)
+        if (guest?.guest_merge_target) throw new HttpError(409, 'Your story is being saved. Please try again.', { code: 'guest_transfer_pending' })
+        const doc: UserInsertDoc = {
+          ...identity, username: usernameFromSeed(seed), password_hash: '', tier: 'free', providers: [provider],
+          preferences: defaultUserPreferences(), token_balance: 15000, created_at: new Date(), updated_at: new Date(),
+        }
         const { insertedId } = await users().insertOne(doc)
-        userDoc = { ...doc, _id: insertedId } as UserDoc
+        userDoc = { ...doc, _id: insertedId }
         newAccount = true
       } catch (error) {
-        if (typeof error !== 'object' || error === null || !('code' in error) || error.code !== 11000) throw error
-        userDoc = await users().findOne({ phone })
+        if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 11000) throw error
+        userDoc = await users().findOne(filter)
         if (!userDoc) throw error
       }
     }
+    if (userDoc.account_status === 'banned') throw new HttpError(403, 'This account is banned')
     if (!newAccount) {
-      if (userDoc.account_status === 'banned') throw new HttpError(403, 'This account is banned')
-      const prov = Array.isArray(userDoc.providers)
-        ? new Set<string>(userDoc.providers)
-        : new Set<string>()
-      prov.add('phone')
-
-      await users().updateOne(
-        { _id: userDoc._id },
-        {
-          $set: {
-            phone,
-            providers: [...prov],
-            updated_at: new Date(),
-          },
-        },
-      )
-
-      userDoc = {
-        ...userDoc,
-        phone,
-        providers: [...prov],
-      }
+      const providers = [...new Set([...(userDoc.providers || []), provider])]
+      await users().updateOne({ _id: userDoc._id }, { $set: { ...identity, providers, updated_at: new Date() } })
+      userDoc = { ...userDoc, ...identity, providers }
     }
-
-    return { userDoc, newAccount }
+    const guest = await guestService.eligible(guestId)
+    userDoc = await guestService.merge(guestId, userDoc)
+    return { userDoc, newAccount: newAccount || !!guest }
   },
 
   async getUserById(userId: string): Promise<UserDoc> {
@@ -257,13 +185,14 @@ export const authService = {
     return row?.tier ?? 'free'
   },
 
-  async getLiveAccess(userId: string): Promise<{ tier: UserTier; account_status: UserAccountStatus; admin_tier_override?: UserTier | null } | null> {
+  async getLiveAccess(userId: string): Promise<{ guest?: boolean; tier: UserTier; account_status: UserAccountStatus; admin_tier_override?: UserTier | null } | null> {
     const row = await users().findOne(
       { _id: parseObjectId(userId) },
-      { projection: { tier: 1, account_status: 1, admin_tier_override: 1 } },
+      { projection: { tier: 1, account_status: 1, admin_tier_override: 1, guest_merge_target: 1, guest_purging: 1, guest: 1 } },
     )
-    if (!row) return null
+    if (!row || row.guest_merge_target || row.guest_purging) return null
     return {
+      guest: row.guest === true,
       tier: row.admin_tier_override || (row.tier as UserTier | undefined) || 'free',
       account_status: row.account_status === 'banned' ? 'banned' : 'active',
       admin_tier_override: row.admin_tier_override ?? null,
@@ -271,8 +200,18 @@ export const authService = {
   },
 
   async updatePreferences(userId: string, body: Record<string, unknown>) {
+    const user = await this.getUserById(userId)
+    if (body.nsfw_enabled === true && !user.age_confirmed_at && body.age_confirmed !== true) {
+      throw new HttpError(400, "Please confirm you're 18 or older to allow mature themes.", { code: 'age_confirmation_required' })
+    }
+    if (body.age_confirmed === true) {
+      // The conditional write keeps the first confirmation, even across requests.
+      await users().updateOne({ _id: user._id, age_confirmed_at: { $exists: false } },
+        { $set: { age_confirmed_at: new Date() } })
+    }
     const updateFields: Record<string, unknown> = {}
     for (const [key, value] of Object.entries(body)) {
+      if (key === 'age_confirmed') continue
       // guide_progress is a client-authored map with free-form keys, so it is
       // the one field here that could grow without bound. Keep it to a sane
       // ceiling — the app declares roughly a dozen arcs.

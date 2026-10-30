@@ -11,8 +11,13 @@ export const LoginBody = t.Object({
   password: t.String({ minLength: 1 }),
 })
 
+export const GuestAuthBody = t.Object({
+  install_id: t.String({ pattern: '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$' }),
+})
+
 export const GoogleAuthBody = t.Object({
   id_token: t.String(),
+  guest_token: t.Optional(t.String({ maxLength: 8192 })),
 })
 
 export const SendOtpBody = t.Object({
@@ -22,6 +27,7 @@ export const SendOtpBody = t.Object({
 export const VerifyOtpBody = t.Object({
   phone: t.String({ pattern: '^\\+[1-9]\\d{7,14}$' }),
   code: t.String({ minLength: 4, maxLength: 10 }),
+  guest_token: t.Optional(t.String({ maxLength: 8192 })),
 })
 
 /** One arc's progress record — see `GuideFlowProgress` in user.model.ts. */
@@ -33,6 +39,7 @@ const GuideFlowProgressBody = t.Object({
 })
 
 export const UpdatePreferencesBody = t.Object({
+  age_confirmed: t.Optional(t.Boolean()),
   nsfw_enabled: t.Optional(t.Boolean()),
   preferred_model: t.Optional(t.String()),
   theme: t.Optional(t.String()),

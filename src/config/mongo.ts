@@ -111,3 +111,17 @@ export function getDb(): Db {
   if (!database) throw new Error('MongoDB not connected. Call connectMongo() first.')
   return database
 }
+
+/** Standalone development Mongo cannot transact; callers keep a durable fence
+ * and source row until every idempotent move has succeeded. */
+export async function accountTransaction<T>(work: (session?: import('mongodb').ClientSession) => Promise<T>): Promise<T> {
+  if (!client) throw new Error('MongoDB not connected')
+  const topology = await getDb().admin().command({ hello: 1 })
+  if (!topology.setName && topology.msg !== 'isdbgrid') return work()
+  const session = client.startSession()
+  try {
+    return await session.withTransaction(() => work(session))
+  } finally {
+    await session.endSession()
+  }
+}

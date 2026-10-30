@@ -38,6 +38,9 @@ export type EverloreIndexDef = {
 }
 
 export const EVERLORE_INDEXES: EverloreIndexDef[] = [
+  { collection: COLLECTIONS.users, key: { install_id: 1 },
+    options: { unique: true, name: 'idx_users_guest_install', partialFilterExpression: { guest: true } } },
+  { collection: COLLECTIONS.users, key: { guest: 1, created_at: 1 }, options: { name: 'idx_users_guest_expiry' } },
   { collection: COLLECTIONS.media_assets, key: { cache_key: 1 }, options: { unique: true } },
   { collection: COLLECTIONS.media_assets, key: { instance_id: 1, event_id: 1 } },
   { collection: COLLECTIONS.media_assets, key: { player_id: 1, status: 1, created_at: -1 },

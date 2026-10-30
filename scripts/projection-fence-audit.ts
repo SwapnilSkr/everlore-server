@@ -118,7 +118,7 @@ let anomalyFailure = false
 let signalFailure = false
 const signalRows: Doc[] = []
 let lifecycleCalls = 0
-mock.module('../src/config/mongo', () => ({ mongoColl: { events: () => events, characters: () => characters, entities: () => entities, signalLedger: () => ({ updateOne: async (_query: Doc, update: Doc) => {
+mock.module('../src/config/mongo', () => ({ mongoColl: { users: () => ({ findOne: async () => ({ guest: false }) }), events: () => events, characters: () => characters, entities: () => entities, signalLedger: () => ({ updateOne: async (_query: Doc, update: Doc) => {
   if (signalFailure) throw new Error('scripted signal write failure')
   signalRows.push(copy(update.$set))
 } }) } }))

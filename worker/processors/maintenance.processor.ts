@@ -21,6 +21,10 @@ const STUCK_SUMMARY_MS = 10 * 60 * 1000
 export async function maintenanceProcessor(job: Job) {
   const { task } = job.data
   switch (task) {
+    case 'expire_guests': {
+      const { expireGuests } = await import('../../src/services/guest-expiry.service')
+      return expireGuests()
+    }
     case 'repair_media_reservations':
       await repairMediaReservations()
       break

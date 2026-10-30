@@ -134,6 +134,9 @@ async function main() {
 
   // Schedule recurring maintenance jobs
   const maintenanceQueue = getMaintenanceQueue()
+  await maintenanceQueue.add('guest-expiry', { task: 'expire_guests' }, {
+    repeat: { pattern: '15 3 * * *' }, priority: 30, ...QUEUE_RETENTION.maintenance,
+  })
   await maintenanceQueue.add('media-repair', { task: 'repair_media_reservations' }, {
     repeat: { pattern: '* * * * *' }, priority: 10, ...QUEUE_RETENTION.maintenance,
   })

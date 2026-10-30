@@ -1,5 +1,5 @@
 import { runWithLLMTrace, snapshotLLMTrace, setLLMTraceSequence } from '../../src/ai/usage'
-import { flushLLMTracesLater, traceLogFields } from '../../src/services/llm-trace.service'
+import { flushLLMTraces, flushLLMTracesLater, traceLogFields } from '../../src/services/llm-trace.service'
 import { env } from '../../src/config/env'
 import { startVectorPrefetch } from '../../src/providers/rag.provider'
 import { detectSpokenLines } from '../../src/services/media/detection'
@@ -427,8 +427,9 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
   }
   if (!isLLMUsageActive()) {
     return runWithLLMTrace({ instance_id: job.data.instanceId, player_id: job.data.playerId },
-      () => runWithLLMUsage(() => generationProcessor(job).catch((error: unknown) => {
-        flushLLMTracesLater(snapshotLLMTrace())
+      () => runWithLLMUsage(() => generationProcessor(job).catch(async (error: unknown) => {
+        if (job.data.guestSession) await flushLLMTraces(snapshotLLMTrace()).catch(() => log.warn('llm_trace.flush_failed'))
+        else flushLLMTracesLater(snapshotLLMTrace())
         throw error
       })))
   }
@@ -3566,7 +3567,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     const slowestCall = slowestTailCall(tailCallMs)
     const traceRecords = snapshotLLMTrace()
     const narratorStartedAt = traceRecords.find(record => record.call.purpose === 'narration')?.call.started_at ?? new Date(genStart)
-    mongoColl
+    const logWrite = mongoColl
       .generationLogs()
       .insertOne({
         _id: new ObjectId(),
@@ -3611,14 +3612,19 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
         end_to_end_ttft_ms: endToEndTtftMs,
         created_at: new Date(loggedAt ?? Date.now()),
       })
-      .then(() => { flushLLMTracesLater(traceRecords, nextSequence, narratorStartedAt) })
+      .then(async () => {
+        if (job.data.guestSession) await flushLLMTraces(traceRecords, nextSequence, narratorStartedAt)
+        else flushLLMTracesLater(traceRecords, nextSequence, narratorStartedAt)
+      })
       .catch((err) => {
         console.warn('generation_log insert failed:', (err as Error).message)
-        flushLLMTracesLater(traceRecords, nextSequence, narratorStartedAt)
+        if (!job.data.guestSession) flushLLMTracesLater(traceRecords, nextSequence, narratorStartedAt)
       })
+    if (job.data.guestSession) await logWrite
     } catch (err) {
       console.warn('generation_log build failed:', (err as Error).message)
-      flushLLMTracesLater(snapshotLLMTrace(), nextSequence)
+      if (job.data.guestSession) await flushLLMTraces(snapshotLLMTrace(), nextSequence).catch(() => log.warn('llm_trace.flush_failed'))
+      else flushLLMTracesLater(snapshotLLMTrace(), nextSequence)
     }
   }
 

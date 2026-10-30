@@ -40,6 +40,7 @@
     "audit:review-access": "bun run scripts/review-access-audit.ts",
     "audit:admin-route-guard": "bun --no-env-file run scripts/admin-route-guard-audit.ts",
     "audit:admin-overview": "bun --no-env-file run scripts/audit-admin-overview.ts",
+    "audit:guest": "bun --no-env-file run scripts/guest-audit.ts",
     "audit:telemetry": "bun --no-env-file run scripts/telemetry-audit.ts",
     "audit:telemetry-admin": "bun --no-env-file run scripts/telemetry-admin-audit.ts",
     "audit:llm-trace": "bun --no-env-file run scripts/llm-trace-audit.ts",

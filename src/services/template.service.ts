@@ -1,3 +1,4 @@
+import { requireIdentity } from './guest-policy'
 import { ObjectId, type UpdateFilter } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import type {
@@ -98,6 +99,7 @@ function assertValidStats(baseStats: Record<string, unknown> | undefined, field:
 
 export const templateService = {
   async create(creatorId: string, data: any): Promise<WorldTemplateDoc> {
+    await requireIdentity(creatorId)
     const kind: 'world' | 'character' = data.kind === 'character' ? 'character' : 'world'
     // Characters may be stat-less; Worlds still require at least one stat.
     if (kind === 'world') {
@@ -260,6 +262,7 @@ export const templateService = {
   },
 
   async publish(templateId: string, creatorId: string, visibility: 'private' | 'public' = 'private') {
+    await requireIdentity(creatorId)
     const tid = parseObjectId(templateId)
     const creatorOid = parseObjectId(creatorId)
 

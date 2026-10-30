@@ -52,6 +52,11 @@ export interface GuideFlowProgress {
  */
 export interface UserDoc {
   _id: ObjectId
+  guest?: boolean
+  install_id?: string
+  guest_turns?: number
+  guest_merge_target?: ObjectId
+  guest_purging?: boolean
   email?: string
   phone?: string
   username: string
@@ -80,6 +85,7 @@ export interface UserDoc {
    * something to hang off.
    */
   firebase_uid?: string
+  age_confirmed_at?: Date
   preferences: UserPreferences
   token_balance: number
   /**

@@ -1,3 +1,5 @@
+import { beginGuestRequest, endGuestRequest } from './guest-requests'
+import { HttpError } from '../utils/http-error'
 import { ObjectId, type Collection } from 'mongodb'
 import * as mongo from '../config/mongo'
 import type { LLMCallDoc, LLMCallBodyDoc, LLMTraceRecord } from '../models/llm-call.model'
@@ -111,7 +113,24 @@ export async function runBackgroundLLMTrace<T>(scope: LLMTraceScope & { event_id
       log.warn('llm_trace.scope_lookup_failed')
     }
   }
-  return runWithLLMTrace({ ...scope, player_id: player, sequence, background: true }, async () => {
-    try { return await fn() } finally { flushLLMTracesLater(snapshotLLMTrace()) }
-  })
+  let guestLease: string | null = null
+  const playerId = player ? String(player) : undefined
+  if (playerId && ObjectId.isValid(playerId)) {
+    const account = await mongo.mongoColl.users().findOne({ _id: new ObjectId(playerId) })
+    if (!account) throw new HttpError(409, 'Your story is being saved. Please try again.')
+    if (account.guest) {
+      guestLease = await beginGuestRequest(playerId, true)
+      if (!guestLease) throw new HttpError(409, 'Your story is being saved. Please try again.')
+    }
+  }
+  try {
+    return await runWithLLMTrace({ ...scope, player_id: player, sequence, background: true }, async () => {
+      try { return await fn() } finally {
+        if (guestLease) await flushLLMTraces(snapshotLLMTrace()).catch(() => log.warn('llm_trace.flush_failed'))
+        else flushLLMTracesLater(snapshotLLMTrace())
+      }
+    })
+  } finally {
+    if (guestLease && playerId) await endGuestRequest(playerId, guestLease)
+  }
 }

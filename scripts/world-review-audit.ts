@@ -113,10 +113,12 @@ check('draft public publish waits for review', publishReviewUpdate({ ...world, i
 // authoring call is needed for the fields selected here.
 const originalWorldTemplates = mongoColl.worldTemplates
 const originalReplaceLore = vectorStore.replaceLore
+const originalOwnerUsers = mongoColl.users
 let stored = { ...world }
 let lastSet: Record<string, unknown> = {}
 try {
   vectorStore.replaceLore = async () => {}
+  ;(mongoColl as unknown as { users: () => unknown }).users = () => ({ findOne: async () => ({ _id: ownerId, guest: false }) })
   ;(mongoColl as unknown as { worldTemplates: () => unknown }).worldTemplates = () => ({
     findOne: async () => stored,
     updateOne: async (_filter: unknown, update: { $set: Record<string, unknown>; $unset?: Record<string, unknown> }) => {
@@ -140,6 +142,7 @@ try {
   check('service private publish clears review status', stored.review_status, undefined)
 } finally {
   vectorStore.replaceLore = originalReplaceLore
+  ;(mongoColl as unknown as { users: () => unknown }).users = originalOwnerUsers
   ;(mongoColl as unknown as { worldTemplates: () => unknown }).worldTemplates = originalWorldTemplates
 }
 

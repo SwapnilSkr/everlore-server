@@ -619,6 +619,12 @@ await check('§3.1: sign_in_completed accepts only boolean new_account', () => {
   assert.equal(normalizeEvent(event('sign_in_completed', { new_account: 'true' }), coverageContext), null)
 })
 
+await check('FR-5: guest_started accepts no props and strips free text', () => {
+  const normalized = normalizeEvent(event('guest_started', { text: marker, user_id: marker }), coverageContext)
+  assert.ok(normalized)
+  assert.deepEqual(normalized.props ?? {}, {})
+})
+
 await check('§4.1: 202 and a kept count; bad items are dropped, the batch is not', async () => {
   reset()
   const reply = await post(

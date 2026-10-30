@@ -235,9 +235,9 @@ try {
     assert.deepEqual(await verify.json(), {
       token: 'phone-audit-token', user: {
         id: user._id, email: '', phone, username: user.username, tier: user.tier,
-        can_forge: false, preferences: user.preferences, token_balance: user.token_balance,
+        guest: false, can_forge: false, preferences: user.preferences, token_balance: user.token_balance,
       },
-    }, 'approved success unchanged')
+    }, 'approved success with explicit real-account guest flag')
     assert.equal(jwtCalls, 1)
     assert.equal(dbCalls, 2)
     passed++
@@ -252,7 +252,7 @@ try {
     assert.equal(firstBody.token, 'phone-audit-token')
     assert.deepEqual(firstBody.user, {
       id: user._id, email: '', phone, username: storedUser!.username, tier: 'free',
-      can_forge: false, preferences: storedUser!.preferences, token_balance: 15000,
+      guest: false, can_forge: false, preferences: storedUser!.preferences, token_balance: 15000,
     })
     const second = await request('verify')
     assert.equal(second.status, 200)
@@ -282,7 +282,7 @@ try {
     assert.equal(Object.hasOwn(racedBody, 'new_account'), false, 'phone race: new_account omitted')
     assert.deepEqual(racedBody, { token: 'phone-audit-token', user: {
       id: winner._id, email: '', phone, username: winner.username, tier: winner.tier,
-      can_forge: false, preferences: winner.preferences, token_balance: winner.token_balance,
+      guest: false, can_forge: false, preferences: winner.preferences, token_balance: winner.token_balance,
     } }, 'phone race: winner returned')
     const [racedUpdate] = writtenUpdates
     assert.deepEqual(racedUpdate, { $set: {

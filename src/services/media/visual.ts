@@ -1,3 +1,4 @@
+import { requireIdentity } from '../guest-policy'
 import { createHash } from 'crypto'
 import { identityKey } from '../character-codex.service'
 import { ObjectId } from 'mongodb'
@@ -595,6 +596,7 @@ async function keptPortraitLook(
 export async function requestPortrait(
   playerId: string, instanceId: string, characterId: string, opts: { repaint?: boolean; personaId?: string } = {},
 ): Promise<QueuedReply> {
+  await requireIdentity(playerId)
   if (!mediaEnabled('portrait')) throw new HttpError(404, 'That moment could not be found.')
   const { iid, instance, template } = await loadContext(playerId, instanceId)
   const pid = parseObjectId(playerId)
@@ -746,6 +748,7 @@ export async function processPortrait(mediaId: string): Promise<void> {
 export async function requestPersonaPortrait(
   playerId: string, personaId: string, opts: { instanceId?: string } = {},
 ): Promise<QueuedReply> {
+  await requireIdentity(playerId)
   if (!mediaEnabled('portrait')) throw new HttpError(404, 'That moment could not be found.')
   const pid = parseObjectId(playerId)
   const persona = await mongoColl.personas().findOne({ _id: parseObjectId(personaId), player_id: pid })
@@ -955,6 +958,7 @@ export async function ensurePersonaFaceReady(
 }
 
 export async function requestPicture(playerId: string, instanceId: string, eventId: string): Promise<QueuedReply> {
+  await requireIdentity(playerId)
   if (!mediaEnabled('picture')) throw new HttpError(404, 'That moment could not be found.')
   const { pid, iid, event } = await loadContext(playerId, instanceId, eventId)
   const revision = mediaRevision(event!.data.ai_response, event!.data.player_input)
@@ -1211,6 +1215,7 @@ export async function ensureVoiceReady(
 }
 
 export async function requestVideo(playerId: string, instanceId: string, eventId: string, lineId: string): Promise<QueuedReply> {
+  await requireIdentity(playerId)
   if (!mediaEnabled('video')) throw new HttpError(404, 'That moment could not be found.')
   const { pid, iid, instance, template, user, event } = await loadContext(playerId, instanceId, eventId)
   if (!matureVoiceAllowed(event!.nsfw_intent, user?.preferences?.nsfw_enabled === true)) {
@@ -1256,6 +1261,7 @@ export async function requestVideo(playerId: string, instanceId: string, eventId
 
 /** A narration-only cut uses the same video queue, cap and completion messages. */
 export async function requestTurnVideo(playerId: string, instanceId: string, eventId: string): Promise<QueuedReply> {
+  await requireIdentity(playerId)
   if (!mediaEnabled('video')) throw new HttpError(404, 'That moment could not be found.')
   const { pid, iid, event, template } = await loadContext(playerId, instanceId, eventId)
   const revision = mediaRevision(event!.data.ai_response, event!.data.player_input)

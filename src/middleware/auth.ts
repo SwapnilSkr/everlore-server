@@ -1,3 +1,4 @@
+import { beginGuestRequest, endGuestRequest } from '../services/guest-requests'
 import { Elysia } from 'elysia'
 import { jwt } from '@elysiajs/jwt'
 import { env } from '../config/env'
@@ -26,23 +27,33 @@ function payloadToUser(payload: unknown): AuthUser | null {
 
 export const authPlugin = new Elysia({ name: 'auth-plugin' })
   .use(jwt({ name: 'jwt', secret: env.JWT_SECRET }))
-  .derive({ as: 'global' }, async ({ jwt, headers }) => {
+  .derive({ as: 'global' }, async ({ jwt, headers, request }) => {
     const auth = headers.authorization
     if (!auth?.startsWith('Bearer ')) {
-      return { user: null as AuthUser | null }
+      return { user: null as AuthUser | null, guestRequestLease: null as { id: string; lease: string } | null }
     }
 
     const token = auth.slice(7)
     const payload = await jwt.verify(token)
     const user = payloadToUser(payload)
-    if (!user) return { user: null as AuthUser | null }
+    if (!user) return { user: null as AuthUser | null, guestRequestLease: null as { id: string; lease: string } | null }
 
     // Tier and ban state are read live so an admin change takes effect without
     // waiting for the user's existing JWT to expire.
     const live = await authService.getLiveAccess(user.id)
-    if (!live || live.account_status === 'banned') return { user: null as AuthUser | null }
+    if (!live || live.account_status === 'banned') return { user: null as AuthUser | null, guestRequestLease: null as { id: string; lease: string } | null }
+    let guestRequestLease: { id: string; lease: string } | null = null
+    const identitySignIn = request.method === 'POST' && /\/auth\/(google|otp\/verify)$/.test(new URL(request.url).pathname)
+    if (live.guest && !identitySignIn) {
+      const lease = await beginGuestRequest(user.id)
+      if (!lease) return { user: null as AuthUser | null, guestRequestLease: null }
+      guestRequestLease = { id: user.id, lease }
+    }
     recordLastActive(user.id)
-    return { user: { ...user, tier: live.tier } }
+    return { user: { ...user, tier: live.tier }, guestRequestLease }
+  })
+  .onAfterResponse({ as: 'global' }, async ({ guestRequestLease }) => {
+    if (guestRequestLease) await endGuestRequest(guestRequestLease.id, guestRequestLease.lease).catch(() => {})
   })
 
 /** Chain after `authPlugin` to reject unauthenticated requests (optional helper). */

@@ -38,7 +38,7 @@ export const deletionService = {
    * - The lore vectors in Pinecone (lore_{templateId})
    * - The template itself
    */
-  async deleteTemplate(templateId: string, creatorId: string): Promise<{ deleted: boolean }> {
+  async deleteTemplate(templateId: string, creatorId: string, retainUsageFor?: ObjectId): Promise<{ deleted: boolean }> {
     const tid = parseObjectId(templateId)
     const cid = parseObjectId(creatorId)
     
@@ -52,14 +52,14 @@ export const deletionService = {
       throw new HttpError(404, 'That world is not yours to unmake.')
     }
 
-    return this.deleteTemplateById(tid)
+    return this.deleteTemplateById(tid, retainUsageFor)
   },
 
   /**
    * Admin/internal template purge. Deletes the template itself plus every
    * playthrough and derivative artifact created from it, regardless of owner.
    */
-  async deleteTemplateById(templateId: string | ObjectId): Promise<{ deleted: boolean }> {
+  async deleteTemplateById(templateId: string | ObjectId, retainUsageFor?: ObjectId): Promise<{ deleted: boolean }> {
     const tid = typeof templateId === 'string' ? parseObjectId(templateId) : templateId
     const template = await worldTemplates().findOne({ _id: tid })
     if (!template) throw new HttpError(404, 'That world could not be found.')
@@ -70,7 +70,7 @@ export const deletionService = {
       .find({ template_id: tid }, { projection: { _id: 1 } })
       .toArray()
     for (const instance of instances) {
-      await this.deleteInstanceById(instance._id)
+      await this.deleteInstanceById(instance._id, retainUsageFor)
     }
 
     await deadLetterJobs().deleteMany({
@@ -271,7 +271,7 @@ export const deletionService = {
    * - The instance itself
    * - Redis session cache
    */
-  async deleteInstance(instanceId: string, playerId: string): Promise<{ deleted: boolean }> {
+  async deleteInstance(instanceId: string, playerId: string, retainUsageFor?: ObjectId): Promise<{ deleted: boolean }> {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
     
@@ -285,11 +285,11 @@ export const deletionService = {
       throw new HttpError(404, 'That story is not yours to end.')
     }
 
-    return this.deleteInstanceById(iid)
+    return this.deleteInstanceById(iid, retainUsageFor)
   },
 
   /** Admin/internal instance purge without owner checks. */
-  async deleteInstanceById(instanceId: string | ObjectId): Promise<{ deleted: boolean }> {
+  async deleteInstanceById(instanceId: string | ObjectId, retainUsageFor?: ObjectId): Promise<{ deleted: boolean }> {
     const iid = typeof instanceId === 'string' ? parseObjectId(instanceId) : instanceId
     const instance = await worldInstances().findOne({ _id: iid })
     if (!instance) throw new HttpError(404, 'That story could not be found.')
@@ -303,9 +303,9 @@ export const deletionService = {
       console.warn(`Failed to drain queued jobs for instance ${iidStr}:`, (err as Error).message)
     })
 
-    await this.purgeInstancePayload(iid, iidStr)
+    await this.purgeInstancePayload(iid, iidStr, retainUsageFor)
     // An already-running worker may have finished while the first pass ran.
-    await this.purgeInstancePayload(iid, iidStr)
+    await this.purgeInstancePayload(iid, iidStr, retainUsageFor)
 
     await redis.del(`session:${iidStr}`)
     await redis.del(`lock:gen:${idString(instance.player_id)}:${iidStr}`)
@@ -319,9 +319,9 @@ export const deletionService = {
   },
 
   /** The one payload list shared by reset, save deletion and template deletion. */
-  async purgeInstancePayload(instanceId: ObjectId, instanceIdStr: string): Promise<void> {
+  async purgeInstancePayload(instanceId: ObjectId, instanceIdStr: string, retainUsageFor?: ObjectId): Promise<void> {
     await events().deleteMany({ instance_id: instanceId })
-    await purgeMedia({ instance_id: instanceId })
+    await purgeMedia({ instance_id: instanceId }, retainUsageFor)
     await purgeCardPortraits(instanceId)
     await this.deleteInstanceData(instanceId, instanceIdStr)
     await Promise.all([
@@ -383,7 +383,7 @@ export const deletionService = {
       .toArray()
 
     for (const instance of instances) {
-      await this.deleteInstance(idString(instance._id), userId)
+      await this.deleteInstance(idString(instance._id), userId, user.guest ? undefined : pid)
     }
 
     const templates = await worldTemplates()
@@ -392,10 +392,17 @@ export const deletionService = {
       .toArray()
 
     for (const template of templates) {
-      await this.deleteTemplate(idString(template._id), userId)
+      await this.deleteTemplate(idString(template._id), userId, user.guest ? undefined : pid)
     }
 
-    await purgeMedia({ player_id: pid })
+    await purgeMedia({ player_id: pid }, user.guest ? undefined : pid)
+    // Standalone persona faces have no instance and must be cleaned separately.
+    for (const persona of await mongoColl.personas().find({ player_id: pid }).toArray()) {
+      const keys = new Set([persona.portrait?.asset_key, ...Object.values(persona.portraits || {}).map(face => face.asset_key)])
+      for (const key of keys) if (key) await storageService.deleteStrict(key)
+    }
+    const { purgeAccountReferences } = await import('./account-references')
+    await purgeAccountReferences(pid, user.guest === true)
     // Telemetry carries the only other rows keyed by player: events, sessions
     // and error samples. Error groups and per-day counters hold counts rather
     // than people and stay; an install shared with another account just loses

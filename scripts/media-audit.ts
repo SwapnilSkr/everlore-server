@@ -203,7 +203,9 @@ check('http_limit', async () => {
 })
 check('auth_switch', async () => {
   const f = fixture()
-  await assert.rejects(requestVoice(String(new ObjectId()), String(f.instance), String(f.event), 'l0'), (e: unknown) => e instanceof HttpError && e.statusCode === 404)
+  const otherPlayer = new ObjectId()
+  f.db.users.rows.push({ _id: otherPlayer, preferences: { nsfw_enabled: false } })
+  await assert.rejects(requestVoice(String(otherPlayer), String(f.instance), String(f.event), 'l0'), (e: unknown) => e instanceof HttpError && e.statusCode === 404)
   process.env.MEDIA_ENABLED = 'false'
   await assert.rejects(requestVoice(String(f.player), String(f.instance), String(f.event), 'l0'), (e: unknown) => e instanceof HttpError && e.statusCode === 404)
   assert.equal(f.calls(), 0)
@@ -361,9 +363,9 @@ check('deletion', async () => {
   await purgeMedia({ event_id: f.event })
   assert.equal(removed, a.asset_key); assert.equal(f.db.mediaAssets.rows.length, 0); assert.equal(f.db.mediaUsage.rows.length, 0)
   const deletion = readFileSync('src/services/deletion.service.ts', 'utf8'), memory = readFileSync('src/services/memory.service.ts', 'utf8')
-  assert.ok(deletion.includes('await purgeMedia({ instance_id: instanceId })'))
-  assert.ok(deletion.includes('await purgeMedia({ player_id: pid })'))
-  assert.ok(deletion.includes('await this.deleteInstanceById(instance._id)'))
+  assert.ok(deletion.includes('await purgeMedia({ instance_id: instanceId }'))
+  assert.ok(deletion.includes('await purgeMedia({ player_id: pid }'))
+  assert.ok(deletion.includes('await this.deleteInstanceById(instance._id'))
   assert.ok(memory.includes('await purgeMedia({ instance_id: iid, event_id: { $in: doomedIds } })'))
 })
 check('revisions_payload', () => {
@@ -2821,7 +2823,9 @@ check('dialogue_free_resting', async () => {
 })
 check('dialogue_free_owner', async () => {
   const f = turnVideoFixture()
-  await assert.rejects(requestTurnVideo(String(new ObjectId()), String(f.instance), String(f.event)), (e: unknown) => e instanceof HttpError && e.statusCode === 404)
+  const otherPlayer = new ObjectId()
+  f.db.users.rows.push({ _id: otherPlayer, preferences: { nsfw_enabled: false } })
+  await assert.rejects(requestTurnVideo(String(otherPlayer), String(f.instance), String(f.event)), (e: unknown) => e instanceof HttpError && e.statusCode === 404)
   assert.equal(f.db.mediaUsage.rows.length, 0)
   assert.equal(f.db.mediaAssets.rows.length, 0)
 })

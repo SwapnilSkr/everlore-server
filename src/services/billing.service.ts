@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb'
+import { GUEST_TURN_LIMIT, signInRequired } from './guest-policy'
 import { mongoColl } from '../config/mongo'
 import type { UserTier } from '../models/user.model'
 import { HttpError } from '../utils/http-error'
@@ -141,6 +142,7 @@ export const billingService = {
   },
 
   async ensureWelcomeInk(playerId: string) {
+    if ((await users().findOne({ _id: parseObjectId(playerId) }))?.guest) return
     const playerOid = parseObjectId(playerId)
     await ledger().updateOne(
       { player_id: playerOid, idempotency_key: 'welcome:v1' },
@@ -187,6 +189,14 @@ export const billingService = {
   },
 
   async reserve(playerId: string, action: BillableAction, requestId: string) {
+    const player = await users().findOne({ _id: parseObjectId(playerId) })
+    if (!player) throw new HttpError(401, 'Sign in to continue.')
+    if (player.guest) {
+      if (action !== 'story_turn' || (player.guest_turns || 0) >= GUEST_TURN_LIMIT || player.guest_merge_target || player.guest_purging) throw signInRequired()
+      // The five-turn preview remains playable with or without the Ink promo.
+      // Its atomic lifetime admission is spent by generationService.
+      return { reservation_id: null, cost: 0, balance: null }
+    }
     const config = await effectiveBilling()
     const promo = config.promo.unlimited
     const cost = promo ? 0 : config.costs[action]

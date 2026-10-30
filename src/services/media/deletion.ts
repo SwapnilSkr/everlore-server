@@ -7,7 +7,7 @@ import { storageService } from '../storage.service'
  * All asset kinds, including passing_face claims and ready faces, share this
  * purge. Handle-keyed faces have no event_id so rewinds retain them until the
  * save is deleted; event/line-keyed faces are removed with their event. */
-export async function purgeMedia(filter: Filter<Pick<MediaAssetDoc, 'player_id' | 'instance_id' | 'event_id'>>): Promise<void> {
+export async function purgeMedia(filter: Filter<Pick<MediaAssetDoc, 'player_id' | 'instance_id' | 'event_id'>>, retainUsageFor?: ObjectId): Promise<void> {
   await mongoColl.mediaAssets().updateMany(filter, { $set: { status: 'failed' } })
   const assets = await mongoColl.mediaAssets().find(filter).toArray()
   for (const asset of assets) {
@@ -16,7 +16,7 @@ export async function purgeMedia(filter: Filter<Pick<MediaAssetDoc, 'player_id' 
     for (const key of asset.still_keys || []) await storageService.deleteStrict(key)
   }
   await mongoColl.mediaAssets().deleteMany(filter)
-  await mongoColl.mediaUsage().deleteMany(filter)
+  await mongoColl.mediaUsage().deleteMany(retainUsageFor ? { $and: [filter, { player_id: { $ne: retainUsageFor } }] } : filter)
   await mongoColl.mediaRejections().deleteMany(filter)
 }
 

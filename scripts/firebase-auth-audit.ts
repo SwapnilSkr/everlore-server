@@ -155,7 +155,7 @@ try {
   assert.equal(first.token, 'firebase-audit-jwt')
   assert.deepEqual(first.user, {
     id: '64b7f0c2a1b2c3d4e5f60718', email: 'player@example.com', phone: null,
-    username: stored!.username, tier: 'free', can_forge: false,
+    username: stored!.username, tier: 'free', guest: false, can_forge: false,
     preferences: stored!.preferences, token_balance: 15000,
   })
   const second = await authController.google({ body: { id_token: 'firebase-audit-token' }, jwt })

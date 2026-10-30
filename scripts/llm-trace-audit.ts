@@ -9,12 +9,13 @@ import { runWithLLMTrace, runWithLLMUsage, snapshotLLMTrace, snapshotLLMUsage, t
 
 mock.module('../src/config/env', () => ({ env: { OPENROUTER_PREFERRED_P90_LATENCY_SECONDS: 3, EMBED_HEDGE_MS: 15, EMBED_DEADLINE_MS: 100 } }))
 const local = await startTraceAuditMongo()
-mock.module('../src/config/mongo', () => ({ coll: (name: string) => local.db.collection(name), mongoColl: { events: () => local.db.collection('events') } }))
+mock.module('../src/config/mongo', () => ({ coll: (name: string) => local.db.collection(name), mongoColl: { events: () => local.db.collection('events'), users: () => local.db.collection('users') } }))
 const { callLLM, callLLMStream, callLLMWithFallback, callLLMStreamWithFallback, setLLMClientForAudit, setNarrationStreamingClientForAudit, buildChatRequest } = await import('../src/ai/client')
 const { embedQuery, setEmbeddingClientForAudit } = await import('../src/ai/embedding')
 const { flushLLMTraces, flushLLMTracesLater, prepareTraceFlush, buildTraceBody, traceLogFields, runBackgroundLLMTrace } = await import('../src/services/llm-trace.service')
 const { buildPrompt } = await import('../src/utils/prompt-builder')
 const instance = new ObjectId(), player = new ObjectId()
+await local.db.collection('users').insertOne({ _id: player })
 const originalFetch = globalThis.fetch
 const sent: Array<Record<string, unknown>> = []
 const usage = { prompt_tokens: 100, completion_tokens: 12, total_tokens: 112, cost: .0003,
@@ -120,10 +121,10 @@ try {
     assert.equal((await local.db.collection('llm_calls').indexes()).length, 5)
     assert.ok((await local.db.collection('llm_calls').find().toArray()).every(c => !('request' in c) && !('response' in c)))
     check('real isolated Mongo stores every call and body with TTL and indexes', () => {})
-    check('flush is chained after the log insert and never awaited by the turn', () => {
+    check('real-account flush stays detached; guest flush completes before transfer can drain', () => {
       const source = readFileSync('worker/processors/generation.processor.ts', 'utf8')
-      assert.match(source, /\.insertOne\(\{[\s\S]+\.then\(\(\) => \{ flushLLMTracesLater\(traceRecords, nextSequence, narratorStartedAt\) \}\)/)
-      assert.doesNotMatch(source, /await\s+(?:flushLLMTraces|flushLLMTracesLater)/)
+      assert.match(source, /\.insertOne\(\{[\s\S]+\.then\(async \(\) => \{[\s\S]+if \(job.data.guestSession\) await flushLLMTraces\(traceRecords, nextSequence, narratorStartedAt\)[\s\S]+else flushLLMTracesLater\(traceRecords, nextSequence, narratorStartedAt\)/)
+      assert.match(source, /if \(job.data.guestSession\) await logWrite/)
     })
     check('body caps, markers, head/tail and total request cap hold', () => {
       const giant = { ...records[0], request: Array.from({ length: 20 }, () => ({ role: 'user', content: 'H'.repeat(20000) + 'TAIL' })), response: 'A'.repeat(14000) + 'END' }
@@ -163,12 +164,12 @@ try {
     assert.equal(bodyWrites, 1); assert.equal(callWrites, 0)
     release()
     await Bun.sleep(5)
-    check('failed-turn cleanup is wired, flush never blocks and duplicate schedules write once', () => {
+    check('failed-turn cleanup keeps real-account flush detached and duplicate schedules write once', () => {
       assert.equal(callWrites, 1); assert.equal(trace.call.sequence, 12)
       const source = readFileSync('worker/processors/generation.processor.ts', 'utf8')
       assert.ok(source.includes('generationProcessor(job).catch('))
       assert.ok(source.includes('setLLMTraceSequence(nextSequence)'))
-      assert.match(source, /catch\(\(error: unknown\) => \{\s*flushLLMTracesLater\(snapshotLLMTrace\(\)\)/)
+      assert.match(source, /catch\(async \(error: unknown\) => \{[\s\S]*?if \(job.data.guestSession\) await flushLLMTraces[\s\S]*?else flushLLMTracesLater\(snapshotLLMTrace\(\)\)/)
     })
   })
   await runWithLLMTrace({ instance_id: instance }, async () => {

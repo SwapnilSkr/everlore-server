@@ -1,6 +1,8 @@
+import { guestClientAddress } from '../utils/guest-client-address'
 import { Elysia } from 'elysia'
 import {
   RegisterBody,
+  GuestAuthBody,
   LoginBody,
   GoogleAuthBody,
   SendOtpBody,
@@ -12,6 +14,12 @@ import { authController } from '../controllers/auth.controller'
 
 export const authRoutes = new Elysia({ prefix: '/auth' })
   .use(authPlugin)
+
+  .post('/guest', (ctx) => authController.guest({ ...ctx,
+    address: guestClientAddress(ctx.server?.requestIP(ctx.request)?.address, ctx.headers['x-forwarded-for']),
+    sessionUserId: ctx.user?.id,
+    sessionToken: ctx.headers.authorization?.startsWith('Bearer ') ? ctx.headers.authorization.slice(7) : undefined,
+  }), { body: GuestAuthBody })
 
   .post('/register', (ctx) => authController.register(ctx), { body: RegisterBody })
 

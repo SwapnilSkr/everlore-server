@@ -90,7 +90,7 @@ const instances = new Map([aid, bid].map((id) => [id, { _id: new ObjectId(id), p
 const emptyCursor = { sort: () => emptyCursor, limit: () => emptyCursor, project: () => emptyCursor, toArray: async () => [] }
 const collections = new Proxy({}, { get: (_target, name) => () => ({
   find: () => name === 'worldInstances' ? { toArray: async () => [...instances.values()] } : emptyCursor,
-  findOne: async (query: { _id?: ObjectId }) => name === 'worldTemplates' ? world
+  findOne: async (query: { _id?: ObjectId }) => name === 'users' ? { _id: new ObjectId(creator), guest: false } : name === 'worldTemplates' ? world
     : name === 'worldInstances' ? instances.get(String(query._id)) || null : null,
   updateOne: async () => ({ matchedCount: 1 }),
   deleteMany: async () => ({}),

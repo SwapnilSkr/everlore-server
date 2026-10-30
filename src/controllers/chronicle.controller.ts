@@ -1,3 +1,4 @@
+import { reserveGuestTurn } from '../services/guest-policy'
 import type { AuthUser } from '../middleware/auth'
 import { memoryService } from '../services/memory.service'
 import { characterCodexService } from '../services/character-codex.service'
@@ -683,7 +684,10 @@ export const chronicleController = {
     if (!user) throw new HttpError(401, 'Unauthorized')
     return withChronicleEdit(user.id, mongoColl.events().findOne({
       _id: parseObjectId(params.eventId), player_id: parseObjectId(user.id),
-    }), () => memoryService.replayEvent(params.eventId, user.id))
+    }), async () => {
+      await reserveGuestTurn(user.id)
+      return memoryService.replayEvent(params.eventId, user.id)
+    })
   },
 
   selectReplayVariant: async ({

@@ -79,6 +79,7 @@ const int = (min: number, max: number): PropRule => ({ kind: 'int', min, max })
  */
 export const EVENT_SCHEMA: Record<string, { props: Record<string, PropDef> }> = {
   first_open: { props: {} },
+  guest_started: { props: {} },
   session_start: { props: { launch: { rule: oneOf('cold', 'resume') } } },
   screen_view: {
     props: {

@@ -1,3 +1,4 @@
+import { beginGuestRequest, endGuestRequest } from './guest-requests'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { getMaintenanceQueue, getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../queues'
@@ -43,51 +44,59 @@ export async function dispatchPostProcessOutbox(limit = 50) {
 
   let dispatched = 0
   for (const row of rows) {
-    const claimed = await mongoColl.postProcessOutbox().findOneAndUpdate(
-      { _id: row._id, status: 'pending' },
-      { $set: { status: 'dispatched', dispatched_at: now, updated_at: now }, $inc: { dispatch_attempts: 1 } },
-      { returnDocument: 'after' },
-    )
-    if (!claimed) continue
+    const player = await mongoColl.users().findOne({ _id: row.player_id })
+    if (!player) continue
+    const guestLease = player.guest ? await beginGuestRequest(idString(row.player_id)) : undefined
+    if (player.guest && !guestLease) continue
     try {
-      const eventId = idString(row.event_id)
-      if (row.kind === 'memory_curation') {
-        await getMemoryCurationQueue().add('curate', row.payload, {
-          jobId: `memory-curation-${eventId}`, priority: 5, attempts: 5,
-          backoff: { type: 'exponential', delay: 2000 },
-          removeOnComplete: QUEUE_RETENTION.memoryCuration.removeOnComplete,
-          removeOnFail: QUEUE_RETENTION.memoryCuration.removeOnFail,
-        })
-      } else if (row.kind === 'scene_summary') {
-        await getSceneSummaryQueue().add('summarize', row.payload, {
-          jobId: `scene-summary-${eventId}`, priority: 10, attempts: 5,
-          backoff: { type: 'exponential', delay: 5000 },
-          removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
-          removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
-        })
-      } else {
-        const task = row.kind === 'projection_checkpoint' ? 'create_projection_checkpoint' : row.kind
-        await getMaintenanceQueue().add('post-process', { task, ...row.payload }, {
-          jobId: `${row.kind}-${eventId}`, priority: 20,
-          // Active claims are retried, so recovery can probe sooner without
-          // duplicating extraction. Retries must extend past the 2-minute lease.
-          ...(row.kind === 'character_projection' ? { delay: 30_000 } : {}),
-          attempts: 5,
-          backoff: { type: 'exponential', delay: row.kind === 'character_projection' ? 30_000 : 5000 },
-          removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
-          removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
-        })
+      const claimed = await mongoColl.postProcessOutbox().findOneAndUpdate(
+        { _id: row._id, status: 'pending' },
+        { $set: { status: 'dispatched', dispatched_at: now, updated_at: now }, $inc: { dispatch_attempts: 1 } },
+        { returnDocument: 'after' },
+      )
+      if (!claimed) continue
+      try {
+        const eventId = idString(row.event_id)
+        if (row.kind === 'memory_curation') {
+          await getMemoryCurationQueue().add('curate', row.payload, {
+            jobId: `memory-curation-${eventId}`, priority: 5, attempts: 5,
+            backoff: { type: 'exponential', delay: 2000 },
+            removeOnComplete: QUEUE_RETENTION.memoryCuration.removeOnComplete,
+            removeOnFail: QUEUE_RETENTION.memoryCuration.removeOnFail,
+          })
+        } else if (row.kind === 'scene_summary') {
+          await getSceneSummaryQueue().add('summarize', row.payload, {
+            jobId: `scene-summary-${eventId}`, priority: 10, attempts: 5,
+            backoff: { type: 'exponential', delay: 5000 },
+            removeOnComplete: QUEUE_RETENTION.sceneSummary.removeOnComplete,
+            removeOnFail: QUEUE_RETENTION.sceneSummary.removeOnFail,
+          })
+        } else {
+          const task = row.kind === 'projection_checkpoint' ? 'create_projection_checkpoint' : row.kind
+          await getMaintenanceQueue().add('post-process', { task, ...row.payload }, {
+            jobId: `${row.kind}-${eventId}`, priority: 20,
+            // Active claims are retried, so recovery can probe sooner without
+            // duplicating extraction. Retries must extend past the 2-minute lease.
+            ...(row.kind === 'character_projection' ? { delay: 30_000 } : {}),
+            attempts: 5,
+            backoff: { type: 'exponential', delay: row.kind === 'character_projection' ? 30_000 : 5000 },
+            removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+            removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+          })
+        }
+        await mongoColl.postProcessOutbox().updateOne(
+          { _id: row._id }, { $set: { status: 'completed', completed_at: new Date(), updated_at: new Date() } },
+        )
+        dispatched++
+      } catch (err) {
+        const attempts = row.dispatch_attempts + 1
+        await mongoColl.postProcessOutbox().updateOne(
+          { _id: row._id },
+          { $set: { status: 'pending', last_error: (err as Error).message, next_attempt_at: new Date(Date.now() + Math.min(60000, 1000 * 2 ** attempts)), updated_at: new Date() } },
+        )
       }
-      await mongoColl.postProcessOutbox().updateOne(
-        { _id: row._id }, { $set: { status: 'completed', completed_at: new Date(), updated_at: new Date() } },
-      )
-      dispatched++
-    } catch (err) {
-      const attempts = row.dispatch_attempts + 1
-      await mongoColl.postProcessOutbox().updateOne(
-        { _id: row._id },
-        { $set: { status: 'pending', last_error: (err as Error).message, next_attempt_at: new Date(Date.now() + Math.min(60000, 1000 * 2 ** attempts)), updated_at: new Date() } },
-      )
+    } finally {
+      if (guestLease) await endGuestRequest(idString(row.player_id), guestLease)
     }
   }
   return { dispatched, scanned: rows.length }

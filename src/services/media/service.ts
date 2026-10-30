@@ -1,3 +1,4 @@
+import { requireIdentity } from '../guest-policy'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
 import { getRedisClient } from '../../config/redis'
@@ -68,6 +69,7 @@ export async function lineVoice(instance: WorldInstanceDoc, event: WorldEventDoc
 }
 
 export async function requestVoice(playerId: string, instanceId: string, eventId: string, lineId: string): Promise<VoiceReply> {
+  await requireIdentity(playerId)
   if (!mediaEnabled('voice')) throw new HttpError(404, 'That moment could not be found.')
   const pid = parseObjectId(playerId), iid = parseObjectId(instanceId), eid = parseObjectId(eventId)
   const instance = await mongoColl.worldInstances().findOne({ _id: iid, player_id: pid })

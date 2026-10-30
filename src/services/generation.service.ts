@@ -1,3 +1,4 @@
+import { reserveGuestTurn, releaseGuestTurn } from './guest-policy'
 import { mongoColl } from '../config/mongo'
 import type { MemoryDoc } from '../models/memory.model'
 import type { CharacterProfileDoc } from '../models/character-profile.model'
@@ -45,6 +46,7 @@ export const generationService = {
     const verdict = screenPlayerInput(userMessage)
     if (verdict.blocked) throw new HttpError(400, verdict.message!)
 
+    if (!await worldInstances().findOne({ _id: parseObjectId(instanceId), player_id: parseObjectId(playerId) })) throw new HttpError(404, 'That story could not be found.')
     const requestedAt = Date.now()
     const session = await instanceService.loadSession(instanceId, playerId)
 
@@ -61,54 +63,68 @@ export const generationService = {
     // retrieval — so retrieved memories can shape which codex cards inject.
     // Dispatch stays thin: identity, session, consent, enqueue.
     const queue = getGenerationQueue()
-    const job = await queue.add(
-      'generate',
-      {
-        instanceId,
-        playerId,
-        userMessage,
-        isContinuation,
-        timeAdvance,
-        worldAction,
-        requestedAt,
-        session,
-        userNsfwEnabled,
-        billingReservationId,
-        priorTurnId: params.priorTurnId,
-      },
-      {
-        jobId: params.turnId,
-        priority: 1,
-        // A turn is a visible interaction, not a background task. Retrying a
-        // failed generation can replace the scene the player just started
-        // reading, so a failed turn is surfaced as a failure and the player
-        // decides whether to try again.
-        attempts: 1,
-        removeOnComplete: QUEUE_RETENTION.generation.removeOnComplete,
-        removeOnFail: QUEUE_RETENTION.generation.removeOnFail,
-      },
-    )
+    const guestTurn = await reserveGuestTurn(playerId)
+    try {
+      const job = await queue.add(
+        'generate',
+        {
+          instanceId,
+          playerId,
+          userMessage,
+          isContinuation,
+          timeAdvance,
+          worldAction,
+          requestedAt,
+          session,
+          userNsfwEnabled,
+          guestSession: guestTurn,
+          billingReservationId,
+          priorTurnId: params.priorTurnId,
+        },
+        {
+          jobId: params.turnId,
+          priority: 1,
+          // A turn is a visible interaction, not a background task. Retrying a
+          // failed generation can replace the scene the player just started
+          // reading, so a failed turn is surfaced as a failure and the player
+          // decides whether to try again.
+          attempts: 1,
+          removeOnComplete: QUEUE_RETENTION.generation.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.generation.removeOnFail,
+        },
+      )
 
-    return job.id
+      return job.id
+    } catch (error) {
+      if (guestTurn) await releaseGuestTurn(playerId)
+      throw error
+    }
   },
 
 
   /** Enqueue a streaming replay (alternative response) for an existing event. */
   async dispatchReplay(params: { instanceId: string; playerId: string; eventId: string; billingReservationId?: string | null; turnId?: string }) {
     const { instanceId, playerId, eventId, billingReservationId } = params
+    if (!await events().findOne({ _id: parseObjectId(eventId), instance_id: parseObjectId(instanceId), player_id: parseObjectId(playerId) })) throw new HttpError(404, 'That moment could not be found.')
     const queue = getGenerationQueue()
-    const job = await queue.add(
-      'replay',
-      { mode: 'replay', instanceId, playerId, eventId, billingReservationId },
-      {
-        jobId: params.turnId,
-        priority: 1,
-        attempts: 1,
-        removeOnComplete: QUEUE_RETENTION.generation.removeOnComplete,
-        removeOnFail: QUEUE_RETENTION.generation.removeOnFail,
-      },
-    )
-    return job.id
+    const guestTurn = await reserveGuestTurn(playerId)
+    try {
+      const job = await queue.add(
+        'replay',
+        { mode: 'replay', instanceId, playerId, eventId, billingReservationId, guestSession: guestTurn },
+        {
+          jobId: params.turnId,
+          priority: 1,
+          attempts: 1,
+          removeOnComplete: QUEUE_RETENTION.generation.removeOnComplete,
+          removeOnFail: QUEUE_RETENTION.generation.removeOnFail,
+        },
+      )
+      return job.id
+    } catch (error) {
+      if (guestTurn) await releaseGuestTurn(playerId)
+      throw error
+    }
   },
 
   async loadInstance(

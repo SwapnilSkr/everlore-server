@@ -1,3 +1,4 @@
+import { requireIdentity } from '../services/guest-policy'
 import { rateLimit } from '../middleware/rate-limit'
 import type { AuthUser } from '../middleware/auth'
 import { templateService } from '../services/template.service'
@@ -83,6 +84,7 @@ export const templateController = {
     headers: Record<string, string | undefined>
   }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
+    await requireIdentity(user.id)
     if (!canForge(user)) {
       throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
@@ -114,6 +116,7 @@ export const templateController = {
     body: { image: File }
   }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
+    await requireIdentity(user.id)
     if (!canForge(user)) {
       throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
@@ -141,6 +144,7 @@ export const templateController = {
     headers: Record<string, string | undefined>
   }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
+    await requireIdentity(user.id)
     if (!canForge(user)) {
       throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
@@ -175,6 +179,7 @@ export const templateController = {
   // a creator craft a whole world only to be walled at the final submit.
   quota: async ({ user }: { user: AuthUser | null }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
+    await requireIdentity(user.id)
     const canCreate = canForge(user)
     if (!canCreate) {
       return { can_create: false, reason: 'tier', remaining: 0, retry_after: null }
@@ -190,6 +195,7 @@ export const templateController = {
 
   create: async ({ user, body }: { user: AuthUser | null; body: CreateBody }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
+    await requireIdentity(user.id)
     if (!canForge(user)) {
       throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
     }
@@ -224,6 +230,7 @@ export const templateController = {
 
   publish: async ({ user, params, body }: { user: AuthUser | null; params: { id: string }; body?: { visibility?: 'private' | 'public' } | null }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
+    await requireIdentity(user.id)
     return templateService.publish(params.id, user.id, body?.visibility)
   },
 
