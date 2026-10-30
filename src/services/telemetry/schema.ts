@@ -100,6 +100,8 @@ export const EVENT_SCHEMA: Record<string, { props: Record<string, PropDef> }> = 
     },
   },
   onboarding_completed: { props: { interests_count: { rule: int(0, 1000) } } },
+  starter_started: { props: { world_id: { rule: { kind: 'world_id' }, required: true } } },
+  starter_fallback: { props: { reason: { rule: oneOf('none', 'error', 'has_saves'), required: true } } },
   persona_created: { props: {} },
   world_viewed: { props: { world_id: { rule: { kind: 'world_id' }, required: true } } },
   world_started: {
