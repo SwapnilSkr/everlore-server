@@ -541,6 +541,66 @@ for (const { name, enums, required = [] } of coverageCases) {
   })
 }
 
+await check('notifications §2: reminder_prompt accepts every answer and both attempts', () => {
+  for (const answer of ['yes', 'not_now', 'granted', 'denied']) {
+    for (const attempt of [1, 2]) {
+      const props = { answer, attempt }
+      const normalized = normalizeEvent(event('reminder_prompt', { ...props, text: marker }), coverageContext)
+      assert.ok(normalized, 'reminder_prompt: valid example accepted')
+      assert.deepEqual(normalized.props, props, 'reminder_prompt: free-text prop dropped')
+    }
+  }
+})
+
+await check('notifications §2: reminder_prompt requires an integer attempt from 1 to 2', () => {
+  for (const attempt of [0, 3, 1.5, '1', null, undefined]) {
+    const props = { answer: 'yes', ...(attempt === undefined ? {} : { attempt }) }
+    assert.equal(normalizeEvent(event('reminder_prompt', props), coverageContext), null, `attempt ${attempt}: dropped`)
+  }
+})
+
+await check('notifications §2: reminder_prompt requires a known answer', () => {
+  for (const answer of ['outside_contract', 1, null, undefined]) {
+    const props = { attempt: 1, ...(answer === undefined ? {} : { answer }) }
+    assert.equal(normalizeEvent(event('reminder_prompt', props), coverageContext), null, `answer ${answer}: dropped`)
+  }
+})
+
+await check('notifications §2: reminder_opened accepts nth 1 through 3', () => {
+  for (const nth of [1, 2, 3]) {
+    const props = { nth }
+    const normalized = normalizeEvent(event('reminder_opened', { ...props, text: marker }), coverageContext)
+    assert.ok(normalized, 'reminder_opened: valid example accepted')
+    assert.deepEqual(normalized.props, props, 'reminder_opened: free-text prop dropped')
+  }
+})
+
+await check('notifications §2: reminder_opened requires an integer nth from 1 to 3', () => {
+  for (const nth of [0, 4, 1.5, '1', null, undefined]) {
+    const props = nth === undefined ? {} : { nth }
+    assert.equal(normalizeEvent(event('reminder_opened', props), coverageContext), null, `nth ${nth}: dropped`)
+  }
+})
+
+await check('notifications §2: ingest keeps valid reminders and drops invalid reminders', async () => {
+  reset()
+  const reply = await post(envelope({
+    events: [
+      event('reminder_prompt', { answer: 'yes', attempt: 1 }),
+      event('reminder_opened', { nth: 3 }),
+      event('reminder_prompt', { answer: 'yes', attempt: 3 }),
+      event('reminder_prompt', { answer: 'outside_contract', attempt: 1 }),
+      event('reminder_opened'),
+    ],
+  }))
+  assert.equal(reply.status, 202)
+  assert.equal(reply.body.accepted, 2)
+  assert.deepEqual(docs('app_events').map(({ name, props }) => ({ name, props })), [
+    { name: 'reminder_prompt', props: { answer: 'yes', attempt: 1 } },
+    { name: 'reminder_opened', props: { nth: 3 } },
+  ])
+})
+
 await check('§3.1: account_action count is an optional integer from 0 to 200', () => {
   for (const count of [undefined, 0, 200]) {
     const props = { action: 'interests_updated', ...(count === undefined ? {} : { count }) }

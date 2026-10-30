@@ -189,6 +189,15 @@ export const EVENT_SCHEMA: Record<string, { props: Record<string, PropDef> }> = 
       outcome: { rule: oneOf('completed', 'skipped'), required: true },
     },
   },
+  reminder_prompt: {
+    props: {
+      answer: { rule: oneOf('yes', 'not_now', 'granted', 'denied'), required: true },
+      attempt: { rule: int(1, 2), required: true },
+    },
+  },
+  reminder_opened: {
+    props: { nth: { rule: int(1, 3), required: true } },
+  },
 }
 
 export const EVENT_NAMES: readonly string[] = Object.keys(EVENT_SCHEMA)
