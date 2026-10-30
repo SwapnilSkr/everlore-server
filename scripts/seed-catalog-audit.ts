@@ -94,6 +94,13 @@ const runtime: Runtime = {
   defaults: defaultUserPreferences,
   upload: imageService.uploadUserImage.bind(imageService),
   create: templateService.create.bind(templateService), update: templateService.update.bind(templateService),
+  setStarter: async (id, owner, starter) => {
+    const result = await collection(worlds).updateOne(
+      { _id: new ObjectId(id), creator_id: new ObjectId(owner) },
+      starter === true ? { $set: { starter: true } } : { $unset: { starter: '' } },
+    )
+    assert.equal(result.matchedCount, 1)
+  },
   publish: templateService.publish.bind(templateService), approve: id => adminService.reviewWorld(id, 'approved', 'catalog-seed'),
   get: async id => worlds.find(world => world._id.toHexString() === id) || null,
 }
@@ -102,7 +109,7 @@ const catalog = join(root, 'catalog'), covers = join(root, 'covers')
 await mkdir(catalog); await mkdir(covers)
 const options = { catalog, covers, apply: true, allowDefaultCover: false }
 const character = {
-  slug: 'fixture-character', cover: 'character.png', title: 'Fixture Character', description: 'An adult guide awaits.',
+  slug: 'fixture-character', cover: 'character.png', starter: true, title: 'Fixture Character', description: 'An adult guide awaits.',
   kind: 'character', is_sentient: true, is_nsfw_capable: false, seed_prompt: 'You are an adult guide to this quiet valley.',
   global_lore: 'The guide is thirty years old.', narrative_style: 'cozy_comfort', genre: 'romance',
   protagonist: { name: 'Fixture Guide', persona: 'An adult guide.', appearance: 'A blue cloak.' },
@@ -142,6 +149,7 @@ try {
       assert.equal(stored.seed_cast?.[0].name, 'Fixture Cast'); assert(stored.image_url?.includes('/media/'))
       // An authored genre reaches the world even though its voice is cozy.
       assert.equal(stored.genre, 'romance'); assert.equal(Object.hasOwn(stored, 'cover'), false)
+      assert.equal(stored.starter, true)
     }
     assert.equal(uploads, 2); assert(casts >= 2); assert(embeddings >= 2); assert.equal(approvals, 2)
     assert(worlds.some(stored => stored.slug === 'fixture-world' && stored.title === 'Different Initial Title'))
@@ -150,6 +158,23 @@ try {
     const before = snapshot()
     assert.deepEqual((await runCatalog(options, runtime, quiet)).map(r => r.outcome), ['unchanged', 'unchanged'])
     assert.equal(snapshot(), before)
+  })
+  await check('starter removal and re-addition plan without writes, apply once, and then stay unchanged', async () => {
+    const stored = worlds.find(w => w.slug === world.slug)!
+    const { starter, ...ordinary } = world
+    assert.equal(Object.hasOwn(validateEntry(world, 'fixture').body, 'starter'), false)
+    for (const authored of [ordinary, world]) {
+      await save('world', authored)
+      const before = snapshot(), logs: string[] = []
+      const dry = await runCatalog({ ...options, apply: false }, runtime, line => logs.push(line))
+      assert.equal(dry.find(r => r.slug === world.slug)!.outcome, 'update')
+      assert(logs.some(line => line.includes(`starter=${'starter' in authored ? 'true' : 'unset'}`)))
+      assert.equal(snapshot(), before)
+      await runCatalog(options, runtime, quiet)
+      assert.equal(Object.hasOwn(stored, 'starter'), 'starter' in authored)
+      if ('starter' in authored) assert.equal(stored.starter, true)
+      assert.equal((await runCatalog(options, runtime, quiet)).find(r => r.slug === world.slug)!.outcome, 'unchanged')
+    }
   })
   await check('one edited file (including title) gives exactly one update that ends approved', async () => {
     await save('character', { ...character, title: 'A Renamed Character', description: 'A changed adult guide awaits.' })
@@ -198,6 +223,7 @@ try {
       { protagonist: { name: 'x'.repeat(81) } }, { protagonist: { name: 'Guide', persona: 'x'.repeat(401) } },
       { protagonist: { name: 'Guide', appearance: 'x'.repeat(401) } }, { protagonist: {} }, { narrative_style: 'unknown' },
       { genre: 'sci-fi' }, { genre: 'Romance' },
+      { starter: false }, { starter: null }, { starter: 'true' },
       { kind: 'world', is_sentient: false, base_stats_template: {} }, { creator_id: new ObjectId() }, { cover: '../secret.png' },
     ]) assert.throws(() => validateEntry({ ...character, ...patch }, 'fixture'))
     const before = snapshot()
@@ -224,6 +250,26 @@ try {
     const real = await readCatalog({ ...options, catalog: launch, covers: join(root, 'absent') })
     assert.equal(real.length, 25)
     console.log(`PASS launch romance validation: ${real.length} files`)
+  }
+  if (process.argv.includes('--catalog-starters')) {
+    const launch = join(import.meta.dir, '../../everlore-docs/launch/catalog')
+    const dryOptions = { ...options, catalog: launch, covers: join(root, 'absent'), apply: false, allowDefaultCover: true }
+    const entries = await readCatalog(dryOptions)
+    // Rehearse a catalog already seeded before starter flags were authored.
+    // Existing covers are retained; no storage or configured database is read.
+    const baseline = worlds[0]
+    worlds.splice(0, worlds.length, ...entries.map(entry => ({
+      ...baseline, ...entry.body, _id: new ObjectId(), creator_id: users[0]._id,
+      slug: entry.slug, is_published: true, visibility: 'public' as const, review_status: 'approved' as const,
+    })))
+    for (const stored of worlds) delete stored.starter
+    const before = snapshot()
+    const results = await runCatalog(dryOptions, runtime)
+    assert.equal(entries.filter(entry => entry.starter === true).length, 26)
+    assert.equal(results.filter(result => result.outcome === 'update').length, 26)
+    assert.equal(results.filter(result => result.outcome === 'unchanged').length, entries.length - 26)
+    assert.equal(snapshot(), before)
+    console.log(`PASS local catalog dry-run rehearsal: ${entries.length} entries, 26 starter updates, zero writes`)
   }
   console.log(`seed-catalog audit: ${passed}/${passed} passed (isolated in-memory DB; no environment, network or paid calls)`)
 } finally { await rm(root, { recursive: true, force: true }) }

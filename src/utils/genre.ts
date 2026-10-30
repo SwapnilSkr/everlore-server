@@ -92,6 +92,27 @@ function dayOfYear(now: Date): number {
   return Math.floor((today - start) / 86_400_000) + 1
 }
 
+/** Voice affinity, then newest, then id; shared by the feed and starter pick. */
+export function forYouComparator(interests: readonly string[]) {
+  const family = new Set(
+    interests.map((voice) => STYLE_FAMILY[voice]).filter((value): value is string => Boolean(value)),
+  )
+  const familyVoices = new Set(
+    Object.entries(STYLE_FAMILY)
+      .filter(([, voiceFamily]) => family.has(voiceFamily))
+      .map(([voice]) => voice),
+  )
+  const score = (candidate: ForYouCandidate): number => {
+    const voice = candidate.narrative_style
+    if (!voice) return 0
+    if (interests.includes(voice)) return 2
+    return familyVoices.has(voice) ? 1 : 0
+  }
+  return (a: ForYouCandidate, b: ForYouCandidate): number =>
+    score(b) - score(a) || b.created_at.getTime() - a.created_at.getTime() ||
+    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+}
+
 /**
  * The For You order: one queue per shelf, served in a weighted round-robin.
  *
@@ -110,22 +131,8 @@ export function forYouOrder(
   interests: readonly string[],
   now: Date = new Date(),
 ): ForYouCandidate[] {
-  const family = new Set(
-    interests.map((voice) => STYLE_FAMILY[voice]).filter((value): value is string => Boolean(value)),
-  )
-  const familyVoices = new Set(
-    Object.entries(STYLE_FAMILY)
-      .filter(([, voiceFamily]) => family.has(voiceFamily))
-      .map(([voice]) => voice),
-  )
+  const compare = forYouComparator(interests)
   const picked = new Set(interests.map((voice) => deriveGenre(voice)))
-
-  const score = (candidate: ForYouCandidate): number => {
-    const voice = candidate.narrative_style
-    if (!voice) return 0
-    if (interests.includes(voice)) return 2
-    return familyVoices.has(voice) ? 1 : 0
-  }
 
   const queues = new Map<Genre, ForYouCandidate[]>()
   for (const candidate of candidates) {
@@ -135,9 +142,7 @@ export function forYouOrder(
     else queues.set(genre, [candidate])
   }
   for (const queue of queues.values()) {
-    queue.sort((a, b) => score(b) - score(a) ||
-      b.created_at.getTime() - a.created_at.getTime() ||
-      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+    queue.sort(compare)
   }
 
   const active = GENRE_KEYS.filter((genre) => (queues.get(genre)?.length ?? 0) > 0)

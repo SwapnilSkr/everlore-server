@@ -14,7 +14,7 @@ import type { WorldTemplateDoc } from '../src/models/world-template.model'
 
 type Body = Static<typeof CreateTemplateBody>
 export type Options = { catalog: string; covers: string; apply: boolean; only?: string[]; allowDefaultCover: boolean }
-export type Entry = { slug: string; cover: string; body: Body; image?: Buffer; normalized?: Buffer }
+export type Entry = { slug: string; cover: string; starter?: true; body: Body; image?: Buffer; normalized?: Buffer }
 type Outcome = 'create' | 'update' | 'unchanged' | 'skip (no cover)'
 export type Result = { slug: string; outcome: Outcome; id?: string; image_url?: string }
 export interface Runtime {
@@ -27,6 +27,7 @@ export interface Runtime {
   upload(file: File): Promise<{ url: string }>
   create(owner: string, data: Body): Promise<WorldTemplateDoc>
   update(id: string, owner: string, data: Record<string, unknown>): Promise<WorldTemplateDoc>
+  setStarter(id: string, owner: string, starter?: true): Promise<void>
   publish(id: string, owner: string, visibility: 'public'): Promise<unknown>
   approve(id: string): Promise<unknown>
   get(id: string): Promise<WorldTemplateDoc | null>
@@ -53,8 +54,9 @@ export function parseOptions(args: string[]): Options {
 
 export function validateEntry(raw: unknown, filename: string): Entry {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`${filename}: expected an object`)
-  const { slug, cover, ...body } = raw as Record<string, unknown>
+  const { slug, cover, starter, ...body } = raw as Record<string, unknown>
   const fail = (message: string): never => { throw new Error(`${filename}: ${message}`) }
+  if (Object.hasOwn(raw, 'starter') && starter !== true) fail('starter must be true or omitted')
   if (typeof slug !== 'string' || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) fail('invalid slug')
   if (typeof cover !== 'string' || !cover || basename(cover) !== cover || /[\\/]/.test(cover) || !/\.(png|jpe?g|webp|heic|heif)$/i.test(cover)) fail('cover must be a file name')
   for (const key of Object.keys(body)) {
@@ -82,7 +84,7 @@ export function validateEntry(raw: unknown, filename: string): Entry {
   // A file without an authored genre seeds the one its voice implies, so a
   // re-run compares like for like instead of seeing a change every time.
   data.genre ??= deriveGenre(data.narrative_style)
-  return { slug: slug as string, cover: cover as string, body: data }
+  return { slug: slug as string, cover: cover as string, ...(starter === true ? { starter: true } : {}), body: data }
 }
 
 export async function readCatalog(options: Options): Promise<Entry[]> {
@@ -140,7 +142,9 @@ export async function runCatalog(options: Options, runtime: Runtime, log: (text:
     if (!existing && owner && await runtime.findTitle(owner._id, entry.body.title)) throw new Error(`${entry.slug}: existing title has a different slug; manual reconciliation required`)
     if (existing?.moderation_status === 'hidden') throw new Error(`${entry.slug}: world is moderated; manual review required`)
     const imageChanged = !!entry.normalized && (!existing?.image_url || !entry.normalized.equals(await runtime.readCover(existing.image_url)))
-    const changed = existing && Object.entries(entry.body).some(([key, value]) => !isDeepStrictEqual(existing[key as keyof WorldTemplateDoc], value))
+    const starterChanged = existing && (existing.starter !== entry.starter ||
+      (entry.starter === undefined && Object.hasOwn(existing, 'starter')))
+    const changed = starterChanged || (existing && Object.entries(entry.body).some(([key, value]) => !isDeepStrictEqual(existing[key as keyof WorldTemplateDoc], value)))
     const live = existing?.is_published && existing.visibility === 'public' && existing.review_status === 'approved'
     const outcome: Outcome = !entry.image && !options.allowDefaultCover ? 'skip (no cover)' : !existing ? 'create' : changed || imageChanged || !live ? 'update' : 'unchanged'
     plan.push({ entry, existing, outcome, imageChanged })
@@ -171,17 +175,22 @@ export async function runCatalog(options: Options, runtime: Runtime, log: (text:
         world = await runtime.update(world._id.toHexString(), ownerId, data)
       }
       const id = world._id.toHexString()
+      // This trusted catalog write is separate from the player update service.
+      await runtime.setStarter(id, ownerId, entry.starter)
       if (!world.image_url || new URL(world.image_url).pathname.includes('/previews/')) throw new Error(`${entry.slug} (${id}): cover promotion failed`)
       await runtime.publish(id, ownerId, 'public')
       world = await runtime.get(id)
       if (!world || !world.creator_id.equals(owner._id)) throw new Error(`${entry.slug}: ownership changed before approval`)
       if (world.review_status === 'pending') await runtime.approve(id)
       world = await runtime.get(id)
-      if (!world || !world.creator_id.equals(owner._id) || world.slug !== entry.slug || !world.is_published || world.visibility !== 'public' || world.review_status !== 'approved') throw new Error(`${entry.slug}: publication verification failed`)
+      if (!world || !world.creator_id.equals(owner._id) || world.slug !== entry.slug || !world.is_published || world.visibility !== 'public' || world.review_status !== 'approved' ||
+        world.starter !== entry.starter || (entry.starter === undefined && Object.hasOwn(world, 'starter'))) throw new Error(`${entry.slug}: publication verification failed`)
     }
     const result = { slug: entry.slug, outcome, ...(world ? { id: world._id.toHexString(), image_url: world.image_url } : {}) }
     results.push(result)
-    log(`${options.apply ? '' : '[dry-run] '}${entry.slug}: ${outcome}${result.id ? ` id=${result.id} image=${result.image_url}` : ''}`)
+    const starterChange = outcome === 'create' || outcome === 'update'
+      ? ` starter=${entry.starter === true ? 'true' : 'unset'}` : ''
+    log(`${options.apply ? '' : '[dry-run] '}${entry.slug}: ${outcome}${starterChange}${result.id ? ` id=${result.id} image=${result.image_url}` : ''}`)
   }
   const counts = Object.fromEntries(['create', 'update', 'unchanged', 'skip (no cover)'].map(outcome => [outcome, results.filter(r => r.outcome === outcome).length]))
   log(`Summary: ${JSON.stringify(counts)}`)
@@ -218,6 +227,7 @@ async function main() {
       upload: async () => { throw new Error('Dry run cannot upload') },
       create: async () => { throw new Error('Dry run cannot create') },
       update: async () => { throw new Error('Dry run cannot update') },
+      setStarter: async () => { throw new Error('Dry run cannot set starter') },
       publish: async () => { throw new Error('Dry run cannot publish') },
       approve: async () => { throw new Error('Dry run cannot approve') },
       get: id => db.collection<WorldTemplateDoc>('world_templates').findOne({ _id: new ObjectId(id) }),
@@ -235,6 +245,13 @@ async function main() {
         defaults: defaultUserPreferences, upload: async (file: File) => { await ready(); return imageService.uploadUserImage(file) },
         create: async (owner: string, data: Body) => { await ready(); return templateService.create(owner, data) },
         update: async (id: string, owner: string, data: Record<string, unknown>) => { await ready(); return templateService.update(id, owner, data) },
+        setStarter: async (id: string, owner: string, starter?: true) => {
+          const result = await db.collection<WorldTemplateDoc>('world_templates').updateOne(
+            { _id: new ObjectId(id), creator_id: new ObjectId(owner) },
+            starter === true ? { $set: { starter: true } } : { $unset: { starter: '' } },
+          )
+          if (result.matchedCount !== 1) throw new Error('Catalog starter ownership changed')
+        },
         publish: templateService.publish.bind(templateService), approve: (id: string) => adminService.reviewWorld(id, 'approved', 'catalog-seed'),
       } satisfies Partial<Runtime>)
     }

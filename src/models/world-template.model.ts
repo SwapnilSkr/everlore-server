@@ -75,6 +75,8 @@ export interface WorldTemplateDoc {
    *  narration voice. Absent on worlds written before the genre backfill, where
    *  the server derives it from {@link narrative_style}. */
   genre?: import('../utils/genre').Genre
+  /** Authored catalog selection only; never writable through player bodies. */
+  starter?: true
   is_published: boolean
   /** Absent on drafts and legacy published worlds (which are public/approved). */
   visibility?: 'private' | 'public'

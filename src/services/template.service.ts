@@ -21,6 +21,7 @@ import { hasMeaningfulWorldEdit, publishReviewUpdate } from '../utils/world-revi
 import {
   deriveGenre,
   forYouOrder,
+  forYouComparator,
   GENRES,
   genreFilter,
   resolveGenre,
@@ -195,6 +196,7 @@ export const templateService = {
     delete updateFields.creator_id
     delete updateFields._id
     delete updateFields.seed_cast
+    delete updateFields.starter
 
     // An authored genre always wins. A world from before the backfill has no
     // stored genre yet, so a new voice re-derives its shelf instead of leaving
@@ -297,6 +299,23 @@ export const templateService = {
 
   async getById(templateId: string) {
     return worldTemplates().findOne({ _id: parseObjectId(templateId) })
+  },
+
+  async starter(userId: string): Promise<WorldTemplateDoc | null> {
+    const filter = {
+      is_published: true,
+      ...(await moderationService.discoveryFilter(userId)),
+      starter: true as const,
+    }
+    const interests = await this.interestsFor(userId)
+    const rows = await worldTemplates().find(filter).toArray()
+    const ranked = rows.map((template) => ({
+      id: idString(template._id),
+      narrative_style: template.narrative_style,
+      created_at: template.created_at,
+      template,
+    })).sort(forYouComparator(interests))
+    return ranked[0]?.template ?? null
   },
 
   async listPublished(

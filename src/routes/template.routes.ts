@@ -14,6 +14,8 @@ import {
 import { templateController } from '../controllers/template.controller'
 import { HttpError } from '../utils/http-error'
 import { VALIDATION_MESSAGE } from '../utils/validation-response'
+import { templateService } from '../services/template.service'
+import { publicTemplate } from '../utils/template-public-projection'
 
 /**
  * A list query outside the schema is a bad request, not an unprocessable entity.
@@ -44,6 +46,12 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
 
   // Must precede /:id or the shelf list would be read as an id.
   .get('/genres', (ctx) => templateController.listGenres(ctx))
+
+  .get('/starter', async ({ user }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    const template = await templateService.starter(user.id)
+    return { template: template ? publicTemplate(template) : null }
+  })
 
   .get('/mine/list', (ctx) => templateController.listMine(ctx), { query: MyTemplateQueryParams })
 
