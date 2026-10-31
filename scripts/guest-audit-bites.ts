@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, cpSync, symlinkSync, mkdtempSync, rmSync }
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 const root = new URL('..', import.meta.url).pathname
-const mutations = [
+const mutations: Array<{ name: string; file: string; before: string; after: string; failure: RegExp; script?: string }> = [
   { name: 'sixth turn admitted', file: 'src/services/guest-policy.ts',
     before: 'GUEST_TURN_LIMIT = 5', after: 'GUEST_TURN_LIMIT = 6', failure: /6 !== 5/ },
   { name: 'claim replaced by a new account', file: 'src/services/auth.service.ts',
@@ -40,7 +40,7 @@ const mutations = [
   { name: 'replay forces guest mature off', file: 'src/services/memory.service.ts',
     before: 'const userNsfwEnabled = player?.preferences?.nsfw_enabled === true', after: 'const userNsfwEnabled = false', failure: /replay forced guest mature off/ },
   { name: 'claim loses mature choice', file: 'src/services/guest.service.ts',
-    before: '$set: { ...identity, providers: [provider], updated_at: new Date() }', after: "$set: { ...identity, providers: [provider], updated_at: new Date(), 'preferences.nsfw_enabled': false }", failure: /claim lost guest mature choice/ },
+    before: '$set: { ...identity, providers: [provider], signed_up_at: guest.signed_up_at ?? new Date(), updated_at: new Date() }', after: "$set: { ...identity, providers: [provider], signed_up_at: guest.signed_up_at ?? new Date(), updated_at: new Date(), 'preferences.nsfw_enabled': false }", failure: /claim lost guest mature choice/ },
   { name: 'merge drops guest age', file: 'src/services/guest.service.ts',
     before: 'if (source.age_confirmed_at)', after: 'if (false)', failure: /merge lost guest age confirmation/ },
   { name: 'merge overwrites existing age', file: 'src/services/guest.service.ts',
@@ -61,6 +61,83 @@ const mutations = [
     before: "} catch {\n      console.warn('Guest expiry merge failed'", after: "} catch (error) {\n      throw error; console.warn('Guest expiry merge failed'", failure: /expiry aborted after an individual failure/ },
   { name: 'expiry aborts on one failed purge', file: 'src/services/guest-expiry.service.ts',
     before: "} catch {\n      console.warn('Guest expiry purge failed'", after: "} catch (error) {\n      throw error; console.warn('Guest expiry purge failed'", failure: /expiry aborted after an individual failure/ },
+  { name: "guest start omitted", file: "src/services/guest.service.ts",
+    before: "created_at: now, guest_started_at: now,", after: "created_at: now,", failure: new RegExp("guest start timestamp missing") },
+  { name: "guest reuse resets start", file: "src/services/guest.service.ts",
+    before: "if (guest && guest.account_status !== 'banned') return guest", after: "if (guest && guest.account_status !== 'banned') { guest.guest_started_at = new Date(); return guest }", failure: new RegExp("reuse moved guest start") },
+  { name: "guest incorrectly marked signed up", file: "src/services/guest.service.ts",
+    before: "created_at: now, guest_started_at: now,", after: "created_at: now, guest_started_at: now, signed_up_at: now,", failure: new RegExp("unsigned guest has sign-up timestamp") },
+  { name: "password creation lacks sign-up timestamp", file: "src/services/auth.service.ts",
+    before: "      signed_up_at: createdAt,", after: "", failure: new RegExp("direct sign-up timestamp differs from creation") },
+  { name: "verified creation lacks sign-up timestamp", file: "src/services/auth.service.ts",
+    before: "created_at: createdAt, signed_up_at: createdAt,", after: "created_at: createdAt,", failure: new RegExp("direct sign-up timestamp differs from creation") },
+  { name: "claim erases guest start", file: "src/services/guest.service.ts",
+    before: "$unset: { guest: '', guest_turns: '', install_id: '' }", after: "$unset: { guest: '', guest_turns: '', install_id: '', guest_started_at: '' }", failure: new RegExp("claim lost guest start") },
+  { name: "claim omits sign-up timestamp", file: "src/services/guest.service.ts",
+    before: "signed_up_at: guest.signed_up_at ?? new Date(), ", after: "", failure: new RegExp("claim sign-up timestamp missing") },
+  { name: "merge provenance omitted", file: "src/services/guest.service.ts",
+    before: "await mongoColl.guestMerges().updateOne", after: "await mongoColl.guestMerges().findOne /* audit */; if (false) await mongoColl.guestMerges().updateOne", failure: new RegExp("merge provenance missing") },
+  { name: "merge provenance uses wrong target", file: "src/services/guest.service.ts",
+    before: "guest_id: source._id, target_id: target._id,", after: "guest_id: source._id, target_id: source._id,", failure: new RegExp("merge provenance identity") },
+  { name: "merge provenance lacks transaction", file: "src/services/guest.service.ts",
+    before: "} }, { ...opts, upsert: true })", after: "} }, { upsert: true })", failure: new RegExp("provenance must exist before guest deletion") },
+  { name: "merge legacy start fallback removed", file: "src/services/guest.service.ts",
+    before: "source.guest_started_at ?? source.created_at", after: "source.guest_started_at", failure: new RegExp("legacy merge lost creation day|undefined is not an object") },
+  { name: "merge resume overwrites provenance", file: "src/services/guest.service.ts",
+    before: "{ $setOnInsert: {", after: "{ $set: {", failure: new RegExp("resumed merge duplicated or rewrote start") },
+  { name: "merge resume duplicates provenance", file: "src/services/guest.service.ts",
+    before: "updateOne({ _id: source._id }, { $setOnInsert:", after: "updateOne({ _id: (await mongoColl.guestMerges().findOne({ guest_id: source._id }, opts)) ? new ObjectId() : source._id }, { $setOnInsert:", failure: new RegExp("resumed merge duplicated or rewrote start") },
+  { name: "target merge provenance retained on deletion", file: "src/services/account-references.ts",
+    before: "{ $or: [{ target_id: userId }, { guest_id: userId }] }", after: "{ guest_id: userId }", failure: new RegExp("target deletion retained merge provenance") },
+  { name: "guest-id safety purge omitted", file: "src/services/account-references.ts",
+    before: "{ $or: [{ target_id: userId }, { guest_id: userId }] }", after: "{ target_id: userId }", failure: new RegExp("guest-id safety purge missing") },
+  { name: "merge start index absent", file: "src/config/mongo-indexes.ts",
+    before: "  { collection: 'guest_merges', key: { guest_started_at: 1 } },", after: "", failure: new RegExp("merge index missing: guest_started_at") },
+  { name: "merge target index absent", file: "src/config/mongo-indexes.ts",
+    before: "  { collection: 'guest_merges', key: { target_id: 1 } },", after: "", failure: new RegExp("merge index missing: target_id") },
+  { name: 'merge introduces a null sign-up fact', file: 'src/services/guest.service.ts',
+    before: '{ $set: { age_confirmed_at: source.age_confirmed_at } }, opts)',
+    after: '{ $set: { age_confirmed_at: source.age_confirmed_at, signed_up_at: null } }, opts)', failure: /null funnel fact: signed_up_at/ },
+  { name: "claimed start incorrectly uses sign-in day", file: "src/services/telemetry/analytics.service.ts",
+    before: "at: row.guest_started_at ?? row.created_at,", after: "at: row.signed_up_at ?? row.created_at,", failure: new RegExp("guest funnel steps and start-day returns"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "outside guest enters by creation day", file: "src/services/telemetry/analytics.service.ts",
+    before: "{ guest_started_at: { $exists: false }, created_at: window }", after: "{ created_at: window }", failure: new RegExp("guest funnel steps and start-day returns"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "merged start incorrectly uses merge window", file: "src/services/telemetry/analytics.service.ts",
+    before: "find({ guest_started_at: window }).toArray()", after: "find({ merged_at: window }).toArray()", failure: new RegExp("guest funnel steps and start-day returns"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "merged activity reads deleted guest", file: "src/services/telemetry/analytics.service.ts",
+    before: "id: row.guest_id, player: row.target_id,", after: "id: row.guest_id, player: row.guest_id,", failure: new RegExp("guest funnel steps and start-day returns"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "merged return keyed to merge day", file: "src/services/telemetry/analytics.service.ts",
+    before: "at: row.guest_started_at, kind:", after: "at: row.merged_at, kind:", failure: new RegExp("guest funnel steps and start-day returns"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "guest saves ignored", file: "src/services/telemetry/analytics.service.ts",
+    before: "reached(new Set([...viewers, ...savers]))", after: "reached(viewers)", failure: new RegExp("guest funnel steps and start-day returns"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "guest turns ignored", file: "src/services/telemetry/analytics.service.ts",
+    before: "firstTurn: reached(turned),", after: "firstTurn: new Set(),", failure: new RegExp("guest funnel steps and start-day returns"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "guest day-one returns ignored", file: "src/services/telemetry/analytics.service.ts",
+    before: "returned, playerIds, accounts,", after: "returned: new Set(), playerIds, accounts,", failure: new RegExp("guest funnel steps and start-day returns"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "started key retired incorrectly", file: "src/services/telemetry/analytics.service.ts",
+    before: "{ key: 'started', label: 'Started playing',", after: "{ key: 'signed_up', label: 'Started playing',", failure: new RegExp("guest funnel steps and start-day returns"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "started count omits guests", file: "src/services/telemetry/analytics.service.ts",
+    before: "count: cohort.started.size,", after: "count: cohort.accounts.signed_in_first,", failure: new RegExp("guest funnel steps and start-day returns"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "guest accounts omitted", file: "src/services/telemetry/analytics.service.ts",
+    before: "as_guest: starts.filter(row => row.kind !== 'direct').length,", after: "as_guest: 0,", failure: new RegExp("guest funnel accounts|legacy guest classification"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "kept-story accounts omitted", file: "src/services/telemetry/analytics.service.ts",
+    before: "kept_story: claimed + merged, claimed, merged,", after: "kept_story: 0, claimed, merged,", failure: new RegExp("guest funnel accounts"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "claimed accounts omitted", file: "src/services/telemetry/analytics.service.ts",
+    before: "kept_story: claimed + merged, claimed, merged,", after: "kept_story: claimed + merged, claimed: 0, merged,", failure: new RegExp("guest funnel accounts"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "merged accounts omitted", file: "src/services/telemetry/analytics.service.ts",
+    before: "kept_story: claimed + merged, claimed, merged,", after: "kept_story: claimed + merged, claimed, merged: 0,", failure: new RegExp("guest funnel accounts"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "signed-in-first accounts omitted", file: "src/services/telemetry/analytics.service.ts",
+    before: "signed_in_first: starts.filter(row => row.kind === 'direct').length,", after: "signed_in_first: 0,", failure: new RegExp("guest funnel accounts|legacy guest classification"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "merged drop query uses deleted guest", file: "src/services/telemetry/analytics.service.ts",
+    before: "ids.map((id) => cohort.playerIds.get(id)!)", after: "ids.map((id) => new ObjectId(id))", failure: new RegExp("merged sessions map to target"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "merged drop sample uses deleted guest", file: "src/services/telemetry/analytics.service.ts",
+    before: "[...userIds].map((id) => cohort.playerIds.get(id)!)", after: "[...userIds].map((id) => new ObjectId(id))", failure: new RegExp("merged sample maps to target"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "legacy guest misclassified", file: "src/services/telemetry/analytics.service.ts",
+    before: "row.guest_started_at || row.guest === true ? 'guest'", after: "row.guest_started_at ? 'guest'", failure: new RegExp("legacy guest classification"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "legacy creation fallback omitted", file: "src/services/telemetry/analytics.service.ts",
+    before: "{ guest_started_at: { $exists: false }, created_at: window },", after: "{ guest_started_at: window },", failure: new RegExp("legacy starts use creation window"), script: "scripts/telemetry-admin-audit.ts" },
+  { name: "retired signed-up filter accepted", file: "src/services/telemetry/analytics.service.ts",
+    before: "  if (value === undefined) return null\n  if (!(DROP_STEPS", after: "  if (value === undefined) return null\n  if (value === 'signed_up') return 'started'\n  if (!(DROP_STEPS", failure: new RegExp("retired signed_up must be a 400"), script: "scripts/telemetry-admin-audit.ts" },
 ]
 const scratch = mkdtempSync(join(tmpdir(), 'everlore-guest-bites-'))
 try {
@@ -69,18 +146,22 @@ try {
   })
   cpSync(join(root, 'package.json'), join(scratch, 'package.json'))
   symlinkSync(join(root, 'node_modules'), join(scratch, 'node_modules'), 'dir')
-  for (const mutation of mutations) {
+  const named = process.argv.find(arg => arg.startsWith('--mutation='))?.slice('--mutation='.length)
+  const selected = named ? mutations.filter(row => row.name === named) : process.argv.includes('--telemetry-only') ? mutations.filter(row => row.script)
+    : process.argv.includes('--funnel-only') ? mutations.slice(mutations.findIndex(row => row.name === 'guest start omitted')) : mutations
+  assert.ok(selected.length > 0, 'no mutations selected')
+  for (const mutation of selected) {
     const file = join(scratch, mutation.file), original = readFileSync(file, 'utf8')
     assert.ok(original.includes(mutation.before), `mutation anchor missing: ${mutation.name}`)
     try {
       writeFileSync(file, original.replace(mutation.before, mutation.after))
-      const process = Bun.spawn(['bun', '--no-env-file', 'run', join(scratch, 'scripts/guest-audit.ts'), '--no-fallback'], { cwd: scratch, stdout: 'pipe', stderr: 'pipe' })
+      const process = Bun.spawn(['bun', '--no-env-file', 'run', join(scratch, mutation.script ?? 'scripts/guest-audit.ts'), '--no-fallback'], { cwd: scratch, stdout: 'pipe', stderr: 'pipe' })
       const [out, err, status] = await Promise.all([new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited])
       assert.notEqual(status, 0, `${mutation.name}: the audit stayed green`)
-      assert.match(out + err, /AssertionError/, `${mutation.name}: did not fail an assertion`)
+      assert.match(out + err, mutation.script ? /FAIL / : /AssertionError/, `${mutation.name}: did not fail an assertion`)
       assert.match(out + err, mutation.failure, `${mutation.name}: wrong assertion failed\n${out}\n${err}`)
       console.log(`BITE ${mutation.name}: audit exited ${status}, expected assertion failed; scratch source restored`)
     } finally { writeFileSync(file, original) }
   }
-  console.log(`guest bites: ${mutations.length}/${mutations.length} detected`)
+  console.log(`guest bites: ${selected.length}/${selected.length} detected`)
 } finally { rmSync(scratch, { recursive: true, force: true }) }

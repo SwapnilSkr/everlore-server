@@ -38,6 +38,8 @@ export type EverloreIndexDef = {
 }
 
 export const EVERLORE_INDEXES: EverloreIndexDef[] = [
+  { collection: 'guest_merges', key: { target_id: 1 } },
+  { collection: 'guest_merges', key: { guest_started_at: 1 } },
   { collection: COLLECTIONS.users, key: { install_id: 1 },
     options: { unique: true, name: 'idx_users_guest_install', partialFilterExpression: { guest: true } } },
   { collection: COLLECTIONS.users, key: { guest: 1, created_at: 1 }, options: { name: 'idx_users_guest_expiry' } },

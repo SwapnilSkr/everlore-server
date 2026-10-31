@@ -14,10 +14,11 @@ export const guestService = {
         guest_merge_target: { $exists: false }, guest_purging: { $ne: true } })
       if (guest && guest.account_status !== 'banned') return guest
     }
+    const now = new Date()
     const doc: UserInsertDoc = {
       guest: true, install_id: installId, guest_turns: 0,
       username: `guest_${new ObjectId().toHexString()}`, password_hash: '', tier: 'free', providers: [],
-      preferences: defaultUserPreferences(), token_balance: 15000, created_at: new Date(), updated_at: new Date(),
+      preferences: defaultUserPreferences(), token_balance: 15000, created_at: now, guest_started_at: now, updated_at: now,
     }
     try {
       const { insertedId } = await users().insertOne(doc)
@@ -38,7 +39,7 @@ export const guestService = {
     const guest = await this.eligible(userId)
     if (!guest) return null
     return users().findOneAndUpdate({ _id: guest._id, guest: true, guest_merge_target: { $exists: false }, guest_purging: { $ne: true } }, {
-      $set: { ...identity, providers: [provider], updated_at: new Date() },
+      $set: { ...identity, providers: [provider], signed_up_at: guest.signed_up_at ?? new Date(), updated_at: new Date() },
       $unset: { guest: '', guest_turns: '', install_id: '' },
     }, { returnDocument: 'after' })
   },
@@ -98,6 +99,10 @@ export const guestService = {
           } }, opts)
         }
         await moveAccountReferences(guest._id, target._id, session)
+        await mongoColl.guestMerges().updateOne({ _id: source._id }, { $setOnInsert: {
+          guest_id: source._id, target_id: target._id,
+          guest_started_at: source.guest_started_at ?? source.created_at, merged_at: new Date(),
+        } }, { ...opts, upsert: true })
         await users().deleteOne({ _id: guest._id, guest: true, guest_merge_target: target._id }, opts)
       })
     } finally {

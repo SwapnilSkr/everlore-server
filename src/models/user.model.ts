@@ -53,6 +53,8 @@ export interface GuideFlowProgress {
 export interface UserDoc {
   _id: ObjectId
   guest?: boolean
+  guest_started_at?: Date
+  signed_up_at?: Date
   install_id?: string
   guest_turns?: number
   guest_merge_target?: ObjectId

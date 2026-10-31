@@ -300,3 +300,12 @@ export type AppErrorCounterDoc = {
   screen?: string
   count: number
 }
+
+/** A guest start survives transfer to an existing account (§4.6b). */
+export interface GuestMergeDoc {
+  _id: ObjectId
+  guest_id: ObjectId
+  target_id: ObjectId
+  guest_started_at: Date
+  merged_at: Date
+}

@@ -52,6 +52,7 @@ export const mongoColl = {
   mediaAssets: () => coll<import('../models/media.model').MediaAssetDoc>(COLLECTIONS.media_assets),
   mediaUsage: () => coll<import('../models/media.model').MediaUsageDoc>(COLLECTIONS.media_usage),
   mediaRejections: () => coll<import('../models/media.model').MediaRejectionDoc>(COLLECTIONS.media_rejections),
+  guestMerges: () => coll<import('../services/telemetry/types').GuestMergeDoc>('guest_merges'),
   users: () => coll<WithoutId<UserDoc>>(COLLECTIONS.users),
   worldTemplates: () => coll<WithoutId<WorldTemplateDoc>>(COLLECTIONS.world_templates),
   worldInstances: () => coll<WithoutId<WorldInstanceDoc>>(COLLECTIONS.world_instances),

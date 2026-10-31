@@ -81,6 +81,7 @@ export const authService = {
 
     const passwordHash = await argon2.hash(password)
 
+    const createdAt = new Date()
     const doc: UserInsertDoc = {
       email,
       username,
@@ -89,7 +90,8 @@ export const authService = {
       providers: ['password'],
       preferences: defaultUserPreferences(),
       token_balance: 15000,
-      created_at: new Date(),
+      created_at: createdAt,
+      signed_up_at: createdAt,
       updated_at: new Date(),
     }
 
@@ -149,9 +151,10 @@ export const authService = {
         // A fenced transfer must finish at its original destination.
         const guest = await guestService.eligible(guestId)
         if (guest?.guest_merge_target) throw new HttpError(409, 'Your story is being saved. Please try again.', { code: 'guest_transfer_pending' })
+        const createdAt = new Date()
         const doc: UserInsertDoc = {
           ...identity, username: usernameFromSeed(seed), password_hash: '', tier: 'free', providers: [provider],
-          preferences: defaultUserPreferences(), token_balance: 15000, created_at: new Date(), updated_at: new Date(),
+          preferences: defaultUserPreferences(), token_balance: 15000, created_at: createdAt, signed_up_at: createdAt, updated_at: createdAt,
         }
         const { insertedId } = await users().insertOne(doc)
         userDoc = { ...doc, _id: insertedId }

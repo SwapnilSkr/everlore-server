@@ -54,6 +54,7 @@ const COLL_NAMES = [
   'app_daily',
   'app_triage_calls',
   'users',
+  'guest_merges',
   'world_instances',
   'events',
 ] as const
@@ -132,6 +133,7 @@ function matches(doc: Doc, filter: Doc): boolean {
   return Object.entries(filter).every(([key, cond]) => {
     // The session list composes its filters under `$and`, so narrow and drop-off
     // conditions can both apply.
+    if (key === '$or') return (cond as Doc[]).some((inner) => matches(doc, inner))
     if (key === '$and') return (cond as Doc[]).every((inner) => matches(doc, inner))
     const value = getPath(doc, key)
     if (isOperator(cond)) {
@@ -346,6 +348,7 @@ mock.module('../src/config/mongo', () => ({
     appDaily: () => fakeColl('app_daily'),
     appTriageCalls: () => fakeColl('app_triage_calls'),
     users: () => fakeColl('users'),
+    guestMerges: () => fakeColl('guest_merges'),
     worldInstances: () => fakeColl('world_instances'),
     events: () => fakeColl('events'),
   },
@@ -415,6 +418,7 @@ const send = (method: string, path: string, body: unknown, headers: Record<strin
   request(path, { method, body: JSON.stringify(body) }, headers)
 
 const DAY_MS = 86_400_000
+const sid = (n: number): string => `c1111111-1111-4111-8111-${String(n).padStart(12, '0')}`
 
 /**
  * The triage hook is deliberately fire-and-forget (a Redis hiccup must never
@@ -588,7 +592,7 @@ await check('§4.6: the funnel counts a cohort step by step', async () => {
   const response = await get('/admin/analytics/funnel?days=7')
   assert.equal(response.status, 200)
   const body = response.body
-  keys(body, ['days', 'generated_at', 'installs', 'steps', 'note'], 'funnel')
+  keys(body, ['days', 'generated_at', 'installs', 'steps', 'accounts', 'note'], 'funnel')
   keys(body.installs, ['available', 'reason', 'total'], 'funnel.installs')
   assert.equal(body.days, 7)
   assert.equal(body.installs.available, true)
@@ -599,12 +603,12 @@ await check('§4.6: the funnel counts a cohort step by step', async () => {
     keys(step, ['key', 'label', 'count', 'pct_of_prev', 'dropped_sessions'], `step ${step.key}`)
   }
   assert.deepEqual(body.steps.map((step: Doc) => step.key),
-    ['first_open', 'signed_up', 'opened_world', 'first_turn', 'returned_d1'])
+    ['first_open', 'started', 'opened_world', 'first_turn', 'returned_d1'])
 
   assert.equal(byKey.first_open.count, 4)
   assert.equal(byKey.first_open.pct_of_prev, null)
-  assert.equal(byKey.signed_up.count, 3)
-  assert.equal(byKey.signed_up.pct_of_prev, 75, '3 of 4 installs signed up')
+  assert.equal(byKey.started.count, 3)
+  assert.equal(byKey.started.pct_of_prev, 75, '3 of 4 installs signed up')
   assert.equal(byKey.opened_world.count, 2, 'one player signed up and never opened a world')
   assert.equal(byKey.opened_world.pct_of_prev, 66.7)
   assert.equal(byKey.first_turn.count, 2)
@@ -612,11 +616,95 @@ await check('§4.6: the funnel counts a cohort step by step', async () => {
   assert.equal(byKey.returned_d1.count, 1, 'one player came back the next day')
   assert.equal(byKey.returned_d1.pct_of_prev, 50)
 
-  assert.deepEqual(byKey.signed_up.dropped_sessions, [SESSION[0]], 'the pre-sign-in session is the sample')
+  assert.deepEqual(byKey.started.dropped_sessions, [SESSION[0]], 'the pre-sign-in session is the sample')
   assert.deepEqual(byKey.opened_world.dropped_sessions, ['21111111-1111-4111-8111-000000000002'])
   assert.deepEqual(byKey.first_turn.dropped_sessions, [])
   assert.deepEqual(byKey.returned_d1.dropped_sessions, [SESSION[2]])
   assert.match(body.note, /Installs come from Play/)
+})
+
+// §4.6b: all four ways to start, with different start / sign-in / merge days.
+function seedGuestFunnel(): ObjectId[] {
+  const ids = Array.from({ length: 7 }, () => new ObjectId())
+  const [direct, guest, claimed, merged, target, outside, outsideMerge] = ids
+  store.users.push(
+    { _id: direct, created_at: dayMoment(-6), signed_up_at: dayMoment(-6) },
+    { _id: guest, guest: true, created_at: dayMoment(-5), guest_started_at: dayMoment(-5) },
+    { _id: claimed, created_at: dayMoment(-4), guest_started_at: dayMoment(-4), signed_up_at: dayMoment(-2) },
+    { _id: target, created_at: dayMoment(-70), signed_up_at: dayMoment(-70) },
+    // Creation and sign-in in the window cannot override an older guest start.
+    { _id: outside, created_at: dayMoment(-1), guest_started_at: dayMoment(-40), signed_up_at: dayMoment(-1) },
+  )
+  store.guest_merges.push(
+    { _id: merged, guest_id: merged, target_id: target, guest_started_at: dayMoment(-3), merged_at: dayMoment(-1) },
+    { _id: outsideMerge, guest_id: outsideMerge, target_id: target, guest_started_at: dayMoment(-40), merged_at: dayMoment(-1) },
+  )
+  for (const [n, player] of [undefined, direct, guest, claimed, target].entries()) {
+    const install = `guest-funnel-${n}`
+    store.app_installs.push({ _id: install, first_seen: dayMoment(-6), ...(player ? { user_ids: [player] } : {}) })
+    store.app_sessions.push({ _id: sid(100 + n), install_id: install, ...(player ? { user_id: player } : {}),
+      started_at: dayMoment(-1, n), last_at: dayMoment(-1, n), app_version: '1.0.11',
+      screen_path: [], counts: { events: 1, errors: 0, actions: 0 } })
+  }
+  store.app_events.push(seedEvent({ name: 'world_viewed', user_id: guest }))
+  store.world_instances.push({ player_id: claimed }, { player_id: target })
+  store.events.push(
+    { player_id: guest, type: 'narration', created_at: dayMoment(-5) },
+    { player_id: target, type: 'travel', created_at: dayMoment(-3) },
+    // The return is a story turn under the target, relative to the guest start.
+    { player_id: target, type: 'narration', created_at: dayMoment(-2) },
+    { player_id: claimed, type: 'action', created_at: dayMoment(-3) },
+  )
+  return ids
+}
+
+await check('§4.6b: guest, claim and merge starts share the exact steps and accounts cohort', async () => {
+  reset()
+  seedGuestFunnel()
+  const response = await get('/admin/analytics/funnel?days=7')
+  assert.equal(response.status, 200)
+  const steps = response.body.steps
+  assert.deepEqual(steps.map((step: Doc) => [step.key, step.label, step.count, step.pct_of_prev]), [
+    ['first_open', 'Opened the app', 5, null],
+    ['started', 'Started playing', 4, 80],
+    ['opened_world', 'Opened a world', 3, 75],
+    ['first_turn', 'Played a first turn', 2, 66.7],
+    ['returned_d1', 'Came back the next day', 1, 50],
+  ], 'guest funnel steps and start-day returns')
+  assert.deepEqual(response.body.accounts, { as_guest: 3, kept_story: 2, claimed: 1, merged: 1, signed_in_first: 1 }, 'guest funnel accounts')
+  const expected = { started: [sid(100)], opened_world: [sid(101)], first_turn: [sid(103)], returned_d1: [sid(102)] }
+  for (const [step, sessions] of Object.entries(expected)) {
+    assert.deepEqual(steps.find((row: Doc) => row.key === step).dropped_sessions, sessions, `guest funnel samples ${step}`)
+    const dropped = await get(`/admin/analytics/sessions?days=7&dropped_at=${step}`)
+    assert.equal(dropped.status, 200)
+    assert.deepEqual(dropped.body.items.map((row: Doc) => row.id), sessions, `guest drop cohort ${step}`)
+  }
+  const retired = await get('/admin/analytics/sessions?dropped_at=signed_up')
+  assert.equal(retired.status, 400, 'retired signed_up must be a 400')
+  assert.equal(retired.body.error, 'dropped_at must be one of started, opened_world, first_turn or returned_d1.')
+})
+
+await check('§4.6b: merged drop-off sessions belong to the target, not the deleted guest', async () => {
+  reset()
+  const [, , , , target] = seedGuestFunnel()
+  store.events = store.events.filter(row => !row.player_id.equals(target))
+  const funnel = await get('/admin/analytics/funnel?days=7')
+  assert.deepEqual(funnel.body.steps.find((row: Doc) => row.key === 'first_turn').dropped_sessions, [sid(104), sid(103)], 'merged sample maps to target')
+  const dropped = await get('/admin/analytics/sessions?days=7&dropped_at=first_turn')
+  assert.deepEqual(dropped.body.items.map((row: Doc) => row.id), [sid(104), sid(103)], 'merged sessions map to target')
+})
+
+await check('§4.6b: legacy guests and never-guest accounts fall back to created_at', async () => {
+  reset()
+  store.users.push(
+    { _id: new ObjectId(), guest: true, created_at: dayMoment(-3) },
+    { _id: new ObjectId(), created_at: dayMoment(-3) },
+    { _id: new ObjectId(), guest: true, created_at: dayMoment(-40) },
+    { _id: new ObjectId(), created_at: dayMoment(-40) },
+  )
+  const funnel = await get('/admin/analytics/funnel?days=7')
+  assert.equal(funnel.body.steps[1].count, 2, 'legacy starts use creation window')
+  assert.deepEqual(funnel.body.accounts, { as_guest: 1, kept_story: 0, claimed: 0, merged: 0, signed_in_first: 1 }, 'legacy guest classification')
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -919,7 +1007,6 @@ const DROP_INSTALL = [
   'a1111111-1111-4111-8111-444444444444',
   'a1111111-1111-4111-8111-555555555555',
 ]
-const sid = (n: number): string => `c1111111-1111-4111-8111-${String(n).padStart(12, '0')}`
 
 /**
  * A seven-day cohort where one player stopped at each funnel step:
@@ -927,7 +1014,7 @@ const sid = (n: number): string => `c1111111-1111-4111-8111-${String(n).padStart
  *   arun — signed up, never opened a world            → drops at opened_world
  *   zoe  — opened a world (a save), never played       → drops at first_turn
  *   liam — played a turn, never came back              → drops at returned_d1
- * and one install that never signed in                 → drops at signed_up
+ * and one install that never signed in                 → drops at started
  *
  * The sessions are deliberately interleaved: mira's four newest match no step, so
  * a filter applied after a bounded query would return a short page and end the
@@ -1001,7 +1088,7 @@ function seedDropCohort(): void {
     // liam, dropped at returned_d1.
     appSession(sid(9), LIAM_INSTALL, LIAM, dayMoment(-1, 10)),
     appSession(sid(10), LIAM_INSTALL, LIAM, dayMoment(-1, 9)),
-    // The install that never signed in, dropped at signed_up.
+    // The install that never signed in, dropped at started.
     appSession(sid(11), ANON_INSTALL, null, dayMoment(-1, 8)),
     appSession(sid(12), ANON_INSTALL, null, dayMoment(-1, 7)),
     // mira's day-1 return — the reason she drops nowhere — and an earlier session.
@@ -1014,10 +1101,10 @@ await check('§4.6a: dropped_at is a funnel step, never a screen name', async ()
   reset()
   seedDropCohort()
 
-  for (const bad of ['play', 'discover', 'first_open', 'signed', 'OPENED_WORLD', '']) {
+  for (const bad of ['play', 'discover', 'first_open', 'signed_up', 'signed', 'OPENED_WORLD', '']) {
     const response = await get(`/admin/analytics/sessions?dropped_at=${encodeURIComponent(bad)}`)
     assert.equal(response.status, 400, `dropped_at=${bad} was accepted`)
-    assert.match(response.body.error, /signed_up, opened_world, first_turn or returned_d1/)
+    assert.match(response.body.error, /started, opened_world, first_turn or returned_d1/)
   }
 })
 
@@ -1046,7 +1133,7 @@ await check('§4.6a: each drop-off stage returns the sessions the funnel samples
   const samples = Object.fromEntries(funnel.body.steps.map((step: Doc) => [step.key, step.dropped_sessions]))
 
   const expected: Record<string, string[]> = {
-    signed_up: [sid(11), sid(12)],
+    started: [sid(11), sid(12)],
     opened_world: [sid(5), sid(6), sid(7)],
     first_turn: [sid(8)],
     returned_d1: [sid(9), sid(10)],
@@ -1118,11 +1205,11 @@ await check('§4.6: the drop-off session query is behind the admin guard', async
   reset()
   seedDropCohort()
 
-  const anonymous = await get('/admin/analytics/sessions?dropped_at=signed_up', { authorization: '' })
+  const anonymous = await get('/admin/analytics/sessions?dropped_at=started', { authorization: '' })
   assert.equal(anonymous.status, 401)
   assert.deepEqual(anonymous.body, { error: 'Unauthorized' })
 
-  const signedIn = await get('/admin/analytics/sessions?dropped_at=signed_up')
+  const signedIn = await get('/admin/analytics/sessions?dropped_at=started')
   assert.equal(signedIn.status, 200)
   assert.equal(signedIn.body.items.length, 2)
 })

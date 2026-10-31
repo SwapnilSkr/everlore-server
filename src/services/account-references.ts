@@ -89,6 +89,7 @@ export async function moveAccountReferences(from: ObjectId, to: ObjectId, sessio
 }
 
 export async function purgeAccountReferences(userId: ObjectId, guest: boolean): Promise<void> {
+  await mongoColl.guestMerges().deleteMany({ $or: [{ target_id: userId }, { guest_id: userId }] })
   // Instance graph, vectors and storage have already gone through deletionService.
   const calls = await coll('llm_calls').find({ player_id: userId }, { projection: { _id: 1 } }).toArray()
   if (calls.length) await coll('llm_call_bodies').deleteMany({ _id: { $in: calls.map(row => row._id) } })

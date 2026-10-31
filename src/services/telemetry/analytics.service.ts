@@ -22,7 +22,7 @@ import type { AppDailyDoc, AppErrorGroupDoc, ErrorGroupStatus, TriageState } fro
  * players — which read the raw rows they need, bounded by the cohort or the
  * fingerprint.
  *
- * Shapes are §4.6a exactly: a field the server cannot know is `null`, never
+ * Shapes follow §4.6a–b: a field the server cannot know is `null`, never
  * omitted, because the console renders the contract rather than guessing.
  */
 
@@ -39,8 +39,8 @@ const ERROR_HISTORY_DAYS = 30
 export const ERROR_VIEWS = ['needs_look', 'confirmed', 'resolved', 'ignored', 'all'] as const
 export type ErrorView = (typeof ERROR_VIEWS)[number]
 
-/** §4.6a: the funnel steps a session can have dropped at. `first_open` has no step before it. */
-export const DROP_STEPS = ['signed_up', 'opened_world', 'first_turn', 'returned_d1'] as const
+/** §4.6b: the funnel steps a session can have dropped at. `first_open` has no step before it. */
+export const DROP_STEPS = ['started', 'opened_world', 'first_turn', 'returned_d1'] as const
 export type DropStep = (typeof DROP_STEPS)[number]
 
 /** §4.6a: `days` is 7–90 (default 30), and anything else is a 400. */
@@ -61,7 +61,7 @@ export function daysParam(value?: string): number {
 export function dropStepParam(value?: string): DropStep | null {
   if (value === undefined) return null
   if (!(DROP_STEPS as readonly string[]).includes(value)) {
-    throw new HttpError(400, 'dropped_at must be one of signed_up, opened_world, first_turn or returned_d1.')
+    throw new HttpError(400, 'dropped_at must be one of started, opened_world, first_turn or returned_d1.')
   }
   return value as DropStep
 }
@@ -279,19 +279,16 @@ function newestVersionOf(groups: Array<{ versions?: Record<string, number> }>): 
   return newest
 }
 
-/**
- * The funnel's cohort in one place: the players who signed up in the window, and
- * what the server can prove each of them did afterwards (§4.6a). `sessions()`
- * reads the same sets for `dropped_at`, so a drop-off filter names exactly the
- * people the funnel counted instead of a second interpretation of the raw rows.
- */
+/** One cohort for the funnel and its session drop-off filters (§4.6b). */
 type FunnelCohort = {
   firstOpens: number
-  signedUp: Set<string>
+  started: Set<string>
   openedWorld: Set<string>
   firstTurn: Set<string>
   returned: Set<string>
-  /** Installs first seen in the window that never signed in: the `signed_up` drop. */
+  playerIds: Map<string, ObjectId>
+  accounts: { as_guest: number; kept_story: number; claimed: number; merged: number; signed_in_first: number }
+  /** Installs first seen in the window without a player: the `started` drop. */
   unsignedInstalls: string[]
 }
 
@@ -300,16 +297,38 @@ async function funnelCohort(days: number, now: Date): Promise<FunnelCohort> {
   const from = new Date(`${range[0]}T00:00:00Z`)
   const window = { $gte: from, $lte: now }
 
-  const [signupRows, firstOpens, unsignedInstalls] = await Promise.all([
-    mongoColl.users().find({ created_at: window }, { projection: { _id: 1, created_at: 1 } }).toArray(),
+  const [userRows, mergeRows, firstOpens, unsignedInstalls] = await Promise.all([
+    mongoColl.users().find({ $or: [
+      { guest_started_at: window },
+      { guest_started_at: { $exists: false }, created_at: window },
+    ] }, { projection: { _id: 1, created_at: 1, guest: 1, guest_started_at: 1, signed_up_at: 1 } }).toArray(),
+    mongoColl.guestMerges().find({ guest_started_at: window }).toArray(),
     mongoColl.appInstalls().countDocuments({ first_seen: window }),
     mongoColl.appInstalls()
       .find({ first_seen: window, user_ids: { $exists: false } }, { projection: { _id: 1 } })
       .toArray(),
   ])
 
-  const players = signupRows.map((row) => row._id)
-  const signupDay = new Map(signupRows.map((row) => [row._id.toHexString(), utcDayOf(row.created_at)]))
+  const starts = [
+    ...userRows.map(row => ({ id: row._id, player: row._id,
+      at: row.guest_started_at ?? row.created_at,
+      kind: row.guest_started_at || row.guest === true ? 'guest' as const : 'direct' as const,
+      claimed: row.guest !== true && !!(row.signed_up_at ?? row.created_at),
+    })),
+    ...mergeRows.map(row => ({ id: row.guest_id, player: row.target_id,
+      at: row.guest_started_at, kind: 'merged' as const, claimed: false,
+    })),
+  ]
+  const playerIds = new Map(starts.map(row => [row.id.toHexString(), row.player]))
+  const players = [...new Map(starts.map(row => [row.player.toHexString(), row.player])).values()]
+  const startDay = new Map(starts.map(row => [row.id.toHexString(), utcDayOf(row.at)]))
+  const claimed = starts.filter(row => row.kind === 'guest' && row.claimed).length
+  const merged = mergeRows.length
+  const accounts = {
+    as_guest: starts.filter(row => row.kind !== 'direct').length,
+    kept_story: claimed + merged, claimed, merged,
+    signed_in_first: starts.filter(row => row.kind === 'direct').length,
+  }
   const empty = Promise.resolve(new Set<string>())
 
   const [viewers, savers, turned, sessionsBack, turnsBack] = await Promise.all([
@@ -325,7 +344,7 @@ async function funnelCohort(days: number, now: Date): Promise<FunnelCohort> {
         type: { $in: STORY_TURN_TYPES },
       })
       : empty,
-    // "Came back the next day" needs the day after each sign-up day, so only
+    // "Came back the next day" needs the day after each start day, so only
     // activity from the earliest possible d1 onwards is fetched.
     players.length > 0
       ? mongoColl.appSessions()
@@ -344,29 +363,34 @@ async function funnelCohort(days: number, now: Date): Promise<FunnelCohort> {
       : [],
   ])
 
-  const returned = new Set<string>()
-  const nextDayOf = (userId: ObjectId): string => {
-    const day = signupDay.get(userId.toHexString())
-    if (!day) return ''
-    return utcDayOf(new Date(new Date(`${day}T00:00:00Z`).getTime() + DAY_MS))
+  // A transferred start reads activity under the target, retaining its own day.
+  const returnDays = new Map<string, Set<string>>()
+  const addReturnDay = (player: ObjectId, at: Date) => {
+    const id = player.toHexString()
+    const days = returnDays.get(id) ?? new Set<string>()
+    days.add(utcDayOf(at))
+    returnDays.set(id, days)
   }
   for (const session of sessionsBack) {
-    if (session.user_id && utcDayOf(session.last_at) === nextDayOf(session.user_id)) {
-      returned.add(session.user_id.toHexString())
-    }
+    if (session.user_id) addReturnDay(session.user_id, session.last_at)
   }
   for (const event of turnsBack) {
-    if (event.player_id && utcDayOf(event.created_at) === nextDayOf(event.player_id)) {
-      returned.add(event.player_id.toHexString())
-    }
+    if (event.player_id) addReturnDay(event.player_id, event.created_at)
   }
+  const reached = (ids: Set<string>) => new Set(starts
+    .filter(row => ids.has(row.player.toHexString())).map(row => row.id.toHexString()))
+  const returned = new Set(starts.filter(row => {
+    const day = startDay.get(row.id.toHexString())!
+    const nextDay = utcDayOf(new Date(new Date(`${day}T00:00:00Z`).getTime() + DAY_MS))
+    return returnDays.get(row.player.toHexString())?.has(nextDay)
+  }).map(row => row.id.toHexString()))
 
   return {
     firstOpens,
-    signedUp: new Set(players.map((id) => id.toHexString())),
-    openedWorld: new Set([...viewers, ...savers]),
-    firstTurn: turned,
-    returned,
+    started: new Set(starts.map(row => row.id.toHexString())),
+    openedWorld: reached(new Set([...viewers, ...savers])),
+    firstTurn: reached(turned),
+    returned, playerIds, accounts,
     unsignedInstalls: unsignedInstalls.map((row) => String(row._id)),
   }
 }
@@ -374,11 +398,11 @@ async function funnelCohort(days: number, now: Date): Promise<FunnelCohort> {
 /** The players who reached the step before `step` and never reached `step` itself. */
 function droppedPlayers(cohort: FunnelCohort, step: DropStep): string[] {
   switch (step) {
-    case 'signed_up':
+    case 'started':
       // `first_open` is install evidence, so this step's drop is installs, not players.
       return []
     case 'opened_world':
-      return [...cohort.signedUp].filter((id) => !cohort.openedWorld.has(id))
+      return [...cohort.started].filter((id) => !cohort.openedWorld.has(id))
     case 'first_turn':
       return [...cohort.openedWorld].filter((id) => !cohort.firstTurn.has(id))
     case 'returned_d1':
@@ -392,19 +416,19 @@ function droppedPlayers(cohort: FunnelCohort, step: DropStep): string[] {
  * empty page without querying.
  */
 function dropFilter(cohort: FunnelCohort, step: DropStep): Record<string, unknown> | null {
-  if (step === 'signed_up') {
+  if (step === 'started') {
     if (cohort.unsignedInstalls.length === 0) return null
     return { install_id: { $in: cohort.unsignedInstalls } }
   }
   const ids = droppedPlayers(cohort, step)
   if (ids.length === 0) return null
-  return { user_id: { $in: ids.map((id) => new ObjectId(id)) } }
+  return { user_id: { $in: ids.map((id) => cohort.playerIds.get(id)!) } }
 }
 
 export const analyticsService = {
   /**
-   * §4.6 funnel: a cohort by sign-up day, computed from what the server knows for
-   * certain. The app only supplies the first step — everything after sign-up is
+   * §4.6 funnel: a cohort by start day, computed from what the server knows for
+   * certain. The app only supplies the first step — everything after starting is
    * counted from `users`, `world_instances` and story events, so a lost event or
    * an opt-out can never make the funnel lie about turns (§2.2).
    */
@@ -415,7 +439,7 @@ export const analyticsService = {
     const [installs, cohort] = await Promise.all([readPlayInstalls(), funnelCohort(days, now)])
 
     const sessionSample = (userIds: Iterable<string>) => {
-      const ids = [...userIds].map((id) => new ObjectId(id))
+      const ids = [...userIds].map((id) => cohort.playerIds.get(id)!)
       if (ids.length === 0) return Promise.resolve([] as Array<{ _id: string }>)
       return mongoColl.appSessions()
         .find({ user_id: { $in: ids } }, { projection: { _id: 1 } })
@@ -432,10 +456,10 @@ export const analyticsService = {
         .toArray()
     }
 
-    const missingWorld = [...cohort.signedUp].filter((id) => !cohort.openedWorld.has(id))
+    const missingWorld = [...cohort.started].filter((id) => !cohort.openedWorld.has(id))
     const missingTurn = [...cohort.openedWorld].filter((id) => !cohort.firstTurn.has(id))
     const missingReturn = [...cohort.firstTurn].filter((id) => !cohort.returned.has(id))
-    const [droppedSignedUp, droppedWorld, droppedTurn, droppedReturn] = await Promise.all([
+    const [droppedStarted, droppedWorld, droppedTurn, droppedReturn] = await Promise.all([
       sessionSampleForInstalls(cohort.unsignedInstalls),
       sessionSample(missingWorld),
       sessionSample(missingTurn),
@@ -444,7 +468,7 @@ export const analyticsService = {
 
     const steps = [
       { key: 'first_open', label: 'Opened the app', count: cohort.firstOpens, dropped: [] as Array<{ _id: string }> },
-      { key: 'signed_up', label: 'Signed up', count: cohort.signedUp.size, dropped: droppedSignedUp },
+      { key: 'started', label: 'Started playing', count: cohort.started.size, dropped: droppedStarted },
       { key: 'opened_world', label: 'Opened a world', count: cohort.openedWorld.size, dropped: droppedWorld },
       { key: 'first_turn', label: 'Played a first turn', count: cohort.firstTurn.size, dropped: droppedTurn },
       { key: 'returned_d1', label: 'Came back the next day', count: cohort.returned.size, dropped: droppedReturn },
@@ -469,6 +493,7 @@ export const analyticsService = {
           : null,
       },
       steps,
+      accounts: cohort.accounts,
       note: "Installs come from Play and can't be linked to a player.",
     }
   },

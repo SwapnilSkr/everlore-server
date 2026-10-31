@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { mock } from 'bun:test'
-import { MongoClient, ObjectId, Collection, type Document } from 'mongodb'
+import { MongoClient, MongoServerError, ObjectId, Collection, type Document } from 'mongodb'
 import { Elysia } from 'elysia'
 
 const standalone = process.argv.includes('--standalone')
@@ -141,13 +141,29 @@ try {
     guestToken = first.body.token; guestId = first.body.user.id
     const doc = await users.findOne({ _id: new ObjectId(guestId) })
     for (const key of ['email', 'phone', 'google_sub', 'age_confirmed_at']) assert.equal(Object.hasOwn(doc!, key), false)
+    assert.ok(doc!.guest_started_at instanceof Date, 'guest start timestamp missing')
+    assert.equal(doc!.guest_started_at.getTime(), doc!.created_at.getTime(), 'guest start differs from creation')
+    assert.equal(Object.hasOwn(doc!, 'signed_up_at'), false, 'unsigned guest has sign-up timestamp')
     assert.equal(doc!.install_id, install); assert.equal(doc!.preferences.nsfw_enabled, false)
     await wait(1050) // Cross an issued-at second: session reuse must return the original token.
     const again = await post('guest', { install_id: install }, guestToken)
     assert.equal(again.status, 200); assert.equal(again.body.user.id, guestId); assert.equal(again.body.token, guestToken)
+    const reused = await guestService.create(install, guestId)
+    assert.equal(reused.guest_started_at?.getTime(), doc!.guest_started_at.getTime(), 'reuse moved guest start')
     assert.equal((await post('guest', { install_id: install })).status, 409)
     assert.equal((await post('guest', { install_id: 'invalid' })).status, 422)
     await newGuest() // real sparse indexes admit a second guest
+  })
+  await check('direct Google, phone and password accounts record sign-up exactly at creation', async () => {
+    const accounts = [
+      (await authService.signInWithGoogle('google:funnel-direct@example.test')).userDoc,
+      (await authService.signInWithPhoneOtp('+15555550999', '123456')).userDoc,
+      await authService.registerWithPassword({ email: 'funnel-password@example.test', username: 'funnel-password', password: 'audit-only-password' }),
+    ]
+    for (const account of accounts) {
+      assert.equal(account.signed_up_at?.getTime(), account.created_at.getTime(), 'direct sign-up timestamp differs from creation')
+      assert.equal(Object.hasOwn(account, 'guest_started_at'), false, 'direct account has a guest start')
+    }
   })
   await check('rate limits bite separately for install and IP', async () => {
     const { guestClientAddress } = await import('../src/utils/guest-client-address')
@@ -322,12 +338,19 @@ try {
     await db.collection('personas').insertOne({ _id: id(), player_id: new ObjectId(guestId), name: 'Saved persona' })
     await db.collection('world_instances').insertOne({ _id: iid, player_id: new ObjectId(guestId), template_id: id() })
     await db.collection('app_events').insertOne({ event_id: crypto.randomUUID(), user_id: new ObjectId(guestId), name: 'guest_started' })
+    const beforeClaim = await users.findOne({ _id: new ObjectId(guestId) })
     const claimed = await post('google', { id_token: 'google:claim@example.test', guest_token: guestToken }, guestToken)
     assert.equal(claimed.status, 200); assert.equal(claimed.body.user.id, guestId); assert.equal(claimed.body.new_account, true)
     assert.equal(claimed.body.user.guest, false); assert.equal(claimed.body.user.preferences.player_name, 'Guest name')
     assert.deepEqual(claimed.body.user.preferences.interests, ['fantasy'])
     assert.equal(claimed.body.user.preferences.nsfw_enabled, true, 'claim lost guest mature choice')
     assert.equal(claimed.body.user.age_confirmed_at, guestAge, 'claim lost age confirmation')
+    const afterClaim = await users.findOne({ _id: new ObjectId(guestId) })
+    assert.equal(afterClaim!.guest_started_at?.getTime(), beforeClaim!.guest_started_at.getTime(), 'claim lost guest start')
+    assert.ok(afterClaim!.signed_up_at instanceof Date, 'claim sign-up timestamp missing')
+    assert.ok(afterClaim!.signed_up_at >= beforeClaim!.created_at, 'claim sign-up predates guest')
+    await authService.signInWithGoogle('google:claim@example.test', guestId)
+    assert.equal((await users.findOne({ _id: new ObjectId(guestId) }))!.signed_up_at.getTime(), afterClaim!.signed_up_at.getTime(), 'sign-in moved sign-up timestamp')
     assert.equal(await db.collection('personas').countDocuments({ player_id: new ObjectId(guestId) }), 1)
     assert.equal(await db.collection('app_events').countDocuments({ user_id: new ObjectId(guestId) }), 1)
     const separate = await post('google', { id_token: 'google:different@example.test', guest_token: guestToken })
@@ -390,6 +413,8 @@ try {
       return false
     }
     for (const collection of await db.listCollections().toArray()) {
+      // Merge provenance deliberately retains the deleted guest's id.
+      if (collection.name === 'guest_merges') continue
       for (const doc of await db.collection(collection.name).find({}).toArray()) assert.equal(contains(doc), false, `${collection.name} retains deleted guest`)
     }
     // Terminal Redis history deliberately retains the original job payload.
@@ -431,9 +456,79 @@ try {
     assert.equal(await redisClient.get(`session:${fixtures.iid}`), null)
     assert.equal(jobs[0].data.playerId, String(source._id), 'merge rewrote terminal history')
     await assertNoReferences(source._id)
+    const merges = db.collection('guest_merges')
+    const mergeRow = await merges.findOne({ _id: source._id })
+    assert.ok(mergeRow, 'merge provenance missing')
+    assert.deepEqual(Object.keys(mergeRow).sort(), ['_id', 'guest_id', 'target_id', 'guest_started_at', 'merged_at'].sort(), 'merge provenance shape')
+    assert.ok(mergeRow.guest_id.equals(source._id) && mergeRow.target_id.equals(target._id), 'merge provenance identity')
+    assert.equal(mergeRow.guest_started_at.getTime(), source.guest_started_at!.getTime(), 'merge lost guest start')
+    assert.ok(mergeRow.merged_at instanceof Date, 'merge timestamp missing')
     const snapshot = JSON.stringify(await db.collection('ink_ledger').find({}).toArray())
     await guestService.merge(String(source._id), target)
     assert.equal(JSON.stringify(await db.collection('ink_ledger').find({}).toArray()), snapshot)
+    assert.deepEqual(await merges.find({ guest_id: source._id }).toArray(), [mergeRow], 'merge retry duplicated or changed provenance')
+  })
+  await check('merge provenance precedes deletion in the same transaction, rolls back and survives retry once; target deletion purges it', async () => {
+    const source = await newGuest()
+    // Older guests have no start timestamp: preserve their creation day.
+    await users.updateOne({ _id: source._id }, { $unset: { guest_started_at: '' } })
+    const target = (await authService.signInWithGoogle('google:funnel-purge@example.test')).userDoc
+    const merges = db.collection('guest_merges')
+    const originalDelete = Collection.prototype.deleteOne
+    let deletes = 0
+    let abort = !standalone
+    Collection.prototype.deleteOne = async function(filter, options) {
+      if (this.collectionName === 'users' && (filter._id as ObjectId)?.equals(source._id)) {
+        deletes++
+        const row = await merges.findOne({ _id: source._id }, options)
+        assert.ok(row, 'provenance must exist before guest deletion')
+        assert.ok(row.guest_started_at instanceof Date, 'legacy merge lost creation day')
+        assert.equal(row.guest_started_at.getTime(), source.created_at.getTime(), 'legacy merge lost creation day')
+        if (!standalone) assert.ok(options?.session, 'merge provenance must use the account transaction')
+        if (abort) throw new Error('audit rollback after provenance write')
+        if (!standalone && deletes === 2) {
+          const retry = new MongoServerError({ message: 'audit transient transaction retry', code: 112 })
+          retry.addErrorLabel('TransientTransactionError')
+          throw retry
+        }
+      }
+      return originalDelete.call(this, filter, options)
+    }
+    try {
+      if (!standalone) {
+        await assert.rejects(guestService.merge(String(source._id), target), /audit rollback/)
+        assert.equal(await merges.countDocuments({ guest_id: source._id }), 0, 'aborted transaction retained merge provenance')
+        assert.ok(await users.findOne({ _id: source._id }), 'aborted merge deleted guest')
+        abort = false
+      }
+      await guestService.merge(String(source._id), target)
+    } finally { Collection.prototype.deleteOne = originalDelete }
+    assert.equal(deletes, standalone ? 1 : 3, 'transaction callback was not retried')
+    const rows = await merges.find({ guest_id: source._id }).toArray()
+    assert.equal(rows.length, 1, 'transaction retry duplicated merge provenance')
+    await guestService.merge(String(source._id), target)
+    assert.deepEqual(await merges.find({ guest_id: source._id }).toArray(), rows, 'merge retry changed provenance')
+    const unrelated = id()
+    await merges.insertOne({ guest_id: target._id, target_id: unrelated, guest_started_at: new Date(), merged_at: new Date() })
+    const keep = { _id: id(), guest_id: id(), target_id: unrelated, guest_started_at: new Date(), merged_at: new Date() }
+    await merges.insertOne(keep)
+    const { deletionService } = await import('../src/services/deletion.service')
+    await deletionService.deleteAccount(String(target._id))
+    assert.equal(await merges.countDocuments({ target_id: target._id }), 0, 'target deletion retained merge provenance')
+    assert.equal(await merges.countDocuments({ guest_id: target._id }), 0, 'guest-id safety purge missing')
+    assert.deepEqual(await merges.findOne({ _id: keep._id }), keep, 'purge removed unrelated merge provenance')
+    const indexes = await merges.listIndexes().toArray()
+    for (const field of ['target_id', 'guest_started_at']) assert.ok(indexes.some(row => row.key[field] === 1), `merge index missing: ${field}`)
+  })
+  await check('merge resumes an already recorded start without duplicating or rewriting it', async () => {
+    const source = await newGuest()
+    const target = (await authService.signInWithGoogle('google:funnel-resume@example.test')).userDoc
+    const row = { _id: source._id, guest_id: source._id, target_id: target._id,
+      guest_started_at: source.guest_started_at!, merged_at: new Date('2026-01-01T00:00:00Z') }
+    const merges = db.collection('guest_merges')
+    await merges.insertOne(row)
+    await guestService.merge(String(source._id), target)
+    assert.deepEqual(await merges.find({ guest_id: source._id }).toArray(), [row], 'resumed merge duplicated or rewrote start')
   })
   await check('merge keeps the existing confirmation and mature choice; unconfirmed merges omit age entirely', async () => {
     for (const targetConfirmed of [false, true]) {
@@ -606,6 +701,10 @@ try {
   await check('no null age timestamp or age-confirmation input is persisted', async () => {
     assert.equal(await users.countDocuments({ age_confirmed_at: { $type: 10 } }), 0, 'null age timestamp was written')
     assert.equal(await users.countDocuments({ 'preferences.age_confirmed': { $exists: true } }), 0)
+  })
+  await check('funnel fact keys are never null', async () => {
+    for (const key of ['guest_started_at', 'signed_up_at']) assert.equal(await users.countDocuments({ [key]: { $type: 10 } }), 0, `null funnel fact: ${key}`)
+    for (const key of ['guest_id', 'target_id', 'guest_started_at', 'merged_at']) assert.equal(await db.collection('guest_merges').countDocuments({ [key]: { $type: 10 } }), 0, `null merge fact: ${key}`)
   })
   console.log(`guest audit (${standalone ? 'standalone fallback' : 'replica-set transactions'}): ${passed} checks passed`)
 } finally {
