@@ -209,7 +209,31 @@ export interface Env {
   ERROR_TRIAGE_MONTHLY_USD_CAP: number
 }
 
+export function assertProductionAuthConfig(
+  config: Partial<Pick<Env, 'TWILIO_ACCOUNT_SID' | 'TWILIO_AUTH_TOKEN' | 'TWILIO_VERIFY_SERVICE_SID' | 'JWT_SECRET'>>,
+  nodeEnv: string | undefined,
+): void {
+  if (nodeEnv !== 'production') return
+
+  for (const key of ['TWILIO_ACCOUNT_SID', 'TWILIO_AUTH_TOKEN', 'TWILIO_VERIFY_SERVICE_SID'] as const) {
+    if (!config[key]?.trim() || (key === 'TWILIO_ACCOUNT_SID' && config[key] === 'AC_MOCK_SID')) {
+      throw new Error(`Invalid production auth configuration: ${key} must be configured for live verification`)
+    }
+  }
+  if (!config.JWT_SECRET?.trim() || config.JWT_SECRET === 'dev-secret-change-in-production') {
+    throw new Error('Invalid production auth configuration: JWT_SECRET must be configured with a non-development secret')
+  }
+}
+
 function loadEnv(): Env {
+  // Both the API and worker import this module, before starting their services.
+  assertProductionAuthConfig({
+    TWILIO_ACCOUNT_SID: process.env.TWILIO_ACCOUNT_SID,
+    TWILIO_AUTH_TOKEN: process.env.TWILIO_AUTH_TOKEN,
+    TWILIO_VERIFY_SERVICE_SID: process.env.TWILIO_VERIFY_SERVICE_SID,
+    JWT_SECRET: process.env.JWT_SECRET,
+  }, process.env.NODE_ENV)
+
   const missing: string[] = []
   for (const key of requiredEnvVars) {
     if (!process.env[key]) missing.push(key)

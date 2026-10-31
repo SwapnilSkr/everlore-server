@@ -130,7 +130,7 @@ function isReviewPhone(phone: string): boolean {
 }
 
 function isMockTwilioMode(): boolean {
-  return (
+  return process.env.NODE_ENV !== 'production' && (
     !env.TWILIO_ACCOUNT_SID ||
     !env.TWILIO_AUTH_TOKEN ||
     !env.TWILIO_VERIFY_SERVICE_SID ||
