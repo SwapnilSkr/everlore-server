@@ -129,13 +129,26 @@ function assertOfficial(user: UserDoc) {
   }
 }
 
+export function withRuntimeMedia(authored: Body['protagonist'], existing: WorldTemplateDoc['protagonist']): WorldTemplateDoc['protagonist'] {
+  if (!authored || !existing) return authored
+  const protagonist: NonNullable<WorldTemplateDoc['protagonist']> = { ...authored }
+  if (existing.voice !== undefined) protagonist.voice = existing.voice
+  // An explicitly changed look needs a fresh painting; other edits keep it.
+  if (authored.appearance === undefined || authored.appearance === existing.appearance) {
+    if (existing.portrait !== undefined) protagonist.portrait = existing.portrait
+    if (existing.appearance_version !== undefined) protagonist.appearance_version = existing.appearance_version
+  }
+  if (authored.appearance === undefined && existing.appearance !== undefined) protagonist.appearance = existing.appearance
+  return protagonist
+}
+
 export async function runCatalog(options: Options, runtime: Runtime, log: (text: string) => void = console.log): Promise<Result[]> {
   const entries = await readCatalog(options)
   const accounts = await runtime.findUsers()
   if (accounts.length > 1) throw new Error('Ambiguous Everlore account identity')
   let owner = accounts[0]
   if (owner) assertOfficial(owner)
-  const plan: { entry: Entry; existing: WorldTemplateDoc | null; outcome: Outcome; imageChanged: boolean }[] = []
+  const plan: { entry: Entry; body: Body; existing: WorldTemplateDoc | null; outcome: Outcome; imageChanged: boolean }[] = []
   for (const entry of entries) {
     const existing = await runtime.findSlug(entry.slug)
     if (existing && (!owner || !existing.creator_id.equals(owner._id))) throw new Error(`${entry.slug}: slug belongs to another creator`)
@@ -144,10 +157,12 @@ export async function runCatalog(options: Options, runtime: Runtime, log: (text:
     const imageChanged = !!entry.normalized && (!existing?.image_url || !entry.normalized.equals(await runtime.readCover(existing.image_url)))
     const starterChanged = existing && (existing.starter !== entry.starter ||
       (entry.starter === undefined && Object.hasOwn(existing, 'starter')))
-    const changed = starterChanged || (existing && Object.entries(entry.body).some(([key, value]) => !isDeepStrictEqual(existing[key as keyof WorldTemplateDoc], value)))
+    const body = { ...entry.body }
+    if (body.protagonist) body.protagonist = withRuntimeMedia(body.protagonist, existing?.protagonist)
+    const changed = starterChanged || (existing && Object.entries(body).some(([key, value]) => !isDeepStrictEqual(existing[key as keyof WorldTemplateDoc], value)))
     const live = existing?.is_published && existing.visibility === 'public' && existing.review_status === 'approved'
     const outcome: Outcome = !entry.image && !options.allowDefaultCover ? 'skip (no cover)' : !existing ? 'create' : changed || imageChanged || !live ? 'update' : 'unchanged'
-    plan.push({ entry, existing, outcome, imageChanged })
+    plan.push({ entry, body, existing, outcome, imageChanged })
   }
   if (options.apply && !owner && plan.some(p => p.outcome === 'create')) {
     const now = new Date()
@@ -164,7 +179,7 @@ export async function runCatalog(options: Options, runtime: Runtime, log: (text:
     if (options.apply && (outcome === 'create' || outcome === 'update')) {
       if (!owner) throw new Error('Official account missing')
       const ownerId = owner._id.toHexString()
-      const data: Record<string, unknown> = { ...entry.body }
+      const data: Record<string, unknown> = { ...item.body }
       if (item.imageChanged && entry.image) data.image_url = (await runtime.upload(new File([new Uint8Array(entry.image)], entry.cover))).url
       if (!world) {
         world = await runtime.create(ownerId, data as Body)

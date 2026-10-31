@@ -159,6 +159,55 @@ try {
     assert.deepEqual((await runCatalog(options, runtime, quiet)).map(r => r.outcome), ['unchanged', 'unchanged'])
     assert.equal(snapshot(), before)
   })
+  const media = {
+    portrait: { asset_key: 'fixture/guide.webp', source: 'generated' as const, appearance_version: 0, painted_at: new Date('2026-10-31T00:00:00Z') },
+    voice: { model: 'fixture-model', voice_id: 'fixture-voice' }, appearance_version: 0,
+  }
+  const protagonistWithoutAppearance = { name: character.protagonist.name, persona: character.protagonist.persona }
+  await check('runtime protagonist media alone stays unchanged with zero writes or model/storage calls', async () => {
+    const stored = worlds.find(w => w.slug === character.slug)!, original = stored.protagonist
+    try {
+      stored.protagonist = { ...character.protagonist, ...media }
+      const before = snapshot()
+      assert.deepEqual((await runCatalog(options, runtime, quiet)).map(r => r.outcome), ['unchanged', 'unchanged'])
+      assert.equal(snapshot(), before)
+    } finally { stored.protagonist = original }
+  })
+  await check('an authored description update preserves protagonist portrait, voice, version and generated appearance', async () => {
+    const stored = worlds.find(w => w.slug === character.slug)!, original = stored.protagonist
+    const description = 'An adult guide with a newly authored description.'
+    const protagonist = { ...protagonistWithoutAppearance, appearance: 'A runtime-painted green cloak.', ...media }
+    stored.protagonist = protagonist
+    try {
+      await save('character', { ...character, protagonist: protagonistWithoutAppearance, description })
+      const before = snapshot()
+      assert.deepEqual((await runCatalog({ ...options, apply: false }, runtime, quiet)).map(r => r.outcome), ['update', 'unchanged'])
+      assert.equal(snapshot(), before)
+      assert.deepEqual((await runCatalog(options, runtime, quiet)).map(r => r.outcome), ['update', 'unchanged'])
+      assert.equal(stored.description, description)
+      assert.deepEqual(stored.protagonist, protagonist)
+      assert.deepEqual((await runCatalog(options, runtime, quiet)).map(r => r.outcome), ['unchanged', 'unchanged'])
+    } finally {
+      stored.protagonist = original; stored.description = character.description
+      await save('character', character)
+    }
+  })
+  await check('a changed authored appearance drops portrait and version while preserving voice', async () => {
+    const stored = worlds.find(w => w.slug === character.slug)!, original = stored.protagonist
+    stored.protagonist = { ...character.protagonist, ...media }
+    const protagonist = { ...character.protagonist, appearance: 'A newly authored red cloak.' }
+    try {
+      await save('character', { ...character, protagonist })
+      const before = snapshot()
+      assert.deepEqual((await runCatalog({ ...options, apply: false }, runtime, quiet)).map(r => r.outcome), ['update', 'unchanged'])
+      assert.equal(snapshot(), before)
+      assert.deepEqual((await runCatalog(options, runtime, quiet)).map(r => r.outcome), ['update', 'unchanged'])
+      assert.deepEqual(stored.protagonist, { ...protagonist, voice: media.voice })
+      assert.equal(Object.hasOwn(stored.protagonist!, 'portrait'), false)
+      assert.equal(Object.hasOwn(stored.protagonist!, 'appearance_version'), false)
+      assert.deepEqual((await runCatalog(options, runtime, quiet)).map(r => r.outcome), ['unchanged', 'unchanged'])
+    } finally { stored.protagonist = original; await save('character', character) }
+  })
   await check('starter removal and re-addition plan without writes, apply once, and then stay unchanged', async () => {
     const stored = worlds.find(w => w.slug === world.slug)!
     const { starter, ...ordinary } = world
