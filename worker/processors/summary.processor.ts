@@ -1,3 +1,5 @@
+import { withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark } from '../../src/services/group-chat/memory'
+import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { runBackgroundLLMTrace } from '../../src/services/llm-trace.service'
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
@@ -44,7 +46,7 @@ async function embedSummary(
 
 export async function summaryProcessor(job: Job) {
   return runBackgroundLLMTrace({ instance_id: job.data.instanceId, player_id: job.data.playerId,
-    sequence: job.data.endSequence }, () => summaryWork(job))
+    sequence: job.data.endSequence, ...(job.data.groupSummary ? { event_id: job.data.eventId } : {}) }, () => job.data.groupSummary ? withGroupMemoryLease(job.data.instanceId, 'summary', () => summaryWork(job)) : summaryWork(job))
 }
 async function summaryWork(job: Job) {
   // The 'scene-summary' worker handles both tiers; chapter jobs are discriminated
@@ -56,7 +58,11 @@ async function summaryWork(job: Job) {
     return arcRollup(job)
   }
 
-  const { instanceId, sceneTag, startSequence, endSequence } = job.data
+  const { instanceId, sceneTag } = job.data
+  const groupBatch = job.data.groupSummary ? await loadGroupBatch(parseObjectId(instanceId), parseObjectId(job.data.eventId), 'summarized_through_sequence') : null
+  if (job.data.groupSummary && !groupBatch) return { skipped: 'group_batch_obsolete' }
+  const startSequence = groupBatch ? groupBatch.events[0].sequence : job.data.startSequence
+  const endSequence = groupBatch ? groupBatch.through : job.data.endSequence
   const instanceOid = parseObjectId(instanceId)
   if (!(await liveInstanceExists(instanceOid))) {
     return { skipped: 'instance_deleted' }
@@ -69,7 +75,7 @@ async function summaryWork(job: Job) {
     endSequence,
   })
 
-  const events = await mongoColl.events()
+  const events = groupBatch ? groupBatch.events : await mongoColl.events()
     .find({
       instance_id: instanceOid,
       sequence: { $gte: startSequence, $lte: endSequence },
@@ -94,7 +100,9 @@ async function summaryWork(job: Job) {
     return { skipped: true }
   }
 
-  const conversationText = events
+  const groupInstance = groupBatch?.instance || (events.some(event => event.data.lines !== undefined) ? await mongoColl.worldInstances().findOne({ _id: instanceOid, group_state: { $exists: true } }) : null)
+  const members = groupInstance ? await loadGroupMembers(groupInstance) : []
+  const conversationText = groupInstance ? events.map(event => `[Turn ${event.sequence}]\n${groupMessages([event], groupInstance.group_context!.player, members).map(line => `${line.name}: ${line.text}`).join('\n')}`).join('\n\n') : events
     .map((e) => `[Turn ${e.sequence}] Player: ${e.data.player_input}\nWorld: ${e.data.ai_response}`)
     .join('\n\n')
 
@@ -111,6 +119,8 @@ async function summaryWork(job: Job) {
     temperature: 0.3,
     maxTokens: 400,
   })
+
+  if (groupBatch && (!summaryResult.trim() || !await groupEventsLive(events))) throw new Error('Group summary failed or source events changed')
 
   const pineconeId = await embedSummary(
     instanceOid,
@@ -134,6 +144,10 @@ async function summaryWork(job: Job) {
     created_at: new Date(),
   }
 
+  if (groupBatch && !await groupEventsLive(events)) {
+    if (pineconeId) await vectorStore.deleteIds({ kind: 'sum', instanceId }, [pineconeId])
+    throw new Error('Group summary source events changed')
+  }
   // Replace, don't accumulate: a rebuild for the same range (e.g. after an
   // event edit staled the original) supersedes the previous summary row.
   await mongoColl.sceneSummaries().deleteMany({
@@ -142,6 +156,15 @@ async function summaryWork(job: Job) {
     'event_range.end_sequence': endSequence,
   })
   await mongoColl.sceneSummaries().insertOne(summary)
+  if (groupBatch) {
+    if (!await groupEventsLive(events)) {
+      await mongoColl.sceneSummaries().deleteOne({ _id: summary._id })
+      if (pineconeId) await vectorStore.deleteIds({ kind: 'sum', instanceId }, [pineconeId])
+      throw new Error('Group summary source events changed')
+    }
+    await advanceGroupWatermark(events, 'summarized_through_sequence')
+    log.info('group.summary_batch', { instanceId, events: events.length, startSequence, endSequence, summary_calls: 1 })
+  }
 
   await mongoColl.worldInstances().updateOne(
     { _id: instanceOid },
@@ -209,6 +232,14 @@ async function maybeQueueChapter(instanceOid: ObjectId): Promise<void> {
   )
 }
 
+async function groupRollupSources(instanceOid: ObjectId, start: number, end: number) {
+  const instance = await mongoColl.worldInstances().findOne({ _id: instanceOid })
+  if (!instance?.group_state) return null
+  const events = await mongoColl.events().find({ instance_id: instanceOid, sequence: { $gte: start, $lte: end } }).toArray()
+  if (events.length !== end - start + 1) throw new Error('Group summary source events changed')
+  return events
+}
+
 /** Compress a block of consecutive scene summaries into one chapter paragraph. */
 async function chapterRollup(job: Job) {
   const { instanceId, chapterIndex, startSequence, endSequence } = job.data
@@ -234,6 +265,7 @@ async function chapterRollup(job: Job) {
     return { skipped: true }
   }
 
+  const groupSources = await groupRollupSources(instanceOid, startSequence, endSequence)
   const body = scenes
     .map((s, i) => `Scene ${i + 1}: ${s.summary_text}`)
     .join('\n\n')
@@ -260,6 +292,10 @@ async function chapterRollup(job: Job) {
     summaryText,
   )
 
+  if (groupSources && !await groupEventsLive(groupSources)) {
+    if (pineconeId) await vectorStore.deleteIds({ kind: 'sum', instanceId }, [pineconeId])
+    throw new Error('Group summary source events changed')
+  }
   const chapter = {
     _id: new ObjectId(),
     instance_id: instanceOid,
@@ -282,6 +318,11 @@ async function chapterRollup(job: Job) {
     'event_range.end_sequence': endSequence,
   })
   await mongoColl.chapterSummaries().insertOne(chapter)
+  if (groupSources && !await groupEventsLive(groupSources)) {
+    await mongoColl.chapterSummaries().deleteOne({ _id: chapter._id })
+    if (pineconeId) await vectorStore.deleteIds({ kind: 'sum', instanceId }, [pineconeId])
+    throw new Error('Group summary source events changed')
+  }
 
   log.info('chapter_summary.succeeded', {
     jobId: job.id,
@@ -366,6 +407,7 @@ async function arcRollup(job: Job) {
     return { skipped: true }
   }
 
+  const groupSources = await groupRollupSources(instanceOid, startSequence, endSequence)
   const body = chapters
     .map((c, i) => `Chapter ${i + 1}: ${c.summary_text}`)
     .join('\n\n')
@@ -386,6 +428,10 @@ async function arcRollup(job: Job) {
 
   const pineconeId = await embedSummary(instanceOid, 'arc', startSequence, endSequence, summaryText)
 
+  if (groupSources && !await groupEventsLive(groupSources)) {
+    if (pineconeId) await vectorStore.deleteIds({ kind: 'sum', instanceId }, [pineconeId])
+    throw new Error('Group summary source events changed')
+  }
   const arc = {
     _id: new ObjectId(),
     instance_id: instanceOid,
@@ -406,6 +452,11 @@ async function arcRollup(job: Job) {
     'event_range.end_sequence': endSequence,
   })
   await mongoColl.arcSummaries().insertOne(arc)
+  if (groupSources && !await groupEventsLive(groupSources)) {
+    await mongoColl.arcSummaries().deleteOne({ _id: arc._id })
+    if (pineconeId) await vectorStore.deleteIds({ kind: 'sum', instanceId }, [pineconeId])
+    throw new Error('Group summary source events changed')
+  }
 
   log.info('arc_summary.succeeded', {
     jobId: job.id,

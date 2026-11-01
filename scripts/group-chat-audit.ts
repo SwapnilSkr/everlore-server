@@ -265,9 +265,10 @@ function matches(row: Row, filter: Row): boolean {
     if (key === '$or') return (expected as Row[]).some(clause => matches(row, clause))
     const value = get(row, key)
     if (expected && typeof expected === 'object' && !(expected instanceof ObjectId) && !(expected instanceof Date)) return Object.entries(expected).every(([op, other]) => {
-      if (op === '$ne') return !eq(value, other)
+      if (op === '$ne') return !(Array.isArray(value) ? value.some(entry => eq(entry, other)) : eq(value, other))
       if (op === '$exists') return (value !== undefined) === other
-      if (op === '$in') return (other as unknown[]).some(other => eq(value, other))
+      if (op === '$in') return (other as unknown[]).some(other => Array.isArray(value) ? value.some(entry => eq(entry, other)) : eq(value, other))
+      if (op === '$lte') return Number(value) <= Number(other)
       if (op === '$lt') return Number(value) < Number(other)
       if (op === '$gte') return Number(value) >= Number(other)
       if (op === '$gt') return Number(value) > Number(other)
@@ -306,9 +307,15 @@ function collection(name: string) {
       if (row) {
         for (const [key, value] of Object.entries((update.$set || {}) as Row)) put(row, key, clone(value))
         for (const [key, value] of Object.entries((update.$inc || {}) as Row)) put(row, key, Number(get(row, key) || 0) + Number(value))
+        for (const [key, value] of Object.entries((update.$max || {}) as Row)) if (get(row, key) === undefined || Number(get(row, key)) < Number(value)) put(row, key, value)
         for (const key of Object.keys((update.$unset || {}) as Row)) delete row[key]
       }
       return { matchedCount: existed ? 1 : 0, modifiedCount: existed ? 1 : 0 }
+    },
+    async updateMany(filter: Row, update: Row) {
+      let modifiedCount = 0
+      for (const row of rows(name).filter(row => matches(row, filter))) { await this.updateOne({ _id: row._id }, update); modifiedCount++ }
+      return { modifiedCount }
     },
     async deleteMany(filter: Row) { const list = rows(name); const kept = list.filter(row => !matches(row, filter)); list.splice(0, list.length, ...kept); return { deletedCount: list.length - kept.length } },
     async deleteOne(filter: Row) { const index = rows(name).findIndex(row => matches(row, filter)); if (index >= 0) rows(name).splice(index, 1); return { deletedCount: index >= 0 ? 1 : 0 } },
@@ -317,10 +324,11 @@ function collection(name: string) {
 const frames: Row[] = [], outbox: Row[] = [], locks = new Map<string, string>(), queued: Row[] = []
 const redis = {
   async get(key: string) { return locks.get(key) || null },
-  async set(key: string, value: string) { locks.set(key, value); return 'OK' },
+  async set(key: string, value: string, ...args: unknown[]) { if (args.includes('NX') && locks.has(key)) return null; locks.set(key, value); return 'OK' },
   async del(key: string) { locks.delete(key); return 1 },
   async publish(channel: string, text: string) { assert(channel.startsWith('user:')); frames.push(JSON.parse(text)); return 1 },
   async eval(_script: string, _keys: number, key: string, outcomeKey: string, before: string, after: string, _ttl: string, outcome: string, channel: string, frame: string) {
+    if (_keys === 1) { if (locks.get(key) === outcomeKey) { locks.delete(key); return 1 }; return 0 }
     if ((locks.get(key) || '') !== before) return 0
     if (channel) await this.publish(channel, frame)
     if (after) locks.set(key, after); else locks.delete(key)
@@ -342,20 +350,24 @@ const routerClient = { chat: { completions: { create: async () => {
   return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ sexual_intent: routerSexual }) } }] }
 } } } }
 mock.module('../src/config/openai', () => ({ getOpenRouter: () => ({ withOptions: () => routerClient }), getOpenAI: unavailable }))
-mock.module('../src/services/llm-trace.service', () => ({ flushLLMTracesLater: () => {}, flushLLMTraces: async () => {}, traceStore: () => ({ calls: collection('llmCalls'), bodies: collection('llmBodies') }), runBackgroundLLMTrace: async (_scope: unknown, fn: () => Promise<unknown>) => fn() }))
-mock.module('../src/providers/rag.provider', () => ({ queryRag: async () => ({ memoryTexts: ['Remembered group fact.'] }), querySummaries: async () => [] }))
+const backgroundScopes: Row[] = []
+mock.module('../src/services/llm-trace.service', () => ({ flushLLMTracesLater: () => {}, flushLLMTraces: async () => {}, traceStore: () => ({ calls: collection('llmCalls'), bodies: collection('llmBodies') }), runBackgroundLLMTrace: async (scope: Row, fn: () => Promise<unknown>) => { backgroundScopes.push(scope); return fn() } }))
+let ragMemoryTexts = ['Remembered group fact.'], ragOpenThreads: string[] = [], ragCalls: unknown[][] = []
+mock.module('../src/providers/rag.provider', () => ({ queryRag: async (...args: unknown[]) => { ragCalls.push(args); return { memoryTexts: ragMemoryTexts, openThreads: ragOpenThreads } }, querySummaries: async () => [] }))
 mock.module('../src/services/post-process-outbox.service', () => ({ stagePostProcess: async (input: Row) => { outbox.push(input) }, dispatchPostProcessOutbox: async () => 0 }))
 mock.module('../src/services/media/attribution', () => ({ ATTRIBUTION_RULE_VERSION: 'audit', mediaRevision: () => 'audit' }))
 mock.module('../src/services/moderation.service', () => ({ moderationService: { discoveryFilter: async () => ({}) } }))
-const checkLogs: Row[] = []
-mock.module('../src/utils/logger', () => ({ log: { info: (name: string, data: Row) => { if (name === 'group.reply_checked') checkLogs.push(data) }, warn: () => {}, error: () => {} } }))
+const checkLogs: Row[] = [], memoryLogs: Row[] = []
+mock.module('../src/utils/logger', () => ({ log: { info: (name: string, data: Row) => { if (name === 'group.reply_checked') checkLogs.push(data); memoryLogs.push({ name, ...data }) }, warn: () => {}, error: () => {} } }))
 mock.module('../src/services/time.service', () => ({ timeService: { initialAnchor: async (input: Row) => { assert.equal(input.templateId, undefined); return { real_time: new Date(), sequence: 0, timeline_id: 'main' } } } }))
 mock.module('../src/services/opening-place.service', () => ({ extractOpeningPlace: unavailable }))
 mock.module('../src/services/character-codex.service', () => ({ characterCodexService: { seedProtagonist: unavailable } }))
 mock.module('../src/services/kinship-graph.service', () => ({ kinshipGraphService: { seedPremiseKinship: unavailable } }))
 mock.module('../src/services/template-cast.service', () => ({ materializeTemplateCast: async (input: { instanceId: string; template: WorldTemplateDoc }) => { const cast = input.template.seed_cast!; rows('characters').push(...cast.map((member, index) => ({ _id: new ObjectId((index + 1).toString(16).padStart(24, '0')), instance_id: new ObjectId(input.instanceId), canonical_name: member.name }))); return cast.length } }))
 mock.module('../worker/lib/template-cast-extractor', () => ({ extractTemplateCast: unavailable }))
-mock.module('../src/services/vector-store', () => ({ vectorStore: { replaceLore: unavailable, deleteScope: async () => {} } }))
+const vectors = new Map<string, Row>()
+mock.module('../src/services/vector-store', () => ({ vectorStore: { replaceLore: unavailable, deleteScope: async () => { vectors.clear() }, fetch: async (_scope: Row, ids: string[]) => ({ records: Object.fromEntries(ids.filter(id => vectors.has(id)).map(id => [id, vectors.get(id)])) }), upsert: async (_scope: Row, values: Row[]) => { for (const value of values) vectors.set(String(value.id), value) }, deleteIds: async (_scope: Row, ids: string[]) => { for (const id of ids) vectors.delete(id) } } }))
+mock.module('../src/services/entity-graph.service', () => ({ normalizeEntityName: (text: string) => text.toLowerCase(), entityGraphService: { ensurePlayerEntity: async () => ({ _id: new ObjectId() }), resolveOrCreateEntities: async () => new Map(), upsertNarrativeEdge: async () => {} } }))
 mock.module('../src/constants/default-cover', () => ({ isDefaultCoverUrl: () => false, resolveTemplateImageUrl: async () => 'https://fixture.invalid/cover.webp' }))
 mock.module('../src/services/media/deletion', () => ({ purgeMedia: async () => {}, purgeCardPortraits: async () => {}, purgeTemplatePortraits: async () => {} }))
 mock.module('../src/services/telemetry/ingest.service', () => ({ telemetryService: { purgeUser: async () => {} } }))
@@ -367,12 +379,22 @@ mock.module('../src/services/auth.service', () => ({ authService: { getLiveAcces
 mock.module('../src/middleware/auth', () => ({ verifyWsToken: unavailable }))
 mock.module('../src/middleware/rate-limit', () => ({ rateLimit: async () => ({ allowed: true }) }))
 mock.module('../src/services/last-active.service', () => ({ recordLastActive: () => {} }))
-mock.module('../src/queues', () => ({ removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { queued.push(data); return { id: options.jobId } } }), QUEUE_RETENTION: { generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
+mock.module('../src/queues', () => ({ removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { queued.push(data); return { id: options.jobId } } }), getSceneSummaryQueue: () => ({ add: async (_name: string, data: Row) => { queued.push(data) } }), QUEUE_RETENTION: { sceneSummary: {}, generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
 let writerHook: ((request: Row) => void) | undefined
+let curatorReply: unknown = { memories: [] }, curatorRequests: Row[] = [], summaryRequests: Row[] = []
+let summaryHook: (() => Promise<void>) | undefined, embedHook: (() => Promise<void>) | undefined
+let summaryReply: string | Error = 'A named summary.'
+let curatorFactory: ((request: Row) => unknown) | undefined
+let curatorHook: (() => Promise<void>) | undefined
 let modelReplies: Array<string | Error | { content: string; finishReason: string }> = [], writerCalls: Row[] = [], turnNumber = 0
-mock.module('../src/ai', () => ({ AI_MODELS: { narrationSfw: 'fake-safe', narrationNsfw: 'fake-story-adult', groupNsfw: 'fake-adult', groupNsfwFallbacks: ['fake-adult-fallback', 'fake-adult-last'], narrationSfwFallbacks: ['fake-safe-fallback'], narrationNsfwFallbacks: ['fake-adult-fallback'] }, narrationTemperature: () => 0.62, snapshotLLMUsage: () => [],
-  callLLMWithFallback: async (request: Row) => { writerCalls.push(request); writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; if (response && typeof response === 'object') return { ...response, model: request.model }; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embed: unavailable, callLLM: unavailable, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
+mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator', sceneSummary: 'fixture-summary', chapterSummary: 'fixture-chapter', arcSummary: 'fixture-arc', narrationSfw: 'fake-safe', narrationNsfw: 'fake-story-adult', groupNsfw: 'fake-adult', groupNsfwFallbacks: ['fake-adult-fallback', 'fake-adult-last'], narrationSfwFallbacks: ['fake-safe-fallback'], narrationNsfwFallbacks: ['fake-adult-fallback'] }, narrationTemperature: () => 0.62, snapshotLLMUsage: () => [],
+  embed: async () => { await embedHook?.(); return [1, 0] },
+  callLLM: async (request: Row) => { if (request.purpose !== 'memory_curation') { summaryRequests.push(request); await summaryHook?.(); if (summaryReply instanceof Error) throw summaryReply; return summaryReply }; curatorRequests.push(request); await curatorHook?.(); if (curatorFactory) return JSON.stringify(curatorFactory(request)); if (curatorReply instanceof Error) throw curatorReply; return typeof curatorReply === 'string' ? curatorReply : JSON.stringify(curatorReply) },
+  callLLMWithFallback: async (request: Row) => { writerCalls.push(request); writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; if (response && typeof response === 'object') return { ...response, model: request.model }; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
 }))
+const { memoryProcessor, buildMemoryCurationRequest } = await import('../worker/processors/memory.processor')
+const { summaryProcessor } = await import('../worker/processors/summary.processor')
+const { loadGroupBatch, groupWriterMemory, GROUP_MEMORY_TEXT_BUDGET } = await import('../src/services/group-chat/memory')
 const { groupTurnProcessor } = await import('../worker/processors/group-turn.processor')
 const { instanceService } = await import('../src/services/instance.service')
 const { generationService } = await import('../src/services/generation.service')
@@ -387,7 +409,7 @@ Math.random = () => 0
 const playerId = '300000000000000000000001'
 let instanceId = ''
 async function start(source = groupTemplate(), player = playerName) {
-  tables.clear(); frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0; routerSexual = true; routerError = false
+  tables.clear(); vectors.clear(); curatorRequests = []; summaryRequests = []; summaryReply = 'A named summary.'; curatorHook = undefined; summaryHook = undefined; embedHook = undefined; curatorFactory = undefined; ragMemoryTexts = ['Remembered group fact.']; ragOpenThreads = []; ragCalls = []; memoryLogs.length = 0; backgroundScopes.length = 0; frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0; routerSexual = true; routerError = false
   rows('users').push({ _id: new ObjectId(playerId), preferences: { nsfw_enabled: false, player_name: player } })
   rows('worldTemplates').push(clone(source) as unknown as Row)
   const created = await instanceService.create(playerId, template._id.toHexString(), 'creator')
@@ -998,9 +1020,12 @@ await check('private adult traits absent recursively wherever player cast is ret
   for (const frame of frames) forbidden(frame)
 })
 
-await check('twentieth writing call stages memory and summary only; history/load leak no internals', async () => {
-  await start(); put(rows('worldInstances')[0], 'group_state.writing_calls', 19)
-  await turn(); assert.deepEqual(outbox.map(row => row.kind), ['memory_curation', 'scene_summary'])
+await check('event cadence stages memory every five and summaries every twelve; history/load leak no internals', async () => {
+  await start(); put(rows('worldInstances')[0], 'group_state.writing_calls', 199)
+  for (let i = 0; i < 12; i++) await turn()
+  assert.deepEqual(outbox.map(row => row.kind), ['memory_curation', 'memory_curation', 'scene_summary'])
+  assert.deepEqual(outbox.map(row => get(row, 'payload.eventId')), [rows('events')[5]._id, rows('events')[10]._id, rows('events')[12]._id].map(String))
+  assert.equal(get(outbox[0], 'payload.playerInput'), undefined)
   const loaded = await generationService.loadInstance(instanceId, playerId)
   forbidden(loaded); assert(loaded.recentEvents.some(event => event.data.lines?.length))
   assert((await instanceService.getById(instanceId, playerId))?.group_state === undefined)
@@ -1077,6 +1102,292 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
     async function visit(path: string) { for (const entry of await readdir(path, { withFileTypes: true })) { const next = `${path}/${entry.name}`; if (entry.isDirectory()) await visit(next); else if (entry.name.endsWith('.ts')) { const source = await readFile(next, 'utf8'); for (const label of labels) assert(!new RegExp(`(?<![A-Za-z])${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z])`).test(source), `${next} names ${label}`) } } }
     await visit(new URL('../src', import.meta.url).pathname); await visit(new URL('../worker', import.meta.url).pathname)
     console.log(`validated ${authored.length} authored groups; identity scan passed`)
+  }
+})
+
+// Memory checks inspect the real queued processors, persisted atoms/vectors and writer requests.
+function storedEvents() { return rows('events') as unknown as import('../src/models/world-event.model').WorldEventDoc[] }
+function numbered(request = curatorRequests.at(-1)!) {
+  const body = (request.messages as Array<{ content: string }>)[1].content
+  return body.split('\n').flatMap(line => {
+    const match = /^(\d+)\. (\{.*\})$/.exec(line)
+    return match ? [{ number: Number(match[1]), ...JSON.parse(match[2]) as { speaker: string; text: string } }] : []
+  })
+}
+function atom(text: string, subject: string, citation: number, patch: Row = {}) {
+  return { text, type: 'observation', importance: 4, is_nsfw: false, subjects: [subject], objects: [],
+    unresolved_thread: false, retrieval_terms: [], source_messages: [citation], ...patch }
+}
+function memoryJob(event = storedEvents().at(-1)!) {
+  return { data: { instanceId, playerId, eventId: String(event._id), groupMemory: true, sceneTag: 'dialogue' } } as Job
+}
+function addEvents(count: number, speaker = members[0]) {
+  const last = storedEvents().at(-1)!
+  for (let i = 1; i <= count; i++) rows('events').push({ ...clone(last) as unknown as Row, _id: new ObjectId(), sequence: last.sequence + i,
+    data: { player_input: `Filler ${last.sequence + i}`, ai_response: `${speaker.name}: filler ${i}`, model_used: 'fake-safe', origin: 'player',
+      lines: [{ character_id: speaker.id, text: `filler ${last.sequence + i}`, shown_at: new Date() }],
+      state_mutations: {}, flag_mutations: {}, group_state_after: clone(get(rows('worldInstances')[0], 'group_state')) } })
+}
+async function identityBatch() {
+  await start(); addEvents(5)
+  const events = storedEvents()
+  events[2].data.lines![0].text = 'My sister is a pilot.'
+  events[3].data.lines = [{ character_id: ids[1], text: 'My sister is a painter.', shown_at: new Date() }]
+  events[4].data.player_input = 'My sister is getting married in June.'
+  curatorFactory = request => ({ memories: numbered(request).filter(message => message.text.startsWith('My sister')).map(message =>
+    atom(`${message.speaker}'s sister: ${message.text}`, message.speaker === playerName ? 'player' : message.speaker, message.number, { objects: [`${message.speaker}'s sister`] })), entities: [] })
+  await memoryProcessor(memoryJob())
+  return events
+}
+await check('memory numbered speakers preserve three sister owners and exact per-atom provenance without ids or player payloads', async () => {
+  const events = await identityBatch()
+  const body = (curatorRequests[0].messages as Array<{ content: string }>)[1].content
+  assert(body.includes(`The human player is "${playerName}"`)); assert(body.includes('"my" belong to the speaker'))
+  assert(!body.includes('GM world') && !body.includes('Player (raw input):') && !body.includes('World:'))
+  for (const event of events) assert(!JSON.stringify(curatorRequests[0]).includes(String(event._id)))
+  assert.deepEqual(rows('memories').map(memory => memory.subjects), [[names[0]], [names[1]], ['player']])
+  assert.deepEqual(rows('memories').map(memory => memory.objects), [names[0], names[1], playerName].map(name => [`${name}'s sister`]))
+  assert.deepEqual(rows('memories').map(memory => (memory.source_event_ids as ObjectId[]).map(String)), [events[2], events[3], events[4]].map(event => [String(event._id)]))
+  assert.equal(vectors.size, 3); assert(!frames.some(frame => frame.type === 'memories_curated'))
+  assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence'), 6)
+  assert(backgroundScopes.some(scope => scope.instance_id === instanceId && scope.event_id === String(events[5]._id)))
+  assert.equal(curatorRequests[0].purpose, 'memory_curation')
+})
+await check('memory invalid citations and malformed atoms are dropped and counted; empty invalid results fail', async () => {
+  await start(); addEvents(5)
+  curatorFactory = request => ({ memories: [atom('A valid fact.', 'player', numbered(request)[0].number),
+    ...[0, -1, 999, 1.5, '1', null].map(citation => atom('Invalid citation.', 'player', citation as number)),
+    atom('Malformed atom.', 'player', 1, { importance: '5' })] })
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories').length, 1)
+  assert(memoryLogs.some(row => row.name === 'group.memory_batch' && row.invalidCitations === 6 && row.invalidAtoms === 1 && row.success === true))
+  for (const bad of ['broken json', { memories: [] }, { memories: [atom('Bad.', 'player', 1000)] }, null, { memories: [null] }]) {
+    await start(); addEvents(5); curatorReply = bad
+    await assert.rejects(memoryProcessor(memoryJob()), /Group curator/)
+    assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence'), 1)
+  }
+})
+await check('memory failed batches catch up from watermark with two event overlap and no duplicate atoms or vectors', async () => {
+  await start(); addEvents(5); curatorReply = new Error('Stub curator failed')
+  await assert.rejects(memoryProcessor(memoryJob()), /Stub curator failed/)
+  assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence'), 1)
+  addEvents(5)
+  curatorFactory = request => ({ memories: [atom('Fact at the old failed batch edge.', 'player', numbered(request).find(message => message.text === 'Filler 5')!.number),
+    atom('Fact at the next overlap.', names[0], numbered(request).find(message => message.text === 'Filler 10')!.number)] })
+  await memoryProcessor(memoryJob())
+  assert(numbered().some(message => message.text === 'Filler 2')); assert(numbered().some(message => message.text === 'Filler 11'))
+  assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence'), 11)
+  addEvents(5)
+  curatorFactory = request => ({ memories: [atom('Fact at the next overlap.', names[0], numbered(request).find(message => message.text === 'Filler 10')!.number), atom('An alternate phrasing of the overlap fact.', names[0], numbered(request).find(message => message.text === 'Filler 10')!.number), atom('New fact.', 'player', numbered(request).at(-1)!.number)] })
+  await memoryProcessor(memoryJob())
+  assert.equal(numbered()[0].text, 'Filler 10'); assert(numbered().some(message => message.text === 'Filler 11'))
+  assert.equal(rows('memories').length, 3); assert.equal(vectors.size, 3)
+  assert(memoryLogs.some(row => row.name === 'group.memory_batch' && row.duplicates === 2 && row.success === true))
+  assert.equal(get(storedEvents().at(-1)! as unknown as Row, 'data.group_state_after.curated_through_sequence'), 16)
+})
+await check('memory catch-up batches are bounded without skipping oldest uncurated events', async () => {
+  await start(); addEvents(70)
+  const batch = await loadGroupBatch(new ObjectId(instanceId), storedEvents().at(-1)!._id, 'curated_through_sequence')
+  assert.equal(batch!.events.length, 27); assert.equal(batch!.events[0].sequence, 2); assert.equal(batch!.through, 28)
+})
+await check('memory message five and open threads reach normal addressed and bystander actual prompts for a silent member past raw window', async () => {
+  await identityBatch()
+  const fact = String(rows('memories')[2].text)
+  rows('memories').push({ ...clone(rows('memories')[2]), _id: new ObjectId(), text: 'An appointment still awaits the player.', unresolved_thread: true })
+  addEvents(40)
+  assert(!storedEvents().some(event => event.data.lines?.some(line => line.character_id === ids[3])))
+  ragOpenThreads = ['An appointment still awaits the player.']; ragMemoryTexts = [fact]
+  modelReplies = [`${names[3]}: A fresh normal reply.`]
+  await turn({ userMessage: `@${names[3]} lol ok` }, never)
+  assert.equal(writerCalls.length, 1)
+  let prompt = String((writerCalls[0].messages as Row[])[1].content)
+  assert(prompt.includes(fact) && prompt.includes('Open threads:\nAn appointment still awaits the player.'))
+  assert.equal(prompt.split(fact).length - 1, 1); assert(!prompt.split('Recent messages:')[1].includes('My sister is getting married in June.'))
+  put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'enforce'
+  modelReplies = [`${names[3]}: Fresh addressed response.`, `${names[2]}: Fresh bystander response.`]
+  writerCalls = []
+  await turn({ userMessage: `@${names[3]} @${names[2]} keep going` }, never)
+  assert.equal(writerCalls.length, 2)
+  for (const call of writerCalls) {
+    prompt = String((call.messages as Row[])[1].content)
+    assert(prompt.includes(fact)); assert(prompt.includes('Open threads:\nAn appointment still awaits the player.'))
+    assert(prompt.indexOf('Memories:') < prompt.indexOf('Open threads:')); assert(prompt.indexOf('Open threads:') < prompt.indexOf('Recent messages:'))
+    assert.equal(prompt.split(fact).length - 1, 1)
+  }
+  assert.equal(curatorRequests.length, 1)
+})
+await check('memory query uses last three named messages plus current for player and autonomous turns with member entity ids', async () => {
+  await start(); addEvents(3)
+  const entities = members.map(member => ({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), character_id: new ObjectId(member.id), type: 'character' }))
+  rows('entities').push(...entities)
+  modelReplies = [`${names[3]}: A query reply.`]
+  await turn({ userMessage: `@${names[3]} ${names[2]} lol ok` }, never)
+  assert.equal(ragCalls[0][2], `${names[0]}: filler 3\n${playerName}: Filler 4\n${names[0]}: filler 4\n${playerName}: @${names[3]} ${names[2]} lol ok`)
+  assert((ragCalls[0][5] as string[]).includes(String(entities[3]._id))); assert((ragCalls[0][5] as string[]).includes(String(entities[2]._id)))
+  // Curated entities can exist by canonical name before a card back-pointer is synced.
+  delete rows('entities')[3].character_id; rows('entities')[3].name_normalized = names[3].toLowerCase()
+  ragCalls = []; modelReplies = [`${names[3]}: Another query reply.`]
+  await turn({ userMessage: `@${names[3]} lol ok` }, never)
+  assert((ragCalls[0][5] as string[]).includes(String(entities[3]._id)))
+  ragCalls = []; await turn({ origin: 'unprompted', userMessage: '' }, never)
+  assert.equal(String(ragCalls[0][2]).split('\n').length, 4); assert(String(ragCalls[0][2]).includes(`${playerName} is quiet. Topic:`))
+  assert((ragCalls[0][5] as string[]).length >= 2)
+})
+await check('memory pins include subject and object for each call speaker with five per person and a total text budget', async () => {
+  await start(); addEvents(40)
+  const source = storedEvents()[4]._id
+  for (const [index, person] of ['player', names[3], names[2]].entries()) for (let i = 0; i < 7; i++) rows('memories').push({
+    _id: new ObjectId(), instance_id: new ObjectId(instanceId), player_id: new ObjectId(playerId), text: `Pinned ${person} ${i} ` + 'x'.repeat(570),
+    is_archived: false, is_nsfw: false, importance: i, updated_at: new Date(i), subjects: index === 1 ? [] : [person], objects: index === 1 ? [person] : [], source_event_ids: [source],
+  })
+  modelReplies = [`${names[3]}: A pin reply.\n${names[2]}: Another pin reply.`]
+  await turn({ userMessage: `@${names[3]} @${names[2]}` }, never)
+  const prompt = String((writerCalls[0].messages as Row[])[1].content)
+  for (const person of ['player', names[3], names[2]]) { assert(prompt.includes(`Pinned ${person} 6`)); assert(prompt.includes(`Pinned ${person} 2`)); assert(!prompt.includes(`Pinned ${person} 1`)) }
+  const memoryText = prompt.split('Memories:\n')[1].split('\n\n')[0]
+  assert(memoryText.length <= GROUP_MEMORY_TEXT_BUDGET)
+  for (const person of [names[0], names[1]]) for (let i = 0; i < 7; i++) rows('memories').push({ ...clone(rows('memories')[0]), _id: new ObjectId(),
+    text: `Budget ${person} ${i} ` + 'x'.repeat(570), subjects: [person], objects: [], importance: i })
+  const bounded = await groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName, speakers: names, enabled: false, memories: [], openThreads: [] })
+  assert(bounded.memories.join('\n').length <= GROUP_MEMORY_TEXT_BUDGET)
+})
+await check('memory adult sourced atoms and threads fail closed on fresh toggle off for all writer kinds', async () => {
+  await identityBatch()
+  const source = storedEvents()[3]; source.type = 'intimate'
+  rows('memories')[1].is_nsfw = false // Provenance must beat a misclassified atom.
+  rows('memories')[1].unresolved_thread = true
+  const adultText = String(rows('memories')[1].text), safeText = String(rows('memories')[2].text)
+  ragMemoryTexts = [adultText, safeText]; ragOpenThreads = [adultText]
+  addEvents(40)
+  modelReplies = [`${names[1]}: A safe memory reply.`]
+  await turn({ userMessage: `@${names[1]}` }, never)
+  assert(!String((writerCalls[0].messages as Row[])[1].content).includes(adultText))
+  put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'enforce'
+  let seen = 0
+  writerHook = () => { if (++seen === 1) put(rows('users')[0], 'preferences.nsfw_enabled', false) }
+  modelReplies = [`${names[1]}: Fresh adult response.`, `${names[2]}: Fresh safe response.`]; writerCalls = []
+  await turn({ userMessage: `@${names[1]} @${names[2]} keep going` }, never)
+  assert.equal(writerCalls.length, 2)
+  assert(String((writerCalls[0].messages as Row[])[1].content).includes(adultText))
+  assert(!String((writerCalls[1].messages as Row[])[1].content).includes(adultText))
+  assert(String((writerCalls[1].messages as Row[])[1].content).includes(safeText))
+  put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  let reads = 0
+  consentReadHook = () => { if (++reads === 2) put(rows('users')[0], 'preferences.nsfw_enabled', false) }
+  writerHook = undefined; writerCalls = []; modelReplies = [`${names[1]}: Fresh redirected reply.`, `${names[2]}: Fresh redirected bystander.`]
+  await turn({ userMessage: `@${names[1]} @${names[2]} keep going again` }, never)
+  assert.equal(writerCalls.length, 2)
+  for (const call of writerCalls) assert(!String((call.messages as Row[])[1].content).includes(adultText))
+  // A stale curator is not allowed to lose the source's adult classification.
+  await start(); addEvents(5); storedEvents()[4].type = 'intimate'
+  curatorFactory = request => ({ memories: [atom('Adult source fact.', 'player', numbered(request).find(message => message.text === 'Filler 5')!.number)] })
+  await memoryProcessor(memoryJob()); assert.equal(rows('memories')[0].is_nsfw, true)
+})
+await check('memory rewind removes message five atom and vector alone and restores both watermarks', async () => {
+  const child = Bun.spawn(['bun', '--no-env-file', 'run', 'scripts/codex-media-carryover-audit.ts'], { stdout: 'pipe', stderr: 'pipe', cwd: new URL('..', import.meta.url).pathname })
+  const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+  assert.equal(code, 0, output + errors); assert(output.includes('PASS memory group rewind removes only message five atoms and vectors'))
+})
+await check('memory reset removes atoms and vectors and obsolete in-flight curator cannot repopulate', async () => {
+  await identityBatch(); assert(rows('memories').length > 0)
+  const old = memoryJob(); await deletionService.resetInstance(instanceId, playerId)
+  assert.equal(rows('memories').length, 0); assert.equal(vectors.size, 0)
+  await memoryProcessor(old); assert.equal(rows('memories').length, 0)
+  addEvents(5); curatorFactory = request => ({ memories: [atom('Late atom.', 'player', numbered(request)[0].number)] })
+  curatorHook = async () => { curatorHook = undefined; await deletionService.resetInstance(instanceId, playerId) }
+  await assert.rejects(memoryProcessor(memoryJob()), /source events changed/)
+  assert.equal(rows('memories').length, 0); assert.equal(vectors.size, 0)
+  addEvents(5); embedHook = async () => { embedHook = undefined; await deletionService.resetInstance(instanceId, playerId) }
+  await assert.rejects(memoryProcessor(memoryJob()), /source events changed/)
+  assert.equal(rows('memories').length, 0); assert.equal(vectors.size, 0)
+})
+await check('memory group summaries render named messages nonoverlapping ranges and watermarks through existing chapter and arc path', async () => {
+  await start(); addEvents(12)
+  const job = () => ({ data: { instanceId, playerId, eventId: String(storedEvents().at(-1)!._id), groupSummary: true, sceneTag: 'dialogue' } }) as Job
+  await summaryProcessor(job())
+  const body = String((summaryRequests[0].messages as Row[])[1].content)
+  assert(body.includes(`${playerName}: Filler 2`)); assert(body.includes(`${names[0]}: filler 13`)); assert(!/^(Player:|World:)/m.test(body))
+  assert.equal(get(rows('worldInstances')[0], 'group_state.summarized_through_sequence'), 13)
+  assert.equal(get(storedEvents().at(-1)! as unknown as Row, 'data.group_state_after.summarized_through_sequence'), 13)
+  await summaryProcessor(job()); assert.equal(summaryRequests.length, 1)
+  for (let block = 1; block < 8; block++) { addEvents(12); await summaryProcessor(job()) }
+  assert.deepEqual(rows('sceneSummaries').map(row => row.event_range), Array.from({ length: 8 }, (_, i) => ({ start_sequence: 2 + 12 * i, end_sequence: 13 + 12 * i })))
+  assert.equal(queued.at(-1)!.kind, 'chapter')
+  await summaryProcessor({ data: { ...queued.at(-1)!, playerId } } as Job)
+  assert.equal(rows('chapterSummaries').length, 1); assert.equal(summaryRequests.at(-1)!.purpose, 'chapter_summary')
+  for (let i = 1; i < 4; i++) rows('chapterSummaries').push({ ...clone(rows('chapterSummaries')[0]), _id: new ObjectId(), chapter_index: i + 1,
+    event_range: { start_sequence: 2 + 96 * i, end_sequence: 97 + 96 * i } })
+  addEvents(288)
+  // Rebuilding the fourth chapter exercises the same rollup and arc enqueue seam.
+  const scene = rows('sceneSummaries')[0]
+  for (let i = 0; i < 8; i++) rows('sceneSummaries').push({ ...clone(scene), _id: new ObjectId(), event_range: { start_sequence: 290 + 12 * i, end_sequence: 301 + 12 * i } })
+  await summaryProcessor({ data: { instanceId, playerId, kind: 'chapter', chapterIndex: 4, startSequence: 290, endSequence: 385 } } as Job)
+  assert.equal(queued.at(-1)!.kind, 'arc')
+  await summaryProcessor({ data: { ...queued.at(-1)!, playerId } } as Job)
+  assert.equal(rows('arcSummaries').length, 1); assert.equal(summaryRequests.at(-1)!.purpose, 'arc_summary')
+  assert(backgroundScopes.some(scope => scope.instance_id === instanceId && scope.event_id))
+  // Ordinary summaries still have the exact existing turn rendering.
+  summaryRequests = []; rows('events').forEach(event => { delete (event.data as Row).lines })
+  await summaryProcessor({ data: { instanceId, playerId, sceneTag: 'dialogue', startSequence: 2, endSequence: 13 } } as Job)
+  assert(String((summaryRequests[0].messages as Row[])[1].content).startsWith('[Turn 2] Player: Filler 2\nWorld:'))
+})
+await check('memory summary failures retain watermark and next job catches up without overlap', async () => {
+  await start(); addEvents(12)
+  const job = () => ({ data: { instanceId, playerId, eventId: String(storedEvents().at(-1)!._id), groupSummary: true, sceneTag: 'dialogue' } }) as Job
+  summaryReply = new Error('Stub summary failed')
+  await assert.rejects(summaryProcessor(job()), /Stub summary failed/)
+  assert.equal(get(rows('worldInstances')[0], 'group_state.summarized_through_sequence'), 1)
+  summaryReply = '   '; await assert.rejects(summaryProcessor(job()), /Group summary failed/)
+  assert.equal(get(rows('worldInstances')[0], 'group_state.summarized_through_sequence'), 1)
+  addEvents(12); summaryReply = 'Recovered summary.'; await summaryProcessor(job())
+  assert.deepEqual(rows('sceneSummaries')[0].event_range, { start_sequence: 2, end_sequence: 13 })
+  await summaryProcessor(job())
+  assert.deepEqual(rows('sceneSummaries')[1].event_range, { start_sequence: 14, end_sequence: 25 })
+})
+await check('memory group summary reset during scene chapter and arc calls leaves no summaries or vectors', async () => {
+  for (const kind of ['scene', 'chapter', 'arc']) {
+    await start(); addEvents(24)
+    for (let i = 0; i < 2; i++) {
+      rows(kind === 'chapter' ? 'sceneSummaries' : 'chapterSummaries').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), status: 'active',
+        summary_text: 'Child summary.', event_range: { start_sequence: 2 + 12 * i, end_sequence: 13 + 12 * i } })
+    }
+    summaryHook = async () => { summaryHook = undefined; await deletionService.resetInstance(instanceId, playerId) }
+    const job = kind === 'scene' ? { groupSummary: true, eventId: String(storedEvents().at(-1)!._id), sceneTag: 'dialogue' }
+      : { kind, startSequence: 2, endSequence: 25, chapterIndex: 1, arcIndex: 1 }
+    await assert.rejects(summaryProcessor({ data: { instanceId, playerId, ...job } } as Job), /source events changed/)
+    for (const table of ['sceneSummaries', 'chapterSummaries', 'arcSummaries']) assert.equal(rows(table).length, 0)
+    assert.equal(vectors.size, 0)
+    assert.equal(get(rows('worldInstances')[0], 'group_state.summarized_through_sequence'), 1)
+  }
+})
+await check('memory concurrent curator jobs serialize one watermark and model call', async () => {
+  await start(); addEvents(5)
+  let release!: () => void, entered!: () => void
+  const ready = new Promise<void>(resolve => { entered = resolve }), gate = new Promise<void>(resolve => { release = resolve })
+  curatorFactory = request => ({ memories: [atom('Concurrent fact.', 'player', numbered(request)[0].number)] })
+  curatorHook = async () => { curatorHook = undefined; entered(); await gate }
+  const job = memoryJob(), running = memoryProcessor(job)
+  await ready
+  try { await assert.rejects(memoryProcessor(job), /already running/) } finally { release() }
+  await running
+  assert.equal(curatorRequests.length, 1); assert.equal(rows('memories').length, 1); assert.equal(vectors.size, 1)
+})
+await check('memory usage trace stores curator and summary provider costs per chat', async () => {
+  const child = Bun.spawn(['bun', '--no-env-file', 'run', 'scripts/group-memory-trace-audit.ts'], { stdout: 'pipe', stderr: 'pipe', cwd: new URL('..', import.meta.url).pathname })
+  const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+  assert.equal(code, 0, output + errors); assert(output.includes('PASS memory usage trace stores curator and summary calls'))
+})
+await check('memory scheduled dedup protects group ownership and source events without changing normal dedup', async () => {
+  const child = Bun.spawn(['bun', '--no-env-file', 'run', 'scripts/group-memory-dedup-audit.ts'], { stdout: 'pipe', stderr: 'pipe', cwd: new URL('..', import.meta.url).pathname })
+  const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+  assert.equal(code, 0, output + errors); assert(output.includes('PASS memory scheduled dedup protects group owners'))
+})
+await check('memory normal curator requests retain fixed pre-change hashes for GM and sentient identities', () => {
+  for (const [isSentient, expected] of [[false, 'c2a93ef57405f0982c5f7df0c2dda009db038ed0a60a076818aad2b465ce7d72'], [true, 'af20a1054a96fa8fc1341b22b1ad14bf73b828d39a5ee8e695f2a92d74f9b4aa']] as const) {
+    const request = buildMemoryCurationRequest({ sceneTag: 'dialogue', roster: [{ canonical_name: 'Fixture One', aliases: ['One'], is_protagonist: true }],
+      isSentient, protagonistName: 'Fixture One', playerPersonaName: 'Fixture Player', precedingAiResponse: 'Previous words.', playerInput: 'My sister arrives tomorrow.',
+      playerSpokenInput: 'My sister arrives tomorrow.', playerNarrationFacts: ['The note is delivered.'], aiResponse: 'A promise is kept.', openThreads: [{ id: 'T1', text: 'Return the letter.' }] })
+    assert.equal(createHash('sha256').update(JSON.stringify(request)).digest('hex'), expected)
   }
 })
 Math.random = originalRandom

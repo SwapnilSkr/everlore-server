@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // and audit files are copied; no environment files or credentials are read.
 const root = await mkdtemp(join(import.meta.dir, '.group-chat-bites-'))
 const server = new URL('..', import.meta.url).pathname
-const auditFiles = ['group-chat-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'narrator-harness-audit.ts']
+const auditFiles = ['group-chat-audit.ts', 'group-memory-trace-audit.ts', 'group-memory-dedup-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'narrator-harness-audit.ts']
 type Edit = [file: string, from: string, to: string]
 type Mutation = { name: string; check: string; edits: Edit[]; script?: string }
 const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat/lines.ts', reply = 'src/services/group-chat/reply.ts'
@@ -39,9 +39,9 @@ const mutations: Mutation[] = [
   { name: 'input guard', check: 'input guard blocks', edits: [[worker, 'if (guard.blocked)', 'if (false)']] },
   { name: 'topic cursor', check: 'unprompted and catchup', edits: [[worker, "state.topics_used + (origin === 'player' ? 0 : 1)", 'state.topics_used']] },
   { name: 'adult consent gates', check: 'toggle off never', edits: [[worker, "enabled: fresh?.preferences?.nsfw_enabled === true", 'enabled: true'], [worker, "adult && template.is_nsfw_capable && consent?.preferences?.nsfw_enabled === true", 'adult']] },
-  { name: 'curation cadence', check: 'twentieth writing', edits: [[worker, 'if (Math.floor(nextState.writing_calls', 'if (false && Math.floor(nextState.writing_calls']] },
-  { name: 'loaded private state', check: 'twentieth writing', edits: [['src/services/group-chat/public.ts', "'group_state',", '']] },
-  { name: 'loaded event snapshot', check: 'twentieth writing', edits: [['src/services/media/events.ts', '  delete data.group_state_after', '  // snapshot not stripped'], ['src/services/group-chat/public.ts', "'group_state_after',", '']] },
+  { name: 'curation cadence', check: 'event cadence', edits: [[worker, 'if ((sequence - 1) % GROUP_MEMORY_CADENCE === 0)', 'if (false)']] },
+  { name: 'loaded private state', check: 'event cadence', edits: [['src/services/group-chat/public.ts', "'group_state',", '']] },
+  { name: 'loaded event snapshot', check: 'event cadence', edits: [['src/services/media/events.ts', '  delete data.group_state_after', '  // snapshot not stripped'], ['src/services/group-chat/public.ts', "'group_state_after',", '']] },
   { name: 'replay refusal', check: 'group replay is refused', edits: [['src/services/generation.service.ts', 'if (replayInstance?.group_state)', 'if (false)']] },
   { name: 'socket reservation', check: 'existing socket chat', edits: [['src/services/play-ws.service.ts', "await billingService.reserve(user.id, 'story_turn',", "await billingService.reserve(user.id, 'group_turn' as never,"]] },
   { name: 'save cascade', check: 'save and account deletion', edits: [['src/services/deletion.service.ts', '    await events().deleteMany({ instance_id: instanceId })', '    // events not deleted']] },
@@ -94,7 +94,7 @@ const mutations: Mutation[] = [
   { name: 'empty adult rescue', check: 'adult retry advances', edits: [[reply, "if (!lines.length) await attempt([input.adult.addressed], 'addressed_fallback')", "if (false) await attempt([input.adult.addressed], 'addressed_fallback')"]] },
   { name: 'template adult override', check: 'adult template preference', edits: [[worker, 'template.model_preferences?.narration_nsfw || ', '']] },
   { name: 'transport fallback call count', check: 'adult template preference', edits: [[worker, 'Math.max(writing.length, usage.filter', 'Math.max(reply.calls, usage.filter']] },
-  { name: 'immediate consent reread', check: 'adult consent withdrawn', edits: [[worker, "? await mongoColl.users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } }) : undefined", '? player : undefined']] },
+  { name: 'immediate consent reread', check: 'adult consent withdrawn', edits: [[worker, "const consent = await mongoColl.users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } })", 'const consent = player']] },
   { name: 'adult call consent gate', check: 'adult consent withdrawn', edits: [[worker, '&& consent?.preferences?.nsfw_enabled === true', '']] },
   { name: 'noncapable route gate', check: 'adult consent withdrawn', edits: [[worker, 'router, capable: template.is_nsfw_capable', 'router, capable: true'], [worker, '&& template.is_nsfw_capable && consent', '&& consent']] },
   { name: 'failed optional speaker loses reply', check: 'adult optional failure', edits: [[reply, 'return index + 1\n    }', "throw new Error('failed optional speaker')\n    }"]] },
@@ -112,7 +112,7 @@ const mutations: Mutation[] = [
   { name: 'interested never reaches adult', check: 'authored tagged reachability', edits: [[worker, "request.writer === 'adult' && interested", 'false']] },
   { name: 'not interested loses addressed prompt', check: 'authored tagged reachability', edits: [[worker, 'const system = addressedPrompt ?', 'const system = stillAdult ?']] },
   { name: 'withdrawn interested keeps adult prompt', check: 'interested addressed prompt follows fresh consent', edits: [[worker, 'const system = addressedPrompt ?', "const system = request.writer === 'adult' ?"]] },
-  { name: 'not interested skips consent reread', check: 'not-interested addressed prompt follows fresh consent', edits: [[worker, "const consent = request.writer === 'adult'", "const consent = request.writer === 'adult' && !redirected"]] },
+  { name: 'not interested skips consent reread', check: 'not-interested addressed prompt follows fresh consent', edits: [[worker, "const consent = await mongoColl.users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } })", "const consent = wantsAdult ? await mongoColl.users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } }) : undefined"]] },
   { name: 'withdrawn consent keeps addressed message rule', check: 'interested addressed prompt follows fresh consent', edits: [[worker, 'messageRule: split ? addressedPrompt ?', "messageRule: split ? request.writer === 'adult' ?"]] },
   { name: 'withdrawn consent keeps addressed token budget', check: 'interested addressed prompt follows fresh consent', edits: [[worker, 'maxTokens: split ? addressedPrompt ?', "maxTokens: split ? request.writer === 'adult' ?"]] },
   { name: 'authored tagged member unreachable', check: 'authored tagged reachability', edits: [[lines, 'if (!member || !options.speakers.includes(member.id))', 'if (!member || member.id === options.members[0].id || !options.speakers.includes(member.id))']] },
@@ -199,8 +199,68 @@ const mutations: Mutation[] = [
   { name: 'normal history counts seed player text', check: 'normal writer seed history', edits: [[worker, "instance_id: iid, 'data.model_used': { $ne: 'seed' }, 'data.player_input'", "instance_id: iid, 'data.player_input'"]] },
   { name: 'normal history ignores old player messages', check: 'normal writer seed history', edits: [[worker, "await mongoColl.events().countDocuments({\n    instance_id: iid, 'data.model_used': { $ne: 'seed' }, 'data.player_input': { $exists: true, $ne: '' },\n  }, { limit: 2 })", "recent.filter(event => event.data.model_used !== 'seed' && event.data.player_input).length"]] },
 
+  { name: 'group curator identity lost', check: 'memory numbered speakers', edits: [['worker/processors/memory.processor.ts', 'The human player is', 'The unnamed participant is']] },
+  { name: 'group curator message numbers lost', check: 'memory numbered speakers', edits: [['worker/processors/memory.processor.ts', '${message.number}. ${JSON.stringify', '0. ${JSON.stringify']] },
+  { name: 'group atom provenance flattened to boundary', check: 'memory numbered speakers', edits: [['worker/processors/memory.processor.ts', 'source_event_ids: sourceEventIds', 'source_event_ids: [eventOid]']] },
+  { name: 'private group memory notification', check: 'memory numbered speakers', edits: [['worker/processors/memory.processor.ts', 'if (!group) await redis.publish', 'await redis.publish']] },
+  { name: 'curator trace chat scope lost', check: 'memory numbered speakers', edits: [['worker/processors/memory.processor.ts', 'instance_id: job.data.instanceId', 'instance_id: undefined']] },
+  { name: 'invalid citations accepted', check: 'memory invalid citations', edits: [['worker/processors/memory.processor.ts', 'Number(number) > group.messages.length', 'false']] },
+  { name: 'invalid atom importance accepted', check: 'memory invalid citations', edits: [['worker/processors/memory.processor.ts', '!Number.isInteger(atom.importance)', 'false']] },
+  { name: 'empty curator is success', check: 'memory invalid citations', edits: [['worker/processors/memory.processor.ts', "throw new Error('Group curator returned empty memories')", 'return { memoriesCreated: 0 }']] },
+  { name: 'invalid curator JSON is success', check: 'memory invalid citations', edits: [['worker/processors/memory.processor.ts', "if (group) throw new Error('Group curator returned invalid JSON')", 'if (group) return { memoriesCreated: 0 }']] },
+  { name: 'failed curator advances watermark', check: 'memory failed batches', edits: [['worker/processors/memory.processor.ts', "  } catch (error) {\n    log.warn('group.memory_batch'", "  } catch (error) {\n    await advanceGroupWatermark(batch.events, 'curated_through_sequence')\n    log.warn('group.memory_batch'"]] },
+  { name: 'group overlap removed', check: 'memory failed batches', edits: [['src/services/group-chat/memory.ts', 'Math.max(2, through - 1)', 'Math.max(2, through + 1)']] },
+  { name: 'group overlap dedup removed', check: 'memory failed batches', edits: [['worker/processors/memory.processor.ts', 'if (duplicate) { duplicates++; continue }', 'if (false) { duplicates++; continue }'], ['worker/processors/memory.processor.ts', 'if (ids.some(id => {', 'if (false && ids.some(id => {']] },
+  { name: 'group catchup unbounded', check: 'memory catch-up batches', edits: [['src/services/group-chat/memory.ts', 'GROUP_MEMORY_BATCH_LIMIT = 27', 'GROUP_MEMORY_BATCH_LIMIT = 1000']] },
+  { name: 'group catchup skips facts', check: 'memory catch-up batches', edits: [['src/services/group-chat/memory.ts', 'Math.max(2, through - 1)', 'Math.max(2, trigger.sequence - 26)']] },
+  { name: 'writer threads omitted', check: 'memory message five', edits: [[worker, 'openThreads: memory.openThreads', 'openThreads: []']] },
+  { name: 'writer pins omitted', check: 'memory pins include', edits: [[worker, 'memories: memory.memories', 'memories: rag.memoryTexts']] },
+  { name: 'pin object ignored', check: 'memory pins include', edits: [['src/services/group-chat/memory.ts', ', { objects: { $in: aliases } }', '']] },
+  { name: 'pin speaker ignored', check: 'memory pins include', edits: [[worker, 'speakers: selected.map(member => member.name), enabled:', 'speakers: [], enabled:']] },
+  { name: 'pin cap too few', check: 'memory pins include', edits: [['src/services/group-chat/memory.ts', '.slice(0, 5)', '.slice(0, 4)']] },
+  { name: 'pin cap too many', check: 'memory pins include', edits: [['src/services/group-chat/memory.ts', '.slice(0, 5)', '.slice(0, 6)']] },
+  { name: 'rag history query truncated', check: 'memory query uses', edits: [[worker, 'messagesFromEvents(recent).slice(-3)', 'messagesFromEvents(recent).slice(-1)']] },
+  { name: 'rag entity ids omitted', check: 'memory query uses', edits: [[worker, 'namedEntities.map(entity => idString(entity._id))', '[]']] },
+  { name: 'rag named hint ignored', check: 'memory query uses', edits: [[worker, ' || mentionsMember(userMessage, member.name)', '']] },
+  { name: 'adult source provenance ignored', check: 'memory adult sourced', edits: [['src/services/group-chat/memory.ts', "memory.source_event_ids.every(id => sourceById.get(String(id))!.type !== 'intimate')", 'true']] },
+  { name: 'adult source flag lost at curation', check: 'memory adult sourced', edits: [['worker/processors/memory.processor.ts', ' || sourceMessages.some(message => message.adult)', '']] },
+  { name: 'fresh memory consent ignored', check: 'memory adult sourced', edits: [[worker, 'enabled: consent?.preferences?.nsfw_enabled === true,', 'enabled: enabled,']] },
+  { name: 'rewind curated watermark retained', check: 'memory rewind removes', edits: [['src/services/memory.service.ts', 'curated_through_sequence: groupSnapshot?.curated_through_sequence ?? 1', 'curated_through_sequence: instance.group_state?.curated_through_sequence ?? 1']] },
+  { name: 'rewind summary watermark retained', check: 'memory rewind removes', edits: [['src/services/memory.service.ts', 'summarized_through_sequence: groupSnapshot?.summarized_through_sequence ?? 1', 'summarized_through_sequence: instance.group_state?.summarized_through_sequence ?? 1']] },
+  { name: 'rewind source atoms left behind', check: 'memory rewind removes', edits: [['src/services/memory.service.ts', 'await memories().deleteMany({ _id: { $in: mems.map((m) => m._id) } })', 'await memories().deleteMany({ _id: { $in: [] } })']] },
+  { name: 'reset leaves memory atoms', check: 'memory reset removes', edits: [['src/services/deletion.service.ts', 'memories().deleteMany({ instance_id: instanceId })', 'memories().deleteMany({ instance_id: new ObjectId() })']] },
+  { name: 'stale in flight group extraction writes', check: 'memory reset removes', edits: [['worker/processors/memory.processor.ts', 'if (!await groupEventsLive(group.events))', 'if (false)'], ['worker/processors/memory.processor.ts', 'if (group && !await groupEventsLive(group.events))', 'if (false)']] },
+  { name: 'group summary world labels return', check: 'memory group summaries', edits: [['worker/processors/summary.processor.ts', 'const conversationText = groupInstance ?', 'const conversationText = false ?']] },
+  { name: 'group summary watermark skipped', check: 'memory group summaries', edits: [['worker/processors/summary.processor.ts', "await advanceGroupWatermark(events, 'summarized_through_sequence')", 'void 0']] },
+  { name: 'group summary overlap introduced', check: 'memory group summaries', edits: [['src/services/group-chat/memory.ts', ': through + 1, $lte:', ': through, $lte:']] },
+  { name: 'failed summary advances watermark', check: 'memory summary failures', edits: [['worker/processors/summary.processor.ts', '  const summaryResult = await callLLM({', "  if (groupBatch) await advanceGroupWatermark(events, 'summarized_through_sequence')\n  const summaryResult = await callLLM({"]] },
+  { name: 'empty summary accepted', check: 'memory summary failures', edits: [['worker/processors/summary.processor.ts', '!summaryResult.trim() || ', '']] },
+  { name: 'normal curator prompt wording changed', check: 'memory normal curator', edits: [['worker/processors/memory.processor.ts', 'This is a GM world:', 'This is an altered GM world:']] },
+
+  { name: 'pin total budget ignored', check: 'memory pins include', edits: [['src/services/group-chat/memory.ts', 'chars + memory.text.length + 1 > GROUP_MEMORY_TEXT_BUDGET', 'false']] },
+  { name: 'group summary reset fence bypassed', check: 'memory group summary reset', edits: [['worker/processors/summary.processor.ts', '!summaryResult.trim() || !await groupEventsLive(events)', '!summaryResult.trim()'], ['worker/processors/summary.processor.ts', 'if (groupBatch && !await groupEventsLive(events))', 'if (false)'], ['worker/processors/summary.processor.ts', 'if (!await groupEventsLive(events))', 'if (false)'], ['worker/processors/summary.processor.ts', 'if (groupSources && !await groupEventsLive(groupSources))', 'if (false)']] },
+  { name: 'concurrent curation lease ignored', check: 'memory concurrent curator', edits: [['src/services/group-chat/memory.ts', "if (await redis.set(key, token, 'PX', 300_000, 'NX') !== 'OK')", 'if (false)']] },
+
+  { name: 'background memory trace loses chat id', check: 'memory usage trace', edits: [['src/services/llm-trace.service.ts', 'runWithLLMTrace({ ...scope, player_id: player,', 'runWithLLMTrace({ ...scope, instance_id: undefined, player_id: player,']] },
+
+  { name: 'rag unsynced entity names ignored', check: 'memory query uses', edits: [[worker, '{ name_normalized: { $in: namedMembers.map(member => normalizeEntityName(member.name)) } }, ', '']] },
+
+  { name: 'paraphrased overlap dedup disabled', check: 'memory failed batches', edits: [['worker/processors/memory.processor.ts', 'if (ids.some(id => {', 'if (false && ids.some(id => {']] },
+  { name: 'scheduled dedup ignores group provenance and identity', check: 'memory scheduled dedup', edits: [['worker/processors/maintenance.processor.ts', 'if (group && !groupMemoryMayMerge(memories[i], memories[j])) continue', 'if (false) continue']] },
+  { name: 'scheduled dedup changes normal worlds', check: 'memory scheduled dedup', edits: [['worker/processors/maintenance.processor.ts', 'if (group && !groupMemoryMayMerge(memories[i], memories[j])) continue', 'if (!groupMemoryMayMerge(memories[i], memories[j])) continue']] },
+
 ]
 try {
+  const missing: string[] = []
+  for (const mutation of mutations) {
+    const sources = new Map<string, string>()
+    for (const [file, from, to] of mutation.edits) {
+      const source = sources.get(file) ?? await readFile(join(server, file), 'utf8')
+      if (!source.includes(from)) missing.push(`${mutation.name}: ${from}`)
+      sources.set(file, source.replaceAll(from, to))
+    }
+  }
+  assert.deepEqual(missing, [], 'mutation targets must match current sources')
   await cp(join(server, 'src'), join(root, 'src'), { recursive: true })
   await cp(join(server, 'worker'), join(root, 'worker'), { recursive: true })
   await cp(join(server, 'scripts', auditFiles[0]), join(root, 'scripts', auditFiles[0]), { recursive: true })

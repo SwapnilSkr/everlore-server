@@ -32,7 +32,7 @@ export async function seedGroupOpening(instance: WorldInstanceDoc, template: Wor
     while (members.some(member => member.name.toLowerCase() === player.toLowerCase()))
   }
   const now = new Date()
-  const group_state = { silent_for: Object.fromEntries(members.map(member => [member.id, 0])), unprompted_since_player: 0, topics_used: 0 }
+  const group_state = { curated_through_sequence: 1, summarized_through_sequence: 1, silent_for: Object.fromEntries(members.map(member => [member.id, 0])), unprompted_since_player: 0, topics_used: 0 }
   const group_context: GroupContext = instance.group_context || {
     static_prompt: buildGroupStatic({ ...template, members, player }), player,
     topics: [...template.topics!], opening_lines: template.opening_lines!.map(line => ({

@@ -75,7 +75,7 @@ const memoriesColl = {
 }
 
 mock.module('../src/config/env', () => ({ env: {} }))
-mock.module('../src/config/mongo', () => ({ mongoColl: { memories: () => memoriesColl, events: forbidden, worldInstances: forbidden } }))
+mock.module('../src/config/mongo', () => ({ mongoColl: { memories: () => memoriesColl, events: forbidden, worldInstances: () => ({ findOne: async (filter: Record<string, unknown>) => { assert.deepEqual(filter.group_state, { $exists: true }); return null } }) } }))
 mock.module('../src/services/media/service', () => ({ repairMediaReservations: forbidden }))
 mock.module('../src/services/vector-store', () => ({
   vectorStore: {

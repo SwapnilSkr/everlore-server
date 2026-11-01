@@ -7,6 +7,7 @@ import type { CharacterProfileDoc } from '../src/models/character-profile.model'
 import { characterCodexService, foldDelta, newFoldState, type CharacterCodexDelta } from '../src/services/character-codex.service'
 import { snapshotCodexMedia, restoreCodexMedia } from '../src/services/codex-media-carryover'
 import { projectionCheckpointService } from '../src/services/projection-checkpoint.service'
+import { vectorStore } from '../src/services/vector-store'
 import { storageService } from '../src/services/storage.service'
 
 // This process has no database, queue, Redis, storage or paid-provider access.
@@ -41,7 +42,7 @@ function matches(row: Row, filter: Row): boolean {
     if (expected && typeof expected === 'object' && !(expected instanceof ObjectId)) {
       return Object.entries(expected).every(([op, v]) => {
         if (op === '$ne') return !equal(actual, v)
-        if (op === '$in') return (v as unknown[]).some((x) => equal(actual, x))
+        if (op === '$in') return (v as unknown[]).some((x) => Array.isArray(actual) ? actual.some(value => equal(value, x)) : equal(actual, x))
         if (op === '$exists') return (actual !== undefined) === v
         if (op === '$gte') return Number(actual) >= Number(v)
         if (op === '$gt') return Number(actual) > Number(v)
@@ -163,7 +164,7 @@ const check = (name: string, run: () => Promise<void>) => checks.push([name, run
 check('group rewind restores silence/topic/writing snapshot and keeps stable cast ids', async () => {
   const f = fixture()
   f.db.worldTemplates.rows[0].kind = 'group'
-  const before = { silent_for: { [String(f.old._id)]: 3 }, topics_used: 2, unprompted_since_player: 1, writing_calls: 7 }
+  const before = { curated_through_sequence: 1, summarized_through_sequence: 1, silent_for: { [String(f.old._id)]: 3 }, topics_used: 2, unprompted_since_player: 1, writing_calls: 7 }
   f.db.worldInstances.rows[0].group_state = { ...before, silent_for: { [String(f.old._id)]: 0 }, topics_used: 8, writing_calls: 15 }
   f.old.first_seen_sequence = 0
   f.db.characters.rows[0].first_seen_sequence = 0
@@ -173,6 +174,30 @@ check('group rewind restores silence/topic/writing snapshot and keeps stable cas
   assert.deepEqual(f.db.worldInstances.rows[0].group_state, before)
   assert.equal(String(f.db.characters.rows[0]._id), String(f.old._id))
   assert.equal(f.db.events.rows.length, 1)
+})
+check('memory group rewind removes only message five atoms and vectors and restores both watermarks from snapshots', async () => {
+  const f = fixture()
+  f.db.worldTemplates.rows[0].kind = 'group'
+  f.db.characters.rows[0].first_seen_sequence = 0
+  f.db.worldInstances.rows[0].group_state = { silent_for: {}, topics_used: 0, unprompted_since_player: 0, curated_through_sequence: 21, summarized_through_sequence: 25 }
+  f.db.events.rows = Array.from({ length: 25 }, (_, index) => ({ ...clone(f.event), _id: new ObjectId(), sequence: index + 1,
+    data: { state_mutations: {}, flag_mutations: {}, lines: [], group_state_after: { silent_for: {}, topics_used: 0, unprompted_since_player: 0,
+      curated_through_sequence: index >= 15 ? 16 : index >= 5 ? 6 : 1, summarized_through_sequence: index >= 12 ? 13 : 1 } } }))
+  const fifth = f.db.events.rows[4], third = f.db.events.rows[2]
+  f.db.memories.rows = [{ _id: new ObjectId(), instance_id: f.iid, source_event_ids: [fifth._id], pinecone_id: 'fifth-vector' },
+    { _id: new ObjectId(), instance_id: f.iid, source_event_ids: [third._id], pinecone_id: 'third-vector' }]
+  const remaining = new Set(['fifth-vector', 'third-vector']), originalDelete = vectorStore.deleteIds
+  vectorStore.deleteIds = async (_scope, ids) => { for (const id of ids) remaining.delete(id) }
+  try {
+    await memoryService.rewindToSequence(String(f.iid), String(f.pid), 17)
+    assert.equal(get(f.db.worldInstances.rows[0], 'group_state.curated_through_sequence'), 16)
+    assert.equal(get(f.db.worldInstances.rows[0], 'group_state.summarized_through_sequence'), 13)
+    await memoryService.rewindToSequence(String(f.iid), String(f.pid), 5)
+    assert.equal(f.db.memories.rows.length, 1); assert.equal(f.db.memories.rows[0].pinecone_id, 'third-vector')
+    assert.deepEqual([...remaining], ['third-vector'])
+    assert.equal(get(f.db.worldInstances.rows[0], 'group_state.curated_through_sequence'), 1)
+    assert.equal(get(f.db.worldInstances.rows[0], 'group_state.summarized_through_sequence'), 1)
+  } finally { vectorStore.deleteIds = originalDelete }
 })
 check('rewind past nothing: real rewind keeps media and re-keys cache', async () => {
   const f = fixture()

@@ -1895,6 +1895,8 @@ export const memoryService = {
       topics_used: groupSnapshot?.topics_used || 0,
       unprompted_since_player: groupSnapshot?.unprompted_since_player || 0,
       writing_calls: groupSnapshot?.writing_calls || 0,
+      curated_through_sequence: groupSnapshot?.curated_through_sequence ?? 1,
+      summarized_through_sequence: groupSnapshot?.summarized_through_sequence ?? 1,
     } : undefined
 
     // 6. Persist rolled-back instance state.

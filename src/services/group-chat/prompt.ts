@@ -21,11 +21,12 @@ export function buildGroupStatic(input: {
 }
 
 export function buildGroupDynamic(input: {
-  memories: string[]; summaries: string[]; history: NamedLine[]
+  memories: string[]; openThreads?: string[]; summaries: string[]; history: NamedLine[]
   now: Date; offsetMinutes?: number; historyLimit?: number; messageRule?: string; speakers: string[]; situation: string
 }): string {
   const parts: string[] = []
   if (input.memories.length) parts.push(`Memories:\n${input.memories.join('\n')}`)
+  if (input.openThreads?.length) parts.push(`Open threads:\n${input.openThreads.join('\n')}`)
   if (input.summaries.length) parts.push(`Summary so far:\n${input.summaries.join('\n')}`)
   parts.push(`Recent messages:\n${input.history.slice(-(input.historyLimit ?? 30)).map(line => `${line.name}: ${line.text}`).join('\n') || '(the chat opens below)'}`)
   const local = new Date(input.now.getTime() + (input.offsetMinutes || 0) * 60_000)

@@ -1,3 +1,4 @@
+import { groupMemoryMayMerge } from '../../src/services/group-chat/memory'
 import { repairMediaReservations } from '../../src/services/media/service'
 import { Job } from 'bullmq'
 import type { ObjectId } from 'mongodb'
@@ -154,6 +155,7 @@ export async function maintenanceProcessor(job: Job) {
       // stored vector is identical to a fresh embed of the same text, so dedup
       // decisions are unchanged. Only memories missing a vector fall back to a
       // single batched embed.
+      const group = await mongoColl.worldInstances().findOne({ _id: instanceOid, group_state: { $exists: true } })
       const embeddings = new Map<string, number[]>()
       const scope = { kind: 'mem' as const, instanceId }
       const withVec = memories.filter((m) => m.pinecone_id)
@@ -186,6 +188,7 @@ export async function maintenanceProcessor(job: Job) {
           const idJ = idString(memories[j]._id)
           if (processed.has(idJ)) continue
 
+          if (group && !groupMemoryMayMerge(memories[i], memories[j])) continue
           const sim = cosineSimilarity(
             embeddings.get(idI)!,
             embeddings.get(idJ)!,

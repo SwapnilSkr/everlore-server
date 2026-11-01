@@ -9,11 +9,13 @@ import { flushLLMTracesLater } from '../../src/services/llm-trace.service'
 import { queryRag, querySummaries } from '../../src/providers/rag.provider'
 import { screenPlayerInput } from '../../src/utils/input-guard'
 import { EmptyLLMResponseError } from '../../src/utils/llm-response'
+import { normalizeEntityName } from '../../src/utils/location-identity'
 import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { finishGenerationTurn, generationLockKey, waitForPriorGeneration } from '../../src/utils/generation-lock'
 import { liveInstanceExists } from '../../src/utils/live-instance'
 import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
 import { stagePostProcess, dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
+import { groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE } from '../../src/services/group-chat/memory'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { buildGroupDynamic, buildAddressedStatic } from '../../src/services/group-chat/prompt'
 import { rollSpeakers, advanceSilence, pickAddressed, mentionsMember } from '../../src/services/group-chat/roll'
@@ -52,13 +54,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   recent.reverse()
   const sequence = (recent.at(-1)?.sequence || 0) + 1
   setLLMTraceSequence(sequence)
-  const messagesFromEvents = (events: typeof recent): NamedLine[] => events.flatMap(event => [
-    ...(event.data.player_input ? [{ name: instance.group_context!.player, text: event.data.player_input }] : []),
-    ...(event.data.lines || []).flatMap(line => {
-      const member = members.find(member => member.id === line.character_id)
-      return member ? [{ name: member.name, text: line.text }] : []
-    }),
-  ])
+  const messagesFromEvents = (events: typeof recent): NamedLine[] => groupMessages(events, instance.group_context!.player, members)
   const playerMessages = (origin === 'player' ? 1 : 0) + await mongoColl.events().countDocuments({
     instance_id: iid, 'data.model_used': { $ne: 'seed' }, 'data.player_input': { $exists: true, $ne: '' },
   }, { limit: 2 })
@@ -73,7 +69,13 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   const config = instance.group_context
   const roll = rollSpeakers(members, state.silent_for, origin, userMessage, rng)
   const topic = config.topics[state.topics_used % config.topics.length]
-  const query = origin === 'player' ? userMessage : recent.at(-1)?.data.ai_response || topic
+  const query = [...messagesFromEvents(recent).slice(-3).map(line => `${line.name}: ${line.text}`),
+    origin === 'player' ? `${config.player}: ${userMessage}` : `${config.player} is quiet. Topic: ${topic}`].join('\n')
+  const namedMembers = members.filter(member => roll.picked.includes(member.id) || mentionsMember(userMessage, member.name))
+  const namedEntities = await mongoColl.entities().find({ instance_id: iid,
+    $or: [{ character_id: { $in: namedMembers.map(member => parseObjectId(member.id)) } },
+      { name_normalized: { $in: namedMembers.map(member => normalizeEntityName(member.name)) } }, { type: 'player' }],
+  }).toArray()
   const enabled = player.preferences?.nsfw_enabled === true
   // No same-turn intent request for autonomy: only recent scene scoring applies.
   const router = startIntentRouter({ capable: origin === 'player' && template.is_nsfw_capable, enabled,
@@ -81,7 +83,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   try {
     const [rag, distant, summary] = await Promise.all([
       queryRag(idString(instance.template_id), instanceId, query, template.max_lore_results || 10,
-        template.max_context_memories || 25, [], 'main', null).catch(() => ({ memoryTexts: [] as string[] })),
+        template.max_context_memories || 25, namedEntities.map(entity => idString(entity._id)), 'main', null).catch(() => ({ memoryTexts: [] as string[], openThreads: [] as string[] })),
       querySummaries(instanceId, query, 3).catch(() => []),
       mongoColl.sceneSummaries().findOne({ instance_id: iid, status: { $ne: 'stale' },
         'event_range.end_sequence': { $lt: recent[0]?.sequence || 0 } }, { sort: { 'event_range.end_sequence': -1 } }),
@@ -122,8 +124,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
         let redirected = !wantsAdult
         for (let index = request.index; index < chain.length; index++) {
           // Each transport attempt is explicit: a fallback must re-read consent too.
-          const consent = request.writer === 'adult'
-            ? await mongoColl.users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } }) : undefined
+          const consent = await mongoColl.users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } })
           // Consent gates the addressed prompt even when interest selects the normal writer.
           const addressedPrompt = request.writer === 'adult' && adult && template.is_nsfw_capable && consent?.preferences?.nsfw_enabled === true
           const stillAdult = addressedPrompt && !redirected
@@ -131,7 +132,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const model = chain[index]
           const selected = members.filter(member => speakers.includes(member.id))
           const split = !!addressed
-          const dynamic = buildGroupDynamic({ memories: rag.memoryTexts,
+          const memory = await groupWriterMemory({ instanceId: iid, player: config.player,
+            speakers: selected.map(member => member.name), enabled: consent?.preferences?.nsfw_enabled === true,
+            memories: rag.memoryTexts, openThreads: rag.openThreads || [] })
+          const dynamic = buildGroupDynamic({ memories: memory.memories, openThreads: memory.openThreads,
             summaries: [...(summary ? [summary.summary_text] : []), ...distant.map(hit => hit.text)],
             history: [...(addressedPrompt ? addressedHistory : history), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
             historyLimit: split ? addressedPrompt ? 12 : 5 : 30,
@@ -182,20 +186,25 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     await mongoColl.events().insertOne(event)
     try {
       const updated = await mongoColl.worldInstances().updateOne({ _id: iid, player_id: pid }, {
-        $set: { group_state: nextState, 'meta.total_events': sequence, 'meta.last_active_at': now, updated_at: now },
+        $set: { ...Object.fromEntries(Object.entries(nextState).filter(([key]) => !['curated_through_sequence', 'summarized_through_sequence'].includes(key)).map(([key, value]) => [`group_state.${key}`, value])), 'meta.total_events': sequence, 'meta.last_active_at': now, updated_at: now },
         $inc: { 'meta.total_tokens_consumed': event.data.tokens_in + event.data.tokens_out },
       })
       if (!updated.matchedCount) {
         await mongoColl.events().deleteOne({ _id: event._id })
         throw new Error('That chat could not be found.')
       }
-      if (Math.floor(nextState.writing_calls / 20) > Math.floor((state.writing_calls || 0) / 20)) {
-        const batch = [...recent.filter(event => event.data.model_used !== 'seed').slice(-19), event]
+      const coverage = await mongoColl.worldInstances().findOne({ _id: iid })
+      await mongoColl.events().updateOne({ _id: event._id }, { $max: {
+        'data.group_state_after.curated_through_sequence': coverage?.group_state?.curated_through_sequence ?? 1,
+        'data.group_state_after.summarized_through_sequence': coverage?.group_state?.summarized_through_sequence ?? 1,
+      } })
+      if ((sequence - 1) % GROUP_MEMORY_CADENCE === 0) {
         await stagePostProcess({ instanceId, playerId, eventId: idString(event._id), kind: 'memory_curation',
-          payload: { instanceId, playerId, eventId: idString(event._id), playerInput: '',
-            aiResponse: batch.map(event => `${event.data.player_input ? `${config.player}: ${event.data.player_input}\n` : ''}${event.data.ai_response}`).join('\n'), sceneTag: 'dialogue' } })
+          payload: { instanceId, playerId, eventId: idString(event._id), groupMemory: true, sceneTag: 'dialogue' } })
+      }
+      if ((sequence - 1) % GROUP_SUMMARY_CADENCE === 0) {
         await stagePostProcess({ instanceId, playerId, eventId: idString(event._id), kind: 'scene_summary',
-          payload: { instanceId, playerId, sceneTag: 'dialogue', startSequence: batch[0].sequence, endSequence: sequence } })
+          payload: { instanceId, playerId, eventId: idString(event._id), groupSummary: true, sceneTag: 'dialogue' } })
       }
       await redis.del(`session:${instanceId}`)
       await redis.publish(channel, JSON.stringify({ type: 'group_lines', instanceId, eventId: idString(event._id),

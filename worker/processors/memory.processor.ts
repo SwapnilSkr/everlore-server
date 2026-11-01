@@ -1,3 +1,7 @@
+import { createHash } from 'node:crypto'
+import { loadGroupMembers } from '../../src/services/group-chat/instance'
+import { groupMemoryMayMerge, withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark, type GroupMemoryBatch } from '../../src/services/group-chat/memory'
+import { log } from '../../src/utils/logger'
 import { runBackgroundLLMTrace } from '../../src/services/llm-trace.service'
 import { ObjectId } from 'mongodb'
 import { Job } from 'bullmq'
@@ -399,6 +403,7 @@ export function buildMemoryCurationRequest(params: {
   playerNarrationFacts?: string[]; aiResponse: string
   /** The debts the world still owes, so the curator can say which this turn paid. */
   openThreads?: Array<{ id: string; text: string }>
+  group?: GroupMemoryBatch
 }) {
   const rosterLines = params.roster.length
     ? params.roster.map((c) => {
@@ -409,6 +414,16 @@ export function buildMemoryCurationRequest(params: {
   const identityContext = params.isSentient
     ? `\nIdentity boundary:\n- This is a sentient/character conversation. The protagonist/main character${params.protagonistName ? ` is "${params.protagonistName}"` : ''}; the human player${params.playerPersonaName ? ` may be called "${params.playerPersonaName}"` : ''} is separate.\n- Any fact in Player input using "I", "me", or "my" belongs to the player. Use subject "player" for those facts, NEVER the protagonist/main character.\n- The narration speaks to/for the player ("you"/first person). A first-person sensation, feeling, or perception in the NARRATION ("a shiver runs through me", "my heart races", "I notice…") is the PLAYER's — use subject "player", NEVER attribute it to the main character. The main character is the subject only when the prose shows THEM acting or feeling by their own name.\n- Player-mentioned off-screen relatives or possessions are facts about the player, not new present characters.\n`
     : `\nIdentity boundary:\n- This is a GM world: the player speaks as the protagonist. Use "player" for the player's own first-person facts in memory subjects unless a specific other character acted.\n`
+  if (params.group) {
+    return {
+      purpose: 'memory_curation', model: AI_MODELS.memoryCuration, temperature: 0.3, maxTokens: 2400,
+      responseFormat: { type: 'json_object' },
+      messages: [
+        { role: 'system' as const, content: EXTRACTION_PROMPT + `\nGroup batch rules override the single-exchange rules: extract up to 20 atoms. Every atom MUST include source_messages: a nonempty array of message numbers from the supplied numbered list. Cite only messages that establish that atom, never a database id. Empty extraction is a failure and will be retried. Use named subjects and objects for every person.` },
+        { role: 'user' as const, content: `Scene type: ${params.sceneTag}\n\nCharacter roster:\n${rosterLines}\n\nIdentity boundary:\nThis is a group conversation. The human player is "${params.group.player}"; use "player" for this person's subjects and objects. All other speakers are separate people. "I", "me", and "my" belong to the speaker of THAT numbered message. Resolve relatives and possessions to that speaker, never to another member or a GM protagonist. Name every person explicitly in atom text, subjects and objects.\n\nLIVE RELATED FACTS:\n${params.openThreads?.map(thread => `${thread.id}: ${thread.text}`).join('\n') || '(none)'}\n\nNumbered messages (speaker and text):\n${params.group.messages.map(message => `${message.number}. ${JSON.stringify({ speaker: message.name, text: message.text })}`).join('\n')}` },
+      ],
+    }
+  }
   return {
     purpose: 'memory_curation',
     model: AI_MODELS.memoryCuration, temperature: 0.3, maxTokens: 900,
@@ -422,9 +437,29 @@ export function buildMemoryCurationRequest(params: {
 
 export async function memoryProcessor(job: Job) {
   return runBackgroundLLMTrace({ instance_id: job.data.instanceId, player_id: job.data.playerId,
-    event_id: job.data.eventId }, () => memoryWork(job))
+    event_id: job.data.eventId }, () => job.data.groupMemory ? withGroupMemoryLease(job.data.instanceId, 'memory', () => groupMemoryWork(job)) : memoryWork(job))
 }
-async function memoryWork(job: Job) {
+async function groupMemoryWork(job: Job) {
+  const batch = await loadGroupBatch(parseObjectId(job.data.instanceId), parseObjectId(job.data.eventId), 'curated_through_sequence')
+  if (!batch) return { skipped: 'group_batch_obsolete' }
+  const members = await loadGroupMembers(batch.instance)
+  const messages = batch.events.flatMap(event => groupMessages([event], batch.instance.group_context!.player, members)
+    .map(line => ({ ...line, eventId: event._id, adult: event.type === 'intimate', number: 0 })))
+    .map((line, index) => ({ ...line, number: index + 1 }))
+  const group: GroupMemoryBatch = { player: batch.instance.group_context!.player, messages, events: batch.events, through: batch.through }
+  try {
+    const result = await memoryWork(job, group)
+    await advanceGroupWatermark(batch.events, 'curated_through_sequence')
+    log.info('group.memory_batch', { instanceId: job.data.instanceId, events: batch.events.length, messages: messages.length,
+      through: batch.through, curator_calls: 1, success: true, ...result })
+    return result
+  } catch (error) {
+    log.warn('group.memory_batch', { instanceId: job.data.instanceId, events: batch.events.length, messages: messages.length,
+      through: batch.through, success: false })
+    throw error
+  }
+}
+async function memoryWork(job: Job, group?: GroupMemoryBatch) {
   const {
     instanceId,
     playerId,
@@ -510,7 +545,7 @@ async function memoryWork(job: Job) {
       .sort({ updated_at: -1 })
       .limit(12)
       .toArray(),
-    findRelatedLiveMemories(instanceOid, playerInput, aiResponse),
+    findRelatedLiveMemories(instanceOid, playerInput || group?.messages.map(message => `${message.name}: ${message.text}`).join("\n") || '', aiResponse || ''),
   ])
   const closeable = mergeCloseableCandidates(
     relatedLive,
@@ -522,17 +557,43 @@ async function memoryWork(job: Job) {
   const result = await callLLM(buildMemoryCurationRequest({
     sceneTag, roster, isSentient, protagonistName, playerPersonaName,
     precedingAiResponse, playerInput, playerSpokenInput, playerNarrationFacts, aiResponse,
-    openThreads,
+    openThreads, group,
   }))
 
   let extracted: any
   try {
     extracted = JSON.parse(result)
   } catch {
+    if (group) throw new Error('Group curator returned invalid JSON')
     console.warn('Memory extraction returned invalid JSON:', result)
     return { memoriesCreated: 0 }
   }
-  normalizePlayerFactAttribution({ extracted, isSentient, playerInput, protagonistName })
+  let invalidCitations = 0, invalidAtoms = 0, duplicates = 0
+  if (group) {
+    if (!extracted || !Array.isArray(extracted.memories) || !extracted.memories.length) throw new Error('Group curator returned empty memories')
+    extracted.memories = extracted.memories.slice(0, 20).filter((raw: unknown) => {
+      if (!raw || typeof raw !== 'object') { invalidAtoms++; return false }
+      const atom = raw as Record<string, unknown>
+      if (!Array.isArray(atom.source_messages) || !atom.source_messages.length ||
+        atom.source_messages.some(number => !Number.isInteger(number) || Number(number) < 1 || Number(number) > group.messages.length)) {
+        invalidCitations++; return false
+      }
+      if (typeof atom.text !== 'string' || !atom.text.trim() || atom.text.length > 600 ||
+        typeof atom.type !== 'string' || !['relationship', 'promise', 'lore', 'observation', 'emotion', 'secret'].includes(atom.type) ||
+        !Number.isInteger(atom.importance) || Number(atom.importance) < 1 || Number(atom.importance) > 5 ||
+        typeof atom.is_nsfw !== 'boolean' || typeof atom.unresolved_thread !== 'boolean' ||
+        !Array.isArray(atom.subjects) || !atom.subjects.length || !Array.isArray(atom.objects) ||
+        [...atom.subjects, ...atom.objects].some(name => typeof name !== 'string' || !name.trim() || name.length > 80) ||
+        (atom.retrieval_terms !== undefined && (!Array.isArray(atom.retrieval_terms) || atom.retrieval_terms.some(term => typeof term !== 'string'))) ||
+        ['emotional_valence', 'emotional_cause', 'emotional_effect', 'relationship_delta'].some(key => atom[key] != null && typeof atom[key] !== 'string')) {
+        invalidAtoms++; return false
+      }
+      return true
+    })
+    log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, accepted: extracted.memories.length })
+    if (!extracted.memories.length) throw new Error('Group curator returned no valid atoms')
+    if (!await groupEventsLive(group.events)) throw new Error('Group memory source events changed')
+  } else normalizePlayerFactAttribution({ extracted, isSentient, playerInput, protagonistName })
 
   // Close earlier facts this turn paid off — even when no new atom was worth
   // storing (a quiet fulfillment is still a resolution). Closed facts leave
@@ -618,6 +679,7 @@ async function memoryWork(job: Job) {
       sequence,
       mentions,
     })
+    if (group && entityMap && playerEntity) entityMap.set('player', playerEntity)
     entitySequence = sequence
   } catch (err) {
     console.warn('Memory entity resolution skipped:', (err as Error).message)
@@ -638,8 +700,14 @@ async function memoryWork(job: Job) {
   for (const mem of extracted.memories) {
     const text = cleanShortText(mem.text, 600)
     if (!text) continue
-    const memId = new ObjectId()
-    const vecId = randomUUID()
+    const sourceMessages = group ? (mem.source_messages as number[]).map(number => group.messages[number - 1]) : []
+    const sourceEventIds = group ? [...new Map(sourceMessages.map(message => [String(message.eventId), message.eventId])).values()] : [eventOid]
+    const memId = group ? new ObjectId(groupAtomKey(instanceId + '\n' + text, cleanNameList(mem.subjects), cleanNameList(mem.objects)).slice(0, 24)) : new ObjectId()
+    if (group) {
+      const duplicate = await mongoColl.memories().findOne({ instance_id: instanceOid, _id: memId })
+      if (duplicate) { duplicates++; continue }
+    }
+    const vecId = group ? `group_${idString(memId)}` : randomUUID()
     const memIdStr = idString(memId)
 
     const subjects = cleanNameList(mem.subjects)
@@ -654,12 +722,28 @@ async function memoryWork(job: Job) {
     const retrievalTerms = cleanNameList(mem.retrieval_terms, 8).map((t) => t.toLowerCase())
     const embedInput = retrievalTerms.length ? `${text}\n${retrievalTerms.join(', ')}` : text
     const embedding = await embed(embedInput)
+    if (group) {
+      const candidates = (await mongoColl.memories().find({ instance_id: instanceOid,
+        source_event_ids: { $in: sourceEventIds }, is_archived: false,
+      }).limit(50).toArray()).filter(candidate => groupMemoryMayMerge(candidate, { subjects, objects, source_event_ids: sourceEventIds }))
+      const ids = candidates.flatMap(candidate => candidate.pinecone_id ? [candidate.pinecone_id] : [])
+      if (ids.length) {
+        const stored = await vectorStore.fetch(scope, ids)
+        if (ids.some(id => {
+          const values = stored.records?.[id]?.values
+          if (!values || values.length !== embedding.length) return false
+          let dot = 0, left = 0, right = 0
+          for (let i = 0; i < values.length; i++) { dot += values[i] * embedding[i]; left += values[i] ** 2; right += embedding[i] ** 2 }
+          return left > 0 && right > 0 && dot / (Math.sqrt(left) * Math.sqrt(right)) > 0.95
+        })) { duplicates++; continue }
+      }
+    }
 
     const vectorMetadata: Record<string, string | number | boolean | string[]> = {
       text,
       type: mem.type,
       importance: mem.importance,
-      is_nsfw: mem.is_nsfw || false,
+      is_nsfw: mem.is_nsfw || sourceMessages.some(message => message.adult) || false,
       mongo_id: memIdStr,
       unresolved_thread: unresolvedThread,
       created_at: new Date().toISOString(),
@@ -693,8 +777,8 @@ async function memoryWork(job: Job) {
       text,
       type: mem.type,
       importance: mem.importance,
-      is_nsfw: mem.is_nsfw || false,
-      source_event_ids: [eventOid],
+      is_nsfw: mem.is_nsfw || sourceMessages.some(message => message.adult) || false,
+      source_event_ids: sourceEventIds,
       pinecone_id: vecId,
       access_count: 0,
       last_accessed_at: new Date(),
@@ -719,7 +803,21 @@ async function memoryWork(job: Job) {
       created_at: new Date(),
       updated_at: new Date(),
     }
-    await mongoColl.memories().insertOne(memoryDoc)
+    if (group && !await groupEventsLive(group.events)) {
+      await vectorStore.deleteIds(scope, [vecId])
+      throw new Error('Group memory source events changed')
+    }
+    try {
+      await mongoColl.memories().insertOne(memoryDoc)
+    } catch (error) {
+      if (group) await vectorStore.deleteIds(scope, [vecId])
+      throw error
+    }
+    if (group && !await groupEventsLive(group.events)) {
+      await mongoColl.memories().deleteOne({ _id: memId })
+      await vectorStore.deleteIds(scope, [vecId])
+      throw new Error('Group memory source events changed')
+    }
     newMemories.push(memoryDoc)
 
     // Relationship atoms also become graph edges (subject → object) so the
@@ -732,14 +830,14 @@ async function memoryWork(job: Job) {
       !subjectEntityIds[0].equals(objectEntityIds[0])
     ) {
       try {
-        await entityGraphService.upsertNarrativeEdge({
+        for (const sourceEventId of sourceEventIds) await entityGraphService.upsertNarrativeEdge({
           instanceId,
           sourceEntityId: subjectEntityIds[0],
           targetEntityId: objectEntityIds[0],
           type: 'relationship',
           label: relationshipDelta || text,
           importance: mem.importance,
-          eventId: eventOid,
+          eventId: sourceEventId,
           sequence: entitySequence,
         })
       } catch (err) {
@@ -749,7 +847,7 @@ async function memoryWork(job: Job) {
   }
 
   if (newMemories.length > 0) {
-    const explicitOldTerms = extractExplicitCorrections(playerInput)
+    const explicitOldTerms = group ? [] : extractExplicitCorrections(playerInput)
     if (explicitOldTerms.length > 0) {
       try {
         const superseded = await supersedeExplicitCorrections({
@@ -815,7 +913,7 @@ async function memoryWork(job: Job) {
     void locationService.refreshLocationStat(instanceId, locId)
   }
 
-  await redis.publish(`user:${playerId}:events`, JSON.stringify({
+  if (!group) await redis.publish(`user:${playerId}:events`, JSON.stringify({
     type: 'memories_curated',
     instanceId,
     memories: newMemories.map((m) => ({
@@ -826,5 +924,10 @@ async function memoryWork(job: Job) {
     })),
   }))
 
-  return { memoriesCreated: newMemories.length, threadsResolved }
+  return { memoriesCreated: newMemories.length, threadsResolved, ...(group ? { invalidCitations, invalidAtoms, duplicates } : {}) }
+}
+
+function groupAtomKey(text: string, subjects: string[], objects: string[]) {
+  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase()
+  return createHash('sha256').update(JSON.stringify([normalize(text), subjects.map(normalize).sort(), objects.map(normalize).sort()])).digest('hex')
 }
