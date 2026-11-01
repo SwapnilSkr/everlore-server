@@ -304,12 +304,13 @@ const redis = {
 const unavailable = (): never => { throw new Error('Unexpected external dependency in group audit') }
 globalThis.fetch = Object.assign(async () => unavailable(), { preconnect: unavailable })
 const auditEnv = { NSFW_SAME_TURN_ROUTER: 'off', NSFW_SAME_TURN_ROUTER_MODEL: 'fake-router', NSFW_SAME_TURN_ROUTER_HOST: 'fixture' }
-let routerRequests = 0, routerDelay = 0, routerSexual = true
+let routerRequests = 0, routerDelay = 0, routerSexual = true, routerError = false
 mock.module('../src/config/env', () => ({ env: { ...auditEnv, get NSFW_SAME_TURN_ROUTER() { return auditEnv.NSFW_SAME_TURN_ROUTER }, CDN_BASE_URL: 'https://fixture.invalid', JWT_SECRET: 'audit-only', MEDIA_VOICE_ENABLED: false } }))
 mock.module('../src/config/mongo', () => ({ mongoColl: new Proxy({}, { get: (_target, key) => () => collection(String(key)) }) }))
 mock.module('../src/config/redis', () => ({ getRedisClient: () => redis, getQueueRedisClient: unavailable, getRedisSubscriber: unavailable }))
 const routerClient = { chat: { completions: { create: async () => {
   routerRequests++
+  if (routerError) throw new Error('Fixture router unavailable')
   await new Promise(resolve => setTimeout(resolve, routerDelay))
   return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ sexual_intent: routerSexual }) } }] }
 } } } }
@@ -358,9 +359,9 @@ const originalRandom = Math.random
 Math.random = () => 0
 const playerId = '300000000000000000000001'
 let instanceId = ''
-async function start(source = groupTemplate()) {
-  tables.clear(); frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0
-  rows('users').push({ _id: new ObjectId(playerId), preferences: { nsfw_enabled: false, player_name: playerName } })
+async function start(source = groupTemplate(), player = playerName) {
+  tables.clear(); frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0; routerSexual = true; routerError = false
+  rows('users').push({ _id: new ObjectId(playerId), preferences: { nsfw_enabled: false, player_name: player } })
   rows('worldTemplates').push(clone(source) as unknown as Row)
   const created = await instanceService.create(playerId, template._id.toHexString(), 'creator')
   instanceId = created.instance._id.toHexString()
@@ -474,22 +475,131 @@ await check('unprompted and catchup use group reservation, topics in order, two 
   assert.equal((rows('worldInstances')[0].group_state as Row).topics_used, 2)
   await assert.rejects(dispatchGroupTurn({ instanceId, playerId, origin: 'catchup' }), /start time/)
 })
-await check('toggle off never picks adult despite recent explicit scene and Ardent mode; toggle on follows scene', async () => {
-  for (const enabled of [false, true]) for (const mode of ['free_play', 'ardent']) {
+await check('toggle off never picks adult despite recent explicit scene and Ardent mode; autonomy stays normal', async () => {
+  for (const enabled of [false, true]) for (const mode of ['free_play', 'ardent']) for (const origin of ['player', 'unprompted'] as const) {
     await start(); put(rows('users')[0], 'preferences.nsfw_enabled', enabled)
     rows('worldInstances')[0].mode = mode
     rows('events').push(...[2, 3].map(sequence => ({ ...clone(rows('events')[0]), _id: new ObjectId(), sequence, type: 'intimate' })))
-    await turn({ origin: 'unprompted', userMessage: '' })
-    assert.equal(writerCalls[0].model, enabled ? 'fake-adult' : 'fake-safe')
+    await turn({ origin, userMessage: origin === 'player' ? `@${names[0]} morning` : '' }, () => 0)
+    assert.equal(writerCalls[0].model, enabled && origin === 'player' ? 'fake-adult' : 'fake-safe')
   }
 })
-async function adultStart() {
-  await start()
+async function adultStart(source = groupTemplate()) {
+  await start(source)
   put(rows('users')[0], 'preferences.nsfw_enabled', true)
-  rows('worldInstances')[0].mode = 'ardent'
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'on'
 }
 function content(call: Row, role: number) { return ((call.messages as Row[])[role].content as string) }
 function lastData() { return rows('events').at(-1)!.data as Row }
+function addEvent(type: string, member: number, sequence = rows('events').length + 1, model = 'fake') {
+  rows('events').push({ ...clone(rows('events')[0]), _id: new ObjectId(), sequence, type,
+    data: { model_used: model, player_input: '', lines: [{ character_id: ids[member], text: `Prior ${sequence}`, shown_at: new Date() }] } })
+}
+await check('addressed history keeps exchange and three recent others without seeds in actual writer text', async () => {
+  for (const interested of [true, false]) {
+    const source = groupTemplate(); source.seed_cast![2].group!.interested = interested
+    await start(source); put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'
+    for (let i = 1; i <= 5; i++) rows('events').push({ ...clone(rows('events')[0]), _id: new ObjectId(), sequence: i + 1,
+      data: { model_used: 'fake', player_input: `player-${i}`, lines: [
+        { character_id: ids[2], text: `addressed-${i}`, shown_at: new Date() },
+        { character_id: ids[0], text: `other-${i}`, shown_at: new Date() },
+      ] } })
+    addEvent('narration', 0, 7, 'seed')
+    put(rows('events').at(-1)!, 'data.player_input', 'Seed player text')
+    modelReplies = [`${names[2]}: Addressed fresh`, `${names[0]}: Bystander fresh`]
+    let draw = 0
+    const message = `@${names[2]} answer this`
+    await turn({ userMessage: message }, () => ++draw <= members.length - 1 ? 0 : 0.75)
+    const actual = content(writerCalls[0], 1).split('Recent messages:\n')[1].split('\n\nNow:')[0]
+    const expected = [`${names[2]}: addressed-1`, ...[2, 3, 4, 5].flatMap(i => [
+      `${playerName}: player-${i}`, `${names[2]}: addressed-${i}`, ...(i >= 3 ? [`${names[0]}: other-${i}`] : []),
+    ])].join('\n')
+    assert.equal(actual, expected)
+    assert(content(writerCalls[0], 1).endsWith(`${playerName}: ${message}`))
+    assert(content(writerCalls[0], 0).includes(members[2].group.intimacy!))
+    assert(content(writerCalls[0], 0).includes(members[2].group.voice![0]))
+    assert(content(writerCalls[1], 1).includes('Prior 7'))
+    assert(content(writerCalls[1], 1).includes('Addressed fresh'))
+  }
+  await start(); addEvent('narration', 0, 2, 'seed'); await turn()
+  assert(content(writerCalls[0], 1).includes('Prior 2'), 'normal history retains seeds')
+})
+await check('leading player tags strip before empty repeat and copy checks while other and later tags stay', async () => {
+  await start(groupTemplate(), 'Sam')
+  modelReplies = [`${names[0]}: @sAm, hello\n${names[1]}: @Marco hello`]
+  await turn()
+  assert.deepEqual((lastData().lines as Row[]).map(line => line.text), ['hello', '@Marco hello'])
+  assert(content(writerCalls[0], 0).includes('Never write a message from Sam'))
+  for (const [raw, expected] of [['@SAM hello', 'hello'], ['@Sam,hello', 'hello'], ['hello @Sam, friend', 'hello @Sam, friend'], ['@Samwise hello', '@Samwise hello']]) {
+    assert.equal(filterLines([{ name: names[0], text: raw }], { ...opts, player: 'Sam' }, emptyLineCounts())[0].text, expected)
+  }
+  const counts = emptyLineCounts()
+  const kept = filterLines([
+    { name: names[0], text: '@Sam, ' }, { name: names[0], text: '@Sam, Earlier line' },
+    { name: names[0], text: `@Sam, ${members[0].group.voice![0]}` },
+  ], { ...opts, player: 'Sam', previous: [{ name: names[0], text: 'Earlier line' }] }, counts)
+  assert.deepEqual(kept, []); assert.equal(counts.empty, 1); assert.equal(counts.duplicate, 1); assert.equal(counts.copied_example, 1)
+})
+await check('adult carry-over downgrades uninvolved morning tags no names stale participation and autonomy', async () => {
+  for (const answer of ['no', 'late', 'error', 'off']) for (const target of ['uninvolved', 'none', 'stale', 'not-interested', 'boundary', 'unprompted', 'catchup']) {
+    const source = groupTemplate(); if (target === 'not-interested') source.seed_cast![0].group!.interested = false
+    await start(source); put(rows('users')[0], 'preferences.nsfw_enabled', true)
+    addEvent('intimate', 0); addEvent('intimate', 1); addEvent('intimate', 1)
+    auditEnv.NSFW_SAME_TURN_ROUTER = answer === 'off' ? 'off' : 'on'; routerSexual = false; routerError = answer === 'error'; routerDelay = answer === 'late' ? 2200 : 0
+    const origin = target === 'unprompted' || target === 'catchup' ? target : 'player'
+    const member = target === 'not-interested' ? 0 : target === 'stale' ? 0 : 2
+    // Put an uninterested participant in the current window as well.
+    if (target === 'not-interested') addEvent('intimate', 0)
+    const message = target === 'none' ? 'Morning everyone' : target === 'boundary' ? `${names[1]}suffix morning` : `@${names[member]} morning`
+    modelReplies = [members.map(member => `${member.name}: Morning reply`).join('\n')]
+    await turn({ origin, userMessage: origin === 'player' ? message : '' }, () => 0)
+    assert.equal(writerCalls.length, 1); assert.equal(writerCalls[0].model, 'fake-safe'); assert.equal(writerCalls[0].maxTokens, 400)
+    assert.equal(content(writerCalls[0], 0), get(rows('worldInstances')[0], 'group_context.static_prompt'))
+    assert.equal(rows('events').at(-1)!.type, 'narration')
+    assert.equal(checkLogs.at(-1)!.adult_downgrade, origin === 'player' ? 'no_involved_member' : 'autonomous')
+    if (answer === 'late' && origin === 'player') await new Promise(resolve => setTimeout(resolve, 250))
+  }
+})
+await check('adult carry-over retains involved tagged or named members and never upgrades or downgrades router yes', async () => {
+  for (const answer of ['no', 'late', 'error', 'off', 'yes']) for (const named of [false, true]) {
+    await start(); put(rows('users')[0], 'preferences.nsfw_enabled', true)
+    addEvent('intimate', 0); addEvent('intimate', 1)
+    // Ordinary events after the intimate events must not replace the intimate window.
+    addEvent('narration', 2)
+    auditEnv.NSFW_SAME_TURN_ROUTER = answer === 'off' ? 'off' : 'on'; routerSexual = answer === 'yes'; routerError = answer === 'error'; routerDelay = answer === 'late' ? 2200 : 0
+    const member = answer === 'yes' ? 2 : 0
+    modelReplies = [`${names[member]}: Involved response`]
+    await turn({ userMessage: `${named ? '' : '@'}${names[member].toLowerCase()}, morning` }, () => 0)
+    assert.equal(writerCalls[0].model, 'fake-adult', JSON.stringify({ answer, named, log: checkLogs.at(-1) })); assert.equal(rows('events').at(-1)!.type, 'intimate')
+    assert.equal(checkLogs.at(-1)!.adult_downgrade, undefined)
+    if (answer === 'late') await new Promise(resolve => setTimeout(resolve, 250))
+  }
+  await start(); put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  addEvent('intimate', 0); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = false
+  modelReplies = [`${names[0]}: Normal response`]
+  await turn({ userMessage: `@${names[0]}, morning` }, () => 0)
+  assert.equal(writerCalls[0].model, 'fake-safe'); assert.equal(rows('events').at(-1)!.type, 'narration')
+})
+await check('copied addressed example is omitted on same actual writer retry before advancing and normal rescue', async () => {
+  for (const transportFallback of [false, true]) {
+    const source = groupTemplate(); source.seed_cast![0].group!.voice!.push('Another authored example')
+    await adultStart(source)
+    const voice = members[0].group.voice![0]
+    modelReplies = [...(transportFallback ? [new Error('provider unavailable')] : []), `${names[0]}: @${playerName}, ${voice}`, `${names[0]}: Fresh retry`]
+    await turn({ userMessage: `@${names[0]} answer` }, () => 0)
+    const copiedAt = transportFallback ? 1 : 0
+    assert.equal(writerCalls[copiedAt + 1].model, writerCalls[copiedAt].model)
+    assert(content(writerCalls[copiedAt], 0).includes(voice)); assert(!content(writerCalls[copiedAt + 1], 0).includes(voice))
+    assert(content(writerCalls[copiedAt + 1], 0).includes('Another authored example'))
+    assert(content(writerCalls[copiedAt + 1], 0).includes(members[0].group.intimacy!))
+    assert.equal(checkLogs.at(-1)!.copied_example, 1); assert.equal(lastData().ai_response, `${names[0]}: Fresh retry`)
+  }
+  await adultStart()
+  modelReplies = [`${names[0]}: ${members[0].group.voice![0]}`, '', `${names[0]}: Backup fresh`]
+  await turn({}, () => 0)
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-adult', 'fake-adult-fallback'])
+  assert(!content(writerCalls[2], 0).includes(members[0].group.voice![0]))
+})
 async function authoredGroups(): Promise<WorldTemplateDoc[]> {
   assert(process.env.GROUP_CHAT_DATA_DIR, 'GROUP_CHAT_DATA_DIR is required for authored reachability')
   const dir = process.env.GROUP_CHAT_DATA_DIR
@@ -511,10 +621,10 @@ await check('authored tagged reachability covers every member and interest routi
       await start(group)
       const adult = scenario !== 'normal'
       put(rows('users')[0], 'preferences.nsfw_enabled', adult)
-      rows('worldInstances')[0].mode = adult ? 'ardent' : 'free_play'
+      auditEnv.NSFW_SAME_TURN_ROUTER = adult ? 'on' : 'off'
       const fresh = `${member.name}: Fresh answer for case ${cases}.`
       const chain = member.group!.interested ? ['fake-adult', 'fake-adult-fallback', 'fake-adult-last'] : ['fake-safe', 'fake-safe-fallback']
-      modelReplies = scenario === 'empty' ? ['', fresh] : scenario === 'rescue' ? [new Error('writer unavailable'), ...chain.slice(1).map(() => ''), fresh]
+      modelReplies = scenario === 'empty' ? ['', fresh] : scenario === 'rescue' ? [new Error('writer unavailable'), ...chain.slice(1).map(() => ''), '', '', fresh]
         : scenario === 'voice' ? [`${member.name}: ${member.group!.voice![0]}`, fresh] : [fresh]
       await turn({ userMessage: `@${member.name} answer me` }, () => 0)
       const card = rows('characters').find(card => card.canonical_name === member.name)!
@@ -534,7 +644,8 @@ await check('authored tagged reachability covers every member and interest routi
         assert(content(writerCalls[0], 1).includes('Write one to three messages.'))
       }
       if (scenario === 'rescue') {
-        assert.deepEqual(writerCalls.slice(0, chain.length).map(call => call.model), chain)
+        const attempts = member.group!.interested ? [chain[0], chain[1], chain[1], chain[2]] : [chain[0], chain[0], chain[1]]
+        assert.deepEqual(writerCalls.slice(0, attempts.length).map(call => call.model), attempts)
         assert(writing.some(call => call.purpose === 'addressed_fallback'))
       }
       if (scenario === 'voice') assert.equal(checkLogs.at(-1)!.copied_example, 1)
@@ -588,7 +699,7 @@ await check('adult split order models histories budgets records and whole reply;
   const staticBefore = get(rows('worldInstances')[0], 'group_context.static_prompt')
   const seed = rows('events')[0]
   for (let sequence = 2; sequence <= 16; sequence++) rows('events').push({ ...clone(seed), _id: new ObjectId(), sequence,
-    data: { player_input: '', lines: [{ character_id: ids[0], text: `history-${sequence}`, shown_at: new Date() }] } })
+    data: { model_used: 'fake', player_input: '', lines: [{ character_id: ids[2], text: `history-${sequence}`, shown_at: new Date() }] } })
   modelReplies = [`${names[2]}: Addressed first\n${names[2]}: Addressed second\n${names[2]}: Addressed third`, `${names[0]}: Bystander reply\n${names[0]}: Extra dropped`]
   let rolls = 0
   await turn({ userMessage: `@${names[2]}, answer this` }, () => { rolls++; return rolls <= members.length - 1 ? 0 : 0.75 })
@@ -615,22 +726,22 @@ await check('adult split order models histories budgets records and whole reply;
   await start(); await turn()
   assert.equal(writerCalls.length, 1); assert.equal(writerCalls[0].model, 'fake-safe'); assert.equal(writerCalls[0].maxTokens, 400)
 })
-await check('adult retry advances writer after filtered output; empty adult chain reaches normal writer', async () => {
+await check('adult retry advances only after same writer retries filtered output; empty adult chain reaches normal writer', async () => {
   await adultStart(); modelReplies = [`${names[0]}: *only action*`, `${names[0]}: Retry fresh`]
   await turn({}, () => 0)
-  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-adult-fallback'])
-  assert.equal(lastData().model_used, 'fake-adult-fallback')
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-adult'])
+  assert.equal(lastData().model_used, 'fake-adult')
   assert.equal(checkLogs.at(-1)!.stage_directions, 1); assert.equal(checkLogs.at(-1)!.empty, 1)
   assert.equal((checkLogs.at(-1)!.writing as Row[])[1].purpose, 'addressed_retry')
-  await adultStart(); modelReplies = ['', '', `${names[0]}: Normal rescue`]
+  await adultStart(); modelReplies = ['', '', '', `${names[0]}: Normal rescue`]
   await turn({}, () => 0)
-  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-adult-fallback', 'fake-safe'])
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-adult', 'fake-adult-fallback', 'fake-safe'])
   assert(lastData().ai_response!.toString().includes('Normal rescue'))
-  assert.equal(get(rows('worldInstances')[0], 'group_state.writing_calls'), 3)
+  assert.equal(get(rows('worldInstances')[0], 'group_state.writing_calls'), 4)
   await adultStart(); put(rows('worldTemplates')[0], 'model_preferences.narration_nsfw', ' fake-adult-fallback ')
-  modelReplies = ['', `${names[0]}: Deduplicated retry`]
+  modelReplies = ['', '', `${names[0]}: Deduplicated retry`]
   await turn({}, () => 0)
-  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult-fallback', 'fake-adult-last'])
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult-fallback', 'fake-adult-fallback', 'fake-adult-last'])
 })
 await check('adult template preference wins and transport fallbacks are counted with per-call consent', async () => {
   await adultStart(); put(rows('worldTemplates')[0], 'model_preferences.narration_nsfw', 'template-adult')
@@ -654,7 +765,8 @@ await check('adult consent withdrawn before first call, retry or transport fallb
   for (const enabled of [false, true]) {
     await adultStart(); put(rows('users')[0], 'preferences.nsfw_enabled', enabled)
     rows('worldTemplates')[0].is_nsfw_capable = false
-    await turn(); assert(writerCalls.every(call => call.model === 'fake-safe'))
+    addEvent('intimate', 0); addEvent('intimate', 0)
+    await turn({ userMessage: `@${names[0]} morning` }, () => 0); assert(writerCalls.every(call => call.model === 'fake-safe'))
   }
 })
 for (const interested of [true, false]) await check(`${interested ? 'interested' : 'not-interested'} addressed prompt follows fresh consent before every call`, async () => {
@@ -663,7 +775,7 @@ for (const interested of [true, false]) await check(`${interested ? 'interested'
     source.seed_cast![0].group!.interested = interested
     await start(source)
     put(rows('users')[0], 'preferences.nsfw_enabled', true)
-    rows('worldInstances')[0].mode = 'ardent'
+    auditEnv.NSFW_SAME_TURN_ROUTER = 'on'
     let reads = 0
     const readsAtCall: number[] = []
     consentReadHook = () => {
@@ -680,7 +792,7 @@ for (const interested of [true, false]) await check(`${interested ? 'interested'
     assert.deepEqual(readsAtCall, at === 'first' ? [2] : [2, 3], 'each call needs a fresh read after the route read')
     assert.deepEqual(writerCalls.map(call => call.model), at === 'first'
       ? [interested && !withdrawn ? 'fake-adult' : 'fake-safe']
-      : [interested ? 'fake-adult' : 'fake-safe', interested ? withdrawn ? 'fake-safe' : 'fake-adult-fallback' : 'fake-safe-fallback'])
+      : [interested ? 'fake-adult' : 'fake-safe', interested ? withdrawn ? 'fake-safe' : at === 'transport' ? 'fake-adult-fallback' : 'fake-adult' : at === 'transport' ? 'fake-safe-fallback' : 'fake-safe'])
     for (const [index, call] of writerCalls.entries()) {
       const allowed = !withdrawn || (at !== 'first' && index === 0)
       const system = content(call, 0)

@@ -4,6 +4,8 @@ const escape = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 const taggedAt = (text: string, name: string) => text.search(new RegExp(`(?<![\\p{L}\\p{N}_])@${escape(name)}(?![\\p{L}\\p{N}_])`, 'iu'))
 const namedAt = (text: string, name: string) => text.search(new RegExp(`(?<![@\\p{L}\\p{N}_])${escape(name)}(?![\\p{L}\\p{N}_])`, 'iu'))
 
+export const mentionsMember = (text: string, name: string) => taggedAt(text, name) >= 0 || namedAt(text, name) >= 0
+
 export function rollSpeakers(members: GroupMember[], silentFor: Record<string, number>, origin: GroupOrigin,
   text = '', rng: () => number = Math.random) {
   const playerText = origin === 'player' ? text : ''

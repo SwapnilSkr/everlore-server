@@ -16,7 +16,7 @@ import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
 import { stagePostProcess, dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { buildGroupDynamic, buildAddressedStatic } from '../../src/services/group-chat/prompt'
-import { rollSpeakers, advanceSilence, pickAddressed } from '../../src/services/group-chat/roll'
+import { rollSpeakers, advanceSilence, pickAddressed, mentionsMember } from '../../src/services/group-chat/roll'
 import { timeLines } from '../../src/services/group-chat/lines'
 import { writeGroupReply } from '../../src/services/group-chat/reply'
 import type { GroupOrigin, NamedLine } from '../../src/services/group-chat/types'
@@ -52,13 +52,14 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   recent.reverse()
   const sequence = (recent.at(-1)?.sequence || 0) + 1
   setLLMTraceSequence(sequence)
-  const history: NamedLine[] = recent.flatMap(event => [
+  const messagesFromEvents = (events: typeof recent): NamedLine[] => events.flatMap(event => [
     ...(event.data.player_input ? [{ name: instance.group_context!.player, text: event.data.player_input }] : []),
     ...(event.data.lines || []).flatMap(line => {
       const member = members.find(member => member.id === line.character_id)
       return member ? [{ name: member.name, text: line.text }] : []
     }),
   ])
+  const history = messagesFromEvents(recent)
   const previousLines: NamedLine[] = (await Promise.all(members.map(async member => {
     const events = await mongoColl.events().find({ instance_id: iid, 'data.lines.character_id': member.id })
       .sort({ sequence: -1 }).limit(5).toArray()
@@ -88,7 +89,13 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     const route = decideIntentRoute({ router, capable: template.is_nsfw_capable,
       enabled: fresh?.preferences?.nsfw_enabled === true, mode: instance.mode,
       text: origin === 'player' ? userMessage : '', recentEvents: recent })
-    const adult = route.sceneClassification === 'nsfw'
+    const routerYes = route.routerSettled && route.trace.sexual === true
+    const intimate = recent.filter(event => event.type === 'intimate').slice(-2)
+    const involved = members.some(member => member.group.interested === true && mentionsMember(userMessage, member.name)
+      && intimate.some(event => event.data.lines?.some(line => line.character_id === member.id)))
+    const adultDowngrade = route.sceneClassification === 'nsfw' && !routerYes
+      ? origin !== 'player' ? 'autonomous' : !involved ? 'no_involved_member' : undefined : undefined
+    const adult = route.sceneClassification === 'nsfw' && !adultDowngrade
     const primary = adult ? template.model_preferences?.narration_nsfw || AI_MODELS.groupNsfw
       : template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw
     const fallbacks = adult ? AI_MODELS.groupNsfwFallbacks : AI_MODELS.narrationSfwFallbacks
@@ -96,6 +103,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     const normalChain = [...new Set([template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw, ...AI_MODELS.narrationSfwFallbacks])]
     const writing: Array<{ writer: string; model: string; purpose: string }> = []
     const addressed = adult ? pickAddressed(members, origin === 'player' ? userMessage : '', roll.picked) : undefined
+    const addressedMessages = messagesFromEvents(recent.filter(event => event.data.model_used !== 'seed'))
+    const addressedName = members.find(member => member.id === addressed)?.name
+    const otherMessages = addressedMessages.filter(line => line.name !== config.player && line.name !== addressedName).slice(-3)
+    const addressedHistory = addressedMessages.filter(line => line.name === config.player || line.name === addressedName || otherMessages.includes(line))
     const now = new Date()
     const reply = await writeGroupReply({ members, speakers: roll.picked, tags: roll.tags,
       player: config.player, origin, adult: addressed ? { addressed, rng } : undefined, previous: previousLines, openings: config.opening_lines,
@@ -119,7 +130,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const split = !!addressed
           const dynamic = buildGroupDynamic({ memories: rag.memoryTexts,
             summaries: [...(summary ? [summary.summary_text] : []), ...distant.map(hit => hit.text)],
-            history: [...history, ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
+            history: [...(addressedPrompt ? addressedHistory : history), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
             historyLimit: split ? addressedPrompt ? 12 : 5 : 30,
             messageRule: split ? addressedPrompt ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
             now, offsetMinutes: state.tz_offset_minutes, speakers: selected.map(member => member.name),
@@ -127,7 +138,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
               : origin === 'catchup' ? `Write up to four messages they sent while ${config.player} was away. Topic: ${topic}`
                 : `${config.player} is quiet. The group carries on. Topic: ${topic}`,
           })
-          const system = addressedPrompt ? buildAddressedStatic({ ...template, members, player: config.player }, selected[0]) : config.static_prompt
+          const system = addressedPrompt ? buildAddressedStatic({ ...template, members, player: config.player }, selected[0], request.excludedVoice) : config.static_prompt
           writing.push({ writer: stillAdult ? 'adult' : 'normal', model, purpose: request.purpose })
           try {
             const result = await callLLMWithFallback({ model, purpose: 'narration',
@@ -145,7 +156,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       },
     })
     log.info('group.reply_checked', { instanceId, sequence, origin, ...reply.counts,
-      writing_calls: writing.length, writing, picked_but_silent: reply.picked_but_silent, routing: route.trace })
+      writing_calls: writing.length, writing, picked_but_silent: reply.picked_but_silent, routing: route.trace, adult_downgrade: adultDowngrade })
     const gapStart = origin === 'catchup' && job.data.gapStart ? new Date(job.data.gapStart) : undefined
     const lines = timeLines(reply.lines, members, new Date(), gapStart, rng)
     const usage = snapshotLLMUsage()

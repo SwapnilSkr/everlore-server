@@ -56,6 +56,7 @@ export function filterLines(input: NamedLine[], options: {
   members: GroupMember[]; speakers: string[]; origin: GroupOrigin
   previous: NamedLine[]; openings: NamedLine[]
   blocked: (text: string) => boolean
+  player?: string; onCopiedExample?: (example: string) => void
   addressed?: string; oneMessage?: boolean; finishReason?: string | null
 }, counts: LineCounts): NamedLine[] {
   const kept: NamedLine[] = []
@@ -66,11 +67,16 @@ export function filterLines(input: NamedLine[], options: {
     if (!member || !options.speakers.includes(member.id)) { counts.off_list++; continue }
     const clean = stripStageDirections(line.text)
     if (line.text.includes('*') && clean !== line.text.trim()) counts.stage_directions++
-    line.text = trimReply(clean, options.finishReason === 'length' && source === input.at(-1), !!options.addressed)
-    if (line.text !== clean) counts.trimmed++
+    const withoutTag = options.player ? clean.replace(new RegExp(`^@${options.player.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])[,\\s]*`, 'iu'), '') : clean
+    line.text = trimReply(withoutTag, options.finishReason === 'length' && source === input.at(-1), !!options.addressed)
+    if (line.text !== withoutTag) counts.trimmed++
     if (!line.text.trim()) { counts.empty++; continue }
     if (options.blocked(line.text)) { counts.unsafe++; continue }
-    if (member.group.voice?.some(example => normalized(stripStageDirections(example)) === normalized(line.text))) { counts.copied_example++; continue }
+    if (member.group.voice?.some(example => {
+      const copied = normalized(stripStageDirections(example)) === normalized(line.text)
+      if (copied) options.onCopiedExample?.(example)
+      return copied
+    })) { counts.copied_example++; continue }
     const previous = options.previous.filter(other => other.name === line.name).slice(-5)
     const duplicates = [...previous, ...options.openings.filter(other => other.name === line.name), ...kept.filter(other => other.name === line.name)]
     if (duplicates.some(other => normalized(other.text) === normalized(line.text))) { counts.duplicate++; continue }

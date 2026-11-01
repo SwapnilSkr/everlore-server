@@ -7,6 +7,7 @@ export interface GroupWritingRequest {
   purpose: 'reply' | 'addressed' | 'addressed_retry' | 'addressed_fallback' | 'bystander' | 'tag_repair' | 'tag_backup'
   index: number
   history: NamedLine[]
+  excludedVoice: string[]
 }
 
 /** One reply's caps and duplicate checks span every attempt, including tag repair. */
@@ -26,14 +27,18 @@ export async function writeGroupReply(input: {
   const addressed = input.adult?.addressed
   const speakers = [...new Set([...input.speakers, ...(addressed ? [addressed] : [])])]
   const options = { ...input, speakers, addressed }
+  const copiedVoice = new Set<string>()
+  let sameIndex = 0
   const attempt = async (picked: string[], purpose: GroupWritingRequest['purpose'] = 'reply', index = 0, writer: GroupWritingRequest['writer'] = 'normal') => {
     calls++
+    sameIndex = index
     try {
-      const response = await input.write(picked, index > 0, { writer, purpose, index, history: [...lines] })
+      const response = await input.write(picked, index > 0, { writer, purpose, index, history: [...lines], excludedVoice: [...copiedVoice] })
+      sameIndex = (response.nextIndex ?? index + 1) - 1
       model = response.model
       if (response.writer === 'adult') adultModel = response.model
       const checked = filterLines(parseLines(response.content, input.members, input.player, counts), {
-        ...options, finishReason: response.finishReason, speakers: picked, previous: [...input.previous, ...lines], oneMessage: purpose === 'bystander' || (!!addressed && !picked.includes(addressed)),
+        ...options, onCopiedExample: example => copiedVoice.add(example), finishReason: response.finishReason, speakers: picked, previous: [...input.previous, ...lines], oneMessage: purpose === 'bystander' || (!!addressed && !picked.includes(addressed)),
       }, counts)
       lines = filterLines([...lines, ...checked], options, counts)
       return response.nextIndex ?? index + 1
@@ -45,7 +50,8 @@ export async function writeGroupReply(input: {
   const missingTags = () => input.tags.filter(id => !lines.some(line => input.members.find(member => member.name === line.name)?.id === id))
   try {
     if (input.adult) {
-      const next = await attempt([input.adult.addressed], 'addressed', 0, 'adult')
+      let next = await attempt([input.adult.addressed], 'addressed', 0, 'adult')
+      if (!lines.length) next = await attempt([input.adult.addressed], 'addressed_retry', sameIndex, 'adult')
       if (!lines.length) await attempt([input.adult.addressed], 'addressed_retry', next, 'adult')
       if (!lines.length) await attempt([input.adult.addressed], 'addressed_fallback')
       if (!lines.length && input.origin === 'player') await attempt([input.adult.addressed], 'addressed_fallback', 1)
