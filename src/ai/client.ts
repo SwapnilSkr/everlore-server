@@ -119,6 +119,8 @@ interface LLMRequest {
   promptSections?: Array<{ name: string; chars: number }>
   /** Trace-only per-block fingerprints; never copied into the provider body. */
   promptParts?: PromptPart[]
+  /** Optional metadata observer; string-returning callers keep their contract. */
+  onFinishReason?: (reason: string | null | undefined) => void
   traceRole?: 'primary' | 'hedge' | 'fallback'
   /** Opt-in internal JSON streaming; zero keeps the non-streamed transport. */
   firstTokenHedge?: LLMFirstTokenHedge
@@ -142,6 +144,7 @@ export interface LLMFallbackResult {
   content: string
   model: string
   fallbackAttempts: Array<{ from: string; to: string }>
+  finishReason?: string | null
 }
 
 /**
@@ -265,6 +268,7 @@ export async function callLLM(req: LLMRequest): Promise<string> {
     traceProvider(trace, response)
     const rawUsage = (response as { usage?: unknown }).usage
     recordLLMUsage({ purpose: req.purpose, model: req.model, streamed: false, ...usageFromProvider(rawUsage) })
+    req.onFinishReason?.(response.choices?.[0]?.finish_reason)
     const content = llmResponseContent(response)
     if (trace) trace.response = content
     settleLLMTrace(trace)
@@ -565,8 +569,11 @@ export async function callLLMWithFallback(
   for (let index = 0; index < models.length; index += 1) {
     const model = models[index]
     try {
-      const content = await callLLM({ ...req, model, traceRole: index > 0 ? 'fallback' : 'primary' })
-      return { content, model, fallbackAttempts }
+      let finishReason: string | null | undefined
+      const content = await callLLM({ ...req, model, traceRole: index > 0 ? 'fallback' : 'primary',
+        onFinishReason: reason => { finishReason = reason; req.onFinishReason?.(reason) },
+      })
+      return { content, model, fallbackAttempts, finishReason }
     } catch (error) {
       lastError = error
       const nextModel = models[index + 1]

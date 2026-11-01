@@ -16,7 +16,7 @@ export async function writeGroupReply(input: {
   adult?: { addressed: string; rng: () => number }
   onChecks?: (counts: ReturnType<typeof emptyLineCounts>, calls: number) => void
   write: (speakers: string[], fallback: boolean, request: GroupWritingRequest) => Promise<{
-    content: string; model: string; writer?: 'adult' | 'normal'; nextIndex?: number
+    content: string; model: string; writer?: 'adult' | 'normal'; nextIndex?: number; finishReason?: string | null
   }>
 }) {
   const counts = emptyLineCounts()
@@ -33,7 +33,7 @@ export async function writeGroupReply(input: {
       model = response.model
       if (response.writer === 'adult') adultModel = response.model
       const checked = filterLines(parseLines(response.content, input.members, input.player, counts), {
-        ...options, speakers: picked, previous: [...input.previous, ...lines], oneMessage: purpose === 'bystander' || (!!addressed && !picked.includes(addressed)),
+        ...options, finishReason: response.finishReason, speakers: picked, previous: [...input.previous, ...lines], oneMessage: purpose === 'bystander' || (!!addressed && !picked.includes(addressed)),
       }, counts)
       lines = filterLines([...lines, ...checked], options, counts)
       return response.nextIndex ?? index + 1

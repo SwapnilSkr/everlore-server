@@ -1,7 +1,7 @@
 import type { GroupLine, GroupMember, GroupOrigin, NamedLine } from './types'
 
-export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example', number>
-export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0 })
+export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed', number>
+export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0 })
 const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim()
 
 export function parseLines(raw: string, members: GroupMember[], player: string, counts: LineCounts): NamedLine[] {
@@ -30,11 +30,33 @@ export function stripStageDirections(text: string): string {
   return text.replace(/\*[^*]*\*/g, '').replace(/^\*[^*]*$|[^*]*\*$/g, '').replace(/\*[^*]*$/g, '').replace(/\s+/g, ' ').trim()
 }
 
+// Emoji sequences are kept together, including skin tones, flags and joined glyphs.
+const emoji = String.raw`(?:\p{Regional_Indicator}{2}|[#*0-9]\uFE0F?\u20E3|\p{Extended_Pictographic}[\uFE0E\uFE0F]?\p{Emoji_Modifier}?(?:\u200D\p{Extended_Pictographic}[\uFE0E\uFE0F]?\p{Emoji_Modifier}?)*)`
+const sentenceEnd = new RegExp(String.raw`(?:[.!?…]|${emoji})(?=\s|$)(?:\s*${emoji}(?=\s|$))*`, 'gu')
+
+export function trimReply(text: string, tokenLimited: boolean, adult: boolean): string {
+  const ends = [...text.matchAll(sentenceEnd)].map(match => match.index! + match[0].length)
+  let clean = tokenLimited ? text.slice(0, ends.at(-1) ?? 0).trimEnd() : text
+  if (adult && Array.from(clean).length > 280) {
+    const end = ends.filter(end => Array.from(text.slice(0, end)).length <= 280).at(-1)
+    if (end !== undefined) return text.slice(0, end).trimEnd()
+    let prefix = ''
+    for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(clean)) {
+      if (Array.from(prefix + segment).length > 280) break
+      prefix += segment
+    }
+    // No spaces (one long token) still obeys the hard limit without splitting a glyph.
+    const boundary = prefix.search(/\s+\S*$/u)
+    clean = boundary >= 0 ? prefix.slice(0, boundary) : prefix
+  }
+  return clean
+}
+
 export function filterLines(input: NamedLine[], options: {
   members: GroupMember[]; speakers: string[]; origin: GroupOrigin
   previous: NamedLine[]; openings: NamedLine[]
   blocked: (text: string) => boolean
-  addressed?: string; oneMessage?: boolean
+  addressed?: string; oneMessage?: boolean; finishReason?: string | null
 }, counts: LineCounts): NamedLine[] {
   const kept: NamedLine[] = []
   const used = new Map<string, number>()
@@ -44,7 +66,8 @@ export function filterLines(input: NamedLine[], options: {
     if (!member || !options.speakers.includes(member.id)) { counts.off_list++; continue }
     const clean = stripStageDirections(line.text)
     if (line.text.includes('*') && clean !== line.text.trim()) counts.stage_directions++
-    line.text = clean
+    line.text = trimReply(clean, options.finishReason === 'length' && source === input.at(-1), !!options.addressed)
+    if (line.text !== clean) counts.trimmed++
     if (!line.text.trim()) { counts.empty++; continue }
     if (options.blocked(line.text)) { counts.unsafe++; continue }
     if (member.group.voice?.some(example => normalized(stripStageDirections(example)) === normalized(line.text))) { counts.copied_example++; continue }

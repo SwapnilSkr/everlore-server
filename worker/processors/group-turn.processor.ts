@@ -102,33 +102,37 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       blocked: text => screenPlayerInput(text).blocked,
       onChecks: counts => log.info('group.line_checks', { instanceId, sequence, ...counts, writing_calls: writing.length }),
       write: async (speakers, _fallback, request) => {
-        let chain = request.writer === 'adult' ? adultChain : normalChain
-        let redirected = false
+        const interested = members.find(member => member.id === addressed)?.group.interested === true
+        const wantsAdult = request.writer === 'adult' && interested
+        let chain = wantsAdult ? adultChain : normalChain
+        let redirected = !wantsAdult
         for (let index = request.index; index < chain.length; index++) {
           // Each transport attempt is explicit: a fallback must re-read consent too.
-          const consent = request.writer === 'adult' && !redirected
+          const consent = request.writer === 'adult'
             ? await mongoColl.users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } }) : undefined
-          const stillAdult = request.writer === 'adult' && !redirected && adult && template.is_nsfw_capable && consent?.preferences?.nsfw_enabled === true
+          // Consent gates the addressed prompt even when interest selects the normal writer.
+          const addressedPrompt = request.writer === 'adult' && adult && template.is_nsfw_capable && consent?.preferences?.nsfw_enabled === true
+          const stillAdult = addressedPrompt && !redirected
           if (request.writer === 'adult' && !stillAdult && !redirected) { chain = normalChain; index = 0; redirected = true }
           const model = chain[index]
           const selected = members.filter(member => speakers.includes(member.id))
           const split = !!addressed
           const dynamic = buildGroupDynamic({ memories: rag.memoryTexts,
             summaries: [...(summary ? [summary.summary_text] : []), ...distant.map(hit => hit.text)],
-            history: [...history, ...(origin === 'player' && split && request.writer !== 'adult' ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
-            historyLimit: split ? request.writer === 'adult' ? 12 : 5 : 30,
-            messageRule: split ? request.writer === 'adult' ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
+            history: [...history, ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
+            historyLimit: split ? addressedPrompt ? 12 : 5 : 30,
+            messageRule: split ? addressedPrompt ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
             now, offsetMinutes: state.tz_offset_minutes, speakers: selected.map(member => member.name),
-            situation: origin === 'player' ? split && request.writer !== 'adult' ? '' : `${config.player}: ${userMessage}`
+            situation: origin === 'player' ? split && !addressedPrompt ? '' : `${config.player}: ${userMessage}`
               : origin === 'catchup' ? `Write up to four messages they sent while ${config.player} was away. Topic: ${topic}`
                 : `${config.player} is quiet. The group carries on. Topic: ${topic}`,
           })
-          const system = stillAdult ? buildAddressedStatic({ ...template, members, player: config.player }, selected[0]) : config.static_prompt
+          const system = addressedPrompt ? buildAddressedStatic({ ...template, members, player: config.player }, selected[0]) : config.static_prompt
           writing.push({ writer: stillAdult ? 'adult' : 'normal', model, purpose: request.purpose })
           try {
             const result = await callLLMWithFallback({ model, purpose: 'narration',
               messages: [{ role: 'system', content: system }, { role: 'user', content: dynamic }],
-              temperature: narrationTemperature(model), maxTokens: split ? request.writer === 'adult' ? 160 : 60 * speakers.length : 400,
+              temperature: narrationTemperature(model), maxTokens: split ? addressedPrompt ? 160 : 60 * speakers.length : 400,
               sessionId: instanceId }, [])
             return { ...result, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: index + 1 }
           } catch (error) {

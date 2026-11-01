@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // and audit files are copied; no environment files or credentials are read.
 const root = await mkdtemp(join(import.meta.dir, '.group-chat-bites-'))
 const server = new URL('..', import.meta.url).pathname
-const auditFiles = ['group-chat-audit.ts', 'group-chat-fixtures.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'narrator-harness-audit.ts']
+const auditFiles = ['group-chat-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'narrator-harness-audit.ts']
 type Edit = [file: string, from: string, to: string]
 type Mutation = { name: string; check: string; edits: Edit[]; script?: string }
 const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat/lines.ts', reply = 'src/services/group-chat/reply.ts'
@@ -105,6 +105,34 @@ const mutations: Mutation[] = [
   { name: 'router autonomy gate', check: 'group router waits', edits: [[worker, "origin === 'player' && template.is_nsfw_capable", 'template.is_nsfw_capable']] },
   { name: 'private intimacy leak', check: 'private adult traits', edits: [['src/services/group-chat/public.ts', "'intimacy', ", '']] },
   { name: 'private voice leak', check: 'private adult traits', edits: [['src/services/group-chat/public.ts', "'voice', ", '']] },
+  { name: 'required interest', check: 'interested is required', edits: [['src/services/group-chat/validation.ts', 'data.is_nsfw_capable || traits!.interested !== undefined', 'traits!.interested !== undefined']] },
+  { name: 'boolean interest', check: 'interested is required', edits: [['src/services/group-chat/validation.ts', "typeof traits!.interested !== 'boolean'", 'false']] },
+  { name: 'schema boolean interest', check: 'seed adult schema', edits: [['src/schemas/template.schema.ts', 'interested: t.Optional(t.Boolean())', 'interested: t.Optional(t.Any())']] },
+  { name: 'not interested reaches adult', check: 'authored tagged reachability', edits: [[worker, "request.writer === 'adult' && interested", "request.writer === 'adult'"]] },
+  { name: 'interested never reaches adult', check: 'authored tagged reachability', edits: [[worker, "request.writer === 'adult' && interested", 'false']] },
+  { name: 'not interested loses addressed prompt', check: 'authored tagged reachability', edits: [[worker, 'const system = addressedPrompt ?', 'const system = stillAdult ?']] },
+  { name: 'withdrawn interested keeps adult prompt', check: 'interested addressed prompt follows fresh consent', edits: [[worker, 'const system = addressedPrompt ?', "const system = request.writer === 'adult' ?"]] },
+  { name: 'not interested skips consent reread', check: 'not-interested addressed prompt follows fresh consent', edits: [[worker, "const consent = request.writer === 'adult'", "const consent = request.writer === 'adult' && !redirected"]] },
+  { name: 'withdrawn consent keeps addressed message rule', check: 'interested addressed prompt follows fresh consent', edits: [[worker, 'messageRule: split ? addressedPrompt ?', "messageRule: split ? request.writer === 'adult' ?"]] },
+  { name: 'withdrawn consent keeps addressed token budget', check: 'interested addressed prompt follows fresh consent', edits: [[worker, 'maxTokens: split ? addressedPrompt ?', "maxTokens: split ? request.writer === 'adult' ?"]] },
+  { name: 'authored tagged member unreachable', check: 'authored tagged reachability', edits: [[lines, 'if (!member || !options.speakers.includes(member.id))', 'if (!member || member.id === options.members[0].id || !options.speakers.includes(member.id))']] },
+  { name: 'authored untagged member unreachable', check: 'authored untagged reachability', edits: [[roll, 'members.filter(member => picked.includes(member.id)).map', 'members.slice(0, -1).filter(member => picked.includes(member.id)).map']] },
+  { name: 'copied voice reaches authored member', check: 'authored tagged reachability', edits: [[lines, 'if (member.group.voice?.some', 'if (false && member.group.voice?.some']] },
+  { name: 'private interest leak', check: 'private adult traits', edits: [['src/services/group-chat/public.ts', "'interested', ", '']] },
+  { name: 'skip sentence trim', check: 'sentence trimming', edits: [[lines, "tokenLimited ? text.slice(0, ends.at(-1) ?? 0).trimEnd() : text", 'text']] },
+  { name: 'emoji sentence end missing', check: 'sentence trimming', edits: [[lines, '(?:[.!?…]|${emoji})', '(?:[.!?…])']] },
+  { name: 'sentence end ignores whitespace boundary', check: 'sentence trimming', edits: [[lines, '(?=\\s|$)', '']] },
+  { name: 'trailing emoji separated from sentence', check: 'sentence trimming', edits: [[lines, '(?:\\s*${emoji}(?=\\s|$))*', '']] },
+  { name: 'skip adult length limit', check: 'sentence trimming', edits: [[lines, 'adult && Array.from(clean).length > 280', 'false']] },
+  { name: 'normal length changed', check: 'sentence trimming', edits: [[lines, 'adult && Array.from(clean).length > 280', 'Array.from(clean).length > 280']] },
+  { name: 'length ignores sentence boundary', check: 'sentence trimming', edits: [[lines, 'if (end !== undefined) return text.slice(0, end).trimEnd()', 'if (false) return text.slice(0, end).trimEnd()']] },
+  { name: 'length ignores last space', check: 'sentence trimming', edits: [[lines, 'boundary >= 0 ? prefix.slice(0, boundary) : prefix', 'prefix']] },
+  { name: 'trim counter missing', check: 'sentence trimming', edits: [[lines, 'counts.trimmed++', 'counts.trimmed += 0']] },
+  { name: 'token trim destroys earlier messages', check: 'sentence trimming', edits: [[lines, "&& source === input.at(-1)", '']] },
+  { name: 'skip processor trim', check: 'processor sentence trim', edits: [[lines, "line.text = trimReply(clean, options.finishReason === 'length' && source === input.at(-1), !!options.addressed)", 'line.text = clean']] },
+  { name: 'finish reason lost at reply', check: 'processor sentence trim', edits: [[reply, 'finishReason: response.finishReason, ', '']] },
+  { name: 'finish reason lost at transport', check: 'writer finish reason exposed', edits: [['src/ai/client.ts', 'req.onFinishReason?.(response.choices?.[0]?.finish_reason)', 'req.onFinishReason?.(undefined)']] },
+  { name: 'finish reason lost at fallback result', check: 'writer finish reason exposed', edits: [['src/ai/client.ts', 'return { content, model, fallbackAttempts, finishReason }', 'return { content, model, fallbackAttempts }']] },
 
 ]
 try {

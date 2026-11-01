@@ -5,7 +5,7 @@ import { mock } from 'bun:test'
 import { ObjectId } from 'mongodb'
 import type { Job } from 'bullmq'
 import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders } from '../src/services/group-chat/roll'
-import { parseLines, filterLines, timeLines, emptyLineCounts } from '../src/services/group-chat/lines'
+import { parseLines, filterLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
 import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic } from '../src/services/group-chat/prompt'
 import { writeGroupReply } from '../src/services/group-chat/reply'
 import { validateGroup } from '../src/services/group-chat/validation'
@@ -175,6 +175,45 @@ await check('addressed prompt is authored per person with player gender sentence
   assert(!buildGroupStatic({ ...template, members, player: playerName }).includes(members[2].group.intimacy!))
 })
 
+await check('interested is required boolean for capable members and validated when optional', () => {
+  for (const capable of [false, true]) for (const interested of [undefined, null, 'false', 0, {}, [], false, true]) {
+    const changed = { ...template, is_nsfw_capable: capable, seed_cast: template.seed_cast!.map(member => ({ ...member, group: { ...member.group!, interested } })) } as WorldTemplateDoc
+    if (typeof interested === 'boolean' || (!capable && interested === undefined)) validateGroup(changed)
+    else assert.throws(() => validateGroup(changed), /interested/)
+  }
+})
+await check('sentence trimming uses structural ends, preserves emoji and limits adult messages only', () => {
+  for (const end of ['.', '!', '?', '…', '🙂', '👩🏽‍💻', '🇮🇳', '1️⃣']) {
+    assert.equal(trimReply(`Complete${end} unfinished`, true, false), `Complete${end}`)
+    assert.equal(trimReply(`Complete${end}`, true, false), `Complete${end}`)
+  }
+  assert.equal(trimReply('Complete. 🙂 unfinished', true, false), 'Complete. 🙂')
+  assert.equal(trimReply('Complete. 👩🏽‍💻 🇮🇳 unfinished', true, false), 'Complete. 👩🏽‍💻 🇮🇳')
+  assert.equal(trimReply('version 1.2 unfinished!suffix', true, false), '')
+  assert.equal(trimReply('unfinished', true, true), '')
+  const long = `Short. ${'long '.repeat(70)}`.trim()
+  assert.equal(trimReply(long, false, true), 'Short.')
+  assert.equal(trimReply(long, false, false), long)
+  assert.equal(trimReply('word '.repeat(70).trim(), false, true), 'word '.repeat(56).trim())
+  assert.equal(trimReply('x'.repeat(281), false, true), 'x'.repeat(280))
+  const exact = `${'x'.repeat(278)}🙂`
+  assert.equal(trimReply(exact, false, true), exact)
+  assert.equal(trimReply('x'.repeat(279) + ' 👩🏽‍💻 tail', false, true), 'x'.repeat(279))
+  assert.equal(trimReply('Short. ' + 'x'.repeat(268) + ' end. 🙂', false, true), 'Short.')
+  const counts = emptyLineCounts()
+  const kept = filterLines([{ name: names[0], text: 'Complete. partial' }], { ...opts, finishReason: 'length' }, counts)
+  assert.equal(kept[0].text, 'Complete.'); assert.equal(counts.trimmed, 1)
+  assert.equal(filterLines([{ name: names[0], text: 'partial' }], { ...opts, finishReason: 'length' }, counts).length, 0)
+  assert.equal(counts.empty, 1); assert.equal(counts.trimmed, 2)
+  const multi = filterLines([{ name: names[0], text: 'Earlier text' }, { name: names[1], text: 'Last. partial' }], { ...opts, finishReason: 'length' }, emptyLineCounts())
+  assert.deepEqual(multi.map(line => line.text), ['Earlier text', 'Last.'])
+})
+await check('writer finish reason exposed by real transport', async () => {
+  const child = Bun.spawn(['bun', '--no-env-file', 'run', 'scripts/group-chat-finish-audit.ts'], { cwd: new URL('..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe' })
+  const [out, err, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+  assert.equal(code, 0, out + err)
+})
+
 // A real processor runs below against in-memory documents and a fake writer.
 // No Mongo/Redis clients, network transport, timers or paid models are started.
 type Row = Record<string, unknown>
@@ -286,7 +325,7 @@ mock.module('../src/services/time.service', () => ({ timeService: { initialAncho
 mock.module('../src/services/opening-place.service', () => ({ extractOpeningPlace: unavailable }))
 mock.module('../src/services/character-codex.service', () => ({ characterCodexService: { seedProtagonist: unavailable } }))
 mock.module('../src/services/kinship-graph.service', () => ({ kinshipGraphService: { seedPremiseKinship: unavailable } }))
-mock.module('../src/services/template-cast.service', () => ({ materializeTemplateCast: async (input: { instanceId: string }) => { rows('characters').push(...members.map(member => ({ _id: new ObjectId(member.id), instance_id: new ObjectId(input.instanceId), canonical_name: member.name }))); return 4 } }))
+mock.module('../src/services/template-cast.service', () => ({ materializeTemplateCast: async (input: { instanceId: string; template: WorldTemplateDoc }) => { const cast = input.template.seed_cast!; rows('characters').push(...cast.map((member, index) => ({ _id: new ObjectId((index + 1).toString(16).padStart(24, '0')), instance_id: new ObjectId(input.instanceId), canonical_name: member.name }))); return cast.length } }))
 mock.module('../worker/lib/template-cast-extractor', () => ({ extractTemplateCast: unavailable }))
 mock.module('../src/services/vector-store', () => ({ vectorStore: { replaceLore: unavailable, deleteScope: async () => {} } }))
 mock.module('../src/constants/default-cover', () => ({ isDefaultCoverUrl: () => false, resolveTemplateImageUrl: async () => 'https://fixture.invalid/cover.webp' }))
@@ -302,9 +341,9 @@ mock.module('../src/middleware/rate-limit', () => ({ rateLimit: async () => ({ a
 mock.module('../src/services/last-active.service', () => ({ recordLastActive: () => {} }))
 mock.module('../src/queues', () => ({ removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { queued.push(data); return { id: options.jobId } } }), QUEUE_RETENTION: { generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
 let writerHook: ((request: Row) => void) | undefined
-let modelReplies: Array<string | Error> = [], writerCalls: Row[] = [], turnNumber = 0
+let modelReplies: Array<string | Error | { content: string; finishReason: string }> = [], writerCalls: Row[] = [], turnNumber = 0
 mock.module('../src/ai', () => ({ AI_MODELS: { narrationSfw: 'fake-safe', narrationNsfw: 'fake-story-adult', groupNsfw: 'fake-adult', groupNsfwFallbacks: ['fake-adult-fallback', 'fake-adult-last'], narrationSfwFallbacks: ['fake-safe-fallback'], narrationNsfwFallbacks: ['fake-adult-fallback'] }, narrationTemperature: () => 0.62, snapshotLLMUsage: () => [],
-  callLLMWithFallback: async (request: Row) => { writerCalls.push(request); writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embed: unavailable, callLLM: unavailable, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
+  callLLMWithFallback: async (request: Row) => { writerCalls.push(request); writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; if (response && typeof response === 'object') return { ...response, model: request.model }; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embed: unavailable, callLLM: unavailable, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
 }))
 const { groupTurnProcessor } = await import('../worker/processors/group-turn.processor')
 const { instanceService } = await import('../src/services/instance.service')
@@ -319,10 +358,10 @@ const originalRandom = Math.random
 Math.random = () => 0
 const playerId = '300000000000000000000001'
 let instanceId = ''
-async function start() {
+async function start(source = groupTemplate()) {
   tables.clear(); frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0
   rows('users').push({ _id: new ObjectId(playerId), preferences: { nsfw_enabled: false, player_name: playerName } })
-  rows('worldTemplates').push(clone(groupTemplate()) as unknown as Row)
+  rows('worldTemplates').push(clone(source) as unknown as Row)
   const created = await instanceService.create(playerId, template._id.toHexString(), 'creator')
   instanceId = created.instance._id.toHexString()
   return created
@@ -333,7 +372,7 @@ async function turn(data: Partial<GroupTurnJob> = {}, rng?: () => number) {
 }
 function forbidden(value: unknown) {
   if (!value || typeof value !== 'object') return
-  for (const [key, entry] of Object.entries(value)) { assert(!['intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'cost', 'cost_usd'].includes(key), `leaked ${key}`); forbidden(entry) }
+  for (const [key, entry] of Object.entries(value)) { assert(!['interested', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'cost', 'cost_usd'].includes(key), `leaked ${key}`); forbidden(entry) }
 }
 await check('group adult model defaults overrides and Euryale temperature are isolated from story narration', async () => {
   const code = `import { mock } from 'bun:test'; mock.module('./src/config/env.ts', () => ({ env: {} })); const { AI_MODELS } = await import('./src/ai/models.ts'); console.log(JSON.stringify({ model: AI_MODELS.groupNsfw, fallbacks: AI_MODELS.groupNsfwFallbacks }));`
@@ -355,7 +394,7 @@ await check('seed adult schema accepts authored traits and rejects malformed or 
   const { _id, creator_id, slug, version, created_at, updated_at, is_published, visibility, review_status, ...body } = template
   assert(Value.Check(CreateTemplateBody, body))
   const groupSchema = CreateTemplateBody.properties.seed_cast.items.properties.group
-  for (const patch of [{ intimacy: 42 }, { voice: 'wrong' }, { voice: [] }, { voice: Array(9).fill('text') }, { voice: [42] }, { extra: 'unknown' }]) {
+  for (const patch of [{ interested: 'false' }, { interested: null }, { interested: 1 }, { intimacy: 42 }, { voice: 'wrong' }, { voice: [] }, { voice: Array(9).fill('text') }, { voice: [42] }, { extra: 'unknown' }]) {
     assert(!Value.Check(groupSchema, { ...members[0].group, ...patch }))
   }
   for (const patch of [{ intimacy: undefined }, { voice: undefined }, { voice: [' '] }]) assert.throws(() => validateEntry({ ...body, slug, cover: 'fixture.png', seed_cast: body.seed_cast!.map((member, index) => index ? member : { ...member, group: { ...member.group!, ...patch } }) }, 'bad-adult'))
@@ -451,6 +490,99 @@ async function adultStart() {
 }
 function content(call: Row, role: number) { return ((call.messages as Row[])[role].content as string) }
 function lastData() { return rows('events').at(-1)!.data as Row }
+async function authoredGroups(): Promise<WorldTemplateDoc[]> {
+  assert(process.env.GROUP_CHAT_DATA_DIR, 'GROUP_CHAT_DATA_DIR is required for authored reachability')
+  const dir = process.env.GROUP_CHAT_DATA_DIR
+  const files = (await readdir(dir)).filter(file => file.endsWith('.json')).sort()
+  assert.equal(files.length, 3)
+  const groups: WorldTemplateDoc[] = []
+  for (const file of files) {
+    const data = JSON.parse(await readFile(`${dir}/${file}`, 'utf8'))
+    validateEntry(data, file)
+    groups.push({ ...groupTemplate(), ...data })
+  }
+  assert.equal(groups.reduce((sum, group) => sum + group.seed_cast!.length, 0), 15)
+  return groups
+}
+await check('authored tagged reachability covers every member and interest routing through retry rescue and copied voice', async () => {
+  let cases = 0
+  for (const group of await authoredGroups()) for (const member of group.seed_cast!) {
+    for (const scenario of ['normal', 'adult', 'empty', 'rescue', 'voice']) {
+      await start(group)
+      const adult = scenario !== 'normal'
+      put(rows('users')[0], 'preferences.nsfw_enabled', adult)
+      rows('worldInstances')[0].mode = adult ? 'ardent' : 'free_play'
+      const fresh = `${member.name}: Fresh answer for case ${cases}.`
+      const chain = member.group!.interested ? ['fake-adult', 'fake-adult-fallback', 'fake-adult-last'] : ['fake-safe', 'fake-safe-fallback']
+      modelReplies = scenario === 'empty' ? ['', fresh] : scenario === 'rescue' ? [new Error('writer unavailable'), ...chain.slice(1).map(() => ''), fresh]
+        : scenario === 'voice' ? [`${member.name}: ${member.group!.voice![0]}`, fresh] : [fresh]
+      await turn({ userMessage: `@${member.name} answer me` }, () => 0)
+      const card = rows('characters').find(card => card.canonical_name === member.name)!
+      assert((lastData().lines as Row[]).some(line => line.character_id === String(card._id)), `${group.slug}/${member.name}/${scenario} never spoke`)
+      assert.equal(rows('events').at(-1)!.type, adult ? 'intimate' : 'narration')
+      const writing = checkLogs.at(-1)!.writing as Row[]
+      const expected = adult && member.group!.interested ? 'fake-adult' : 'fake-safe'
+      assert.equal(writerCalls[0].model, expected)
+      if (!member.group!.interested || !adult) {
+        assert(writerCalls.every(call => !String(call.model).startsWith('fake-adult')))
+        assert(writing.every(call => call.writer === 'normal'))
+        assert(String(lastData().model_used).startsWith('fake-safe'))
+      }
+      if (adult) {
+        assert.equal(writerCalls[0].maxTokens, 160)
+        assert(content(writerCalls[0], 0).includes(member.group!.intimacy!))
+        assert(content(writerCalls[0], 1).includes('Write one to three messages.'))
+      }
+      if (scenario === 'rescue') {
+        assert.deepEqual(writerCalls.slice(0, chain.length).map(call => call.model), chain)
+        assert(writing.some(call => call.purpose === 'addressed_fallback'))
+      }
+      if (scenario === 'voice') assert.equal(checkLogs.at(-1)!.copied_example, 1)
+      cases++
+    }
+  }
+  assert.equal(cases, 75)
+  console.log(`authored tagged reachability: ${cases}/75 cases produced the tagged member's line`)
+})
+await check('authored untagged reachability picks and speaks every member over 2000 seeded processor rolls per group', async () => {
+  let seed = 91
+  const rng = () => ((seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32)
+  for (const group of await authoredGroups()) {
+    const spoken = new Set<string>()
+    for (let roll = 0; roll < 2000; roll++) {
+      await start(group)
+      modelReplies = [group.seed_cast!.map(member => `${member.name}: A fresh untagged response ${roll}.`).join('\n')]
+      await turn({ userMessage: 'Anyone around?' }, rng)
+      for (const line of lastData().lines as Row[]) {
+        const card = rows('characters').find(card => String(card._id) === line.character_id)!
+        spoken.add(String(card.canonical_name))
+      }
+    }
+    assert.deepEqual([...spoken].sort(), group.seed_cast!.map(member => member.name).sort(), group.slug)
+    console.log(`authored untagged reachability: ${group.slug}, all ${spoken.size} members spoke over 2000 seeded rolls`)
+  }
+})
+await check('processor sentence trim gates token cutoffs normal turns adult addressed and bystanders with counters', async () => {
+  await start()
+  modelReplies = [{ content: `${names[0]}: Complete. unfinished`, finishReason: 'length' }]
+  await turn({ userMessage: `@${names[0]}` })
+  assert.equal((lastData().lines as Row[])[0].text, 'Complete.')
+  assert.equal(checkLogs.at(-1)!.trimmed, 1)
+  await start()
+  modelReplies = [{ content: `${names[0]}: unfinished`, finishReason: 'length' }, `${names[0]}: Fresh repair.`]
+  await turn({ userMessage: `@${names[0]}` })
+  assert.equal((lastData().lines as Row[])[0].text, 'Fresh repair.')
+  assert.equal(checkLogs.at(-1)!.trimmed, 1)
+  const long = `Short. ${'long '.repeat(70)}`.trim()
+  await start(); modelReplies = [`${names[0]}: ${long}`]
+  await turn({ userMessage: `@${names[0]}` })
+  assert.equal((lastData().lines as Row[])[0].text, long)
+  await adultStart()
+  modelReplies = [`${names[0]}: ${long}`, `${names[1]}: ${long}`]
+  await turn({ userMessage: `@${names[0]} @${names[1]}` })
+  assert.deepEqual((lastData().lines as Row[]).map(line => line.text), ['Short.', 'Short.'])
+  assert.equal(checkLogs.at(-1)!.trimmed, 2)
+})
 await check('adult split order models histories budgets records and whole reply; normal turn stays one call', async () => {
   await adultStart()
   const staticBefore = get(rows('worldInstances')[0], 'group_context.static_prompt')
@@ -523,6 +655,49 @@ await check('adult consent withdrawn before first call, retry or transport fallb
     await adultStart(); put(rows('users')[0], 'preferences.nsfw_enabled', enabled)
     rows('worldTemplates')[0].is_nsfw_capable = false
     await turn(); assert(writerCalls.every(call => call.model === 'fake-safe'))
+  }
+})
+for (const interested of [true, false]) await check(`${interested ? 'interested' : 'not-interested'} addressed prompt follows fresh consent before every call`, async () => {
+  for (const withdrawn of [false, true]) for (const at of ['first', 'retry', 'transport'] as const) {
+    const source = clone(groupTemplate())
+    source.seed_cast![0].group!.interested = interested
+    await start(source)
+    put(rows('users')[0], 'preferences.nsfw_enabled', true)
+    rows('worldInstances')[0].mode = 'ardent'
+    let reads = 0
+    const readsAtCall: number[] = []
+    consentReadHook = () => {
+      reads++
+      if (withdrawn && at === 'first' && reads === 2) put(rows('users')[0], 'preferences.nsfw_enabled', false)
+    }
+    writerHook = () => {
+      readsAtCall.push(reads)
+      if (withdrawn && at !== 'first') put(rows('users')[0], 'preferences.nsfw_enabled', false)
+    }
+    const answer = `${names[0]}: Fresh consent reply.`
+    modelReplies = at === 'first' ? [answer] : [at === 'transport' ? new Error('429 unavailable') : '', answer]
+    await turn({}, () => 0)
+    assert.deepEqual(readsAtCall, at === 'first' ? [2] : [2, 3], 'each call needs a fresh read after the route read')
+    assert.deepEqual(writerCalls.map(call => call.model), at === 'first'
+      ? [interested && !withdrawn ? 'fake-adult' : 'fake-safe']
+      : [interested ? 'fake-adult' : 'fake-safe', interested ? withdrawn ? 'fake-safe' : 'fake-adult-fallback' : 'fake-safe-fallback'])
+    for (const [index, call] of writerCalls.entries()) {
+      const allowed = !withdrawn || (at !== 'first' && index === 0)
+      const system = content(call, 0)
+      assert.equal(system.includes(`You are writing only ${names[0]}'s messages`), allowed)
+      assert.equal(system.includes(`How ${names[0]} is about flirting and sex: ${members[0].group.intimacy}`), allowed)
+      assert.equal(system.includes('as explicitly and crudely as'), allowed)
+      if (!allowed) {
+        assert.equal(system, get(rows('worldInstances')[0], 'group_context.static_prompt'))
+        assert(members.every(member => !system.includes(member.group.intimacy!)))
+      }
+      assert.equal(call.maxTokens, allowed ? 160 : 60)
+      assert(content(call, 1).includes(allowed ? 'Write one to three messages.' : 'Each writes one short message.'))
+      assert.equal(content(call, 1).includes('Write one to three messages.'), allowed)
+      assert(content(call, 1).includes(`${playerName}: A player message`))
+    }
+    assert.equal(lastData().ai_response, answer)
+    assert.equal((frames.find(frame => frame.type === 'group_lines')!.lines as Row[]).length, 1)
   }
 })
 await check('adult optional failure preserves fresh reply and other tags get repair plus last backup attempt', async () => {
