@@ -10,7 +10,7 @@ import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic } from '../sr
 import { writeGroupReply } from '../src/services/group-chat/reply'
 import { validateGroup } from '../src/services/group-chat/validation'
 import { publicGroupData } from '../src/services/group-chat/public'
-import { members, groupTemplate } from './group-chat-fixtures'
+import { members, groupTemplate, owenReply } from './group-chat-fixtures'
 import type { GroupTurnJob } from '../worker/processors/group-turn.processor'
 import type { WorldInstanceDoc } from '../src/models/world-instance.model'
 import type { WorldTemplateDoc } from '../src/models/world-template.model'
@@ -154,6 +154,33 @@ ${names[1]}: other three`
   assert.equal(counts.stage_directions, 6); assert.equal(counts.empty, 3)
   assert.equal(counts.copied_example, 1); assert.equal(counts.duplicate, 1); assert.equal(counts.over_cap, 2)
   assert.equal(filterLines([{ name: names[0], text: 'first' }, { name: names[0], text: 'second' }], { ...opts, oneMessage: true }, emptyLineCounts()).length, 1)
+})
+await check('repeated openers compare two normalized words against only that member last three lines', () => {
+  const previous = [
+    { name: names[0], text: 'Old opening outside the window.' },
+    { name: names[0], text: 'First phrase from three lines ago.' },
+    { name: names[1], text: 'Other member says this.' },
+    { name: names[0], text: 'Second phrase from two lines ago.' },
+    { name: names[0], text: 'Third phrase from the last line.' },
+  ]
+  const counts = emptyLineCounts()
+  const options = { ...opts, previous, addressed: ids[0], repeatedOpener: true }
+  for (const text of ['FIRST,   phrase is changed.', 'Second PHRASE has new words.', '*waves* “third”—phrase still repeats.']) {
+    assert.deepEqual(filterLines([{ name: names[0], text }], options, counts), [])
+  }
+  assert.equal(counts.repeated_opener, 3)
+  for (const text of ['Old opening is allowed now.', 'Other member has a different speaker.', 'First different second word.', 'First']) {
+    assert.equal(filterLines([{ name: names[0], text }], options, counts).length, 1)
+  }
+  assert.equal(filterLines([{ name: names[1], text: 'First phrase from someone else.' }], options, counts).length, 1)
+  assert.equal(filterLines([{ name: names[0], text: 'First phrase on a normal turn.' }], { ...options, repeatedOpener: false }, counts).length, 1)
+  assert.equal(counts.repeated_opener, 3)
+  const fresh = filterLines([{ name: names[0], text: 'Fresh start in this reply.' }, { name: names[0], text: 'Fresh start repeated within the reply.' }], options, counts)
+  assert.deepEqual(fresh.map(line => line.text), ['Fresh start in this reply.'])
+  assert.equal(counts.repeated_opener, 4)
+  assert.equal(filterLines([{ name: names[1], text: 'Other member says it differently.' }], options, counts).length, 1)
+  assert.equal(filterLines([{ name: names[0], text: 'YES' }], { ...options, previous: [{ name: names[0], text: 'yes' }] }, emptyLineCounts()).length, 0) // Exact repeats still gate.
+  assert.equal(filterLines([{ name: names[0], text: 'YES!' }], { ...options, previous: [{ name: names[0], text: 'yes' }] }, counts).length, 1)
 })
 await check('adult validation requires authored intimacy and 1–8 voice lines and rejects unknown shapes even when optional', () => {
   const patch = (group: unknown, capable = true) => ({ ...template, is_nsfw_capable: capable, seed_cast: template.seed_cast!.map((member, index) => index ? member : { ...member, group }) }) as WorldTemplateDoc
@@ -518,7 +545,7 @@ await check('addressed history keeps exchange and three recent others without se
     assert(content(writerCalls[0], 1).endsWith(`${playerName}: ${message}`))
     assert(content(writerCalls[0], 0).includes(members[2].group.intimacy!))
     assert(content(writerCalls[0], 0).includes(members[2].group.voice![0]))
-    assert(content(writerCalls[1], 1).includes('Prior 7'))
+    assert(!content(writerCalls[1], 1).includes('Prior 7'))
     assert(content(writerCalls[1], 1).includes('Addressed fresh'))
   }
   await start(); addEvent('narration', 0, 2, 'seed'); await turn()
@@ -614,6 +641,105 @@ async function authoredGroups(): Promise<WorldTemplateDoc[]> {
   assert.equal(groups.reduce((sum, group) => sum + group.seed_cast!.length, 0), 15)
   return groups
 }
+await check('authored player placeholders resolve per call for all fifteen addressed prompts', async () => {
+  let checked = 0
+  for (const group of await authoredGroups()) for (const member of group.seed_cast!) {
+    for (const player of [playerName, 'Rae $&']) {
+      await start(group, player)
+      put(rows('users')[0], 'preferences.nsfw_enabled', true)
+      auditEnv.NSFW_SAME_TURN_ROUTER = 'on'
+      modelReplies = [`${member.name}: A fresh personal answer.`]
+      await turn({ userMessage: `@${member.name} answer me` }, never)
+      const system = content(writerCalls[0], 0)
+      const intimacy = member.group!.intimacy!
+      assert(system.includes(`How ${member.name} is about flirting and sex: ${intimacy.replaceAll('{player}', () => player)}`))
+      assert(writerCalls.every(call => (call.messages as Row[]).every(message => !String(message.content).includes('{player}'))))
+      if (intimacy.includes('{player}')) assert(!system.includes(intimacy), 'unresolved authored address remained')
+    }
+    checked++
+  }
+  assert.equal(checked, 15)
+  const member = { ...members[0], group: { ...members[0].group, intimacy: 'Interested in {player}; asks {player} directly.' } }
+  assert(buildAddressedStatic({ ...template, members, player: 'Rae $&' }, member).includes('Interested in Rae $&; asks Rae $& directly.'))
+})
+await check('whole Owen message retains a long complete sentence under the adult 280 limit', async () => {
+  const group = (await authoredGroups()).find(group => group.seed_cast!.some(member => member.name === 'Owen'))!
+  const member = group.seed_cast!.find(member => member.name === 'Owen')!
+  await adultStart(group)
+  assert(Array.from(owenReply.sentence).length >= 200 && Array.from(owenReply.sentence).length <= 280)
+  const full = `${owenReply.sentence} ${owenReply.overflow}`
+  assert(Array.from(full).length > 280)
+  modelReplies = [{ content: `${member.name}: ${full}`, finishReason: 'stop' }]
+  await turn({ userMessage: `@${member.name} answer me` }, never)
+  assert.equal(writerCalls[0].maxTokens, 300)
+  assert.equal(writerCalls[0].model, 'fake-safe')
+  assert.equal((lastData().lines as Row[])[0].text, owenReply.sentence)
+  assert((lastData().lines as Row[]).every(line => Array.from(String(line.text)).length <= 280))
+  assert.equal(checkLogs.at(-1)!.trimmed, 1)
+})
+await check('adult repeated opener drops one line keeps the rest and retries only when empty', async () => {
+  for (const scenario of ['remaining', 'retry', 'normal', 'bystander', 'not-interested', 'withdrawn']) {
+    const source = groupTemplate()
+    if (scenario === 'not-interested') source.seed_cast![0].group!.interested = false
+    await adultStart(source)
+    addEvent('narration', 0)
+    put(rows('events').at(-1)!, 'data.lines', [{ character_id: ids[0], text: 'Familiar start was said before.', shown_at: new Date() }])
+    if (scenario === 'normal') auditEnv.NSFW_SAME_TURN_ROUTER = 'off'
+    if (scenario === 'withdrawn') consentReadHook = () => { put(rows('users')[0], 'preferences.nsfw_enabled', false) }
+    if (scenario === 'bystander') {
+      modelReplies = [`${names[1]}: Entirely fresh addressed answer.`, `${names[0]}: Familiar start from the bystander.`]
+    } else {
+      modelReplies = [`${names[0]}: *waves* FAMILIAR, start with different words.${scenario === 'remaining' ? `\n${names[0]}: A complete new answer survives.\n${names[0]}: Another line survives as well.` : ''}`, `${names[0]}: Completely new answer after retry.`]
+    }
+    await turn({ userMessage: scenario === 'bystander' ? `@${names[1]} @${names[0]}` : `@${names[0]}` }, never)
+    const data = lastData().lines as Row[]
+    const gated = scenario === 'remaining' || scenario === 'retry'
+    assert.equal(checkLogs.at(-1)!.repeated_opener, gated ? 1 : 0, scenario)
+    assert.equal(writerCalls.length, scenario === 'retry' || scenario === 'bystander' ? 2 : 1, scenario)
+    if (scenario === 'remaining') assert.deepEqual(data.map(line => line.text), ['A complete new answer survives.', 'Another line survives as well.'])
+    if (scenario === 'retry') {
+      assert.equal(data[0].text, 'Completely new answer after retry.')
+      assert.deepEqual((checkLogs.at(-1)!.writing as Row[]).map(call => call.purpose), ['addressed', 'addressed_retry'])
+      assert.equal(writerCalls[1].model, 'fake-adult')
+    }
+    if (!gated) assert(data.some(line => String(line.text).toLowerCase().includes('familiar')))
+  }
+})
+await check('normal writer seed history expires at two player messages including the current turn across the full chat', async () => {
+  for (const origin of ['player', 'unprompted', 'catchup'] as const) for (const priorPlayers of [0, 1, 2]) {
+    await start()
+    for (let i = 0; i < priorPlayers; i++) {
+      addEvent('narration', 1)
+      put(rows('events').at(-1)!, 'data.player_input', `Earlier player message ${i}.`)
+    }
+    await turn({ origin, userMessage: origin === 'player' ? 'Current player message.' : '' }, never)
+    const keepsSeed = priorPlayers + (origin === 'player' ? 1 : 0) < 2
+    assert.equal(content(writerCalls[0], 1).includes('The authored opening.'), keepsSeed, `${origin}/${priorPlayers}`)
+  }
+  await start()
+  put(rows('events')[0], 'data.player_input', 'Seed player text')
+  addEvent('narration', 1)
+  addEvent('narration', 1)
+  await turn({ userMessage: 'First real player message.' }, never)
+  assert(content(writerCalls[0], 1).includes('The authored opening.'), 'seed and nonplayer events do not count as player messages')
+  // Player messages may have fallen outside the thirty-event prompt window.
+  await start()
+  for (let sequence = 2; sequence <= 36; sequence++) {
+    addEvent('narration', 1, sequence)
+    if (sequence <= 3) put(rows('events').at(-1)!, 'data.player_input', `Old player message ${sequence}.`)
+  }
+  addEvent('narration', 1, 37, 'seed')
+  await turn({ origin: 'unprompted', userMessage: '' }, never)
+  assert(!content(writerCalls[0], 1).includes('Prior 37'))
+  for (const priorPlayers of [0, 1]) {
+    await adultStart()
+    if (priorPlayers) { addEvent('narration', 1); put(rows('events').at(-1)!, 'data.player_input', 'Earlier player message.') }
+    modelReplies = [`${names[0]}: Fresh addressed answer.`, `${names[1]}: Fresh bystander answer.`]
+    await turn({ userMessage: `@${names[0]} @${names[1]}` }, never)
+    assert.equal(content(writerCalls[1], 1).includes('The authored opening.'), priorPlayers === 0)
+    assert(content(writerCalls[1], 1).includes('Fresh addressed answer.'))
+  }
+})
 await check('authored tagged reachability covers every member and interest routing through retry rescue and copied voice', async () => {
   let cases = 0
   for (const group of await authoredGroups()) for (const member of group.seed_cast!) {
@@ -639,8 +765,8 @@ await check('authored tagged reachability covers every member and interest routi
         assert(String(lastData().model_used).startsWith('fake-safe'))
       }
       if (adult) {
-        assert.equal(writerCalls[0].maxTokens, 160)
-        assert(content(writerCalls[0], 0).includes(member.group!.intimacy!))
+        assert.equal(writerCalls[0].maxTokens, 300)
+        assert(content(writerCalls[0], 0).includes(member.group!.intimacy!.replaceAll('{player}', playerName)))
         assert(content(writerCalls[0], 1).includes('Write one to three messages.'))
       }
       if (scenario === 'rescue') {
@@ -706,7 +832,7 @@ await check('adult split order models histories budgets records and whole reply;
   assert.equal(rolls > 0, true)
   // The first non-addressed rolled speaker is selected by the injected roll.
   assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-safe'])
-  assert.deepEqual(writerCalls.map(call => call.maxTokens), [160, 60])
+  assert.deepEqual(writerCalls.map(call => call.maxTokens), [300, 60])
   assert(content(writerCalls[0], 0).includes(members[2].group.intimacy!))
   assert(!content(writerCalls[0], 0).includes(members[1].group.wants))
   assert(!content(writerCalls[0], 1).includes('history-4\n'))
@@ -803,7 +929,7 @@ for (const interested of [true, false]) await check(`${interested ? 'interested'
         assert.equal(system, get(rows('worldInstances')[0], 'group_context.static_prompt'))
         assert(members.every(member => !system.includes(member.group.intimacy!)))
       }
-      assert.equal(call.maxTokens, allowed ? 160 : 60)
+      assert.equal(call.maxTokens, allowed ? 300 : 60)
       assert(content(call, 1).includes(allowed ? 'Write one to three messages.' : 'Each writes one short message.'))
       assert.equal(content(call, 1).includes('Write one to three messages.'), allowed)
       assert(content(call, 1).includes(`${playerName}: A player message`))

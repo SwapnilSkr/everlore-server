@@ -59,7 +59,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       return member ? [{ name: member.name, text: line.text }] : []
     }),
   ])
-  const history = messagesFromEvents(recent)
+  const playerMessages = (origin === 'player' ? 1 : 0) + await mongoColl.events().countDocuments({
+    instance_id: iid, 'data.model_used': { $ne: 'seed' }, 'data.player_input': { $exists: true, $ne: '' },
+  }, { limit: 2 })
+  const history = messagesFromEvents(playerMessages >= 2 ? recent.filter(event => event.data.model_used !== 'seed') : recent)
   const previousLines: NamedLine[] = (await Promise.all(members.map(async member => {
     const events = await mongoColl.events().find({ instance_id: iid, 'data.lines.character_id': member.id })
       .sort({ sequence: -1 }).limit(5).toArray()
@@ -143,7 +146,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           try {
             const result = await callLLMWithFallback({ model, purpose: 'narration',
               messages: [{ role: 'system', content: system }, { role: 'user', content: dynamic }],
-              temperature: narrationTemperature(model), maxTokens: split ? addressedPrompt ? 160 : 60 * speakers.length : 400,
+              temperature: narrationTemperature(model), maxTokens: split ? addressedPrompt ? 300 : 60 * speakers.length : 400,
               sessionId: instanceId }, [])
             return { ...result, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: index + 1 }
           } catch (error) {

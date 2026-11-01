@@ -1,8 +1,13 @@
 import type { GroupLine, GroupMember, GroupOrigin, NamedLine } from './types'
 
-export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed', number>
-export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0 })
+export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'repeated_opener' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed', number>
+export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, repeated_opener: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0 })
 const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim()
+
+const opener = (text: string): string | undefined => {
+  const words = stripStageDirections(text).toLowerCase().match(/[\p{L}\p{N}]+/gu) || []
+  return words.length >= 2 ? words.slice(0, 2).join(' ') : undefined
+}
 
 export function parseLines(raw: string, members: GroupMember[], player: string, counts: LineCounts): NamedLine[] {
   const names = new Map(members.map(member => [member.name.toLowerCase(), member.name]))
@@ -57,7 +62,7 @@ export function filterLines(input: NamedLine[], options: {
   previous: NamedLine[]; openings: NamedLine[]
   blocked: (text: string) => boolean
   player?: string; onCopiedExample?: (example: string) => void
-  addressed?: string; oneMessage?: boolean; finishReason?: string | null
+  addressed?: string; repeatedOpener?: boolean; oneMessage?: boolean; finishReason?: string | null
 }, counts: LineCounts): NamedLine[] {
   const kept: NamedLine[] = []
   const used = new Map<string, number>()
@@ -80,6 +85,9 @@ export function filterLines(input: NamedLine[], options: {
     const previous = options.previous.filter(other => other.name === line.name).slice(-5)
     const duplicates = [...previous, ...options.openings.filter(other => other.name === line.name), ...kept.filter(other => other.name === line.name)]
     if (duplicates.some(other => normalized(other.text) === normalized(line.text))) { counts.duplicate++; continue }
+    const firstWords = opener(line.text)
+    if (options.repeatedOpener && member.id === options.addressed && firstWords !== undefined
+      && [...previous, ...kept.filter(other => other.name === line.name)].slice(-3).some(other => opener(other.text) === firstWords)) { counts.repeated_opener++; continue }
     if ((used.get(line.name) ?? 0) >= (options.oneMessage ? 1 : member.id === options.addressed ? 3 : 2) || (options.origin === 'catchup' && kept.length >= 4)) { counts.over_cap++; continue }
     used.set(line.name, (used.get(line.name) ?? 0) + 1)
     kept.push(line)

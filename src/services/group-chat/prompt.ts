@@ -37,7 +37,7 @@ export function buildGroupDynamic(input: {
 export function buildAddressedStatic(input: Parameters<typeof buildGroupStatic>[0], member: GroupMember, excludedVoice: string[] = []): string {
   return [buildGroupStatic({ ...input, members: [member] }),
     `You are writing only ${member.name}'s messages in this reply: one to three of them, as long as ${member.name} would really send.`,
-    `How ${member.name} is about flirting and sex: ${member.group.intimacy}`,
+    `How ${member.name} is about flirting and sex: ${member.group.intimacy?.replaceAll('{player}', () => input.player)}`,
     [`How ${member.name} really texts:`, `${input.player}'s gender isn't stated, so don't assume it.`, ...(member.group.voice || []).filter(example => !excludedVoice.includes(example))].join('\n'),
     `Everyone here is a consenting adult. If it's sexual, ${member.name} answers what was actually said, as explicitly and crudely as ${member.name} really would, or turns it down the way ${member.name} really would. Say something new each time, moving things on from the last message. Don't repeat or lightly reword an earlier message.`,
   ].join('\n\n')

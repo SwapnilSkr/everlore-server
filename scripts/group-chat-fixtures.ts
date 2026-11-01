@@ -20,3 +20,8 @@ export function groupTemplate(): WorldTemplateDoc {
     max_lore_results: 10, created_at: new Date('2026-01-01Z'), updated_at: new Date('2026-01-01Z'),
   }
 }
+
+export const owenReply = {
+  sentence: 'Having consulted the record from 14 March, I can confirm that I am still flattered by the invitation, although I must politely decline for reasons which are entirely my own and which, mercifully, do not require a guild meeting to discuss.',
+  overflow: 'I trust this clarification will spare us another lengthy debate in the minutes.',
+}
