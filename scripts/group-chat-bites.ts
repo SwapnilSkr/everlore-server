@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // and audit files are copied; no environment files or credentials are read.
 const root = await mkdtemp(join(import.meta.dir, '.group-chat-bites-'))
 const server = new URL('..', import.meta.url).pathname
-const auditFiles = ['group-chat-audit.ts', 'group-memory-trace-audit.ts', 'group-memory-dedup-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'narrator-harness-audit.ts']
+const auditFiles = ['group-chat-audit.ts', 'group-memory-recall.ts', 'group-memory-trace-audit.ts', 'group-memory-dedup-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'narrator-harness-audit.ts']
 type Edit = [file: string, from: string, to: string]
 type Mutation = { name: string; check: string; edits: Edit[]; script?: string }
 const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat/lines.ts', reply = 'src/services/group-chat/reply.ts'
@@ -204,6 +204,37 @@ const mutations: Mutation[] = [
   { name: 'group atom provenance flattened to boundary', check: 'memory numbered speakers', edits: [['worker/processors/memory.processor.ts', 'source_event_ids: sourceEventIds', 'source_event_ids: [eventOid]']] },
   { name: 'private group memory notification', check: 'memory numbered speakers', edits: [['worker/processors/memory.processor.ts', 'if (!group) await redis.publish', 'await redis.publish']] },
   { name: 'curator trace chat scope lost', check: 'memory numbered speakers', edits: [['worker/processors/memory.processor.ts', 'instance_id: job.data.instanceId', 'instance_id: undefined']] },
+  { name: 'group prompt inherits normal extraction limits', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', 'content: GROUP_EXTRACTION_PROMPT', 'content: EXTRACTION_PROMPT']] },
+  { name: 'group prompt drops small facts', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', 'even when it looks small', 'only when momentous']] },
+  { name: 'group prompt merges facts', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', 'one fact per atom', 'several facts per atom']] },
+  { name: 'group schema field missing', check: 'memory group prompt', edits: [['src/services/group-chat/curation.ts', '  source_messages:', '  omitted_source_messages:']] },
+  { name: 'group citation not required', check: 'memory group prompt', edits: [['src/services/group-chat/curation.ts', 'Object.keys(atomProperties)', "Object.keys(atomProperties).filter(key => key !== 'source_messages')"]] },
+  { name: 'group citation schema permits empty', check: 'memory group prompt', edits: [['src/services/group-chat/curation.ts', 'minItems: 1', 'minItems: 0']] },
+  { name: 'group citation schema permits fractions', check: 'memory group prompt', edits: [['src/services/group-chat/curation.ts', "items: { type: 'integer', minimum: 1 }", "items: { type: 'number', minimum: 1 }"]] },
+  { name: 'group request omits response schema', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', '      responseSchema: GROUP_CURATION_SCHEMA,', '']] },
+  { name: 'group request disables strict schema', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', "name: 'group_memories', strict: true", "name: 'group_memories', strict: false"]] },
+  { name: 'stub string response ignores requested schema', check: 'memory group prompt', edits: [['scripts/group-chat-audit.ts', 'try { result = JSON.parse(result) } catch { return result }', 'return result']] },
+  { name: 'stub invents unrequested citations', check: 'memory group prompt', edits: [['scripts/group-chat-audit.ts', "if (get(request, 'responseSchema.properties.memories.items.properties.source_messages')) return result", 'return result']] },
+  { name: 'player subject remains named', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', 'atom.subjects = atom.subjects.map(canonical)', 'atom.subjects = atom.subjects']] },
+  { name: 'player object remains named', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', 'atom.objects = atom.objects.map(canonical)', 'atom.objects = atom.objects']] },
+  { name: 'player comparison becomes case sensitive', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', 'name.toLowerCase() === group.player.toLowerCase()', 'name === group.player']] },
+  { name: 'player relative incorrectly canonicalized', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', 'name.toLowerCase() === group.player.toLowerCase()', 'name.toLowerCase().startsWith(group.player.toLowerCase())']] },
+  { name: 'group prompt loses numbered conversation', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', 'numbered conversation among several people', 'single exchange']] },
+  { name: 'group prompt drops personal fact categories', check: 'memory group prompt', edits: [['worker/processors/memory.processor.ts', 'family, work, health, plans and promises', 'major events']] },
+  { name: 'group citations become strings', check: 'memory group prompt', edits: [['src/services/group-chat/curation.ts', "source_messages: { type: 'array'", "source_messages: { type: 'string'"]] },
+  { name: 'group citation schema permits zero', check: 'memory group prompt', edits: [['src/services/group-chat/curation.ts', "items: { type: 'integer', minimum: 1 }", "items: { type: 'integer', minimum: 0 }"]] },
+  { name: 'client drops group schema', check: 'memory group prompt', edits: [['src/ai/client.ts', 'schema: req.responseSchema,', 'schema: {},']] },
+  { name: 'client allows schema ignoring provider', check: 'memory group prompt', edits: [['src/ai/client.ts', 'require_parameters: true', 'require_parameters: false']] },
+  { name: 'summary falsely earns recall', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', '[sections?.memories, sections?.openThreads].filter(Boolean)', '[sections?.memories, sections?.openThreads, sections?.summaries].filter(Boolean)']] },
+  { name: 'raw history falsely earns recall', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', '[sections?.memories, sections?.openThreads].filter(Boolean)', '[sections?.memories, sections?.openThreads, sections?.recent].filter(Boolean)']] },
+  { name: 'unresolved Q6 accepts ordinary memories', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "question.id === 'Q6' && ladderUnresolved", 'false']] },
+  { name: 'resolved Q6 still demands open thread', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "question.id === 'Q6' && ladderUnresolved", "question.id === 'Q6'"]] },
+  { name: 'section reporting loses raw history', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "['raw history', sections?.recent ?? '']", "['raw history', '']"]] },
+  { name: 'Q3 requires no recall token', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "promptMust: [['lena', 'lisbon']]", 'promptMust: []']] },
+  { name: 'Q5 rejects allergy reply', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "replyMust: [['peanut', 'allerg']]", "replyMust: [['peanut']]"]] },
+  { name: 'canonical player rejected by recall', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "name === 'the player' || name === 'player' || name === PLAYER.toLowerCase()", "name === 'the player' || name === PLAYER.toLowerCase()"]] },
+  { name: 'mixed wrong person escapes recall', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', 'return wrongPerson.length > 0', "return !subjects.includes('player') && wrongPerson.length > 0"]] },
+  { name: 'raw curator envelope discarded', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', 'call.rawResponse ?? call.response', 'call.response']] },
   { name: 'invalid citations accepted', check: 'memory invalid citations', edits: [['worker/processors/memory.processor.ts', 'Number(number) > group.messages.length', 'false']] },
   { name: 'invalid atom importance accepted', check: 'memory invalid citations', edits: [['worker/processors/memory.processor.ts', '!Number.isInteger(atom.importance)', 'false']] },
   { name: 'empty curator is success', check: 'memory invalid citations', edits: [['worker/processors/memory.processor.ts', "throw new Error('Group curator returned empty memories')", 'return { memoriesCreated: 0 }']] },

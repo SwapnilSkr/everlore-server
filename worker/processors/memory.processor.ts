@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { GROUP_CURATION_SCHEMA } from '../../src/services/group-chat/curation'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { groupMemoryMayMerge, withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark, type GroupMemoryBatch } from '../../src/services/group-chat/memory'
 import { log } from '../../src/utils/logger'
@@ -18,30 +19,38 @@ import type { EntityDoc, EntityType } from '../../src/models/entity.model'
 import type { TimeAnchorDoc } from '../../src/models/time.model'
 import type { LocationAnchorDoc } from '../../src/models/location.model'
 
+const ATOM_CLASSIFICATION_RULES = `- Rate importance 1-5 (5 = critical plot point or vow, 1 = minor detail).
+- Classify type: relationship, promise, lore, observation, emotion, secret.
+- subjects = who acts/feels in the atom; objects = who/what is affected. Use canonical roster names where possible; use "player" for the player.`
+
+const ATOM_IDENTITY_RULE = `- NEVER invent, extend, or merge a name. Use each person's name EXACTLY as it appears in the text or roster. Do not attach a surname, title, or epithet from one character to another who lacks one (if the player is "Kade" and a different character is "Mara Chen", never write "Kade Chen"). Keep distinct people distinct — never fuse two characters because their names share a fragment, and never give one character another's codename/alias unless the text explicitly equates them.`
+
+const ATOM_METADATA_RULES = `- Set unresolved_thread true for genuinely open hooks: an unkept promise, an unanswered question, an unresolved conflict, a debt, a threat still looming, an appointment or instruction that has not yet been carried out (meet at a place, go at first light, deliver or burn a note, wait for someone). Mundane ongoing states are not threads. A type of "promise" is always a thread until a later turn pays it off.
+- Top-level "entities": classify EVERY name used in any atom's subjects/objects with its kind: character, location, faction, item, quest, or other. Use "character" for people (including "player").
+- Flag is_nsfw if explicit content is referenced.
+- retrieval_terms: 3-6 short, lowercase alternate ways a LATER turn might refer to this fact — synonyms, the roles/objects/places involved, and the gist in different words — so the memory is still found when the future turn is worded differently from the atom. Example: atom "Mira forgave the player after the ash-bridge betrayal" → ["forgiveness", "betrayal at the ash bridge", "mira's trust", "making amends", "broken promise"]. Keep each a short phrase, not a sentence. Return [] only if truly none apply.`
+
+const THREAD_CLOSURE_RULES = `Rules for resolved threads:
+- You will be shown LIVE RELATED FACTS, each with an id (T1, T2, ...). These include flagged open threads AND earlier facts this turn is talking about (appointments, warnings, notes, meetings, instructions). They are still retrieved as if they were current.
+- For EACH listed fact, decide whether THIS exchange settles, completes, or contradicts it. Settled means the thing it was waiting for actually happens: the meeting occurs, the note is burned, the appointment is kept, the order is given, the demand is met, the promise is kept or broken. Put those ids in "closed_thread_ids".
+- Settling is about the EVENT, not the mood. A character who is still angry, suspicious, or unsatisfied AFTER getting what they demanded has still had the demand met — close it. If a new demand replaces it, that is a NEW thread, which you record as a memory atom with unresolved_thread true.
+- Be decisive. A fact you leave open is handed to the storyteller on every future turn as live plot, so a meeting already held or a note already burned will be restaged as if it had not happened.
+- "resolved_threads" is for a payoff you can describe but that matches no listed id — use the explicit names involved (e.g. "the player's promise to return Mira's locket"). Otherwise return an empty array.`
+
 const EXTRACTION_PROMPT = `You are the memory curator for a long-running narrative world. Given one exchange between a player and the world, extract 0-3 memory atoms worth keeping long-term, and detect whether this turn resolved any previously open thread.
 
 Rules for memory atoms:
 - Only extract facts that would still matter 10+ turns from now.
 - Each atom must be ONE self-contained sentence (or two short ones) that makes sense with no other context: resolve every pronoun to an explicit name from the character roster, and name places/objects explicitly.
 - Prefer emotionally instructive memories over flat facts. Weak: "Mira forgave the player." Strong: "Mira chose to forgive the player after the ash-bridge betrayal, but her trust remains fragile; honesty now matters deeply to her." Capture the cause AND the lasting effect.
-- Rate importance 1-5 (5 = critical plot point or vow, 1 = minor detail).
-- Classify type: relationship, promise, lore, observation, emotion, secret.
-- subjects = who acts/feels in the atom; objects = who/what is affected. Use canonical roster names where possible; use "player" for the player.
+${ATOM_CLASSIFICATION_RULES}
 - RESOLVE BACK-REFERENCES using the "Preceding narration" below: when the player's input points at something just said ("stuff like that", "what you said", "things like that", "that", "such things"), resolve it to the ACTUAL content from the preceding narration before writing the atom — never store the vague pointer. Worked example: preceding narration said "Never trust your enemies." and the player says "my father used to say stuff like that" → atom: 'The player's father used to say things like "never trust your enemies."' with subject "father" (or his name if known). ATTRIBUTE a quote, saying, belief, or trait to the PERSON it belongs to (here the father), so it becomes a memory ABOUT that person — list them in subjects so it attaches to their card/entity. Only do this when the player actually attributes it to someone; otherwise treat it as a normal observation.
-- NEVER invent, extend, or merge a name. Use each person's name EXACTLY as it appears in the text or roster. Do not attach a surname, title, or epithet from one character to another who lacks one (if the player is "Kade" and a different character is "Mara Chen", never write "Kade Chen"). Keep distinct people distinct — never fuse two characters because their names share a fragment, and never give one character another's codename/alias unless the text explicitly equates them.
-- Set unresolved_thread true for genuinely open hooks: an unkept promise, an unanswered question, an unresolved conflict, a debt, a threat still looming, an appointment or instruction that has not yet been carried out (meet at a place, go at first light, deliver or burn a note, wait for someone). Mundane ongoing states are not threads. A type of "promise" is always a thread until a later turn pays it off.
-- Top-level "entities": classify EVERY name used in any atom's subjects/objects with its kind: character, location, faction, item, quest, or other. Use "character" for people (including "player").
-- Flag is_nsfw if explicit content is referenced.
-- retrieval_terms: 3-6 short, lowercase alternate ways a LATER turn might refer to this fact — synonyms, the roles/objects/places involved, and the gist in different words — so the memory is still found when the future turn is worded differently from the atom. Example: atom "Mira forgave the player after the ash-bridge betrayal" → ["forgiveness", "betrayal at the ash bridge", "mira's trust", "making amends", "broken promise"]. Keep each a short phrase, not a sentence. Return [] only if truly none apply.
+${ATOM_IDENTITY_RULE}
+${ATOM_METADATA_RULES}
 - If nothing is worth remembering, return an empty array.
 - Treat "Player canonical narration facts" as events that DEFINITELY happened.
 
-Rules for resolved threads:
-- You will be shown LIVE RELATED FACTS, each with an id (T1, T2, ...). These include flagged open threads AND earlier facts this turn is talking about (appointments, warnings, notes, meetings, instructions). They are still retrieved as if they were current.
-- For EACH listed fact, decide whether THIS exchange settles, completes, or contradicts it. Settled means the thing it was waiting for actually happens: the meeting occurs, the note is burned, the appointment is kept, the order is given, the demand is met, the promise is kept or broken. Put those ids in "closed_thread_ids".
-- Settling is about the EVENT, not the mood. A character who is still angry, suspicious, or unsatisfied AFTER getting what they demanded has still had the demand met — close it. If a new demand replaces it, that is a NEW thread, which you record as a memory atom with unresolved_thread true.
-- Be decisive. A fact you leave open is handed to the storyteller on every future turn as live plot, so a meeting already held or a note already burned will be restaged as if it had not happened.
-- "resolved_threads" is for a payoff you can describe but that matches no listed id — use the explicit names involved (e.g. "the player's promise to return Mira's locket"). Otherwise return an empty array.
+${THREAD_CLOSURE_RULES}
 
 Respond ONLY with valid JSON matching this schema:
 {
@@ -67,6 +76,21 @@ Respond ONLY with valid JSON matching this schema:
   "resolved_threads": ["string"],
   "closed_thread_ids": ["T1"]
 }`
+
+const GROUP_EXTRACTION_PROMPT = `You are the memory curator for a numbered conversation among several people. Read all supplied messages and keep each personal fact about anyone in the chat, including their family, work, health, plans and promises, as its own atom even when it looks small. There is no per-exchange atom limit. Detect whether the conversation resolves any previously open thread.
+
+Rules for memory atoms:
+- Write one self-contained sentence per fact, one fact per atom. Resolve pronouns and relatives to the speaker of the cited message; keep each person's facts separate. Name people, places and objects explicitly.
+${ATOM_CLASSIFICATION_RULES}
+${ATOM_IDENTITY_RULE}
+${ATOM_METADATA_RULES}
+- Every atom must include source_messages: a nonempty array of integer message numbers from the supplied numbered conversation. Cite only messages that establish that fact, never database ids.
+- Return an empty memories array only when no message establishes any personal fact.
+
+${THREAD_CLOSURE_RULES.replaceAll('THIS exchange', 'THIS conversation')}
+
+Respond ONLY with valid JSON matching this schema. Every field listed in required must be present in each object, including source_messages in each memory atom:
+${JSON.stringify(GROUP_CURATION_SCHEMA, null, 2)}`
 
 function cleanShortText(value: unknown, max = 300): string | undefined {
   if (typeof value !== 'string') return undefined
@@ -417,9 +441,10 @@ export function buildMemoryCurationRequest(params: {
   if (params.group) {
     return {
       purpose: 'memory_curation', model: AI_MODELS.memoryCuration, temperature: 0.3, maxTokens: 2400,
-      responseFormat: { type: 'json_object' },
+      responseFormat: { type: 'json_schema', json_schema: { name: 'group_memories', strict: true } },
+      responseSchema: GROUP_CURATION_SCHEMA,
       messages: [
-        { role: 'system' as const, content: EXTRACTION_PROMPT + `\nGroup batch rules override the single-exchange rules: extract up to 20 atoms. Every atom MUST include source_messages: a nonempty array of message numbers from the supplied numbered list. Cite only messages that establish that atom, never a database id. Empty extraction is a failure and will be retried. Use named subjects and objects for every person.` },
+        { role: 'system' as const, content: GROUP_EXTRACTION_PROMPT },
         { role: 'user' as const, content: `Scene type: ${params.sceneTag}\n\nCharacter roster:\n${rosterLines}\n\nIdentity boundary:\nThis is a group conversation. The human player is "${params.group.player}"; use "player" for this person's subjects and objects. All other speakers are separate people. "I", "me", and "my" belong to the speaker of THAT numbered message. Resolve relatives and possessions to that speaker, never to another member or a GM protagonist. Name every person explicitly in atom text, subjects and objects.\n\nLIVE RELATED FACTS:\n${params.openThreads?.map(thread => `${thread.id}: ${thread.text}`).join('\n') || '(none)'}\n\nNumbered messages (speaker and text):\n${params.group.messages.map(message => `${message.number}. ${JSON.stringify({ speaker: message.name, text: message.text })}`).join('\n')}` },
       ],
     }
@@ -590,6 +615,12 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       }
       return true
     })
+    // Canonicalize only exact, case-insensitive player names after shape/citation validation.
+    for (const atom of extracted.memories as Array<{ subjects: string[]; objects: string[] }>) {
+      const canonical = (name: string) => name.toLowerCase() === group.player.toLowerCase() ? 'player' : name
+      atom.subjects = atom.subjects.map(canonical)
+      atom.objects = atom.objects.map(canonical)
+    }
     log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, accepted: extracted.memories.length })
     if (!extracted.memories.length) throw new Error('Group curator returned no valid atoms')
     if (!await groupEventsLive(group.events)) throw new Error('Group memory source events changed')

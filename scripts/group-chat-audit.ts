@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { readFile, readdir } from 'node:fs/promises'
+import { readFile, readdir, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import { ObjectId } from 'mongodb'
@@ -386,10 +386,30 @@ let summaryHook: (() => Promise<void>) | undefined, embedHook: (() => Promise<vo
 let summaryReply: string | Error = 'A named summary.'
 let curatorFactory: ((request: Row) => unknown) | undefined
 let curatorHook: (() => Promise<void>) | undefined
+// The stub follows the requested atom schema, so omitted citation fields cannot pass unnoticed.
+function curatorResponse(request: Row, result: unknown): unknown {
+  if (typeof result === 'string') {
+    try { result = JSON.parse(result) } catch { return result }
+  }
+  if (get(request, 'responseSchema.properties.memories.items.properties.source_messages')) return result
+  if (!result || typeof result !== 'object' || !Array.isArray((result as Row).memories)) return result
+  return { ...result, memories: ((result as Row).memories as Row[]).map(({ source_messages: _citations, ...atom }) => atom) }
+}
 let modelReplies: Array<string | Error | { content: string; finishReason: string }> = [], writerCalls: Row[] = [], turnNumber = 0
 mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator', sceneSummary: 'fixture-summary', chapterSummary: 'fixture-chapter', arcSummary: 'fixture-arc', narrationSfw: 'fake-safe', narrationNsfw: 'fake-story-adult', groupNsfw: 'fake-adult', groupNsfwFallbacks: ['fake-adult-fallback', 'fake-adult-last'], narrationSfwFallbacks: ['fake-safe-fallback'], narrationNsfwFallbacks: ['fake-adult-fallback'] }, narrationTemperature: () => 0.62, snapshotLLMUsage: () => [],
   embed: async () => { await embedHook?.(); return [1, 0] },
-  callLLM: async (request: Row) => { if (request.purpose !== 'memory_curation') { summaryRequests.push(request); await summaryHook?.(); if (summaryReply instanceof Error) throw summaryReply; return summaryReply }; curatorRequests.push(request); await curatorHook?.(); if (curatorFactory) return JSON.stringify(curatorFactory(request)); if (curatorReply instanceof Error) throw curatorReply; return typeof curatorReply === 'string' ? curatorReply : JSON.stringify(curatorReply) },
+  callLLM: async (request: Row) => {
+    if (request.purpose !== 'memory_curation') {
+      summaryRequests.push(request); await summaryHook?.()
+      if (summaryReply instanceof Error) throw summaryReply
+      return summaryReply
+    }
+    curatorRequests.push(request); await curatorHook?.()
+    const result = curatorFactory ? curatorFactory(request) : curatorReply
+    if (result instanceof Error) throw result
+    const response = curatorResponse(request, result)
+    return typeof response === 'string' ? response : JSON.stringify(response)
+  },
   callLLMWithFallback: async (request: Row) => { writerCalls.push(request); writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; if (response && typeof response === 'object') return { ...response, model: request.model }; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
 }))
 const { memoryProcessor, buildMemoryCurationRequest } = await import('../worker/processors/memory.processor')
@@ -1135,7 +1155,7 @@ async function identityBatch() {
   events[3].data.lines = [{ character_id: ids[1], text: 'My sister is a painter.', shown_at: new Date() }]
   events[4].data.player_input = 'My sister is getting married in June.'
   curatorFactory = request => ({ memories: numbered(request).filter(message => message.text.startsWith('My sister')).map(message =>
-    atom(`${message.speaker}'s sister: ${message.text}`, message.speaker === playerName ? 'player' : message.speaker, message.number, { objects: [`${message.speaker}'s sister`] })), entities: [] })
+    atom(`${message.speaker}'s sister: ${message.text}`, message.speaker, message.number, { objects: [`${message.speaker}'s sister`] })), entities: [] })
   await memoryProcessor(memoryJob())
   return events
 }
@@ -1152,6 +1172,41 @@ await check('memory numbered speakers preserve three sister owners and exact per
   assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence'), 6)
   assert(backgroundScopes.some(scope => scope.instance_id === instanceId && scope.event_id === String(events[5]._id)))
   assert.equal(curatorRequests[0].purpose, 'memory_curation')
+})
+await check('memory group prompt and required schema request preserve small personal facts and citations', async () => {
+  await identityBatch()
+  const request = curatorRequests[0]
+  const system = (request.messages as Array<{ content: string }>)[0].content
+  assert(system.includes('numbered conversation among several people'))
+  assert(system.includes('family, work, health, plans and promises'))
+  assert(system.includes('even when it looks small'))
+  assert(system.includes('one fact per atom'))
+  assert(!system.includes('0-3') && !system.includes('10+ turns') && !system.includes('one exchange'))
+  assert(system.includes('"source_messages"'))
+  const item = get(request, 'responseSchema.properties.memories.items') as Row
+  assert((item.required as string[]).includes('source_messages'))
+  assert.equal(get(item, 'properties.source_messages.type'), 'array')
+  assert.equal(get(item, 'properties.source_messages.minItems'), 1)
+  assert.equal(get(item, 'properties.source_messages.items.type'), 'integer')
+  assert.equal(get(item, 'properties.source_messages.items.minimum'), 1)
+  const { buildChatRequest } = await import('../src/ai/client')
+  const transport = buildChatRequest(request as unknown as Parameters<typeof buildChatRequest>[0]).params
+  assert.equal(transport.response_format.type, 'json_schema')
+  assert.equal(transport.response_format.json_schema.strict, true)
+  assert.deepEqual(transport.response_format.json_schema.schema, request.responseSchema)
+  assert.equal(transport.provider.require_parameters, true)
+  assert.equal(transport.model, request.model)
+  const fixture = { memories: [atom('A cited fact.', playerName, 1)] }
+  assert.equal((curatorResponse({ ...request, responseSchema: undefined }, fixture) as { memories: Row[] }).memories[0].source_messages, undefined)
+  assert.deepEqual((curatorResponse(request, fixture) as { memories: Row[] }).memories[0].source_messages, [1])
+  assert.equal((curatorResponse({ ...request, responseSchema: undefined }, JSON.stringify(fixture)) as { memories: Row[] }).memories[0].source_messages, undefined)
+  // Both arrays canonicalize exact names ignoring case; relatives and other people stay distinct.
+  await start(); addEvents(5)
+  curatorFactory = () => ({ memories: [atom('A personal fact.', playerName.toUpperCase(), 1,
+    { objects: [playerName.toLowerCase(), `${playerName}'s sister`, names[0]] })] })
+  await memoryProcessor(memoryJob())
+  assert.deepEqual(rows('memories')[0].subjects, ['player'])
+  assert.deepEqual(rows('memories')[0].objects, ['player', `${playerName}'s sister`, names[0]])
 })
 await check('memory invalid citations and malformed atoms are dropped and counted; empty invalid results fail', async () => {
   await start(); addEvents(5)
@@ -1381,6 +1436,19 @@ await check('memory scheduled dedup protects group ownership and source events w
   const child = Bun.spawn(['bun', '--no-env-file', 'run', 'scripts/group-memory-dedup-audit.ts'], { stdout: 'pipe', stderr: 'pipe', cwd: new URL('..', import.meta.url).pathname })
   const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
   assert.equal(code, 0, output + errors); assert(output.includes('PASS memory scheduled dedup protects group owners'))
+})
+await check('memory recall script scoring selftest rejects history summary and attribution false positives', async () => {
+  const outputDir = `${import.meta.dir}/.recall-selftest-${process.pid}`
+  try {
+    const child = Bun.spawn(['bun', '--no-env-file', 'run', 'scripts/group-memory-recall.ts', '--selftest'], {
+      cwd: new URL('..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
+      env: { ...process.env, OPENROUTER_API_KEY: 'offline-fixture', OPENAI_API_KEY: 'offline-fixture', JWT_SECRET: 'offline-fixture',
+        GROUP_MEMORY_RECALL_OUTPUT_DIR: outputDir },
+    })
+    const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    assert.equal(code, 0, output + errors)
+    assert(output.includes('recall sections, player attribution and allergy scoring'))
+  } finally { await rm(outputDir, { recursive: true, force: true }) }
 })
 await check('memory normal curator requests retain fixed pre-change hashes for GM and sentient identities', () => {
   for (const [isSentient, expected] of [[false, 'c2a93ef57405f0982c5f7df0c2dda009db038ed0a60a076818aad2b465ce7d72'], [true, 'af20a1054a96fa8fc1341b22b1ad14bf73b828d39a5ee8e695f2a92d74f9b4aa']] as const) {
