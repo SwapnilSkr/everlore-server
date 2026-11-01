@@ -1,3 +1,6 @@
+import { requireIdentity } from './guest-policy'
+import { seedGroupOpening } from './group-chat/instance'
+import { publicGroupData } from './group-chat/public'
 import { detectSpokenLines } from './media/detection'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
@@ -53,6 +56,19 @@ export const instanceService = {
       throw new HttpError(404, 'That world could not be found.')
     }
 
+    if (template.kind === 'group') {
+      await requireIdentity(playerId)
+      const existing = await worldInstances().findOne({ template_id: templateOid, player_id: playerOid })
+      if (existing) {
+        if (!existing.group_state) {
+          await materializeTemplateCast({ template: { ...template, seed_cast: existing.seed_cast_snapshot || template.seed_cast }, instanceId: idString(existing._id), playerId, sequence: 0 })
+          const player = await mongoColl.users().findOne({ _id: playerOid }, { projection: { 'preferences.player_name': 1 } })
+          await seedGroupOpening(existing, template, player?.preferences?.player_name || 'Player')
+        }
+        return { instance: existing, template }
+      }
+    }
+
     const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
     const instanceCount = await worldInstances().countDocuments({
       player_id: playerOid,
@@ -75,7 +91,7 @@ export const instanceService = {
     const _id = new ObjectId()
     const initialTimeAnchor = await timeService.initialAnchor({
       instanceId: idString(_id),
-      templateId,
+      templateId: template.kind === 'group' ? undefined : templateId,
       sequence: 0,
     })
     let personaIdForInstance: ObjectId | null = null
@@ -96,6 +112,7 @@ export const instanceService = {
     const instance: WorldInstanceDoc = {
       _id,
       template_id: templateOid,
+      ...(template.kind === 'group' ? { group_template_id: templateOid } : {}),
       template_version: template.version,
       seed_cast_snapshot: (template.seed_cast || []).map((character) => ({ ...character })),
       player_id: playerOid,
@@ -133,7 +150,14 @@ export const instanceService = {
       updated_at: new Date(),
     }
 
-    await worldInstances().insertOne(instance)
+    try {
+      await worldInstances().insertOne(instance)
+    } catch (error) {
+      if (template.kind === 'group' && (error as { code?: number }).code === 11000) {
+        throw new HttpError(409, 'This chat is opening. Try again in a moment.')
+      }
+      throw error
+    }
 
     // Deterministic protagonist: for sentient templates, seed the locked main
     // persona codex card from the template so it's present + correct from turn 0
@@ -160,11 +184,16 @@ export const instanceService = {
       instanceId: idString(_id),
       playerId,
       sequence: 0,
-    }).catch(() => undefined)
+    }).catch((error: unknown) => { if (template.kind === 'group') throw error })
+
+    if (template.kind === 'group') {
+      const player = await mongoColl.users().findOne({ _id: playerOid }, { projection: { 'preferences.player_name': 1 } })
+      await seedGroupOpening(instance, template, player?.preferences?.player_name || 'Player')
+    }
 
     // Opening line: if the template greets the player, seed it as the first event
     // so the chat opens with the character speaking instead of a blank screen.
-    if (template.opening_line && template.opening_line.trim().length > 0) {
+    if (template.kind !== 'group' && template.opening_line && template.opening_line.trim().length > 0) {
       const greeting = template.opening_line.trim()
       // The authored opening says where the player is standing. Read it, so the
       // FIRST generated turn arbitrates against a real cursor instead of taking
@@ -226,10 +255,11 @@ export const instanceService = {
   },
 
   async getById(instanceId: string, playerId: string) {
-    return worldInstances().findOne({
+    const instance = await worldInstances().findOne({
       _id: parseObjectId(instanceId),
       player_id: parseObjectId(playerId),
     }, { projection: { media_voice_cast: 0 } })
+    return instance?.group_state ? publicGroupData(instance) : instance
   },
 
   /**
@@ -376,7 +406,7 @@ export const instanceService = {
       const raw = previewMap.get(idString(inst._id)) || ''
       const preview = raw.length > 160 ? `${raw.slice(0, 157)}…` : raw
       return {
-        ...inst,
+        ...(inst.group_state ? publicGroupData(inst) : inst),
         template: summary,
         preview,
         story_index: instances.length - idx,
@@ -411,7 +441,7 @@ export const instanceService = {
     const templateMap = new Map(templates.map((t) => [idString(t._id), t]))
 
     return instances.map((inst) => ({
-      ...inst,
+      ...(inst.group_state ? publicGroupData(inst) : inst),
       template: templateMap.get(idString(inst.template_id)) || null,
     }))
   },
@@ -477,7 +507,7 @@ export const instanceService = {
     )
     const [result] = await worldInstances().aggregate<any>(pipeline).toArray()
     return {
-      realms: result?.rows ?? [],
+      realms: (result?.rows ?? []).map((row: { latest?: WorldInstanceDoc }) => row.latest?.group_state ? publicGroupData(row) : row),
       total: result?.count?.[0]?.total ?? 0,
       page: safePage,
     }
@@ -618,6 +648,7 @@ export const instanceService = {
     if (!template) throw new Error('Template not found')
 
     const session = {
+      kind: template.kind || 'world',
       world_state: instance.world_state,
       // Template semantics travel with the session so post-stream bookkeeping
       // can judge each gauge on its own terms and apply its actual bounds.

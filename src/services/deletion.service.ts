@@ -1,3 +1,5 @@
+import { seedGroupOpening } from './group-chat/instance'
+import { materializeTemplateCast } from './template-cast.service'
 import { purgeCardPortraits, purgeMedia, purgeTemplatePortraits } from './media/deletion'
 import { detectSpokenLines } from './media/detection'
 import { ObjectId } from 'mongodb'
@@ -142,7 +144,7 @@ export const deletionService = {
     }
     const initialTimeAnchor = await timeService.initialAnchor({
       instanceId: iidStr,
-      templateId: idString(template._id),
+      templateId: template.kind === 'group' ? undefined : idString(template._id),
       sequence: 0,
     })
     await worldInstances().updateOne(
@@ -169,6 +171,13 @@ export const deletionService = {
         $unset: { seed_relation_assertions: '', manual_relation_assertions: '', manual_lifecycle_transitions: '', manual_identity_revisions: '' },
       },
     )
+
+    if (template.kind === 'group') {
+      await materializeTemplateCast({ template: { ...template, seed_cast: instance.seed_cast_snapshot || template.seed_cast }, instanceId: iidStr, playerId, sequence: 0 })
+      await seedGroupOpening(instance, template, instance.group_context?.player || 'Player')
+      await getRedisClient().del(`session:${iidStr}`)
+      return { reset: true }
+    }
 
     // 3. Re-seed the protagonist so the chat reopens anchored to the player's
     // character — present from turn 0. Sentient worlds restore from the

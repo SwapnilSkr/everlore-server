@@ -1726,6 +1726,7 @@ export const memoryService = {
             scene_tag: 1,
             time_anchor: 1,
             location_anchor: 1,
+            'data.group_state_after': 1,
             'data.state_mutations': 1,
             'data.flag_mutations': 1,
             'data.codex_deltas': 1,
@@ -1887,12 +1888,21 @@ export const memoryService = {
         sequence: 0,
       }))
     const rewindLocation = last?.location_anchor || null
+    const groupSnapshot = last?.data.group_state_after
+    const rewindGroupState = template.kind === 'group' ? {
+      ...instance.group_state,
+      silent_for: groupSnapshot?.silent_for || Object.fromEntries(Object.keys(instance.group_state?.silent_for || {}).map(id => [id, 0])),
+      topics_used: groupSnapshot?.topics_used || 0,
+      unprompted_since_player: groupSnapshot?.unprompted_since_player || 0,
+      writing_calls: groupSnapshot?.writing_calls || 0,
+    } : undefined
 
     // 6. Persist rolled-back instance state.
     await worldInstances().updateOne(
       { _id: iid },
       {
         $set: {
+          ...(rewindGroupState ? { group_state: rewindGroupState } : {}),
           world_state: worldState,
           active_flags: activeFlags,
           current_scene: {
@@ -1963,6 +1973,7 @@ export const memoryService = {
       player_id: pid,
     })
     if (!event) throw new Error('Event not found')
+    if (event.data.lines) throw new HttpError(400, 'Editing and replaying messages is not available in group chats yet.')
 
     const nextAiResponse = updates.ai_response ?? event.data.ai_response
     const nextPlayerInput = updates.player_input ?? event.data.player_input
@@ -2199,6 +2210,7 @@ export const memoryService = {
 
     const event = await events().findOne({ _id: eid, player_id: pid })
     if (!event) throw new Error('Event not found')
+    if (event.data.lines) throw new HttpError(400, 'Editing and replaying messages is not available in group chats yet.')
     if (!(event.data?.ai_response || '').trim() || event.data?.model_used === 'seed') {
       throw new Error('Replay is only supported for generated AI turns')
     }
@@ -2587,6 +2599,7 @@ ${replayDirective || '(none)'}`,
     const pid = parseObjectId(playerId)
     const event = await events().findOne({ _id: eid, player_id: pid })
     if (!event) throw new Error('Event not found')
+    if (event.data.lines) throw new HttpError(400, 'Editing and replaying messages is not available in group chats yet.')
 
     const variants = normalizeReplayVariants(event)
     if (variantIndex < 0 || variantIndex >= variants.length) {

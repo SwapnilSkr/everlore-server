@@ -27,7 +27,7 @@ export const templateController = {
       page?: number
       limit?: number
       search?: string
-      kind?: 'world' | 'character'
+      kind?: 'world' | 'character' | 'group'
       genre?: Genre
       styles?: string
       sort?: 'foryou' | 'new'
@@ -69,7 +69,7 @@ export const templateController = {
       throw new HttpError(404, 'That world could not be found.')
     }
 
-    return canReadTemplateAuthoring(template, user) ? template : publicTemplate(template)
+    return template.kind !== 'group' && canReadTemplateAuthoring(template, user) ? template : publicTemplate(template)
   },
 
   // Generate a preview image from a (creator-edited) prompt → returns CDN url.

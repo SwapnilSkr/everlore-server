@@ -106,6 +106,20 @@ async function tierFor(playerId: ObjectId, fallbackTier = 'free'): Promise<UserT
 }
 
 export const billingService = {
+  /** Autonomous group writing is counted even when Ink enforcement is off. */
+  async reserveGroupTurn(playerId: string, requestId: string) {
+    const playerOid = parseObjectId(playerId)
+    const player = await users().findOne({ _id: playerOid })
+    if (!player) throw new HttpError(401, 'Sign in to continue.')
+    if (player.guest) throw signInRequired()
+    if (!requestId.trim()) throw new HttpError(400, 'A billing request id is required')
+    const key = `reserve:group_turn:${requestId}`
+    await ledger().updateOne({ player_id: playerOid, idempotency_key: key }, {
+      $setOnInsert: { _id: new ObjectId(), player_id: playerOid, delta: 0, reason: 'reserve',
+        idempotency_key: key, reference: 'group_turn', created_at: new Date() },
+    }, { upsert: true })
+    return { reservation_id: key, cost: 0, balance: null }
+  },
   /**
    * Keep local development opt-in, but do not let a production deployment
    * accidentally run with free billing after Play credentials are configured.

@@ -1,3 +1,4 @@
+import { validateGroup } from './group-chat/validation'
 import { requireIdentity } from './guest-policy'
 import { ObjectId, type UpdateFilter } from 'mongodb'
 import { mongoColl } from '../config/mongo'
@@ -33,7 +34,7 @@ const users = () => mongoColl.users()
 
 /** Explore options beyond paging and search; mirrors the query schema. */
 export interface TemplateListFilters {
-  kind?: 'world' | 'character'
+  kind?: 'world' | 'character' | 'group'
   genre?: Genre
   styles?: string[]
   sort?: 'foryou' | 'new'
@@ -101,7 +102,10 @@ function assertValidStats(baseStats: Record<string, unknown> | undefined, field:
 export const templateService = {
   async create(creatorId: string, data: any): Promise<WorldTemplateDoc> {
     await requireIdentity(creatorId)
-    const kind: 'world' | 'character' = data.kind === 'character' ? 'character' : 'world'
+    const kind: WorldTemplateDoc['kind'] = data.kind === 'group' ? 'group' : data.kind === 'character' ? 'character' : 'world'
+    if (kind === 'group') {
+      try { validateGroup(data) } catch (error) { throw new HttpError(400, (error as Error).message) }
+    }
     // Characters may be stat-less; Worlds still require at least one stat.
     if (kind === 'world') {
       assertValidStats(data.base_stats_template, 'base_stats_template')
@@ -127,7 +131,7 @@ export const templateService = {
 
     // This runs during authoring, never on a play turn. A failure simply leaves
     // the cast empty; it must not block a creator from saving their template.
-    const seedCast = await extractTemplateCast({
+    const seedCast = kind === 'group' ? data.seed_cast : await extractTemplateCast({
       title: data.title,
       description: data.description,
       seedPrompt: data.seed_prompt,
@@ -160,6 +164,7 @@ export const templateService = {
       opening_line: typeof data.opening_line === 'string' ? data.opening_line.trim() : undefined,
       protagonist,
       seed_cast: seedCast,
+      ...(kind === 'group' ? { topics: data.topics, opening_lines: data.opening_lines } : {}),
       base_stats_template: (data.base_stats_template || {}) as Record<string, StatDefinitionDoc>,
       flag_definitions: (data.flag_definitions || {}) as Record<string, FlagDefinitionDoc>,
       scene_tags: data.scene_tags || [],
@@ -188,6 +193,12 @@ export const templateService = {
     if (!existing) throw new Error('Template not found')
 
     const effectiveKind = data.kind || existing.kind || 'world'
+    if ((existing.kind === 'group' || effectiveKind === 'group') && existing.kind !== effectiveKind) {
+      throw new HttpError(400, 'Create a new template to change the group format.')
+    }
+    if (effectiveKind === 'group') {
+      try { validateGroup({ ...existing, ...data }) } catch (error) { throw new HttpError(400, (error as Error).message) }
+    }
     if (effectiveKind === 'world' && data.base_stats_template !== undefined) {
       assertValidStats(data.base_stats_template, 'base_stats_template')
     }
@@ -195,7 +206,7 @@ export const templateService = {
     const updateFields: Record<string, unknown> = { ...data, updated_at: new Date() }
     delete updateFields.creator_id
     delete updateFields._id
-    delete updateFields.seed_cast
+    if (effectiveKind !== 'group') delete updateFields.seed_cast
     delete updateFields.starter
 
     // An authored genre always wins. A world from before the backfill has no
@@ -210,7 +221,7 @@ export const templateService = {
       'title', 'description', 'seed_prompt', 'global_lore', 'opening_line', 'protagonist',
     ].some((key) => Object.prototype.hasOwnProperty.call(data, key) &&
       hasMeaningfulWorldEdit(existing, { [key]: data[key] }))
-    if (castSourceChanged) {
+    if (castSourceChanged && effectiveKind !== 'group') {
       const merged = { ...existing, ...data }
       const protagonist = merged.protagonist as WorldTemplateDoc['protagonist'] | undefined
       updateFields.seed_cast = await extractTemplateCast({
@@ -306,6 +317,7 @@ export const templateService = {
       is_published: true,
       ...(await moderationService.discoveryFilter(userId)),
       starter: true as const,
+      kind: { $ne: 'group' as const },
     }
     const interests = await this.interestsFor(userId)
     const rows = await worldTemplates().find(filter).toArray()
@@ -346,8 +358,9 @@ export const templateService = {
       // treats those as 'world', so the Worlds filter must too.
       clauses.push(filters.kind === 'world'
         ? { $or: [{ kind: 'world' }, { kind: null }] }
-        : { kind: 'character' })
+        : { kind: filters.kind })
     }
+    if (!filters.kind) clauses.push({ kind: { $ne: 'group' } })
     if (filters.genre) clauses.push(genreFilter(filters.genre))
     if (filters.styles?.length) filter.narrative_style = { $in: filters.styles }
     if (clauses.length > 0) filter.$and = clauses
@@ -468,6 +481,7 @@ export const templateService = {
 
     const filter: Record<string, unknown> = {
       is_published: true,
+      kind: { $ne: 'group' as const },
       ...(await moderationService.discoveryFilter(userId)),
     }
     const rows = await worldTemplates()
@@ -515,7 +529,7 @@ export const templateService = {
   },
 
   async listByCreator(creatorId: string, page: number = 1, limit: number = 20, search?: string) {
-    const filter: Record<string, unknown> = { creator_id: parseObjectId(creatorId) }
+    const filter: Record<string, unknown> = { creator_id: parseObjectId(creatorId), kind: { $ne: 'group' } }
     const term = search?.trim()
     if (term) {
       filter.$or = [

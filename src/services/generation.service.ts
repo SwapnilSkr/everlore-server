@@ -1,3 +1,5 @@
+import { requireIdentity } from './guest-policy'
+import { publicGroupData } from './group-chat/public'
 import { reserveGuestTurn, releaseGuestTurn } from './guest-policy'
 import { mongoColl } from '../config/mongo'
 import type { MemoryDoc } from '../models/memory.model'
@@ -49,6 +51,11 @@ export const generationService = {
     if (!await worldInstances().findOne({ _id: parseObjectId(instanceId), player_id: parseObjectId(playerId) })) throw new HttpError(404, 'That story could not be found.')
     const requestedAt = Date.now()
     const session = await instanceService.loadSession(instanceId, playerId)
+
+    if (session.kind === 'group') {
+      await requireIdentity(playerId)
+      if (isContinuation || worldAction) throw new HttpError(400, 'Send a message to keep this chat going.')
+    }
 
     // Per-user NSFW consent is read fresh (not from the cached session) so a
     // user toggling the preference takes effect on their very next turn.
@@ -106,6 +113,8 @@ export const generationService = {
   async dispatchReplay(params: { instanceId: string; playerId: string; eventId: string; billingReservationId?: string | null; turnId?: string }) {
     const { instanceId, playerId, eventId, billingReservationId } = params
     if (!await events().findOne({ _id: parseObjectId(eventId), instance_id: parseObjectId(instanceId), player_id: parseObjectId(playerId) })) throw new HttpError(404, 'That moment could not be found.')
+    const replayInstance = await worldInstances().findOne({ _id: parseObjectId(instanceId), player_id: parseObjectId(playerId) })
+    if (replayInstance?.group_state) throw new HttpError(400, 'Replaying messages is not available in group chats yet.')
     const queue = getGenerationQueue()
     const guestTurn = await reserveGuestTurn(playerId)
     try {
@@ -185,16 +194,17 @@ export const generationService = {
       .catch(() => null)
 
     const filtered = recentEvents.map(publicMediaEvent)
-    return {
+    const result = {
       instance,
       template,
       recentEvents: await withTurnMedia(filtered),
       memories: mems,
       characters: codex,
       operation: activeLock
-        ? { kind: activeLock.startsWith('rewind:') ? 'rewind' : 'generation' }
+        ? { kind: activeLock.startsWith('rewind:') ? 'rewind' as const : 'generation' as const }
         : null,
       eventWindow: buildEventWindow(totalEvents, recentEvents.length),
     }
+    return template?.kind === 'group' ? publicGroupData(result) : result
   },
 }

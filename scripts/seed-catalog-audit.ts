@@ -1,3 +1,4 @@
+import { groupTemplate } from './group-chat-fixtures'
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -289,6 +290,13 @@ try {
     const { genre, ...voiced } = character
     assert.equal(validateEntry(voiced, 'fixture').body.genre, 'cozy')
     assert.equal(validateEntry({ ...voiced, genre: 'romance' }, 'fixture').body.genre, 'romance')
+  })
+  await check('group catalog validation accepts authored shape and refuses a minor before writes', () => {
+    const { _id, creator_id, slug, version, created_at, updated_at, is_published, visibility, review_status, ...body } = groupTemplate()
+    validateEntry({ ...body, slug, cover: 'group.png' }, 'group-fixture')
+    const before = snapshot()
+    assert.throws(() => validateEntry({ ...body, slug, cover: 'group.png', seed_cast: body.seed_cast!.map(member => ({ ...member, group: { ...member.group!, age: 17 } })) }, 'bad-group'))
+    assert.equal(snapshot(), before)
   })
   await check('CLI parsing supports Bun separator and rejects typos', () => {
     assert.deepEqual(parseOptions(['--', '--catalog', catalog, '--covers', covers, '--only', 'a,b']).only, ['a', 'b'])

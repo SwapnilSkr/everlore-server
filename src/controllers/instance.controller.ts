@@ -1,3 +1,4 @@
+import { publicGroupData } from '../services/group-chat/public'
 import type { AuthUser } from '../middleware/auth'
 import { instanceService } from '../services/instance.service'
 import { deletionService } from '../services/deletion.service'
@@ -47,6 +48,7 @@ export const instanceController = {
   create: async ({ user, body }: { user: AuthUser | null; body: { template_id: string; persona_id?: string } }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     const result = await instanceService.create(user.id, body.template_id, user.tier, body.persona_id)
+    if (result.template.kind === 'group') return publicGroupData({ ...result, template: publicTemplate(result.template) })
     return canReadTemplateAuthoring(result.template, user)
       ? result
       : { ...result, template: publicTemplate(result.template) }

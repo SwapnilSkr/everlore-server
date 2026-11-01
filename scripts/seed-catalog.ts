@@ -1,3 +1,4 @@
+import { validateGroup } from '../src/services/group-chat/validation'
 import { readdir, readFile } from 'node:fs/promises'
 import { basename, join, resolve } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
@@ -40,11 +41,11 @@ export function parseOptions(args: string[]): Options {
     if (arg === '--') continue
     if (arg === '--apply') options.apply = true
     else if (arg === '--allow-default-cover') options.allowDefaultCover = true
-    else if (['--catalog', '--covers', '--only'].includes(arg)) {
+    else if (['--catalog', '--dir', '--covers', '--only'].includes(arg)) {
       const value = args[++i]
       if (!value || value.startsWith('--')) throw new Error(`Missing value for ${arg}`)
       if (arg === '--only') options.only = value.split(',')
-      else if (arg === '--catalog') options.catalog = resolve(value)
+      else if ((arg === '--catalog' || arg === '--dir')) options.catalog = resolve(value)
       else options.covers = resolve(value)
     } else throw new Error(`Unknown argument: ${arg}`)
   }
@@ -68,6 +69,8 @@ export function validateEntry(raw: unknown, filename: string): Entry {
   const data = body as Body
   if (!data.title.trim() || !data.description.trim() || data.seed_prompt.trim().length < 10) fail('title, description and seed_prompt must contain text')
   if (!data.kind) fail('kind is required')
+  validateGroup(data)
+  if (data.kind === 'group' && starter) fail('groups cannot be starters')
   if (data.is_sentient !== (data.kind === 'character')) fail('only GM worlds and sentient characters are allowed')
   if (data.kind === 'character' && !data.protagonist?.name.trim()) fail('character requires protagonist.name')
   if (!NARRATIVE_STYLE_PRESETS.some(style => style.key === data.narrative_style)) fail('unknown narrative_style')

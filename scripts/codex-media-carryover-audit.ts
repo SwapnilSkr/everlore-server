@@ -160,6 +160,20 @@ function fixture() {
 
 const checks: Array<[string, () => Promise<void>]> = []
 const check = (name: string, run: () => Promise<void>) => checks.push([name, run])
+check('group rewind restores silence/topic/writing snapshot and keeps stable cast ids', async () => {
+  const f = fixture()
+  f.db.worldTemplates.rows[0].kind = 'group'
+  const before = { silent_for: { [String(f.old._id)]: 3 }, topics_used: 2, unprompted_since_player: 1, writing_calls: 7 }
+  f.db.worldInstances.rows[0].group_state = { ...before, silent_for: { [String(f.old._id)]: 0 }, topics_used: 8, writing_calls: 15 }
+  f.old.first_seen_sequence = 0
+  f.db.characters.rows[0].first_seen_sequence = 0
+  f.db.events.rows[0].data = { group_state_after: before, lines: [{ character_id: String(f.old._id), text: 'retained', shown_at: new Date() }] }
+  f.db.events.rows.push({ ...f.event, _id: new ObjectId(), sequence: 2, data: { group_state_after: { topics_used: 8 } } })
+  await memoryService.rewindToSequence(String(f.iid), String(f.pid), 2)
+  assert.deepEqual(f.db.worldInstances.rows[0].group_state, before)
+  assert.equal(String(f.db.characters.rows[0]._id), String(f.old._id))
+  assert.equal(f.db.events.rows.length, 1)
+})
 check('rewind past nothing: real rewind keeps media and re-keys cache', async () => {
   const f = fixture()
   await memoryService.rewindToSequence(String(f.iid), String(f.pid), 2)

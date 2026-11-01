@@ -1131,7 +1131,7 @@ check('image_safety_tolerance', async () => {
 
 check('director_verbatim', () => {
   // The director prompt is the contract text, byte for byte, so it can't drift.
-  const md = readFileSync(new URL('../../everlore-docs/server/MEDIA_DIRECTOR_PROMPT.md', import.meta.url), 'utf8')
+  const md = readFileSync(process.env.EVERLORE_DOCS_ROOT ? `${process.env.EVERLORE_DOCS_ROOT}/server/MEDIA_DIRECTOR_PROMPT.md` : new URL('../../everlore-docs/server/MEDIA_DIRECTOR_PROMPT.md', import.meta.url), 'utf8')
   const raw = md.split('```\n')[1]
   const block = raw.endsWith('\n') ? raw.slice(0, -1) : raw
   assert.equal(DIRECTOR_SYSTEM_PROMPT, block)

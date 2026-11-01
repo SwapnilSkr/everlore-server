@@ -50,6 +50,9 @@ export interface WorldInstanceDoc {
   /** Save-owned casting survives codex rebuilds. Key is a hash of codex identityKey. */
   media_voice_cast?: Record<string, { voice: import('./media.model').CharacterVoice; last_spoken_at?: Date }>
   /** Immutable-at-start cast copy; rewind never reads a later-edited template. */
+  group_template_id?: ObjectId
+  group_context?: import('../services/group-chat/instance').GroupContext
+  group_state?: import('../services/group-chat/types').GroupState
   seed_cast_snapshot?: TemplateCastCharacterDoc[]
   player_id: ObjectId
   world_state: Record<string, number>

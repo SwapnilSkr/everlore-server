@@ -1,3 +1,4 @@
+import { groupTurnProcessor } from './group-turn.processor'
 import { runWithLLMTrace, snapshotLLMTrace, setLLMTraceSequence } from '../../src/ai/usage'
 import { flushLLMTraces, flushLLMTracesLater, traceLogFields } from '../../src/services/llm-trace.service'
 import { env } from '../../src/config/env'
@@ -444,6 +445,11 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
     session: dispatchedSession,
     userNsfwEnabled,
   } = job.data
+
+  if (dispatchedSession.kind === 'group') {
+    if (!(await liveInstanceExists(parseObjectId(instanceId)))) return
+    return groupTurnProcessor(job)
+  }
 
   // Input-only work starts at pickup, ahead of the live check and prior tail.
   // The routing snapshot is read synchronously immediately before narration.

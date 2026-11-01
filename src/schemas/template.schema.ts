@@ -49,7 +49,7 @@ export const FIELD_LIMITS = {
 export const CreateTemplateBody = t.Object({
   title: t.String({ minLength: 1, maxLength: FIELD_LIMITS.title }),
   description: t.String({ minLength: 1, maxLength: FIELD_LIMITS.description }),
-  kind: t.Optional(t.Union([t.Literal('world'), t.Literal('character')])),
+  kind: t.Optional(t.Union([t.Literal('world'), t.Literal('character'), t.Literal('group')])),
   genre: t.Optional(GenreSchema),
   is_sentient: t.Boolean(),
   is_nsfw_capable: t.Boolean(),
@@ -60,6 +60,17 @@ export const CreateTemplateBody = t.Object({
   image_url: t.Optional(t.String({ maxLength: 600 })),
   image_prompt: t.Optional(t.String({ maxLength: FIELD_LIMITS.imagePrompt })),
   opening_line: t.Optional(t.String({ maxLength: FIELD_LIMITS.openingLine })),
+  topics: t.Optional(t.Array(t.String({ minLength: 1, maxLength: 1000 }), { minItems: 1, maxItems: 100 })),
+  opening_lines: t.Optional(t.Array(t.Object({ name: t.String({ minLength: 1, maxLength: 80 }), text: t.String({ minLength: 1, maxLength: 1000 }) }), { minItems: 1, maxItems: 30 })),
+  seed_cast: t.Optional(t.Array(t.Object({
+    name: t.String({ minLength: 1, maxLength: 80 }),
+    role: t.Optional(t.String({ maxLength: 400 })),
+    persona: t.Optional(t.String({ maxLength: 2500 })),
+    appearance: t.Optional(t.String({ maxLength: 1000 })),
+    aliases: t.Optional(t.Array(t.String({ maxLength: 80 }))),
+    immutable_facts: t.Optional(t.Array(t.String({ maxLength: 1000 }))),
+    group: t.Object({ age: t.Number({ minimum: 18 }), talkativeness: t.Number({ minimum: 0, maximum: 1 }), speech: t.String({ minLength: 1, maxLength: 2000 }), wants: t.String({ minLength: 1, maxLength: 2500 }) }),
+  }), { minItems: 4, maxItems: 5 })),
   protagonist: t.Optional(
     t.Object({
       name: t.String({ minLength: 1, maxLength: FIELD_LIMITS.protagonistName }),
@@ -109,7 +120,7 @@ export const TemplateQueryParams = t.Object({
   page: t.Optional(t.Numeric()),
   limit: t.Optional(t.Numeric()),
   search: t.Optional(t.String()),
-  kind: t.Optional(t.Union([t.Literal('world'), t.Literal('character')])),
+  kind: t.Optional(t.Union([t.Literal('world'), t.Literal('character'), t.Literal('group')])),
   genre: t.Optional(GenreSchema),
   styles: t.Optional(t.String({ pattern: STYLE_LIST_PATTERN })),
   sort: t.Optional(t.Union([t.Literal('foryou'), t.Literal('new')])),

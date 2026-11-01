@@ -43,6 +43,7 @@ export interface ProtagonistDoc {
  * character cards so later memories, relationships, and state can diverge.
  */
 export interface TemplateCastCharacterDoc {
+  group?: import('../services/group-chat/types').GroupTraits
   name: string
   voice?: import('./media.model').CharacterVoice
   voice_traits?: import('./media.model').VoiceTraits
@@ -69,8 +70,9 @@ export interface WorldTemplateDoc {
   slug: string
   description: string
   /** 'world' = RPG experience (stats, GM or sentient). 'character' = lightweight
-   *  chat-with-a-character (always sentient, stats optional). Defaults to 'world'. */
-  kind?: 'world' | 'character'
+   *  chat-with-a-character (always sentient, stats optional). 'group' = online
+   *  authored cast chat without stats. Defaults to 'world'. */
+  kind?: 'world' | 'character' | 'group'
   /** The Explore shelf (see utils/genre.ts). Authored data, independent of the
    *  narration voice. Absent on worlds written before the genre backfill, where
    *  the server derives it from {@link narrative_style}. */
@@ -115,6 +117,8 @@ export interface WorldTemplateDoc {
   /** The visual prompt used to generate {@link image_url} (for re-rolls/editing). */
   image_prompt?: string
   /** Optional first message a sentient persona/character greets the player with. */
+  opening_lines?: import('../services/group-chat/types').NamedLine[]
+  topics?: string[]
   opening_line?: string
   /** Locked main persona for sentient templates (deterministic protagonist). */
   protagonist?: ProtagonistDoc

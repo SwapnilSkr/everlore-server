@@ -125,6 +125,9 @@ export interface CharacterLifecycleDeltaDoc {
 }
 
 export interface EventDataDoc {
+  origin?: import('../services/group-chat/types').GroupOrigin
+  lines?: import('../services/group-chat/types').GroupLine[]
+  group_state_after?: import('../services/group-chat/types').GroupState
   player_input: string
   /** Spoken dialogue outside narration markers. */
   player_spoken_input?: string

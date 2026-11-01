@@ -1,3 +1,4 @@
+import { publicGroupData } from './group-chat/public'
 import { recordLastActive } from './last-active.service'
 import { getRedisClient, getRedisSubscriber } from '../config/redis'
 import { generationService } from './generation.service'
@@ -400,7 +401,7 @@ export const playWsService = {
           const responseState = state.template && !canReadTemplateAuthoring(state.template, user)
             ? { ...state, template: publicTemplate(state.template) }
             : state
-          ws.send(JSON.stringify({ type: 'instance_loaded', data: responseState }))
+          ws.send(JSON.stringify({ type: 'instance_loaded', data: state.template?.kind === 'group' ? publicGroupData(responseState) : responseState }))
         } catch (err: unknown) {
           ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.load_instance', userId: user.id }) }))
         }

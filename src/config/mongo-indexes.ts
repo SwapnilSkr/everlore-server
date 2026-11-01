@@ -96,6 +96,11 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   // world_instances
   {
     collection: COLLECTIONS.world_instances,
+    key: { player_id: 1, group_template_id: 1 },
+    options: { unique: true, name: "idx_group_player_template", partialFilterExpression: { group_template_id: { $exists: true } } },
+  },
+  {
+    collection: COLLECTIONS.world_instances,
     key: { player_id: 1, "meta.is_archived": 1 },
     options: { name: "idx_world_instances_player_archived" },
   },
