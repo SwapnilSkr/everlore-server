@@ -289,12 +289,19 @@ function collection(name: string) {
       assert.equal(name, 'worldInstances')
       return { toArray: async () => [{ rows: rows(name).map(latest => ({ latest: clone(latest) })), count: [{ total: rows(name).length }] }] }
     },
-    find(filter: Row = {}) {
+    find(filter: Row = {}, options?: { projection?: Record<string, number> }) {
       let values = rows(name).filter(row => matches(row, filter))
       const cursor = {
         sort(order: Record<string, number>) { values.sort((a, b) => { for (const [key, dir] of Object.entries(order)) { const av = get(a, key), bv = get(b, key); if (av !== bv) return (Number(av) < Number(bv) ? -1 : 1) * dir } return 0 }); return cursor },
         limit(n: number) { values = values.slice(0, n); return cursor }, skip(n: number) { values = values.slice(n); return cursor },
-        project(fields: Record<string, number>) { values = values.map(value => Object.fromEntries(Object.keys(fields).filter(key => fields[key] && key in value).map(key => [key, value[key]]))); return cursor }, async toArray() { return clone(values) },
+        project(fields: Record<string, number>) { values = values.map(value => Object.fromEntries(Object.keys(fields).filter(key => fields[key] && key in value).map(key => [key, value[key]]))); return cursor }, async toArray() {
+          if (!options?.projection) return clone(values)
+          return values.map(value => {
+            const projected: Row = options.projection!._id === 0 ? {} : { _id: value._id }
+            for (const [key, include] of Object.entries(options.projection!)) if (include && get(value, key) !== undefined) put(projected, key, clone(get(value, key)))
+            return projected
+          })
+        },
       }
       return cursor
     },
@@ -361,7 +368,7 @@ const checkLogs: Row[] = [], memoryLogs: Row[] = []
 mock.module('../src/utils/logger', () => ({ log: { info: (name: string, data: Row) => { if (name === 'group.reply_checked') checkLogs.push(data); memoryLogs.push({ name, ...data }) }, warn: () => {}, error: () => {} } }))
 mock.module('../src/services/time.service', () => ({ timeService: { initialAnchor: async (input: Row) => { assert.equal(input.templateId, undefined); return { real_time: new Date(), sequence: 0, timeline_id: 'main' } } } }))
 mock.module('../src/services/opening-place.service', () => ({ extractOpeningPlace: unavailable }))
-mock.module('../src/services/character-codex.service', () => ({ characterCodexService: { seedProtagonist: unavailable } }))
+mock.module('../src/services/character-codex.service', () => ({ characterCodexService: { seedProtagonist: unavailable }, foldDelta: unavailable, newFoldState: unavailable, isEphemeralPersonDescriptor: unavailable, isNonPersonRole: unavailable, rankCodexForInjection: unavailable, identityKey: unavailable }))
 mock.module('../src/services/kinship-graph.service', () => ({ kinshipGraphService: { seedPremiseKinship: unavailable } }))
 mock.module('../src/services/template-cast.service', () => ({ materializeTemplateCast: async (input: { instanceId: string; template: WorldTemplateDoc }) => { const cast = input.template.seed_cast!; rows('characters').push(...cast.map((member, index) => ({ _id: new ObjectId((index + 1).toString(16).padStart(24, '0')), instance_id: new ObjectId(input.instanceId), canonical_name: member.name }))); return cast.length } }))
 mock.module('../worker/lib/template-cast-extractor', () => ({ extractTemplateCast: unavailable }))
@@ -379,7 +386,7 @@ mock.module('../src/services/auth.service', () => ({ authService: { getLiveAcces
 mock.module('../src/middleware/auth', () => ({ verifyWsToken: unavailable }))
 mock.module('../src/middleware/rate-limit', () => ({ rateLimit: async () => ({ allowed: true }) }))
 mock.module('../src/services/last-active.service', () => ({ recordLastActive: () => {} }))
-mock.module('../src/queues', () => ({ removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { queued.push(data); return { id: options.jobId } } }), getSceneSummaryQueue: () => ({ add: async (_name: string, data: Row) => { queued.push(data) } }), QUEUE_RETENTION: { sceneSummary: {}, generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
+mock.module('../src/queues', () => ({ getMemoryCurationQueue: unavailable, removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { queued.push(data); return { id: options.jobId } } }), getSceneSummaryQueue: () => ({ add: async (_name: string, data: Row) => { queued.push(data) } }), QUEUE_RETENTION: { sceneSummary: {}, generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
 let writerHook: ((request: Row) => void) | undefined
 let curatorReply: unknown = { memories: [] }, curatorRequests: Row[] = [], summaryRequests: Row[] = []
 let summaryHook: (() => Promise<void>) | undefined, embedHook: (() => Promise<void>) | undefined
@@ -390,6 +397,10 @@ let curatorHook: (() => Promise<void>) | undefined
 function curatorResponse(request: Row, result: unknown): unknown {
   if (typeof result === 'string') {
     try { result = JSON.parse(result) } catch { return result }
+  }
+  if (result && typeof result === 'object' && 'closed_threads' in result) {
+    const closures = get(request, 'responseSchema.properties.closed_threads.items.properties.source_messages')
+    result = { ...result, closed_threads: closures ? (result as Row).closed_threads : [] }
   }
   if (get(request, 'responseSchema.properties.memories.items.properties.source_messages')) return result
   if (!result || typeof result !== 'object' || !Array.isArray((result as Row).memories)) return result
@@ -1239,6 +1250,116 @@ await check('memory failed batches catch up from watermark with two event overla
   assert.equal(rows('memories').length, 3); assert.equal(vectors.size, 3)
   assert(memoryLogs.some(row => row.name === 'group.memory_batch' && row.duplicates === 2 && row.success === true))
   assert.equal(get(storedEvents().at(-1)! as unknown as Row, 'data.group_state_after.curated_through_sequence'), 16)
+})
+async function closureBatch() {
+  await start(); addEvents(5)
+  curatorFactory = request => ({ memories: [atom('A lasting plain fact about the player.', 'player', 1),
+    atom('The player promised to return a borrowed item.', 'player', 1, { type: 'promise', unresolved_thread: true,
+      source_messages: numbered(request).filter(message => ['Filler 4', 'Filler 6'].includes(message.text)).map(message => message.number) })] })
+  await memoryProcessor(memoryJob())
+  const thread = clone(rows('memories')[1])
+  addEvents(5)
+  return thread
+}
+await check('memory group closure request lists only open threads and forbids copying with cited closure schema', async () => {
+  const thread = await closureBatch()
+  curatorFactory = request => {
+    const messages = request.messages as Row[]
+    const list = String(messages[1].content).split('OPEN THREADS:\n')[1].split('\n\nNumbered messages')[0]
+    assert.equal(list, `T1: ${thread.text}`)
+    assert(!String(messages[1].content).includes('LIVE RELATED FACTS'))
+    assert(String(messages[0].content).includes('Atoms come only from the numbered messages, never from that list'))
+    assert(!String(messages[0].content).includes('closed_thread_ids') && !String(messages[0].content).includes('resolved_threads'))
+    assert.deepEqual(get(request, 'responseSchema.required'), ['memories', 'entities', 'closed_threads'])
+    const schema = get(request, 'responseSchema.properties.closed_threads.items') as Row
+    assert.equal(schema.additionalProperties, false)
+    assert.deepEqual(schema.required, ['thread_id', 'source_messages'])
+    assert.deepEqual(get(schema, 'properties.source_messages'), { type: 'array', minItems: 1, items: { type: 'integer', minimum: 1 } })
+    const fixture = { memories: [], closed_threads: [{ thread_id: 'T1', source_messages: [1] }] }
+    assert.deepEqual((curatorResponse(request, fixture) as Row).closed_threads, fixture.closed_threads)
+    assert.deepEqual((curatorResponse({ ...request, responseSchema: undefined }, fixture) as Row).closed_threads, [])
+    return { memories: [atom('A new independent fact.', names[1], 1)] }
+  }
+  await memoryProcessor(memoryJob())
+  assert.equal(curatorRequests.length, 2)
+})
+await check('memory group closure rejects missing earlier same overlap invalid and legacy citations and counts drops', async () => {
+  for (const kind of ['missing', 'empty', 'earlier', 'same', 'range', 'fraction', 'string', 'unknown', 'legacy', 'prose', 'missing-source']) {
+    const thread = await closureBatch()
+    if (kind === 'missing-source') (rows('memories')[1].source_event_ids as ObjectId[]).push(new ObjectId())
+    curatorFactory = request => {
+      const citation = (text: string) => numbered(request).find(message => message.text === text)!.number
+      const closures: Row[] = [{ thread_id: kind === 'unknown' ? 'T9' : 'T1', source_messages:
+        kind === 'empty' ? [] : [kind === 'earlier' ? citation('Filler 5') : kind === 'same' ? citation('Filler 6') :
+          kind === 'range' ? 999 : kind === 'fraction' ? 1.5 : kind === 'string' ? '1' : citation('Filler 7')] }]
+      if (kind === 'missing') delete closures[0].source_messages
+      return { memories: [atom('An unrelated new fact.', names[1], 1)],
+        closed_threads: ['legacy', 'prose'].includes(kind) ? [] : closures,
+        closed_thread_ids: kind === 'legacy' ? ['T1'] : [], resolved_threads: kind === 'prose' ? [String(thread.text)] : [] }
+    }
+    await memoryProcessor(memoryJob())
+    const stored = rows('memories').find(row => eq(row._id, thread._id))!
+    assert.equal(stored.unresolved_thread, true, kind); assert.equal(stored.is_archived, false, kind)
+    assert(vectors.has(String(thread.pinecone_id)), kind)
+    const log = memoryLogs.filter(row => row.name === 'group.memory_batch').at(-1)!
+    assert.equal(log.closuresAccepted, 0, kind)
+    assert.equal(log.closuresRejected, ['legacy', 'prose'].includes(kind) ? 0 : 1, kind)
+  }
+})
+await check('memory group valid closure keeps atom vector provenance and Memories but leaves Open threads', async () => {
+  const thread = await closureBatch(), before = clone(vectors.get(String(thread.pinecone_id)))
+  curatorFactory = request => ({ memories: [], closed_threads: [{ thread_id: 'T1',
+    source_messages: [numbered(request).find(message => message.text === 'Filler 7')!.number] }] })
+  await memoryProcessor(memoryJob())
+  const stored = rows('memories').find(row => eq(row._id, thread._id))!
+  assert.equal(rows('memories').length, 2); assert.equal(stored.unresolved_thread, false)
+  assert.equal(stored.is_archived, false); assert.equal(stored.status, thread.status)
+  assert(stored.resolved_at instanceof Date); assert.deepEqual(stored.source_event_ids, thread.source_event_ids)
+  assert.equal(stored.pinecone_id, thread.pinecone_id); assert.deepEqual(vectors.get(String(thread.pinecone_id)), before)
+  const log = memoryLogs.filter(row => row.name === 'group.memory_batch').at(-1)!
+  assert.equal(log.closuresAccepted, 1); assert.equal(log.closuresRejected, 0); assert.equal(log.threadsResolved, 1)
+  addEvents(30); ragMemoryTexts = [String(thread.text)]; ragOpenThreads = []
+  modelReplies = [`${names[0]}: A fresh response after completion.`]
+  await turn({ userMessage: `@${names[0]} remember that?` }, never)
+  const body = String((writerCalls.at(-1)!.messages as Row[])[1].content)
+  assert(body.split('Memories:\n')[1].split('\n\n')[0].includes(String(thread.text)))
+  assert(!body.split('Open threads:\n')[1]?.split('\n\n')[0].includes(String(thread.text)))
+})
+await check('memory group closed rewind deletes sourced atom and vector while older fact survives', async () => {
+  const thread = await closureBatch()
+  curatorFactory = request => ({ memories: [], closed_threads: [{ thread_id: 'T1',
+    source_messages: [numbered(request).find(message => message.text === 'Filler 7')!.number] }] })
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories')[1].unresolved_thread, false)
+  // Rewind itself is real; unrelated card-media and graph work has no bearing on atom provenance.
+  mock.module('../src/services/codex-media-carryover', () => ({ snapshotCodexMedia: async () => ({}), restoreCodexMedia: async () => {} }))
+  const { characterCodexService } = await import('../src/services/character-codex.service')
+  Object.assign(characterCodexService, { applyManualIdentityRevisions: async () => {} })
+  const { entityGraphService } = await import('../src/services/entity-graph.service')
+  Object.assign(entityGraphService, { repairAfterRewind: async () => {} })
+  const { memoryService } = await import('../src/services/memory.service')
+  const older = clone(rows('memories')[0])
+  rows('events')[4].time_anchor = { real_time: new Date(), sequence: 5, timeline_id: 'main' }
+  await memoryService.rewindToSequence(instanceId, playerId, 6)
+  assert.deepEqual(rows('memories'), [older])
+  assert(!vectors.has(String(thread.pinecone_id))); assert(vectors.has(String(older.pinecone_id)))
+  assert(storedEvents().every(event => event.sequence < 6))
+})
+await check('memory group same normalized text ignores objects subjects and events while distinct people facts remain', async () => {
+  await start(); addEvents(5)
+  curatorFactory = () => ({ memories: [atom('The player owns a green coat.', 'player', 1),
+    atom('  THE player  owns a green coat. ', names[0], 2, { objects: ['coat'] }),
+    atom(`${names[0]} owns a blue coat.`, names[0], 3), atom(`${names[1]} owns a red coat.`, names[1], 3)] })
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories').length, 3); assert.equal(vectors.size, 3)
+  const older = clone(rows('memories')[0])
+  addEvents(5)
+  curatorFactory = request => ({ memories: [atom('the player owns a green coat.', names[1], numbered(request).at(-1)!.number, { objects: ['other object'] })] })
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories').length, 3); assert.equal(vectors.size, 3)
+  assert.deepEqual(rows('memories')[0], older)
+  assert(memoryLogs.filter(row => row.name === 'group.memory_batch').every(row => row.duplicates === 1))
+  assert.deepEqual(rows('memories').slice(1).map(row => row.subjects), [[names[0]], [names[1]]])
 })
 await check('memory catch-up batches are bounded without skipping oldest uncurated events', async () => {
   await start(); addEvents(70)

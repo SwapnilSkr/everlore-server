@@ -232,8 +232,8 @@ const mutations: Mutation[] = [
   { name: 'section reporting loses raw history', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "['raw history', sections?.recent ?? '']", "['raw history', '']"]] },
   { name: 'Q3 requires no recall token', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "promptMust: [['lena', 'lisbon']]", 'promptMust: []']] },
   { name: 'Q5 rejects allergy reply', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "replyMust: [['peanut', 'allerg']]", "replyMust: [['peanut']]"]] },
-  { name: 'canonical player rejected by recall', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "name === 'the player' || name === 'player' || name === PLAYER.toLowerCase()", "name === 'the player' || name === PLAYER.toLowerCase()"]] },
-  { name: 'mixed wrong person escapes recall', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', 'return wrongPerson.length > 0', "return !subjects.includes('player') && wrongPerson.length > 0"]] },
+  { name: 'canonical player rejected by recall', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "? [expected, 'player', 'the player']", "? [expected]"]] },
+  { name: 'mixed right person falsely called misattribution', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', 'const misattributed = matching.filter(atom => !hasPerson(atom))', "const misattributed = matching.filter(atom => atom.subjects.includes('Jess'))"]] },
   { name: 'raw curator envelope discarded', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', 'call.rawResponse ?? call.response', 'call.response']] },
   { name: 'invalid citations accepted', check: 'memory invalid citations', edits: [['worker/processors/memory.processor.ts', 'Number(number) > group.messages.length', 'false']] },
   { name: 'invalid atom importance accepted', check: 'memory invalid citations', edits: [['worker/processors/memory.processor.ts', '!Number.isInteger(atom.importance)', 'false']] },
@@ -280,10 +280,52 @@ const mutations: Mutation[] = [
   { name: 'scheduled dedup ignores group provenance and identity', check: 'memory scheduled dedup', edits: [['worker/processors/maintenance.processor.ts', 'if (group && !groupMemoryMayMerge(memories[i], memories[j])) continue', 'if (false) continue']] },
   { name: 'scheduled dedup changes normal worlds', check: 'memory scheduled dedup', edits: [['worker/processors/maintenance.processor.ts', 'if (group && !groupMemoryMayMerge(memories[i], memories[j])) continue', 'if (!groupMemoryMayMerge(memories[i], memories[j])) continue']] },
 
+  { name: 'group plain facts offered for closure', check: 'memory group closure request', edits: [['worker/processors/memory.processor.ts', 'group ? Promise.resolve([])', 'group ? mongoColl.memories().find({ instance_id: instanceOid, is_archived: false }).toArray()']] },
+  { name: 'group closure list heading misleading', check: 'memory group closure request', edits: [['worker/processors/memory.processor.ts', 'OPEN THREADS:', 'LIVE RELATED FACTS:']] },
+  { name: 'group atom copying instruction lost', check: 'memory group closure request', edits: [['worker/processors/memory.processor.ts', 'Atoms come only from the numbered messages, never from that list', 'Atoms may come from that list']] },
+  { name: 'group closure schema citation omitted', check: 'memory group closure request', edits: [['src/services/group-chat/curation.ts', "required: ['thread_id', 'source_messages']", "required: ['thread_id']"]] },
+  { name: 'group closure schema accepts extra fields', check: 'memory group closure request', edits: [['src/services/group-chat/curation.ts', "type: 'object', additionalProperties: false, required: ['thread_id'", "type: 'object', additionalProperties: true, required: ['thread_id'"]] },
+  { name: 'group closure stub ignores requested schema', check: 'memory group closure request', edits: [['scripts/group-chat-audit.ts', "result = { ...result, closed_threads: closures ? (result as Row).closed_threads : [] }", "result = { ...result }"]] },
+  { name: 'group closure missing citations accepted', check: 'memory group closure rejects', edits: [['src/services/group-chat/curation.ts', '!Array.isArray(citations) || !citations.length || citations.some(number => {', 'Array.isArray(citations) && citations.some(number => {']] },
+  { name: 'group closure same event accepted', check: 'memory group closure rejects', edits: [['src/services/group-chat/curation.ts', 'event.sequence <= sequence.get(String(id))!', 'event.sequence < sequence.get(String(id))!']] },
+  { name: 'group closure earlier event accepted', check: 'memory group closure rejects', edits: [['src/services/group-chat/curation.ts', 'event.sequence <= sequence.get(String(id))!', 'event.sequence === sequence.get(String(id))!']] },
+  { name: 'group closure range citation accepted', check: 'memory group closure rejects', edits: [['src/services/group-chat/curation.ts', 'number > input.group.messages.length', 'false'], ['src/services/group-chat/curation.ts', 'input.group.messages[number - 1].eventId', 'input.group.messages[Math.min(number, input.group.messages.length) - 1].eventId']] },
+  { name: 'group closure missing sources accepted', check: 'memory group closure rejects', edits: [['src/services/group-chat/curation.ts', 'thread.source_event_ids.some(id => !Number.isFinite(sequence.get(String(id))))', 'false']] },
+  { name: 'group closure rejection counter lost', check: 'memory group closure rejects', edits: [['src/services/group-chat/curation.ts', 'closuresRejected++', 'closuresRejected += 0']] },
+  { name: 'group closure legacy ids routed', check: 'memory group closure rejects', edits: [['worker/processors/memory.processor.ts', "const routed = group ? { ids: [], prose: [] } : routeThreadClosures(extracted, [...openThreadById.keys()])", "const routed = routeThreadClosures(extracted, [...openThreadById.keys()])"], ['worker/processors/memory.processor.ts', 'const threadsResolved = groupClosures ? groupClosures.closuresAccepted :', 'const threadsResolved =']] },
+  { name: 'group closure archives atom', check: 'memory group valid closure', edits: [['src/services/group-chat/curation.ts', '$set: { unresolved_thread: false, resolved_at:', '$set: { is_archived: true, unresolved_thread: false, resolved_at:']] },
+  { name: 'group closure leaves thread open', check: 'memory group valid closure', edits: [['src/services/group-chat/curation.ts', '$set: { unresolved_thread: false, resolved_at:', '$set: { unresolved_thread: true, resolved_at:']] },
+  { name: 'group closure deletes vector', check: 'memory group valid closure', edits: [['src/services/group-chat/curation.ts', "import { mongoColl }", "import { vectorStore } from '../vector-store'\nimport { mongoColl }"], ['src/services/group-chat/curation.ts', '    const result = await mongoColl.memories().updateOne', "    const memory = await mongoColl.memories().findOne({ _id: thread._id })\n    if (memory?.pinecone_id) await vectorStore.deleteIds({ kind: 'mem', instanceId: String(input.instanceId) }, [memory.pinecone_id])\n    const result = await mongoColl.memories().updateOne"]] },
+  { name: 'group closure accepted counter lost', check: 'memory group valid closure', edits: [['src/services/group-chat/curation.ts', 'closuresAccepted++', 'closuresAccepted += 0']] },
+  { name: 'group closure only response rejected', check: 'memory group valid closure', edits: [['worker/processors/memory.processor.ts', ' && !extracted.closed_threads?.length', '']] },
+  { name: 'group closed atom rewind left behind', check: 'memory group closed rewind', edits: [['src/services/memory.service.ts', 'source_event_ids: { $in: doomedIds }', 'source_event_ids: { $in: doomedIds }, unresolved_thread: true']] },
+  { name: 'group closed atom rewind vector left behind', check: 'memory group closed rewind', edits: [['src/services/memory.service.ts', 'await vectorStore.deleteIds(scope, [m.pinecone_id])', 'void 0']] },
+  { name: 'group exact text dedup disabled', check: 'memory group same normalized text', edits: [['worker/processors/memory.processor.ts', 'if (duplicate) { duplicates++; continue }', 'if (false) { duplicates++; continue }']] },
+  { name: 'group exact text dedup loses within batch', check: 'memory group same normalized text', edits: [['worker/processors/memory.processor.ts', 'liveGroupTexts?.add(normalizeGroupMemoryText(text))', 'void 0']] },
+  { name: 'group exact text dedup loses case normalization', check: 'memory group same normalized text', edits: [['src/services/group-chat/curation.ts', ".trim().toLowerCase()", '.trim()']] },
+  { name: 'group exact text dedup loses previous events', check: 'memory group same normalized text', edits: [['worker/processors/memory.processor.ts', 'const duplicate = liveGroupTexts!.has(normalizeGroupMemoryText(text))', 'const duplicate = newMemories.some(memory => normalizeGroupMemoryText(memory.text) === normalizeGroupMemoryText(text))']] },
+  { name: 'recall incidentally mentioned wedding earns provenance', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "text.includes('mira') && /wedding|marri|june/.test(text)", "text.includes('mira')"]] },
+  { name: 'recall peanut list earns allergy provenance', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "text.includes('peanut') && text.includes('allerg')", "text.includes('peanut')"]] },
+  { name: 'recall right person objects ignored', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', '[...atom.subjects, ...atom.objects]', '[...atom.subjects]']] },
+  { name: 'recall right person text ignored', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "names.some(name => new RegExp(`\\\\b${name}\\\\b`, 'i').test(atom.text))", 'false']] },
+  { name: 'recall provenance citation ignored', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', 'atom.sources.includes(event.eventId)', 'true']] },
+  { name: 'recall indirect Q3 auto passes', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "pass: null, detail: 'manual review: reply plainly", "pass: true, detail: 'manual review: reply plainly"]] },
+  { name: 'recall indirect Q3 rejected', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "question.id === 'Q3' && /insufferable/i.test(reply)", "false && /insufferable/i.test(reply)"]] },
+  { name: 'recall report created atoms counter lost', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "created: sum('memoriesCreated')", 'created: 0']] },
+  { name: 'recall report accepted closures counter lost', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "accepted: sum('closuresAccepted')", 'accepted: 0']] },
+  { name: 'recall report rejected closures counter lost', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "rejected: sum('closuresRejected')", 'rejected: 0']] },
+
+  { name: 'group closure ignores latest source event', check: 'memory group closure rejects', edits: [['src/services/group-chat/curation.ts', 'thread.source_event_ids.some(id => event.sequence <= sequence.get(String(id))!)', 'thread.source_event_ids.every(id => event.sequence <= sequence.get(String(id))!)']] },
+  { name: 'group paraphrase merges different people facts', check: 'memory group same normalized text', edits: [['worker/processors/memory.processor.ts', '.filter(candidate => groupMemoryMayMerge(candidate, { subjects, objects, source_event_ids: sourceEventIds }))', '.filter(candidate => true)']] },
+  { name: 'recall report archived atoms lost', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', "input.archivedBeforeRewind ?? 'unavailable'", '0']] },
+  { name: 'recall report live atoms lost', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', 'live before rewind ${input.atoms.length}', 'live before rewind 0']] },
+  { name: 'recall report closure wiring lost', check: 'memory recall script', edits: [['scripts/group-memory-recall.ts', 'memoryBatchCounts(memoryBatches).accepted', '0']] },
+
 ]
+const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {
   const missing: string[] = []
-  for (const mutation of mutations) {
+  for (const mutation of selectedMutations) {
     const sources = new Map<string, string>()
     for (const [file, from, to] of mutation.edits) {
       const source = sources.get(file) ?? await readFile(join(server, file), 'utf8')
@@ -298,7 +340,7 @@ try {
   for (const file of auditFiles.slice(1)) await cp(join(server, 'scripts', file), join(root, 'scripts', file))
   await symlink(join(server, 'node_modules'), join(root, 'node_modules'), 'dir')
   let rejected = 0
-  for (const mutation of mutations) {
+  for (const mutation of selectedMutations) {
     const originals = new Map<string, string>()
     try {
       for (const [file, from, to] of mutation.edits) {
@@ -316,5 +358,5 @@ try {
       rejected++; console.log(`BITE ${mutation.name}: exit ${code}; FAIL ${mutation.check}`)
     } finally { for (const [path, original] of originals) await writeFile(path, original) }
   }
-  console.log(`group-chat bites: ${rejected}/${mutations.length} mutations rejected; scratch sources restored and removed`)
+  console.log(`group-chat bites: ${rejected}/${selectedMutations.length} mutations rejected; scratch sources restored and removed`)
 } finally { await rm(root, { recursive: true, force: true }) }

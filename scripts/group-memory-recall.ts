@@ -569,7 +569,7 @@ function dryCuration(user: string, body: Record<string, unknown>): string {
   if (!format?.json_schema?.schema?.properties?.memories?.items?.properties?.source_messages) {
     for (const atom of atoms) delete atom.source_messages
   }
-  return JSON.stringify({ memories: atoms, entities: [], resolved_threads: [], closed_thread_ids: [] })
+  return JSON.stringify({ memories: atoms, entities: [], closed_threads: [] })
 }
 
 function dryResponse(purpose: PurposeKey, body: Record<string, unknown>, system: string, user: string): { content: string; embedding?: number[] } {
@@ -920,7 +920,7 @@ const QUESTIONS: QuestionSpec[] = [
     note: 'attribution of a relative' },
   { id: 'Q3', kind: 'normal', player: '@Jess how is your sister settling in?', speakers: ['Jess'],
     promptMust: [['lena', 'lisbon']], promptMustNot: [], replyMust: [['lena', 'lisbon']], replyMustNot: ['mira', 'asha'],
-    note: 'Lena or Lisbon, never Mira or Asha' },
+    note: 'Lena or Lisbon, or an indirect insufferable-sister reply for manual review; never Mira or Asha' },
   { id: 'Q4', kind: 'normal', player: '@Priya what does your sister do?', speakers: ['Priya'],
     promptMust: [['vet']], promptMustNot: [], replyMust: [['vet']], replyMustNot: ['lisbon'], note: 'the vet job' },
   { id: 'Q5', kind: 'normal', player: '@Tom can you get peanut stuff for the party?', speakers: ['Tom'],
@@ -1104,10 +1104,40 @@ async function selftest(): Promise<void> {
     for (const subject of ['player', PLAYER]) {
       assert(checkFact(1, [{ ...stored, subjects: [subject] }], { eventId: 'event', sequence: 2 }).pass, 'canonical or named player rejected')
     }
-    for (const subjects of [['Jess'], ['player', 'Jess']]) {
+    for (const subjects of [['Jess'], ['Priya']]) {
       assert(!checkFact(1, [{ ...stored, subjects }], { eventId: 'event', sequence: 2 }).pass, 'wrong person escaped misattribution')
     }
     assert(!checkFact(1, [], { eventId: 'event', sequence: 2 }).pass, 'zero stored atoms earned coverage')
+    for (const patch of [{ subjects: ['player', 'Jess'] }, { subjects: ['Jess'], objects: ['Sam'] },
+      { subjects: ['Jess'], text: "Sam's sister Mira has a June wedding." }]) {
+      assert(checkFact(1, [{ ...stored, ...patch }], { eventId: 'event', sequence: 2 }).pass, 'right person present was called misattribution')
+    }
+    const incidental = { ...stored, text: 'Sam asked Priya about his brother, she mentioned Mira', sources: ['wrong'] }
+    assert(!statesFact(1, incidental), 'Mira mention alone earned wedding provenance')
+    assert(!checkFact(1, [stored, incidental], { eventId: 'event', sequence: 2 }).detail.includes('MISATTRIBUTED'), 'incidental Mira was misattributed')
+    assert(!checkFact(1, [{ ...stored, text: 'Mira was mentioned in passing.' }], { eventId: 'event', sequence: 2 }).pass, 'incidental token earned provenance')
+    assert(!checkFact(1, [{ ...stored, sources: ['wrong'] }], { eventId: 'event', sequence: 2 }).pass, 'wrong source earned provenance')
+    assert(statesFact(1, { ...stored, text: "Sam's sister Mira has a wedding planned." }), 'wedding without June rejected')
+    assert(!statesFact(4, { ...stored, text: 'Tom flagged Sam is on the fridge list for peanuts' }), 'peanut list earned allergy provenance')
+    const allergic = { ...stored, text: 'Sam is allergic to peanuts.', subjects: ['Tom'] }
+    assert(checkFact(4, [allergic], { eventId: 'event', sequence: 2 }).pass, 'allergy with right person in text rejected')
+    assert(!checkFact(4, [{ ...allergic, text: 'Jess is allergic to peanuts.' }], { eventId: 'event', sequence: 2 }).pass, 'wrong allergy person accepted')
+    assert(!checkFact(4, [{ ...allergic, sources: ['wrong'] }], { eventId: 'event', sequence: 2 }).pass, 'wrong allergy provenance accepted')
+    assert(recallReplyCheck(QUESTIONS[2], "oh she's INSUFFERABLE sam 🥲").pass === null, 'Q3 actual indirect answer must be read by a person')
+    assert(recallReplyCheck(QUESTIONS[2], 'My sister is being insufferable about it.').pass === null, 'Q3 indirect answer must be read by a person')
+    assert(recallReplyCheck(QUESTIONS[2], 'My sister Mira is insufferable.').pass === false, 'Q3 wrong sister accepted')
+    assert(recallReplyCheck(QUESTIONS[2], 'Lena is settling in well.').pass === true, 'Q3 explicit answer rejected')
+
+    const counts = memoryBatchCounts([{ fields: { memoriesCreated: 4, closuresAccepted: 2, closuresRejected: 3 } }, { fields: { memoriesCreated: 1 } }])
+    assert(counts.created === 5 && counts.accepted === 2 && counts.rejected === 3, 'memory and closure counts were lost')
+    const logLength = logs.length
+    logs.push({ msg: 'group.memory_batch', fields: { memoriesCreated: 5, closuresAccepted: 2, closuresRejected: 3 } })
+    try {
+      const summary = summaryMarkdown({ checks: [], atoms: [stored], archivedBeforeRewind: 2, factChecks: [], toggle: null,
+        rewind: [], reset: null, watermarksBefore: null, watermarksAfter: null, postSections: '', answers: [], factEvents: new Map() })
+      assert(summary.includes('atoms: created 5; archived before rewind 2; live before rewind 1'), 'created archived and live reporting was lost')
+      assert(summary.includes('closures: accepted 2; rejected 3'), 'closure reporting was lost')
+    } finally { logs.splice(logLength) }
 
     const rawCalls = [{ purpose: 'curation', turn: 'test-1', response: '{}', rawResponse: '{invalid raw body', status: 500 },
       { purpose: 'curation', turn: 'test-2', response: '{"memories":[]}', status: 200 }] as CapturedCall[]
@@ -1410,7 +1440,7 @@ async function runProbe(): Promise<number> {
         ? { name: `${question.id} reply level`, pass: null as boolean | null, detail: 'dry run: the reply text is simulated, so it is not scored' }
         : question.kind === 'control'
           ? { name: `${question.id} reply level`, pass: null as boolean | null, detail: `manual review: control question, no fixture fact. Possible invented names: ${inventedNames(reply).join(', ') || 'none'}` }
-          : tokenCheck(`${question.id} reply level`, reply, question.replyMust, question.replyMustNot)
+          : recallReplyCheck(question, reply)
       checks.push(promptCheck, replyCheck)
       let extra = ''
       if (question.id === 'Q9') {
@@ -1436,6 +1466,7 @@ async function runProbe(): Promise<number> {
       vectorIds: doc.pinecone_id ? [String(doc.pinecone_id)] : [],
     }))
     const atomsBeforeRewind = await readAtoms()
+    const archivedBeforeRewind = await mongoColl.memories().countDocuments({ instance_id: instanceId, is_archived: true })
     const factKeys: FactKey[] = [1, 2, 3, 4, 5, 6, 7]
     const factChecks = factKeys.map(key => checkFact(key, atomsBeforeRewind, factEvents.get(key)))
 
@@ -1508,7 +1539,7 @@ async function runProbe(): Promise<number> {
     writeQuestions(answers, bystanderRecord)
     writeAtoms(atomsBeforeRewind, atomsAfterRewind, factChecks)
     writeSummary({
-      checks, atoms: atomsBeforeRewind, factChecks, toggle: toggleCheck, rewind: rewindChecks, reset: resetCheck,
+      checks, atoms: atomsBeforeRewind, archivedBeforeRewind, factChecks, toggle: toggleCheck, rewind: rewindChecks, reset: resetCheck,
       watermarksBefore, watermarksAfter, postSections, answers, factEvents,
     })
 
@@ -1613,30 +1644,46 @@ interface AtomRow {
 
 function matchesFact(atom: AtomRow, tokens: readonly string[]): boolean {
   const text = atom.text.toLowerCase()
-  return tokens.some(token => text.includes(token))
+  return tokens.every(token => text.includes(token))
+}
+
+function statesFact(key: FactKey, atom: AtomRow): boolean {
+  const text = atom.text.toLowerCase()
+  if (key === 1) return text.includes('mira') && /wedding|marri|june/.test(text)
+  if (key === 4) return text.includes('peanut') && text.includes('allerg')
+  return matchesFact(atom, FACTS[key].tokens)
 }
 
 function checkFact(key: FactKey, atoms: AtomRow[], event: { eventId: string; sequence: number } | undefined): Check {
   const fact = FACTS[key]
-  const matching = atoms.filter(atom => matchesFact(atom, fact.tokens))
+  const matching = atoms.filter(atom => statesFact(key, atom))
   const expected = fact.person.toLowerCase()
-  const subjectOf = (atom: AtomRow) => atom.subjects.map(name => name.toLowerCase())
-  const hasRightSubject = matching.some(atom => subjectOf(atom).some(name =>
-    name === expected || (expected === PLAYER.toLowerCase() && (name === 'the player' || name === 'player' || name === PLAYER.toLowerCase()))))
-  const withProvenance = matching.filter(atom => event?.eventId && atom.sources.includes(event.eventId))
+  const names = expected === PLAYER.toLowerCase() ? [expected, 'player', 'the player'] : [expected]
+  const hasPerson = (atom: AtomRow) => [...atom.subjects, ...atom.objects].some(name => names.includes(name.toLowerCase())) ||
+    names.some(name => new RegExp(`\\b${name}\\b`, 'i').test(atom.text))
+  const hasRightSubject = matching.some(hasPerson)
+  const withProvenance = matching.filter(atom => hasPerson(atom) && event?.eventId && atom.sources.includes(event.eventId))
   const provenanceOk = withProvenance.length > 0
-  const misattributed = matching.filter(atom => {
-    const subjects = subjectOf(atom)
-    const people = [...CAST.map(member => member.toLowerCase()), 'player', 'the player', PLAYER.toLowerCase()]
-    const wrongPerson = subjects.filter(name => people.includes(name) && name !== expected
-      && !(expected === PLAYER.toLowerCase() && (name === 'player' || name === 'the player' || name === PLAYER.toLowerCase())))
-    return wrongPerson.length > 0
-  })
+  const misattributed = matching.filter(atom => !hasPerson(atom))
   const pass = matching.length > 0 && hasRightSubject && provenanceOk && misattributed.length === 0
   const detail = matching.length === 0 ? 'no atom stored'
-    : `atoms: ${matching.length}; right subject: ${hasRightSubject}; provenance: ${provenanceOk}${event ? ` (event seq ${event.sequence})` : ''}` +
+    : `atoms: ${matching.length}; right person: ${hasRightSubject}; provenance: ${provenanceOk}${event ? ` (event seq ${event.sequence})` : ''}` +
       `${misattributed.length ? `; MISATTRIBUTED: ${misattributed.map(atom => `${atom.text.slice(0, 60)} [${atom.subjects.join(', ')}]`).join(' | ')}` : ''}`
   return { name: `fact ${key} (${fact.label}): atom, subject and provenance`, pass, detail }
+}
+
+function recallReplyCheck(question: QuestionSpec, reply: string): Check {
+  const check = tokenCheck(`${question.id} reply level`, reply, question.replyMust, question.replyMustNot)
+  if (!check.pass && question.id === 'Q3' && /insufferable/i.test(reply) &&
+    !question.replyMustNot.some(token => reply.toLowerCase().includes(token))) {
+    return { ...check, pass: null, detail: 'manual review: reply plainly discusses the sister being insufferable; confirm Lisbon context in the transcript' }
+  }
+  return check
+}
+
+function memoryBatchCounts(batches: Array<{ fields: Record<string, unknown> }>) {
+  const sum = (key: string) => batches.reduce((total, entry) => total + Number(entry.fields[key] ?? 0), 0)
+  return { created: sum('memoriesCreated'), accepted: sum('closuresAccepted'), rejected: sum('closuresRejected') }
 }
 
 function money(value: number): string { return `$${value.toFixed(6)}` }
@@ -1706,9 +1753,10 @@ function writeAtoms(before: AtomRow[], after: AtomRow[], factChecks: Check[]): v
   writeFileSync(join(RUN_DIR, 'atoms.md'), `${lines.join('\n').trimEnd()}\n`)
 }
 
-function writeSummary(input: {
+function summaryMarkdown(input: {
   checks: Check[]
   atoms: AtomRow[]
+  archivedBeforeRewind?: number
   factChecks: Check[]
   toggle: Check | null
   rewind: Check[]
@@ -1718,7 +1766,7 @@ function writeSummary(input: {
   postSections: string
   answers: Array<{ question: QuestionSpec; prompt: Check; replyCheck: Check }>
   factEvents: Map<FactKey, { eventId: string; sequence: number }>
-}): void {
+}): string {
   const pass = input.checks.filter(check => check.pass === true).length
   const fail = input.checks.filter(check => check.pass === false)
   const manual = input.checks.filter(check => check.pass === null).length
@@ -1729,6 +1777,7 @@ function writeSummary(input: {
   const memoryCost = curation.cost_usd + embedding.cost_usd
   const lines: string[] = [DRY ? '# Recall run summary — DRY REHEARSAL (every provider call simulated; nothing measured)' : '# Recall run summary', '']
   lines.push(`- turns: ${turns.length}; events stored: ${events}; atoms before rewind: ${input.atoms.length}`)
+  lines.push(`- atoms: created ${memoryBatchCounts(logs.filter(entry => entry.msg === 'group.memory_batch')).created}; archived before rewind ${input.archivedBeforeRewind ?? 'unavailable'}; live before rewind ${input.atoms.length}`)
   lines.push(`- atom coverage: ${input.factChecks.filter(check => check.pass === true).length}/7 planted facts stored with correct subject and provenance`)
   lines.push(`- checks: ${pass} pass, ${fail.length} fail, ${manual} manual (read by a person)`)
   lines.push(`- spend: ${money(ledger.spent_usd)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}) of the $${CAP_USD.toFixed(2)} cap; ${ledger.calls} calls, ${ledger.planted_calls} planted fixtures, ${ledger.unpriced_calls} unpriced`)
@@ -1755,7 +1804,8 @@ function writeSummary(input: {
   lines.push('## Curator and summary batches')
   lines.push('')
   lines.push(`- group.memory_batch: ${memoryBatches.length} (${memoryBatches.filter(entry => entry.fields.success === true).length} ok, ${memoryBatches.filter(entry => entry.fields.success === false).length} failed)`)
-  for (const entry of memoryBatches) lines.push(`  - through ${entry.fields.through}: events ${entry.fields.events}, messages ${entry.fields.messages}, created ${entry.fields.memoriesCreated ?? 0}, threads ${entry.fields.threadsResolved ?? 0}, invalid citations ${entry.fields.invalidCitations ?? 0}, invalid atoms ${entry.fields.invalidAtoms ?? 0}, duplicates ${entry.fields.duplicates ?? 0}, ok ${entry.fields.success}`)
+  for (const entry of memoryBatches) lines.push(`  - through ${entry.fields.through}: events ${entry.fields.events}, messages ${entry.fields.messages}, created ${entry.fields.memoriesCreated ?? 0}, closures accepted ${entry.fields.closuresAccepted ?? 0}, rejected ${entry.fields.closuresRejected ?? 0}, invalid citations ${entry.fields.invalidCitations ?? 0}, invalid atoms ${entry.fields.invalidAtoms ?? 0}, duplicates ${entry.fields.duplicates ?? 0}, ok ${entry.fields.success}`)
+  lines.push(`- closures: accepted ${memoryBatchCounts(memoryBatches).accepted}; rejected ${memoryBatchCounts(memoryBatches).rejected}`)
   const invalidCitations = memoryValidation.reduce((sum, entry) => sum + Number(entry.fields.invalidCitations ?? 0), 0)
   const invalidAtoms = memoryValidation.reduce((sum, entry) => sum + Number(entry.fields.invalidAtoms ?? 0), 0)
   lines.push(`- validation totals: invalid citations ${invalidCitations}, invalid atoms ${invalidAtoms}`)
@@ -1786,7 +1836,11 @@ function writeSummary(input: {
   if (notes.length) { lines.push('', '## Notes', ''); for (const note of notes) lines.push(`- ${note}`) }
   lines.push('')
   lines.push(`_Generated ${new Date().toISOString()}._`)
-  writeFileSync(join(RUN_DIR, 'summary.md'), `${lines.join('\n')}\n`)
+  return `${lines.join('\n')}\n`
+}
+
+function writeSummary(input: Parameters<typeof summaryMarkdown>[0]): void {
+  writeFileSync(join(RUN_DIR, 'summary.md'), summaryMarkdown(input))
 }
 
 /** Pairs each writer call with the texts groupWriterMemory was handed. */

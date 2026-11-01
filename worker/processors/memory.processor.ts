@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto'
-import { GROUP_CURATION_SCHEMA } from '../../src/services/group-chat/curation'
+import { GROUP_CURATION_SCHEMA, closeGroupThreads, normalizeGroupMemoryText } from '../../src/services/group-chat/curation'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { groupMemoryMayMerge, withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark, type GroupMemoryBatch } from '../../src/services/group-chat/memory'
 import { log } from '../../src/utils/logger'
@@ -87,7 +86,10 @@ ${ATOM_METADATA_RULES}
 - Every atom must include source_messages: a nonempty array of integer message numbers from the supplied numbered conversation. Cite only messages that establish that fact, never database ids.
 - Return an empty memories array only when no message establishes any personal fact.
 
-${THREAD_CLOSURE_RULES.replaceAll('THIS exchange', 'THIS conversation')}
+Rules for closing open threads:
+- OPEN THREADS lists only previously stored unresolved threads. Use that list only to identify a thread to close. Atoms come only from the numbered messages, never from that list; do not copy or recite its facts as new atoms.
+- Return closed_threads objects with thread_id (T1, T2, ...) and nonempty source_messages citing the numbered messages that establish the payoff. Cite only messages from events later than every event that established the thread; repeating the opening promise is not a payoff.
+- Closing means a promise is kept or broken, a question answered, or an appointment completed. The memory remains stored after closure. Return [] when no later message establishes a payoff.
 
 Respond ONLY with valid JSON matching this schema. Every field listed in required must be present in each object, including source_messages in each memory atom:
 ${JSON.stringify(GROUP_CURATION_SCHEMA, null, 2)}`
@@ -440,12 +442,12 @@ export function buildMemoryCurationRequest(params: {
     : `\nIdentity boundary:\n- This is a GM world: the player speaks as the protagonist. Use "player" for the player's own first-person facts in memory subjects unless a specific other character acted.\n`
   if (params.group) {
     return {
-      purpose: 'memory_curation', model: AI_MODELS.memoryCuration, temperature: 0.3, maxTokens: 2400,
+      purpose: 'memory_curation', model: AI_MODELS.memoryCuration, temperature: 0.3, maxTokens: 4000,
       responseFormat: { type: 'json_schema', json_schema: { name: 'group_memories', strict: true } },
       responseSchema: GROUP_CURATION_SCHEMA,
       messages: [
         { role: 'system' as const, content: GROUP_EXTRACTION_PROMPT },
-        { role: 'user' as const, content: `Scene type: ${params.sceneTag}\n\nCharacter roster:\n${rosterLines}\n\nIdentity boundary:\nThis is a group conversation. The human player is "${params.group.player}"; use "player" for this person's subjects and objects. All other speakers are separate people. "I", "me", and "my" belong to the speaker of THAT numbered message. Resolve relatives and possessions to that speaker, never to another member or a GM protagonist. Name every person explicitly in atom text, subjects and objects.\n\nLIVE RELATED FACTS:\n${params.openThreads?.map(thread => `${thread.id}: ${thread.text}`).join('\n') || '(none)'}\n\nNumbered messages (speaker and text):\n${params.group.messages.map(message => `${message.number}. ${JSON.stringify({ speaker: message.name, text: message.text })}`).join('\n')}` },
+        { role: 'user' as const, content: `Scene type: ${params.sceneTag}\n\nCharacter roster:\n${rosterLines}\n\nIdentity boundary:\nThis is a group conversation. The human player is "${params.group.player}"; use "player" for this person's subjects and objects. All other speakers are separate people. "I", "me", and "my" belong to the speaker of THAT numbered message. Resolve relatives and possessions to that speaker, never to another member or a GM protagonist. Name every person explicitly in atom text, subjects and objects.\n\nOPEN THREADS:\n${params.openThreads?.map(thread => `${thread.id}: ${thread.text}`).join('\n') || '(none)'}\n\nNumbered messages (speaker and text):\n${params.group.messages.map(message => `${message.number}. ${JSON.stringify({ speaker: message.name, text: message.text })}`).join('\n')}` },
       ],
     }
   }
@@ -565,12 +567,12 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       .memories()
       .find(
         { instance_id: instanceOid, unresolved_thread: true, is_archived: false },
-        { projection: { text: 1, importance: 1, updated_at: 1 } },
+        { projection: { text: 1, importance: 1, updated_at: 1, ...(group ? { source_event_ids: 1 } : {}) } },
       )
       .sort({ updated_at: -1 })
       .limit(12)
       .toArray(),
-    findRelatedLiveMemories(instanceOid, playerInput || group?.messages.map(message => `${message.name}: ${message.text}`).join("\n") || '', aiResponse || ''),
+    group ? Promise.resolve([]) : findRelatedLiveMemories(instanceOid, playerInput || '', aiResponse || ''),
   ])
   const closeable = mergeCloseableCandidates(
     relatedLive,
@@ -595,7 +597,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
   }
   let invalidCitations = 0, invalidAtoms = 0, duplicates = 0
   if (group) {
-    if (!extracted || !Array.isArray(extracted.memories) || !extracted.memories.length) throw new Error('Group curator returned empty memories')
+    if (!extracted || !Array.isArray(extracted.memories) || (!extracted.memories.length && !extracted.closed_threads?.length)) throw new Error('Group curator returned empty memories')
     extracted.memories = extracted.memories.slice(0, 20).filter((raw: unknown) => {
       if (!raw || typeof raw !== 'object') { invalidAtoms++; return false }
       const atom = raw as Record<string, unknown>
@@ -622,17 +624,19 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       atom.objects = atom.objects.map(canonical)
     }
     log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, accepted: extracted.memories.length })
-    if (!extracted.memories.length) throw new Error('Group curator returned no valid atoms')
+    if (!extracted.memories.length && !extracted.closed_threads?.length) throw new Error('Group curator returned no valid atoms')
     if (!await groupEventsLive(group.events)) throw new Error('Group memory source events changed')
   } else normalizePlayerFactAttribution({ extracted, isSentient, playerInput, protagonistName })
 
   // Close earlier facts this turn paid off — even when no new atom was worth
   // storing (a quiet fulfillment is still a resolution). Closed facts leave
   // retrieval so they cannot be restaged as current plot.
-  const routed = routeThreadClosures(extracted, [...openThreadById.keys()])
+  const groupClosures = group ? await closeGroupThreads({ instanceId: instanceOid, group,
+    threads: closeable.map(row => openThreadDocs.find(doc => doc._id.equals(row.id))!), closures: extracted.closed_threads }) : undefined
+  const routed = group ? { ids: [], prose: [] } : routeThreadClosures(extracted, [...openThreadById.keys()])
   const closedIds = routed.ids.map((id) => openThreadById.get(id)).filter((id): id is ObjectId => !!id)
   const resolvedThreads = routed.prose.slice(0, 3)
-  const threadsResolved =
+  const threadsResolved = groupClosures ? groupClosures.closuresAccepted :
     (await closeThreadsById(closedIds, scope)) +
     (resolvedThreads.length ? await resolveOpenThreads(instanceOid, resolvedThreads) : 0)
   if (threadsResolved > 0) {
@@ -640,7 +644,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
   }
 
   if (!extracted.memories || extracted.memories.length === 0) {
-    return { memoriesCreated: 0, threadsResolved }
+    return { memoriesCreated: 0, threadsResolved, ...(group ? { invalidCitations, invalidAtoms, duplicates, ...groupClosures } : {}) }
   }
 
   // ── Entity-graph resolution: subjects/objects → entity ids ──
@@ -728,14 +732,16 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
 
   const newMemories: any[] = []
 
+  const liveGroupTexts = group ? new Set((await mongoColl.memories().find({ instance_id: instanceOid, is_archived: false },
+    { projection: { text: 1 } }).toArray()).map(memory => normalizeGroupMemoryText(memory.text))) : undefined
   for (const mem of extracted.memories) {
     const text = cleanShortText(mem.text, 600)
     if (!text) continue
     const sourceMessages = group ? (mem.source_messages as number[]).map(number => group.messages[number - 1]) : []
     const sourceEventIds = group ? [...new Map(sourceMessages.map(message => [String(message.eventId), message.eventId])).values()] : [eventOid]
-    const memId = group ? new ObjectId(groupAtomKey(instanceId + '\n' + text, cleanNameList(mem.subjects), cleanNameList(mem.objects)).slice(0, 24)) : new ObjectId()
+    const memId = new ObjectId()
     if (group) {
-      const duplicate = await mongoColl.memories().findOne({ instance_id: instanceOid, _id: memId })
+      const duplicate = liveGroupTexts!.has(normalizeGroupMemoryText(text))
       if (duplicate) { duplicates++; continue }
     }
     const vecId = group ? `group_${idString(memId)}` : randomUUID()
@@ -849,6 +855,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       await vectorStore.deleteIds(scope, [vecId])
       throw new Error('Group memory source events changed')
     }
+    liveGroupTexts?.add(normalizeGroupMemoryText(text))
     newMemories.push(memoryDoc)
 
     // Relationship atoms also become graph edges (subject → object) so the
@@ -955,10 +962,5 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
     })),
   }))
 
-  return { memoriesCreated: newMemories.length, threadsResolved, ...(group ? { invalidCitations, invalidAtoms, duplicates } : {}) }
-}
-
-function groupAtomKey(text: string, subjects: string[], objects: string[]) {
-  const normalize = (value: string) => value.replace(/\s+/g, ' ').trim().toLowerCase()
-  return createHash('sha256').update(JSON.stringify([normalize(text), subjects.map(normalize).sort(), objects.map(normalize).sort()])).digest('hex')
+  return { memoriesCreated: newMemories.length, threadsResolved, ...(group ? { invalidCitations, invalidAtoms, duplicates, ...groupClosures } : {}) }
 }

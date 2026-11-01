@@ -1,3 +1,8 @@
+import { mongoColl } from '../../config/mongo'
+import type { MemoryDoc } from '../../models/memory.model'
+import type { GroupMemoryBatch } from './memory'
+import type { ObjectId } from 'mongodb'
+
 const strings = { type: 'array', items: { type: 'string' } }
 const nullableText = { type: ['string', 'null'] }
 
@@ -21,7 +26,7 @@ const atomProperties = {
 export const GROUP_CURATION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
-  required: ['memories', 'entities', 'resolved_threads', 'closed_thread_ids'],
+  required: ['memories', 'entities', 'closed_threads'],
   properties: {
     memories: {
       type: 'array',
@@ -37,7 +42,46 @@ export const GROUP_CURATION_SCHEMA = {
         },
       },
     },
-    resolved_threads: strings,
-    closed_thread_ids: strings,
+    closed_threads: {
+      type: 'array',
+      items: {
+        type: 'object', additionalProperties: false, required: ['thread_id', 'source_messages'],
+        properties: { thread_id: { type: 'string' }, source_messages: atomProperties.source_messages },
+      },
+    },
   },
+}
+
+export const normalizeGroupMemoryText = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase()
+
+/** Event order, rather than message order, also rejects same-event replies and batch overlap. */
+export async function closeGroupThreads(input: {
+  instanceId: ObjectId
+  group: GroupMemoryBatch
+  threads: Array<Pick<MemoryDoc, '_id' | 'source_event_ids'>>
+  closures: unknown
+}): Promise<{ closuresAccepted: number; closuresRejected: number }> {
+  let closuresAccepted = 0, closuresRejected = 0
+  const sources = [...new Map(input.threads.flatMap(thread => thread.source_event_ids || []).map(id => [String(id), id])).values()]
+  const events = sources.length ? await mongoColl.events().find({ instance_id: input.instanceId, _id: { $in: sources } },
+    { projection: { sequence: 1 } }).toArray() : []
+  const sequence = new Map(events.map(event => [String(event._id), event.sequence]))
+  const accepted = new Set<string>()
+  for (const raw of Array.isArray(input.closures) ? input.closures : input.closures == null ? [] : [input.closures]) {
+    const closure = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+    const thread = input.threads.find((_, index) => closure.thread_id === `T${index + 1}`)
+    const citations = closure.source_messages
+    if (!thread || accepted.has(String(thread._id)) || !thread.source_event_ids?.length ||
+      thread.source_event_ids.some(id => !Number.isFinite(sequence.get(String(id)))) ||
+      !Array.isArray(citations) || !citations.length || citations.some(number => {
+        if (!Number.isInteger(number) || number < 1 || number > input.group.messages.length) return true
+        const event = input.group.events.find(event => event._id.equals(input.group.messages[number - 1].eventId))
+        return !event || thread.source_event_ids.some(id => event.sequence <= sequence.get(String(id))!)
+      })) { closuresRejected++; continue }
+    const result = await mongoColl.memories().updateOne({ _id: thread._id, instance_id: input.instanceId,
+      is_archived: false, unresolved_thread: true }, { $set: { unresolved_thread: false, resolved_at: new Date(), updated_at: new Date() } })
+    if (result.modifiedCount) { closuresAccepted++; accepted.add(String(thread._id)) }
+    else closuresRejected++
+  }
+  return { closuresAccepted, closuresRejected }
 }
