@@ -17,7 +17,14 @@ export function validateGroup(data: Partial<WorldTemplateDoc>): void {
     const traits = member.group
     if (!traits || !Number.isFinite(traits.age) || traits.age < 18) fail('every member must be 18 or older')
     if (!Number.isFinite(traits!.talkativeness) || traits!.talkativeness < 0 || traits!.talkativeness > 1) fail('talkativeness must be 0–1')
-    if (!traits!.speech?.trim() || !traits!.wants?.trim()) fail('speech and wants must contain text')
+    if (Object.keys(traits!).some(key => !['age', 'talkativeness', 'speech', 'wants', 'intimacy', 'voice'].includes(key))) fail('unknown member group field')
+    const text = (value: unknown): value is string => typeof value === 'string' && !!value.trim()
+    if ((data.is_nsfw_capable || traits!.intimacy !== undefined) && !text(traits!.intimacy)) fail('intimacy must contain text')
+    if (data.is_nsfw_capable || traits!.voice !== undefined) {
+      const voice = traits!.voice
+      if (!Array.isArray(voice) || voice.length < 1 || voice.length > 8 || !voice.every(line => text(line) && !/[\r\n]/u.test(line))) fail('voice must contain 1–8 text lines')
+    }
+    if (!text(traits!.speech) || !text(traits!.wants)) fail('speech and wants must contain text')
   }
   if (!data.topics?.length || data.topics.some(topic => !topic.trim())) fail('topics must contain text')
   if (!data.opening_lines?.length) fail('opening_lines required')

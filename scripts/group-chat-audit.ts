@@ -4,9 +4,9 @@ import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import { ObjectId } from 'mongodb'
 import type { Job } from 'bullmq'
-import { rollSpeakers, advanceSilence } from '../src/services/group-chat/roll'
+import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders } from '../src/services/group-chat/roll'
 import { parseLines, filterLines, timeLines, emptyLineCounts } from '../src/services/group-chat/lines'
-import { buildGroupStatic, buildGroupDynamic } from '../src/services/group-chat/prompt'
+import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic } from '../src/services/group-chat/prompt'
 import { writeGroupReply } from '../src/services/group-chat/reply'
 import { validateGroup } from '../src/services/group-chat/validation'
 import { publicGroupData } from '../src/services/group-chat/public'
@@ -105,7 +105,7 @@ await check('tag repair merged; empty primary retries then falls back; complete 
   let calls: Array<[string[], boolean]> = []
   const input = { ...opts, player: playerName, tags: [ids[1]], write: async (speakers: string[], fallback: boolean) => { calls.push([speakers, fallback]); return { content: `${calls.length === 1 ? names[0] : names[1]}: reply ${calls.length}`, model: 'fake' } } }
   const repaired = await writeGroupReply(input)
-  assert.equal(repaired.lines.length, 2); assert.deepEqual(calls[1][0], [ids[1]])
+  assert.equal(repaired.lines.length, 2); assert.deepEqual(calls[1][0], [ids[1]]); assert.equal(calls[1][1], false)
   calls = []
   const recovered = await writeGroupReply({ ...input, tags: [], write: async (speakers, fallback) => { calls.push([speakers, fallback]); return { content: fallback ? `${names[0]}: recovered` : '', model: 'fake' } } })
   assert.equal(recovered.lines.length, 1); assert.equal(calls.length, 3); assert.equal(calls[2][1], true)
@@ -120,6 +120,59 @@ await check('group validation rejects unsafe adults, stats, sentience, invalid c
     ...[{ age: 17 }, { talkativeness: -0.1 }, { talkativeness: 1.1 }, { speech: ' ' }, { wants: ' ' }].map(patch => ({ seed_cast: template.seed_cast!.map((member, i) => i ? member : { ...member, group: { ...member.group!, ...patch } }) })),
     { topics: [] }, { opening_lines: [{ name: 'Unknown Writer', text: 'bad' }] },
   ]) assert.throws(() => validateGroup({ ...template, ...patch }))
+})
+
+await check('addressed pick uses first tag, then first named, then first roll with structural boundaries', () => {
+  assert.equal(pickAddressed(members, `@${names[3]} then @${names[0]}`, ids), ids[3])
+  assert.equal(pickAddressed(members, `${names[3]}, ${names[0]}`, ids), ids[3])
+  assert.equal(pickAddressed(members, `${names[0]} @${names[2]}`, ids), ids[2])
+  assert.equal(pickAddressed(members, `x@${names[3]} ${names[0]}suffix`, [ids[1]]), ids[1])
+  assert.equal(pickAddressed(members, `@${names[2].toLowerCase()}`, ids), ids[2])
+})
+await check('adult bystander roll skips half, selects first other roll, and always includes other tags', () => {
+  assert.deepEqual(rollBystanders(ids, [], ids[0], () => 0.499), [])
+  assert.deepEqual(rollBystanders(ids, [], ids[0], () => 0.5), [ids[1]])
+  assert.deepEqual(rollBystanders([ids[0]], [], ids[0], never), [])
+  assert.deepEqual(rollBystanders(ids, [ids[0], ids[2], ids[3]], ids[0], () => 0), [ids[2], ids[3]])
+})
+await check('adult line checks strip paired and unpaired directions before blank, repeat and voice checks; caps gate', () => {
+  const counts = emptyLineCounts()
+  const raw = `${names[0]}: *laughs* Fresh words
+${names[0]}: *only action*
+${names[0]}: *unclosed leading
+${names[0]}: unclosed trailing*
+${names[0]}: *laughs*  AUTHORED   TEXT 0
+${names[0]}: *sighs* Prior line
+${names[0]}: second
+${names[0]}: third
+${names[0]}: fourth
+${names[1]}: other one
+${names[1]}: other two
+${names[1]}: other three`
+  const result = filterLines(parseLines(raw, members, playerName, counts), { ...opts, addressed: ids[0], previous: [{ name: names[0], text: 'prior line' }] }, counts)
+  assert.deepEqual(result.map(line => line.text), ['Fresh words', 'second', 'third', 'other one', 'other two'])
+  assert.equal(counts.stage_directions, 6); assert.equal(counts.empty, 3)
+  assert.equal(counts.copied_example, 1); assert.equal(counts.duplicate, 1); assert.equal(counts.over_cap, 2)
+  assert.equal(filterLines([{ name: names[0], text: 'first' }, { name: names[0], text: 'second' }], { ...opts, oneMessage: true }, emptyLineCounts()).length, 1)
+})
+await check('adult validation requires authored intimacy and 1–8 voice lines and rejects unknown shapes even when optional', () => {
+  const patch = (group: unknown, capable = true) => ({ ...template, is_nsfw_capable: capable, seed_cast: template.seed_cast!.map((member, index) => index ? member : { ...member, group }) }) as WorldTemplateDoc
+  const base = members[0].group
+  for (const intimacy of [undefined, null, '', ' ', 42, []]) assert.throws(() => validateGroup(patch({ ...base, intimacy })))
+  for (const voice of [undefined, null, '', [], [' '], [1], ['two\nlines'], Array(9).fill('text')]) assert.throws(() => validateGroup(patch({ ...base, voice })))
+  assert.throws(() => validateGroup(patch({ ...base, unknown: 'field' })))
+  assert.throws(() => validateGroup(patch({ ...base, voice: {} }, false)))
+  const { intimacy, voice, ...optional } = base
+  validateGroup(patch(optional, false))
+  validateGroup(patch({ ...base, voice: Array(8).fill('text') }))
+})
+await check('addressed prompt is authored per person with player gender sentence and unchanged boundaries', async () => {
+  const prompt = buildAddressedStatic({ ...template, members, player: playerName }, members[2])
+  for (const text of ['one to three', members[2].group.intimacy!, ...members[2].group.voice!, `${playerName}'s gender isn't stated, so don't assume it.`, 'answers what was actually said', 'turns it down', 'Say something new']) assert(prompt.includes(text))
+  for (const other of members.filter(member => member.id !== ids[2])) assert(!prompt.includes(other.group.wants) && !prompt.includes(other.group.intimacy!))
+  const { NARRATIVE_BOUNDARIES } = await import('../src/utils/prompt-builder')
+  assert(prompt.includes(NARRATIVE_BOUNDARIES.trim()))
+  assert(!buildGroupStatic({ ...template, members, player: playerName }).includes(members[2].group.intimacy!))
 })
 
 // A real processor runs below against in-memory documents and a fake writer.
@@ -162,6 +215,7 @@ const clone = <T>(input: T): T => {
   if (Array.isArray(input)) return input.map(clone) as T
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, clone(value)])) as T
 }
+let consentReadHook: (() => void) | undefined
 function collection(name: string) {
   return {
     aggregate() {
@@ -173,11 +227,11 @@ function collection(name: string) {
       const cursor = {
         sort(order: Record<string, number>) { values.sort((a, b) => { for (const [key, dir] of Object.entries(order)) { const av = get(a, key), bv = get(b, key); if (av !== bv) return (Number(av) < Number(bv) ? -1 : 1) * dir } return 0 }); return cursor },
         limit(n: number) { values = values.slice(0, n); return cursor }, skip(n: number) { values = values.slice(n); return cursor },
-        project() { return cursor }, async toArray() { return clone(values) },
+        project(fields: Record<string, number>) { values = values.map(value => Object.fromEntries(Object.keys(fields).filter(key => fields[key] && key in value).map(key => [key, value[key]]))); return cursor }, async toArray() { return clone(values) },
       }
       return cursor
     },
-    async findOne(filter: Row, options?: { sort?: Record<string, number> }) { let cursor = this.find(filter); if (options?.sort) cursor = cursor.sort(options.sort); return (await cursor.toArray())[0] || null },
+    async findOne(filter: Row, options?: { sort?: Record<string, number>; projection?: Row }) { if (name === 'users' && options?.projection) consentReadHook?.(); let cursor = this.find(filter); if (options?.sort) cursor = cursor.sort(options.sort); return (await cursor.toArray())[0] || null },
     async countDocuments(filter: Row) { return rows(name).filter(row => matches(row, filter)).length },
     async insertOne(row: Row) { rows(name).push(clone(row)); return { insertedId: row._id } },
     async updateOne(filter: Row, update: Row, options?: { upsert?: boolean }) {
@@ -210,16 +264,24 @@ const redis = {
 }
 const unavailable = (): never => { throw new Error('Unexpected external dependency in group audit') }
 globalThis.fetch = Object.assign(async () => unavailable(), { preconnect: unavailable })
-mock.module('../src/config/env', () => ({ env: { NSFW_SAME_TURN_ROUTER: 'off', CDN_BASE_URL: 'https://fixture.invalid', JWT_SECRET: 'audit-only', MEDIA_VOICE_ENABLED: false } }))
+const auditEnv = { NSFW_SAME_TURN_ROUTER: 'off', NSFW_SAME_TURN_ROUTER_MODEL: 'fake-router', NSFW_SAME_TURN_ROUTER_HOST: 'fixture' }
+let routerRequests = 0, routerDelay = 0, routerSexual = true
+mock.module('../src/config/env', () => ({ env: { ...auditEnv, get NSFW_SAME_TURN_ROUTER() { return auditEnv.NSFW_SAME_TURN_ROUTER }, CDN_BASE_URL: 'https://fixture.invalid', JWT_SECRET: 'audit-only', MEDIA_VOICE_ENABLED: false } }))
 mock.module('../src/config/mongo', () => ({ mongoColl: new Proxy({}, { get: (_target, key) => () => collection(String(key)) }) }))
 mock.module('../src/config/redis', () => ({ getRedisClient: () => redis, getQueueRedisClient: unavailable, getRedisSubscriber: unavailable }))
-mock.module('../src/config/openai', () => ({ getOpenRouter: unavailable, getOpenAI: unavailable }))
+const routerClient = { chat: { completions: { create: async () => {
+  routerRequests++
+  await new Promise(resolve => setTimeout(resolve, routerDelay))
+  return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify({ sexual_intent: routerSexual }) } }] }
+} } } }
+mock.module('../src/config/openai', () => ({ getOpenRouter: () => ({ withOptions: () => routerClient }), getOpenAI: unavailable }))
 mock.module('../src/services/llm-trace.service', () => ({ flushLLMTracesLater: () => {}, flushLLMTraces: async () => {}, traceStore: () => ({ calls: collection('llmCalls'), bodies: collection('llmBodies') }), runBackgroundLLMTrace: async (_scope: unknown, fn: () => Promise<unknown>) => fn() }))
 mock.module('../src/providers/rag.provider', () => ({ queryRag: async () => ({ memoryTexts: ['Remembered group fact.'] }), querySummaries: async () => [] }))
 mock.module('../src/services/post-process-outbox.service', () => ({ stagePostProcess: async (input: Row) => { outbox.push(input) }, dispatchPostProcessOutbox: async () => 0 }))
 mock.module('../src/services/media/attribution', () => ({ ATTRIBUTION_RULE_VERSION: 'audit', mediaRevision: () => 'audit' }))
 mock.module('../src/services/moderation.service', () => ({ moderationService: { discoveryFilter: async () => ({}) } }))
-mock.module('../src/utils/logger', () => ({ log: { info: () => {}, warn: () => {}, error: () => {} } }))
+const checkLogs: Row[] = []
+mock.module('../src/utils/logger', () => ({ log: { info: (name: string, data: Row) => { if (name === 'group.reply_checked') checkLogs.push(data) }, warn: () => {}, error: () => {} } }))
 mock.module('../src/services/time.service', () => ({ timeService: { initialAnchor: async (input: Row) => { assert.equal(input.templateId, undefined); return { real_time: new Date(), sequence: 0, timeline_id: 'main' } } } }))
 mock.module('../src/services/opening-place.service', () => ({ extractOpeningPlace: unavailable }))
 mock.module('../src/services/character-codex.service', () => ({ characterCodexService: { seedProtagonist: unavailable } }))
@@ -239,9 +301,10 @@ mock.module('../src/middleware/auth', () => ({ verifyWsToken: unavailable }))
 mock.module('../src/middleware/rate-limit', () => ({ rateLimit: async () => ({ allowed: true }) }))
 mock.module('../src/services/last-active.service', () => ({ recordLastActive: () => {} }))
 mock.module('../src/queues', () => ({ removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { queued.push(data); return { id: options.jobId } } }), QUEUE_RETENTION: { generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
-let modelReplies: string[] = [], writerCalls: Row[] = [], turnNumber = 0
-mock.module('../src/ai', () => ({ AI_MODELS: { narrationSfw: 'fake-safe', narrationNsfw: 'fake-adult', narrationSfwFallbacks: ['fake-safe-fallback'], narrationNsfwFallbacks: ['fake-adult-fallback'] }, narrationTemperature: () => 0.62, snapshotLLMUsage: () => [],
-  callLLMWithFallback: async (request: Row) => { writerCalls.push(request); return { content: modelReplies.shift() ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embed: unavailable, callLLM: unavailable, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
+let writerHook: ((request: Row) => void) | undefined
+let modelReplies: Array<string | Error> = [], writerCalls: Row[] = [], turnNumber = 0
+mock.module('../src/ai', () => ({ AI_MODELS: { narrationSfw: 'fake-safe', narrationNsfw: 'fake-story-adult', groupNsfw: 'fake-adult', groupNsfwFallbacks: ['fake-adult-fallback', 'fake-adult-last'], narrationSfwFallbacks: ['fake-safe-fallback'], narrationNsfwFallbacks: ['fake-adult-fallback'] }, narrationTemperature: () => 0.62, snapshotLLMUsage: () => [],
+  callLLMWithFallback: async (request: Row) => { writerCalls.push(request); writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embed: unavailable, callLLM: unavailable, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
 }))
 const { groupTurnProcessor } = await import('../worker/processors/group-turn.processor')
 const { instanceService } = await import('../src/services/instance.service')
@@ -257,21 +320,46 @@ Math.random = () => 0
 const playerId = '300000000000000000000001'
 let instanceId = ''
 async function start() {
-  tables.clear(); frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []
+  tables.clear(); frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0
   rows('users').push({ _id: new ObjectId(playerId), preferences: { nsfw_enabled: false, player_name: playerName } })
   rows('worldTemplates').push(clone(groupTemplate()) as unknown as Row)
   const created = await instanceService.create(playerId, template._id.toHexString(), 'creator')
   instanceId = created.instance._id.toHexString()
   return created
 }
-async function turn(data: Partial<GroupTurnJob> = {}) {
+async function turn(data: Partial<GroupTurnJob> = {}, rng?: () => number) {
   const id = crypto.randomUUID(); locks.set(`lock:gen:${playerId}:${instanceId}`, JSON.stringify({ owner: id, phase: 'running' }))
-  return groupTurnProcessor({ id, data: { instanceId, playerId, userMessage: 'A player message', ...data } } as Job<GroupTurnJob>)
+  return groupTurnProcessor({ id, data: { instanceId, playerId, userMessage: 'A player message', ...data } } as Job<GroupTurnJob>, { rng })
 }
 function forbidden(value: unknown) {
   if (!value || typeof value !== 'object') return
-  for (const [key, entry] of Object.entries(value)) { assert(!['wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'cost', 'cost_usd'].includes(key), `leaked ${key}`); forbidden(entry) }
+  for (const [key, entry] of Object.entries(value)) { assert(!['intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'cost', 'cost_usd'].includes(key), `leaked ${key}`); forbidden(entry) }
 }
+await check('group adult model defaults overrides and Euryale temperature are isolated from story narration', async () => {
+  const code = `import { mock } from 'bun:test'; mock.module('./src/config/env.ts', () => ({ env: {} })); const { AI_MODELS } = await import('./src/ai/models.ts'); console.log(JSON.stringify({ model: AI_MODELS.groupNsfw, fallbacks: AI_MODELS.groupNsfwFallbacks }));`
+  for (const override of [false, true]) {
+    const child = Bun.spawn(['bun', '--no-env-file', '-e', code], { cwd: new URL('..', import.meta.url).pathname,
+      env: { ...process.env, GROUP_NSFW_MODEL: override ? 'override-adult' : '', GROUP_NSFW_FALLBACK_MODELS: override ? ' first, second , ' : undefined }, stdout: 'pipe', stderr: 'pipe' })
+    const [out, errors, result] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    assert.equal(result, 0, errors)
+    assert.deepEqual(JSON.parse(out), override ? { model: 'override-adult', fallbacks: ['first', 'second'] } : {
+      model: 'sao10k/l3.1-euryale-70b', fallbacks: ['cognitivecomputations/dolphin-mistral-24b-venice-edition', 'thedrummer/skyfall-36b-v2'],
+    })
+  }
+  const { narrationTemperature } = await import('../src/ai/narration-profile')
+  assert.equal(narrationTemperature('sao10k/l3.1-euryale-70b'), 0.62)
+})
+await check('seed adult schema accepts authored traits and rejects malformed or unknown fields', async () => {
+  const { CreateTemplateBody } = await import('../src/schemas/template.schema')
+  const { Value } = await import('@sinclair/typebox/value')
+  const { _id, creator_id, slug, version, created_at, updated_at, is_published, visibility, review_status, ...body } = template
+  assert(Value.Check(CreateTemplateBody, body))
+  const groupSchema = CreateTemplateBody.properties.seed_cast.items.properties.group
+  for (const patch of [{ intimacy: 42 }, { voice: 'wrong' }, { voice: [] }, { voice: Array(9).fill('text') }, { voice: [42] }, { extra: 'unknown' }]) {
+    assert(!Value.Check(groupSchema, { ...members[0].group, ...patch }))
+  }
+  for (const patch of [{ intimacy: undefined }, { voice: undefined }, { voice: [' '] }]) assert.throws(() => validateEntry({ ...body, slug, cover: 'fixture.png', seed_cast: body.seed_cast!.map((member, index) => index ? member : { ...member, group: { ...member.group!, ...patch } }) }, 'bad-adult'))
+})
 await check('seed validation refuses bad group via actual catalog validator', () => {
   const { _id, creator_id, slug, version, created_at, updated_at, is_published, visibility, review_status, ...body } = template
   validateEntry({ ...body, slug, cover: 'fixture.png' }, 'fixture')
@@ -356,6 +444,147 @@ await check('toggle off never picks adult despite recent explicit scene and Arde
     assert.equal(writerCalls[0].model, enabled ? 'fake-adult' : 'fake-safe')
   }
 })
+async function adultStart() {
+  await start()
+  put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  rows('worldInstances')[0].mode = 'ardent'
+}
+function content(call: Row, role: number) { return ((call.messages as Row[])[role].content as string) }
+function lastData() { return rows('events').at(-1)!.data as Row }
+await check('adult split order models histories budgets records and whole reply; normal turn stays one call', async () => {
+  await adultStart()
+  const staticBefore = get(rows('worldInstances')[0], 'group_context.static_prompt')
+  const seed = rows('events')[0]
+  for (let sequence = 2; sequence <= 16; sequence++) rows('events').push({ ...clone(seed), _id: new ObjectId(), sequence,
+    data: { player_input: '', lines: [{ character_id: ids[0], text: `history-${sequence}`, shown_at: new Date() }] } })
+  modelReplies = [`${names[2]}: Addressed first\n${names[2]}: Addressed second\n${names[2]}: Addressed third`, `${names[0]}: Bystander reply\n${names[0]}: Extra dropped`]
+  let rolls = 0
+  await turn({ userMessage: `@${names[2]}, answer this` }, () => { rolls++; return rolls <= members.length - 1 ? 0 : 0.75 })
+  assert.equal(rolls > 0, true)
+  // The first non-addressed rolled speaker is selected by the injected roll.
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-safe'])
+  assert.deepEqual(writerCalls.map(call => call.maxTokens), [160, 60])
+  assert(content(writerCalls[0], 0).includes(members[2].group.intimacy!))
+  assert(!content(writerCalls[0], 0).includes(members[1].group.wants))
+  assert(!content(writerCalls[0], 1).includes('history-4\n'))
+  assert(content(writerCalls[0], 1).includes('history-5\n'))
+  assert(!content(writerCalls[1], 1).includes('history-15\n'))
+  assert(content(writerCalls[1], 1).includes('history-16\n'))
+  assert(content(writerCalls[1], 1).includes('Addressed third'))
+  assert.equal((lastData().lines as Row[]).length, 4)
+  assert.equal(lastData().model_used, 'fake-adult')
+  assert.equal(get(rows('worldInstances')[0], 'group_state.writing_calls'), 2)
+  assert.deepEqual(checkLogs.at(-1)!.writing, [
+    { writer: 'adult', model: 'fake-adult', purpose: 'addressed' }, { writer: 'normal', model: 'fake-safe', purpose: 'bystander' },
+  ])
+  assert.equal(checkLogs.at(-1)!.writing_calls, 2)
+  assert.equal(get(rows('worldInstances')[0], 'group_context.static_prompt'), staticBefore)
+  assert.equal((frames.find(frame => frame.type === 'group_lines')!.lines as Row[]).length, 4)
+  await start(); await turn()
+  assert.equal(writerCalls.length, 1); assert.equal(writerCalls[0].model, 'fake-safe'); assert.equal(writerCalls[0].maxTokens, 400)
+})
+await check('adult retry advances writer after filtered output; empty adult chain reaches normal writer', async () => {
+  await adultStart(); modelReplies = [`${names[0]}: *only action*`, `${names[0]}: Retry fresh`]
+  await turn({}, () => 0)
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-adult-fallback'])
+  assert.equal(lastData().model_used, 'fake-adult-fallback')
+  assert.equal(checkLogs.at(-1)!.stage_directions, 1); assert.equal(checkLogs.at(-1)!.empty, 1)
+  assert.equal((checkLogs.at(-1)!.writing as Row[])[1].purpose, 'addressed_retry')
+  await adultStart(); modelReplies = ['', '', `${names[0]}: Normal rescue`]
+  await turn({}, () => 0)
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-adult-fallback', 'fake-safe'])
+  assert(lastData().ai_response!.toString().includes('Normal rescue'))
+  assert.equal(get(rows('worldInstances')[0], 'group_state.writing_calls'), 3)
+  await adultStart(); put(rows('worldTemplates')[0], 'model_preferences.narration_nsfw', ' fake-adult-fallback ')
+  modelReplies = ['', `${names[0]}: Deduplicated retry`]
+  await turn({}, () => 0)
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult-fallback', 'fake-adult-last'])
+})
+await check('adult template preference wins and transport fallbacks are counted with per-call consent', async () => {
+  await adultStart(); put(rows('worldTemplates')[0], 'model_preferences.narration_nsfw', 'template-adult')
+  modelReplies = [new Error('provider unavailable'), new Error('second unavailable'), `${names[0]}: Last writer fresh`]
+  await turn({}, () => 0)
+  assert.deepEqual(writerCalls.map(call => call.model), ['template-adult', 'fake-adult-fallback', 'fake-adult-last'])
+  assert.equal(lastData().model_used, 'fake-adult-last')
+  assert.equal(get(rows('worldInstances')[0], 'group_state.writing_calls'), 3)
+  assert.equal((checkLogs.at(-1)!.writing as Row[]).length, 3)
+})
+await check('adult consent withdrawn before first call, retry or transport fallback never reaches adult again; noncapable stays normal', async () => {
+  for (const at of ['first', 'retry', 'transport'] as const) {
+    await adultStart()
+    if (at === 'first') { let reads = 0; consentReadHook = () => { if (++reads === 2) put(rows('users')[0], 'preferences.nsfw_enabled', false) } }
+    else writerHook = () => { put(rows('users')[0], 'preferences.nsfw_enabled', false) }
+    modelReplies = at === 'first' ? [`${names[0]}: Normal from start`] : [at === 'transport' ? new Error('unavailable') : '', `${names[0]}: Normal after withdrawal`]
+    await turn({}, () => 0)
+    assert.deepEqual(writerCalls.map(call => call.model), at === 'first' ? ['fake-safe'] : ['fake-adult', 'fake-safe'])
+    assert((checkLogs.at(-1)!.writing as Row[]).slice(at === 'first' ? 0 : 1).every(call => call.writer === 'normal'))
+  }
+  for (const enabled of [false, true]) {
+    await adultStart(); put(rows('users')[0], 'preferences.nsfw_enabled', enabled)
+    rows('worldTemplates')[0].is_nsfw_capable = false
+    await turn(); assert(writerCalls.every(call => call.model === 'fake-safe'))
+  }
+})
+await check('adult optional failure preserves fresh reply and other tags get repair plus last backup attempt', async () => {
+  await adultStart(); modelReplies = [`${names[0]}: Addressed survives`, new Error('429 failed bystander'), new Error('429 failed backup')]
+  let draw = 0
+  await turn({}, () => ++draw <= members.length ? 0 : 0.9)
+  assert(lastData().ai_response!.toString().includes('Addressed survives'))
+  assert.equal(writerCalls.length, 3)
+  await adultStart(); modelReplies = [`${names[0]}: Another addressed reply`, new Error('optional failure')]
+  draw = 0; await turn({}, () => ++draw <= members.length ? 0 : 0.9)
+  assert(lastData().ai_response!.toString().includes('Another addressed reply')); assert.equal(writerCalls.length, 2)
+  await adultStart(); modelReplies = [`${names[3]}: Addressed tag`, '', '', `${names[1]}: Backup tag`]
+  await turn({ userMessage: `@${names[3]} then @${names[1]}` }, () => 0)
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-safe', 'fake-safe', 'fake-safe-fallback'])
+  assert(content(writerCalls[0], 0).includes(members[3].group.intimacy!))
+  assert(content(writerCalls[1], 1).includes(`Only these people write in this reply: ${names[1]}.`))
+  assert.equal((lastData().lines as Row[]).length, 2)
+  assert.equal((checkLogs.at(-1)!.writing as Row[]).at(-1)!.purpose, 'tag_backup')
+  await adultStart(); modelReplies = [`${names[3]}: First of three tags`, `${names[0]}: First other tag\n${names[1]}: Second other tag`]
+  await turn({ userMessage: `@${names[3]} @${names[0]} @${names[1]}` }, () => 0)
+  assert.equal(writerCalls.length, 2); assert.equal(writerCalls[1].maxTokens, 120); assert.equal((lastData().lines as Row[]).length, 3)
+  await start(); modelReplies = [`${names[0]}: Normal reply`, '', `${names[1]}: Last chance normal tag`]
+  await turn({ userMessage: `@${names[1]}` })
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-safe', 'fake-safe', 'fake-safe-fallback'])
+  await start(); modelReplies = [`${names[0]}: Fresh but missing tag`, '', '']
+  await assert.rejects(turn({ userMessage: `@${names[1]}` }), /could not finish/)
+})
+await check('group router waits for player intent and late answers fall through after two seconds; autonomy never asks', async () => {
+  await start(); put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerDelay = 20
+  await turn({}, () => 0)
+  assert.equal(routerRequests, 1); assert.equal(writerCalls[0].model, 'fake-adult')
+  assert.equal((checkLogs.at(-1)!.routing as Row).settled, true)
+  await start(); put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerDelay = 2200
+  const began = Date.now()
+  await turn({}, () => 0)
+  assert(Date.now() - began >= 1950 && Date.now() - began < 2150)
+  assert.equal(writerCalls[0].model, 'fake-safe')
+  assert.equal((checkLogs.at(-1)!.routing as Row).fallback, 'late')
+  await new Promise(resolve => setTimeout(resolve, 250))
+  assert.equal((checkLogs.at(-1)!.routing as Row).fallback, 'late')
+  for (const [capable, enabled] of [[true, false], [false, true]]) {
+    await start(); rows('worldTemplates')[0].is_nsfw_capable = capable; put(rows('users')[0], 'preferences.nsfw_enabled', enabled)
+    auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; await turn(); assert.equal(routerRequests, 0); assert.equal(writerCalls[0].model, 'fake-safe')
+  }
+  for (const origin of ['unprompted', 'catchup'] as const) {
+    await start(); put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'
+    await turn({ origin, userMessage: '' }); assert.equal(routerRequests, 0)
+  }
+})
+await check('private adult traits absent recursively wherever player cast is returned', async () => {
+  await start(); await turn()
+  const payload = publicGroupData({ seed_cast: template.seed_cast, nested: { cast: members, list: [{ group: members[0].group }] } })
+  forbidden(payload)
+  const loaded = await generationService.loadInstance(instanceId, playerId); forbidden(loaded)
+  forbidden(await instanceService.getById(instanceId, playerId))
+  forbidden(await instanceService.listRealms(playerId))
+  forbidden(await instanceService.list(playerId))
+  for (const frame of frames) forbidden(frame)
+})
+
 await check('twentieth writing call stages memory and summary only; history/load leak no internals', async () => {
   await start(); put(rows('worldInstances')[0], 'group_state.writing_calls', 19)
   await turn(); assert.deepEqual(outbox.map(row => row.kind), ['memory_curation', 'scene_summary'])

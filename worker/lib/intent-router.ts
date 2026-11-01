@@ -91,6 +91,8 @@ export function startIntentRouter(input: Eligibility & { text: string }, deps: {
   let closed = false
   let snapshot: IntentRouterTrace | undefined
   const began = now()
+  let finish!: () => void
+  const completion = new Promise<void>(resolve => { finish = resolve })
   if (started) {
     // A synchronous transport throw must fall back just like a rejected request.
     void (async () => {
@@ -101,10 +103,16 @@ export function startIntentRouter(input: Eligibility & { text: string }, deps: {
       } catch (error) {
         if (!closed) Object.assign(slot, { settled: true, ms: now() - began,
           error: error instanceof MalformedIntent ? 'malformed' : 'error' })
-      }
+      } finally { finish() }
     })()
   }
   return {
+    async wait(maxMs: number): Promise<void> {
+      if (!started || slot.settled || closed) return
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try { await Promise.race([completion, new Promise<void>(resolve => { timer = setTimeout(resolve, maxMs) })]) }
+      finally { if (timer) clearTimeout(timer) }
+    },
     decide(current: Eligibility & { text?: string }): IntentRouterTrace {
       if (snapshot) return snapshot
       closed = true

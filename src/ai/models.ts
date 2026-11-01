@@ -41,6 +41,11 @@ export const AI_MODELS = {
   /** Mature-narration alternatives; intentionally separate from the SFW list. */
   narrationNsfwFallbacks: env.NARRATION_NSFW_FALLBACK_MODELS,
 
+  /** Adult group messages have their own writer chain. */
+  groupNsfw: process.env.GROUP_NSFW_MODEL || 'sao10k/l3.1-euryale-70b',
+  groupNsfwFallbacks: (process.env.GROUP_NSFW_FALLBACK_MODELS ?? 'cognitivecomputations/dolphin-mistral-24b-venice-edition,thedrummer/skyfall-36b-v2')
+    .split(',').map(model => model.trim()).filter(Boolean),
+
   /** Derives stat/flag mutations, scene tag, and tone from finished prose (NSFW path). */
   metadata: process.env.MODEL_METADATA || 'gpt-4o-mini',
 

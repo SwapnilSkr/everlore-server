@@ -5,6 +5,8 @@ export interface GroupTraits {
   talkativeness: number
   speech: string
   wants: string
+  intimacy?: string
+  voice?: string[]
 }
 
 export interface GroupMember {

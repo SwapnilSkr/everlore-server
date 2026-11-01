@@ -5,7 +5,7 @@ import type { GroupMember } from '../src/services/group-chat/types'
 export const members: GroupMember[] = ['Test Alpha', 'Test Beta', 'Test Gamma', 'Test Delta'].map((name, index) => ({
   id: new ObjectId((index + 1).toString(16).padStart(24, '0')).toHexString(), name,
   role: `member ${index}`, persona: `Persona ${index}`,
-  group: { age: 24 + index, talkativeness: 0.5, speech: `Voice ${index}`, wants: `Private motivation ${index}` },
+  group: { age: 24 + index, talkativeness: 0.5, speech: `Voice ${index}`, wants: `Private motivation ${index}`, intimacy: `Private intimacy ${index}`, voice: [`Authored text ${index}`] },
 }))
 
 export function groupTemplate(): WorldTemplateDoc {
