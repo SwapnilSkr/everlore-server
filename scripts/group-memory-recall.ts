@@ -1491,7 +1491,7 @@ async function runProbe(): Promise<number> {
         for (const call of writers.filter(call => call.system.includes('You are writing only'))) {
           if ((call.sections?.memories ?? '').split('\n').filter(Boolean).length > 8 || call.sections?.openThreads || call.sections?.summaries) failures.push(`${turn.label}: the adult prompt is not narrow`)
           if (turn.label === 'wedding-recall' && !MEMORIES_OFF && !/mira/i.test(call.sections?.memories ?? '')) failures.push('wedding-recall: the wedding fact was not in the adult prompt')
-          if (turn.label === 'scene-recall' && !MEMORIES_OFF && !/jess/i.test(call.sections?.memories ?? '')) failures.push('scene-recall: no memory about Jess was in the adult prompt')
+          if (turn.label === 'scene-recall' && !MEMORIES_OFF && !atoms.some(atom => atom.explicit_fact === true && (call.sections?.memories ?? '').includes(String(atom.text)))) failures.push('scene-recall: no explicit scene fact was in the adult prompt')
         }
         out.push(`## ${turn.label}: route=${turn.route} · memory lines per writer: ${held.join(', ')} · $${turn.cost.toFixed(6)}`, '', `Sam: ${turn.player}`)
         for (const line of turn.lines) out.push(`  ${line.name} [${line.model ?? 'unknown'}]: ${line.text}`)
