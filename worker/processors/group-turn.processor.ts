@@ -14,6 +14,7 @@ import { idString, parseObjectId } from '../../src/utils/mongo-id'
 import { finishGenerationTurn, generationLockKey, waitForPriorGeneration } from '../../src/utils/generation-lock'
 import { liveInstanceExists } from '../../src/utils/live-instance'
 import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
+import { judgeGroupReply } from '../lib/group-explicit-check'
 import { stagePostProcess, dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
 import { groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE } from '../../src/services/group-chat/memory'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
@@ -30,7 +31,7 @@ export interface GroupTurnJob {
   origin?: GroupOrigin; gapStart?: string; priorTurnId?: string
 }
 
-export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: () => number } = {}) {
+export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: () => number; onBackground?: (work: Promise<void>) => void } = {}) {
   const { instanceId, playerId, userMessage, origin = 'player' } = job.data
   if (!['player', 'unprompted', 'catchup'].includes(origin)) throw new Error('Invalid group turn origin')
   const rng = deps.rng ?? Math.random
@@ -108,8 +109,11 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     const normalChain = [...new Set([template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw, ...AI_MODELS.narrationSfwFallbacks])]
     const writing: Array<{ writer: string; model: string; purpose: string }> = []
     const addressed = adult ? pickAddressed(members, origin === 'player' ? userMessage : '', roll.picked) : undefined
-    const addressedMessages = messagesFromEvents(recent.filter(event => event.data.model_used !== 'seed'))
     const addressedName = members.find(member => member.id === addressed)?.name
+    // A reply the check marked tame stays in the chat, but out of this writer's view,
+    // so one tame reply can't set the tone for the rest of the scene.
+    const addressedMessages = recent.filter(event => event.data.model_used !== 'seed').flatMap(event =>
+      messagesFromEvents([event]).filter(line => !(event.data.tame === true && line.name === addressedName)))
     const otherMessages = addressedMessages.filter(line => line.name !== config.player && line.name !== addressedName).slice(-3)
     const addressedHistory = addressedMessages.filter(line => line.name === config.player || line.name === addressedName || otherMessages.includes(line))
     const now = new Date()
@@ -215,6 +219,14 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
         event: { id: idString(event._id), sequence, player_input: event.data.player_input, narrative: event.data.ai_response, origin, lines },
       }))
     } finally { void dispatchPostProcessOutbox().catch(() => {}) }
+    if (addressedName && origin === 'player' && writing.some(call => call.writer === 'adult')) {
+      const said = reply.lines.filter(line => line.name === addressedName).map(line => line.text).join('\n')
+      const work = judgeGroupReply(said).then(async explicit => {
+        if (explicit === false) await mongoColl.events().updateOne({ _id: event._id }, { $set: { 'data.tame': true } })
+        log.info('group.explicit_check', { instanceId, sequence, explicit })
+      }).catch(error => log.warn('group.explicit_check_failed', { instanceId, sequence, error: String(error) }))
+      deps.onBackground?.(work)
+    }
     return { eventId: idString(event._id), sequence }
   } finally {
     router.cancel()

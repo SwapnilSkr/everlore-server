@@ -127,6 +127,8 @@ export interface CharacterLifecycleDeltaDoc {
 export interface EventDataDoc {
   origin?: import('../services/group-chat/types').GroupOrigin
   lines?: import('../services/group-chat/types').GroupLine[]
+  /** Group adult turn: the after-reply check found the reply wasn't explicit. Never sent to the player. */
+  tame?: boolean
   group_state_after?: import('../services/group-chat/types').GroupState
   player_input: string
   /** Spoken dialogue outside narration markers. */

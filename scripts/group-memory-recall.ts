@@ -55,7 +55,7 @@ const MEMORIES_OFF = Boolean(SCENE) && process.argv.includes('--memories=off')
 const OUT_DIR = process.env.GROUP_MEMORY_RECALL_OUTPUT_DIR || join(ROOT, SCENE ? '.agents/probes/group-chat/adult-memory' : '.agents/probes/group-chat/recall')
 const LEDGER_FILE = join(OUT_DIR, 'spend.json')
 const WORK_DIR = process.env.COMMANDCODE_SCRATCHPAD || join(OUT_DIR, 'tmp')
-const CAP_USD = SCENE ? 0.04 : 0.30
+const CAP_USD = SCENE ? Number(process.env.GROUP_SCENE_CAP_USD || 0.04) : 0.30
 const INR_PER_USD = 87
 const PLAYER = 'Sam'
 const PLAYER_AGE = 28
@@ -583,6 +583,7 @@ function dryCuration(user: string, body: Record<string, unknown>): string {
 
 function dryResponse(purpose: PurposeKey, body: Record<string, unknown>, system: string, user: string): { content: string; embedding?: number[] } {
   if (purpose === 'embedding') return { content: '', embedding: dryEmbedding(system || user) }
+  if (purpose === 'router' && system.startsWith('You judge one reply')) return { content: JSON.stringify({ explicit: dryCallCounter % 2 === 0 }) }
   if (purpose === 'router') {
     const text = user.toLowerCase()
     return { content: JSON.stringify({ sexual_intent: /naked|make love|bed|kiss/.test(text) }) }
@@ -1398,6 +1399,7 @@ async function runProbe(): Promise<number> {
 
   // ---- one real group turn
   let turnIndex = 0
+  const background: Promise<void>[] = []
   async function runTurn(spec: TurnSpec, label: string): Promise<TurnResult> {
     turnIndex += 1
     const index = turnIndex
@@ -1421,7 +1423,8 @@ async function runProbe(): Promise<number> {
     try {
       result = await groupTurnProcessor({
         id: jobId, data: { instanceId: instanceId.toHexString(), playerId: PLAYER_ID, userMessage: spec.player },
-      } as never, spec.rolled ? {} : { rng: makeRng(spec.speakers, tags) }) as { eventId: string; sequence: number }
+      } as never, { ...(spec.rolled ? {} : { rng: makeRng(spec.speakers, tags) }), onBackground: (work: Promise<void>) => { background.push(work) } }) as { eventId: string; sequence: number }
+      await Promise.all(background.splice(0))
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught)
     }
@@ -1489,11 +1492,12 @@ async function runProbe(): Promise<number> {
         if (writers.some(call => MEMORIES_OFF ? Boolean(call.sections?.memories || call.sections?.summaries) : !call.system.includes('You are writing only') && !call.sections?.memories)) failures.push(`${turn.label}: memory state of a writer prompt is wrong`)
         if (writers.some(call => !/\b19:\d\d\b/.test(call.user) && !/\b2\d:\d\d\b/.test(call.user))) failures.push(`${turn.label}: a writer prompt was not at the evening clock`)
         for (const call of writers.filter(call => call.system.includes('You are writing only'))) {
-          if ((call.sections?.memories ?? '').split('\n').filter(Boolean).length > 8 || call.sections?.openThreads || call.sections?.summaries) failures.push(`${turn.label}: the adult prompt is not narrow`)
+          if ((call.sections?.memories ?? '').split('\n').filter(Boolean).length > 10 || call.sections?.openThreads || call.sections?.summaries) failures.push(`${turn.label}: the adult prompt is not narrow`)
           if (turn.label === 'wedding-recall' && !MEMORIES_OFF && !/mira/i.test(call.sections?.memories ?? '')) failures.push('wedding-recall: the wedding fact was not in the adult prompt')
           if (turn.label === 'scene-recall' && !MEMORIES_OFF && !atoms.some(atom => atom.explicit_fact === true && (call.sections?.memories ?? '').includes(String(atom.text)))) failures.push('scene-recall: no explicit scene fact was in the adult prompt')
         }
-        out.push(`## ${turn.label}: route=${turn.route} · memory lines per writer: ${held.join(', ')} · $${turn.cost.toFixed(6)}`, '', `Sam: ${turn.player}`)
+        const tame = turn.eventId ? (await mongoColl.events().findOne({ _id: new ObjectId(turn.eventId) }))?.data?.tame === true : false
+        out.push(`## ${turn.label}: route=${turn.route}${tame ? ' · marked tame' : ''} · memory lines per writer: ${held.join(', ')} · $${turn.cost.toFixed(6)}`, '', `Sam: ${turn.player}`)
         for (const line of turn.lines) out.push(`  ${line.name} [${line.model ?? 'unknown'}]: ${line.text}`)
         out.push('')
       }

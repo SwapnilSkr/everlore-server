@@ -11,7 +11,7 @@ export const GROUP_SUMMARY_CADENCE = 12
 export const GROUP_MEMORY_BATCH_LIMIT = 27 // 25 new events plus the two-event overlap.
 export const GROUP_MEMORY_TEXT_BUDGET = 12_000
 export const GROUP_ADULT_MEMORY_LINES = 4
-export const GROUP_ADULT_SCENE_LINES = 4
+export const GROUP_ADULT_SCENE_LINES = 6
 const GROUP_RAISED_WORD_MAX_ATOMS = 3
 export type GroupWatermark = 'curated_through_sequence' | 'summarized_through_sequence'
 export interface GroupMemoryMessage extends NamedLine { number: number; eventId: ObjectId; adult: boolean }
@@ -65,13 +65,16 @@ export async function advanceGroupWatermark(events: WorldEventDoc[], watermark: 
 /** Facts the player's line itself brings up, ranked by how rare the shared words are.
  * A structural test: a word most facts share says nothing about which one was raised. */
 export function raisedMemories<T extends Pick<MemoryDoc, 'text' | 'importance' | 'search_terms'>>(line: string, atoms: T[], people: string[]): T[] {
-  const words = (text: string) => new Set<string>(text.toLowerCase().match(/\p{L}{4,}/gu) || [])
+  const words = (text: string) => new Set<string>(text.toLowerCase().match(/\p{L}{3,}/gu) || [])
+  // Short everyday words ("what", "that") matched unrelated facts live; a short word
+  // only counts when the fact capitalizes it mid-sentence, as a name.
+  const named = (text: string) => new Set<string>((text.match(/(?<=\s)\p{Lu}\p{L}{2,}/gu) || []).map(name => name.toLowerCase()))
   const ignored = new Set(people.flatMap(name => [...words(name)]))
   const said = [...words(line)].filter(word => !ignored.has(word))
-  const held = atoms.map(atom => ({ atom, words: words(`${atom.text} ${atom.search_terms || ''}`) }))
+  const held = atoms.map(atom => ({ atom, words: words(`${atom.text} ${atom.search_terms || ''}`), named: named(atom.text) }))
   const count = new Map(said.map(word => [word, held.filter(row => row.words.has(word)).length]))
   return held.map(row => ({ atom: row.atom, score: said.reduce((sum, word) =>
-    sum + (row.words.has(word) && count.get(word)! <= GROUP_RAISED_WORD_MAX_ATOMS ? 1 / count.get(word)! : 0), 0) }))
+    sum + (row.words.has(word) && (word.length >= 6 || row.named.has(word)) && count.get(word)! <= GROUP_RAISED_WORD_MAX_ATOMS ? 1 / count.get(word)! : 0), 0) }))
     .filter(row => row.score > 0)
     .sort((a, b) => b.score - a.score || (b.atom.importance ?? 0) - (a.atom.importance ?? 0))
     .map(row => row.atom)
@@ -126,7 +129,9 @@ export async function groupWriterMemory(input: {
     const inScene = (memory: MemoryDoc) => memory.explicit_fact === true && input.speakers.some(name =>
       [...(memory.subjects || []), ...(memory.objects || [])].includes(name) || memory.text.includes(name))
     const limit = memories.length + GROUP_ADULT_SCENE_LINES
-    for (const memory of concerning.filter(allowed).filter(inScene)) {
+    // What she herself said or wants comes first, then the most important.
+    const hers = (memory: MemoryDoc) => (memory.subjects || []).some(name => input.speakers.includes(name)) ? 1 : 0
+    for (const memory of concerning.filter(allowed).filter(inScene).sort((a, b) => hers(b) - hers(a) || (b.importance ?? 0) - (a.importance ?? 0))) {
       if (memories.length < limit) add(memory)
     }
     return { memories, openThreads }

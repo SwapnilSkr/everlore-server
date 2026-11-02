@@ -204,7 +204,19 @@ const mutations: Mutation[] = [
   { name: 'bystander narrowed too', check: 'memory adult addressed call', edits: [[worker, 'raisedBy: addressedPrompt ? userMessage : undefined', 'raisedBy: split ? userMessage : undefined']] },
   { name: 'adult memory cap ignored', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', 'if (memories.length < GROUP_ADULT_MEMORY_LINES) add(memory)', 'add(memory)']] },
   { name: 'adult call lists other people', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', 'concerning.filter(allowed), people)', 'candidates.filter(allowed), people)']] },
-  { name: 'adult call forgets the scene', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', 'concerning.filter(allowed).filter(inScene)', '[] as MemoryDoc[]']] },
+  { name: 'explicit check delays the reply', check: 'explicit check runs after', edits: [[worker, 'deps.onBackground?.(work)', 'deps.onBackground?.(work); await work']] },
+  { name: 'tame reply never marked', check: 'explicit check runs after', edits: [[worker, "if (explicit === false) await", "if (explicit === null) await"]] },
+  { name: 'no verdict marks a reply', check: 'explicit check runs after', edits: [[worker, "if (explicit === false) await", "if (explicit !== true) await"]] },
+  { name: 'tame lines stay in adult view', check: 'explicit check runs after', edits: [[worker, 'event.data.tame === true && line.name === addressedName', 'false']] },
+  { name: 'tame event drops the player line too', check: 'explicit check runs after', edits: [[worker, 'event.data.tame === true && line.name === addressedName', 'event.data.tame === true']] },
+  { name: 'normal writer judged', check: 'explicit check runs after', edits: [[worker, "writing.some(call => call.writer === 'adult')", 'true']] },
+  { name: 'judge reads the bystanders', check: 'explicit check runs after', edits: [[worker, 'reply.lines.filter(line => line.name === addressedName)', 'reply.lines']] },
+  { name: 'tame mark reaches the player', check: 'explicit check runs after', edits: [['src/services/group-chat/public.ts', ", 'tame']", ']']] },
+  { name: 'interested prompt keeps refusal', check: 'adult prompt asks', edits: [['src/services/group-chat/prompt.ts', 'member.group.interested === true\n', 'false\n']] },
+  { name: 'short words raise facts', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', '(word.length >= 6 || row.named.has(word))', 'true']] },
+  { name: 'names no longer raise facts', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', '(word.length >= 6 || row.named.has(word))', 'word.length >= 6']] },
+  { name: 'her own words lose priority', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', 'hers(b) - hers(a) || ', '']] },
+  { name: 'adult call forgets the scene', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', 'concerning.filter(allowed).filter(inScene)', '([] as MemoryDoc[])']] },
   { name: 'adult call scene cap ignored', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', 'if (memories.length < limit) add(memory)', 'add(memory)']] },
   { name: 'adult call lists adult facts about others', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', 'memory.explicit_fact === true && input.speakers.some(name =>', 'memory.explicit_fact === true && people.some(name =>']] },
   { name: 'adult call brings back every adult-turn line', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', 'memory.explicit_fact === true && input.speakers', 'memory.is_nsfw === true && input.speakers']] },
@@ -370,7 +382,10 @@ try {
       const child = Bun.spawn(['bun', '--no-env-file', 'run', `scripts/${mutation.script || 'group-chat-audit.ts'}`], {
         cwd: root, env: { ...process.env, GROUP_AUDIT_ONLY: mutation.check }, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
       })
+      // A mutation can deadlock the audit; a hung child must fail this run, not stall it.
+      const childTimer = setTimeout(() => child.kill(9), 120_000)
       const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+      clearTimeout(childTimer)
       assert.notEqual(code, 0, `${mutation.name}: audit accepted broken behavior\n${output}`)
       assert((output + errors).includes(`FAIL ${mutation.check}`), `${mutation.name}: failed outside intended check\n${output}\n${errors}`)
       rejected++; console.log(`BITE ${mutation.name}: exit ${code}; FAIL ${mutation.check}`)

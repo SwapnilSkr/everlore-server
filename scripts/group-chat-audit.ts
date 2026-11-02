@@ -194,7 +194,7 @@ await check('adult validation requires authored intimacy and 1–8 voice lines a
   validateGroup(patch({ ...base, voice: Array(8).fill('text') }))
 })
 await check('addressed prompt is authored per person with player gender sentence and unchanged boundaries', async () => {
-  const prompt = buildAddressedStatic({ ...template, members, player: playerName }, members[2])
+  const prompt = buildAddressedStatic({ ...template, members, player: playerName }, { ...members[2], group: { ...members[2].group, interested: false } })
   for (const text of ['one to three', members[2].group.intimacy!, ...members[2].group.voice!, `${playerName}'s gender isn't stated, so don't assume it.`, 'answers what was actually said', 'turns it down', 'Say something new']) assert(prompt.includes(text))
   for (const other of members.filter(member => member.id !== ids[2])) assert(!prompt.includes(other.group.wants) && !prompt.includes(other.group.intimacy!))
   const { NARRATIVE_BOUNDARIES } = await import('../src/utils/prompt-builder')
@@ -350,7 +350,13 @@ let routerRequests = 0, routerDelay = 0, routerSexual = true, routerError = fals
 mock.module('../src/config/env', () => ({ env: { ...auditEnv, get NSFW_SAME_TURN_ROUTER() { return auditEnv.NSFW_SAME_TURN_ROUTER }, CDN_BASE_URL: 'https://fixture.invalid', JWT_SECRET: 'audit-only', MEDIA_VOICE_ENABLED: false } }))
 mock.module('../src/config/mongo', () => ({ mongoColl: new Proxy({}, { get: (_target, key) => () => collection(String(key)) }) }))
 mock.module('../src/config/redis', () => ({ getRedisClient: () => redis, getQueueRedisClient: unavailable, getRedisSubscriber: unavailable }))
-const routerClient = { chat: { completions: { create: async () => {
+let judgeVerdict: boolean | 'error' | 'malformed' = true, judgeCalls: string[] = [], judgeGate: Promise<void> | undefined
+const routerClient = { chat: { completions: { create: async (params: { messages: Array<{ content: string }> }) => {
+  if (params.messages[0].content.startsWith('You judge one reply')) {
+    judgeCalls.push(params.messages[1].content); await judgeGate
+    if (judgeVerdict === 'error') throw new Error('Fixture judge unavailable')
+    return { choices: [{ finish_reason: 'stop', message: { content: judgeVerdict === 'malformed' ? 'yes' : JSON.stringify({ explicit: judgeVerdict }) } }] }
+  }
   routerRequests++
   if (routerError) throw new Error('Fixture router unavailable')
   await new Promise(resolve => setTimeout(resolve, routerDelay))
@@ -447,13 +453,14 @@ async function start(source = groupTemplate(), player = playerName) {
   instanceId = created.instance._id.toHexString()
   return created
 }
+let backgroundWork: Promise<void>[] = []
 async function turn(data: Partial<GroupTurnJob> = {}, rng?: () => number) {
   const id = crypto.randomUUID(); locks.set(`lock:gen:${playerId}:${instanceId}`, JSON.stringify({ owner: id, phase: 'running' }))
-  return groupTurnProcessor({ id, data: { instanceId, playerId, userMessage: 'A player message', ...data } } as Job<GroupTurnJob>, { rng })
+  return groupTurnProcessor({ id, data: { instanceId, playerId, userMessage: 'A player message', ...data } } as Job<GroupTurnJob>, { rng, onBackground: work => { backgroundWork.push(work) } })
 }
 function forbidden(value: unknown) {
   if (!value || typeof value !== 'object') return
-  for (const [key, entry] of Object.entries(value)) { assert(!['interested', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'cost', 'cost_usd'].includes(key), `leaked ${key}`); forbidden(entry) }
+  for (const [key, entry] of Object.entries(value)) { assert(!['interested', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'cost', 'cost_usd', 'tame'].includes(key), `leaked ${key}`); forbidden(entry) }
 }
 await check('group adult model defaults overrides and Euryale temperature are isolated from story narration', async () => {
   const code = `import { mock } from 'bun:test'; mock.module('./src/config/env.ts', () => ({ env: {} })); const { AI_MODELS } = await import('./src/ai/models.ts'); console.log(JSON.stringify({ model: AI_MODELS.groupNsfw, fallbacks: AI_MODELS.groupNsfwFallbacks }));`
@@ -1454,6 +1461,48 @@ await check('memory pins include subject and object for each call speaker with f
   const bounded = await groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName, speakers: names, enabled: false, memories: [], openThreads: [] })
   assert(bounded.memories.join('\n').length <= GROUP_MEMORY_TEXT_BUDGET)
 })
+await check('explicit check runs after the reply without delaying it and only the adult writer loses tame lines', async () => {
+  await start(); addEvents(3); put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = true
+  judgeVerdict = false; judgeCalls = []; backgroundWork = []
+  let release!: () => void; judgeGate = new Promise<void>(resolve => { release = resolve })
+  modelReplies = [`${names[1]}: Tame maple reply.`, `${names[3]}: Copper bystander reply.`]; writerCalls = []
+  // The turn finishes while the judge is still held, so the player never waits on it.
+  const heldTimer = new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('The turn waited on the held judge')), 5_000).unref() })
+  await Promise.race([turn({ userMessage: `@${names[1]} @${names[3]} first line` }, never), heldTimer])
+  const judged = storedEvents().at(-1)!
+  assert.equal(judgeCalls.length, 1); assert.equal(judgeCalls[0], 'Tame maple reply.'); assert.equal(judged.data.tame, undefined)
+  release(); await Promise.all(backgroundWork); judgeGate = undefined
+  assert.equal(judged.data.tame, true)
+  assert.equal('tame' in publicGroupData(judged.data), false)
+  const isAdultCall = (call: Row) => String((call.messages as Row[])[0].content).includes('You are writing only')
+  judgeVerdict = true; writerCalls = []; modelReplies = [`${names[1]}: Violet second reply.`, `${names[3]}: Quiet second bystander.`]
+  await turn({ userMessage: `@${names[1]} @${names[3]} second line` }, never)
+  const adult = String((writerCalls.find(isAdultCall)!.messages as Row[])[1].content), bystander = String((writerCalls.find(call => !isAdultCall(call))!.messages as Row[])[1].content)
+  assert(!adult.includes('Tame maple reply.')); assert(adult.includes('first line')); assert(bystander.includes('Tame maple reply.'))
+  await Promise.all(backgroundWork)
+  assert.equal('tame' in storedEvents().at(-1)!.data, false)
+  // No verdict never marks a reply.
+  for (const [verdict, reply] of [['error', 'Silver orchards bloom.'], ['malformed', 'Crimson bridges sway.']] as const) {
+    judgeVerdict = verdict; modelReplies = [`${names[1]}: ${reply}`, `${names[3]}: ${reply} Again and elsewhere.`]; writerCalls = []
+    await turn({ userMessage: `@${names[1]} @${names[3]} another ${verdict}` }, never); await Promise.all(backgroundWork)
+    assert.equal('tame' in storedEvents().at(-1)!.data, false)
+  }
+  judgeVerdict = true; judgeCalls = []
+  // Normal turns, and a character who isn't interested, are never judged.
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'off'
+  await start(); addEvents(3); modelReplies = [`${names[1]}: An ordinary reply.`]
+  await turn({ userMessage: `@${names[1]} ordinary` }, never); assert.equal(judgeCalls.length, 0)
+  const source = groupTemplate(); source.seed_cast![1].group!.interested = false
+  await start(source); addEvents(3); put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = true
+  modelReplies = [`${names[1]}: A plain no thanks.`]
+  await turn({ userMessage: `@${names[1]} line` }, never); assert.equal(judgeCalls.length, 0)
+})
+await check('adult prompt asks an interested character for explicit words and keeps refusal only for others', () => {
+  const interested = { ...members[2], group: { ...members[2].group, interested: true } }, other = { ...members[2], group: { ...members[2].group, interested: false } }
+  const yes = buildAddressedStatic({ ...template, members, player: playerName }, interested), no = buildAddressedStatic({ ...template, members, player: playerName }, other)
+  assert(yes.includes('plain, crude words')); assert(yes.includes('without putting it off')); assert(!yes.includes('turns it down'))
+  assert(no.includes('turns it down')); assert(!no.includes('plain, crude words'))
+})
 await check('memory adult addressed call is narrow and the bystander keeps full memory', async () => {
   await start(); addEvents(40)
   const source = storedEvents()[4]._id
@@ -1462,12 +1511,12 @@ await check('memory adult addressed call is narrow and the bystander keeps full 
   for (let i = 0; i < 7; i++) rows('memories').push(row(`Pin player ${i}`, 'player', i), row(`Pin addressed ${i}`, names[1], i))
   rows('memories').push({ ...row('The player has a family occasion.', 'player', 1), search_terms: 'wedding' }, row('The addressed lost a passport.', names[1], 1),
     row('Someone else has a wedding passport.', names[3], 5), { ...row('Thread: the player owes a passport.', 'player', 0), unresolved_thread: true },
-    ...[1, 2, 3, 4].map(i => row(`Common fact ${i} about keys.`, 'player', 5)), ...[5, 6].map(i => row(`Extra raised ${i} about ticket.`, 'player', i)), row('Another raised about ticket.', 'player', 1))
+    ...[1, 2, 3, 4].map(i => row(`Common fact ${i} about lanterns.`, 'player', 5)), ...[5, 6].map(i => row(`Extra raised ${i} about ticket.`, 'player', i)), row('Another raised about ticket.', 'player', 1))
   ragMemoryTexts = ['Pin player 6', 'Someone else has a wedding passport.']; ragOpenThreads = ['Thread: the player owes a passport.']
   rows('sceneSummaries').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), status: 'ready', summary_text: 'Summary marker', event_range: { start_sequence: 1, end_sequence: 2 } })
   put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = true
   const isAdultCall = (call: Row) => String((call.messages as Row[])[0].content).includes('You are writing only')
-  const fresh = [['Maple rivers hum.', 'Copper foxes dance.'], ['Violet trains arrive.', 'Quiet lanterns drift.'], ['Silver orchards bloom.', 'Amber kites wander.'], ['Crimson bridges sway.', 'Golden moths settle.'], ['Indigo clocks chime.', 'Velvet ferries glide.']]
+  const fresh = [['Maple rivers hum.', 'Copper foxes dance.'], ['Violet trains arrive.', 'Quiet lanterns drift.'], ['Silver orchards bloom.', 'Amber kites wander.'], ['Crimson bridges sway.', 'Golden moths settle.'], ['Indigo clocks chime.', 'Velvet ferries glide.'], ['Scarlet herons wade.', 'Pewter gulls circle.']]
   const send = async (userMessage: string) => {
     // The line checks refuse a repeat, so each turn's fake reply must be new.
     const [adultLine, safeLine] = fresh.shift()!
@@ -1485,16 +1534,24 @@ await check('memory adult addressed call is narrow and the bystander keeps full 
   assert.deepEqual([...held].sort(), ['The addressed lost a passport.', 'The player has a family occasion.', 'Thread: the player owes a passport.'].sort())
   assert(!raised.adult.includes('Open threads:')); assert(!raised.adult.includes('Summary so far:'))
   // A word shared by many facts raises none of them; the cap holds for a rare word.
-  const common = await send(`@${names[1]} @${names[3]} where are the keys`)
+  const common = await send(`@${names[1]} @${names[3]} where are the lanterns`)
   assert(!common.adult.includes('Memories:'))
   const tickets = await send(`@${names[1]} @${names[3]} the ticket, the wedding and the passport`)
   assert.equal(tickets.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n').length, 4)
   // Adult facts she's part of always come along, newest first and capped; other people's don't.
   const adultRow = (text: string, subject: string, order: number) => ({ ...row(text, subject, 1), is_nsfw: true, explicit_fact: true, updated_at: new Date(1000 + order) })
-  rows('memories').push(...[1, 2, 3, 4, 5].map(i => adultRow(`Adult scene ${i}.`, names[1], i)), { ...adultRow('Adult with someone else.', 'player', 9), objects: [names[3]] }, { ...adultRow('Plans said on an adult turn.', names[1], 10), explicit_fact: false })
+  rows('memories').push(...[1, 2, 3, 4, 5, 6, 7].map(i => adultRow(`Adult scene ${i}.`, names[1], i)), { ...adultRow('Adult from the player.', 'player', 20), objects: [names[1]] }, { ...adultRow('Adult with someone else.', 'player', 9), objects: [names[3]] }, { ...adultRow('Plans said on an adult turn.', names[1], 10), explicit_fact: false })
   const scene = await send(`@${names[1]} @${names[3]} carry on`)
   const inScene = scene.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n')
-  assert.deepEqual(inScene, [5, 4, 3, 2].map(i => `Adult scene ${i}.`))
+  assert.deepEqual(inScene, [7, 6, 5, 4, 3, 2].map(i => `Adult scene ${i}.`))
+  // With room to spare, the player's fact with someone else still stays out.
+  for (const memory of rows('memories')) if (String(memory.text).startsWith('Adult scene')) memory.explicit_fact = false
+  const roomy = await send(`@${names[1]} @${names[3]} keep it up`)
+  assert.deepEqual(roomy.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n'), ['Adult from the player.'])
+  // Short everyday words raise nothing; a capitalized name does.
+  const everyday = raisedMemories(`what again`, [{ text: 'Priya asked what the noise was again.', importance: 1 }] as never, [])
+  assert.deepEqual(everyday, [])
+  assert.equal(raisedMemories(`how is mira`, [{ text: 'The sister Mira is well.', importance: 1 }] as never, []).length, 1)
   // The player's tag and name are never what makes a fact count as raised.
   assert.deepEqual(raisedMemories(`@${names[1]} hello`, [{ text: `${names[1]} has a thing.`, importance: 1 }] as never, [names[1]]), [])
 })
