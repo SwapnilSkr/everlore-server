@@ -1,6 +1,6 @@
 import { mongoColl } from '../../config/mongo'
 import type { MemoryDoc } from '../../models/memory.model'
-import type { GroupMemoryBatch } from './memory'
+import { allowedGroupMemories, deriveGroupAudience, type GroupMemoryBatch } from './memory'
 import type { ObjectId } from 'mongodb'
 
 const strings = { type: 'array', items: { type: 'string' } }
@@ -54,11 +54,28 @@ export const GROUP_CURATION_SCHEMA = {
 
 export const normalizeGroupMemoryText = (text: string) => text.replace(/\s+/g, ' ').trim().toLowerCase()
 
+export const groupMemoryTextKey = (text: string, privateTo?: string) => JSON.stringify([privateTo ?? '', normalizeGroupMemoryText(text)])
+
+/** Citation shape is checked first; this pass rejects facts spanning direct audiences. */
+export function filterGroupAtomAudiences<T extends { source_messages: number[] }>(group: GroupMemoryBatch, atoms: T[]) {
+  let invalidAudiences = 0
+  const memories = atoms.filter(atom => {
+    const cited = atom.source_messages.flatMap(number => {
+      const message = group.messages[number - 1]
+      const event = message && group.events.find(event => event._id.equals(message.eventId))
+      return event ? [event] : []
+    })
+    if (cited.length !== atom.source_messages.length || !deriveGroupAudience(cited).valid) { invalidAudiences++; return false }
+    return true
+  })
+  return { memories, invalidAudiences }
+}
+
 /** Event order, rather than message order, also rejects same-event replies and batch overlap. */
 export async function closeGroupThreads(input: {
   instanceId: ObjectId
   group: GroupMemoryBatch
-  threads: Array<Pick<MemoryDoc, '_id' | 'source_event_ids'>>
+  threads: Array<Pick<MemoryDoc, '_id' | 'source_event_ids' | 'private_to' | 'is_nsfw'>>
   closures: unknown
 }): Promise<{ closuresAccepted: number; closuresRejected: number }> {
   let closuresAccepted = 0, closuresRejected = 0
@@ -66,17 +83,18 @@ export async function closeGroupThreads(input: {
   const events = sources.length ? await mongoColl.events().find({ instance_id: input.instanceId, _id: { $in: sources } },
     { projection: { sequence: 1 } }).toArray() : []
   const sequence = new Map(events.map(event => [String(event._id), event.sequence]))
+  const eligible = new Set(await allowedGroupMemories(input.instanceId, input.threads, input.group.thread, true, true))
   const accepted = new Set<string>()
   for (const raw of Array.isArray(input.closures) ? input.closures : input.closures == null ? [] : [input.closures]) {
     const closure = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
     const thread = input.threads.find((_, index) => closure.thread_id === `T${index + 1}`)
     const citations = closure.source_messages
-    if (!thread || accepted.has(String(thread._id)) || !thread.source_event_ids?.length ||
+    if (!thread || !eligible.has(thread) || accepted.has(String(thread._id)) || !thread.source_event_ids?.length ||
       thread.source_event_ids.some(id => !Number.isFinite(sequence.get(String(id)))) ||
       !Array.isArray(citations) || !citations.length || citations.some(number => {
         if (!Number.isInteger(number) || number < 1 || number > input.group.messages.length) return true
         const event = input.group.events.find(event => event._id.equals(input.group.messages[number - 1].eventId))
-        return !event || thread.source_event_ids.some(id => event.sequence <= sequence.get(String(id))!)
+        return !event || event.data.dm_with !== input.group.thread || thread.source_event_ids.some(id => event.sequence <= sequence.get(String(id))!)
       })) { closuresRejected++; continue }
     const result = await mongoColl.memories().updateOne({ _id: thread._id, instance_id: input.instanceId,
       is_archived: false, unresolved_thread: true }, { $set: { unresolved_thread: false, resolved_at: new Date(), updated_at: new Date() } })

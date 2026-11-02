@@ -15,10 +15,28 @@ export const GROUP_ADULT_SCENE_LINES = 6
 const GROUP_RAISED_WORD_MAX_ATOMS = 3
 export type GroupWatermark = 'curated_through_sequence' | 'summarized_through_sequence'
 export interface GroupMemoryMessage extends NamedLine { number: number; eventId: ObjectId; adult: boolean }
-export interface GroupMemoryBatch { player: string; messages: GroupMemoryMessage[]; events: WorldEventDoc[]; through: number }
+export interface GroupMemoryBatch { player: string; messages: GroupMemoryMessage[]; events: WorldEventDoc[]; through: number; thread?: string }
 
-export function groupMessages(events: WorldEventDoc[], player: string, members: GroupMember[]): NamedLine[] {
-  return events.flatMap(event => [
+/** Undefined is the group thread; malformed stored audiences fail closed. */
+export function validGroupThread(thread: unknown): thread is string | undefined {
+  return thread === undefined || (typeof thread === 'string' && ObjectId.isValid(thread))
+}
+
+export function groupThreadFilter(thread?: string) {
+  if (!validGroupThread(thread)) throw new Error('Invalid group thread')
+  return { 'data.dm_with': thread ?? { $exists: false } }
+}
+
+export function deriveGroupAudience(events: WorldEventDoc[]): { valid: boolean; privateTo?: string } {
+  if (!events.length || events.some(event => !validGroupThread(event.data.dm_with))) return { valid: false }
+  const direct = new Set(events.flatMap(event => event.data.dm_with === undefined ? [] : [event.data.dm_with]))
+  if (direct.size > 1) return { valid: false }
+  const privateTo = [...direct][0]
+  return { valid: true, ...(privateTo === undefined ? {} : { privateTo }) }
+}
+
+export function groupMessages(events: WorldEventDoc[], player: string, members: GroupMember[], thread?: string): NamedLine[] {
+  return events.filter(event => validGroupThread(thread) && event.data.dm_with === thread).flatMap(event => [
     ...(event.data.player_input ? [{ name: player, text: event.data.player_input }] : []),
     ...(event.data.lines || []).flatMap(line => {
       const member = members.find(member => member.id === line.character_id)
@@ -27,20 +45,27 @@ export function groupMessages(events: WorldEventDoc[], player: string, members: 
   ])
 }
 
+function groupWatermarkPath(watermark: GroupWatermark, thread?: string) {
+  if (!validGroupThread(thread)) throw new Error('Invalid group thread')
+  return thread === undefined ? watermark : `direct_threads.${thread}.${watermark}`
+}
+
 /** Jobs carry an immutable triggering event, never a transcript that could outlive reset. */
 export async function loadGroupBatch(instanceId: ObjectId, eventId: ObjectId, watermark: GroupWatermark) {
   const instance = await mongoColl.worldInstances().findOne({ _id: instanceId })
   const trigger = await mongoColl.events().findOne({ _id: eventId, instance_id: instanceId })
-  if (!instance?.group_state || !instance.group_context || !trigger) return null
-  const through = instance.group_state[watermark] ?? 1 // sequence 1 is the authored opening.
+  if (!instance?.group_state || !instance.group_context || !trigger || !validGroupThread(trigger.data.dm_with)) return null
+  const thread = trigger.data.dm_with
+  const through = (thread === undefined ? instance.group_state[watermark] : instance.group_state.direct_threads?.[thread]?.[watermark]) ?? 1
   const memory = watermark === 'curated_through_sequence'
-  if (trigger.sequence - through < (memory ? GROUP_MEMORY_CADENCE : GROUP_SUMMARY_CADENCE)) return null
-  const events = await mongoColl.events().find({ instance_id: instanceId,
-    sequence: { $gte: memory ? Math.max(2, through - 1) : through + 1, $lte: trigger.sequence },
-    'data.model_used': { $ne: 'seed' },
-  }).sort({ sequence: 1 }).limit(memory ? GROUP_MEMORY_BATCH_LIMIT : GROUP_SUMMARY_CADENCE).toArray()
-  if (!events.length || (!memory && events.length !== GROUP_SUMMARY_CADENCE)) return null
-  return { instance, events, through: events.at(-1)!.sequence }
+  const filter = { instance_id: instanceId, ...groupThreadFilter(thread), 'data.model_used': { $ne: 'seed' } }
+  const overlap = memory ? await mongoColl.events().find({ ...filter, sequence: { $gte: 2, $lte: through } })
+    .sort({ sequence: -1 }).limit(2).toArray() : []
+  const fresh = await mongoColl.events().find({ ...filter, sequence: { $gt: through, $lte: trigger.sequence } })
+    .sort({ sequence: 1 }).limit(memory ? GROUP_MEMORY_BATCH_LIMIT - overlap.length : GROUP_SUMMARY_CADENCE).toArray()
+  if (fresh.length < (memory ? GROUP_MEMORY_CADENCE : GROUP_SUMMARY_CADENCE)) return null
+  const events = [...overlap.reverse(), ...fresh]
+  return { instance, events, through: events.at(-1)!.sequence, ...(thread === undefined ? {} : { thread }) }
 }
 
 export async function groupEventsLive(events: WorldEventDoc[]): Promise<boolean> {
@@ -51,14 +76,17 @@ export async function groupEventsLive(events: WorldEventDoc[]): Promise<boolean>
 
 export async function advanceGroupWatermark(events: WorldEventDoc[], watermark: GroupWatermark) {
   if (!await groupEventsLive(events)) throw new Error('Group memory source events changed')
+  const audience = deriveGroupAudience(events)
+  if (!audience.valid || events.some(event => event.data.dm_with !== events[0].data.dm_with)) throw new Error('Mixed group memory batch')
+  const path = groupWatermarkPath(watermark, events[0].data.dm_with)
   const instanceId = events[0].instance_id, through = events.at(-1)!.sequence
   // Patch snapshots from the coverage boundary onward so rewind restores coverage,
   // even when the background job completed several turns after that boundary.
   await mongoColl.events().updateMany({ instance_id: instanceId, sequence: { $gte: through } }, {
-    $max: { [`data.group_state_after.${watermark}`]: through },
+    $max: { [`data.group_state_after.${path}`]: through },
   })
   await mongoColl.worldInstances().updateOne({ _id: instanceId, group_state: { $exists: true } }, {
-    $max: { [`group_state.${watermark}`]: through },
+    $max: { [`group_state.${path}`]: through },
   })
 }
 
@@ -80,10 +108,55 @@ export function raisedMemories<T extends Pick<MemoryDoc, 'text' | 'importance' |
     .map(row => row.atom)
 }
 
-/** RAG is shared with story worlds; group calls verify every returned atom against
- * Mongo, including provenance, before it enters a prompt. Unknown rows fail closed. */
+/** Stored labels AND live provenance must agree. Unlabelled direct-sourced legacy
+ * rows cannot become shared facts through retrieval or the curator's open threads. */
+export async function allowedGroupMemories<T extends Pick<MemoryDoc, 'source_event_ids' | 'private_to' | 'is_nsfw'>>(
+  instanceId: ObjectId, candidates: T[], thread?: string, enabled = true, exactAudience = false,
+): Promise<T[]> {
+  if (!validGroupThread(thread)) return []
+  const sourceIds = [...new Map(candidates.flatMap(memory => memory.source_event_ids || []).map(id => [String(id), id])).values()]
+  const sources = sourceIds.length ? await mongoColl.events().find({ instance_id: instanceId, _id: { $in: sourceIds } }).toArray() : []
+  const sourceById = new Map(sources.map(event => [String(event._id), event]))
+  return candidates.filter(memory => {
+    const cited = (memory.source_event_ids || []).flatMap(id => sourceById.has(String(id)) ? [sourceById.get(String(id))!] : [])
+    if (!cited.length || cited.length !== memory.source_event_ids.length) return false
+    const audience = deriveGroupAudience(cited)
+    return audience.valid && validGroupThread(memory.private_to) && memory.private_to === audience.privateTo &&
+      (exactAudience ? memory.private_to === thread : memory.private_to === undefined || memory.private_to === thread) &&
+      (enabled || (!memory.is_nsfw && cited.every(event => event.type !== 'intimate')))
+  })
+}
+
+/** Global sequence gaps between this thread's events belong to other audiences.
+ * The stored row owns the audience; retrieval metadata never grants access. */
+export async function groupSummarySources(instanceId: ObjectId, start: number, end: number, thread?: string) {
+  if (!validGroupThread(thread) || !Number.isInteger(start) || !Number.isInteger(end) || start < 1 || end < start) return []
+  const events = await mongoColl.events().find({ instance_id: instanceId, ...groupThreadFilter(thread),
+    sequence: { $gte: start, $lte: end } }).sort({ sequence: 1 }).toArray()
+  return events[0]?.sequence === start && events.at(-1)?.sequence === end ? events : []
+}
+
+export async function groupWriterSummaries(instanceId: ObjectId, candidates: Array<{ text: string; startSequence: number; endSequence: number }>, thread?: string) {
+  if (!validGroupThread(thread)) return []
+  const allowed: string[] = []
+  for (const summary of candidates) {
+    const filter = { instance_id: instanceId, status: { $ne: 'stale' as const }, summary_text: summary.text,
+      'event_range.start_sequence': summary.startSequence, 'event_range.end_sequence': summary.endSequence }
+    const stored = (await Promise.all([mongoColl.sceneSummaries().find(filter).toArray(),
+      mongoColl.chapterSummaries().find(filter).toArray(), mongoColl.arcSummaries().find(filter).toArray()])).flat()
+    if (!stored.length || stored.some(row => !validGroupThread(row.private_to) ||
+      !(row.private_to === undefined || row.private_to === thread))) continue
+    const audiences = new Set(stored.map(row => row.private_to))
+    if (audiences.size !== 1) continue
+    const events = await groupSummarySources(instanceId, summary.startSequence, summary.endSequence, stored[0].private_to)
+    if (events.length) allowed.push(summary.text)
+  }
+  return allowed
+}
+
+/** RAG is shared with story worlds; group calls verify every returned atom against Mongo. */
 export async function groupWriterMemory(input: {
-  instanceId: ObjectId; player: string; speakers: string[]; enabled: boolean
+  instanceId: ObjectId; player: string; speakers: string[]; enabled: boolean; thread?: string
   memories: string[]; openThreads: string[]; raisedBy?: string
 }) {
   const names = [['player', input.player], ...[...new Set(input.speakers)].map(name => [name])]
@@ -101,12 +174,8 @@ export async function groupWriterMemory(input: {
     }).sort({ updated_at: -1 }).limit(200).toArray(),
   ])
   const candidates = [...pins.flat(), ...retrieved, ...concerning]
-  const sourceIds = [...new Map(candidates.flatMap(memory => memory.source_event_ids).map(id => [String(id), id])).values()]
-  const sources = sourceIds.length ? await mongoColl.events().find({ instance_id: input.instanceId, _id: { $in: sourceIds } }).toArray() : []
-  const sourceById = new Map(sources.map(event => [String(event._id), event]))
-  const allowed = (memory: MemoryDoc) => memory.source_event_ids.length > 0 &&
-    memory.source_event_ids.every(id => sourceById.has(String(id))) &&
-    (input.enabled || (!memory.is_nsfw && memory.source_event_ids.every(id => sourceById.get(String(id))!.type !== 'intimate')))
+  const eligible = new Set(await allowedGroupMemories(input.instanceId, candidates, input.thread, input.enabled))
+  const allowed = (memory: MemoryDoc) => eligible.has(memory)
   const seen = new Set<string>(), memories: string[] = [], openThreads: string[] = []
   let chars = 0
   const add = (memory: MemoryDoc, thread = false) => {
@@ -153,9 +222,9 @@ export async function withGroupMemoryLease<T>(instanceId: string, kind: string, 
 }
 
 /** Similar wording cannot merge distinct people's facts or change rewind provenance. */
-export function groupMemoryMayMerge(left: Pick<MemoryDoc, 'subjects' | 'objects' | 'source_event_ids'>,
-  right: Pick<MemoryDoc, 'subjects' | 'objects' | 'source_event_ids'>): boolean {
+export function groupMemoryMayMerge(left: Pick<MemoryDoc, 'subjects' | 'objects' | 'source_event_ids' | 'private_to'>,
+  right: Pick<MemoryDoc, 'subjects' | 'objects' | 'source_event_ids' | 'private_to'>): boolean {
   const key = (values: Array<string | ObjectId>) => [...new Set(values.map(value => String(value).replace(/\s+/g, ' ').trim().toLowerCase()))].sort().join('\n')
-  return left.source_event_ids.length > 0 && key(left.source_event_ids) === key(right.source_event_ids) &&
+  return left.private_to === right.private_to && left.source_event_ids.length > 0 && key(left.source_event_ids) === key(right.source_event_ids) &&
     key(left.subjects || []) === key(right.subjects || []) && key(left.objects || []) === key(right.objects || [])
 }

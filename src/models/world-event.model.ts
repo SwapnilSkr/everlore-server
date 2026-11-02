@@ -125,6 +125,8 @@ export interface CharacterLifecycleDeltaDoc {
 }
 
 export interface EventDataDoc {
+  /** Group direct thread. Internal; absent means the group thread. */
+  dm_with?: string
   origin?: import('../services/group-chat/types').GroupOrigin
   lines?: import('../services/group-chat/types').GroupLine[]
   /** Group adult turn: the after-reply check found the reply wasn't explicit. Never sent to the player. */

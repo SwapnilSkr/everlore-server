@@ -1,3 +1,4 @@
+import { publicGroupData } from './group-chat/public'
 import { purgeMedia } from './media/deletion'
 import { spokenLineUpdate, publishSpokenLines, publicMediaEvent, withTurnMedia, wireSpokenLines } from './media/events'
 import { randomUUID } from 'crypto'
@@ -1318,7 +1319,9 @@ export const memoryService = {
       ? await events().countDocuments({ ...filter, sequence: { $lt: oldestSequence } }) > 0
       : false
     const ordered = evs.reverse().map(publicMediaEvent)
-    return { events: await withTurnMedia(ordered), total, page: opts.page || 1, hasOlder }
+    const payload = { events: await withTurnMedia(ordered), total, page: opts.page || 1, hasOlder }
+    const group = await worldInstances().findOne({ _id: iid, group_state: { $exists: true } })
+    return group ? publicGroupData(payload) : payload
   },
 
   async getMemories(instanceId: string, playerId: string, opts: any) {
@@ -1340,18 +1343,21 @@ export const memoryService = {
     }
     if (opts.unresolved) filter.unresolved_thread = true
 
+    const group = await worldInstances().findOne({ _id: iid, group_state: { $exists: true } })
     const q = typeof opts.q === 'string' ? opts.q.trim() : ''
     if (q) {
       // Full-text over text/subjects/objects, ranked by relevance.
       filter.$text = { $search: q }
-      return memories()
+      const found = await memories()
         .find(filter, { projection: { score: { $meta: 'textScore' } } })
         .sort({ score: { $meta: 'textScore' } })
         .limit(100)
         .toArray()
+      return group ? publicGroupData(found) : found
     }
 
-    return memories().find(filter).sort({ importance: -1, updated_at: -1 }).toArray()
+    const found = await memories().find(filter).sort({ importance: -1, updated_at: -1 }).toArray()
+    return group ? publicGroupData(found) : found
   },
 
   /**
@@ -1890,7 +1896,8 @@ export const memoryService = {
     const rewindLocation = last?.location_anchor || null
     const groupSnapshot = last?.data.group_state_after
     const rewindGroupState = template.kind === 'group' ? {
-      ...instance.group_state,
+      ...Object.fromEntries(Object.entries(instance.group_state || {}).filter(([key]) => key !== 'direct_threads')),
+      ...(groupSnapshot?.direct_threads ? { direct_threads: groupSnapshot.direct_threads } : {}),
       silent_for: groupSnapshot?.silent_for || Object.fromEntries(Object.keys(instance.group_state?.silent_for || {}).map(id => [id, 0])),
       topics_used: groupSnapshot?.topics_used || 0,
       unprompted_since_player: groupSnapshot?.unprompted_since_player || 0,

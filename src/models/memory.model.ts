@@ -18,6 +18,8 @@ export interface MemoryDoc {
   type: string
   importance: number
   is_nsfw: boolean
+  /** Group memory audience, derived from cited events; absent means shared. */
+  private_to?: string
   source_event_ids: ObjectId[]
   pinecone_id: string | null
   access_count: number

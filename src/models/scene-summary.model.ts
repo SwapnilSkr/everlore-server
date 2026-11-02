@@ -14,6 +14,8 @@ export interface SceneSummaryDoc {
   instance_id: ObjectId
   scene_tag: string
   event_range: SceneEventRangeDoc
+  /** Group audience; omitted for shared summaries. */
+  private_to?: string
   summary_text: string
   key_facts_extracted: unknown[]
   model_used: string

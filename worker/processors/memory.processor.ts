@@ -1,6 +1,6 @@
-import { GROUP_CURATION_SCHEMA, closeGroupThreads, normalizeGroupMemoryText } from '../../src/services/group-chat/curation'
+import { GROUP_CURATION_SCHEMA, filterGroupAtomAudiences, closeGroupThreads, groupMemoryTextKey } from '../../src/services/group-chat/curation'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
-import { groupMemoryMayMerge, withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark, type GroupMemoryBatch } from '../../src/services/group-chat/memory'
+import { allowedGroupMemories, deriveGroupAudience, groupMemoryMayMerge, withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark, type GroupMemoryBatch } from '../../src/services/group-chat/memory'
 import { log } from '../../src/utils/logger'
 import { runBackgroundLLMTrace } from '../../src/services/llm-trace.service'
 import { ObjectId } from 'mongodb'
@@ -470,10 +470,10 @@ async function groupMemoryWork(job: Job) {
   const batch = await loadGroupBatch(parseObjectId(job.data.instanceId), parseObjectId(job.data.eventId), 'curated_through_sequence')
   if (!batch) return { skipped: 'group_batch_obsolete' }
   const members = await loadGroupMembers(batch.instance)
-  const messages = batch.events.flatMap(event => groupMessages([event], batch.instance.group_context!.player, members)
+  const messages = batch.events.flatMap(event => groupMessages([event], batch.instance.group_context!.player, members, batch.thread)
     .map(line => ({ ...line, eventId: event._id, adult: event.type === 'intimate', number: 0 })))
     .map((line, index) => ({ ...line, number: index + 1 }))
-  const group: GroupMemoryBatch = { player: batch.instance.group_context!.player, messages, events: batch.events, through: batch.through }
+  const group: GroupMemoryBatch = { player: batch.instance.group_context!.player, messages, events: batch.events, through: batch.through, ...(batch.thread === undefined ? {} : { thread: batch.thread }) }
   try {
     const result = await memoryWork(job, group)
     await advanceGroupWatermark(batch.events, 'curated_through_sequence')
@@ -562,18 +562,19 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
   // Related live facts for THIS turn are shown first. The ids make closure
   // exact: the curator returns T3, and T3 closes and leaves retrieval.
   const scope = { kind: 'mem' as const, instanceId }
-  const [openThreadDocs, relatedLive] = await Promise.all([
+  const [threadCandidates, relatedLive] = await Promise.all([
     mongoColl
       .memories()
       .find(
         { instance_id: instanceOid, unresolved_thread: true, is_archived: false },
-        { projection: { text: 1, importance: 1, updated_at: 1, ...(group ? { source_event_ids: 1 } : {}) } },
+        { projection: { text: 1, importance: 1, updated_at: 1, ...(group ? { source_event_ids: 1, private_to: 1, is_nsfw: 1 } : {}) } },
       )
       .sort({ updated_at: -1 })
       .limit(12)
       .toArray(),
     group ? Promise.resolve([]) : findRelatedLiveMemories(instanceOid, playerInput || '', aiResponse || ''),
   ])
+  const openThreadDocs = group ? await allowedGroupMemories(instanceOid, threadCandidates, group.thread, true, true) : threadCandidates
   const closeable = mergeCloseableCandidates(
     relatedLive,
     openThreadDocs.map((doc) => ({ _id: doc._id, text: String(doc.text || '') })),
@@ -595,7 +596,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
     console.warn('Memory extraction returned invalid JSON:', result)
     return { memoriesCreated: 0 }
   }
-  let invalidCitations = 0, invalidAtoms = 0, duplicates = 0
+  let invalidCitations = 0, invalidAtoms = 0, invalidAudiences = 0, duplicates = 0
   if (group) {
     if (!extracted || !Array.isArray(extracted.memories) || (!extracted.memories.length && !extracted.closed_threads?.length)) throw new Error('Group curator returned empty memories')
     extracted.memories = extracted.memories.slice(0, 20).filter((raw: unknown) => {
@@ -605,6 +606,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
         atom.source_messages.some(number => !Number.isInteger(number) || Number(number) < 1 || Number(number) > group.messages.length)) {
         invalidCitations++; return false
       }
+      if ('private_to' in atom || 'dm_with' in atom) { invalidAtoms++; return false }
       if (typeof atom.text !== 'string' || !atom.text.trim() || atom.text.length > 600 ||
         typeof atom.type !== 'string' || !['relationship', 'promise', 'lore', 'observation', 'emotion', 'secret'].includes(atom.type) ||
         !Number.isInteger(atom.importance) || Number(atom.importance) < 1 || Number(atom.importance) > 5 ||
@@ -617,13 +619,16 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       }
       return true
     })
+    const audiences = filterGroupAtomAudiences(group, extracted.memories as Array<{ source_messages: number[] }>)
+    extracted.memories = audiences.memories
+    invalidAudiences = audiences.invalidAudiences
     // Canonicalize only exact, case-insensitive player names after shape/citation validation.
     for (const atom of extracted.memories as Array<{ subjects: string[]; objects: string[] }>) {
       const canonical = (name: string) => name.toLowerCase() === group.player.toLowerCase() ? 'player' : name
       atom.subjects = atom.subjects.map(canonical)
       atom.objects = atom.objects.map(canonical)
     }
-    log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, accepted: extracted.memories.length })
+    log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, invalidAudiences, accepted: extracted.memories.length })
     if (!extracted.memories.length && !extracted.closed_threads?.length) throw new Error('Group curator returned no valid atoms')
     if (!await groupEventsLive(group.events)) throw new Error('Group memory source events changed')
   } else normalizePlayerFactAttribution({ extracted, isSentient, playerInput, protagonistName })
@@ -644,7 +649,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
   }
 
   if (!extracted.memories || extracted.memories.length === 0) {
-    return { memoriesCreated: 0, threadsResolved, ...(group ? { invalidCitations, invalidAtoms, duplicates, ...groupClosures } : {}) }
+    return { memoriesCreated: 0, threadsResolved, ...(group ? { invalidCitations, invalidAtoms, invalidAudiences, duplicates, ...groupClosures } : {}) }
   }
 
   // ── Entity-graph resolution: subjects/objects → entity ids ──
@@ -733,15 +738,18 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
   const newMemories: any[] = []
 
   const liveGroupTexts = group ? new Set((await mongoColl.memories().find({ instance_id: instanceOid, is_archived: false },
-    { projection: { text: 1 } }).toArray()).map(memory => normalizeGroupMemoryText(memory.text))) : undefined
+    { projection: { text: 1, private_to: 1 } }).toArray()).map(memory => groupMemoryTextKey(memory.text, memory.private_to))) : undefined
   for (const mem of extracted.memories) {
     const text = cleanShortText(mem.text, 600)
     if (!text) continue
     const sourceMessages = group ? (mem.source_messages as number[]).map(number => group.messages[number - 1]) : []
     const sourceEventIds = group ? [...new Map(sourceMessages.map(message => [String(message.eventId), message.eventId])).values()] : [eventOid]
+    const audience = group ? deriveGroupAudience(group.events.filter(event => sourceEventIds.some(id => id.equals(event._id)))) : undefined
+    if (audience && !audience.valid) { invalidAudiences++; continue }
+    const privateTo = audience?.privateTo
     const memId = new ObjectId()
     if (group) {
-      const duplicate = liveGroupTexts!.has(normalizeGroupMemoryText(text))
+      const duplicate = liveGroupTexts!.has(groupMemoryTextKey(text, privateTo))
       if (duplicate) { duplicates++; continue }
     }
     const vecId = group ? `group_${idString(memId)}` : randomUUID()
@@ -762,7 +770,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
     if (group) {
       const candidates = (await mongoColl.memories().find({ instance_id: instanceOid,
         source_event_ids: { $in: sourceEventIds }, is_archived: false,
-      }).limit(50).toArray()).filter(candidate => groupMemoryMayMerge(candidate, { subjects, objects, source_event_ids: sourceEventIds }))
+      }).limit(50).toArray()).filter(candidate => groupMemoryMayMerge(candidate, { subjects, objects, source_event_ids: sourceEventIds, private_to: privateTo }))
       const ids = candidates.flatMap(candidate => candidate.pinecone_id ? [candidate.pinecone_id] : [])
       if (ids.length) {
         const stored = await vectorStore.fetch(scope, ids)
@@ -816,6 +824,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       importance: mem.importance,
       is_nsfw: mem.is_nsfw || sourceMessages.some(message => message.adult) || false,
       ...(group && mem.is_nsfw === true ? { explicit_fact: true } : {}),
+      ...(privateTo === undefined ? {} : { private_to: privateTo }),
       source_event_ids: sourceEventIds,
       pinecone_id: vecId,
       access_count: 0,
@@ -856,13 +865,16 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       await vectorStore.deleteIds(scope, [vecId])
       throw new Error('Group memory source events changed')
     }
-    liveGroupTexts?.add(normalizeGroupMemoryText(text))
+    liveGroupTexts?.add(groupMemoryTextKey(text, privateTo))
     newMemories.push(memoryDoc)
 
     // Relationship atoms also become graph edges (subject → object) so the
     // graph can answer "what stands between these two" without re-reading
     // memory text. Provenance = this event; rewind/edit prunes it.
+    // A graph edge has no audience, so a private fact never becomes one: its text
+    // would land in a record everyone can read.
     if (
+      privateTo === undefined &&
       mem.type === 'relationship' &&
       subjectEntityIds.length > 0 &&
       objectEntityIds.length > 0 &&
@@ -963,5 +975,5 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
     })),
   }))
 
-  return { memoriesCreated: newMemories.length, threadsResolved, ...(group ? { invalidCitations, invalidAtoms, duplicates, ...groupClosures } : {}) }
+  return { memoriesCreated: newMemories.length, threadsResolved, ...(group ? { invalidCitations, invalidAtoms, invalidAudiences, duplicates, ...groupClosures } : {}) }
 }

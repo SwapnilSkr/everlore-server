@@ -1,4 +1,4 @@
-import { withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark } from '../../src/services/group-chat/memory'
+import { withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark, groupSummarySources, validGroupThread } from '../../src/services/group-chat/memory'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { runBackgroundLLMTrace } from '../../src/services/llm-trace.service'
 import { ObjectId } from 'mongodb'
@@ -102,7 +102,7 @@ async function summaryWork(job: Job) {
 
   const groupInstance = groupBatch?.instance || (events.some(event => event.data.lines !== undefined) ? await mongoColl.worldInstances().findOne({ _id: instanceOid, group_state: { $exists: true } }) : null)
   const members = groupInstance ? await loadGroupMembers(groupInstance) : []
-  const conversationText = groupInstance ? events.map(event => `[Turn ${event.sequence}]\n${groupMessages([event], groupInstance.group_context!.player, members).map(line => `${line.name}: ${line.text}`).join('\n')}`).join('\n\n') : events
+  const conversationText = groupInstance ? events.filter(event => event.data.dm_with === groupBatch?.thread).map(event => `[Turn ${event.sequence}]\n${groupMessages([event], groupInstance.group_context!.player, members, groupBatch?.thread).map(line => `${line.name}: ${line.text}`).join('\n')}`).join('\n\n') : events
     .map((e) => `[Turn ${e.sequence}] Player: ${e.data.player_input}\nWorld: ${e.data.ai_response}`)
     .join('\n\n')
 
@@ -134,6 +134,7 @@ async function summaryWork(job: Job) {
     _id: new ObjectId(),
     instance_id: instanceOid,
     scene_tag: sceneTag,
+    ...(groupBatch?.thread === undefined ? {} : { private_to: groupBatch.thread }),
     event_range: { start_sequence: startSequence, end_sequence: endSequence },
     summary_text: summaryResult,
     key_facts_extracted: [],
@@ -152,6 +153,7 @@ async function summaryWork(job: Job) {
   // event edit staled the original) supersedes the previous summary row.
   await mongoColl.sceneSummaries().deleteMany({
     instance_id: instanceOid,
+    ...(groupInstance ? { private_to: groupBatch?.thread ?? { $exists: false } } : {}),
     'event_range.start_sequence': startSequence,
     'event_range.end_sequence': endSequence,
   })
@@ -181,7 +183,7 @@ async function summaryWork(job: Job) {
   })
 
   // A completed scene may close out a chapter's worth of scenes.
-  await maybeQueueChapter(instanceOid)
+  await maybeQueueChapter(instanceOid, groupBatch?.thread)
 
   return { summaryId: summary._id }
 }
@@ -191,9 +193,10 @@ async function summaryWork(job: Job) {
  * accumulated beyond the last chapter's coverage. Each scene completion rolls at
  * most one chapter, which keeps the cost flat as a playthrough grows.
  */
-async function maybeQueueChapter(instanceOid: ObjectId): Promise<void> {
+async function maybeQueueChapter(instanceOid: ObjectId, thread?: string): Promise<void> {
+  const audience = await rollupAudience(instanceOid, thread)
   const lastChapter = await mongoColl.chapterSummaries().findOne(
-    { instance_id: instanceOid },
+    { instance_id: instanceOid, ...audience },
     { sort: { 'event_range.end_sequence': -1 } },
   )
   const coveredThrough = lastChapter?.event_range.end_sequence ?? 0
@@ -203,6 +206,7 @@ async function maybeQueueChapter(instanceOid: ObjectId): Promise<void> {
       instance_id: instanceOid,
       status: { $ne: 'stale' },
       'event_range.end_sequence': { $gt: coveredThrough },
+      ...audience,
     })
     .sort({ 'event_range.end_sequence': 1 })
     .toArray()
@@ -215,6 +219,7 @@ async function maybeQueueChapter(instanceOid: ObjectId): Promise<void> {
     'summarize',
     {
       kind: 'chapter',
+      ...(thread === undefined ? {} : { privateTo: thread }),
       instanceId: idString(instanceOid),
       chapterIndex: (lastChapter?.chapter_index ?? 0) + 1,
       startSequence: block[0].event_range.start_sequence,
@@ -222,7 +227,7 @@ async function maybeQueueChapter(instanceOid: ObjectId): Promise<void> {
       sceneSummaryIds: block.map((s) => idString(s._id)),
     },
     {
-      jobId: `chapter-summary-${idString(instanceOid)}-${block[0].event_range.start_sequence}-${block[block.length - 1].event_range.end_sequence}`,
+      jobId: `chapter-summary-${idString(instanceOid)}-${thread === undefined ? '' : `${thread}-`}${block[0].event_range.start_sequence}-${block[block.length - 1].event_range.end_sequence}`,
       priority: 16,
       attempts: 5,
       backoff: { type: 'exponential', delay: 5000 },
@@ -232,11 +237,27 @@ async function maybeQueueChapter(instanceOid: ObjectId): Promise<void> {
   )
 }
 
-async function groupRollupSources(instanceOid: ObjectId, start: number, end: number) {
+/** Existing story jobs retain their queries; group jobs carry a code-owned audience. */
+async function rollupAudience(instanceOid: ObjectId, thread?: string) {
+  const instance = await mongoColl.worldInstances().findOne({ _id: instanceOid })
+  if (!instance?.group_state) return {}
+  if (!validGroupThread(thread)) throw new Error('Invalid group summary audience')
+  return { private_to: thread ?? { $exists: false } }
+}
+
+async function groupRollupSources(instanceOid: ObjectId, start: number, end: number, children: Array<{
+  private_to?: string; event_range: { start_sequence: number; end_sequence: number }
+}>, thread?: string) {
   const instance = await mongoColl.worldInstances().findOne({ _id: instanceOid })
   if (!instance?.group_state) return null
-  const events = await mongoColl.events().find({ instance_id: instanceOid, sequence: { $gte: start, $lte: end } }).toArray()
-  if (events.length !== end - start + 1) throw new Error('Group summary source events changed')
+  // Recheck the actual stored children before constructing any model request.
+  if (!validGroupThread(thread) || children.some(child => child.private_to !== thread)) throw new Error('Mixed group summary audiences')
+  const events = await groupSummarySources(instanceOid, start, end, thread)
+  if (!events.length) throw new Error('Group summary source events changed')
+  for (const child of children) {
+    if (!(await groupSummarySources(instanceOid, child.event_range.start_sequence, child.event_range.end_sequence, thread)).length)
+      throw new Error('Group summary source events changed')
+  }
   return events
 }
 
@@ -248,12 +269,14 @@ async function chapterRollup(job: Job) {
     return { skipped: 'instance_deleted' }
   }
 
+  const audience = await rollupAudience(instanceOid, job.data.privateTo)
   // Fetch the child scenes by EVENT RANGE, not by stored id: scene summaries are
   // replaced (new _id) when rebuilt, so a range query stays correct across edits.
   const scenes = await mongoColl.sceneSummaries()
     .find({
       instance_id: instanceOid,
       status: { $ne: 'stale' },
+      ...audience,
       'event_range.start_sequence': { $gte: startSequence },
       'event_range.end_sequence': { $lte: endSequence },
     })
@@ -265,7 +288,7 @@ async function chapterRollup(job: Job) {
     return { skipped: true }
   }
 
-  const groupSources = await groupRollupSources(instanceOid, startSequence, endSequence)
+  const groupSources = await groupRollupSources(instanceOid, startSequence, endSequence, scenes, job.data.privateTo)
   const body = scenes
     .map((s, i) => `Scene ${i + 1}: ${s.summary_text}`)
     .join('\n\n')
@@ -300,6 +323,7 @@ async function chapterRollup(job: Job) {
     _id: new ObjectId(),
     instance_id: instanceOid,
     chapter_index: chapterIndex,
+    ...(groupSources && job.data.privateTo !== undefined ? { private_to: job.data.privateTo } : {}),
     event_range: { start_sequence: startSequence, end_sequence: endSequence },
     scene_summary_ids: scenes.map((s) => s._id),
     summary_text: summaryText,
@@ -314,6 +338,7 @@ async function chapterRollup(job: Job) {
   // supersedes the prior chapter row.
   await mongoColl.chapterSummaries().deleteMany({
     instance_id: instanceOid,
+    ...audience,
     'event_range.start_sequence': startSequence,
     'event_range.end_sequence': endSequence,
   })
@@ -334,16 +359,17 @@ async function chapterRollup(job: Job) {
   })
 
   // A completed chapter may close out an arc's worth of chapters.
-  await maybeQueueArc(instanceOid)
+  await maybeQueueArc(instanceOid, job.data.privateTo)
 
   return { chapterId: chapter._id }
 }
 
 /** Enqueue an arc rollup when ARC_CHAPTER_BLOCK chapters accumulate beyond the
  *  last arc's coverage. One arc per chapter completion keeps cost flat. */
-async function maybeQueueArc(instanceOid: ObjectId): Promise<void> {
+async function maybeQueueArc(instanceOid: ObjectId, thread?: string): Promise<void> {
+  const audience = await rollupAudience(instanceOid, thread)
   const lastArc = await mongoColl.arcSummaries().findOne(
-    { instance_id: instanceOid },
+    { instance_id: instanceOid, ...audience },
     { sort: { 'event_range.end_sequence': -1 } },
   )
   const coveredThrough = lastArc?.event_range.end_sequence ?? 0
@@ -353,6 +379,7 @@ async function maybeQueueArc(instanceOid: ObjectId): Promise<void> {
       instance_id: instanceOid,
       status: { $ne: 'stale' },
       'event_range.end_sequence': { $gt: coveredThrough },
+      ...audience,
     })
     .sort({ 'event_range.end_sequence': 1 })
     .toArray()
@@ -365,13 +392,14 @@ async function maybeQueueArc(instanceOid: ObjectId): Promise<void> {
     'summarize',
     {
       kind: 'arc',
+      ...(thread === undefined ? {} : { privateTo: thread }),
       instanceId: idString(instanceOid),
       arcIndex: (lastArc?.arc_index ?? 0) + 1,
       startSequence: block[0].event_range.start_sequence,
       endSequence: block[block.length - 1].event_range.end_sequence,
     },
     {
-      jobId: `arc-summary-${idString(instanceOid)}-${block[0].event_range.start_sequence}-${block[block.length - 1].event_range.end_sequence}`,
+      jobId: `arc-summary-${idString(instanceOid)}-${thread === undefined ? '' : `${thread}-`}${block[0].event_range.start_sequence}-${block[block.length - 1].event_range.end_sequence}`,
       priority: 17,
       attempts: 5,
       backoff: { type: 'exponential', delay: 5000 },
@@ -390,12 +418,14 @@ async function arcRollup(job: Job) {
     return { skipped: 'instance_deleted' }
   }
 
+  const audience = await rollupAudience(instanceOid, job.data.privateTo)
   // Fetch child chapters by EVENT RANGE (robust to chapter rebuilds, which mint
   // new _ids), same as chapters fetch their scenes.
   const chapters = await mongoColl.chapterSummaries()
     .find({
       instance_id: instanceOid,
       status: { $ne: 'stale' },
+      ...audience,
       'event_range.start_sequence': { $gte: startSequence },
       'event_range.end_sequence': { $lte: endSequence },
     })
@@ -407,7 +437,7 @@ async function arcRollup(job: Job) {
     return { skipped: true }
   }
 
-  const groupSources = await groupRollupSources(instanceOid, startSequence, endSequence)
+  const groupSources = await groupRollupSources(instanceOid, startSequence, endSequence, chapters, job.data.privateTo)
   const body = chapters
     .map((c, i) => `Chapter ${i + 1}: ${c.summary_text}`)
     .join('\n\n')
@@ -436,6 +466,7 @@ async function arcRollup(job: Job) {
     _id: new ObjectId(),
     instance_id: instanceOid,
     arc_index: arcIndex,
+    ...(groupSources && job.data.privateTo !== undefined ? { private_to: job.data.privateTo } : {}),
     event_range: { start_sequence: startSequence, end_sequence: endSequence },
     chapter_summary_ids: chapters.map((c) => c._id),
     summary_text: summaryText,
@@ -448,6 +479,7 @@ async function arcRollup(job: Job) {
 
   await mongoColl.arcSummaries().deleteMany({
     instance_id: instanceOid,
+    ...audience,
     'event_range.start_sequence': startSequence,
     'event_range.end_sequence': endSequence,
   })

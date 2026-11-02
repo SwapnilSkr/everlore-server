@@ -19,6 +19,8 @@ export interface ArcSummaryDoc {
   event_range: SceneEventRangeDoc
   /** Provenance: the chapter summaries this arc compressed. */
   chapter_summary_ids: ObjectId[]
+  /** Group audience; omitted for shared summaries. */
+  private_to?: string
   summary_text: string
   model_used: string
   tokens_consumed: number

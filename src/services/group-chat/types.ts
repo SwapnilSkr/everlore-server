@@ -24,6 +24,7 @@ export interface GroupState {
   topics_used: number
   curated_through_sequence?: number
   summarized_through_sequence?: number
+  direct_threads?: Record<string, { curated_through_sequence?: number; summarized_through_sequence?: number }>
   writing_calls?: number
   tz_offset_minutes?: number
   last_seen_at?: Date

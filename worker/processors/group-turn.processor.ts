@@ -16,7 +16,7 @@ import { liveInstanceExists } from '../../src/utils/live-instance'
 import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
 import { judgeGroupReply } from '../lib/group-explicit-check'
 import { stagePostProcess, dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
-import { groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE } from '../../src/services/group-chat/memory'
+import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE } from '../../src/services/group-chat/memory'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { buildGroupDynamic, buildAddressedStatic } from '../../src/services/group-chat/prompt'
 import { rollSpeakers, advanceSilence, pickAddressed, mentionsMember } from '../../src/services/group-chat/roll'
@@ -51,17 +51,18 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   const guard = screenPlayerInput(userMessage)
   if (guard.blocked) throw new Error(guard.message)
   const members = await loadGroupMembers(instance)
-  const recent = await mongoColl.events().find({ instance_id: iid }).sort({ sequence: -1 }).limit(30).toArray()
+  const latest = await mongoColl.events().findOne({ instance_id: iid }, { sort: { sequence: -1 } })
+  const recent = await mongoColl.events().find({ instance_id: iid, ...groupThreadFilter() }).sort({ sequence: -1 }).limit(30).toArray()
   recent.reverse()
-  const sequence = (recent.at(-1)?.sequence || 0) + 1
+  const sequence = (latest?.sequence || 0) + 1
   setLLMTraceSequence(sequence)
   const messagesFromEvents = (events: typeof recent): NamedLine[] => groupMessages(events, instance.group_context!.player, members)
   const playerMessages = (origin === 'player' ? 1 : 0) + await mongoColl.events().countDocuments({
-    instance_id: iid, 'data.model_used': { $ne: 'seed' }, 'data.player_input': { $exists: true, $ne: '' },
+    instance_id: iid, ...groupThreadFilter(), 'data.model_used': { $ne: 'seed' }, 'data.player_input': { $exists: true, $ne: '' },
   }, { limit: 2 })
   const history = messagesFromEvents(playerMessages >= 2 ? recent.filter(event => event.data.model_used !== 'seed') : recent)
   const previousLines: NamedLine[] = (await Promise.all(members.map(async member => {
-    const events = await mongoColl.events().find({ instance_id: iid, 'data.lines.character_id': member.id })
+    const events = await mongoColl.events().find({ instance_id: iid, ...groupThreadFilter(), 'data.lines.character_id': member.id })
       .sort({ sequence: -1 }).limit(30).toArray()
     return events.reverse().flatMap(event => (event.data.lines || [])
       .filter(line => line.character_id === member.id).map(line => ({ name: member.name, text: line.text }))).slice(-30)
@@ -86,8 +87,11 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       queryRag(idString(instance.template_id), instanceId, query, template.max_lore_results || 10,
         template.max_context_memories || 25, namedEntities.map(entity => idString(entity._id)), 'main', null).catch(() => ({ memoryTexts: [] as string[], openThreads: [] as string[] })),
       querySummaries(instanceId, query, 3).catch(() => []),
-      mongoColl.sceneSummaries().findOne({ instance_id: iid, status: { $ne: 'stale' },
+      mongoColl.sceneSummaries().findOne({ instance_id: iid, private_to: { $exists: false }, status: { $ne: 'stale' },
         'event_range.end_sequence': { $lt: recent[0]?.sequence || 0 } }, { sort: { 'event_range.end_sequence': -1 } }),
+    ])
+    const summaries = await groupWriterSummaries(iid, [
+      ...(summary ? [{ text: summary.summary_text, startSequence: summary.event_range.start_sequence, endSequence: summary.event_range.end_sequence }] : []), ...distant,
     ])
     if (origin === 'player' && template.is_nsfw_capable && enabled) await router.wait(2000)
     // Re-read consent immediately before the first narrator, after retrieval.
@@ -137,10 +141,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const selected = members.filter(member => speakers.includes(member.id))
           const split = !!addressed
           const memory = await groupWriterMemory({ instanceId: iid, player: config.player,
-            speakers: selected.map(member => member.name), enabled: consent?.preferences?.nsfw_enabled === true,
+            speakers: selected.map(member => member.name), thread: undefined, enabled: consent?.preferences?.nsfw_enabled === true,
             memories: rag.memoryTexts, openThreads: rag.openThreads || [], raisedBy: addressedPrompt ? userMessage : undefined })
           const dynamic = buildGroupDynamic({ memories: memory.memories, openThreads: memory.openThreads,
-            summaries: addressedPrompt ? [] : [...(summary ? [summary.summary_text] : []), ...distant.map(hit => hit.text)],
+            summaries: addressedPrompt ? [] : summaries,
             history: [...(addressedPrompt ? addressedHistory : history), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
             historyLimit: split ? addressedPrompt ? 12 : 5 : 30,
             messageRule: split ? addressedPrompt ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
@@ -190,7 +194,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     await mongoColl.events().insertOne(event)
     try {
       const updated = await mongoColl.worldInstances().updateOne({ _id: iid, player_id: pid }, {
-        $set: { ...Object.fromEntries(Object.entries(nextState).filter(([key]) => !['curated_through_sequence', 'summarized_through_sequence'].includes(key)).map(([key, value]) => [`group_state.${key}`, value])), 'meta.total_events': sequence, 'meta.last_active_at': now, updated_at: now },
+        $set: { ...Object.fromEntries(Object.entries(nextState).filter(([key]) => !['curated_through_sequence', 'summarized_through_sequence', 'direct_threads'].includes(key)).map(([key, value]) => [`group_state.${key}`, value])), 'meta.total_events': sequence, 'meta.last_active_at': now, updated_at: now },
         $inc: { 'meta.total_tokens_consumed': event.data.tokens_in + event.data.tokens_out },
       })
       if (!updated.matchedCount) {
@@ -202,11 +206,15 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
         'data.group_state_after.curated_through_sequence': coverage?.group_state?.curated_through_sequence ?? 1,
         'data.group_state_after.summarized_through_sequence': coverage?.group_state?.summarized_through_sequence ?? 1,
       } })
-      if ((sequence - 1) % GROUP_MEMORY_CADENCE === 0) {
+      if (coverage?.group_state?.direct_threads) await mongoColl.events().updateOne({ _id: event._id }, {
+        $set: { 'data.group_state_after.direct_threads': coverage.group_state.direct_threads },
+      })
+      const threadEvents = await mongoColl.events().countDocuments({ instance_id: iid, ...groupThreadFilter(), 'data.model_used': { $ne: 'seed' } })
+      if (threadEvents % GROUP_MEMORY_CADENCE === 0) {
         await stagePostProcess({ instanceId, playerId, eventId: idString(event._id), kind: 'memory_curation',
           payload: { instanceId, playerId, eventId: idString(event._id), groupMemory: true, sceneTag: 'dialogue' } })
       }
-      if ((sequence - 1) % GROUP_SUMMARY_CADENCE === 0) {
+      if (threadEvents % GROUP_SUMMARY_CADENCE === 0) {
         await stagePostProcess({ instanceId, playerId, eventId: idString(event._id), kind: 'scene_summary',
           payload: { instanceId, playerId, eventId: idString(event._id), groupSummary: true, sceneTag: 'dialogue' } })
       }
