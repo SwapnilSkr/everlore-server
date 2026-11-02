@@ -61,6 +61,22 @@ await check('parser prefixes, continuation; player and unknown dropped with thei
   assert.deepEqual(lines, [{ name: names[0], text: 'first continued' }, { name: names[1], text: 'second' }, { name: names[2], text: 'third' }])
   assert.equal(counts.player, 1); assert.equal(counts.unknown, 3)
 })
+await check('one speaker: lines with no name are theirs, each its own message', () => {
+  const counts = emptyLineCounts()
+  assert.deepEqual(parseLines('first\n\nsecond', members, playerName, counts, names[0]), [{ name: names[0], text: 'first' }, { name: names[0], text: 'second' }])
+  assert.deepEqual(parseLines(`${names[0]}: first\ncontinued\n${playerName}: forbidden\nleaked\nUnknown Writer: forbidden\nleaked`, members, playerName, counts, names[0]), [{ name: names[0], text: 'first continued' }])
+  assert.deepEqual(parseLines('no name', members, playerName, emptyLineCounts()), [])
+})
+await check('one speaker reply with no name needs one call; two speakers still retry', async () => {
+  const input = { members, tags: [], player: playerName, origin: 'player' as const, previous: [], openings: [], blocked: () => false }
+  let calls = 0
+  const one = await writeGroupReply({ ...input, speakers: [ids[0]], direct: ids[0], write: async () => { calls++; return { content: 'no name here', model: 'fake' } } })
+  assert.equal(calls, 1)
+  assert.deepEqual(one.lines.map(line => [line.name, line.text]), [[names[0], 'no name here']])
+  calls = 0
+  await writeGroupReply({ ...input, speakers: [ids[0], ids[1]], write: async () => { calls++; return { content: calls > 1 ? `${names[0]}: named` : 'no name here', model: 'fake' } } })
+  assert.equal(calls, 2)
+})
 await check('off-list speakers dropped', () => {
   const counts = emptyLineCounts()
   assert.equal(filterLines([{ name: names[1], text: 'off list' }], { ...opts, speakers: [ids[0]] }, counts).length, 0)

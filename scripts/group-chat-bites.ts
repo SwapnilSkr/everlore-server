@@ -12,6 +12,12 @@ type Mutation = { name: string; check: string; edits: Edit[]; script?: string }
 const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat/lines.ts', reply = 'src/services/group-chat/reply.ts'
 const worker = 'worker/processors/group-turn.processor.ts', prompt = 'src/services/group-chat/prompt.ts'
 const mutations: Mutation[] = [
+  { name: 'one speaker wiring lost', check: 'one speaker reply with no name', edits: [[reply, 'picked.length === 1 ? input.members.find(member => member.id === picked[0])?.name : undefined', 'undefined']] },
+  { name: 'one speaker wiring opened to several', check: 'one speaker reply with no name', edits: [[reply, 'picked.length === 1 ?', 'picked.length >= 1 ?']] },
+  { name: 'one speaker: unnamed lines dropped', check: 'one speaker: lines with no name', edits: [[lines, 'else if (soleSpeaker && !rejected)', 'else if (false)']] },
+  { name: 'one speaker: unnamed lines merged', check: 'one speaker: lines with no name', edits: [[lines, 'else if (current && !unnamed)', 'else if (current)']] },
+  { name: 'one speaker: rejected speaker continuation kept', check: 'one speaker: lines with no name', edits: [[lines, 'else if (soleSpeaker && !rejected)', 'else if (soleSpeaker)']] },
+  { name: 'unnamed lines kept with several speakers', check: 'one speaker: lines with no name', edits: [[lines, 'else if (soleSpeaker && !rejected)', 'else if (!rejected)']] },
   { name: 'retrieval audience omitted at dispatch', check: 'direct real Jess', edits: [[worker, 'undefined, { thread: directWith }', 'undefined']] },
   { name: 'retrieval direct audience becomes shared', check: 'direct real Jess', edits: [[worker, '{ thread: directWith }', '{ thread: undefined }']] },
   { name: 'retrieval shared audience omitted', check: 'direct real Jess', edits: [[worker, '{ thread: directWith }', 'directWith ? { thread: directWith } : undefined']] },

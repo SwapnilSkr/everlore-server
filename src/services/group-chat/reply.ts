@@ -38,7 +38,7 @@ export async function writeGroupReply(input: {
       sameIndex = (response.nextIndex ?? index + 1) - 1
       model = response.model
       if (response.writer === 'adult') adultModel = response.model
-      const checked = filterLines(parseLines(response.content, input.members, input.player, counts), {
+      const checked = filterLines(parseLines(response.content, input.members, input.player, counts, picked.length === 1 ? input.members.find(member => member.id === picked[0])?.name : undefined), {
         ...options, repeatedOpener: response.writer === 'adult' && addressed !== undefined && picked.includes(addressed), onCopiedExample: example => copiedVoice.add(example), finishReason: response.finishReason, speakers: picked, previous: [...input.previous, ...lines], oneMessage: purpose === 'bystander' || (!!addressed && !picked.includes(addressed)),
       }, counts)
       lines = filterLines([...lines, ...checked], options, counts)

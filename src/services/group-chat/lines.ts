@@ -9,10 +9,12 @@ const opener = (text: string): string | undefined => {
   return words.length >= 2 ? words.slice(0, 2).join(' ') : undefined
 }
 
-export function parseLines(raw: string, members: GroupMember[], player: string, counts: LineCounts): NamedLine[] {
+export function parseLines(raw: string, members: GroupMember[], player: string, counts: LineCounts, soleSpeaker?: string): NamedLine[] {
   const names = new Map(members.map(member => [member.name.toLowerCase(), member.name]))
   const lines: NamedLine[] = []
   let current: NamedLine | undefined
+  let unnamed = false
+  let rejected = false
   for (const source of raw.split(/\r?\n/)) {
     const text = source.trim()
     if (!text) continue
@@ -22,10 +24,15 @@ export function parseLines(raw: string, members: GroupMember[], player: string, 
       const name = names.get(key)
       // Do not attach a rejected speaker's continuation to an earlier member.
       current = undefined
+      unnamed = false
+      rejected = !name
       if (key === player.toLowerCase()) counts.player++
       else if (!name) counts.unknown++
       else { current = { name, text: (text.startsWith('**') ? prefix[2].replace(/^\*\*/, '') : prefix[2]).trim() }; lines.push(current) }
-    } else if (current) current.text = `${current.text} ${text}`.trim()
+    } else if (current && !unnamed) current.text = `${current.text} ${text}`.trim()
+    // Proven live: writing for one person, the writer often leaves off the name, and
+    // dropping those replies paid for a second call. Each line is its own message.
+    else if (soleSpeaker && !rejected) { current = { name: soleSpeaker, text }; unnamed = true; lines.push(current) }
     else counts.unknown++
   }
   return lines
