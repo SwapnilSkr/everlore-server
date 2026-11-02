@@ -15,6 +15,7 @@ export async function writeGroupReply(input: {
   members: GroupMember[]; speakers: string[]; tags: string[]; player: string; origin: GroupOrigin
   previous: NamedLine[]; openings: NamedLine[]; blocked: (text: string) => boolean
   adult?: { addressed: string; rng: () => number }
+  direct?: string
   onChecks?: (counts: ReturnType<typeof emptyLineCounts>, calls: number) => void
   write: (speakers: string[], fallback: boolean, request: GroupWritingRequest) => Promise<{
     content: string; model: string; writer?: 'adult' | 'normal'; nextIndex?: number; finishReason?: string | null
@@ -24,8 +25,8 @@ export async function writeGroupReply(input: {
   let calls = 0
   let model = '', adultModel = ''
   let lines: NamedLine[] = []
-  const addressed = input.adult?.addressed
-  const speakers = [...new Set([...input.speakers, ...(addressed ? [addressed] : [])])]
+  const addressed = input.direct ?? input.adult?.addressed
+  const speakers = input.direct ? [input.direct] : [...new Set([...input.speakers, ...(addressed ? [addressed] : [])])]
   const options = { ...input, speakers, addressed }
   const copiedVoice = new Set<string>()
   let sameIndex = 0
@@ -47,15 +48,16 @@ export async function writeGroupReply(input: {
       return index + 1
     }
   }
-  const missingTags = () => input.tags.filter(id => !lines.some(line => input.members.find(member => member.name === line.name)?.id === id))
+  const missingTags = () => (input.direct ? [] : input.tags).filter(id => !lines.some(line => input.members.find(member => member.name === line.name)?.id === id))
   try {
-    if (input.adult) {
-      let next = await attempt([input.adult.addressed], 'addressed', 0, 'adult')
-      if (!lines.length) next = await attempt([input.adult.addressed], 'addressed_retry', sameIndex, 'adult')
-      if (!lines.length) await attempt([input.adult.addressed], 'addressed_retry', next, 'adult')
-      if (!lines.length) await attempt([input.adult.addressed], 'addressed_fallback')
-      if (!lines.length && input.origin === 'player') await attempt([input.adult.addressed], 'addressed_fallback', 1)
-      const others = rollBystanders(input.speakers, input.tags, input.adult.addressed, input.adult.rng)
+    if (addressed) {
+      const writer = input.adult ? 'adult' : 'normal'
+      let next = await attempt([addressed], 'addressed', 0, writer)
+      if (!lines.length) next = await attempt([addressed], 'addressed_retry', sameIndex, writer)
+      if (!lines.length) await attempt([addressed], 'addressed_retry', next, writer)
+      if (!lines.length) await attempt([addressed], 'addressed_fallback')
+      if (!lines.length && input.origin === 'player') await attempt([addressed], 'addressed_fallback', 1)
+      const others = input.direct ? [] : rollBystanders(input.speakers, input.tags, addressed, input.adult!.rng)
       if (others.length) await attempt(others, 'bystander')
     } else {
       await attempt(input.speakers)

@@ -8,7 +8,7 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
   .use(authPlugin)
 
   .get('/events/:instanceId', (ctx) => chronicleController.getEvents(ctx), {
-    query: EventQueryParams,
+    query: t.Object({ ...EventQueryParams.properties, direct_with: t.Optional(t.String()) }),
   })
 
   .get('/memories/:instanceId', (ctx) => chronicleController.getMemories(ctx), {
@@ -17,7 +17,9 @@ export const chronicleRoutes = new Elysia({ prefix: '/chronicle' })
 
   .get('/calendar/:instanceId', (ctx) => chronicleController.getCalendar(ctx))
 
-  .get('/recap/:instanceId', (ctx) => chronicleController.getRecap(ctx))
+  .get('/recap/:instanceId', (ctx) => chronicleController.getRecap(ctx), {
+    query: t.Object({ direct_with: t.Optional(t.String()) }),
+  })
 
   .get('/threads/:instanceId', (ctx) => chronicleController.getThreads(ctx))
 

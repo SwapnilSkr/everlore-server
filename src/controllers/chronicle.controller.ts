@@ -61,7 +61,7 @@ export const chronicleController = {
     user,
   }: {
     params: { instanceId: string }
-    query: { page?: number; limit?: number; before_sequence?: number; type?: string }
+    query: { page?: number; limit?: number; before_sequence?: number; type?: string; direct_with?: string }
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
@@ -70,6 +70,7 @@ export const chronicleController = {
       limit: Number(query.limit) || EVENT_WINDOWS.chroniclePageSize,
       beforeSequence: query.before_sequence != null ? Number(query.before_sequence) : undefined,
       type: query.type,
+      directWith: query.direct_with,
     })
   },
 
@@ -113,12 +114,14 @@ export const chronicleController = {
   getRecap: async ({
     params,
     user,
+    query,
   }: {
     params: { instanceId: string }
+    query: { direct_with?: string }
     user: AuthUser | null
   }) => {
     if (!user) throw new HttpError(401, 'Unauthorized')
-    return memoryService.buildRecap(params.instanceId, user.id)
+    return memoryService.buildRecap(params.instanceId, user.id, query.direct_with)
   },
 
   getThreads: async ({

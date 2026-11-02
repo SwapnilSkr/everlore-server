@@ -1,3 +1,5 @@
+import { resolveGroupThread } from './group-chat/threads'
+import { groupThreadFilter } from './group-chat/memory'
 import { publicGroupData } from './group-chat/public'
 import { purgeMedia } from './media/deletion'
 import { spokenLineUpdate, publishSpokenLines, publicMediaEvent, withTurnMedia, wireSpokenLines } from './media/events'
@@ -1300,6 +1302,9 @@ export const memoryService = {
       player_id: pid,
       type: { $ne: 'side_chat' },
     }
+    const group = await worldInstances().findOne({ _id: iid, player_id: pid, group_state: { $exists: true } })
+    if (opts.directWith !== undefined && !group) throw new HttpError(400, 'That person is not in this chat.')
+    if (group) Object.assign(filter, groupThreadFilter(await resolveGroupThread(group, opts.directWith)))
     if (opts.type && opts.type !== 'side_chat') filter.type = opts.type
 
     // The play feed uses this cursor rather than offset pagination. New turns
@@ -1320,7 +1325,6 @@ export const memoryService = {
       : false
     const ordered = evs.reverse().map(publicMediaEvent)
     const payload = { events: await withTurnMedia(ordered), total, page: opts.page || 1, hasOlder }
-    const group = await worldInstances().findOne({ _id: iid, group_state: { $exists: true } })
     return group ? publicGroupData(payload) : payload
   },
 
@@ -1417,7 +1421,7 @@ export const memoryService = {
    * relationship standings, and current place/time on top. No new LLM call, so
    * it's free to open and always reflects the current projections.
    */
-  async buildRecap(instanceId: string, playerId: string) {
+  async buildRecap(instanceId: string, playerId: string, directWith?: unknown) {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
     const instance = await worldInstances().findOne({
@@ -1425,16 +1429,19 @@ export const memoryService = {
       player_id: pid,
     })
     if (!instance) throw new Error('Instance not found')
+    const thread = await resolveGroupThread(instance, directWith)
+    const threadFilter = instance.group_state ? groupThreadFilter(thread) : {}
+    const audience = instance.group_state ? { private_to: thread ?? { $exists: false } } : {}
     const mainVisibleMemory = await mainVisibleMemoryScope(iid)
 
     const [latestSummary, latestEvent, openThreads, bondCards] = await Promise.all([
       sceneSummaries().findOne(
-        { instance_id: iid, status: { $ne: 'stale' } },
+        { instance_id: iid, ...audience, status: { $ne: 'stale' } },
         { sort: { 'event_range.end_sequence': -1 } },
       ),
       // Main story only — a private side chat must never become the recap spine.
       events().findOne(
-        { instance_id: iid, type: { $ne: 'side_chat' } },
+        { instance_id: iid, ...threadFilter, type: { $ne: 'side_chat' } },
         {
           sort: { sequence: -1 },
           projection: { 'data.ai_response': 1, sequence: 1 },
@@ -1446,6 +1453,7 @@ export const memoryService = {
           unresolved_thread: true,
           is_archived: false,
           ...mainVisibleMemory,
+          ...audience,
         })
         .sort({ importance: -1, updated_at: -1 })
         .limit(5)

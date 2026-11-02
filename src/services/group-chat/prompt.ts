@@ -22,6 +22,7 @@ export function buildGroupStatic(input: {
 
 export function buildGroupDynamic(input: {
   memories: string[]; openThreads?: string[]; summaries: string[]; history: NamedLine[]
+  groupContext?: NamedLine[]
   now: Date; offsetMinutes?: number; historyLimit?: number; messageRule?: string; speakers: string[]; situation: string
 }): string {
   const parts: string[] = []
@@ -29,6 +30,7 @@ export function buildGroupDynamic(input: {
   if (input.openThreads?.length) parts.push(`Open threads:\n${input.openThreads.join('\n')}`)
   if (input.summaries.length) parts.push(`Summary so far:\n${input.summaries.join('\n')}`)
   parts.push(`Recent messages:\n${input.history.slice(-(input.historyLimit ?? 30)).map(line => `${line.name}: ${line.text}`).join('\n') || '(the chat opens below)'}`)
+  if (input.groupContext) parts.push(`Group chat (read-only; everyone saw these messages):\n${input.groupContext.map(line => `${line.name}: ${line.text}`).join('\n') || '(no group messages)'}`)
   const local = new Date(input.now.getTime() + (input.offsetMinutes || 0) * 60_000)
   const clock = new Intl.DateTimeFormat('en-GB', { weekday: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }).format(local)
   parts.push(`Now:\nIt's ${clock}.\nOnly these people write in this reply: ${input.speakers.join(', ')}.\n${input.messageRule ?? "Each writes one or two short messages, and it's fine if someone only reacts in a few words."}\n${input.situation}`)
@@ -44,4 +46,8 @@ export function buildAddressedStatic(input: Parameters<typeof buildGroupStatic>[
       ? `If it's sexual, ${member.name} answers what was actually said in plain, crude words, as explicitly and crudely as ${member.name} really would: naming what ${member.name} wants done and will do, without putting it off or changing the subject.`
       : `If it's sexual, ${member.name} answers what was actually said, as explicitly and crudely as ${member.name} really would, or turns it down the way ${member.name} really would.`} Say something new each time, moving things on from the last message. Don't repeat or lightly reword an earlier message.`,
   ].join('\n\n')
+}
+
+export function buildDirectStatic(system: string, member: GroupMember, player: string): string {
+  return `${system}\n\nThis is a private conversation between ${player} and ${member.name}. Only these two can see it. Only ${member.name} writes a reply, in one to three messages. The group chat block is read-only context, separate from this conversation.`
 }

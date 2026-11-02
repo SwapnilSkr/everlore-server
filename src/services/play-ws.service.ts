@@ -221,6 +221,7 @@ export const playWsService = {
 
         let reservationId: string | null = null
         try {
+          const directWith = (data as { direct_with?: unknown }).direct_with
           const payload = (data as { payload?: { message?: string } }).payload
           const message = payload?.message
           if (!message || typeof message !== 'string' || message.length === 0 || message.length > 4000) {
@@ -236,6 +237,7 @@ export const playWsService = {
             instanceId,
             playerId: user.id,
             userMessage: message,
+            ...(directWith === undefined ? {} : { directWith }),
             billingReservationId: reservation.reservation_id,
             turnId,
             priorTurnId: locked.priorTurnId,
@@ -397,7 +399,10 @@ export const playWsService = {
       case 'load_instance': {
         try {
           const instanceId = (data as { instance_id?: string }).instance_id
-          const state = await generationService.loadInstance(instanceId!, user.id)
+          const directWith = (data as { direct_with?: unknown }).direct_with
+          const state = directWith === undefined
+            ? await generationService.loadInstance(instanceId!, user.id)
+            : await generationService.loadInstance(instanceId!, user.id, directWith)
           const responseState = state.template && !canReadTemplateAuthoring(state.template, user)
             ? { ...state, template: publicTemplate(state.template) }
             : state

@@ -1,3 +1,4 @@
+import { groupThreadFilter } from './group-chat/memory'
 import { requireIdentity } from './guest-policy'
 import { seedGroupOpening } from './group-chat/instance'
 import { publicGroupData } from './group-chat/public'
@@ -354,6 +355,7 @@ export const instanceService = {
             instance_id: { $in: instanceIds },
             player_id: playerOid,
             type: { $ne: 'side_chat' },
+            ...(instances.some(instance => instance.group_state) ? groupThreadFilter() : {}),
           },
         },
         { $sort: { sequence: -1 } },

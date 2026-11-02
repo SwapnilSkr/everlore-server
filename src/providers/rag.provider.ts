@@ -294,6 +294,8 @@ export async function queryRag(
   /** Current place entity; adds "what happened here before?" retrieval. */
   currentLocationEntityId?: string | null,
   prefetched?: { lore?: QueryResponse; memory?: QueryResponse },
+  /** Supplied only by group calls; an absent thread selects shared memories. */
+  audience?: { thread?: string },
 ): Promise<RagResult> {
   const ragStartedAt = Date.now()
   // The vector search is one of four retrieval routes, not a precondition for
@@ -428,7 +430,7 @@ export async function queryRag(
     vectorMs = Date.now() - vectorStartedAt
     return [lore, memory] as const
   })
-  const [[loreResults, memoryResults], keywordMemories, entityMemories, locationMemories, threadMemories] =
+  const [[loreResults, memoryResults], keywordMemories, entityMemories, locationMemories, rawThreadMemories] =
     await Promise.all([
       vectorPart,
       keywordSearch(),
@@ -441,13 +443,38 @@ export async function queryRag(
     (m) => (m.metadata as { text?: string })?.text || '',
   )
 
+  // Every retrieval route must use stored audience labels before fusion, the
+  // reranker or access bumps. Missing rows/read failures cannot grant access.
+  let audienceDocs = new Map<string, MemoryDoc>()
+  if (audience) {
+    const ids = [...new Set([
+      ...(memoryResults.matches || []).map(match => String(match.metadata?.mongo_id || '')),
+      ...[...keywordMemories, ...entityMemories, ...locationMemories, ...rawThreadMemories].map(memory => idString(memory._id)),
+    ])].flatMap(id => {
+      try { return [parseObjectId(id)] } catch { return [] }
+    })
+    try {
+      if (ids.length) audienceDocs = new Map((await mongoColl.memories().find(
+        { instance_id: instanceOid, _id: { $in: ids } },
+        { projection: { _id: 1, private_to: 1, timeline_id: 1, time_anchor: 1, origin: 1, known_by_entity_ids: 1 } },
+      ).toArray()).map(memory => [idString(memory._id), memory]))
+    } catch { /* Unreadable audiences exclude these candidates. */ }
+  }
+  const audienceAllows = (id: string | null) => {
+    if (!audience) return true
+    const stored = id ? audienceDocs.get(id) : undefined
+    return !!stored && (stored.private_to === undefined ||
+      (typeof audience.thread === 'string' && stored.private_to === audience.thread))
+  }
+  const threadMemories = rawThreadMemories.filter(memory => audienceAllows(idString(memory._id)))
+
   // ── Fuse vector + keyword memory rankings (RRF + importance boost) ──
   const candidates = new Map<string, FusedCandidate>()
 
   const addRanked = (
     items: Array<{ key: string; text: string; mongoId: string | null; importance: number }>,
   ) => {
-    items.forEach((item, rank) => {
+    items.filter(item => audienceAllows(item.mongoId)).forEach((item, rank) => {
       if (!item.text) return
       const existing = candidates.get(item.key)
       const rrf = 1 / (RRF_K + rank)
@@ -469,7 +496,7 @@ export async function queryRag(
   const vectorMongoIds = vectorMatches
     .map((m) => String((m.metadata || {}).mongo_id || ''))
     .filter(Boolean)
-  const vectorDocs = vectorMongoIds.length
+  const vectorDocs = audience ? audienceDocs : vectorMongoIds.length
     ? new Map(
         (
           (await mongoColl.memories()
@@ -493,6 +520,7 @@ export async function queryRag(
           known_by?: string[]
         }
         const mongoId = meta.mongo_id ? String(meta.mongo_id) : ''
+        if (!audienceAllows(mongoId)) return false
         const doc = mongoId ? vectorDocs.get(mongoId) : null
         if (doc) return !eligibility || eligibility.allowsMemory(doc)
         if (!eligibility) return true

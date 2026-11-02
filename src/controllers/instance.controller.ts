@@ -1,3 +1,4 @@
+import { listGroupThreads } from '../services/group-chat/threads'
 import { publicGroupData } from '../services/group-chat/public'
 import type { AuthUser } from '../middleware/auth'
 import { instanceService } from '../services/instance.service'
@@ -6,6 +7,11 @@ import { HttpError } from '../utils/http-error'
 import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
 
 export const instanceController = {
+  threads: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    return listGroupThreads(params.id, user.id)
+  },
+
   list: async ({ user, query }: { user: AuthUser | null; query: { include_archived?: boolean } }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     return instanceService.list(user.id, query.include_archived === true)

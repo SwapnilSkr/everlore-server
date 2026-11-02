@@ -1,3 +1,5 @@
+import { resolveGroupThread } from './group-chat/threads'
+import { groupThreadFilter } from './group-chat/memory'
 import { requireIdentity } from './guest-policy'
 import { publicGroupData } from './group-chat/public'
 import { reserveGuestTurn, releaseGuestTurn } from './guest-policy'
@@ -38,6 +40,7 @@ export const generationService = {
     billingReservationId?: string | null
     turnId?: string
     priorTurnId?: string
+    directWith?: unknown
   }) {
     const { instanceId, playerId, userMessage, isContinuation = false, timeAdvance, worldAction, billingReservationId } = params
 
@@ -48,7 +51,9 @@ export const generationService = {
     const verdict = screenPlayerInput(userMessage)
     if (verdict.blocked) throw new HttpError(400, verdict.message!)
 
-    if (!await worldInstances().findOne({ _id: parseObjectId(instanceId), player_id: parseObjectId(playerId) })) throw new HttpError(404, 'That story could not be found.')
+    const instance = await worldInstances().findOne({ _id: parseObjectId(instanceId), player_id: parseObjectId(playerId) })
+    if (!instance) throw new HttpError(404, 'That story could not be found.')
+    const directWith = await resolveGroupThread(instance, params.directWith)
     const requestedAt = Date.now()
     const session = await instanceService.loadSession(instanceId, playerId)
 
@@ -81,6 +86,7 @@ export const generationService = {
           isContinuation,
           timeAdvance,
           worldAction,
+          ...(directWith === undefined ? {} : { directWith }),
           requestedAt,
           session,
           userNsfwEnabled,
@@ -139,6 +145,7 @@ export const generationService = {
   async loadInstance(
     instanceId: string,
     playerId: string,
+    directWith?: unknown,
   ): Promise<{
     instance: WorldInstanceDoc
     template: WorldTemplateDoc | null
@@ -165,15 +172,19 @@ export const generationService = {
       _id: instance.template_id,
     })
 
+    const thread = await resolveGroupThread(instance, directWith)
+    const threadFilter = instance.group_state ? groupThreadFilter(thread) : {}
     const recentEvents = await events()
-      .find({ instance_id: iid })
+      .find({ instance_id: iid, ...threadFilter })
       .sort({ sequence: -1 })
       .limit(EVENT_WINDOWS.loadInstanceRecentEvents)
       .toArray()
     recentEvents.reverse()
 
     const mems = await memories()
-      .find({ instance_id: iid, is_archived: false })
+      .find({ instance_id: iid, is_archived: false,
+        ...(instance.group_state ? { $or: [{ private_to: { $exists: false } }, ...(thread ? [{ private_to: thread }] : [])] } : {}),
+      })
       .sort({ importance: -1 })
       .limit(20)
       .toArray()
@@ -184,7 +195,7 @@ export const generationService = {
       .limit(30)
       .toArray()
 
-    const totalEvents =
+    const totalEvents = instance.group_state ? await events().countDocuments({ instance_id: iid, ...threadFilter }) :
       typeof instance.meta?.total_events === 'number'
         ? instance.meta.total_events
         : await events().countDocuments({ instance_id: iid })
