@@ -155,32 +155,34 @@ ${names[1]}: other three`
   assert.equal(counts.copied_example, 1); assert.equal(counts.duplicate, 1); assert.equal(counts.over_cap, 2)
   assert.equal(filterLines([{ name: names[0], text: 'first' }, { name: names[0], text: 'second' }], { ...opts, oneMessage: true }, emptyLineCounts()).length, 1)
 })
-await check('repeated openers compare two normalized words against only that member last three lines', () => {
+await check('repeated openers compare two normalized words within one reply and ignore earlier turns', () => {
   const previous = [
-    { name: names[0], text: 'Old opening outside the window.' },
     { name: names[0], text: 'First phrase from three lines ago.' },
     { name: names[1], text: 'Other member says this.' },
-    { name: names[0], text: 'Second phrase from two lines ago.' },
-    { name: names[0], text: 'Third phrase from the last line.' },
+    { name: names[0], text: 'Second phrase from the last line.' },
   ]
-  const counts = emptyLineCounts()
   const options = { ...opts, previous, addressed: ids[0], repeatedOpener: true }
-  for (const text of ['FIRST,   phrase is changed.', 'Second PHRASE has new words.', '*waves* “third”—phrase still repeats.']) {
-    assert.deepEqual(filterLines([{ name: names[0], text }], options, counts), [])
+  const run = (member: string, ...texts: string[]) => {
+    const counts = emptyLineCounts()
+    return { kept: filterLines(texts.map(text => ({ name: member, text })), options, counts).map(line => line.text), dropped: counts.repeated_opener }
   }
-  assert.equal(counts.repeated_opener, 3)
-  for (const text of ['Old opening is allowed now.', 'Other member has a different speaker.', 'First different second word.', 'First']) {
-    assert.equal(filterLines([{ name: names[0], text }], options, counts).length, 1)
-  }
-  assert.equal(filterLines([{ name: names[1], text: 'First phrase from someone else.' }], options, counts).length, 1)
-  assert.equal(filterLines([{ name: names[0], text: 'First phrase on a normal turn.' }], { ...options, repeatedOpener: false }, counts).length, 1)
-  assert.equal(counts.repeated_opener, 3)
-  const fresh = filterLines([{ name: names[0], text: 'Fresh start in this reply.' }, { name: names[0], text: 'Fresh start repeated within the reply.' }], options, counts)
-  assert.deepEqual(fresh.map(line => line.text), ['Fresh start in this reply.'])
-  assert.equal(counts.repeated_opener, 4)
-  assert.equal(filterLines([{ name: names[1], text: 'Other member says it differently.' }], options, counts).length, 1)
-  assert.equal(filterLines([{ name: names[0], text: 'YES' }], { ...options, previous: [{ name: names[0], text: 'yes' }] }, emptyLineCounts()).length, 0) // Exact repeats still gate.
-  assert.equal(filterLines([{ name: names[0], text: 'YES!' }], { ...options, previous: [{ name: names[0], text: 'yes' }] }, counts).length, 1)
+  // Openers from earlier turns no longer remove a line.
+  assert.deepEqual(run(names[0], 'FIRST,   phrase is changed.'), { kept: ['FIRST, phrase is changed.'], dropped: 0 })
+  assert.deepEqual(run(names[0], 'Other member says this.'), { kept: ['Other member says this.'], dropped: 0 })
+  // Within one reply the second is dropped, however it's cased or punctuated.
+  assert.deepEqual(run(names[0], 'Fresh start in this reply.', '*waves* “FRESH,   start”—again here.').kept, ['Fresh start in this reply.'])
+  assert.equal(run(names[0], 'Fresh start in this reply.', 'Fresh start again.').dropped, 1)
+  assert.deepEqual(run(names[0], 'Fresh start here.', 'Later words.', 'Fresh start returns.').kept, ['Fresh start here.', 'Later words.'])
+  // Two different second words, a one-word line, and another speaker all stay.
+  assert.deepEqual(run(names[0], 'Fresh start here.', 'Fresh idea here.').kept, ['Fresh start here.', 'Fresh idea here.'])
+  assert.deepEqual(run(names[0], 'Yes', 'Yes!').kept, ['Yes', 'Yes!'])
+  const twoPeople = filterLines([{ name: names[0], text: 'Same words here.' }, { name: names[1], text: 'Same words there.' }], options, emptyLineCounts())
+  assert.equal(twoPeople.length, 2)
+  const otherIsAddressed = filterLines([{ name: names[1], text: 'Same words here.' }, { name: names[1], text: 'Same words there.' }], options, emptyLineCounts())
+  assert.equal(otherIsAddressed.length, 2)
+  assert.equal(filterLines([{ name: names[0], text: 'Same words here.' }, { name: names[0], text: 'Same words there.' }], { ...options, repeatedOpener: false }, emptyLineCounts()).length, 2)
+  // Exact repeats of earlier lines still gate.
+  assert.equal(filterLines([{ name: names[0], text: 'YES' }], { ...options, previous: [{ name: names[0], text: 'yes' }] }, emptyLineCounts()).length, 0)
 })
 await check('adult validation requires authored intimacy and 1–8 voice lines and rejects unknown shapes even when optional', () => {
   const patch = (group: unknown, capable = true) => ({ ...template, is_nsfw_capable: capable, seed_cast: template.seed_cast!.map((member, index) => index ? member : { ...member, group }) }) as WorldTemplateDoc
@@ -744,7 +746,7 @@ await check('whole Owen message retains a long complete sentence under the adult
   assert((lastData().lines as Row[]).every(line => Array.from(String(line.text)).length <= 280))
   assert.equal(checkLogs.at(-1)!.trimmed, 1)
 })
-await check('adult repeated opener drops one line keeps the rest and retries only when empty', async () => {
+await check('adult repeated opener drops a same-reply line, keeps a match with earlier turns and retries only when empty', async () => {
   for (const scenario of ['remaining', 'retry', 'normal', 'bystander', 'not-interested', 'withdrawn']) {
     const source = groupTemplate()
     if (scenario === 'not-interested') source.seed_cast![0].group!.interested = false
@@ -753,23 +755,26 @@ await check('adult repeated opener drops one line keeps the rest and retries onl
     put(rows('events').at(-1)!, 'data.lines', [{ character_id: ids[0], text: 'Familiar start was said before.', shown_at: new Date() }])
     if (scenario === 'normal') auditEnv.NSFW_SAME_TURN_ROUTER = 'off'
     if (scenario === 'withdrawn') consentReadHook = () => { put(rows('users')[0], 'preferences.nsfw_enabled', false) }
-    if (scenario === 'bystander') {
-      modelReplies = [`${names[1]}: Entirely fresh addressed answer.`, `${names[0]}: Familiar start from the bystander.`]
-    } else {
-      modelReplies = [`${names[0]}: *waves* FAMILIAR, start with different words.${scenario === 'remaining' ? `\n${names[0]}: A complete new answer survives.\n${names[0]}: Another line survives as well.` : ''}`, `${names[0]}: Completely new answer after retry.`]
-    }
+    const twoLines = `${names[0]}: FAMILIAR, start with different words.
+${names[0]}: Familiar start again here.`
+    modelReplies = scenario === 'bystander' ? [`${names[1]}: Entirely fresh addressed answer.`, `${names[0]}: Familiar start from the bystander.`]
+      : scenario === 'remaining' ? [`${twoLines}
+${names[0]}: A complete new answer survives.`]
+      : scenario === 'retry' ? [`${names[0]}: Familiar start was said before.`, `${names[0]}: Completely new answer after retry.`]
+      : [twoLines]
     await turn({ userMessage: scenario === 'bystander' ? `@${names[1]} @${names[0]}` : `@${names[0]}` }, never)
     const data = lastData().lines as Row[]
-    const gated = scenario === 'remaining' || scenario === 'retry'
-    assert.equal(checkLogs.at(-1)!.repeated_opener, gated ? 1 : 0, scenario)
+    assert.equal(checkLogs.at(-1)!.repeated_opener, scenario === 'remaining' ? 1 : 0, scenario)
     assert.equal(writerCalls.length, scenario === 'retry' || scenario === 'bystander' ? 2 : 1, scenario)
-    if (scenario === 'remaining') assert.deepEqual(data.map(line => line.text), ['A complete new answer survives.', 'Another line survives as well.'])
+    // The first line matches an earlier turn and stays; only the same-reply repeat goes.
+    if (scenario === 'remaining') assert.deepEqual(data.map(line => line.text), ['FAMILIAR, start with different words.', 'A complete new answer survives.'])
+    if (['normal', 'not-interested', 'withdrawn'].includes(scenario)) assert.equal(data.length, 2, scenario)
     if (scenario === 'retry') {
       assert.equal(data[0].text, 'Completely new answer after retry.')
       assert.deepEqual((checkLogs.at(-1)!.writing as Row[]).map(call => call.purpose), ['addressed', 'addressed_retry'])
       assert.equal(writerCalls[1].model, 'fake-adult')
     }
-    if (!gated) assert(data.some(line => String(line.text).toLowerCase().includes('familiar')))
+    if (scenario !== 'retry') assert(data.some(line => String(line.text).toLowerCase().includes('familiar')))
   }
 })
 await check('normal writer seed history expires at two player messages including the current turn across the full chat', async () => {

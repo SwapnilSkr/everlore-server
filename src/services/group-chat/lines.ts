@@ -88,8 +88,10 @@ export function filterLines(input: NamedLine[], options: {
     const duplicates = [...looksBack, ...options.openings.filter(other => other.name === line.name), ...kept.filter(other => other.name === line.name)]
     if (duplicates.some(other => normalized(other.text) === normalized(line.text))) { counts.duplicate++; continue }
     const firstWords = opener(line.text)
+    // Within one reply only. Proven live: against earlier turns this removed explicit
+    // lines, which tend to open the same way, and once emptied a reply.
     if (options.repeatedOpener && member.id === options.addressed && firstWords !== undefined
-      && [...previous, ...kept.filter(other => other.name === line.name)].slice(-3).some(other => opener(other.text) === firstWords)) { counts.repeated_opener++; continue }
+      && kept.filter(other => other.name === line.name).some(other => opener(other.text) === firstWords)) { counts.repeated_opener++; continue }
     if ((used.get(line.name) ?? 0) >= (options.oneMessage ? 1 : member.id === options.addressed ? 3 : 2) || (options.origin === 'catchup' && kept.length >= 4)) { counts.over_cap++; continue }
     used.set(line.name, (used.get(line.name) ?? 0) + 1)
     kept.push(line)
