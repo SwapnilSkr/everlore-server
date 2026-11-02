@@ -48,10 +48,12 @@ import Redis from 'ioredis'
 // ---------------------------------------------------------------- paths, cap
 
 const ROOT = resolve(import.meta.dir, '..', '..')
-const OUT_DIR = process.env.GROUP_MEMORY_RECALL_OUTPUT_DIR || join(ROOT, '.agents/probes/group-chat/recall')
+/** `--scene=a|b` replays an owner-passed adult scene after the long chat, memories on. */
+const SCENE = process.argv.find(arg => arg === '--scene=a' || arg === '--scene=b')?.slice(-1) as 'a' | 'b' | undefined
+const OUT_DIR = process.env.GROUP_MEMORY_RECALL_OUTPUT_DIR || join(ROOT, SCENE ? '.agents/probes/group-chat/adult-memory' : '.agents/probes/group-chat/recall')
 const LEDGER_FILE = join(OUT_DIR, 'spend.json')
 const WORK_DIR = process.env.COMMANDCODE_SCRATCHPAD || join(OUT_DIR, 'tmp')
-const CAP_USD = 0.30
+const CAP_USD = SCENE ? 0.10 : 0.30
 const INR_PER_USD = 87
 const PLAYER = 'Sam'
 const PLAYER_AGE = 28
@@ -61,12 +63,15 @@ const SCRATCH_DB = 'everlore_recall_scratch'
 const EMBED_USD_PER_TOKEN = 0.00000002
 
 const args = new Set(process.argv.slice(2))
+// A misquoted flag must not fall through to the paid run.
+const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b'].includes(arg))
+if (unknownArgs.length) throw new Error(`Unknown argument(s): ${unknownArgs.join(' | ')}`)
 const MODE: 'selftest' | 'plan' | 'dry' | 'run' = args.has('--selftest') ? 'selftest' : args.has('--plan') ? 'plan'
   : args.has('--dry') ? 'dry' : 'run'
 /** Offline rehearsal: every provider call is answered locally and costs nothing. */
 const DRY = MODE === 'dry'
 /** A dry run writes its own directory, so its fixtures can never be read as results. */
-const RUN_DIR = DRY ? join(OUT_DIR, 'dry') : OUT_DIR
+const RUN_DIR = DRY ? join(OUT_DIR, 'dry') : SCENE ? join(OUT_DIR, `scene-${SCENE}`) : OUT_DIR
 
 mkdirSync(OUT_DIR, { recursive: true })
 mkdirSync(RUN_DIR, { recursive: true })
@@ -273,7 +278,8 @@ function freshLedger(): Ledger {
 const ledger: Ledger = (() => {
   if (DRY) return freshLedger()
   // Verification may redirect artifacts, but it must keep the measured run's existing spend.
-  const prior = [LEDGER_FILE, join(ROOT, '.agents/probes/group-chat/recall/spend.json')].find(path => existsSync(path))
+  // A scene replay has its own cap and ledger, separate from the recall test's.
+  const prior = [LEDGER_FILE, ...(SCENE ? [] : [join(ROOT, '.agents/probes/group-chat/recall/spend.json')])].find(path => existsSync(path))
   if (!prior) return freshLedger()
   try {
     const raw = JSON.parse(readFileSync(prior, 'utf8')) as Partial<Ledger>
@@ -290,6 +296,7 @@ const ledger: Ledger = (() => {
 function saveLedger(): void {
   ledger.updated_at = new Date().toISOString()
   writeFileSync(join(RUN_DIR, 'spend.json'), `${JSON.stringify(ledger, null, 2)}\n`)
+  if (SCENE && !DRY) writeFileSync(LEDGER_FILE, `${JSON.stringify(ledger, null, 2)}\n`)
 }
 
 /** Upper estimate per provider call, by what the request is. Measured on gc-1/gc-1f runs. */
@@ -808,6 +815,8 @@ interface TurnSpec {
   player: string
   /** Cast members the fixture rng keeps in the speaker roll (others are rolled out). */
   speakers: string[]
+  /** Leave the speaker roll to the product's own randomness, as the passed scenes did. */
+  rolled?: boolean
   /** Scripted member line returned instead of a provider response, exactly once. */
   planted?: { name: string; line: string }
   /** Which planted fact this turn carries, for provenance checks. */
@@ -941,6 +950,35 @@ const QUESTIONS: QuestionSpec[] = [
   { id: 'Q11', kind: 'control', player: '@Priya what was the name of my brother again?', speakers: ['Priya'],
     promptMust: [], promptMustNot: ['brother'], replyMust: [], replyMustNot: [], note: 'never planted' },
 ]
+
+/** The owner-passed lines, verbatim from scripts/group-chat-live.ts (test fixtures). */
+const SCENE_LINES: Record<'a' | 'b', string[]> = {
+  a: [
+    '@Jess you look really good tonight.',
+    '@Jess I keep thinking about you in that dress.',
+    '@Jess if we\'re both awake at 2am, I know what I\'d rather be doing.',
+    '@Jess come to my room. Bring nothing.',
+    '@Jess tell me exactly what you want me to do to you.',
+    '@Jess I wanna fuck you.',
+    '@Jess I want you naked in my bed right now.',
+    '@Jess I\'m so hard thinking about you.',
+    'Everyone else asleep?',
+    '@Jess don\'t stop.',
+    '@Jess tell me what you want.',
+    'I want to fuck Jess tonight and everyone here should know it.',
+    '@Marco morning. Any coffee?',
+    '@Jess last night was good.',
+    '@Jess what do you remember most about last night?',
+  ],
+  b: [
+    '@Tom you look really good tonight.',
+    '@Tom I wanna fuck you.',
+    '@Priya I want you naked in my bed right now.',
+    '@Anya tell me exactly what you want me to do to you.',
+    '@Marco I\'m so hard thinking about you.',
+    'The gas bill is fucking ridiculous.',
+  ],
+}
 
 const TOGGLE_OFF: TurnSpec = { player: '@Jess you look good tonight', speakers: ['Jess'] }
 const POST_REWIND: TurnSpec = { player: '@Priya any tattoos in this flat?', speakers: ['Priya'] }
@@ -1362,7 +1400,7 @@ async function runProbe(): Promise<number> {
     try {
       result = await groupTurnProcessor({
         id: jobId, data: { instanceId: instanceId.toHexString(), playerId: PLAYER_ID, userMessage: spec.player },
-      } as never, { rng: makeRng(spec.speakers, tags) }) as { eventId: string; sequence: number }
+      } as never, spec.rolled ? {} : { rng: makeRng(spec.speakers, tags) }) as { eventId: string; sequence: number }
     } catch (caught) {
       error = caught instanceof Error ? caught.message : String(caught)
     }
@@ -1396,6 +1434,49 @@ async function runProbe(): Promise<number> {
   }
 
   try {
+    if (SCENE) {
+      // The ordinary chat up to fact 7, without its abrupt adult turns, then the passed lines.
+      for (const spec of CHAT.slice(0, CHAT.findIndex(entry => entry.fact === 7) + 1)) await runTurn(spec, `chat-${turnIndex + 1}`)
+      const sceneTurns: TurnResult[] = []
+      for (const [offset, player] of SCENE_LINES[SCENE].entries()) {
+        sceneTurns.push(await runTurn({ player, speakers: tagsOf(player), rolled: true }, `scene-${offset + 1}`))
+      }
+      const atoms = await mongoColl.memories().find({ instance_id: instanceId, is_archived: false }).toArray()
+      const intimate = new Set(turns.filter(turn => turn.eventType === 'intimate' && turn.eventId).map(turn => turn.eventId!))
+      const adultAtoms = atoms.filter(atom => atom.is_nsfw === true || (atom.source_event_ids || []).some(id => intimate.has(String(id))))
+
+      await mongoColl.users().updateOne({ _id: playerId }, { $set: { 'preferences.nsfw_enabled': false } } as never)
+      const toggleTurn = await runTurn(TOGGLE_OFF, 'toggle-off')
+      const toggleWriters = toggleTurn.calls.filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration')
+      const toggleText = toggleWriters.map(call => [call.sections?.memories, call.sections?.openThreads].join('\n')).join('\n').toLowerCase()
+      const leaked = adultAtoms.filter(atom => toggleText.includes(norm(String(atom.text))))
+
+      const failures: string[] = []
+      if (!adultAtoms.length) failures.push('no adult memory was stored, so the toggle check proved nothing')
+      if (leaked.length) failures.push(`toggle off: ${leaked.length} adult memory reached a prompt`)
+      if (toggleWriters.some(call => adultModelSet?.has(String(call.model)))) failures.push('toggle off: an adult model wrote')
+      const out: string[] = [`# Scene ${SCENE.toUpperCase()} with memories on`, '', `${turnIndex - sceneTurns.length - 1} ordinary turns came first. Speakers in the scene were rolled by the product.`, '']
+      for (const turn of [...sceneTurns, toggleTurn]) {
+        const writers = turn.calls.filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration')
+        const held = writers.map(call => (call.sections?.memories ?? '').split('\n').filter(Boolean).length)
+        const tagged = tagsOf(turn.player)
+        if (turn.error) failures.push(`${turn.label}: ${turn.error}`)
+        if (!turn.lines.length) failures.push(`${turn.label}: nobody replied`)
+        for (const name of tagged) if (!turn.lines.some(line => line.name === name)) failures.push(`${turn.label}: ${name} was tagged and did not reply`)
+        if (writers.some(call => !call.sections?.memories)) failures.push(`${turn.label}: a writer had no memories`)
+        out.push(`## ${turn.label}: route=${turn.route} · memory lines per writer: ${held.join(', ')} · $${turn.cost.toFixed(6)}`, '', `Sam: ${turn.player}`)
+        for (const line of turn.lines) out.push(`  ${line.name} [${line.model ?? 'unknown'}]: ${line.text}`)
+        out.push('')
+      }
+      const firstAddressed = sceneTurns.flatMap(turn => turn.calls).find(call => call.system.includes('You are writing only'))
+      out.push('## Memories in the first adult addressed prompt', '', firstAddressed?.sections?.memories || '(none)', '', '## Failures', '', ...(failures.length ? failures.map(item => `- ${item}`) : ['- none']), '',
+        `Adult memories stored: ${adultAtoms.length} of ${atoms.length}.`, ...adultAtoms.map(atom => `- ${atom.text}`), '', `Ledger: $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}) of $${CAP_USD.toFixed(2)}.`)
+      writeFileSync(join(RUN_DIR, 'scene.md'), `${out.join('\n')}\n`)
+      writeCuratorResponses()
+      console.log(`scene ${SCENE}: ${failures.length} failure(s), ${adultAtoms.length} adult memories, $${ledger.spent_usd.toFixed(6)}; ${join(RUN_DIR, 'scene.md')}`)
+      return failures.length ? 1 : 0
+    }
+
     // ---- the chat, past the 30-event raw window
     for (const spec of CHAT) await runTurn(spec, `chat-${turnIndex + 1}`)
 
