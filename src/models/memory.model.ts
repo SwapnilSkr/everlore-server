@@ -35,6 +35,9 @@ export interface MemoryDoc {
    *  Embedded WITH the atom and part of the text index so the memory is found
    *  when a later turn is worded differently from `text`. */
   search_terms?: string
+  /** Group chats: the curator itself called this fact explicit. `is_nsfw` also covers
+   *  anything said on an adult turn, so it can't tell a quiz plan from the scene. */
+  explicit_fact?: boolean
   /** Entity-graph ids resolved from `subjects` (strings kept for compat). */
   subject_entity_ids?: ObjectId[]
   /** Entity-graph ids resolved from `objects`. */

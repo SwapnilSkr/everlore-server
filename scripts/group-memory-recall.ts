@@ -55,7 +55,7 @@ const MEMORIES_OFF = Boolean(SCENE) && process.argv.includes('--memories=off')
 const OUT_DIR = process.env.GROUP_MEMORY_RECALL_OUTPUT_DIR || join(ROOT, SCENE ? '.agents/probes/group-chat/adult-memory' : '.agents/probes/group-chat/recall')
 const LEDGER_FILE = join(OUT_DIR, 'spend.json')
 const WORK_DIR = process.env.COMMANDCODE_SCRATCHPAD || join(OUT_DIR, 'tmp')
-const CAP_USD = SCENE ? 0.06 : 0.30
+const CAP_USD = SCENE ? 0.04 : 0.30
 const INR_PER_USD = 87
 const PLAYER = 'Sam'
 const PLAYER_AGE = 28
@@ -992,6 +992,8 @@ const SCENE_LINES: Record<'a' | 'b', string[]> = {
 
 /** An old everyday fact raised mid-scene: the narrowed adult call must still find it. */
 const WEDDING_RECALL = '@Jess June is going to be a nightmare, all i can think about is you. i want you naked, and i want to make love to you after the wedding'
+/** Something she said long before, asked vaguely: only the scene memories can answer it. */
+const SCENE_RECALL = '@Jess remember what you told me you wanted me to do to you earlier? say it again'
 const TOGGLE_OFF: TurnSpec = { player: '@Jess you look good tonight', speakers: ['Jess'] }
 const POST_REWIND: TurnSpec = { player: '@Priya any tattoos in this flat?', speakers: ['Priya'] }
 
@@ -1461,6 +1463,7 @@ async function runProbe(): Promise<number> {
         sceneTurns.push(await runTurn({ player, speakers: tagsOf(player), rolled: true }, `scene-${offset + 1}`))
       }
       if (SCENE === 'a') sceneTurns.push(await runTurn({ player: WEDDING_RECALL, speakers: tagsOf(WEDDING_RECALL), rolled: true }, 'wedding-recall'))
+      if (SCENE === 'a') sceneTurns.push(await runTurn({ player: SCENE_RECALL, speakers: tagsOf(SCENE_RECALL), rolled: true }, 'scene-recall'))
       const atoms = await mongoColl.memories().find({ instance_id: instanceId, is_archived: false }).toArray()
       const intimate = new Set(turns.filter(turn => turn.eventType === 'intimate' && turn.eventId).map(turn => turn.eventId!))
       const adultAtoms = atoms.filter(atom => atom.is_nsfw === true || (atom.source_event_ids || []).some(id => intimate.has(String(id))))
@@ -1486,8 +1489,9 @@ async function runProbe(): Promise<number> {
         if (writers.some(call => MEMORIES_OFF ? Boolean(call.sections?.memories || call.sections?.summaries) : !call.system.includes('You are writing only') && !call.sections?.memories)) failures.push(`${turn.label}: memory state of a writer prompt is wrong`)
         if (writers.some(call => !/\b19:\d\d\b/.test(call.user) && !/\b2\d:\d\d\b/.test(call.user))) failures.push(`${turn.label}: a writer prompt was not at the evening clock`)
         for (const call of writers.filter(call => call.system.includes('You are writing only'))) {
-          if ((call.sections?.memories ?? '').split('\n').filter(Boolean).length > 4 || call.sections?.openThreads || call.sections?.summaries) failures.push(`${turn.label}: the adult prompt is not narrow`)
+          if ((call.sections?.memories ?? '').split('\n').filter(Boolean).length > 8 || call.sections?.openThreads || call.sections?.summaries) failures.push(`${turn.label}: the adult prompt is not narrow`)
           if (turn.label === 'wedding-recall' && !MEMORIES_OFF && !/mira/i.test(call.sections?.memories ?? '')) failures.push('wedding-recall: the wedding fact was not in the adult prompt')
+          if (turn.label === 'scene-recall' && !MEMORIES_OFF && !/jess/i.test(call.sections?.memories ?? '')) failures.push('scene-recall: no memory about Jess was in the adult prompt')
         }
         out.push(`## ${turn.label}: route=${turn.route} · memory lines per writer: ${held.join(', ')} · $${turn.cost.toFixed(6)}`, '', `Sam: ${turn.player}`)
         for (const line of turn.lines) out.push(`  ${line.name} [${line.model ?? 'unknown'}]: ${line.text}`)

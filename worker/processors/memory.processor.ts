@@ -815,6 +815,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       type: mem.type,
       importance: mem.importance,
       is_nsfw: mem.is_nsfw || sourceMessages.some(message => message.adult) || false,
+      ...(group && mem.is_nsfw === true ? { explicit_fact: true } : {}),
       source_event_ids: sourceEventIds,
       pinecone_id: vecId,
       access_count: 0,

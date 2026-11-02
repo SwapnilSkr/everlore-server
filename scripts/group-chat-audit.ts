@@ -1231,7 +1231,13 @@ await check('memory a member line on an adult turn is kept as an adult fact and 
   curatorFactory = request => ({ memories: [atom('Said in the scene.', names[0], numbered(request).find(message => message.text === storedEvents()[4].data.lines![0].text)!.number)] })
   await memoryProcessor(memoryJob())
   assert.deepEqual(rows('memories').map(row => row.text), ['Said in the scene.'])
-  assert.equal(rows('memories')[0].is_nsfw, true)
+  assert.equal(rows('memories')[0].is_nsfw, true); assert.equal(rows('memories')[0].explicit_fact, undefined)
+  await start(); addEvents(5)
+  curatorFactory = request => ({ memories: [atom('Called explicit.', names[0], numbered(request)[0].number, { is_nsfw: true })] })
+  await memoryProcessor(memoryJob()); assert.equal(rows('memories')[0].explicit_fact, true)
+  await start(); addEvents(5); storedEvents()[4].type = 'intimate'
+  curatorFactory = request => ({ memories: [atom('Said in the scene.', names[0], numbered(request).find(message => message.text === storedEvents()[4].data.lines![0].text)!.number)] })
+  await memoryProcessor(memoryJob())
   const hidden = await groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[0]], enabled: false, memories: [], openThreads: [] })
   assert(!hidden.memories.includes('Said in the scene.'))
   const shown = await groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[0]], enabled: true, memories: [], openThreads: [] })
@@ -1461,7 +1467,7 @@ await check('memory adult addressed call is narrow and the bystander keeps full 
   rows('sceneSummaries').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), status: 'ready', summary_text: 'Summary marker', event_range: { start_sequence: 1, end_sequence: 2 } })
   put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = true
   const isAdultCall = (call: Row) => String((call.messages as Row[])[0].content).includes('You are writing only')
-  const fresh = [['Maple rivers hum.', 'Copper foxes dance.'], ['Violet trains arrive.', 'Quiet lanterns drift.'], ['Silver orchards bloom.', 'Amber kites wander.'], ['Crimson bridges sway.', 'Golden moths settle.']]
+  const fresh = [['Maple rivers hum.', 'Copper foxes dance.'], ['Violet trains arrive.', 'Quiet lanterns drift.'], ['Silver orchards bloom.', 'Amber kites wander.'], ['Crimson bridges sway.', 'Golden moths settle.'], ['Indigo clocks chime.', 'Velvet ferries glide.']]
   const send = async (userMessage: string) => {
     // The line checks refuse a repeat, so each turn's fake reply must be new.
     const [adultLine, safeLine] = fresh.shift()!
@@ -1483,6 +1489,12 @@ await check('memory adult addressed call is narrow and the bystander keeps full 
   assert(!common.adult.includes('Memories:'))
   const tickets = await send(`@${names[1]} @${names[3]} the ticket, the wedding and the passport`)
   assert.equal(tickets.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n').length, 4)
+  // Adult facts she's part of always come along, newest first and capped; other people's don't.
+  const adultRow = (text: string, subject: string, order: number) => ({ ...row(text, subject, 1), is_nsfw: true, explicit_fact: true, updated_at: new Date(1000 + order) })
+  rows('memories').push(...[1, 2, 3, 4, 5].map(i => adultRow(`Adult scene ${i}.`, names[1], i)), { ...adultRow('Adult with someone else.', 'player', 9), objects: [names[3]] }, { ...adultRow('Plans said on an adult turn.', names[1], 10), explicit_fact: false })
+  const scene = await send(`@${names[1]} @${names[3]} carry on`)
+  const inScene = scene.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n')
+  assert.deepEqual(inScene, [5, 4, 3, 2].map(i => `Adult scene ${i}.`))
   // The player's tag and name are never what makes a fact count as raised.
   assert.deepEqual(raisedMemories(`@${names[1]} hello`, [{ text: `${names[1]} has a thing.`, importance: 1 }] as never, [names[1]]), [])
 })

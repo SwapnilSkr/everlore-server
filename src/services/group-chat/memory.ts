@@ -11,6 +11,7 @@ export const GROUP_SUMMARY_CADENCE = 12
 export const GROUP_MEMORY_BATCH_LIMIT = 27 // 25 new events plus the two-event overlap.
 export const GROUP_MEMORY_TEXT_BUDGET = 12_000
 export const GROUP_ADULT_MEMORY_LINES = 4
+export const GROUP_ADULT_SCENE_LINES = 4
 const GROUP_RAISED_WORD_MAX_ATOMS = 3
 export type GroupWatermark = 'curated_through_sequence' | 'summarized_through_sequence'
 export interface GroupMemoryMessage extends NamedLine { number: number; eventId: ObjectId; adult: boolean }
@@ -118,6 +119,15 @@ export async function groupWriterMemory(input: {
     // full memory, and threads lose their heading because they're just facts here.
     for (const memory of raisedMemories(input.raisedBy, concerning.filter(allowed), people)) {
       if (memories.length < GROUP_ADULT_MEMORY_LINES) add(memory)
+    }
+    // The character in the scene must remember it too, once it has left the recent
+    // messages. Proven live: everything said on an adult turn feeds her own dodges
+    // back ("about to walk out the door to a quiz"), so only explicit facts come along.
+    const inScene = (memory: MemoryDoc) => memory.explicit_fact === true && input.speakers.some(name =>
+      [...(memory.subjects || []), ...(memory.objects || [])].includes(name) || memory.text.includes(name))
+    const limit = memories.length + GROUP_ADULT_SCENE_LINES
+    for (const memory of concerning.filter(allowed).filter(inScene)) {
+      if (memories.length < limit) add(memory)
     }
     return { memories, openThreads }
   }
