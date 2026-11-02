@@ -50,6 +50,8 @@ import Redis from 'ioredis'
 const ROOT = resolve(import.meta.dir, '..', '..')
 /** `--scene=a|b` replays an owner-passed adult scene after the long chat, memories on. */
 const SCENE = process.argv.find(arg => arg === '--scene=a' || arg === '--scene=b')?.slice(-1) as 'a' | 'b' | undefined
+/** Strips memory from writer prompts and skips curation, to isolate what memory changes. */
+const MEMORIES_OFF = Boolean(SCENE) && process.argv.includes('--memories=off')
 const OUT_DIR = process.env.GROUP_MEMORY_RECALL_OUTPUT_DIR || join(ROOT, SCENE ? '.agents/probes/group-chat/adult-memory' : '.agents/probes/group-chat/recall')
 const LEDGER_FILE = join(OUT_DIR, 'spend.json')
 const WORK_DIR = process.env.COMMANDCODE_SCRATCHPAD || join(OUT_DIR, 'tmp')
@@ -64,14 +66,14 @@ const EMBED_USD_PER_TOKEN = 0.00000002
 
 const args = new Set(process.argv.slice(2))
 // A misquoted flag must not fall through to the paid run.
-const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b'].includes(arg))
+const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b', '--memories=off'].includes(arg))
 if (unknownArgs.length) throw new Error(`Unknown argument(s): ${unknownArgs.join(' | ')}`)
 const MODE: 'selftest' | 'plan' | 'dry' | 'run' = args.has('--selftest') ? 'selftest' : args.has('--plan') ? 'plan'
   : args.has('--dry') ? 'dry' : 'run'
 /** Offline rehearsal: every provider call is answered locally and costs nothing. */
 const DRY = MODE === 'dry'
 /** A dry run writes its own directory, so its fixtures can never be read as results. */
-const RUN_DIR = DRY ? join(OUT_DIR, 'dry') : SCENE ? join(OUT_DIR, `scene-${SCENE}`) : OUT_DIR
+const RUN_DIR = DRY ? join(OUT_DIR, 'dry') : SCENE ? join(OUT_DIR, `scene-${SCENE}-memories-${MEMORIES_OFF ? 'off' : 'on'}`) : OUT_DIR
 
 mkdirSync(OUT_DIR, { recursive: true })
 mkdirSync(RUN_DIR, { recursive: true })
@@ -613,6 +615,14 @@ const guardedFetchBase = async (input: Parameters<typeof fetch>[0], init?: Param
   }
   let body: Record<string, unknown> = {}
   try { if (typeof init?.body === 'string') body = JSON.parse(init.body) as Record<string, unknown> } catch { /* leave unattributed */ }
+  if (MEMORIES_OFF && Array.isArray(body.messages)) {
+    for (const message of body.messages as Array<{ role?: string; content?: unknown }>) {
+      if (message.role === 'user' && typeof message.content === 'string') {
+        message.content = message.content.replace(/(?<=^|\n\n)(?:Memories|Open threads|Summary so far):\n[\s\S]*?\n\n(?=(?:Open threads|Summary so far|Recent messages|Now):\n)/g, '')
+      }
+    }
+    init = { ...init, body: JSON.stringify(body) }
+  }
   const model = typeof body.model === 'string' ? body.model : null
   const messages = Array.isArray(body.messages) ? body.messages as Array<{ role?: string; content?: string }> : []
   const system = messages.find(message => message.role === 'system')?.content ?? ''
@@ -1346,6 +1356,12 @@ async function runProbe(): Promise<number> {
   }
 
   await seedGroupOpening(instance as never, template as never, PLAYER)
+  if (SCENE) {
+    // The passed scenes ran at Sunday 19:21, so hold every replay at that hour through the product's own offset.
+    const started = new Date()
+    const minutes = ((19 * 60 + 21 - (started.getUTCHours() * 60 + started.getUTCMinutes())) % 1440 + 1440) % 1440
+    await mongoColl.worldInstances().updateOne({ _id: instanceId }, { $set: { 'group_state.tz_offset_minutes': minutes } } as never)
+  }
   const reloaded = await mongoColl.worldInstances().findOne({ _id: instanceId })
   const members = await loadGroupMembers(reloaded as never)
   const nameById = new Map(members.map(member => [member.id, member.name]))
@@ -1355,6 +1371,7 @@ async function runProbe(): Promise<number> {
 
   // ---- processing the post-process outbox, in order, in-process
   async function drainPostProcess(): Promise<void> {
+    if (MEMORIES_OFF) { staged.length = 0; return }
     while (staged.length) {
       const job = staged.shift()!
       const kind = job.data.groupMemory ? 'memory' : job.data.groupSummary ? 'summary' : 'unknown'
@@ -1445,25 +1462,26 @@ async function runProbe(): Promise<number> {
       const intimate = new Set(turns.filter(turn => turn.eventType === 'intimate' && turn.eventId).map(turn => turn.eventId!))
       const adultAtoms = atoms.filter(atom => atom.is_nsfw === true || (atom.source_event_ids || []).some(id => intimate.has(String(id))))
 
-      await mongoColl.users().updateOne({ _id: playerId }, { $set: { 'preferences.nsfw_enabled': false } } as never)
-      const toggleTurn = await runTurn(TOGGLE_OFF, 'toggle-off')
-      const toggleWriters = toggleTurn.calls.filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration')
+      if (!MEMORIES_OFF) await mongoColl.users().updateOne({ _id: playerId }, { $set: { 'preferences.nsfw_enabled': false } } as never)
+      const toggleTurn = MEMORIES_OFF ? null : await runTurn(TOGGLE_OFF, 'toggle-off')
+      const toggleWriters = (toggleTurn?.calls ?? []).filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration')
       const toggleText = toggleWriters.map(call => [call.sections?.memories, call.sections?.openThreads].join('\n')).join('\n').toLowerCase()
       const leaked = adultAtoms.filter(atom => toggleText.includes(norm(String(atom.text))))
 
       const failures: string[] = []
-      if (!adultAtoms.length) failures.push('no adult memory was stored, so the toggle check proved nothing')
+      if (!MEMORIES_OFF && !adultAtoms.length) failures.push('no adult memory was stored, so the toggle check proved nothing')
       if (leaked.length) failures.push(`toggle off: ${leaked.length} adult memory reached a prompt`)
       if (toggleWriters.some(call => adultModelSet?.has(String(call.model)))) failures.push('toggle off: an adult model wrote')
-      const out: string[] = [`# Scene ${SCENE.toUpperCase()} with memories on`, '', `${turnIndex - sceneTurns.length - 1} ordinary turns came first. Speakers in the scene were rolled by the product.`, '']
-      for (const turn of [...sceneTurns, toggleTurn]) {
+      const out: string[] = [`# Scene ${SCENE.toUpperCase()} with memories ${MEMORIES_OFF ? 'off' : 'on'}, evening clock`, '', `${turnIndex - sceneTurns.length - 1} ordinary turns came first. Speakers in the scene were rolled by the product.`, '']
+      for (const turn of [...sceneTurns, ...(toggleTurn ? [toggleTurn] : [])]) {
         const writers = turn.calls.filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration')
         const held = writers.map(call => (call.sections?.memories ?? '').split('\n').filter(Boolean).length)
         const tagged = tagsOf(turn.player)
         if (turn.error) failures.push(`${turn.label}: ${turn.error}`)
         if (!turn.lines.length) failures.push(`${turn.label}: nobody replied`)
         for (const name of tagged) if (!turn.lines.some(line => line.name === name)) failures.push(`${turn.label}: ${name} was tagged and did not reply`)
-        if (writers.some(call => !call.sections?.memories)) failures.push(`${turn.label}: a writer had no memories`)
+        if (writers.some(call => MEMORIES_OFF ? Boolean(call.sections?.memories || call.sections?.summaries) : !call.sections?.memories)) failures.push(`${turn.label}: memory state of a writer prompt is wrong`)
+        if (writers.some(call => !/\b19:\d\d\b/.test(call.user) && !/\b2\d:\d\d\b/.test(call.user))) failures.push(`${turn.label}: a writer prompt was not at the evening clock`)
         out.push(`## ${turn.label}: route=${turn.route} · memory lines per writer: ${held.join(', ')} · $${turn.cost.toFixed(6)}`, '', `Sam: ${turn.player}`)
         for (const line of turn.lines) out.push(`  ${line.name} [${line.model ?? 'unknown'}]: ${line.text}`)
         out.push('')
@@ -1472,6 +1490,7 @@ async function runProbe(): Promise<number> {
       out.push('## Memories in the first adult addressed prompt', '', firstAddressed?.sections?.memories || '(none)', '', '## Failures', '', ...(failures.length ? failures.map(item => `- ${item}`) : ['- none']), '',
         `Adult memories stored: ${adultAtoms.length} of ${atoms.length}.`, ...adultAtoms.map(atom => `- ${atom.text}`), '', `Ledger: $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}) of $${CAP_USD.toFixed(2)}.`)
       writeFileSync(join(RUN_DIR, 'scene.md'), `${out.join('\n')}\n`)
+      writeFileSync(join(RUN_DIR, 'adult-prompts.md'), `${sceneTurns.flatMap(turn => turn.calls.filter(call => call.system.includes('You are writing only')).map(call => `## ${turn.label} · ${call.model}\n\n${call.user}\n\n--- reply\n${call.response}\n`)).join('\n')}\n`)
       writeCuratorResponses()
       console.log(`scene ${SCENE}: ${failures.length} failure(s), ${adultAtoms.length} adult memories, $${ledger.spent_usd.toFixed(6)}; ${join(RUN_DIR, 'scene.md')}`)
       return failures.length ? 1 : 0
