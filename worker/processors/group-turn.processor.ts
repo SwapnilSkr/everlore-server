@@ -61,9 +61,9 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   const history = messagesFromEvents(playerMessages >= 2 ? recent.filter(event => event.data.model_used !== 'seed') : recent)
   const previousLines: NamedLine[] = (await Promise.all(members.map(async member => {
     const events = await mongoColl.events().find({ instance_id: iid, 'data.lines.character_id': member.id })
-      .sort({ sequence: -1 }).limit(5).toArray()
+      .sort({ sequence: -1 }).limit(30).toArray()
     return events.reverse().flatMap(event => (event.data.lines || [])
-      .filter(line => line.character_id === member.id).map(line => ({ name: member.name, text: line.text }))).slice(-5)
+      .filter(line => line.character_id === member.id).map(line => ({ name: member.name, text: line.text }))).slice(-30)
   }))).flat()
   const state = instance.group_state
   const config = instance.group_context
@@ -134,9 +134,9 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const split = !!addressed
           const memory = await groupWriterMemory({ instanceId: iid, player: config.player,
             speakers: selected.map(member => member.name), enabled: consent?.preferences?.nsfw_enabled === true,
-            memories: rag.memoryTexts, openThreads: rag.openThreads || [] })
+            memories: rag.memoryTexts, openThreads: rag.openThreads || [], raisedBy: addressedPrompt ? userMessage : undefined })
           const dynamic = buildGroupDynamic({ memories: memory.memories, openThreads: memory.openThreads,
-            summaries: [...(summary ? [summary.summary_text] : []), ...distant.map(hit => hit.text)],
+            summaries: addressedPrompt ? [] : [...(summary ? [summary.summary_text] : []), ...distant.map(hit => hit.text)],
             history: [...(addressedPrompt ? addressedHistory : history), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
             historyLimit: split ? addressedPrompt ? 12 : 5 : 30,
             messageRule: split ? addressedPrompt ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,

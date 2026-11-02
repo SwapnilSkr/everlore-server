@@ -10,6 +10,8 @@ export const GROUP_MEMORY_CADENCE = 5
 export const GROUP_SUMMARY_CADENCE = 12
 export const GROUP_MEMORY_BATCH_LIMIT = 27 // 25 new events plus the two-event overlap.
 export const GROUP_MEMORY_TEXT_BUDGET = 12_000
+export const GROUP_ADULT_MEMORY_LINES = 4
+const GROUP_RAISED_WORD_MAX_ATOMS = 3
 export type GroupWatermark = 'curated_through_sequence' | 'summarized_through_sequence'
 export interface GroupMemoryMessage extends NamedLine { number: number; eventId: ObjectId; adult: boolean }
 export interface GroupMemoryBatch { player: string; messages: GroupMemoryMessage[]; events: WorldEventDoc[]; through: number }
@@ -59,14 +61,30 @@ export async function advanceGroupWatermark(events: WorldEventDoc[], watermark: 
   })
 }
 
+/** Facts the player's line itself brings up, ranked by how rare the shared words are.
+ * A structural test: a word most facts share says nothing about which one was raised. */
+export function raisedMemories<T extends Pick<MemoryDoc, 'text' | 'importance' | 'search_terms'>>(line: string, atoms: T[], people: string[]): T[] {
+  const words = (text: string) => new Set<string>(text.toLowerCase().match(/\p{L}{4,}/gu) || [])
+  const ignored = new Set(people.flatMap(name => [...words(name)]))
+  const said = [...words(line)].filter(word => !ignored.has(word))
+  const held = atoms.map(atom => ({ atom, words: words(`${atom.text} ${atom.search_terms || ''}`) }))
+  const count = new Map(said.map(word => [word, held.filter(row => row.words.has(word)).length]))
+  return held.map(row => ({ atom: row.atom, score: said.reduce((sum, word) =>
+    sum + (row.words.has(word) && count.get(word)! <= GROUP_RAISED_WORD_MAX_ATOMS ? 1 / count.get(word)! : 0), 0) }))
+    .filter(row => row.score > 0)
+    .sort((a, b) => b.score - a.score || (b.atom.importance ?? 0) - (a.atom.importance ?? 0))
+    .map(row => row.atom)
+}
+
 /** RAG is shared with story worlds; group calls verify every returned atom against
  * Mongo, including provenance, before it enters a prompt. Unknown rows fail closed. */
 export async function groupWriterMemory(input: {
   instanceId: ObjectId; player: string; speakers: string[]; enabled: boolean
-  memories: string[]; openThreads: string[]
+  memories: string[]; openThreads: string[]; raisedBy?: string
 }) {
   const names = [['player', input.player], ...[...new Set(input.speakers)].map(name => [name])]
-  const [pins, retrieved] = await Promise.all([
+  const people = names.flat()
+  const [pins, retrieved, concerning] = await Promise.all([
     Promise.all(names.map(aliases => mongoColl.memories().find({ instance_id: input.instanceId, is_archived: false,
       ...(input.enabled ? {} : { is_nsfw: { $ne: true } }),
       $or: [{ subjects: { $in: aliases } }, { objects: { $in: aliases } }],
@@ -74,8 +92,11 @@ export async function groupWriterMemory(input: {
     mongoColl.memories().find({ instance_id: input.instanceId, is_archived: false,
       text: { $in: [...input.memories, ...input.openThreads] },
     }).toArray(),
+    input.raisedBy === undefined ? [] : mongoColl.memories().find({ instance_id: input.instanceId, is_archived: false,
+      $or: [{ subjects: { $in: people } }, { objects: { $in: people } }],
+    }).sort({ updated_at: -1 }).limit(200).toArray(),
   ])
-  const candidates = [...pins.flat(), ...retrieved]
+  const candidates = [...pins.flat(), ...retrieved, ...concerning]
   const sourceIds = [...new Map(candidates.flatMap(memory => memory.source_event_ids).map(id => [String(id), id])).values()]
   const sources = sourceIds.length ? await mongoColl.events().find({ instance_id: input.instanceId, _id: { $in: sourceIds } }).toArray() : []
   const sourceById = new Map(sources.map(event => [String(event._id), event]))
@@ -90,6 +111,15 @@ export async function groupWriterMemory(input: {
     seen.add(key); chars += memory.text.length + 1
     if (thread) openThreads.push(memory.text)
     else memories.push(memory.text)
+  }
+  if (input.raisedBy !== undefined) {
+    // Proven live: even eight everyday lines dull the adult writer, which fixes on
+    // them. It sees only what this line raises; people who aren't in the scene keep
+    // full memory, and threads lose their heading because they're just facts here.
+    for (const memory of raisedMemories(input.raisedBy, concerning.filter(allowed), people)) {
+      if (memories.length < GROUP_ADULT_MEMORY_LINES) add(memory)
+    }
+    return { memories, openThreads }
   }
   // Pins have first claim on the shared budget; five per person after safety filtering.
   for (const person of pins) for (const memory of person.filter(allowed).slice(0, 5)) add(memory, memory.unresolved_thread === true)

@@ -425,7 +425,7 @@ mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator'
 }))
 const { memoryProcessor, buildMemoryCurationRequest } = await import('../worker/processors/memory.processor')
 const { summaryProcessor } = await import('../worker/processors/summary.processor')
-const { loadGroupBatch, groupWriterMemory, GROUP_MEMORY_TEXT_BUDGET } = await import('../src/services/group-chat/memory')
+const { loadGroupBatch, groupWriterMemory, raisedMemories, GROUP_MEMORY_TEXT_BUDGET } = await import('../src/services/group-chat/memory')
 const { groupTurnProcessor } = await import('../worker/processors/group-turn.processor')
 const { instanceService } = await import('../src/services/instance.service')
 const { generationService } = await import('../src/services/generation.service')
@@ -619,6 +619,13 @@ await check('leading player tags strip before empty repeat and copy checks while
     { name: names[0], text: `@Sam, ${members[0].group.voice![0]}` },
   ], { ...opts, player: 'Sam', previous: [{ name: names[0], text: 'Earlier line' }] }, counts)
   assert.deepEqual(kept, []); assert.equal(counts.empty, 1); assert.equal(counts.duplicate, 1); assert.equal(counts.copied_example, 1)
+})
+await check('repeat check looks back thirty lines for sentences but five for short reactions', () => {
+  const counts = emptyLineCounts()
+  const older = [{ name: names[0], text: 'A full sentence said earlier today.' }, { name: names[0], text: 'lol' },
+    ...Array.from({ length: 6 }, (_, i) => ({ name: names[0], text: `Later line ${i}` }))]
+  const kept = filterLines([{ name: names[0], text: 'a full sentence said earlier today.' }, { name: names[0], text: 'lol' }], { ...opts, player: 'Sam', previous: older }, counts)
+  assert.deepEqual(kept.map(line => line.text), ['lol']); assert.equal(counts.duplicate, 1)
 })
 await check('adult carry-over downgrades uninvolved morning tags no names stale participation and autonomy', async () => {
   for (const answer of ['no', 'late', 'error', 'off']) for (const target of ['uninvolved', 'none', 'stale', 'not-interested', 'boundary', 'unprompted', 'catchup']) {
@@ -1219,6 +1226,22 @@ await check('memory group prompt and required schema request preserve small pers
   assert.deepEqual(rows('memories')[0].subjects, ['player'])
   assert.deepEqual(rows('memories')[0].objects, ['player', `${playerName}'s sister`, names[0]])
 })
+await check('memory in-scene member lines on adult turns cannot establish a fact alone', async () => {
+  await start(); addEvents(5); storedEvents()[4].type = 'intimate'
+  const inScene = (request = curatorRequests.at(-1)!) => numbered(request).find(message => message.text === 'filler 5')!.number
+  const playerLine = (request = curatorRequests.at(-1)!) => numbered(request).find(message => message.text === 'Filler 5')!.number
+  const ordinary = (request = curatorRequests.at(-1)!) => numbered(request).find(message => message.text === 'filler 4')!.number
+  curatorFactory = request => ({ memories: [atom('Claimed in the scene.', names[0], inScene(request)), atom('Said by the player.', 'player', playerLine(request)),
+    atom('Both sides confirmed.', names[1], inScene(request), { source_messages: [playerLine(request), inScene(request)] }), atom('Ordinary line.', names[0], ordinary(request))] })
+  await memoryProcessor(memoryJob())
+  assert.deepEqual(rows('memories').map(row => row.text).sort(), ['Both sides confirmed.', 'Ordinary line.', 'Said by the player.'])
+  // A batch holding only in-scene atoms still advances instead of retrying forever.
+  await start(); addEvents(5); storedEvents()[4].type = 'intimate'
+  curatorFactory = request => ({ memories: [atom('Claimed in the scene.', names[0], inScene(request))] })
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories').length, 0)
+  assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence'), storedEvents().at(-1)!.sequence)
+})
 await check('memory invalid citations and malformed atoms are dropped and counted; empty invalid results fail', async () => {
   await start(); addEvents(5)
   curatorFactory = request => ({ memories: [atom('A valid fact.', 'player', numbered(request)[0].number),
@@ -1379,17 +1402,20 @@ await check('memory message five and open threads reach normal addressed and bys
   let prompt = String((writerCalls[0].messages as Row[])[1].content)
   assert(prompt.includes(fact) && prompt.includes('Open threads:\nAn appointment still awaits the player.'))
   assert.equal(prompt.split(fact).length - 1, 1); assert(!prompt.split('Recent messages:')[1].includes('My sister is getting married in June.'))
-  put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'enforce'
+  put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = true
   modelReplies = [`${names[3]}: Fresh addressed response.`, `${names[2]}: Fresh bystander response.`]
   writerCalls = []
-  await turn({ userMessage: `@${names[3]} @${names[2]} keep going` }, never)
+  await turn({ userMessage: `@${names[3]} @${names[2]} keep going, the appointment and married` }, never)
   assert.equal(writerCalls.length, 2)
-  for (const call of writerCalls) {
-    prompt = String((call.messages as Row[])[1].content)
-    assert(prompt.includes(fact)); assert(prompt.includes('Open threads:\nAn appointment still awaits the player.'))
-    assert(prompt.indexOf('Memories:') < prompt.indexOf('Open threads:')); assert(prompt.indexOf('Open threads:') < prompt.indexOf('Recent messages:'))
-    assert.equal(prompt.split(fact).length - 1, 1)
-  }
+  // The adult call lists the thread as a plain fact; the bystander keeps the full shape.
+  const isAdultCall = (call: Row) => String((call.messages as Row[])[0].content).includes('You are writing only')
+  prompt = String((writerCalls.find(isAdultCall)!.messages as Row[])[1].content)
+  assert(prompt.includes(fact)); assert(prompt.split('Memories:\n')[1].split('\n\n')[0].includes('An appointment still awaits the player.')); assert(!prompt.includes('Open threads:'))
+  assert.equal(prompt.split(fact).length - 1, 1)
+  prompt = String((writerCalls.find(call => !isAdultCall(call))!.messages as Row[])[1].content)
+  assert(prompt.includes(fact)); assert(prompt.includes('Open threads:\nAn appointment still awaits the player.'))
+  assert(prompt.indexOf('Memories:') < prompt.indexOf('Open threads:')); assert(prompt.indexOf('Open threads:') < prompt.indexOf('Recent messages:'))
+  assert.equal(prompt.split(fact).length - 1, 1)
   assert.equal(curatorRequests.length, 1)
 })
 await check('memory query uses last three named messages plus current for player and autonomous turns with member entity ids', async () => {
@@ -1427,6 +1453,44 @@ await check('memory pins include subject and object for each call speaker with f
   const bounded = await groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName, speakers: names, enabled: false, memories: [], openThreads: [] })
   assert(bounded.memories.join('\n').length <= GROUP_MEMORY_TEXT_BUDGET)
 })
+await check('memory adult addressed call is narrow and the bystander keeps full memory', async () => {
+  await start(); addEvents(40)
+  const source = storedEvents()[4]._id
+  const row = (text: string, person: string, importance: number) => ({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), player_id: new ObjectId(playerId), text,
+    is_archived: false, is_nsfw: false, importance, updated_at: new Date(importance), subjects: [person], objects: [], source_event_ids: [source] })
+  for (let i = 0; i < 7; i++) rows('memories').push(row(`Pin player ${i}`, 'player', i), row(`Pin addressed ${i}`, names[1], i))
+  rows('memories').push({ ...row('The player has a family occasion.', 'player', 1), search_terms: 'wedding' }, row('The addressed lost a passport.', names[1], 1),
+    row('Someone else has a wedding passport.', names[3], 5), { ...row('Thread: the player owes a passport.', 'player', 0), unresolved_thread: true },
+    ...[1, 2, 3, 4].map(i => row(`Common fact ${i} about keys.`, 'player', 5)), ...[5, 6].map(i => row(`Extra raised ${i} about ticket.`, 'player', i)), row('Another raised about ticket.', 'player', 1))
+  ragMemoryTexts = ['Pin player 6', 'Someone else has a wedding passport.']; ragOpenThreads = ['Thread: the player owes a passport.']
+  rows('sceneSummaries').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), status: 'ready', summary_text: 'Summary marker', event_range: { start_sequence: 1, end_sequence: 2 } })
+  put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = true
+  const isAdultCall = (call: Row) => String((call.messages as Row[])[0].content).includes('You are writing only')
+  const fresh = [['Maple rivers hum.', 'Copper foxes dance.'], ['Violet trains arrive.', 'Quiet lanterns drift.'], ['Silver orchards bloom.', 'Amber kites wander.'], ['Crimson bridges sway.', 'Golden moths settle.']]
+  const send = async (userMessage: string) => {
+    // The line checks refuse a repeat, so each turn's fake reply must be new.
+    const [adultLine, safeLine] = fresh.shift()!
+    modelReplies = [`${names[1]}: ${adultLine}`, `${names[3]}: ${safeLine}`]; writerCalls = []
+    await turn({ userMessage }, never); assert.equal(writerCalls.length, 2)
+    return { adult: String((writerCalls.find(isAdultCall)!.messages as Row[])[1].content), bystander: String((writerCalls.find(call => !isAdultCall(call))!.messages as Row[])[1].content) }
+  }
+  // Nothing raised: no memory block at all, while the bystander keeps full memory.
+  const quiet = await send(`@${names[1]} @${names[3]} keep going`)
+  for (const absent of ['Memories:', 'Open threads:', 'Summary so far:', 'Summary marker']) assert(!quiet.adult.includes(absent), absent)
+  for (const present of ['Extra raised 6 about ticket.', 'Someone else has a wedding passport.', 'Open threads:', 'Summary marker']) assert(quiet.bystander.includes(present), present)
+  // Raised: fact found through its retrieval terms, a thread as a plain fact, other people's left out.
+  const raised = await send(`@${names[1]} @${names[3]} after the wedding I need my passport`)
+  const held = raised.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n')
+  assert.deepEqual([...held].sort(), ['The addressed lost a passport.', 'The player has a family occasion.', 'Thread: the player owes a passport.'].sort())
+  assert(!raised.adult.includes('Open threads:')); assert(!raised.adult.includes('Summary so far:'))
+  // A word shared by many facts raises none of them; the cap holds for a rare word.
+  const common = await send(`@${names[1]} @${names[3]} where are the keys`)
+  assert(!common.adult.includes('Memories:'))
+  const tickets = await send(`@${names[1]} @${names[3]} the ticket, the wedding and the passport`)
+  assert.equal(tickets.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n').length, 4)
+  // The player's tag and name are never what makes a fact count as raised.
+  assert.deepEqual(raisedMemories(`@${names[1]} hello`, [{ text: `${names[1]} has a thing.`, importance: 1 }] as never, [names[1]]), [])
+})
 await check('memory adult sourced atoms and threads fail closed on fresh toggle off for all writer kinds', async () => {
   await identityBatch()
   const source = storedEvents()[3]; source.type = 'intimate'
@@ -1438,11 +1502,11 @@ await check('memory adult sourced atoms and threads fail closed on fresh toggle 
   modelReplies = [`${names[1]}: A safe memory reply.`]
   await turn({ userMessage: `@${names[1]}` }, never)
   assert(!String((writerCalls[0].messages as Row[])[1].content).includes(adultText))
-  put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'enforce'
+  put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = true
   let seen = 0
   writerHook = () => { if (++seen === 1) put(rows('users')[0], 'preferences.nsfw_enabled', false) }
   modelReplies = [`${names[1]}: Fresh adult response.`, `${names[2]}: Fresh safe response.`]; writerCalls = []
-  await turn({ userMessage: `@${names[1]} @${names[2]} keep going` }, never)
+  await turn({ userMessage: `@${names[1]} @${names[2]} keep going, the painter` }, never)
   assert.equal(writerCalls.length, 2)
   assert(String((writerCalls[0].messages as Row[])[1].content).includes(adultText))
   assert(!String((writerCalls[1].messages as Row[])[1].content).includes(adultText))

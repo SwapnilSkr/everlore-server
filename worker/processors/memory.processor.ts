@@ -595,7 +595,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
     console.warn('Memory extraction returned invalid JSON:', result)
     return { memoriesCreated: 0 }
   }
-  let invalidCitations = 0, invalidAtoms = 0, duplicates = 0
+  let invalidCitations = 0, invalidAtoms = 0, inSceneAtoms = 0, duplicates = 0
   if (group) {
     if (!extracted || !Array.isArray(extracted.memories) || (!extracted.memories.length && !extracted.closed_threads?.length)) throw new Error('Group curator returned empty memories')
     extracted.memories = extracted.memories.slice(0, 20).filter((raw: unknown) => {
@@ -615,6 +615,12 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
         ['emotional_valence', 'emotional_cause', 'emotional_effect', 'relationship_delta'].some(key => atom[key] != null && typeof atom[key] !== 'string')) {
         invalidAtoms++; return false
       }
+      // A member's line on an adult turn is improvised in the moment, so alone it
+      // can't establish a fact ("we agreed to wait" was stored, then fed back).
+      if ((atom.source_messages as number[]).every(number => {
+        const message = group.messages[number - 1]
+        return message.adult && message.name !== group.player
+      })) { inSceneAtoms++; return false }
       return true
     })
     // Canonicalize only exact, case-insensitive player names after shape/citation validation.
@@ -623,8 +629,8 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       atom.subjects = atom.subjects.map(canonical)
       atom.objects = atom.objects.map(canonical)
     }
-    log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, accepted: extracted.memories.length })
-    if (!extracted.memories.length && !extracted.closed_threads?.length) throw new Error('Group curator returned no valid atoms')
+    log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, inSceneAtoms, accepted: extracted.memories.length })
+    if (!extracted.memories.length && !extracted.closed_threads?.length && !inSceneAtoms) throw new Error('Group curator returned no valid atoms')
     if (!await groupEventsLive(group.events)) throw new Error('Group memory source events changed')
   } else normalizePlayerFactAttribution({ extracted, isSentient, playerInput, protagonistName })
 

@@ -83,7 +83,9 @@ export function filterLines(input: NamedLine[], options: {
       return copied
     })) { counts.copied_example++; continue }
     const previous = options.previous.filter(other => other.name === line.name).slice(-5)
-    const duplicates = [...previous, ...options.openings.filter(other => other.name === line.name), ...kept.filter(other => other.name === line.name)]
+    // A short reaction can fairly recur; a full sentence copied from further back can't.
+    const looksBack = line.text.trim().split(/\s+/).length >= 4 ? options.previous.filter(other => other.name === line.name) : previous
+    const duplicates = [...looksBack, ...options.openings.filter(other => other.name === line.name), ...kept.filter(other => other.name === line.name)]
     if (duplicates.some(other => normalized(other.text) === normalized(line.text))) { counts.duplicate++; continue }
     const firstWords = opener(line.text)
     if (options.repeatedOpener && member.id === options.addressed && firstWords !== undefined
