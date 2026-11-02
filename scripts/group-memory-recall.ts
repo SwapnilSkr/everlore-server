@@ -49,7 +49,7 @@ import Redis from 'ioredis'
 
 const ROOT = resolve(import.meta.dir, '..', '..')
 /** `--scene=a|b` replays an owner-passed adult scene after the long chat, memories on. */
-const SCENE = process.argv.find(arg => arg === '--scene=a' || arg === '--scene=b')?.slice(-1) as 'a' | 'b' | undefined
+const SCENE = process.argv.find(arg => arg === '--scene=a' || arg === '--scene=b' || arg === '--scene=d')?.slice(-1) as 'a' | 'b' | 'd' | undefined
 /** Strips memory from writer prompts and skips curation, to isolate what memory changes. */
 const MEMORIES_OFF = Boolean(SCENE) && process.argv.includes('--memories=off')
 const OUT_DIR = process.env.GROUP_MEMORY_RECALL_OUTPUT_DIR || join(ROOT, SCENE ? '.agents/probes/group-chat/adult-memory' : '.agents/probes/group-chat/recall')
@@ -66,7 +66,7 @@ const EMBED_USD_PER_TOKEN = 0.00000002
 
 const args = new Set(process.argv.slice(2))
 // A misquoted flag must not fall through to the paid run.
-const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b', '--memories=off'].includes(arg))
+const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b', '--scene=d', '--memories=off'].includes(arg))
 if (unknownArgs.length) throw new Error(`Unknown argument(s): ${unknownArgs.join(' | ')}`)
 const MODE: 'selftest' | 'plan' | 'dry' | 'run' = args.has('--selftest') ? 'selftest' : args.has('--plan') ? 'plan'
   : args.has('--dry') ? 'dry' : 'run'
@@ -828,6 +828,8 @@ interface TurnSpec {
   speakers: string[]
   /** Leave the speaker roll to the product's own randomness, as the passed scenes did. */
   rolled?: boolean
+  /** The member this message goes to privately; absent means the group thread. */
+  direct?: string
   /** Scripted member line returned instead of a provider response, exactly once. */
   planted?: { name: string; line: string }
   /** Which planted fact this turn carries, for provenance checks. */
@@ -995,6 +997,18 @@ const SCENE_LINES: Record<'a' | 'b', string[]> = {
 const WEDDING_RECALL = '@Jess June is going to be a nightmare, all i can think about is you. i want you naked, and i want to make love to you after the wedding'
 /** Something she said long before, asked vaguely: only the scene memories can answer it. */
 const SCENE_RECALL = '@Jess remember what you told me you wanted me to do to you earlier? say it again'
+/** Direct messages: an ordinary opening, a planted secret, then the owner-passed adult lines. */
+const DIRECT_TO = 'Jess', DIRECT_OTHER = 'Priya', DIRECT_MARKER = 'persimmon'
+const DIRECT_OPENING = ['hey, you ok? you went quiet in the group earlier.',
+  `don't tell anyone in the flat. I got fired from the hospital last week and I'm hiding it. my locker code was ${DIRECT_MARKER.toUpperCase()} and I still have the badge.`]
+const DIRECT_ADULT = ['tell me exactly what you want me to do to you.', 'I wanna fuck you.', 'I want you naked in my bed right now.', 'I\'m so hard thinking about you.', 'don\'t stop.',
+  'tell me what you want.', 'I want to fuck you tonight and nobody in the flat can know.', 'last night was good.', 'what do you remember most about last night?', 'remember what you told me you wanted me to do to you earlier? say it again']
+const DIRECT_RECALL = 'what did I tell you about the hospital, and what was that locker code?'
+const DIRECT_PROBES: Array<{ label: string; spec: TurnSpec }> = [
+  { label: 'probe-direct-priya', spec: { player: 'what was my locker code? has Jess told you why I left the hospital?', speakers: [DIRECT_OTHER], direct: DIRECT_OTHER, rolled: true } },
+  { label: 'probe-group-jess', spec: { player: '@Jess what was my locker code? and why am I not at the hospital any more?', speakers: ['Jess'], rolled: true } },
+  { label: 'probe-group-all', spec: { player: 'has anyone heard why I\'ve been home so much lately?', speakers: [], rolled: true } },
+]
 const TOGGLE_OFF: TurnSpec = { player: '@Jess you look good tonight', speakers: ['Jess'] }
 const POST_REWIND: TurnSpec = { player: '@Priya any tattoos in this flat?', speakers: ['Priya'] }
 
@@ -1422,7 +1436,7 @@ async function runProbe(): Promise<number> {
     let error: string | null = null
     try {
       result = await groupTurnProcessor({
-        id: jobId, data: { instanceId: instanceId.toHexString(), playerId: PLAYER_ID, userMessage: spec.player },
+        id: jobId, data: { instanceId: instanceId.toHexString(), playerId: PLAYER_ID, userMessage: spec.player, ...(spec.direct ? { directWith: idByName.get(spec.direct) } : {}) },
       } as never, { ...(spec.rolled ? {} : { rng: makeRng(spec.speakers, tags) }), onBackground: (work: Promise<void>) => { background.push(work) } }) as { eventId: string; sequence: number }
       await Promise.all(background.splice(0))
     } catch (caught) {
@@ -1458,6 +1472,69 @@ async function runProbe(): Promise<number> {
   }
 
   try {
+    if (SCENE === 'd') {
+      for (const spec of CHAT.slice(0, CHAT.findIndex(entry => entry.fact === 7) + 1)) await runTurn(spec, `chat-${turnIndex + 1}`)
+      const direct = (player: string): TurnSpec => ({ player, speakers: [DIRECT_TO], direct: DIRECT_TO, rolled: true })
+      const opening: TurnResult[] = [], adult: TurnResult[] = []
+      for (const [offset, player] of DIRECT_OPENING.entries()) opening.push(await runTurn(direct(player), `direct-open-${offset + 1}`))
+      for (const [offset, player] of DIRECT_ADULT.entries()) adult.push(await runTurn(direct(player), `direct-adult-${offset + 1}`))
+      const recall = await runTurn(direct(DIRECT_RECALL), 'direct-recall')
+      const probes: TurnResult[] = []
+      for (const { label, spec } of DIRECT_PROBES) probes.push(await runTurn(spec, label))
+      await mongoColl.users().updateOne({ _id: playerId }, { $set: { 'preferences.nsfw_enabled': false } } as never)
+      const toggleTurn = await runTurn({ ...direct('you look good tonight'), rolled: true }, 'direct-toggle-off')
+
+      const atoms = await mongoColl.memories().find({ instance_id: instanceId, is_archived: false }).toArray()
+      const jessId = idByName.get(DIRECT_TO)
+      const privateAtoms = atoms.filter(atom => (atom as { private_to?: string }).private_to === jessId)
+      const adultPrivate = privateAtoms.filter(atom => atom.is_nsfw === true)
+      const failures: string[] = []
+      if (!privateAtoms.length) failures.push('no private memory was stored, so the privacy checks proved nothing')
+      const writersOf = (turn: TurnResult) => turn.calls.filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration')
+      const allTurns = [...opening, ...adult, recall, ...probes, toggleTurn]
+      for (const turn of allTurns) {
+        if (turn.error) failures.push(`${turn.label}: ${turn.error}`)
+        if (!turn.lines.length) failures.push(`${turn.label}: nobody replied`)
+      }
+      for (const turn of [...opening, ...adult, recall, toggleTurn]) {
+        if (turn.lines.some(line => line.name !== DIRECT_TO)) failures.push(`${turn.label}: someone other than ${DIRECT_TO} replied`)
+        for (const call of writersOf(turn)) {
+          const narrow = call.system.includes('You are writing only')
+          if (narrow && call.user.includes('Group chat (read-only')) failures.push(`${turn.label}: the adult direct prompt has the group block`)
+          if (!narrow && !call.user.includes('Group chat (read-only')) failures.push(`${turn.label}: the normal direct prompt lacks the group block`)
+        }
+      }
+      // The secret and every private fact must be absent from every other thread's calls.
+      const secrets = [DIRECT_MARKER, 'fired from the hospital', ...privateAtoms.map(atom => norm(String(atom.text)))]
+      const leakIn = (text: string) => secrets.filter(secret => norm(text).includes(norm(secret)))
+      for (const turn of probes) {
+        for (const call of turn.calls) {
+          const found = leakIn(`${call.system ?? ''}\n${call.user ?? ''}`)
+          if (found.length) failures.push(`${turn.label}: a ${call.purpose} request held private text: ${found[0].slice(0, 60)}`)
+        }
+        if (turn.lines.some(line => norm(line.text).includes(DIRECT_MARKER))) failures.push(`${turn.label}: a reply said the secret`)
+      }
+      const toggleWriters = writersOf(toggleTurn)
+      if (toggleWriters.some(call => adultModelSet?.has(String(call.model)))) failures.push('toggle off: an adult model wrote')
+      const toggleText = toggleWriters.map(call => call.user).join('\n')
+      if (adultPrivate.some(atom => norm(toggleText).includes(norm(String(atom.text))))) failures.push('toggle off: an adult memory reached a prompt')
+
+      const out: string[] = ['# Direct messages, evening clock', '', `${turnIndex - allTurns.length} ordinary group turns came first.`, '']
+      for (const turn of allTurns) {
+        const tame = turn.eventId ? (await mongoColl.events().findOne({ _id: new ObjectId(turn.eventId) }))?.data?.tame === true : false
+        const held = writersOf(turn).map(call => (call.sections?.memories ?? '').split('\n').filter(Boolean).length)
+        out.push(`## ${turn.label}: route=${turn.route}${tame ? ' · marked tame' : ''} · memory lines per writer: ${held.join(', ')} · ${Math.round(turn.elapsedMs)} ms · $${turn.cost.toFixed(6)}`, '', `Sam: ${turn.player}`)
+        for (const line of turn.lines) out.push(`  ${line.name} [${line.model ?? 'unknown'}]: ${line.text}`)
+        out.push('')
+      }
+      out.push('## Failures', '', ...(failures.length ? failures.map(item => `- ${item}`) : ['- none']), '', `Private memories for ${DIRECT_TO}: ${privateAtoms.length} of ${atoms.length}.`, ...privateAtoms.map(atom => `- ${atom.text}`), '',
+        `Ledger: $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}) of $${CAP_USD.toFixed(2)}.`)
+      writeFileSync(join(RUN_DIR, 'scene.md'), `${out.join('\n')}\n`)
+      writeFileSync(join(RUN_DIR, 'adult-prompts.md'), `${allTurns.flatMap(turn => writersOf(turn).map(call => `## ${turn.label} · ${call.model}\n\n${call.user}\n\n--- reply\n${call.response}\n`)).join('\n')}\n`)
+      writeCuratorResponses()
+      console.log(`direct: ${failures.length} failure(s), ${privateAtoms.length} private memories, $${ledger.spent_usd.toFixed(6)}; ${join(RUN_DIR, 'scene.md')}`)
+      return failures.length ? 1 : 0
+    }
     if (SCENE) {
       // The ordinary chat up to fact 7, without its abrupt adult turns, then the passed lines.
       for (const spec of CHAT.slice(0, CHAT.findIndex(entry => entry.fact === 7) + 1)) await runTurn(spec, `chat-${turnIndex + 1}`)
