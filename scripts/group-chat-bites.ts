@@ -209,10 +209,8 @@ const mutations: Mutation[] = [
   { name: 'tag counts as raising a fact', check: 'memory adult addressed call', edits: [['src/services/group-chat/memory.ts', '.filter(word => !ignored.has(word))', '']] },
   { name: 'repeat check forgets older sentences', check: 'repeat check looks back', edits: [['src/services/group-chat/lines.ts', '.length >= 4 ? options.previous.filter(other => other.name === line.name) : previous', '.length >= 4 ? previous : previous']] },
   { name: 'repeat check bans old short reactions', check: 'repeat check looks back', edits: [['src/services/group-chat/lines.ts', '.length >= 4 ? options.previous', '.length >= 1 ? options.previous']] },
-  { name: 'in-scene line stored as fact', check: 'memory in-scene', edits: [['worker/processors/memory.processor.ts', '})) { inSceneAtoms++; return false }', '})) { inSceneAtoms++ }']] },
-  { name: 'in-scene filter drops player lines', check: 'memory in-scene', edits: [['worker/processors/memory.processor.ts', 'return message.adult && message.name !== group.player', 'return message.adult']] },
-  { name: 'in-scene filter drops ordinary lines', check: 'memory in-scene', edits: [['worker/processors/memory.processor.ts', 'return message.adult && message.name !== group.player', 'return message.name !== group.player']] },
-  { name: 'in-scene-only batch fails forever', check: 'memory in-scene', edits: [['worker/processors/memory.processor.ts', ' && !inSceneAtoms) throw', ') throw']] },
+  { name: 'member adult line dropped from memory', check: 'memory a member line on an adult turn', edits: [['worker/processors/memory.processor.ts', "      return true\n    })\n    // Canonicalize", "      return !(atom.source_messages as number[]).every(number => group.messages[number - 1].adult && group.messages[number - 1].name !== group.player)\n    })\n    // Canonicalize"]] },
+  { name: 'member adult line loses its adult mark', check: 'memory a member line on an adult turn', edits: [['worker/processors/memory.processor.ts', "adult: event.type === 'intimate', number: 0", 'adult: false, number: 0']] },
 
   { name: 'group curator identity lost', check: 'memory numbered speakers', edits: [['worker/processors/memory.processor.ts', 'The human player is', 'The unnamed participant is']] },
   { name: 'group curator message numbers lost', check: 'memory numbered speakers', edits: [['worker/processors/memory.processor.ts', '${message.number}. ${JSON.stringify', '0. ${JSON.stringify']] },

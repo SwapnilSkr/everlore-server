@@ -1226,21 +1226,16 @@ await check('memory group prompt and required schema request preserve small pers
   assert.deepEqual(rows('memories')[0].subjects, ['player'])
   assert.deepEqual(rows('memories')[0].objects, ['player', `${playerName}'s sister`, names[0]])
 })
-await check('memory in-scene member lines on adult turns cannot establish a fact alone', async () => {
+await check('memory a member line on an adult turn is kept as an adult fact and hidden when the toggle is off', async () => {
   await start(); addEvents(5); storedEvents()[4].type = 'intimate'
-  const inScene = (request = curatorRequests.at(-1)!) => numbered(request).find(message => message.text === 'filler 5')!.number
-  const playerLine = (request = curatorRequests.at(-1)!) => numbered(request).find(message => message.text === 'Filler 5')!.number
-  const ordinary = (request = curatorRequests.at(-1)!) => numbered(request).find(message => message.text === 'filler 4')!.number
-  curatorFactory = request => ({ memories: [atom('Claimed in the scene.', names[0], inScene(request)), atom('Said by the player.', 'player', playerLine(request)),
-    atom('Both sides confirmed.', names[1], inScene(request), { source_messages: [playerLine(request), inScene(request)] }), atom('Ordinary line.', names[0], ordinary(request))] })
+  curatorFactory = request => ({ memories: [atom('Said in the scene.', names[0], numbered(request).find(message => message.text === storedEvents()[4].data.lines![0].text)!.number)] })
   await memoryProcessor(memoryJob())
-  assert.deepEqual(rows('memories').map(row => row.text).sort(), ['Both sides confirmed.', 'Ordinary line.', 'Said by the player.'])
-  // A batch holding only in-scene atoms still advances instead of retrying forever.
-  await start(); addEvents(5); storedEvents()[4].type = 'intimate'
-  curatorFactory = request => ({ memories: [atom('Claimed in the scene.', names[0], inScene(request))] })
-  await memoryProcessor(memoryJob())
-  assert.equal(rows('memories').length, 0)
-  assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence'), storedEvents().at(-1)!.sequence)
+  assert.deepEqual(rows('memories').map(row => row.text), ['Said in the scene.'])
+  assert.equal(rows('memories')[0].is_nsfw, true)
+  const hidden = await groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[0]], enabled: false, memories: [], openThreads: [] })
+  assert(!hidden.memories.includes('Said in the scene.'))
+  const shown = await groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[0]], enabled: true, memories: [], openThreads: [] })
+  assert(shown.memories.includes('Said in the scene.'))
 })
 await check('memory invalid citations and malformed atoms are dropped and counted; empty invalid results fail', async () => {
   await start(); addEvents(5)
