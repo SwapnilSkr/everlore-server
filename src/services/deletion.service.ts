@@ -339,6 +339,7 @@ export const deletionService = {
       mongoColl.chapterSummaries().deleteMany({ instance_id: instanceId }),
       mongoColl.arcSummaries().deleteMany({ instance_id: instanceId }),
       characters().deleteMany({ instance_id: instanceId }),
+      mongoColl.groupBondChanges().deleteMany({ instance_id: instanceId }),
       entities().deleteMany({ instance_id: instanceId }),
       entityEdges().deleteMany({ instance_id: instanceId }),
       mongoColl.storyCalendars().deleteMany({ instance_id: instanceId }),

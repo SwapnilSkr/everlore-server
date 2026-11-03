@@ -11,6 +11,7 @@ export const COLLECTIONS = {
   world_instances: 'world_instances',
   events: 'events',
   memories: 'memories',
+  group_bond_changes: 'group_bond_changes',
   scene_summaries: 'scene_summaries',
   chapter_summaries: 'chapter_summaries',
   arc_summaries: 'arc_summaries',

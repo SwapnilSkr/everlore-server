@@ -1,3 +1,4 @@
+import { rewindGroupBonds } from './group-chat/bonds'
 import { resolveGroupThread } from './group-chat/threads'
 import { groupThreadFilter } from './group-chat/memory'
 import { publicGroupData } from './group-chat/public'
@@ -1811,6 +1812,7 @@ export const memoryService = {
       if (!survivingProtagonist) await reseedProtagonist()
     }
 
+    if (template.kind === 'group' && instance.seed_cast_snapshot?.length) await rewindGroupBonds(instance, sequence)
     await characterCodexService.applyManualIdentityRevisions({ instanceId, playerId })
     if (!usedCheckpointRebuild) await restoreCodexMedia(mediaSnapshot)
 

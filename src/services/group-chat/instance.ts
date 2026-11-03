@@ -1,3 +1,4 @@
+import { seedGroupBonds } from './bonds'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
 import type { WorldInstanceDoc } from '../../models/world-instance.model'
@@ -20,11 +21,12 @@ export async function loadGroupMembers(instance: WorldInstanceDoc): Promise<Grou
   return (instance.seed_cast_snapshot || []).map(member => {
     const card = cards.find(card => card.canonical_name.toLowerCase() === member.name.toLowerCase())
     if (!card || !member.group) throw new Error('The group is still getting ready. Try again in a moment.')
-    return { id: idString(card._id), name: member.name, role: member.role, persona: member.persona, group: member.group }
+    return { id: idString(card._id), name: member.name, role: member.role, persona: member.persona, group: member.group, relationship: card.relationship }
   })
 }
 
 export async function seedGroupOpening(instance: WorldInstanceDoc, template: WorldTemplateDoc, player: string) {
+  await seedGroupBonds(instance)
   const members = await loadGroupMembers(instance)
   if (members.some(member => member.name.toLowerCase() === player.toLowerCase())) {
     let suffix = 0

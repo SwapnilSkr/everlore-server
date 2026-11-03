@@ -112,7 +112,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       text: origin === 'player' ? userMessage : '', recentEvents: recent })
     const routerYes = route.routerSettled && route.trace.sexual === true
     const intimate = recent.filter(event => event.type === 'intimate').slice(-2)
-    const involved = members.some(member => member.group.interested === true && (directWith === member.id || mentionsMember(userMessage, member.name))
+    const involved = members.some(member => (directWith === member.id || mentionsMember(userMessage, member.name))
       && intimate.some(event => event.data.lines?.some(line => line.character_id === member.id)))
     const adultDowngrade = route.sceneClassification === 'nsfw' && !routerYes
       ? origin !== 'player' ? 'autonomous' : !involved ? 'no_involved_member' : undefined : undefined
@@ -148,19 +148,20 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       blocked: text => screenPlayerInput(text).blocked,
       onChecks: counts => log.info('group.line_checks', { instanceId, sequence, ...counts, writing_calls: writing.length }),
       write: async (speakers, _fallback, request) => {
-        const interested = members.find(member => member.id === addressed)?.group.interested === true
-        const wantsAdult = request.writer === 'adult' && interested
+        const wantsAdult = request.writer === 'adult'
         let chain = wantsAdult ? adultChain : normalChain
         let redirected = !wantsAdult
         for (let index = request.index; index < chain.length; index++) {
           // Each transport attempt is explicit: a fallback must re-read consent too.
           const consent = await mongoColl.users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } })
-          // Consent gates the addressed prompt even when interest selects the normal writer.
-          const addressedPrompt = request.writer === 'adult' && adult && template.is_nsfw_capable && consent?.preferences?.nsfw_enabled === true
+          const freshMembers = await loadGroupMembers(instance)
+          const selected = freshMembers.filter(member => speakers.includes(member.id))
+          const frightened = selected.some(member => (member.relationship?.fear ?? 0) >= 70)
+          // Fear and consent are read together for every transport and content attempt.
+          const addressedPrompt = request.writer === 'adult' && adult && template.is_nsfw_capable && consent?.preferences?.nsfw_enabled === true && !frightened
           const stillAdult = addressedPrompt && !redirected
           if (request.writer === 'adult' && !stillAdult && !redirected) { chain = normalChain; index = 0; redirected = true }
           const model = chain[index]
-          const selected = members.filter(member => speakers.includes(member.id))
           const split = !!addressed
           const consented = consent?.preferences?.nsfw_enabled === true
           const memory = await groupWriterMemory({ instanceId: iid, player: config.player,
@@ -171,7 +172,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const hiddenWords = origin === 'player' && !addressedPrompt ? await groupHiddenWords({ instanceId: iid, thread: directWith, line: userMessage,
             people: [config.player, ...members.map(member => member.name)], known: [...memory.memories, ...memory.openThreads],
             lines: [...shownHistory, ...(shownGroup || [])] }) : []
-          const dynamic = buildGroupDynamic({ notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
+          const dynamic = buildGroupDynamic({ bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),
             groupContext: stillAdult ? undefined : shownGroup,
             history: [...(addressedPrompt ? addressedHistory : shownHistory), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],

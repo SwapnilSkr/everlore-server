@@ -24,9 +24,11 @@ export function buildGroupDynamic(input: {
   memories: string[]; openThreads?: string[]; summaries: string[]; history: NamedLine[]
   groupContext?: NamedLine[]
   now: Date; offsetMinutes?: number; historyLimit?: number; messageRule?: string; speakers: string[]; situation: string
+  bonds?: GroupMember[]
   notToldAbout?: string[]
 }): string {
   const parts: string[] = []
+  if (input.bonds?.length) parts.push(`Bonds toward the player (never mention numbers):\n${input.bonds.filter(member => input.speakers.includes(member.name)).map(member => `${member.name}: ${JSON.stringify(member.relationship)}${(member.relationship?.fear ?? 0) >= 70 ? " — scared of the player and doesn't want anything sexual with them. Never agrees to sex because of fear." : ''}`).join('\n')}`)
   if (input.memories.length) parts.push(`Memories:\n${input.memories.join('\n')}`)
   if (input.openThreads?.length) parts.push(`Open threads:\n${input.openThreads.join('\n')}`)
   if (input.summaries.length) parts.push(`Summary so far:\n${input.summaries.join('\n')}`)
@@ -45,9 +47,7 @@ export function buildAddressedStatic(input: Parameters<typeof buildGroupStatic>[
     `You are writing only ${member.name}'s messages in this reply: one to three of them, as long as ${member.name} would really send.`,
     `How ${member.name} is about flirting and sex: ${member.group.intimacy?.replaceAll('{player}', () => input.player)}`,
     [`How ${member.name} really texts:`, `${input.player}'s gender isn't stated, so don't assume it.`, `In these messages "I" is ${member.name} and "you" is ${input.player}. Keep straight who is doing what to whom.`, ...(member.group.voice || []).filter(example => !excludedVoice.includes(example))].join('\n'),
-    `Everyone here is a consenting adult. ${member.group.interested === true
-      ? `If it's sexual, ${member.name} answers what was actually said in plain, crude words, as explicitly and crudely as ${member.name} really would: naming what ${member.name} wants done and will do, without putting it off or changing the subject. At least one message says the act itself: what goes where, in plain crude words. Saying yes, teasing, setting a time or asking what ${input.player} would do is never enough alone: ${member.name} says exactly what they want done in the same reply.`
-      : `If it's sexual, ${member.name} answers what was actually said, as explicitly and crudely as ${member.name} really would, or turns it down the way ${member.name} really would.`} Say something new each time, moving things on from the last message. Don't repeat or lightly reword an earlier message.`,
+    `Everyone here is a consenting adult. If it's sexual, ${member.name} answers what was actually said in plain, crude words, as explicitly and crudely as ${member.name} really would: naming what ${member.name} wants done and will do, without putting it off or changing the subject. At least one message says the act itself: what goes where, in plain crude words. Saying yes, teasing, setting a time or asking what ${input.player} would do is never enough alone: ${member.name} says exactly what they want done in the same reply. Low trust and affection mean they start wary or teasing and usually warm up within the scene. A flat no is rare, only when the persona truly fits and the bond is low. Say something new each time, moving things on from the last message. Don't repeat or lightly reword an earlier message.`,
   ].join('\n\n')
 }
 

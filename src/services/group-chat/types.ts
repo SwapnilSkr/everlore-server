@@ -5,7 +5,7 @@ export interface GroupTraits {
   talkativeness: number
   speech: string
   wants: string
-  interested?: boolean
+  start_bond: import('../../utils/relationship-baseline').RelationshipInitializationKind
   intimacy?: string
   voice?: string[]
 }
@@ -15,6 +15,7 @@ export interface GroupMember {
   name: string
   role?: string
   persona?: string
+  relationship?: import('../../models/character-profile.model').RelationshipMeters
   group: GroupTraits
 }
 

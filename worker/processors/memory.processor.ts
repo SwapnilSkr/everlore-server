@@ -1,3 +1,4 @@
+import { curateGroupBonds } from '../../src/services/group-chat/bonds'
 import { GROUP_CURATION_SCHEMA, filterGroupAtomAudiences, closeGroupThreads, groupMemoryTextKey, missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts, clearEverydayAdultMarks, uncoveredAdultEvents, adultRetryAtoms, adultLineAtoms } from '../../src/services/group-chat/curation'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { allowedGroupMemories, deriveGroupAudience, groupMemoryMayMerge, withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark, type GroupMemoryBatch } from '../../src/services/group-chat/memory'
@@ -477,6 +478,9 @@ async function groupMemoryWork(job: Job) {
   const group: GroupMemoryBatch = { player: batch.instance.group_context!.player, messages, events: batch.events, through: batch.through, overlap: batch.overlap, ...(batch.thread === undefined ? {} : { thread: batch.thread }) }
   try {
     const result = await memoryWork(job, group)
+    const freshEvents = batch.events.slice(batch.overlap)
+    const freshMessages = messages.filter(line => freshEvents.some(event => event._id.equals(line.eventId))).map((line, index) => ({ ...line, number: index + 1 }))
+    await curateGroupBonds(batch.instance, { ...group, events: freshEvents, messages: freshMessages }, members)
     await advanceGroupWatermark(batch.events, 'curated_through_sequence')
     log.info('group.memory_batch', { instanceId: job.data.instanceId, events: batch.events.length, messages: messages.length,
       through: batch.through, curator_calls: 1, success: true, ...result })

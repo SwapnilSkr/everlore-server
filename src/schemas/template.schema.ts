@@ -69,7 +69,7 @@ export const CreateTemplateBody = t.Object({
     appearance: t.Optional(t.String({ maxLength: 1000 })),
     aliases: t.Optional(t.Array(t.String({ maxLength: 80 }))),
     immutable_facts: t.Optional(t.Array(t.String({ maxLength: 1000 }))),
-    group: t.Object({ age: t.Number({ minimum: 18 }), talkativeness: t.Number({ minimum: 0, maximum: 1 }), speech: t.String({ minLength: 1, maxLength: 2000 }), wants: t.String({ minLength: 1, maxLength: 2500 }), interested: t.Optional(t.Boolean()), intimacy: t.Optional(t.String({ minLength: 1 })), voice: t.Optional(t.Array(t.String({ minLength: 1 }), { minItems: 1, maxItems: 8 })) }, { additionalProperties: false }),
+    group: t.Object({ age: t.Number({ minimum: 18 }), talkativeness: t.Number({ minimum: 0, maximum: 1 }), speech: t.String({ minLength: 1, maxLength: 2000 }), wants: t.String({ minLength: 1, maxLength: 2500 }), start_bond: t.String({ minLength: 1 }), intimacy: t.Optional(t.String({ minLength: 1 })), voice: t.Optional(t.Array(t.String({ minLength: 1 }), { minItems: 1, maxItems: 8 })) }, { additionalProperties: false }),
   }), { minItems: 4, maxItems: 5 })),
   protagonist: t.Optional(
     t.Object({

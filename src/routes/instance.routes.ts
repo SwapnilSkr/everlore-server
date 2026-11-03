@@ -20,6 +20,10 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
 
   .get('/:id/reusable-protagonists', (ctx) => instanceController.reusableProtagonists(ctx))
 
+  .get('/:id/bonds', (ctx) => instanceController.bonds(ctx))
+
+  .put('/:id/bonds/:characterId', (ctx) => instanceController.setBonds(ctx), { body: t.Unknown() })
+
   .get('/:id/threads', (ctx) => instanceController.threads(ctx))
 
   .get('/:id', (ctx) => instanceController.getById(ctx))

@@ -57,6 +57,7 @@ export const mongoColl = {
   worldTemplates: () => coll<WithoutId<WorldTemplateDoc>>(COLLECTIONS.world_templates),
   worldInstances: () => coll<WithoutId<WorldInstanceDoc>>(COLLECTIONS.world_instances),
   events: () => coll<WithoutId<WorldEventDoc>>(COLLECTIONS.events),
+  groupBondChanges: () => coll<import('../models/group-bond-change.model').GroupBondChangeDoc>(COLLECTIONS.group_bond_changes),
   memories: () => coll<WithoutId<MemoryDoc>>(COLLECTIONS.memories),
   sceneSummaries: () => coll<WithoutId<SceneSummaryDoc>>(COLLECTIONS.scene_summaries),
   chapterSummaries: () => coll<WithoutId<ChapterSummaryDoc>>(COLLECTIONS.chapter_summaries),
@@ -103,6 +104,10 @@ export async function connectMongo(): Promise<Db> {
   database = client.db()
 
   await ensureEverloreIndexes(database)
+  await database.collection(COLLECTIONS.group_bond_changes).createIndexes([
+    { key: { instance_id: 1, created_at: 1, _id: 1 }, name: 'group_bond_fold' },
+    { key: { instance_id: 1, character_id: 1, thread: 1, batch_end_sequence: 1 }, name: 'group_bond_chat_once', unique: true, partialFilterExpression: { reason: 'chat' } },
+  ])
 
   console.log('MongoDB connected')
   return database

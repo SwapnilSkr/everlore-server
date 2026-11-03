@@ -13,7 +13,9 @@ import { missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts, clearEvery
 import { validateGroup } from '../src/services/group-chat/validation'
 import { filterGroupAtomAudiences } from '../src/services/group-chat/curation'
 import { publicGroupData } from '../src/services/group-chat/public'
-import { members, groupTemplate, owenReply } from './group-chat-fixtures'
+import { members as priorMembers, groupTemplate as priorGroupTemplate, owenReply } from './group-chat-fixtures'
+const members = priorMembers.map(member => { const { interested: _old, ...group } = member.group as typeof member.group & { interested?: boolean }; return { ...member, group: { ...group, start_bond: 'acquaintance' as const } } })
+function groupTemplate(): WorldTemplateDoc { return { ...priorGroupTemplate(), seed_cast: members.map(({ id, ...member }) => structuredClone(member)) } }
 import type { GroupTurnJob } from '../worker/processors/group-turn.processor'
 import type { WorldInstanceDoc } from '../src/models/world-instance.model'
 import type { WorldTemplateDoc } from '../src/models/world-template.model'
@@ -234,19 +236,19 @@ await check('adult validation requires authored intimacy and 1–8 voice lines a
   validateGroup(patch({ ...base, voice: Array(8).fill('text') }))
 })
 await check('addressed prompt is authored per person with player gender sentence and unchanged boundaries', async () => {
-  const prompt = buildAddressedStatic({ ...template, members, player: playerName }, { ...members[2], group: { ...members[2].group, interested: false } })
-  for (const text of ['one to three', members[2].group.intimacy!, ...members[2].group.voice!, `${playerName}'s gender isn't stated, so don't assume it.`, 'answers what was actually said', 'turns it down', 'Say something new']) assert(prompt.includes(text))
+  const prompt = buildAddressedStatic({ ...template, members, player: playerName }, { ...members[2], group: { ...members[2].group, start_bond: 'enemy' } })
+  for (const text of ['one to three', members[2].group.intimacy!, ...members[2].group.voice!, `${playerName}'s gender isn't stated, so don't assume it.`, 'answers what was actually said', 'A flat no is rare', 'Say something new']) assert(prompt.includes(text))
   for (const other of members.filter(member => member.id !== ids[2])) assert(!prompt.includes(other.group.wants) && !prompt.includes(other.group.intimacy!))
   const { NARRATIVE_BOUNDARIES } = await import('../src/utils/prompt-builder')
   assert(prompt.includes(NARRATIVE_BOUNDARIES.trim()))
   assert(!buildGroupStatic({ ...template, members, player: playerName }).includes(members[2].group.intimacy!))
 })
 
-await check('interested is required boolean for capable members and validated when optional', () => {
-  for (const capable of [false, true]) for (const interested of [undefined, null, 'false', 0, {}, [], false, true]) {
-    const changed = { ...template, is_nsfw_capable: capable, seed_cast: template.seed_cast!.map(member => ({ ...member, group: { ...member.group!, interested } })) } as WorldTemplateDoc
-    if (typeof interested === 'boolean' || (!capable && interested === undefined)) validateGroup(changed)
-    else assert.throws(() => validateGroup(changed), /interested/)
+await check('starting bond is required and validated for every group member', () => {
+  for (const capable of [false, true]) for (const start_bond of [undefined, null, 'unknown', 0, {}, [], 'enemy', 'friend']) {
+    const changed = { ...template, is_nsfw_capable: capable, seed_cast: template.seed_cast!.map(member => ({ ...member, group: { ...member.group!, start_bond } })) } as WorldTemplateDoc
+    if (start_bond === 'enemy' || start_bond === 'friend') validateGroup(changed)
+    else assert.throws(() => validateGroup(changed), /start_bond/)
   }
 })
 await check('sentence trimming uses structural ends, preserves emoji and limits adult messages only', () => {
@@ -437,7 +439,7 @@ function collection(name: string) {
     find(filter: Row = {}, options?: { projection?: Record<string, number> }) {
       let values = rows(name).filter(row => matches(row, filter))
       const cursor = {
-        sort(order: Record<string, number>) { values.sort((a, b) => { for (const [key, dir] of Object.entries(order)) { const av = get(a, key), bv = get(b, key); if (av !== bv) return (Number(av) < Number(bv) ? -1 : 1) * dir } return 0 }); return cursor },
+        sort(order: Record<string, number>) { values.sort((a, b) => { for (const [key, dir] of Object.entries(order)) { const av = get(a, key), bv = get(b, key); if (av !== bv) return ((av instanceof ObjectId ? av.toHexString() : Number(av)) < (bv instanceof ObjectId ? bv.toHexString() : Number(bv)) ? -1 : 1) * dir } return 0 }); return cursor },
         limit(n: number) { values = values.slice(0, n); return cursor }, skip(n: number) { values = values.slice(n); return cursor },
         project(fields: Record<string, number>) { values = values.map(value => Object.fromEntries(Object.keys(fields).filter(key => fields[key] && key in value).map(key => [key, value[key]]))); return cursor }, async toArray() {
           if (!options?.projection) return clone(values)
@@ -456,7 +458,7 @@ function collection(name: string) {
     async insertOne(row: Row) { rows(name).push(clone(row)); return { insertedId: row._id } },
     async updateOne(filter: Row, update: Row, options?: { upsert?: boolean }) {
       let row = rows(name).find(row => matches(row, filter)); const existed = !!row
-      if (!row && options?.upsert) { row = { ...filter }; rows(name).push(row); Object.assign(row, clone(update.$setOnInsert)) }
+      if (!row && options?.upsert) { row = Object.fromEntries(Object.entries(filter).filter(([, value]) => !value || typeof value !== 'object' || value instanceof ObjectId || value instanceof Date)); rows(name).push(row); Object.assign(row, clone(update.$setOnInsert)) }
       if (row) {
         for (const [key, value] of Object.entries((update.$set || {}) as Row)) put(row, key, clone(value))
         for (const [key, value] of Object.entries((update.$inc || {}) as Row)) put(row, key, Number(get(row, key) || 0) + Number(value))
@@ -518,7 +520,7 @@ mock.module('../src/services/post-process-outbox.service', () => ({ stagePostPro
 mock.module('../src/services/media/attribution', () => ({ ATTRIBUTION_RULE_VERSION: 'audit', mediaRevision: () => 'audit' }))
 mock.module('../src/services/moderation.service', () => ({ moderationService: { discoveryFilter: async () => ({}) } }))
 const checkLogs: Row[] = [], memoryLogs: Row[] = []
-mock.module('../src/utils/logger', () => ({ log: { info: (name: string, data: Row) => { if (name === 'group.reply_checked') checkLogs.push(data); memoryLogs.push({ name, ...data }) }, warn: () => {}, error: () => {} } }))
+mock.module('../src/utils/logger', () => ({ log: { info: (name: string, data: Row) => { if (name === 'group.reply_checked') checkLogs.push(data); memoryLogs.push({ name, ...data }) }, warn: (name: string, data: Row) => { memoryLogs.push({ name, ...data }) }, error: () => {} } }))
 mock.module('../src/services/time.service', () => ({ timeService: { initialAnchor: async (input: Row) => { assert.equal(input.templateId, undefined); return { real_time: new Date(), sequence: 0, timeline_id: 'main' } } } }))
 mock.module('../src/services/opening-place.service', () => ({ extractOpeningPlace: unavailable }))
 mock.module('../src/services/character-codex.service', () => ({ characterCodexService: { seedProtagonist: unavailable }, foldDelta: unavailable, newFoldState: unavailable, isEphemeralPersonDescriptor: unavailable, isNonPersonRole: unavailable, rankCodexForInjection: unavailable, identityKey: unavailable }))
@@ -543,7 +545,8 @@ mock.module('../src/middleware/auth', () => ({ verifyWsToken: unavailable,
 mock.module('../src/middleware/rate-limit', () => ({ rateLimit: async () => ({ allowed: true }) }))
 mock.module('../src/services/last-active.service', () => ({ recordLastActive: () => {} }))
 mock.module('../src/queues', () => ({ getMemoryCurationQueue: unavailable, removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { queued.push(data); return { id: options.jobId } } }), getSceneSummaryQueue: () => ({ add: async (_name: string, data: Row) => { queued.push(data) } }), QUEUE_RETENTION: { sceneSummary: {}, generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
-let writerHook: ((request: Row) => void) | undefined
+let writerHook: ((request: Row) => void | Promise<void>) | undefined
+let bondReply: unknown = { changes: [] }, bondRequests: Row[] = [], bondHook: (() => Promise<void>) | undefined
 let curatorReply: unknown = { memories: [] }, curatorRequests: Row[] = [], summaryRequests: Row[] = []
 let summaryHook: (() => Promise<void>) | undefined, embedHook: (() => Promise<void>) | undefined
 let summaryReply: string | Error = 'A named summary.'
@@ -566,6 +569,7 @@ let modelReplies: Array<string | Error | { content: string; finishReason: string
 mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator', sceneSummary: 'fixture-summary', chapterSummary: 'fixture-chapter', arcSummary: 'fixture-arc', narrationSfw: 'fake-safe', narrationNsfw: 'fake-story-adult', groupNsfw: 'fake-adult', groupNsfwFallbacks: ['fake-adult-fallback', 'fake-adult-last'], narrationSfwFallbacks: ['fake-safe-fallback'], narrationNsfwFallbacks: ['fake-adult-fallback'] }, narrationTemperature: () => 0.62, snapshotLLMUsage: () => [],
   embed: async () => { await embedHook?.(); return [1, 0] },
   callLLM: async (request: Row) => {
+    if (request.purpose === 'group_bonds') { bondRequests.push(request); await bondHook?.(); if (bondReply instanceof Error) throw bondReply; return typeof bondReply === 'string' ? bondReply : JSON.stringify(bondReply) }
     if (request.purpose !== 'memory_curation') {
       summaryRequests.push(request); await summaryHook?.()
       if (summaryReply instanceof Error) throw summaryReply
@@ -577,7 +581,7 @@ mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator'
     const response = curatorResponse(request, result)
     return typeof response === 'string' ? response : JSON.stringify(response)
   },
-  callLLMWithFallback: async (request: Row) => { writerCalls.push(request); writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; if (response && typeof response === 'object') return { ...response, model: request.model }; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
+  callLLMWithFallback: async (request: Row) => { writerCalls.push(request); await writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; if (response && typeof response === 'object') return { ...response, model: request.model }; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
 }))
 const { memoryProcessor, buildMemoryCurationRequest } = await import('../worker/processors/memory.processor')
 const { summaryProcessor } = await import('../worker/processors/summary.processor')
@@ -596,7 +600,7 @@ Math.random = () => 0
 const playerId = '300000000000000000000001'
 let instanceId = ''
 async function start(source = groupTemplate(), player = playerName) {
-  ragSummaryHits = []; tables.clear(); vectors.clear(); curatorRequests = []; summaryRequests = []; summaryReply = 'A named summary.'; curatorHook = undefined; summaryHook = undefined; embedHook = undefined; curatorFactory = undefined; ragMemoryTexts = ['Remembered group fact.']; ragOpenThreads = []; ragCalls = []; memoryLogs.length = 0; backgroundScopes.length = 0; frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0; routerSexual = true; routerError = false
+  bondReply = { changes: [] }; bondRequests = []; bondHook = undefined; ragSummaryHits = []; tables.clear(); vectors.clear(); curatorRequests = []; summaryRequests = []; summaryReply = 'A named summary.'; curatorHook = undefined; summaryHook = undefined; embedHook = undefined; curatorFactory = undefined; ragMemoryTexts = ['Remembered group fact.']; ragOpenThreads = []; ragCalls = []; memoryLogs.length = 0; backgroundScopes.length = 0; frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0; routerSexual = true; routerError = false
   rows('users').push({ _id: new ObjectId(playerId), preferences: { nsfw_enabled: false, player_name: player } })
   rows('worldTemplates').push(clone(source) as unknown as Row)
   const created = await instanceService.create(playerId, template._id.toHexString(), 'creator')
@@ -610,7 +614,7 @@ async function turn(data: Partial<GroupTurnJob> = {}, rng?: () => number) {
 }
 function forbidden(value: unknown) {
   if (!value || typeof value !== 'object') return
-  for (const [key, entry] of Object.entries(value)) { assert(!['dm_with', 'private_to', 'interested', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'cost', 'cost_usd', 'tame'].includes(key), `leaked ${key}`); forbidden(entry) }
+  for (const [key, entry] of Object.entries(value)) { assert(!['dm_with', 'private_to', 'start_bond', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'cost', 'cost_usd', 'tame'].includes(key), `leaked ${key}`); forbidden(entry) }
 }
 await check('group adult model defaults overrides and Euryale temperature are isolated from story narration', async () => {
   const code = `import { mock } from 'bun:test'
@@ -635,7 +639,7 @@ await check('seed adult schema accepts authored traits and rejects malformed or 
   const { _id, creator_id, slug, version, created_at, updated_at, is_published, visibility, review_status, ...body } = template
   assert(Value.Check(CreateTemplateBody, body))
   const groupSchema = CreateTemplateBody.properties.seed_cast.items.properties.group
-  for (const patch of [{ interested: 'false' }, { interested: null }, { interested: 1 }, { intimacy: 42 }, { voice: 'wrong' }, { voice: [] }, { voice: Array(9).fill('text') }, { voice: [42] }, { extra: 'unknown' }]) {
+  for (const patch of [{ start_bond: 23 }, { start_bond: null }, { start_bond: '' }, { interested: true }, { intimacy: 42 }, { voice: 'wrong' }, { voice: [] }, { voice: Array(9).fill('text') }, { voice: [42] }, { extra: 'unknown' }]) {
     assert(!Value.Check(groupSchema, { ...members[0].group, ...patch }))
   }
   for (const patch of [{ intimacy: undefined }, { voice: undefined }, { voice: [' '] }]) assert.throws(() => validateEntry({ ...body, slug, cover: 'fixture.png', seed_cast: body.seed_cast!.map((member, index) => index ? member : { ...member, group: { ...member.group!, ...patch } }) }, 'bad-adult'))
@@ -737,7 +741,7 @@ function addEvent(type: string, member: number, sequence = rows('events').length
 }
 await check('addressed history keeps exchange and three recent others without seeds in actual writer text', async () => {
   for (const interested of [true, false]) {
-    const source = groupTemplate(); source.seed_cast![2].group!.interested = interested
+    const source = groupTemplate(); source.seed_cast![2].group!.start_bond = interested ? 'friend' : 'enemy'
     await start(source); put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'
     for (let i = 1; i <= 5; i++) rows('events').push({ ...clone(rows('events')[0]), _id: new ObjectId(), sequence: i + 1,
       data: { model_used: 'fake', player_input: `player-${i}`, lines: [
@@ -788,15 +792,13 @@ await check('repeat check looks back thirty lines for sentences but five for sho
   assert.deepEqual(kept.map(line => line.text), ['lol']); assert.equal(counts.duplicate, 1)
 })
 await check('adult carry-over downgrades uninvolved morning tags no names stale participation and autonomy', async () => {
-  for (const answer of ['no', 'late', 'error', 'off']) for (const target of ['uninvolved', 'none', 'stale', 'not-interested', 'boundary', 'unprompted', 'catchup']) {
-    const source = groupTemplate(); if (target === 'not-interested') source.seed_cast![0].group!.interested = false
+  for (const answer of ['no', 'late', 'error', 'off']) for (const target of ['uninvolved', 'none', 'stale', 'boundary', 'unprompted', 'catchup']) {
+    const source = groupTemplate()
     await start(source); put(rows('users')[0], 'preferences.nsfw_enabled', true)
     addEvent('intimate', 0); addEvent('intimate', 1); addEvent('intimate', 1)
     auditEnv.NSFW_SAME_TURN_ROUTER = answer === 'off' ? 'off' : 'on'; routerSexual = false; routerError = answer === 'error'; routerDelay = answer === 'late' ? 2200 : 0
     const origin = target === 'unprompted' || target === 'catchup' ? target : 'player'
-    const member = target === 'not-interested' ? 0 : target === 'stale' ? 0 : 2
-    // Put an uninterested participant in the current window as well.
-    if (target === 'not-interested') addEvent('intimate', 0)
+    const member = target === 'stale' ? 0 : 2
     const message = target === 'none' ? 'Morning everyone' : target === 'boundary' ? `${names[1]}suffix morning` : `@${names[member]} morning`
     modelReplies = [members.map(member => `${member.name}: Morning reply`).join('\n')]
     await turn({ origin, userMessage: origin === 'player' ? message : '' }, () => 0)
@@ -892,19 +894,20 @@ await check('whole Owen message retains a long complete sentence under the adult
   modelReplies = [{ content: `${member.name}: ${full}`, finishReason: 'stop' }]
   await turn({ userMessage: `@${member.name} answer me` }, never)
   assert.equal(writerCalls[0].maxTokens, 300)
-  assert.equal(writerCalls[0].model, 'fake-safe')
+  assert.equal(writerCalls[0].model, 'fake-adult')
   assert.equal((lastData().lines as Row[])[0].text, owenReply.sentence)
   assert((lastData().lines as Row[]).every(line => Array.from(String(line.text)).length <= 280))
   assert.equal(checkLogs.at(-1)!.trimmed, 1)
 })
 await check('adult repeated opener drops a same-reply line, keeps a match with earlier turns and retries only when empty', async () => {
-  for (const scenario of ['remaining', 'retry', 'normal', 'bystander', 'not-interested', 'withdrawn']) {
+  for (const scenario of ['remaining', 'retry', 'normal', 'bystander', 'not-interested', 'withdrawn', 'fear']) {
     const source = groupTemplate()
-    if (scenario === 'not-interested') source.seed_cast![0].group!.interested = false
+    if (scenario === 'not-interested') source.seed_cast![0].group!.start_bond = 'enemy'
     await adultStart(source)
     addEvent('narration', 0)
     put(rows('events').at(-1)!, 'data.lines', [{ character_id: ids[0], text: 'Familiar start was said before.', shown_at: new Date() }])
     if (scenario === 'normal') auditEnv.NSFW_SAME_TURN_ROUTER = 'off'
+    if (scenario === 'fear') { routeUser = { id: playerId, tier: 'creator' }; assert.equal((await bondHttp('PUT', { fear: 70 })).status, 200) }
     if (scenario === 'withdrawn') consentReadHook = () => { put(rows('users')[0], 'preferences.nsfw_enabled', false) }
     const twoLines = `${names[0]}: FAMILIAR, start with different words.
 ${names[0]}: Familiar start again here.`
@@ -915,11 +918,11 @@ ${names[0]}: A complete new answer survives.`]
       : [twoLines]
     await turn({ userMessage: scenario === 'bystander' ? `@${names[1]} @${names[0]}` : `@${names[0]}` }, never)
     const data = lastData().lines as Row[]
-    assert.equal(checkLogs.at(-1)!.repeated_opener, scenario === 'remaining' ? 1 : 0, scenario)
+    assert.equal(checkLogs.at(-1)!.repeated_opener, ['remaining', 'not-interested'].includes(scenario) ? 1 : 0, scenario)
     assert.equal(writerCalls.length, scenario === 'retry' || scenario === 'bystander' ? 2 : 1, scenario)
     // The first line matches an earlier turn and stays; only the same-reply repeat goes.
     if (scenario === 'remaining') assert.deepEqual(data.map(line => line.text), ['FAMILIAR, start with different words.', 'A complete new answer survives.'])
-    if (['normal', 'not-interested', 'withdrawn'].includes(scenario)) assert.equal(data.length, 2, scenario)
+    if (['normal', 'withdrawn', 'fear'].includes(scenario)) assert.equal(data.length, 2, scenario)
     if (scenario === 'retry') {
       assert.equal(data[0].text, 'Completely new answer after retry.')
       assert.deepEqual((checkLogs.at(-1)!.writing as Row[]).map(call => call.purpose), ['addressed', 'addressed_retry'])
@@ -972,7 +975,7 @@ await check('authored tagged reachability covers every member and interest routi
       put(rows('users')[0], 'preferences.nsfw_enabled', adult)
       auditEnv.NSFW_SAME_TURN_ROUTER = adult ? 'on' : 'off'
       const fresh = `${member.name}: Fresh answer for case ${cases}.`
-      const chain = member.group!.interested ? ['fake-adult', 'fake-adult-fallback', 'fake-adult-last'] : ['fake-safe', 'fake-safe-fallback']
+      const chain = ['fake-adult', 'fake-adult-fallback', 'fake-adult-last']
       modelReplies = scenario === 'empty' ? ['', fresh] : scenario === 'rescue' ? [new Error('writer unavailable'), ...chain.slice(1).map(() => ''), '', '', fresh]
         : scenario === 'voice' ? [`${member.name}: ${member.group!.voice![0]}`, fresh] : [fresh]
       await turn({ userMessage: `@${member.name} answer me` }, () => 0)
@@ -980,9 +983,9 @@ await check('authored tagged reachability covers every member and interest routi
       assert((lastData().lines as Row[]).some(line => line.character_id === String(card._id)), `${group.slug}/${member.name}/${scenario} never spoke`)
       assert.equal(rows('events').at(-1)!.type, adult ? 'intimate' : 'narration')
       const writing = checkLogs.at(-1)!.writing as Row[]
-      const expected = adult && member.group!.interested ? 'fake-adult' : 'fake-safe'
+      const expected = adult ? 'fake-adult' : 'fake-safe'
       assert.equal(writerCalls[0].model, expected)
-      if (!member.group!.interested || !adult) {
+      if (!adult) {
         assert(writerCalls.every(call => !String(call.model).startsWith('fake-adult')))
         assert(writing.every(call => call.writer === 'normal'))
         assert(String(lastData().model_used).startsWith('fake-safe'))
@@ -993,7 +996,7 @@ await check('authored tagged reachability covers every member and interest routi
         assert(content(writerCalls[0], 1).includes('Write one to three messages.'))
       }
       if (scenario === 'rescue') {
-        const attempts = member.group!.interested ? [chain[0], chain[1], chain[1], chain[2]] : [chain[0], chain[0], chain[1]]
+        const attempts = [chain[0], chain[1], chain[1], chain[2]]
         assert.deepEqual(writerCalls.slice(0, attempts.length).map(call => call.model), attempts)
         assert(writing.some(call => call.purpose === 'addressed_fallback'))
       }
@@ -1121,7 +1124,7 @@ await check('adult consent withdrawn before first call, retry or transport fallb
 for (const interested of [true, false]) await check(`${interested ? 'interested' : 'not-interested'} addressed prompt follows fresh consent before every call`, async () => {
   for (const withdrawn of [false, true]) for (const at of ['first', 'retry', 'transport'] as const) {
     const source = clone(groupTemplate())
-    source.seed_cast![0].group!.interested = interested
+    source.seed_cast![0].group!.start_bond = interested ? 'friend' : 'enemy'
     await start(source)
     put(rows('users')[0], 'preferences.nsfw_enabled', true)
     auditEnv.NSFW_SAME_TURN_ROUTER = 'on'
@@ -1140,8 +1143,8 @@ for (const interested of [true, false]) await check(`${interested ? 'interested'
     await turn({}, () => 0)
     assert.deepEqual(readsAtCall, at === 'first' ? [2] : [2, 3], 'each call needs a fresh read after the route read')
     assert.deepEqual(writerCalls.map(call => call.model), at === 'first'
-      ? [interested && !withdrawn ? 'fake-adult' : 'fake-safe']
-      : [interested ? 'fake-adult' : 'fake-safe', interested ? withdrawn ? 'fake-safe' : at === 'transport' ? 'fake-adult-fallback' : 'fake-adult' : at === 'transport' ? 'fake-safe-fallback' : 'fake-safe'])
+      ? [!withdrawn ? 'fake-adult' : 'fake-safe']
+      : ['fake-adult', withdrawn ? 'fake-safe' : at === 'transport' ? 'fake-adult-fallback' : 'fake-adult'])
     for (const [index, call] of writerCalls.entries()) {
       const allowed = !withdrawn || (at !== 'first' && index === 0)
       const system = content(call, 0)
@@ -1725,20 +1728,25 @@ await check('explicit check runs after the reply without delaying it and only th
     assert.equal('tame' in storedEvents().at(-1)!.data, false)
   }
   judgeVerdict = true; judgeCalls = []
-  // Normal turns, and a character who isn't interested, are never judged.
+  // Normal turns are never judged; low bonds still reach the adult check.
   auditEnv.NSFW_SAME_TURN_ROUTER = 'off'
   await start(); addEvents(3); modelReplies = [`${names[1]}: An ordinary reply.`]
   await turn({ userMessage: `@${names[1]} ordinary` }, never); assert.equal(judgeCalls.length, 0)
-  const source = groupTemplate(); source.seed_cast![1].group!.interested = false
+  const source = groupTemplate(); source.seed_cast![1].group!.start_bond = 'enemy'
   await start(source); addEvents(3); put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = true
   modelReplies = [`${names[1]}: A plain no thanks.`]
-  await turn({ userMessage: `@${names[1]} line` }, never); assert.equal(judgeCalls.length, 0)
+  await turn({ userMessage: `@${names[1]} line` }, never); await Promise.all(backgroundWork.splice(0)); assert.equal(judgeCalls.length, 1)
+  judgeCalls = []; routeUser = { id: playerId, tier: 'creator' }
+  assert.equal((await bondHttp('PUT', { fear: 70 }, ids[1])).status, 200)
+  modelReplies = [`${names[1]}: A frightened reply.`]
+  await turn({ userMessage: `@${names[1]} line again` }, never); await Promise.all(backgroundWork.splice(0))
+  assert.equal(judgeCalls.length, 0)
 })
-await check('adult prompt asks an interested character for explicit words and keeps refusal only for others', () => {
-  const interested = { ...members[2], group: { ...members[2].group, interested: true } }, other = { ...members[2], group: { ...members[2].group, interested: false } }
-  const yes = buildAddressedStatic({ ...template, members, player: playerName }, interested), no = buildAddressedStatic({ ...template, members, player: playerName }, other)
-  assert(yes.includes('plain, crude words')); assert(yes.includes('without putting it off')); assert(yes.includes('says the act itself')); assert(!yes.includes('turns it down'))
-  assert(no.includes('turns it down')); assert(!no.includes('plain, crude words')); assert(!no.includes('says the act itself'))
+await check('adult prompt asks every member for the act itself with the same low bond rule', () => {
+  const low = { ...members[2], group: { ...members[2].group, start_bond: 'enemy' as const } }, high = { ...members[2], group: { ...members[2].group, start_bond: 'friend' as const } }
+  const yes = buildAddressedStatic({ ...template, members, player: playerName }, low), no = buildAddressedStatic({ ...template, members, player: playerName }, high)
+  assert.equal(yes, no)
+  for (const rule of ['plain, crude words', 'without putting it off', 'says the act itself', 'Low trust and affection', 'A flat no is rare']) assert(yes.includes(rule))
 })
 await check('memory adult addressed call is narrow and the bystander keeps full memory', async () => {
   await start(); addEvents(40)
@@ -2390,24 +2398,25 @@ await check('direct reply helper ignores rolled speakers and tags even on adult 
   assert.deepEqual(reply.lines.map(line => line.name), [names[1]])
 })
 await check('direct actual adult prompts omit group context and normal prompts include it on every retry and fallback', async () => {
-  for (const scenario of ['normal', 'adult', 'content retry', 'content fallback', 'transport', 'withdraw retry', 'withdraw transport', 'uninterested'] as const) {
+  for (const scenario of ['normal', 'adult', 'content retry', 'content fallback', 'transport', 'withdraw retry', 'withdraw transport', 'uninterested', 'fear'] as const) {
     await adultStart()
     if (scenario === 'normal') put(rows('users')[0], 'preferences.nsfw_enabled', false)
+    if (scenario === 'fear') { routeUser = { id: playerId, tier: 'creator' }; assert.equal((await bondHttp('PUT', { fear: 70 })).status, 200) }
     if (scenario === 'uninterested') {
       const cast = rows('worldInstances')[0].seed_cast_snapshot as Row[]
-      put(cast[0], 'group.interested', false)
+      put(cast[0], 'group.start_bond', 'enemy')
     }
     const answer = `${names[0]}: A fresh private answer.`
     const first = scenario.includes('transport') ? new Error('429 unavailable') : ''
     modelReplies = scenario === 'content fallback' ? ['', '', '', answer]
-      : ['content retry', 'transport', 'withdraw retry', 'withdraw transport', 'normal', 'uninterested'].includes(scenario) ? [first, answer] : [answer]
+      : ['content retry', 'transport', 'withdraw retry', 'withdraw transport', 'normal', 'uninterested', 'fear'].includes(scenario) ? [first, answer] : [answer]
     if (scenario.startsWith('withdraw')) writerHook = () => put(rows('users')[0], 'preferences.nsfw_enabled', false)
     await turn({ directWith: ids[0], userMessage: 'A private current line.' }, never)
     const writing = checkLogs.at(-1)!.writing as Row[]
     assert.equal(writing.length, writerCalls.length)
     if (scenario === 'content fallback') assert.deepEqual(writing.map(call => call.writer), ['adult', 'adult', 'adult', 'normal'])
     if (scenario.startsWith('withdraw')) assert.deepEqual(writing.map(call => call.writer), ['adult', 'normal'])
-    if (scenario === 'normal' || scenario === 'uninterested') assert(writing.every(call => call.writer === 'normal'))
+    if (scenario === 'normal' || scenario === 'fear') assert(writing.every(call => call.writer === 'normal'))
     for (const [index, request] of writerCalls.entries()) {
       const text = requestText(request), isAdult = writing[index].writer === 'adult'
       assert.equal(text.includes('Group chat (read-only; everyone saw these messages):\n'), !isAdult, scenario + ': group block on ' + index)
@@ -2909,11 +2918,11 @@ await check('direct adult route reuses consent interest carryover history and ta
   assert.equal(writerCalls.length, 1); assert.equal(writerCalls[0].model, 'fake-safe')
   assert(!requestText(writerCalls[0]).includes('How ' + names[1] + ' is about flirting'))
   put(rows('users')[0], 'preferences.nsfw_enabled', true)
-  ;((rows('worldInstances')[0].seed_cast_snapshot as Row[])[1].group as Row).interested = false
+  ;((rows('worldInstances')[0].seed_cast_snapshot as Row[])[1].group as Row).start_bond = 'enemy'
   writerCalls = []; modelReplies = [`${names[1]}: My own way to turn that down.`]
   await turn({ directWith: ids[1], userMessage: 'Please keep going.' }, never)
-  assert.equal(writerCalls.length, 1); assert.equal(writerCalls[0].model, 'fake-safe')
-  assert(requestText(writerCalls[0]).includes('turns it down the way'))
+  assert.equal(writerCalls.length, 1); assert.equal(writerCalls[0].model, 'fake-adult')
+  assert(requestText(writerCalls[0]).includes('A flat no is rare'))
   assert(!requestText(writerCalls[0]).includes('First direct adult answer.'))
 })
 await check('direct real load socket and chronicle reads filter thread events totals cursors and private load memories', async () => {
@@ -3062,6 +3071,186 @@ await check('direct rewind removes later real turns from every thread and restor
   await memoryService.rewindToSequence(instanceId, playerId, 4)
   assert.deepEqual(storedEvents().map(event => event.sequence), [1, 2, 3])
   assert.deepEqual(rows('worldInstances')[0].group_state, keep)
+})
+
+async function bondHttp(method: string, body?: unknown, characterId = ids[0]) {
+  const { instanceRoutes } = await import('../src/routes/instance.routes')
+  const app = new Elysia().onError(({ error, set }) => {
+    set.status = 'statusCode' in error ? Number(error.statusCode) : 500
+    return { message: error.message }
+  }).use(instanceRoutes)
+  return app.handle(new Request(`http://localhost/instances/${instanceId}/bonds${method === 'PUT' ? '/' + characterId : ''}`, {
+    method, headers: { 'content-type': 'application/json' }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  }))
+}
+function cardMeters(index = 0) { return rows('characters').find(card => String(card._id) === ids[index])!.relationship as Record<string, number> }
+async function bondBatch(thread?: string) {
+  await start(); addEvents(5)
+  if (thread) for (const event of storedEvents().slice(1)) event.data.dm_with = thread
+  storedEvents()[1].data.player_input = 'I trust you with my secret.'
+  storedEvents()[1].data.lines![0].text = 'I feel closer to you.'
+  storedEvents()[2].data.lines = [{ character_id: ids[1], text: 'My own separate words.', shown_at: new Date() }]
+  curatorFactory = request => ({ memories: [atom('The player shared a secret.', 'player', numbered(request)[0].number)] })
+}
+await check('bond batch request evidence attribution caps dedup and retry read stored rows', async () => {
+  for (const thread of [undefined, ids[0]]) {
+    await bondBatch(thread)
+    const make = (patch: Row = {}) => ({ name: names[0], meter: 'trust', delta: 999, evidence: 'trust you', line: 1, ...patch })
+    bondReply = { changes: [make(), make({ delta: 5 }),
+      make({ name: 'Unknown person', meter: 'fear' }), make({ meter: 'affection', line: 2, evidence: 'trust you' }),
+      make({ meter: 'rivalry', line: 4, evidence: 'My own separate words.' }),
+      make({ name: names[1], meter: 'affection', line: 4, evidence: 'My own separate words.' }),
+      make({ meter: 'fear', delta: -500, evidence: 'feel closer', line: 2 })] }
+    const before = clone(cardMeters())
+    await memoryProcessor(memoryJob())
+    assert.equal(bondRequests.length, 1)
+    assert.equal(bondRequests[0].model, 'fixture-curator'); assert.equal(bondRequests[0].purpose, 'group_bonds')
+    const text = requestText(bondRequests[0])
+    for (const row of [...rows('characters'), ...rows('events'), ...rows('worldInstances')]) assert(!text.includes(String(row._id)))
+    assert(!text.includes('The player shared a secret.') && !text.includes('OPEN THREADS') && !text.includes('Remembered group fact.'))
+    assert.deepEqual(cardMeters(), { ...before, trust: before.trust + 10, fear: 0 })
+    const row = rows('groupBondChanges').find(row => String(row.character_id) === ids[0])!
+    assert.deepEqual(row.deltas, { trust: 10, fear: -10 })
+    assert.equal(row.reason, 'chat'); assert.equal(row.thread, thread)
+    assert.equal(rows('groupBondChanges').length, thread ? 1 : 2)
+    const snapshot = clone(rows('groupBondChanges'))
+    const path = thread ? `group_state.direct_threads.${thread}.curated_through_sequence` : 'group_state.curated_through_sequence'
+    put(rows('worldInstances')[0], path, 1)
+    await memoryProcessor(memoryJob())
+    assert.deepEqual(rows('groupBondChanges'), snapshot)
+    assert.deepEqual(cardMeters(), { ...before, trust: before.trust + 10, fear: 0 })
+  }
+  // Clamping also holds at both endpoints.
+  await bondBatch(); routeUser = { id: playerId, tier: 'creator' }
+  assert.equal((await bondHttp('PUT', { trust: 98, fear: 2 })).status, 200)
+  bondReply = { changes: [{ name: names[0], meter: 'trust', delta: 10, evidence: 'trust you', line: 1 }, { name: names[0], meter: 'fear', delta: -10, evidence: 'feel closer', line: 2 }] }
+  await memoryProcessor(memoryJob()); assert.equal(cardMeters().trust, 100); assert.equal(cardMeters().fear, 0)
+})
+await check('bond telemetry keeps its own purpose with real background trace storage', async () => {
+  const source = await readFile(new URL('./group-memory-trace-audit.ts', import.meta.url), 'utf8')
+  const code = source.replaceAll("['memory_curation', 'scene_summary']", "['group_bonds', 'memory_curation', 'scene_summary']")
+    .replaceAll('calls.length < 4', 'calls.length < 6').replaceAll('calls.length, 4', 'calls.length, 6').replaceAll('bodies.length, 4', 'bodies.length, 6')
+    .replaceAll('0.0004', '3 * 0.0002').replaceAll('), 30)', '), 45)')
+  const child = Bun.spawn(['bun', '--no-env-file', '-e', code], { stdout: 'pipe', stderr: 'pipe', cwd: import.meta.dir })
+  const [output, errors, status] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+  assert.equal(status, 0, output + errors)
+})
+await check('bond failure preserves curated memories and records empty and failed calls', async () => {
+  for (const result of [new Error('Unavailable'), '', 'bad json', { changes: [] }]) {
+    await bondBatch(); bondReply = result
+    await memoryProcessor(memoryJob())
+    assert.equal(rows('memories').length, 1); assert.equal(rows('groupBondChanges').length, 0)
+    assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence'), 6)
+    assert(memoryLogs.some(log => log.name === ((result === '' || typeof result === 'object' && !(result instanceof Error)) ? 'group.bond_call_empty' : 'group.bond_call_failed')))
+  }
+})
+await check('bond HTTP ownership validation adult moments and no model calls', async () => {
+  await start(); routeUser = { id: playerId, tier: 'creator' }
+  for (const body of [{ trust: -1 }, { fear: 101 }, { affection: 1.5 }, { rivalry: '25' }, {}, [], null, { unknown: 3 }]) {
+    const response = await bondHttp('PUT', body)
+    assert.equal(response.status, 400, JSON.stringify(body)); assert((await response.text()).includes('whole numbers'))
+  }
+  assert.equal((await bondHttp('PUT', { fear: 10 }, new ObjectId().toHexString())).status, 400)
+  routeUser = null; assert.equal((await bondHttp('GET')).status, 401); assert.equal((await bondHttp('PUT', { trust: 50 })).status, 401)
+  routeUser = { id: new ObjectId().toHexString(), tier: 'creator' }
+  assert.equal((await bondHttp('GET')).status, 404); assert.equal((await bondHttp('PUT', { trust: 50 })).status, 404)
+  routeUser = { id: playerId, tier: 'creator' }
+  rows('worldTemplates')[0].kind = 'world'
+  assert.equal((await bondHttp('GET')).status, 404); assert.equal((await bondHttp('PUT', { trust: 50 })).status, 404)
+  rows('worldTemplates')[0].kind = 'group'
+  locks.set(`group:projection:bonds:${instanceId}`, 'busy')
+  const busy = await bondHttp('PUT', { trust: 80 }); assert.equal(busy.status, 409); assert((await busy.text()).includes('still settling'))
+  locks.delete(`group:projection:bonds:${instanceId}`)
+  const result = await bondHttp('PUT', { trust: 80 }); assert.equal(result.status, 200); assert.equal((await result.json()).trust, 80)
+  assert.equal(rows('groupBondChanges')[0].reason, 'player_set'); assert.equal(writerCalls.length, 0); assert.equal(rows('memories').length, 0)
+  for (let n = 0; n < 8; n++) rows('groupBondChanges').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), character_id: new ObjectId(ids[0]), reason: 'chat', adult: n % 2 === 0, evidence: `Moment ${n}`, created_at: new Date(Date.now() + n) })
+  for (const enabled of [false, true]) {
+    put(rows('users')[0], 'preferences.nsfw_enabled', enabled)
+    const body = await (await bondHttp('GET')).json() as Row[]
+    assert.equal(body.length, 4); assert.deepEqual(Object.keys(body[0]).sort(), ['characterId', 'meters', 'moments', 'name'])
+    const moments = body[0].moments as Row[]
+    assert.equal(moments.length, enabled ? 5 : 4); assert(moments.every(moment => moment.evidence))
+    if (!enabled) for (const n of [0, 2, 4, 6]) assert(!JSON.stringify(moments).includes(`Moment ${n}`))
+  }
+})
+await check('bond fold delta set delta and real rewind keep sets and restore cards', async () => {
+  await bondBatch(); routeUser = { id: playerId, tier: 'creator' }
+  bondReply = { changes: [{ name: names[0], meter: 'trust', delta: 10, evidence: 'trust you', line: 1 }] }
+  await memoryProcessor(memoryJob()); assert.equal(cardMeters().trust, 65)
+  assert.equal((await bondHttp('PUT', { trust: 80 })).status, 200)
+  addEvents(5)
+  storedEvents()[7].data.player_input = 'I trust you again.'
+  bondReply = { changes: [{ name: names[0], meter: 'trust', delta: -5, evidence: 'trust you again', line: 3 }] }
+  // The two overlap events are omitted from the bond request, so this is new line 3.
+  await memoryProcessor(memoryJob()); assert.equal(cardMeters().trust, 75)
+  mock.module('../src/services/codex-media-carryover', () => ({ snapshotCodexMedia: async () => ({}), restoreCodexMedia: async () => {} }))
+  const { characterCodexService } = await import('../src/services/character-codex.service')
+  Object.assign(characterCodexService, { applyManualIdentityRevisions: async () => {} })
+  const { entityGraphService } = await import('../src/services/entity-graph.service')
+  Object.assign(entityGraphService, { repairAfterRewind: async () => {} })
+  const { memoryService } = await import('../src/services/memory.service')
+  rows('events')[5].time_anchor = { real_time: new Date(), sequence: 6, timeline_id: 'main' }
+  await memoryService.rewindToSequence(instanceId, playerId, 7)
+  assert.equal(cardMeters().trust, 80)
+  assert.deepEqual(rows('groupBondChanges').map(row => row.reason), ['chat', 'player_set'])
+  assert(storedEvents().every(event => event.sequence < 7))
+})
+await check('bond prompts hold only call speakers meters no evidence and stable static prefixes', async () => {
+  await adultStart(); routeUser = { id: playerId, tier: 'creator' }
+  const systems = new Map<string, string>()
+  for (const trust of [1, 99]) {
+    await bondHttp('PUT', { trust })
+    rows('groupBondChanges').at(-1)!.evidence = 'Private evidence must never enter a prompt.'
+    writerCalls = []; modelReplies = [`${names[0]}: Unique addressed ${trust}.`, `${names[1]}: Unique bystander ${trust}.`]
+    await turn({ userMessage: `@${names[0]} @${names[1]}` }, never)
+    for (const call of writerCalls) {
+      const system = content(call, 0), dynamic = content(call, 1)
+      assert(!system.includes('Bonds toward') && !requestText(call).includes('Private evidence'))
+      const bondBlock = dynamic.split('Bonds toward the player (never mention numbers):\n')[1].split('\n\n')[0]
+      const selected = (checkLogs.at(-1)!.writing as Row[])[writerCalls.indexOf(call)].writer === 'adult' ? 0 : 1
+      assert(bondBlock.includes(names[selected]))
+      for (let i = 0; i < names.length; i++) if (i !== selected) assert(!bondBlock.includes(names[i]))
+      if (selected === 0) assert(bondBlock.includes(`"trust":${trust}`))
+      const prior = systems.get(String(selected)); if (prior) assert.equal(system, prior); else systems.set(String(selected), system)
+    }
+  }
+})
+await check('bond fear rereads on every writer attempt and low bonds reach adult with consent', async () => {
+  for (const enabled of [true, false]) for (const fear of [69, 70, 100]) {
+    await adultStart(); routeUser = { id: playerId, tier: 'creator' }
+    put(rows('users')[0], 'preferences.nsfw_enabled', enabled)
+    await bondHttp('PUT', { trust: 0, affection: 0, fear })
+    modelReplies = [`${names[0]}: Unique fear reply ${fear}.`]
+    await turn({ directWith: ids[0], userMessage: 'Keep going.' }, never)
+    assert.equal(writerCalls[0].model, enabled && fear === 69 ? 'fake-adult' : 'fake-safe')
+    assert.equal(requestText(writerCalls[0]).includes("doesn't want anything sexual"), fear >= 70)
+  }
+  for (const kind of ['retry', 'transport']) {
+    await adultStart(); routeUser = { id: playerId, tier: 'creator' }
+    let first = true
+    writerHook = async () => { if (first) { first = false; assert.equal((await bondHttp('PUT', { fear: 70 })).status, 200) } }
+    modelReplies = [kind === 'retry' ? '' : new Error('429 unavailable'), `${names[0]}: Fresh safe answer.`]
+    await turn({ directWith: ids[0], userMessage: 'Keep going.' }, never)
+    assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-safe'])
+    assert(requestText(writerCalls[1]).includes("doesn't want anything sexual"))
+  }
+})
+
+await check('bond purge reset save internal template and account deletion remove every row', async () => {
+  const failures: string[] = []
+  for (const operation of ['reset', 'save', 'internal', 'template', 'account']) {
+    await start(); routeUser = { id: playerId, tier: 'creator' }
+    assert.equal((await bondHttp('PUT', { trust: 98 })).status, 200)
+    assert.equal(rows('groupBondChanges').length, 1)
+    if (operation === 'reset') await deletionService.resetInstance(instanceId, playerId)
+    if (operation === 'save') await deletionService.deleteInstance(instanceId, playerId)
+    if (operation === 'internal') await deletionService.deleteInstanceById(instanceId)
+    if (operation === 'template') await deletionService.deleteTemplateById(template._id)
+    if (operation === 'account') await deletionService.deleteAccount(playerId)
+    if (rows('groupBondChanges').length) failures.push(`${operation}: ${rows('groupBondChanges').length} bond rows remain`)
+    if (operation === 'reset' && cardMeters().trust !== 55) failures.push('reset did not restore the starting bond')
+  }
+  assert.deepEqual(failures, [])
 })
 
 Math.random = originalRandom

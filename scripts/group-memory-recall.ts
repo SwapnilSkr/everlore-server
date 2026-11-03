@@ -64,9 +64,12 @@ const SCRATCH_DB = 'everlore_recall_scratch'
 /** text-embedding-3-small list price, per token. Priced from usage, not a provider cost. */
 const EMBED_USD_PER_TOKEN = 0.00000002
 
+const bondSetupArg = process.argv.find(arg => arg.startsWith('--bond-setup='))?.slice('--bond-setup='.length)
+const bondSetup = bondSetupArg ? JSON.parse(bondSetupArg) as Record<string, Record<string, number>> : undefined
+if (bondSetupArg !== undefined && (!SCENE || !bondSetup || Array.isArray(bondSetup) || typeof bondSetup !== 'object')) throw new Error('--bond-setup requires a scene and a JSON object mapping names to meters')
 const args = new Set(process.argv.slice(2))
 // A misquoted flag must not fall through to the paid run.
-const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b', '--scene=d', '--memories=off'].includes(arg))
+const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b', '--scene=d', '--memories=off'].includes(arg) && !arg.startsWith('--bond-setup='))
 if (unknownArgs.length) throw new Error(`Unknown argument(s): ${unknownArgs.join(' | ')}`)
 const MODE: 'selftest' | 'plan' | 'dry' | 'run' = args.has('--selftest') ? 'selftest' : args.has('--plan') ? 'plan'
   : args.has('--dry') ? 'dry' : 'run'
@@ -184,6 +187,7 @@ const DEAD = {
 const POISON: Record<string, string> = {
   // The shared .env carries NODE_ENV=production; this process is not the server.
   NODE_ENV: 'test',
+  JWT_SECRET: 'recall-scratch-route-only',
   MONGODB_URI: DEAD.MONGODB_URI,
   REDIS_URL: DEAD.REDIS_URL,
   PINECONE_API_KEY: 'dead-pinecone-key',
@@ -307,6 +311,7 @@ const CALL_ESTIMATE_USD = {
   narration: 0.0006,
   adult_narration: 0.0017,
   curation: 0.005,
+  group_bonds: 0.005,
   summary: 0.002,
   embedding: 0.00002,
 } as const
@@ -497,6 +502,7 @@ function classify(body: Record<string, unknown>, host: string, system: string): 
   if (host === 'api.openai.com') return 'embedding'
   const responseFormat = body.response_format as { type?: unknown } | undefined
   if (responseFormat?.type === 'json_object' && Number(body.max_tokens) <= 16) return 'router'
+  if (system.startsWith('You judge changes in each member')) return 'group_bonds'
   if (/^You are the memory curator/.test(system)) return 'curation'
   if (/^(Compress the following scene|Weave these consecutive scene summaries|Distill these consecutive chapters)/.test(system)) return 'summary'
   const model = String(body.model || '')
@@ -588,6 +594,7 @@ function dryResponse(purpose: PurposeKey, body: Record<string, unknown>, system:
     const text = user.toLowerCase()
     return { content: JSON.stringify({ sexual_intent: /naked|make love|bed|kiss/.test(text) }) }
   }
+  if (purpose === 'group_bonds') return { content: JSON.stringify({ changes: [] }) }
   if (purpose === 'curation') return { content: dryCuration(user, body) }
   if (purpose === 'summary') return { content: 'The flat argued about bins and bills, made plans, and someone promised to bring a ladder.' }
   // narration: answer the speakers the prompt actually asked for
@@ -636,7 +643,7 @@ const guardedFetchBase = async (input: Parameters<typeof fetch>[0], init?: Param
     throw new SpendStop(`spend guard: reserved $${ledger.reserved_usd.toFixed(6)} + ${purpose} $${CALL_ESTIMATE_USD[purpose]} would pass the $${CAP_USD.toFixed(2)} cap`)
   }
 
-  if (purpose !== 'router' && purpose !== 'embedding' && purpose !== 'curation' && purpose !== 'summary' && pendingPlanted) {
+  if (purpose !== 'router' && purpose !== 'embedding' && purpose !== 'curation' && purpose !== 'group_bonds' && purpose !== 'summary' && pendingPlanted) {
     const planted = pendingPlanted
     pendingPlanted = null
     const response = plantedResponse(body, planted)
@@ -1030,9 +1037,9 @@ function estimatePlan(): PlanEstimate {
   const curation = Math.floor(turns / 5)
   const summaries = Math.floor(turns / 12)
   const embeddings = turns * 2 + 40
-  const calls = narration + turns + curation + summaries + embeddings
+  const calls = narration + turns + curation * 2 + summaries + embeddings
   const usd = (turns - 2) * 2 * CALL_ESTIMATE_USD.narration + 6 * CALL_ESTIMATE_USD.adult_narration + routerUsd
-    + curation * CALL_ESTIMATE_USD.curation + summaries * CALL_ESTIMATE_USD.summary + embeddings * CALL_ESTIMATE_USD.embedding
+    + curation * (CALL_ESTIMATE_USD.curation + CALL_ESTIMATE_USD.group_bonds) + summaries * CALL_ESTIMATE_USD.summary + embeddings * CALL_ESTIMATE_USD.embedding
   return { turns, events, calls, usd, curation, summaries, embeddings }
 }
 
@@ -1387,6 +1394,33 @@ async function runProbe(): Promise<number> {
   const members = await loadGroupMembers(reloaded as never)
   const nameById = new Map(members.map(member => [member.id, member.name]))
   const idByName = new Map(members.map(member => [member.name, member.id]))
+  // Invoke the real authenticated routes in-process; no HTTP server is started.
+  const { Elysia } = await import('elysia')
+  const { SignJWT } = await import('jose')
+  const { instanceRoutes } = await import('../src/routes/instance.routes')
+  const bondApp = new Elysia().use(instanceRoutes)
+  const bondToken = await new SignJWT({ id: PLAYER_ID, tier: 'creator' }).setProtectedHeader({ alg: 'HS256' })
+    .sign(new TextEncoder().encode(POISON.JWT_SECRET))
+  async function bondRoute(method: string, suffix = '', body?: unknown) {
+    const response = await bondApp.handle(new Request(`http://localhost/instances/${instanceId}/bonds${suffix}`, {
+      method, headers: { authorization: `Bearer ${bondToken}`, 'content-type': 'application/json' },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    }))
+    if (!response.ok) throw new Error(`Bond route returned ${response.status}: ${await response.text()}`)
+    return response.json()
+  }
+  async function setupBonds() {
+    for (const [name, meters] of Object.entries(bondSetup ?? {})) {
+      const memberId = idByName.get(name)
+      if (!memberId) throw new Error(`Unknown bond setup member: ${name}`)
+      await bondRoute('PUT', `/${memberId}`, meters)
+    }
+  }
+  async function reportBonds() {
+    const bonds = await bondRoute('GET')
+    writeFileSync(join(RUN_DIR, 'bonds-after.json'), `${JSON.stringify(bonds, null, 2)}\n`)
+    return bonds
+  }
   const silentId = idByName.get(SILENT)
   console.log(`group: ${(template as { title: string }).title} — ${members.map(member => member.name).join(', ')}; silent member ${SILENT}`)
 
@@ -1475,6 +1509,7 @@ async function runProbe(): Promise<number> {
 
   try {
     if (SCENE === 'd') {
+      await setupBonds()
       for (const spec of CHAT.slice(0, CHAT.findIndex(entry => entry.fact === 7) + 1)) await runTurn(spec, `chat-${turnIndex + 1}`)
       const direct = (player: string): TurnSpec => ({ player, speakers: [DIRECT_TO], direct: DIRECT_TO, rolled: true })
       const opening: TurnResult[] = [], adult: TurnResult[] = []
@@ -1535,6 +1570,7 @@ async function runProbe(): Promise<number> {
       }
       out.push('## Failures', '', ...(failures.length ? failures.map(item => `- ${item}`) : ['- none']), '', `Private memories for ${DIRECT_TO}: ${privateAtoms.length} of ${atoms.length}.`, ...privateAtoms.map(atom => `- ${atom.text}`), '',
         `Ledger: $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}) of $${CAP_USD.toFixed(2)}.`)
+      out.push('## Bonds after scene', '', JSON.stringify(await reportBonds(), null, 2))
       writeFileSync(join(RUN_DIR, 'scene.md'), `${out.join('\n')}\n`)
       writeFileSync(join(RUN_DIR, 'adult-prompts.md'), `${allTurns.flatMap(turn => writersOf(turn).map(call => `## ${turn.label} · ${call.model}\n\n${call.user}\n\n--- reply\n${call.response}\n`)).join('\n')}\n`)
       writeCuratorResponses()
@@ -1544,6 +1580,7 @@ async function runProbe(): Promise<number> {
     if (SCENE) {
       // The ordinary chat up to fact 7, without its abrupt adult turns, then the passed lines.
       for (const spec of CHAT.slice(0, CHAT.findIndex(entry => entry.fact === 7) + 1)) await runTurn(spec, `chat-${turnIndex + 1}`)
+      await setupBonds()
       const sceneTurns: TurnResult[] = []
       for (const [offset, player] of SCENE_LINES[SCENE].entries()) {
         sceneTurns.push(await runTurn({ player, speakers: tagsOf(player), rolled: true }, `scene-${offset + 1}`))
@@ -1587,6 +1624,7 @@ async function runProbe(): Promise<number> {
       const firstAddressed = sceneTurns.flatMap(turn => turn.calls).find(call => call.system.includes('You are writing only'))
       out.push('## Memories in the first adult addressed prompt', '', firstAddressed?.sections?.memories || '(none)', '', '## Failures', '', ...(failures.length ? failures.map(item => `- ${item}`) : ['- none']), '',
         `Adult memories stored: ${adultAtoms.length} of ${atoms.length}.`, ...adultAtoms.map(atom => `- ${atom.text}`), '', `Ledger: $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}) of $${CAP_USD.toFixed(2)}.`)
+      out.push('## Bonds after scene', '', JSON.stringify(await reportBonds(), null, 2))
       writeFileSync(join(RUN_DIR, 'scene.md'), `${out.join('\n')}\n`)
       writeFileSync(join(RUN_DIR, 'adult-prompts.md'), `${sceneTurns.flatMap(turn => turn.calls.filter(call => call.system.includes('You are writing only')).map(call => `## ${turn.label} · ${call.model}\n\n${call.user}\n\n--- reply\n${call.response}\n`)).join('\n')}\n`)
       writeCuratorResponses()
@@ -1972,7 +2010,7 @@ function summaryMarkdown(input: {
   const writer = purpose('narration'), adult = purpose('adult_narration'), curation = purpose('curation')
   const summaryCost = purpose('summary'), embedding = purpose('embedding'), router = purpose('router')
   const events = turns.filter(turn => turn.eventId).length
-  const memoryCost = curation.cost_usd + embedding.cost_usd
+  const memoryCost = curation.cost_usd + purpose('group_bonds').cost_usd + embedding.cost_usd
   const lines: string[] = [DRY ? '# Recall run summary — DRY REHEARSAL (every provider call simulated; nothing measured)' : '# Recall run summary', '']
   lines.push(`- turns: ${turns.length}; events stored: ${events}; atoms before rewind: ${input.atoms.length}`)
   lines.push(`- atoms: created ${memoryBatchCounts(logs.filter(entry => entry.msg === 'group.memory_batch')).created}; archived before rewind ${input.archivedBeforeRewind ?? 'unavailable'}; live before rewind ${input.atoms.length}`)

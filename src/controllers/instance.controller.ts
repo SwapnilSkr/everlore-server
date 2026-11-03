@@ -1,3 +1,4 @@
+import { getGroupBonds, setGroupBonds } from '../services/group-chat/bonds'
 import { listGroupThreads } from '../services/group-chat/threads'
 import { publicGroupData } from '../services/group-chat/public'
 import type { AuthUser } from '../middleware/auth'
@@ -7,6 +8,14 @@ import { HttpError } from '../utils/http-error'
 import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
 
 export const instanceController = {
+  bonds: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    return getGroupBonds(params.id, user.id)
+  },
+  setBonds: async ({ user, params, body }: { user: AuthUser | null; params: { id: string; characterId: string }; body: unknown }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    return setGroupBonds(params.id, user.id, params.characterId, body)
+  },
   threads: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     return listGroupThreads(params.id, user.id)

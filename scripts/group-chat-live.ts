@@ -929,26 +929,6 @@ function runChecks(): Array<{ name: string; pass: boolean; detail: string }> {
     checks.push({ name: 'sweep: every tagged character has at least one line in both turns', pass: failures.length === 0, detail: failures.join('; ') || `${sweep?.turns.length ?? 0} turns checked` })
   }
 
-  // Sweep: a not-interested character never reaches an adult writer.
-  {
-    const failures: string[] = []
-    for (const [index, turn] of (sweep?.turns ?? []).entries()) {
-      const name = /^@([^\s]+)/.exec(turn.player)?.[1] ?? ''
-      let found: { template: WorldTemplateDoc; member: NonNullable<WorldTemplateDoc['seed_cast']>[number] } | undefined
-      for (const slug of ['flat-4b', 'alder-lane-watch', 'last-light-guild']) {
-        const template = templateFor(slug)
-        const member = template.seed_cast?.find(entry => entry.name === name)
-        if (member) { found = { template, member }; break }
-      }
-      if (!found || found.member.group?.interested !== false) continue
-      if (!adMet(turn)) failures.push(`turn ${index + 1}: ${name} (not interested) was written by an adult writer: ${JSON.stringify(turn.writing)}`)
-      const adult = new Set(adultModels(found.template))
-      const gate = turn.calls.filter(call => call.purpose === 'narration' && call.model && adult.has(call.model))
-      if (gate.length) failures.push(`turn ${index + 1}: ${name} (not interested) reached ${[...new Set(gate.map(call => call.model))].join(', ')}`)
-    }
-    checks.push({ name: 'sweep: a not-interested character never reaches an adult writer', pass: failures.length === 0, detail: failures.join('; ') || 'no not-interested character reached an adult writer' })
-  }
-
   // Toggle off: every writer is normal and no addressed block or intimacy line was sent.
   {
     const failures: string[] = []
