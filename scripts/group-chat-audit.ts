@@ -3495,6 +3495,33 @@ await check('nway selection covers mentions in textual order continuation narrow
   }
 })
 
+await check('a question to one character carries their own lines, scene lines last, only with consent and only on the normal writer', async () => {
+  const data = async (enabled: boolean, userMessage: string, kind?: string) => {
+    await start(); put(rows('users')[0], 'preferences.nsfw_enabled', enabled)
+    const push = (type: string, text: string, member = 0) => { addEvent(type, member); put(rows('events').at(-1)!, 'data.lines', [{ character_id: ids[member], text, shown_at: new Date() }]) }
+    push('intimate', 'Scene line old.'); push('narration', 'Other member line.', 1); push('intimate', 'Scene line new.'); push('narration', 'Kitchen line new.')
+    writerCalls = []; modelReplies = [0, 1, 2, 3, 4, 5].map(round => members.map((member, at) => `${member.name}: Fresh words ${round} item ${at}.`).join('\n'))
+    await turn({ userMessage, ...(kind ? { kind: kind as 'action' } : {}) }, () => 0)
+    return { text: content(writerCalls[0], 1), model: writerCalls[0].model }
+  }
+  const ask = `@${names[0]} what did you say earlier?`
+  const on = await data(true, ask)
+  assert.equal(on.model, 'fake-safe')
+  const block = on.text.slice(on.text.indexOf(`${names[0]}'s own earlier messages, oldest first:`))
+  assert(on.text.includes(`is asking ${names[0]} directly, so ${names[0]} writes first`))
+  assert(block.indexOf('- Kitchen line new.') >= 0 && block.indexOf('- Kitchen line new.') < block.indexOf('- Scene line old.') && block.indexOf('- Scene line old.') < block.indexOf('- Scene line new.'))
+  assert(!block.slice(0, block.indexOf(ask)).includes('Other member line.'))
+  assert(on.text.indexOf(`is asking ${names[0]} directly`) > on.text.indexOf('Now:'))
+  const off = await data(false, ask)
+  assert(off.text.includes('- Kitchen line new.')); assert(!off.text.includes('Scene line old.')); assert(!off.text.includes('Scene line new.'))
+  for (const line of [`@${names[0]} tell me what you said.`, `@${names[0]} @${names[1]} what did you say?`, 'what did anyone say?']) assert(!(await data(true, line)).text.includes('own earlier messages'))
+  assert(!(await data(true, ask, 'action')).text.includes('own earlier messages'))
+  await start(); put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  writerCalls = []; modelReplies = [`${names[0]}: The answer.`]
+  await turn({ userMessage: ask }, () => 0)
+  assert(content(writerCalls[0], 1).includes(`${names[0]} hasn't said anything recently.`))
+})
+
 await check('nway scene examples are the longest lines, rotate and skip copied ones', () => {
   const voiced = { ...members[0], group: { ...members[0].group, voice: ['no', 'a much longer example line here', 'the longest example line of them all here', 'a long example line'] } }
   const [one, two, three] = [voiced.group.voice[2], voiced.group.voice[1], voiced.group.voice[3]]

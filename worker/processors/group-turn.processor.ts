@@ -157,6 +157,18 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       return addressedMessages.filter(line => groupSpeaker(line) === config.player || line.name === name || otherMessages.includes(line))
     }
     const addressedHistory = writerHistory(addressed)
+    // Proven by replay on a live scene: asked what they'd said, the normal writer answered from the
+    // chat's newest topic (0 of 12). Their own lines beside the question, scene lines nearest, gave 8 of 12.
+    const mentioned = members.filter(member => mentionsMember(userMessage, member.name))
+    const askedMember = origin === 'player' && job.data.kind !== 'action' && !adult && userMessage.trim().endsWith('?') && mentioned.length === 1 ? mentioned[0] : undefined
+    const askedOwnLines = (events: typeof recent) => groupMessages(events.filter(event => event.data.model_used !== 'seed'), config.player, members, directWith, askedMember?.id)
+      .filter(line => line.name === askedMember?.name).slice(-3).map(line => `- ${line.text}`)
+    const askedRule = (consented: boolean) => {
+      if (!askedMember) return undefined
+      const own = [...askedOwnLines(recent.filter(event => event.type !== 'intimate')), ...(consented ? askedOwnLines(recent.filter(event => event.type === 'intimate')) : [])]
+      const name = askedMember.name
+      return `${config.player} is asking ${name} directly, so ${name} writes first and answers exactly what's asked. ${own.length ? `If it's about what ${name} said, it comes from all of these and not only the latest thing. ${name}'s own earlier messages, oldest first:\n${own.join('\n')}` : `${name} hasn't said anything recently.`}`
+    }
     const published: GroupLine[] = []
     const timeSceneLines = (freshLines: NamedLine[]) => timeLines(freshLines, members,
       new Date(Math.max(Date.now(), published.length ? published.at(-1)!.shown_at.getTime() + 1500 : 0)), undefined, rng)
@@ -215,7 +227,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const sceneHistory = writerHistory(speakers[0])
           const sceneOwn = sceneOthers.length ? sceneHistory.filter(line => line.name === selected[0].name) : []
           const sceneVoice = sceneOthers.length ? sceneExamples(selected[0], sceneOwn.length, request.excludedVoice, sceneOwn.at(-1)?.text) : []
-          const dynamic = buildGroupDynamic({ sceneRule: sceneOthers.length ? `This is a sex scene between ${config.player}, ${selected[0].name} and ${sceneOthers.join(' and ')}, and it's happening now. ${selected[0].name} answers ${config.player} and doesn't organise the others or talk about anything else.${sceneVoice.length ? ` ${selected[0].name} says it the way these sound, in new words, about what's happening now: ${sceneVoice.map(example => `"${example}"`).join(' ')}` : ''}` : undefined, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
+          const dynamic = buildGroupDynamic({ askedRule: selected.some(member => member.id === askedMember?.id) ? askedRule(consented) : undefined, sceneRule: sceneOthers.length ? `This is a sex scene between ${config.player}, ${selected[0].name} and ${sceneOthers.join(' and ')}, and it's happening now. ${selected[0].name} answers ${config.player} and doesn't organise the others or talk about anything else.${sceneVoice.length ? ` ${selected[0].name} says it the way these sound, in new words, about what's happening now: ${sceneVoice.map(example => `"${example}"`).join(' ')}` : ''}` : undefined, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),
             groupContext: stillAdult ? undefined : shownGroup,
             history: [...(addressedPrompt ? sceneMembers.length ? sceneOthers.length

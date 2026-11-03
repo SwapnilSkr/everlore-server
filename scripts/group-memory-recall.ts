@@ -1559,6 +1559,8 @@ async function runProbe(): Promise<number> {
       scene.push(await runTurn({ player: 'Keep going together, just like that.', speakers: [], rolled: true }, 'nway-follow-up'))
       scene.push(await runTurn({ player: `@${members[0].name} tell me what you want me to do next.`, speakers: [members[0].name], rolled: true }, 'nway-narrow'))
       for (const member of members) scene.push(await runTurn({ player: `@${member.name} What did you say you wanted us to do together earlier?`, speakers: [member.name], rolled: true }, `nway-recall-${member.name}`))
+      // The first member's first answer comes straight after the scene. This one comes after the chat has moved on.
+      scene.push(await runTurn({ player: `@${members[0].name} What did you say you wanted us to do together earlier?`, speakers: [members[0].name], rolled: true }, 'nway-recall-again'))
       await mongoColl.users().updateOne({ _id: playerId }, { $set: { 'preferences.nsfw_enabled': false } } as never)
       scene.push(await runTurn({ player: `@${members[0].name} @${members[1].name} How is your evening?`, speakers: [members[0].name, members[1].name], rolled: true }, 'nway-toggle-off'))
       const failures = scene.filter(turn => turn.error).map(turn => `${turn.label}: ${turn.error}`)
