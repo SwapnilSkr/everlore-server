@@ -34,10 +34,16 @@ export const ordinaryActions = [
   'I switch on the lamp by the window.',
 ]
 
+/** One steady group, building up: the dry one, the forward one and the shy one. */
 export function nwayTurns(cast: string[]) {
-  return Array.from({ length: 8 }, (_, index) => {
-    const names = [cast[index % cast.length], cast[(index + 1) % cast.length], ...(index % 2 ? [cast[(index + 2) % cast.length]] : [])]
-    return { player: `${names.map(name => `@${name}`).join(' ')} ${index % 2 ? 'I take off your clothes and pull you onto me.' : 'Tell me exactly how you want me to fuck you, together.'}`,
-      speakers: names, ...(index % 2 ? { kind: 'action' as const } : {}), rolled: true }
-  })
+  const names = [cast[0], cast[2], cast[3]]
+  const tags = names.map(name => `@${name}`).join(' ')
+  return [
+    { player: `${tags} come to my room, all three of you. I want you naked on my bed tonight.` },
+    { player: `${tags} I take off your clothes, one at a time.`, kind: 'action' as const },
+    { player: `${tags} tell me exactly how you want me to fuck you.` },
+    { player: `${tags} I kiss ${names[0]} and put my hand between ${names[1]}'s legs while ${names[2]} watches.`, kind: 'action' as const },
+    { player: `${tags} what do you want to do to each other while I watch?` },
+    { player: `${tags} I go down on ${names[1]} and pull ${names[2]} closer.`, kind: 'action' as const },
+  ].map(turn => ({ ...turn, speakers: names, rolled: true }))
 }

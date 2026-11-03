@@ -3521,8 +3521,11 @@ await check('nway real prompts own static all earlier lines per-member caps orde
     assert(content(writerCalls[index], 1).includes(`Held${member} at 4.`))
     assert(content(writerCalls[index], 1).includes(`This is a scene with ${playerName} and `))
     assert(content(writerCalls[index], 1).includes(`${names[member]} can answer what they just said or did, and can do things with them too.`))
-    // The player's line stays last, so the writer answers it and not the instruction.
-    assert(content(writerCalls[index], 1).trim().endsWith(order.map(member => `@${names[member]}`).join(' ')))
+    const playerAction = order.map(member => `@${names[member]}`).join(' ')
+    // First writer: the player's line closes the prompt. Later writers: it comes before this turn's replies.
+    if (!index) assert(content(writerCalls[index], 1).trim().endsWith(playerAction))
+    else assert(content(writerCalls[index], 1).lastIndexOf(playerAction) < content(writerCalls[index], 1).indexOf('Fresh0 item 0.'))
+    if (index) assert.equal(content(writerCalls[index], 1).split(playerAction).length, 2)
     for (let prior = 0; prior < index; prior++) for (let line = 0; line < 3; line++) assert(content(writerCalls[index], 1).includes(`Fresh${line} item ${prior}.`))
   }
   assert(!requestText(writerCalls[3]).includes('This is a scene with '))
@@ -3692,13 +3695,13 @@ await check('nway rewind deletion remove scene fields and real group memory neve
   assert.equal(rows('events').length, 0)
 })
 
-await check('nway recall plan has mixed eight-turn cast sequence and requested observability without calls', async () => {
+await check('nway recall plan has a steady group of three, mixed turns and requested observability without calls', async () => {
   const { nwayTurns } = await import('./group-chat-fixtures')
   const plan = nwayTurns(names)
-  assert.equal(plan.length, 8)
-  assert.equal(plan.filter(turn => turn.kind === 'action').length, 4)
-  assert(plan.every(turn => [2, 3].includes(turn.speakers.length)))
-  assert.deepEqual(new Set(plan.flatMap(turn => turn.speakers)), new Set(names))
+  assert.equal(plan.length, 6)
+  assert.equal(plan.filter(turn => turn.kind === 'action').length, 3)
+  assert.equal(new Set(plan.flatMap(turn => turn.speakers)).size, 3)
+  assert(plan.every(turn => turn.speakers.length === 3 && turn.speakers.every(name => turn.player.includes(`@${name}`))))
   const outputDir = `${import.meta.dir}/.nway-plan-${process.pid}`
   try {
     const child = Bun.spawn(['bun', '--no-env-file', 'run', 'scripts/group-memory-recall.ts', '--scene=nway', '--plan'], {
@@ -3708,7 +3711,7 @@ await check('nway recall plan has mixed eight-turn cast sequence and requested o
     const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
     assert.equal(code, 0, output + errors)
     for (const expected of ['plan nway: flat-4b cast', 'untagged continuation', 'one tag', 'one question per member', 'toggle-off', 'each writer and model', 'group_lines payload and elapsed milliseconds', 'full system and per-turn prompts', 'no calls made']) assert(output.includes(expected), expected)
-    assert.equal((output.match(/  \d: (message|action):/g) || []).length, 8)
+    assert.equal((output.match(/  \d: (message|action):/g) || []).length, 6)
   } finally { await rm(outputDir, { recursive: true, force: true }) }
 })
 

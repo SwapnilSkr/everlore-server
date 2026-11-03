@@ -1051,7 +1051,7 @@ function estimatePlan(): PlanEstimate {
 
 function printPlan(): void {
   if (SCENE === 'nway') {
-    console.log(['plan nway: flat-4b cast; eight sexual turns tagging two or three members, alternating messages and actions.',
+    console.log(['plan nway: flat-4b cast; six sexual turns with one steady group of three, alternating messages and actions.',
       ...nwayTurns(CAST).map((turn, index) => `  ${index + 1}: ${turn.kind || 'message'}: ${turn.player}`),
       '  follow-up: untagged continuation; narrowing: one tag; recall: one question per member; toggle-off: one turn.',
       '  output: each writer and model, each group_lines payload and elapsed milliseconds, full system and per-turn prompts.',

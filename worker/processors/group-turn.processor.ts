@@ -205,16 +205,19 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const hiddenWords = origin === 'player' && !addressedPrompt ? await groupHiddenWords({ instanceId: iid, thread: directWith, line: userMessage,
             people: [config.player, ...members.map(member => member.name)], known: [...memory.memories, ...memory.openThreads],
             lines: [...shownHistory, ...(shownGroup || [])] }) : []
+          // Proven live: with the player's line under "Now", earlier replies this turn read as
+          // coming before the line they answer. It goes above them, in order.
+          const laterInScene = addressedPrompt && sceneMembers.length > 0 && request.history.length > 0
           // Only a scene member writing alone: a bystander or a repair isn't in the scene.
           const sceneOthers = selected.length === 1 && sceneMembers.includes(selected[0].id) ? sceneMembers.filter(id => id !== selected[0].id).map(id => members.find(member => member.id === id)!.name) : []
           const dynamic = buildGroupDynamic({ sceneRule: sceneOthers.length ? `This is a scene with ${config.player} and ${sceneOthers.join(', ')}. ${selected[0].name} can answer what they just said or did, and can do things with them too.` : undefined, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),
             groupContext: stillAdult ? undefined : shownGroup,
-            history: [...(addressedPrompt ? sceneMembers.length ? writerHistory(speakers[0]) : addressedHistory : shownWriterHistory), ...(origin === 'player' && split && !addressedPrompt && (!sceneMembers.length || consented) ? [playerLine] : []), ...(split ? sceneMembers.length && !consented ? [] : request.history : [])],
+            history: [...(addressedPrompt ? sceneMembers.length ? writerHistory(speakers[0]) : addressedHistory : shownWriterHistory), ...(origin === 'player' && split && (laterInScene || (!addressedPrompt && (!sceneMembers.length || consented))) ? [playerLine] : []), ...(split ? sceneMembers.length && !consented ? [] : request.history : [])],
             historyLimit: split ? addressedPrompt ? 12 : directWith ? 30 : 5 : 30,
             messageRule: split ? plainQuestion && addressedPrompt ? 'Write one message, answering what was asked.' : addressedPrompt || directWith ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
             now, offsetMinutes: state.tz_offset_minutes, speakers: selected.map(member => member.name),
-            situation: origin === 'player' ? split && !addressedPrompt ? '' : groupLineText(playerLine)
+            situation: origin === 'player' ? split && (!addressedPrompt || laterInScene) ? '' : groupLineText(playerLine)
               : origin === 'catchup' ? `Write up to four messages they sent while ${config.player} was away. Topic: ${topic}`
                 : `${config.player} is quiet. The group carries on. Topic: ${topic}`,
           })

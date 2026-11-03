@@ -709,6 +709,9 @@ const mutations: Mutation[] = [
   { name: "nway own static", check: "nway real prompts", edits: [[worker, "selected[0], request.excludedVoice", "members[0], request.excludedVoice"]] },
   { name: "nway earlier lines", check: "nway real prompts", edits: [[worker, "...(split ? sceneMembers.length && !consented ? [] : request.history : [])", "...[]"]] },
   { name: "nway scene sentence missing", check: "nway real prompts", edits: [[prompt, "${input.sceneRule ? `\\n${input.sceneRule}` : ''}", ""]] },
+  { name: "nway player line under earlier replies", check: "nway real prompts", edits: [[worker, "split && (!addressedPrompt || laterInScene) ? ''", "split && !addressedPrompt ? ''"], [worker, "split && (laterInScene || (!addressedPrompt", "split && ((!addressedPrompt"]] },
+  { name: "nway player line lost for later writers", check: "nway real prompts", edits: [[worker, "split && (laterInScene || (!addressedPrompt", "split && ((!addressedPrompt"]] },
+  { name: "nway first writer loses player line", check: "nway real prompts", edits: [[worker, "request.history.length > 0\n", "true\n"]] },
   { name: "nway scene sentence on bystander", check: "nway real prompts", edits: [[worker, "selected.length === 1 && sceneMembers.includes(selected[0].id) ? sceneMembers.filter", "sceneMembers.length ? sceneMembers.filter"]] },
   { name: "nway scene sentence after the player", check: "nway real prompts", edits: [[prompt, "${input.sceneRule ? `\\n${input.sceneRule}` : ''}\\n${input.situation}", "\\n${input.situation}${input.sceneRule ? `\\n${input.sceneRule}` : ''}"]] },
   { name: "nway failed repair loses shown lines", check: "nway shown lines", edits: [[reply, "(missingTags().length && !shown)", "missingTags().length"]] },
@@ -735,8 +738,8 @@ const mutations: Mutation[] = [
   { name: "nway tame empty array", check: "nway tame members", edits: [[worker, "if (tame.length) await", "if (true) await"]] },
   { name: "nway judge single member", check: "nway tame members", edits: [[worker, "sceneMembers.length ? sceneMembers : [addressed!]", "sceneMembers.length ? sceneMembers.slice(0, 1) : [addressed!]"]] },
   { name: "nway scene rewind survives", check: "nway rewind deletion", edits: [['src/services/memory.service.ts', "await events().deleteMany({\n      instance_id: iid,\n      sequence: { $gte: sequence },\n    })", "void 0"]] },
-  { name: "nway recall turn count", check: "nway recall plan", edits: [['scripts/group-chat-fixtures.ts', "Array.from({ length: 8 }", "Array.from({ length: 7 }"]] },
-  { name: "nway recall actions lost", check: "nway recall plan", edits: [['scripts/group-chat-fixtures.ts', "{ kind: 'action' as const }", "{}"]] },
+  { name: "nway recall turn count", check: "nway recall plan", edits: [['scripts/group-chat-fixtures.ts', "    { player: `${tags} what do you want to do to each other while I watch?` },\n", ""]] },
+  { name: "nway recall actions lost", check: "nway recall plan", edits: [['scripts/group-chat-fixtures.ts', "pull ${names[2]} closer.`, kind: 'action' as const }", "pull ${names[2]} closer.` }"]] },
 ]
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {
