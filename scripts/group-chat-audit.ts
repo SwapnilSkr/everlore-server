@@ -88,6 +88,14 @@ await check('reply numbers: a long number nobody was shown is dropped', () => {
   assert.deepEqual(run('it was 4471'), [1, 0])
   assert.equal(emptyLineCounts().invented_detail, 0)
 })
+await check('a line naming its own speaker is dropped as the writer talking; other names and longer words pass', () => {
+  const run = (text: string) => { const counts = emptyLineCounts(); return [filterLines([{ name: names[0], text }], { ...opts, speakers: [ids[0]] }, counts).length, counts.self_named] }
+  assert.deepEqual(run(`${names[0]}'s messages will reflect that.`), [0, 1])
+  assert.deepEqual(run(`so ${names[0].toLowerCase()} will write this`), [0, 1])
+  assert.deepEqual(run(`ask ${names[1]} about it`), [1, 0])
+  assert.deepEqual(run(`${names[0]}x is not me`), [1, 0])
+  assert.equal(emptyLineCounts().self_named, 0)
+})
 await check('reply wording: a later message repeating earlier wording is dropped, the first stands', () => {
   const previous = [{ name: names[0], text: 'tongue sliding over clit, fingers gripping thighs' }]
   const run = (lines: string[], extra = {}) => { const counts = emptyLineCounts(); const kept = filterLines(lines.map(text => ({ name: names[0], text })), { ...opts, speakers: [ids[0]], addressed: ids[0], previous, repeatedIdea: true, ...extra }, counts); return [kept.map(line => line.text), counts.repeated_idea] }
@@ -237,7 +245,7 @@ await check('adult validation requires authored intimacy and 1–8 voice lines a
 })
 await check('addressed prompt is authored per person with player gender sentence and unchanged boundaries', async () => {
   const prompt = buildAddressedStatic({ ...template, members, player: playerName }, { ...members[2], group: { ...members[2].group, start_bond: 'enemy' } })
-  for (const text of ['one to three', members[2].group.intimacy!, ...members[2].group.voice!, `${playerName}'s gender isn't stated, so don't assume it.`, 'answers what was actually said', 'A flat no is rare', 'Say something new']) assert(prompt.includes(text))
+  for (const text of ['one to three', members[2].group.intimacy!, ...members[2].group.voice!, `${playerName}'s gender isn't stated: use their name`, 'answers what was actually said', 'never whether they say it', "it's happening", 'A flat no is rare', 'Say something new']) assert(prompt.includes(text))
   for (const other of members.filter(member => member.id !== ids[2])) assert(!prompt.includes(other.group.wants) && !prompt.includes(other.group.intimacy!))
   const { NARRATIVE_BOUNDARIES } = await import('../src/utils/prompt-builder')
   assert(prompt.includes(NARRATIVE_BOUNDARIES.trim()))
@@ -2474,7 +2482,7 @@ await check('direct real Jess and Priya prompts separate history memories summar
     source_event_ids: [source._id], ...(privateTo ? { private_to: privateTo } : {}), updated_at: new Date() })
   rows('memories').push(mem('Shared memory marker.', events[1]), mem('Jess memory marker.', secret, jess.id), mem('Priya memory marker.', other, priya.id))
   const expectedBlock = groupMessages(events, playerName, [jess, priya, ...members.slice(2)]).slice(-8).map(line => `${line.name}: ${line.text}`).join('\n')
-  modelReplies = ['Jess: A direct Jess reply.']; writerCalls = []; ragCalls = []
+  modelReplies = ['Jess: A direct reply from her.']; writerCalls = []; ragCalls = []
   await turn({ directWith: jess.id, userMessage: 'Jess current private line.' }, never)
   const body = requestText(writerCalls[0])
   for (const value of ['Private Jess envelope.', 'Private Jess reply.', summaryText, 'Jess memory marker.', 'Shared memory marker.', expectedBlock]) assert(body.includes(value), value)
@@ -2484,7 +2492,7 @@ await check('direct real Jess and Priya prompts separate history memories summar
   const boundary = storedEvents().length
   addEvents(8, jess)
   for (const event of storedEvents().slice(boundary)) event.data.dm_with = jess.id
-  writerCalls = []; ragCalls = []; modelReplies = ['Priya: A direct Priya reply.']
+  writerCalls = []; ragCalls = []; modelReplies = ['Priya: A direct reply from her.']
   await turn({ directWith: priya.id, userMessage: 'Priya current private line.' }, never)
   const priyaBody = requestText(writerCalls[0])
   assert(priyaBody.includes(expectedBlock))

@@ -1528,15 +1528,24 @@ async function runProbe(): Promise<number> {
   try {
     if (SCENE === 'act') {
       await setupBonds()
-      const addressed = members[0].name, other = members[1].name
+      const addressed = process.env.GROUP_SCENE_TO || members[0].name, other = members.find(member => member.name !== addressed)!.name
       const action = (player: string): TurnSpec => ({ player, kind: 'action', speakers: tagsOf(player), rolled: true })
+      const adultActions = ['I kiss you and push you back against the wall.', 'I take your clothes off, slowly.', 'I go down on you.', 'I pin your wrists above your head.', 'I fuck you against the kitchen counter.', 'I bite your neck and tell you to be quiet.', 'I pull you on top of me.', 'I roll you over and keep going.', 'I finish and stay inside you.']
+      if (process.env.GROUP_ACT_ADULT_ONLY === '1') {
+        const turns = [await runTurn(action(`@${addressed} I pull you close and slide my hand between your legs.`), 'act-adult-on')]
+        for (const [index, text] of adultActions.entries()) turns.push(await runTurn(action(`@${addressed} ${text}`), `act-adult-extra-${index + 1}`))
+        const addressedCalls = (turn: TurnResult) => turn.calls.filter(call => call.system.includes('You are writing only'))
+        writeFileSync(join(RUN_DIR, 'scene.md'), `${['# Sexual actions', '', ...turns.flatMap(turn => [`## ${turn.label}: ${turn.route}`, `${PLAYER} did this: ${turn.player}`, ...turn.lines.map(line => `${line.name} [${line.model ?? 'unknown'}]: ${line.text}`), '']), `Spend: $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}).`].join('\n')}\n`)
+        writeFileSync(join(RUN_DIR, 'adult-prompts.md'), `${turns.flatMap(turn => addressedCalls(turn).map(call => `## ${turn.label} · ${call.model}\n\n${call.system}\n\n--- user\n${call.user}\n\n--- reply\n${call.response}\n`)).join('\n')}\n`)
+        return 0
+      }
       const ordinary: TurnResult[] = []
       for (const [index, text] of ordinaryActions.entries()) ordinary.push(await runTurn(action(index ? text : `@${addressed} ${text}`), `act-ordinary-${index + 1}`))
       const later = await runTurn({ player: `@${other} what colour was the parcel I left, and what was written on it?`, speakers: [other], rolled: true }, 'act-untagged-recall')
       const claim = await runTurn(action(`@${other} I put my bag down and ${other} promises to carry it all day.`), 'act-claim')
       const adult = await runTurn(action(`@${addressed} I pull you close and slide my hand between your legs.`), 'act-adult-on')
       const adultExtra: TurnResult[] = []
-      if (process.env.GROUP_ACT_ADULT === '1') for (const [index, text] of ['I kiss you and push you back against the wall.', 'I take your clothes off, slowly.', 'I go down on you.', 'I pin your wrists above your head.', 'I fuck you against the kitchen counter.', 'I bite your neck and tell you to be quiet.', 'I pull you on top of me.', 'I roll you over and keep going.', 'I finish and stay inside you.'].entries()) adultExtra.push(await runTurn(action(`@${addressed} ${text}`), `act-adult-extra-${index + 1}`))
+      if (process.env.GROUP_ACT_ADULT === '1') for (const [index, text] of adultActions.entries()) adultExtra.push(await runTurn(action(`@${addressed} ${text}`), `act-adult-extra-${index + 1}`))
       // Reach the normal five-event curator boundary before testing withdrawal.
       for (let index = 0; index < 2; index++) await runTurn({ player: `@${other} can you still see my drawing?`, speakers: [other], rolled: true }, `act-memory-flush-${index + 1}`)
       const atoms = await mongoColl.memories().find({ instance_id: instanceId, is_archived: false }).toArray()

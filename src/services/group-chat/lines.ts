@@ -1,7 +1,7 @@
 import type { GroupLine, GroupMember, GroupOrigin, NamedLine } from './types'
 
-export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'repeated_opener' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed' | 'repeated_idea' | 'invented_detail' | 'hidden_guess', number>
-export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, repeated_opener: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0, repeated_idea: 0, invented_detail: 0, hidden_guess: 0 })
+export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'repeated_opener' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed' | 'repeated_idea' | 'invented_detail' | 'hidden_guess' | 'self_named', number>
+export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, repeated_opener: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0, repeated_idea: 0, invented_detail: 0, hidden_guess: 0, self_named: 0 })
 const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim()
 
 const opener = (text: string): string | undefined => {
@@ -97,6 +97,9 @@ export function filterLines(input: NamedLine[], options: {
     if (line.text !== withoutTag) counts.trimmed++
     if (!line.text.trim()) { counts.empty++; continue }
     if (options.blocked(line.text)) { counts.unsafe++; continue }
+    // Proven live: a writer's note to itself reached the player (its own name, then "messages will reflect
+    // that"). Nobody texts their own name; a line that does is the writer talking.
+    if (new RegExp(`(?<![\\p{L}\\p{N}_])${line.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'iu').test(line.text)) { counts.self_named++; continue }
     if (member.group.voice?.some(example => {
       const copy = normalized(stripStageDirections(example))
       // Proven live: every example joined into one message passed a whole-line comparison.

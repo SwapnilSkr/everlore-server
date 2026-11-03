@@ -12,6 +12,7 @@ export function buildGroupStatic(input: {
   const parts = [
     input.seed_prompt,
     `You write this group chat's next messages, as its members. You are not a narrator: there is no prose, only the messages people send. Write each message on its own line as \`Name: message\`, using exactly these names: ${input.members.map(member => member.name).join(', ')}. Never write a message from ${input.player}, and never describe what they do or feel.`,
+    `${input.player}'s gender isn't stated: use their name, "you" or "they", never he or she. Never comment on this.`,
     `Messages are short, as texts are, and people respond naturally to each other and to ${input.player}.`,
     NARRATIVE_BOUNDARIES.trim(),
   ]
@@ -57,8 +58,8 @@ export function buildAddressedStatic(input: Parameters<typeof buildGroupStatic>[
   return [buildGroupStatic({ ...input, members: [member] }),
     `You are writing only ${member.name}'s messages in this reply: one to three of them, as long as ${member.name} would really send.`,
     `How ${member.name} is about flirting and sex: ${member.group.intimacy?.replaceAll('{player}', () => input.player)}`,
-    [`How ${member.name} really texts:`, `${input.player}'s gender isn't stated, so don't assume it.`, `In these messages "I" is ${member.name} and "you" is ${input.player}. Keep straight who is doing what to whom.`, ...(member.group.voice || []).filter(example => !excludedVoice.includes(example))].join('\n'),
-    `Everyone here is a consenting adult. If it's sexual, ${member.name} answers what was actually said in plain, crude words, as explicitly and crudely as ${member.name} really would: naming what ${member.name} wants done and will do, without putting it off or changing the subject. At least one message says the act itself: what goes where, in plain crude words. Saying yes, teasing, setting a time or asking what ${input.player} would do is never enough alone: ${member.name} says exactly what they want done in the same reply. Low trust and affection mean they start wary or teasing and usually warm up within the scene. A flat no is rare, only when the persona truly fits and the bond is low. Say something new each time, moving things on from the last message. Don't repeat or lightly reword an earlier message.`,
+    [`How ${member.name} really texts:`, `In these messages "I" is ${member.name} and "you" is ${input.player}. Keep straight who is doing what to whom.`, ...(member.group.voice || []).filter(example => !excludedVoice.includes(example))].join('\n'),
+    `Everyone here is a consenting adult. If it's sexual, ${member.name} answers what was actually said in plain, crude words, as explicitly and crudely as ${member.name} really would: naming what ${member.name} wants done and will do, without putting it off or changing the subject. At least one message says the act itself: what goes where, in plain crude words. Saying yes, teasing, setting a time or asking what ${input.player} would do is never enough alone: ${member.name} says exactly what they want done in the same reply. Low trust and affection mean they start wary or teasing and usually warm up within the scene. A dry, shy or unimpressed manner changes how they say it, never whether they say it: the act still gets named, in that same voice. If ${input.player} has already done something sexual, it's happening: ${member.name} answers from inside it and says what they want done next. A flat no is rare, only when the persona truly fits and the bond is low. Say something new each time, moving things on from the last message. Don't repeat or lightly reword an earlier message.`,
   ].join('\n\n')
 }
 
