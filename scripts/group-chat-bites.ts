@@ -709,6 +709,7 @@ const mutations: Mutation[] = [
   { name: "nway own static", check: "nway real prompts", edits: [[worker, "selected[0], request.excludedVoice", "members[0], request.excludedVoice"]] },
   { name: "nway earlier lines", check: "nway real prompts", edits: [[worker, "...(split ? sceneMembers.length && !consented ? [] : request.history : [])", "...[]"]] },
   { name: "nway scene sentence missing", check: "nway real prompts", edits: [[prompt, "${input.sceneRule ? `\\n${input.sceneRule}` : ''}", ""]] },
+  { name: "nway scene sentence invites banter", check: "nway real prompts", edits: [[worker, "${selected[0].name} answers ${config.player}: what ${selected[0].name} wants done to them and what ${selected[0].name} does next, named in plain crude words. ${selected[0].name} doesn't organise the others or talk about anything else.", "${selected[0].name} can answer what they just said or did, and can do things with them too."]] },
   { name: "nway player line under earlier replies", check: "nway real prompts", edits: [[worker, "split && (!addressedPrompt || laterInScene) ? ''", "split && !addressedPrompt ? ''"], [worker, "split && (laterInScene || (!addressedPrompt", "split && ((!addressedPrompt"]] },
   { name: "nway player line lost for later writers", check: "nway real prompts", edits: [[worker, "split && (laterInScene || (!addressedPrompt", "split && ((!addressedPrompt"]] },
   { name: "nway first writer loses player line", check: "nway real prompts", edits: [[worker, "request.history.length > 0\n", "true\n"]] },

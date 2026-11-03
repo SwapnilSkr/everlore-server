@@ -3519,8 +3519,8 @@ await check('nway real prompts own static all earlier lines per-member caps orde
       assert(!content(writerCalls[index], 0).includes(other.group.intimacy!)); assert(!content(writerCalls[index], 0).includes(other.group.wants))
     }
     assert(content(writerCalls[index], 1).includes(`Held${member} at 4.`))
-    assert(content(writerCalls[index], 1).includes(`This is a scene with ${playerName} and `))
-    assert(content(writerCalls[index], 1).includes(`${names[member]} can answer what they just said or did, and can do things with them too.`))
+    assert(content(writerCalls[index], 1).includes(`This is a sex scene between ${playerName}, ${names[member]} and `))
+    assert(content(writerCalls[index], 1).includes(`${names[member]} answers ${playerName}: what ${names[member]} wants done to them and what ${names[member]} does next, named in plain crude words. ${names[member]} doesn't organise the others or talk about anything else.`))
     const playerAction = order.map(member => `@${names[member]}`).join(' ')
     // First writer: the player's line closes the prompt. Later writers: it comes before this turn's replies.
     if (!index) assert(content(writerCalls[index], 1).trim().endsWith(playerAction))
@@ -3528,7 +3528,7 @@ await check('nway real prompts own static all earlier lines per-member caps orde
     if (index) assert.equal(content(writerCalls[index], 1).split(playerAction).length, 2)
     for (let prior = 0; prior < index; prior++) for (let line = 0; line < 3; line++) assert(content(writerCalls[index], 1).includes(`Fresh${line} item ${prior}.`))
   }
-  assert(!requestText(writerCalls[3]).includes('This is a scene with '))
+  assert(!requestText(writerCalls[3]).includes('This is a sex scene between '))
   const stored = lastData().lines as Array<{ character_id: string; text: string; shown_at: Date }>
   assert.deepEqual(lastData().scene_members, order.map(member => ids[member]))
   for (const member of order) assert.equal(stored.filter(line => line.character_id === ids[member]).length, 3)
@@ -3622,11 +3622,11 @@ await check('nway continuation counts involvement narrowing and direct exclude s
   writerCalls = []; modelReplies = [`${names[0]}: Narrowed answer.`]
   await turn({ userMessage: `@${names[0]} keep going` }, never)
   assert(!Object.hasOwn(lastData(), 'scene_members'))
-  assert(writerCalls.every(call => !requestText(call).includes('This is a scene with ')))
+  assert(writerCalls.every(call => !requestText(call).includes('This is a sex scene between ')))
   writerCalls = []; modelReplies = [`${names[0]}: Private answer.`]
   await turn({ directWith: ids[0], userMessage: `@${names[0]} @${names[2]}` }, never)
   assert.equal(writerCalls.length, 1); assert(!Object.hasOwn(lastData(), 'scene_members'))
-  assert(!requestText(writerCalls[0]).includes('This is a scene with '))
+  assert(!requestText(writerCalls[0]).includes('This is a sex scene between '))
 })
 
 await check('nway tame members judged after completion and removed only from their own writer view', async () => {
@@ -3661,7 +3661,7 @@ await check('nway legacy adult request publish and event retain pre-scene shape 
   assert.deepEqual(Object.keys(shown[0]).sort(), ['eventId', 'instanceId', 'lines', 'type'])
   for (const key of ['scene_members', 'tame_members']) assert(!Object.hasOwn(data, key))
   assert.equal(content(writerCalls[0], 0), buildAddressedStatic({ ...template, members, player: playerName }, members[0]))
-  assert(!requestText(writerCalls[0]).includes('This is a scene with '))
+  assert(!requestText(writerCalls[0]).includes('This is a sex scene between '))
   const trace = { requests: writerCalls.map(call => ({ ...call, sessionId: 'fixture', messages: (call.messages as Row[]).map(message => ({ ...message, content: String(message.content).replace(/It's [^\n]+\./, "It's CLOCK.") })) })),
     data: { ...data, group_state_after: 'fixture', lines: (data.lines as Row[]).map(({ shown_at: _shown, ...line }) => line) },
     shown: shown.map(frame => ({ ...frame, instanceId: 'fixture', eventId: 'fixture', lines: (frame.lines as Row[]).map(({ shownAt: _shown, ...line }) => line) })) }

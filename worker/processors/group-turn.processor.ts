@@ -209,8 +209,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           // coming before the line they answer. It goes above them, in order.
           const laterInScene = addressedPrompt && sceneMembers.length > 0 && request.history.length > 0
           // Only a scene member writing alone: a bystander or a repair isn't in the scene.
+          // Proven live and by replay: inviting them to answer each other gave 7 of 22 explicit, all
+          // banter between them. Answering the player, on the same history, gave 15 of 18.
           const sceneOthers = selected.length === 1 && sceneMembers.includes(selected[0].id) ? sceneMembers.filter(id => id !== selected[0].id).map(id => members.find(member => member.id === id)!.name) : []
-          const dynamic = buildGroupDynamic({ sceneRule: sceneOthers.length ? `This is a scene with ${config.player} and ${sceneOthers.join(', ')}. ${selected[0].name} can answer what they just said or did, and can do things with them too.` : undefined, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
+          const dynamic = buildGroupDynamic({ sceneRule: sceneOthers.length ? `This is a sex scene between ${config.player}, ${selected[0].name} and ${sceneOthers.join(' and ')}, and it's happening now. ${selected[0].name} answers ${config.player}: what ${selected[0].name} wants done to them and what ${selected[0].name} does next, named in plain crude words. ${selected[0].name} doesn't organise the others or talk about anything else.` : undefined, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),
             groupContext: stillAdult ? undefined : shownGroup,
             history: [...(addressedPrompt ? sceneMembers.length ? writerHistory(speakers[0]) : addressedHistory : shownWriterHistory), ...(origin === 'player' && split && (laterInScene || (!addressedPrompt && (!sceneMembers.length || consented))) ? [playerLine] : []), ...(split ? sceneMembers.length && !consented ? [] : request.history : [])],
