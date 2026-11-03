@@ -1,3 +1,4 @@
+import { groupPlayerLine, groupLineText, groupSpeaker, GROUP_ACTION_RULE } from '../../src/services/group-chat/actions'
 import { curateGroupBonds } from '../../src/services/group-chat/bonds'
 import { GROUP_CURATION_SCHEMA, filterGroupAtomAudiences, closeGroupThreads, groupMemoryTextKey, missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts, clearEverydayAdultMarks, uncoveredAdultEvents, adultRetryAtoms, adultLineAtoms } from '../../src/services/group-chat/curation'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
@@ -449,7 +450,7 @@ export function buildMemoryCurationRequest(params: {
       responseSchema: GROUP_CURATION_SCHEMA,
       messages: [
         { role: 'system' as const, content: GROUP_EXTRACTION_PROMPT },
-        { role: 'user' as const, content: `Scene type: ${params.sceneTag}\n\nCharacter roster:\n${rosterLines}\n\nIdentity boundary:\nThis is a group conversation. The human player is "${params.group.player}"; use "player" for this person's subjects and objects. All other speakers are separate people. "I", "me", and "my" belong to the speaker of THAT numbered message. Resolve relatives and possessions to that speaker, never to another member or a GM protagonist. Name every person explicitly in atom text, subjects and objects.\n\nOPEN THREADS:\n${params.openThreads?.map(thread => `${thread.id}: ${thread.text}`).join('\n') || '(none)'}\n\nNumbered messages (speaker and text):\n${params.group.messages.map(message => `${message.number}. ${JSON.stringify({ speaker: message.name, text: message.text })}`).join('\n')}` },
+        { role: 'user' as const, content: `Scene type: ${params.sceneTag}\n\nCharacter roster:\n${rosterLines}\n\nIdentity boundary:\nThis is a group conversation. The human player is "${params.group.player}"; use "player" for this person's subjects and objects. All other speakers are separate people. "I", "me", and "my" belong to the speaker of THAT numbered message. Resolve relatives and possessions to that speaker, never to another member or a GM protagonist. Name every person explicitly in atom text, subjects and objects.\n\nOPEN THREADS:\n${params.openThreads?.map(thread => `${thread.id}: ${thread.text}`).join('\n') || '(none)'}${params.group.messages.some(message => message.player_action) ? `\n\n${GROUP_ACTION_RULE}` : ''}\n\nNumbered messages (speaker and text):\n${params.group.messages.map(message => `${message.number}. ${JSON.stringify({ speaker: message.name, text: message.player_action ? groupLineText(groupPlayerLine(message.name, message.text, true)) : message.text })}`).join('\n')}` },
       ],
     }
   }
@@ -473,7 +474,7 @@ async function groupMemoryWork(job: Job) {
   if (!batch) return { skipped: 'group_batch_obsolete' }
   const members = await loadGroupMembers(batch.instance)
   const messages = batch.events.flatMap(event => groupMessages([event], batch.instance.group_context!.player, members, batch.thread)
-    .map(line => ({ ...line, eventId: event._id, adult: event.type === 'intimate', number: 0 })))
+    .map(line => ({ ...line, name: groupSpeaker(line), eventId: event._id, adult: event.type === 'intimate', number: 0 })))
     .map((line, index) => ({ ...line, number: index + 1 }))
   const group: GroupMemoryBatch = { player: batch.instance.group_context!.player, messages, events: batch.events, through: batch.through, overlap: batch.overlap, ...(batch.thread === undefined ? {} : { thread: batch.thread }) }
   try {

@@ -1,3 +1,4 @@
+import { groupPlayerLine, groupLineText, GROUP_ACTION_RULE } from './actions'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
 import { relationshipBaseline } from '../../utils/relationship-baseline'
@@ -61,7 +62,7 @@ export function buildGroupBondRequest(group: GroupMemoryBatch, members: GroupMem
     },
     messages: [
       { role: 'system' as const, content: 'You judge changes in each member’s bond toward the player. Most batches change nothing. Return a change only when feeling toward the player really shifts: a secret shared or kept, a promise, a confession, a betrayal, real hurt, sex. Plans, jokes, banter, flirting in passing, food, where someone is and friendly chat change nothing, however warm they sound. Use trust, affection, fear or rivalry and a delta: usually 1 to 3, 4 to 6 for a strong moment, up to 10 only for something life-changing, negative when it falls. Give an exact quote from one numbered line and its line number. That line must be the player’s or that member’s own words. At most one change per member per meter. Return {"changes":[]} when nothing changed.' },
-      { role: 'user' as const, content: `Player: ${group.player}\nMembers: ${members.map(member => member.name).join(', ')}\nNumbered lines:\n${group.messages.map(line => `${line.number}. ${JSON.stringify({ speaker: line.name, text: line.text })}`).join('\n')}` },
+      { role: 'user' as const, content: `Player: ${group.player}\nMembers: ${members.map(member => member.name).join(', ')}${group.messages.some(line => line.player_action) ? `\n${GROUP_ACTION_RULE}` : ''}\nNumbered lines:\n${group.messages.map(line => `${line.number}. ${JSON.stringify({ speaker: line.name, text: line.player_action ? groupLineText(groupPlayerLine(line.name, line.text, true)) : line.text })}`).join('\n')}` },
     ],
   }
 }

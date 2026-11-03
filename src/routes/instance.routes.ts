@@ -24,6 +24,8 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
 
   .put('/:id/bonds/:characterId', (ctx) => instanceController.setBonds(ctx), { body: t.Unknown() })
 
+  .get('/:id/actions', (ctx) => instanceController.actions(ctx))
+
   .get('/:id/threads', (ctx) => instanceController.threads(ctx))
 
   .get('/:id', (ctx) => instanceController.getById(ctx))

@@ -3264,5 +3264,173 @@ await check('bond purge reset save internal template and account deletion remove
   assert.deepEqual(failures, [])
 })
 
+
+// Action checks cross the actual socket, processor, read routes and background writers.
+const { GROUP_ACTION_RULE } = await import('../src/services/group-chat/actions')
+const { ordinaryActions } = await import('./group-chat-fixtures')
+async function actionHttp(query = '') {
+  const { instanceRoutes } = await import('../src/routes/instance.routes')
+  const app = new Elysia().onError(({ error, set }) => {
+    set.status = 'statusCode' in error ? Number(error.statusCode) : 500
+    return { message: error.message }
+  }).use(instanceRoutes)
+  return app.handle(new Request(`http://localhost/instances/${instanceId}/actions${query}`))
+}
+await check('actions socket refusals leave no reservation lock or job; accepted kind survives to storage', async () => {
+  const reserve = billingService.reserve, release = billingService.release
+  const pending = new Set<string>()
+  billingService.reserve = async () => { const id = crypto.randomUUID(); pending.add(id); return { reservation_id: id, cost: 0, balance: null } }
+  billingService.release = async (_player, id) => { if (id) pending.delete(id) }
+  try {
+    for (const scenario of ['chat world', 'direct', 'empty', 'whitespace', 'too long', 'unknown kind']) {
+      await start()
+      if (scenario === 'chat world') delete rows('worldInstances')[0].group_state
+      const sent: Row[] = []
+      await playWsService.handleMessage(socket(sent), { ...chat(scenario === 'empty' ? '' : scenario === 'whitespace' ? '   ' : scenario === 'too long' ? 'x'.repeat(4001) : ordinaryActions[0], scenario === 'direct' ? ids[0] : undefined), kind: scenario === 'unknown kind' ? 'other' : 'action' })
+      assert.equal(sent[0].type, 'error', scenario); assert.equal(typeof sent[0].message, 'string', scenario)
+      assert.equal(pending.size, 0, scenario); assert.equal(queued.length, 0, scenario)
+      assert(!locks.has(`lock:gen:${playerId}:${instanceId}`), scenario)
+    }
+    await start(); const sent: Row[] = []
+    await playWsService.handleMessage(socket(sent), { ...chat(`@${names[1]} ${ordinaryActions[0]}`), kind: 'action' })
+    assert.equal(sent[0].type, 'ack'); assert.equal(queued[0].kind, 'action')
+    modelReplies = [`${names[1]}: I see what you left.`]
+    await groupTurnProcessor({ id: sent[0].jobId, data: queued[0] } as unknown as Job<GroupTurnJob>, { rng: never })
+    assert.equal(lastData().player_action, true); assert.equal(lastData().player_input, `@${names[1]} ${ordinaryActions[0]}`)
+    assert(storedEvents().at(-1)!.data.lines!.some(line => line.character_id === ids[1]))
+    const complete = frames.find(frame => frame.type === 'generation_complete')!
+    assert.equal((complete.event as Row).player_action, true)
+    assert.equal(storedEvents().at(-1)!.data.group_state_after!.unprompted_since_player, 0)
+    for (const payload of [await generationService.loadInstance(instanceId, playerId), await (await import('../src/services/memory.service')).memoryService.getEvents(instanceId, playerId, {})]) {
+      assert(JSON.stringify(payload).includes('"player_action":true')); forbidden(payload)
+    }
+  } finally { billingService.reserve = reserve; billingService.release = release }
+})
+await check('actions legacy message has no marker or claim rule and keeps exact prompt bytes', async () => {
+  await start()
+  const now = new Date('2026-11-03T18:00Z')
+  const { groupPlayerLine } = await import('../src/services/group-chat/actions')
+  const base = { memories: [], summaries: [], now, speakers: [names[0]], situation: `${playerName}: ${ordinaryActions[0]}` }
+  assert.deepEqual(groupPlayerLine(playerName, ordinaryActions[0]), { name: playerName, text: ordinaryActions[0] })
+  assert.equal(buildGroupDynamic({ ...base, history: [groupPlayerLine(playerName, ordinaryActions[0])] }), buildGroupDynamic({ ...base, history: [{ name: playerName, text: ordinaryActions[0] }] }))
+  await generationService.dispatch({ instanceId, playerId, userMessage: ordinaryActions[0] })
+  assert(!Object.hasOwn(queued[0], 'kind'))
+  await turn({ userMessage: ordinaryActions[0] }, never)
+  assert(!Object.hasOwn(lastData(), 'player_action'))
+  assert(writerCalls.every(call => !requestText(call).includes(GROUP_ACTION_RULE)))
+  assert(content(writerCalls[0], 1).endsWith(`${playerName}: ${ordinaryActions[0]}`))
+  await start(); addEvents(5); curatorReply = { memories: [atom('A remembered ordinary fact.', 'player', 1)] }; await memoryProcessor(memoryJob())
+  assert(curatorRequests.every(call => !requestText(call).includes(GROUP_ACTION_RULE)))
+  assert(bondRequests.every(call => !requestText(call).includes(GROUP_ACTION_RULE)))
+})
+await check('actions transcript form reaches current history direct block curator bonds and summary', async () => {
+  await start()
+  for (const text of ordinaryActions) {
+    const from = writerCalls.length
+    await turn({ kind: 'action', userMessage: text }, () => 0)
+    assert(lastData().player_action); assert(storedEvents().at(-1)!.data.lines!.length)
+    for (const call of writerCalls.slice(from)) { assert(requestText(call).includes(`${playerName} did this: ${text}`)); assert(requestText(call).includes(GROUP_ACTION_RULE)); assert(!requestText(call).includes(`${playerName}: ${text}`)) }
+  }
+  const before = writerCalls.length
+  modelReplies = [`${names[2]}: I saw the parcel.`]
+  await turn({ userMessage: `@${names[2]} what did I leave?` }, never)
+  for (const call of writerCalls.slice(before)) { assert(requestText(call).includes(`${playerName} did this: ${ordinaryActions[0]}`)); assert(requestText(call).includes(GROUP_ACTION_RULE)) }
+  modelReplies = [`${names[1]}: I saw the lamp too.`]
+  await turn({ directWith: ids[1], userMessage: 'Did you see what I did?' }, never)
+  const block = requestText(writerCalls.at(-1)!).split('Group chat (read-only; everyone saw these messages):\n')[1].split('\n\n')[0]
+  assert(block.includes(`${playerName} did this: ${ordinaryActions[4]}`)); assert(requestText(writerCalls.at(-1)!).includes(GROUP_ACTION_RULE))
+  const actions = storedEvents().filter(event => event.data.player_action)
+  curatorFactory = request => ({ memories: [atom(`${playerName} left a green parcel labelled PARCEL71 on the table.`, 'player', numbered(request).find(line => line.text.includes('PARCEL71'))!.number)] })
+  await memoryProcessor(memoryJob(actions.at(-1)))
+  for (const call of [...curatorRequests, ...bondRequests]) {
+    assert(requestText(call).includes(GROUP_ACTION_RULE))
+    for (const action of actions) assert(requestText(call).includes(`${playerName} did this: ${action.data.player_input}`))
+  }
+  assert(numbered().some(line => line.speaker === playerName && line.text === `${playerName} did this: ${ordinaryActions[0]}`))
+  assert(rows('memories').length); assert(rows('memories').every(row => !Object.hasOwn(row, 'private_to')))
+  assert(rows('memories').every(row => (row.subjects as string[]).includes('player')))
+  addEvents(7)
+  await summaryProcessor({ data: { instanceId, playerId, eventId: String(storedEvents().at(-1)!._id), groupSummary: true, sceneTag: 'dialogue' } } as Job)
+  assert(summaryRequests.length)
+  assert(requestText(summaryRequests[0]).includes(`${playerName} did this: ${ordinaryActions[0]}`))
+  assert(!requestText(summaryRequests[0]).includes(`${playerName}: ${ordinaryActions[0]}`))
+  assert(rows('sceneSummaries').every(row => !Object.hasOwn(row, 'private_to')))
+  const claim = `@${names[1]} I put down my bag and ${names[1]} promises to carry it.`
+  modelReplies = [`${names[1]}: I'll decide whether I carry it.`]
+  await turn({ kind: 'action', userMessage: claim }, never)
+  assert(requestText(writerCalls.at(-1)!).includes(GROUP_ACTION_RULE))
+})
+await check('actions adult routing consent fear and hidden adult history memories and direct block', async () => {
+  for (const scenario of ['on', 'off', 'fear'] as const) {
+    await adultStart()
+    if (scenario === 'off') put(rows('users')[0], 'preferences.nsfw_enabled', false)
+    if (scenario === 'fear') put(rows('characters').find(row => String(row._id) === ids[0])!, 'relationship.fear', 70)
+    await turn({ kind: 'action', userMessage: `@${names[0]} I slide my hand over your cock. ACTIONADULT71` }, never)
+    const writing = checkLogs.at(-1)!.writing as Row[]
+    assert(writing.length)
+    assert.equal(writing[0].writer, scenario === 'on' ? 'adult' : 'normal', scenario)
+    assert.equal(writerCalls[0].model, scenario === 'on' ? 'fake-adult' : 'fake-safe', scenario)
+    assert(writerCalls.every(call => requestText(call).includes(`${playerName} did this:`)))
+    assert(writerCalls.every(call => requestText(call).includes(GROUP_ACTION_RULE)))
+  }
+  await adultStart()
+  await turn({ kind: 'action', userMessage: `@${names[0]} I slide my hand over your cock. ACTIONADULT71` }, never)
+  const adult = storedEvents().at(-1)!
+  assert.equal(adult.type, 'intimate')
+  rows('memories').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), player_id: new ObjectId(playerId), text: 'Adult action memory ACTIONMEM71',
+    subjects: ['player'], objects: [], source_event_ids: [adult._id], is_nsfw: true, is_archived: false, importance: 4, updated_at: new Date() })
+  ragMemoryTexts = ['Adult action memory ACTIONMEM71']
+  put(rows('users')[0], 'preferences.nsfw_enabled', false)
+  for (const directWith of [undefined, ids[1]]) {
+    writerCalls = []; modelReplies = [`${names[directWith ? 1 : 0]}: A fresh everyday reply.`]
+    await turn({ directWith, userMessage: `@${names[directWith ? 1 : 0]} How is your morning?` }, never)
+    for (const call of writerCalls) { assert.equal(call.model, 'fake-safe'); assert(!/ACTIONADULT71|ACTIONMEM71/.test(requestText(call))); assert(!requestText(call).includes(adult.data.player_input)) }
+  }
+  routeUser = { id: playerId, tier: 'creator' }
+  const page = await actionHttp(); assert.equal(page.status, 200); assert.deepEqual((await page.json()).actions, [])
+})
+await check('actions HTTP auth ownership world cursor projection default and bounded limits', async () => {
+  await start(); addEvents(65)
+  for (const event of storedEvents().slice(1)) event.data.player_action = true
+  routeUser = null; assert.equal((await actionHttp()).status, 401)
+  routeUser = { id: new ObjectId().toHexString(), tier: 'creator' }; assert.equal((await actionHttp()).status, 404)
+  routeUser = { id: playerId, tier: 'creator' }
+  const first = await (await actionHttp()).json()
+  assert.equal(first.actions.length, 30); assert.equal(first.actions[0].sequence, 66); assert.equal(first.next, 37)
+  const second = await (await actionHttp(`?before=${first.next}&limit=50`)).json()
+  assert.equal(second.actions.length, 35); assert.equal(second.actions[0].sequence, 36); assert.equal(second.next, null)
+  assert.deepEqual(Object.keys(first.actions[0]).sort(), ['at', 'eventId', 'sequence', 'text'])
+  assert.equal(new Set([...first.actions, ...second.actions].map((entry: Row) => entry.eventId)).size, 65)
+  for (const limit of [1, 50]) assert.equal((await (await actionHttp(`?limit=${limit}`)).json()).actions.length, limit)
+  for (const query of ['?limit=0', '?limit=51', '?limit=-1', '?limit=1.5', '?limit=bad', '?limit=', '?before=0', '?before=-1', '?before=1.5', '?before=bad', '?before=9007199254740992']) assert.equal((await actionHttp(query)).status, 400, query)
+  assert.deepEqual((await (await actionHttp('?before=1')).json()).actions, [])
+  storedEvents()[1].type = 'intimate'; storedEvents()[2].data.dm_with = ids[0]; delete storedEvents()[3].data.player_action
+  const filtered = await (await actionHttp('?before=6')).json()
+  assert.deepEqual(filtered.actions.map((entry: Row) => entry.sequence), [5])
+  put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  assert.deepEqual((await (await actionHttp('?before=6')).json()).actions.map((entry: Row) => entry.sequence), [5, 2])
+  delete rows('worldInstances')[0].group_state; assert.equal((await actionHttp()).status, 404)
+})
+await check('actions memory fallback attributes to player and rewind removes action event memory and actions read', async () => {
+  mock.module('../src/services/codex-media-carryover', () => ({ snapshotCodexMedia: async () => ({}), restoreCodexMedia: async () => {} }))
+  await start()
+  for (const text of ordinaryActions) await turn({ kind: 'action', userMessage: text }, () => 0)
+  curatorReply = { memories: [atom('A remembered ordinary fact.', 'player', 3)] }
+  await memoryProcessor(memoryJob())
+  assert(rows('memories').some(row => String(row.text).includes(`${playerName} did this: ${ordinaryActions[0]}`)))
+  assert(rows('memories').every(row => !Object.hasOwn(row, 'private_to') && (row.subjects as string[]).includes('player')))
+  const { memoryService } = await import('../src/services/memory.service')
+  const { characterCodexService } = await import('../src/services/character-codex.service')
+  Object.assign(characterCodexService, { applyManualIdentityRevisions: async () => {} })
+  const { entityGraphService } = await import('../src/services/entity-graph.service')
+  Object.assign(entityGraphService, { repairAfterRewind: async () => {} })
+  storedEvents()[0].time_anchor = { real_time: new Date(), sequence: 1, timeline_id: 'main' }
+  await memoryService.rewindToSequence(instanceId, playerId, 2)
+  assert(!storedEvents().some(event => event.data.player_action))
+  assert.equal(rows('memories').length, 0)
+  routeUser = { id: playerId, tier: 'creator' }
+  assert.deepEqual((await (await actionHttp()).json()).actions, [])
+})
+
 Math.random = originalRandom
 console.log(`group-chat audit: ${passed}/${passed} passed (pure; fake writer; no connections or paid calls)`)

@@ -221,6 +221,7 @@ export const playWsService = {
 
         let reservationId: string | null = null
         try {
+          const kind = (data as { kind?: unknown }).kind
           const directWith = (data as { direct_with?: unknown }).direct_with
           const payload = (data as { payload?: { message?: string } }).payload
           const message = payload?.message
@@ -238,6 +239,7 @@ export const playWsService = {
             playerId: user.id,
             userMessage: message,
             ...(directWith === undefined ? {} : { directWith }),
+            ...(kind === undefined ? {} : { kind }),
             billingReservationId: reservation.reservation_id,
             turnId,
             priorTurnId: locked.priorTurnId,

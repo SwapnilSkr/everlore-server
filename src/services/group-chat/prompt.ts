@@ -1,3 +1,4 @@
+import { GROUP_ACTION_RULE } from './actions'
 import { NARRATIVE_BOUNDARIES } from '../../utils/prompt-builder'
 import { buildStyleBlock } from '../../utils/narrative-styles'
 import type { GroupMember, NamedLine } from './types'
@@ -31,9 +32,11 @@ export function buildGroupDynamic(input: {
   groupContext?: NamedLine[]
   now: Date; offsetMinutes?: number; historyLimit?: number; messageRule?: string; speakers: string[]; situation: string
   bonds?: GroupMember[]
+  actionPresent?: boolean
   notToldAbout?: string[]
 }): string {
   const parts: string[] = []
+  if (input.actionPresent || input.history.slice(-(input.historyLimit ?? 30)).some(line => line.player_action) || input.groupContext?.some(line => line.player_action)) parts.push(GROUP_ACTION_RULE)
   if (input.bonds?.length) parts.push(`Bonds toward the player (never mention numbers):\n${input.bonds.filter(member => input.speakers.includes(member.name)).map(member => `${member.name}: ${JSON.stringify(member.relationship)}${(member.relationship?.fear ?? 0) >= 70 ? " — scared of the player and doesn't want anything sexual with them. Never agrees to sex because of fear." : ''}`).join('\n')}`)
   if (input.memories.length) parts.push(`Memories:\n${input.memories.join('\n')}`)
   if (input.openThreads?.length) parts.push(`Open threads:\n${input.openThreads.join('\n')}`)

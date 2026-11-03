@@ -1,3 +1,4 @@
+import { validateGroupAction } from './group-chat/actions'
 import { resolveGroupThread } from './group-chat/threads'
 import { groupThreadFilter } from './group-chat/memory'
 import { requireIdentity } from './guest-policy'
@@ -40,6 +41,7 @@ export const generationService = {
     billingReservationId?: string | null
     turnId?: string
     priorTurnId?: string
+    kind?: unknown
     directWith?: unknown
   }) {
     const { instanceId, playerId, userMessage, isContinuation = false, timeAdvance, worldAction, billingReservationId } = params
@@ -53,6 +55,7 @@ export const generationService = {
 
     const instance = await worldInstances().findOne({ _id: parseObjectId(instanceId), player_id: parseObjectId(playerId) })
     if (!instance) throw new HttpError(404, 'That story could not be found.')
+    validateGroupAction(params.kind, !!instance.group_state, params.directWith, userMessage)
     const directWith = await resolveGroupThread(instance, params.directWith)
     const requestedAt = Date.now()
     const session = await instanceService.loadSession(instanceId, playerId)
@@ -87,6 +90,7 @@ export const generationService = {
           timeAdvance,
           worldAction,
           ...(directWith === undefined ? {} : { directWith }),
+          ...(params.kind === 'action' ? { kind: 'action' } : {}),
           requestedAt,
           session,
           userNsfwEnabled,

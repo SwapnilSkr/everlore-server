@@ -1,3 +1,4 @@
+import { groupPlayerLine } from './actions'
 import { ObjectId } from 'mongodb'
 import { randomUUID } from 'node:crypto'
 import { getRedisClient } from '../../config/redis'
@@ -39,7 +40,7 @@ export function deriveGroupAudience(events: WorldEventDoc[]): { valid: boolean; 
 
 export function groupMessages(events: WorldEventDoc[], player: string, members: GroupMember[], thread?: string): NamedLine[] {
   return events.filter(event => validGroupThread(thread) && event.data.dm_with === thread).flatMap(event => [
-    ...(event.data.player_input ? [{ name: player, text: event.data.player_input }] : []),
+    ...(event.data.player_input ? [groupPlayerLine(player, event.data.player_input, event.data.player_action)] : []),
     ...(event.data.lines || []).flatMap(line => {
       const member = members.find(member => member.id === line.character_id)
       return member ? [{ name: member.name, text: line.text }] : []

@@ -38,4 +38,4 @@ export interface GroupLine {
   shown_at: Date
 }
 
-export interface NamedLine { name: string; text: string }
+export interface NamedLine { name: string; text: string; player_action?: true }

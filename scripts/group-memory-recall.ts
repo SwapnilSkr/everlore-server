@@ -44,12 +44,13 @@ import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
 import { Collection, MongoClient, ObjectId } from 'mongodb'
 import Redis from 'ioredis'
+import { ordinaryActions } from './group-chat-fixtures'
 
 // ---------------------------------------------------------------- paths, cap
 
 const ROOT = resolve(import.meta.dir, '..', '..')
-/** `--scene=a|b` replays an owner-passed adult scene after the long chat, memories on. */
-const SCENE = process.argv.find(arg => arg === '--scene=a' || arg === '--scene=b' || arg === '--scene=d')?.slice(-1) as 'a' | 'b' | 'd' | undefined
+/** Scenes a/b replay the passed adult scenes; d tests direct messages, act tests actions. */
+const SCENE = process.argv.find(arg => arg === '--scene=a' || arg === '--scene=b' || arg === '--scene=d' || arg === '--scene=act')?.slice('--scene='.length) as 'a' | 'b' | 'd' | 'act' | undefined
 /** Strips memory from writer prompts and skips curation, to isolate what memory changes. */
 const MEMORIES_OFF = Boolean(SCENE) && process.argv.includes('--memories=off')
 const OUT_DIR = process.env.GROUP_MEMORY_RECALL_OUTPUT_DIR || join(ROOT, SCENE ? '.agents/probes/group-chat/adult-memory' : '.agents/probes/group-chat/recall')
@@ -69,7 +70,7 @@ const bondSetup = bondSetupArg ? JSON.parse(bondSetupArg) as Record<string, Reco
 if (bondSetupArg !== undefined && (!SCENE || !bondSetup || Array.isArray(bondSetup) || typeof bondSetup !== 'object')) throw new Error('--bond-setup requires a scene and a JSON object mapping names to meters')
 const args = new Set(process.argv.slice(2))
 // A misquoted flag must not fall through to the paid run.
-const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b', '--scene=d', '--memories=off'].includes(arg) && !arg.startsWith('--bond-setup='))
+const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b', '--scene=d', '--scene=act', '--memories=off'].includes(arg) && !arg.startsWith('--bond-setup='))
 if (unknownArgs.length) throw new Error(`Unknown argument(s): ${unknownArgs.join(' | ')}`)
 const MODE: 'selftest' | 'plan' | 'dry' | 'run' = args.has('--selftest') ? 'selftest' : args.has('--plan') ? 'plan'
   : args.has('--dry') ? 'dry' : 'run'
@@ -831,6 +832,7 @@ type FactKey = 1 | 2 | 3 | 4 | 5 | 6 | 7
 
 interface TurnSpec {
   player: string
+  kind?: 'action'
   /** Cast members the fixture rng keeps in the speaker roll (others are rolled out). */
   speakers: string[]
   /** Leave the speaker roll to the product's own randomness, as the passed scenes did. */
@@ -1047,6 +1049,18 @@ function estimatePlan(): PlanEstimate {
 }
 
 function printPlan(): void {
+  if (SCENE === 'act') {
+    console.log(['plan actions: five ordinary actions, a later question to someone not tagged, a claim about someone else, a tagged sexual action with consent on, memory flush, and a toggle-off turn.',
+      ...ordinaryActions.map((text, index) => `  action ${index + 1}: ${text}`),
+      '  later question: ask an untagged member about the parcel.',
+      '  claim: claim another member promised something; review their independent reaction.',
+      '  adult action: tag a member; print each writer and model; review explicit reaction.',
+      '  toggle off: normal writer; prior adult words and memories absent from every writer prompt and actions read.',
+      '  memory: player attribution, no private_to, with live action provenance.',
+      '  manual pass marks: five reactions, untagged recall, independent response to the claim, explicit adult reaction.',
+      `plan actions: no calls made; paid execution requires a separately approved cap; output ${OUT_DIR}`].join('\n'))
+    return
+  }
   const planned = estimatePlan()
   const lines: string[] = []
   lines.push(`plan: ${CHAT.length} chat turns, ${QUESTIONS.filter(question => question.kind !== 'bystander').length} questions, 1 toggle-off turn, 1 post-rewind turn`)
@@ -1475,7 +1489,7 @@ async function runProbe(): Promise<number> {
     let error: string | null = null
     try {
       result = await groupTurnProcessor({
-        id: jobId, data: { instanceId: instanceId.toHexString(), playerId: PLAYER_ID, userMessage: spec.player, ...(spec.direct ? { directWith: idByName.get(spec.direct) } : {}) },
+        id: jobId, data: { instanceId: instanceId.toHexString(), playerId: PLAYER_ID, userMessage: spec.player, ...(spec.kind ? { kind: spec.kind } : {}), ...(spec.direct ? { directWith: idByName.get(spec.direct) } : {}) },
       } as never, { ...(spec.rolled ? {} : { rng: makeRng(spec.speakers, tags) }), onBackground: (work: Promise<void>) => { background.push(work) } }) as { eventId: string; sequence: number }
       await Promise.all(background.splice(0))
     } catch (caught) {
@@ -1506,11 +1520,59 @@ async function runProbe(): Promise<number> {
     if (spec.fact) factEvents.set(spec.fact, { eventId: result?.eventId ?? '', sequence: result?.sequence ?? 0 })
     if (error) errors.push(`turn ${label}: ${error}`)
     console.log(`${label}: route=${record.route ?? 'none'} calls=${calls.length} lines=${lines.length} $${record.cost.toFixed(6)}${error ? ` error=${error}` : ''}${tags.length ? ` tags=${tags.join(',')}` : ''}`)
+    if (SCENE === 'act') for (const writer of record.writing) console.log(`${label}: writer=${writer.writer} model=${writer.model} purpose=${writer.purpose}`)
     await drainPostProcess()
     return record
   }
 
   try {
+    if (SCENE === 'act') {
+      await setupBonds()
+      const addressed = members[0].name, other = members[1].name
+      const action = (player: string): TurnSpec => ({ player, kind: 'action', speakers: tagsOf(player), rolled: true })
+      const ordinary: TurnResult[] = []
+      for (const [index, text] of ordinaryActions.entries()) ordinary.push(await runTurn(action(index ? text : `@${addressed} ${text}`), `act-ordinary-${index + 1}`))
+      const later = await runTurn({ player: `@${other} what colour was the parcel I left, and what was written on it?`, speakers: [other], rolled: true }, 'act-untagged-recall')
+      const claim = await runTurn(action(`@${other} I put my bag down and ${other} promises to carry it all day.`), 'act-claim')
+      const adult = await runTurn(action(`@${addressed} I pull you close and slide my hand between your legs.`), 'act-adult-on')
+      // Reach the normal five-event curator boundary before testing withdrawal.
+      for (let index = 0; index < 2; index++) await runTurn({ player: `@${other} can you still see my drawing?`, speakers: [other], rolled: true }, `act-memory-flush-${index + 1}`)
+      const atoms = await mongoColl.memories().find({ instance_id: instanceId, is_archived: false }).toArray()
+      const actionIds = [...ordinary, claim, adult].flatMap(turn => turn.eventId ? [turn.eventId] : [])
+      const actionAtoms = atoms.filter(atom => atom.source_event_ids.some(id => actionIds.includes(String(id))))
+      const playerAtoms = actionAtoms.filter(atom => atom.subjects.some(subject => norm(subject) === 'player' || norm(subject) === norm(PLAYER)))
+      await mongoColl.users().updateOne({ _id: playerId }, { $set: { 'preferences.nsfw_enabled': false } } as never)
+      const toggle = await runTurn(action(`@${addressed} I undo my shirt and touch your bare chest.`), 'act-adult-off')
+      const writersOf = (turn: TurnResult) => turn.calls.filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration')
+      const failures: string[] = []
+      const tested = [...ordinary, later, claim, adult, toggle]
+      for (const turn of tested) {
+        if (turn.error || !turn.lines.length) failures.push(`${turn.label}: ${turn.error || 'nobody replied'}`)
+        if (turn !== later && writersOf(turn).some(call => !call.user.includes(`${PLAYER} did this: ${turn.player}`))) failures.push(`${turn.label}: action not rendered`)
+      }
+      if (!adult.writing.some(call => call.writer === 'adult')) failures.push('tagged sexual action did not reach adult writer')
+      if (!toggle.writing.length || toggle.writing.some(call => call.writer !== 'normal')) failures.push('toggle off: normal writer required')
+      const adultAtoms = actionAtoms.filter(atom => atom.is_nsfw)
+      for (const call of writersOf(toggle)) {
+        if (call.user.includes(adult.player) || adultAtoms.some(atom => norm(call.user).includes(norm(atom.text)))) failures.push('toggle off: adult action or memory reached a writer prompt')
+      }
+      if (!playerAtoms.length) failures.push('no action memory stored under player')
+      if (actionAtoms.some(atom => Object.hasOwn(atom, 'private_to'))) failures.push('an action memory has private_to')
+      const response = await bondApp.handle(new Request(`http://localhost/instances/${instanceId}/actions`, { headers: { authorization: `Bearer ${bondToken}` } }))
+      if (!response.ok) failures.push(`actions route: ${response.status}`)
+      else if (JSON.stringify(await response.json()).includes(adult.player)) failures.push('toggle off: adult action in actions read')
+      const out = ['# Actions scene', '', ...(DRY ? ['OFFLINE FIXTURES: no live writing or recall is scored.', ''] : []),
+        ...tested.flatMap(turn => [`## ${turn.label}: ${turn.route}`, `${PLAYER}${turn === later ? '' : ' did this'}: ${turn.player}`,
+          ...turn.writing.map(call => `Writer: ${call.writer}; model: ${call.model}; purpose: ${call.purpose}`), ...turn.lines.map(line => `${line.name} [${line.model ?? 'unknown'}]: ${line.text}`), '']),
+        '## Stored action memories', ...actionAtoms.map(atom => JSON.stringify({ text: atom.text, subjects: atom.subjects, private_to: atom.private_to, sources: atom.source_event_ids })), '',
+        '## Structural failures', ...(failures.length ? failures : ['none']), '',
+        '## Manual pass marks (review required)', 'Five ordinary replies react to each action; the untagged member recalls the parcel; the claim is not simply accepted; the consent-on adult reaction is explicit.',
+        `Spend: $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}).`]
+      writeFileSync(join(RUN_DIR, 'scene.md'), `${out.join('\n')}\n`)
+      writeCuratorResponses()
+      console.log(`actions: ${failures.length} structural failure(s); ${playerAtoms.length} player action memories; manual pass marks require review${DRY ? '; offline fixtures only' : ''}`)
+      return failures.length ? 1 : 0
+    }
     if (SCENE === 'd') {
       await setupBonds()
       if (IN_FLAT && process.env.GROUP_SCENE_SKIP_CHAT !== '1') for (const spec of CHAT.slice(0, CHAT.findIndex(entry => entry.fact === 7) + 1)) await runTurn(spec, `chat-${turnIndex + 1}`)

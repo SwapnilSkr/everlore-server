@@ -1,3 +1,4 @@
+import { groupPlayerFact } from './actions'
 import { mongoColl } from '../../config/mongo'
 import type { MemoryDoc } from '../../models/memory.model'
 import { allowedGroupMemories, deriveGroupAudience, type GroupMemoryBatch } from './memory'
@@ -110,7 +111,7 @@ export function adultRetryAtoms<T extends { text: string; is_nsfw?: unknown }>(k
 /** Last resort, so a scene is never lost: what the player said on the uncovered turns, word for word. */
 export function adultLineAtoms(group: Pick<GroupMemoryBatch, 'player' | 'messages'>, uncovered: Set<string>) {
   return group.messages.filter(message => message.adult && message.name === group.player && uncovered.has(String(message.eventId))).map(message => ({
-    text: `${group.player} said: ${message.text}`.slice(0, 600), type: 'observation', importance: 3, is_nsfw: true,
+    text: groupPlayerFact(group.player, message).slice(0, 600), type: 'observation', importance: 3, is_nsfw: true,
     subjects: ['player'], objects: [], unresolved_thread: false, retrieval_terms: [], source_messages: [message.number],
   }))
 }
@@ -139,7 +140,7 @@ export function refileSpokenFacts<T extends { text: string; is_nsfw?: unknown; s
     const spoken = same.filter(message => message.name.toLowerCase() === player).sort((a, b) => share(b.text) - share(a.text))[0]
     if (!spoken || share(spoken.text) < REFILED_SHARE || share(spoken.text) <= best(same.filter(message => people.has(message.name.toLowerCase())))) return [atom]
     refiled++
-    const text = `${group.player} said: ${spoken.text}`.slice(0, 600)
+    const text = groupPlayerFact(group.player, spoken).slice(0, 600)
     if (seen.has(text)) return []
     seen.add(text)
     return [{ ...atom, text, is_nsfw: spoken.adult, subjects: ['player'], objects: atom.subjects, source_messages: [spoken.number] }]
@@ -159,7 +160,7 @@ export function missedDetailAtoms(group: Pick<GroupMemoryBatch, 'player' | 'mess
   const held = [...atoms.map(atom => atom.text), ...stored].join('\n').toLowerCase()
   return group.messages.filter(message => message.name === group.player &&
     exactDetails(message.text).some(word => !held.includes(word.toLowerCase()))).map(message => ({
-    text: `${group.player} said: ${message.text}`.slice(0, 600), type: 'observation', importance: 3, is_nsfw: message.adult,
+    text: groupPlayerFact(group.player, message).slice(0, 600), type: 'observation', importance: 3, is_nsfw: message.adult,
     subjects: ['player'], objects: [], unresolved_thread: false, retrieval_terms: [], source_messages: [message.number],
   }))
 }

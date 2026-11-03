@@ -1,3 +1,4 @@
+import { groupPlayerLine, groupLineText, groupSpeaker, validateGroupAction } from '../../src/services/group-chat/actions'
 import type { Job } from 'bullmq'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../src/config/mongo'
@@ -29,6 +30,7 @@ import { log } from '../../src/utils/logger'
 
 export interface GroupTurnJob {
   instanceId: string; playerId: string; userMessage: string
+  kind?: 'action'
   directWith?: string
   origin?: GroupOrigin; gapStart?: string; priorTurnId?: string
 }
@@ -52,6 +54,8 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   if (!player || player.guest || player.account_status === 'banned') throw new Error('Sign in to continue.')
   const guard = screenPlayerInput(userMessage)
   if (guard.blocked) throw new Error(guard.message)
+  validateGroupAction(job.data.kind, true, job.data.directWith, userMessage)
+  if (job.data.kind && origin !== 'player') throw new Error('Send an action as the player.')
   const directWith = await resolveGroupThread(instance, job.data.directWith)
   if (directWith && origin !== 'player') throw new Error('Send a message to keep this chat going.')
   const members = await loadGroupMembers(instance)
@@ -75,14 +79,15 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   }))).flat()
   const state = instance.group_state
   const config = instance.group_context
+  const playerLine = groupPlayerLine(config.player, userMessage, job.data.kind === 'action' ? true : undefined)
   const roll = directWith ? { picked: [directWith], tags: [] as string[] } : rollSpeakers(members, state.silent_for, origin, userMessage, rng)
   const groupEvents = directWith ? (await mongoColl.events().find({ instance_id: iid, ...groupThreadFilter() })
     .sort({ sequence: -1 }).limit(8).toArray()).reverse() : undefined
   const groupContext = groupEvents && groupMessages(groupEvents, config.player, members).slice(-8)
   const plainGroupContext = groupEvents && groupMessages(withoutAdultEvents(groupEvents), config.player, members).slice(-8)
   const topic = config.topics[state.topics_used % config.topics.length]
-  const query = [...messagesFromEvents(recent).slice(-3).map(line => `${line.name}: ${line.text}`),
-    origin === 'player' ? `${config.player}: ${userMessage}` : `${config.player} is quiet. Topic: ${topic}`].join('\n')
+  const query = [...messagesFromEvents(recent).slice(-3).map(line => groupLineText(line)),
+    origin === 'player' ? groupLineText(playerLine) : `${config.player} is quiet. Topic: ${topic}`].join('\n')
   const namedMembers = members.filter(member => roll.picked.includes(member.id) || (!directWith && mentionsMember(userMessage, member.name)))
   const namedEntities = await mongoColl.entities().find({ instance_id: iid,
     $or: [{ character_id: { $in: namedMembers.map(member => parseObjectId(member.id)) } },
@@ -137,8 +142,8 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     // so one tame reply can't set the tone for the rest of the scene.
     const addressedMessages = recent.filter(event => event.data.model_used !== 'seed').flatMap(event =>
       messagesFromEvents([event]).filter(line => !(event.data.tame === true && line.name === addressedName)))
-    const otherMessages = addressedMessages.filter(line => line.name !== config.player && line.name !== addressedName).slice(-3)
-    const addressedHistory = addressedMessages.filter(line => line.name === config.player || line.name === addressedName || otherMessages.includes(line))
+    const otherMessages = addressedMessages.filter(line => groupSpeaker(line) !== config.player && line.name !== addressedName).slice(-3)
+    const addressedHistory = addressedMessages.filter(line => groupSpeaker(line) === config.player || line.name === addressedName || otherMessages.includes(line))
     const now = new Date()
     // Proven live: asked a plain question mid-scene, she answered it, then spent the next
     // messages steering back to sex. One message answers it and leaves the lead to the player.
@@ -172,14 +177,14 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const hiddenWords = origin === 'player' && !addressedPrompt ? await groupHiddenWords({ instanceId: iid, thread: directWith, line: userMessage,
             people: [config.player, ...members.map(member => member.name)], known: [...memory.memories, ...memory.openThreads],
             lines: [...shownHistory, ...(shownGroup || [])] }) : []
-          const dynamic = buildGroupDynamic({ bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
+          const dynamic = buildGroupDynamic({ actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),
             groupContext: stillAdult ? undefined : shownGroup,
-            history: [...(addressedPrompt ? addressedHistory : shownHistory), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
+            history: [...(addressedPrompt ? addressedHistory : shownHistory), ...(origin === 'player' && split && !addressedPrompt ? [playerLine] : []), ...(split ? request.history : [])],
             historyLimit: split ? addressedPrompt ? 12 : directWith ? 30 : 5 : 30,
             messageRule: split ? plainQuestion && addressedPrompt ? 'Write one message, answering what was asked.' : addressedPrompt || directWith ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
             now, offsetMinutes: state.tz_offset_minutes, speakers: selected.map(member => member.name),
-            situation: origin === 'player' ? split && !addressedPrompt ? '' : `${config.player}: ${userMessage}`
+            situation: origin === 'player' ? split && !addressedPrompt ? '' : groupLineText(playerLine)
               : origin === 'catchup' ? `Write up to four messages they sent while ${config.player} was away. Topic: ${topic}`
                 : `${config.player} is quiet. The group carries on. Topic: ${topic}`,
           })
@@ -215,7 +220,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     const event: WorldEventDoc = {
       _id: new ObjectId(), instance_id: iid, player_id: pid, sequence, type: adult ? 'intimate' : 'narration',
       scene_tag: 'dialogue', is_user_edited: false, edit_history: [], created_at: now,
-      data: { ...(directWith === undefined ? {} : { dm_with: directWith }), player_input: origin === 'player' ? userMessage : '',
+      data: { ...(job.data.kind === 'action' ? { player_action: true as const } : {}), ...(directWith === undefined ? {} : { dm_with: directWith }), player_input: origin === 'player' ? userMessage : '',
         ai_response: reply.lines.map(line => `${line.name}: ${line.text}`).join('\n'),
         origin, lines, group_state_after: nextState, state_mutations: {}, flag_mutations: {},
         model_used: reply.model, tokens_in: usage.reduce((sum, call) => sum + call.prompt_tokens, 0),
@@ -256,7 +261,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           text: line.text, shownAt: line.shown_at })) }))
       await finishGenerationTurn(redis, lockKey, String(job.id), true, channel, JSON.stringify({
         type: 'generation_complete', instanceId, jobId: String(job.id),
-        event: { id: idString(event._id), sequence, player_input: event.data.player_input, narrative: event.data.ai_response, origin, lines },
+        event: { id: idString(event._id), sequence, ...(event.data.player_action ? { player_action: true } : {}), player_input: event.data.player_input, narrative: event.data.ai_response, origin, lines },
       }))
     } finally { void dispatchPostProcessOutbox().catch(() => {}) }
     if (addressedName && origin === 'player' && writing.some(call => call.writer === 'adult')) {

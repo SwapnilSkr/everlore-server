@@ -27,5 +27,7 @@ export const WsMessage = t.Object({
   ]),
   instance_id: t.Optional(t.String()),
   event_id: t.Optional(t.String()),
+  kind: t.Optional(t.Literal('action')),
+  direct_with: t.Optional(t.String()),
   payload: t.Optional(t.Any()),
 })
