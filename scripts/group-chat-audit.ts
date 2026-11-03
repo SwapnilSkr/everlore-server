@@ -2695,15 +2695,12 @@ await check('adult gap counts new adult turns no explicit fact cites', () => {
   assert.equal(uncoveredAdultEvents(group, [atom2(false, 2), atom2(false, 3)]).short, true)
   assert.equal(uncoveredAdultEvents({ messages: [messages[3]], events: [events[3]], overlap: 0 } as never, []).short, false)
 })
-await check('adult retry keeps only explicit new facts on uncovered turns', () => {
-  const ids = [new ObjectId(), new ObjectId()]
-  const group = { messages: ids.map((eventId, index) => ({ number: index + 1, name: names[0], text: 'x', eventId, adult: true })) } as never
-  const kept = adultRetryAtoms(group, new Set([String(ids[1])]), [{ text: 'Already  held.' }], [
-    { text: 'New fact.', is_nsfw: true, source_messages: [2] },
-    { text: 'NEW FACT.', is_nsfw: true, source_messages: [2] },
-    { text: 'already held.', is_nsfw: true, source_messages: [2] },
-    { text: 'Everyday.', is_nsfw: false, source_messages: [2] },
-    { text: 'Covered turn.', is_nsfw: true, source_messages: [1] },
+await check('adult retry keeps only explicit new facts', () => {
+  const kept = adultRetryAtoms([{ text: 'Already  held.' }], [
+    { text: 'New fact.', is_nsfw: true },
+    { text: 'NEW FACT.', is_nsfw: true },
+    { text: 'already held.', is_nsfw: true },
+    { text: 'Everyday.', is_nsfw: false },
   ])
   assert.deepEqual(kept.map(row => row.text), ['New fact.'])
 })
@@ -2734,6 +2731,12 @@ await check('memory short adult batch asks again without threads and keeps the f
   assert(!texts.some(text => String(text).includes(' said: ')))
   assert(memoryLogs.some(row => row.name === 'group.memory_validation' && Number(row.adultRetryFacts) > 0 && row.adultLinesKept === 0))
   assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence') > 1, true)
+  // Facts on only some turns are still facts: the last resort is for an answer with none.
+  await start(); addEvents(5)
+  for (const event of storedEvents().slice(1)) event.type = 'intimate'
+  curatorFactory = request => curatorRequests.length === 1 ? { memories: [] } : { memories: [atom('One scene fact.', 'player', playerLines(request)[1].number, { is_nsfw: true })] }
+  await memoryProcessor(memoryJob())
+  assert.deepEqual(rows('memories').map(row => row.text).filter(text => String(text).includes(' said: ')), [])
   // A covered batch costs no second call, and neither does an everyday one.
   await start(); addEvents(5)
   for (const event of storedEvents().slice(1)) event.type = 'intimate'

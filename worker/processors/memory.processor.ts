@@ -634,7 +634,7 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       return spoken.memories
     }
     extracted.memories = cleanAtoms(extracted.memories)
-    let gap = uncoveredAdultEvents(group, extracted.memories)
+    const gap = uncoveredAdultEvents(group, extracted.memories)
     if (gap.short) {
       // A failed second try only means the last resort below; the first answer still counts.
       try {
@@ -643,14 +643,13 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
           precedingAiResponse, playerInput, playerSpokenInput, playerNarrationFacts, aiResponse,
           openThreads: [], group,
         })))
-        const facts = adultRetryAtoms(group, gap.uncovered, extracted.memories, cleanAtoms(Array.isArray(again?.memories) ? again.memories : []))
+        const facts = adultRetryAtoms(extracted.memories, cleanAtoms(Array.isArray(again?.memories) ? again.memories : []))
         adultRetryFacts = facts.length
         extracted.memories.push(...facts)
       } catch (error) {
         log.warn('group.memory_adult_retry', { instanceId, error: (error as Error).message })
       }
-      gap = uncoveredAdultEvents(group, extracted.memories)
-      if (gap.short) {
+      if (!adultRetryFacts) {
         const lines = adultLineAtoms(group, gap.uncovered)
         adultLinesKept = lines.length
         extracted.memories.push(...lines)

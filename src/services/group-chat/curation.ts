@@ -95,13 +95,13 @@ export function uncoveredAdultEvents(group: Pick<GroupMemoryBatch, 'messages' | 
 
 /** Replays of saved batches: with the open threads in the prompt the curator kept 0 to 2 adult
  * facts of 24 lines, and without them 5 to 10 every time; a rule in its prompt didn't hold.
- * So a batch that comes back short is asked once more with no threads. These are its facts worth
- * keeping: explicit, about turns still uncovered, and not already held. */
-export function adultRetryAtoms<T extends { text: string; is_nsfw?: unknown; source_messages: number[] }>(group: Pick<GroupMemoryBatch, 'messages'>, uncovered: Set<string>, kept: Array<{ text: string }>, atoms: T[]) {
+ * So a batch that comes back short is asked once more with no threads. Its explicit facts are
+ * kept whichever turn they cite, unless already held. */
+export function adultRetryAtoms<T extends { text: string; is_nsfw?: unknown }>(kept: Array<{ text: string }>, atoms: T[]) {
   const held = new Set(kept.map(atom => normalizeGroupMemoryText(atom.text)))
   return atoms.filter(atom => {
     const key = normalizeGroupMemoryText(atom.text)
-    if (atom.is_nsfw !== true || held.has(key) || !atom.source_messages.some(number => uncovered.has(String(group.messages[number - 1].eventId)))) return false
+    if (atom.is_nsfw !== true || held.has(key)) return false
     held.add(key)
     return true
   })
