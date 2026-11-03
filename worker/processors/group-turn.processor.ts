@@ -121,7 +121,13 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       && intimate.some(event => event.data.lines?.some(line => line.character_id === member.id)))
     const adultDowngrade = route.sceneClassification === 'nsfw' && !routerYes
       ? origin !== 'player' ? 'autonomous' : !involved ? 'no_involved_member' : undefined : undefined
-    const carried = route.sceneClassification === 'nsfw' && !adultDowngrade
+    // Proven live: straight after an adult turn, kissing someone and pushing them against a wall
+    // reached the normal writer, which changed the subject. The router rightly calls a kiss alone
+    // romance, and one adult turn is below scene momentum. An action on someone already in it
+    // carries on that scene. Messages keep the momentum rule.
+    const continuesScene = origin === 'player' && job.data.kind === 'action' && template.is_nsfw_capable && fresh?.preferences?.nsfw_enabled === true
+      && recent.at(-1)?.type === 'intimate' && involved
+    const carried = route.sceneClassification === 'nsfw' && !adultDowngrade || continuesScene
     const plainLine = carried && origin === 'player' && route.routerSettled && route.trace.sexual === false && userMessage.trim().endsWith('?')
     // Proven live: told facts in its prompt, the adult writer still denied them or turned
     // the answer to sex. Asked about a stored fact, the normal writer answers plainly. So does

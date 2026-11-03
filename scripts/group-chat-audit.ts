@@ -837,6 +837,18 @@ await check('adult carry-over retains involved tagged or named members and never
   await turn({ userMessage: `@${names[0]}, morning` }, () => 0)
   assert.equal(writerCalls[0].model, 'fake-safe'); assert.equal(rows('events').at(-1)!.type, 'narration')
 })
+await check('an action on someone in the last adult turn carries the scene on; a message, someone else, an older turn or toggle off do not', async () => {
+  for (const [variant, expected] of [['action', true], ['message', false], ['other', false], ['older', false], ['off', false]] as const) {
+    await start(); if (variant !== 'off') put(rows('users')[0], 'preferences.nsfw_enabled', true)
+    addEvent('intimate', 0); if (variant === 'older') addEvent('narration', 0)
+    auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = false
+    const target = variant === 'other' ? 1 : 0
+    modelReplies = [`${names[target]}: A reply`]
+    await turn({ ...(variant === 'message' ? {} : { kind: 'action' as const }), userMessage: `@${names[target]} I kiss you.` }, () => 0)
+    assert.equal(writerCalls[0].model !== 'fake-safe', expected, variant)
+    assert.equal(rows('events').at(-1)!.type, expected ? 'intimate' : 'narration', variant)
+  }
+})
 await check('copied addressed example is omitted on same actual writer retry before advancing and normal rescue', async () => {
   for (const transportFallback of [false, true]) {
     const source = groupTemplate(); source.seed_cast![0].group!.voice!.push('Another authored example')
