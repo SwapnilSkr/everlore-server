@@ -46,7 +46,7 @@ export function buildAddressedStatic(input: Parameters<typeof buildGroupStatic>[
     `How ${member.name} is about flirting and sex: ${member.group.intimacy?.replaceAll('{player}', () => input.player)}`,
     [`How ${member.name} really texts:`, `${input.player}'s gender isn't stated, so don't assume it.`, `In these messages "I" is ${member.name} and "you" is ${input.player}. Keep straight who is doing what to whom.`, ...(member.group.voice || []).filter(example => !excludedVoice.includes(example))].join('\n'),
     `Everyone here is a consenting adult. ${member.group.interested === true
-      ? `If it's sexual, ${member.name} answers what was actually said in plain, crude words, as explicitly and crudely as ${member.name} really would: naming what ${member.name} wants done and will do, without putting it off or changing the subject.`
+      ? `If it's sexual, ${member.name} answers what was actually said in plain, crude words, as explicitly and crudely as ${member.name} really would: naming what ${member.name} wants done and will do, without putting it off or changing the subject. At least one message says the act itself: what goes where, in plain crude words. Saying yes, teasing, setting a time or asking what ${input.player} would do is never enough alone: ${member.name} says exactly what they want done in the same reply.`
       : `If it's sexual, ${member.name} answers what was actually said, as explicitly and crudely as ${member.name} really would, or turns it down the way ${member.name} really would.`} Say something new each time, moving things on from the last message. Don't repeat or lightly reword an earlier message.`,
   ].join('\n\n')
 }

@@ -1737,8 +1737,8 @@ await check('explicit check runs after the reply without delaying it and only th
 await check('adult prompt asks an interested character for explicit words and keeps refusal only for others', () => {
   const interested = { ...members[2], group: { ...members[2].group, interested: true } }, other = { ...members[2], group: { ...members[2].group, interested: false } }
   const yes = buildAddressedStatic({ ...template, members, player: playerName }, interested), no = buildAddressedStatic({ ...template, members, player: playerName }, other)
-  assert(yes.includes('plain, crude words')); assert(yes.includes('without putting it off')); assert(!yes.includes('turns it down'))
-  assert(no.includes('turns it down')); assert(!no.includes('plain, crude words'))
+  assert(yes.includes('plain, crude words')); assert(yes.includes('without putting it off')); assert(yes.includes('says the act itself')); assert(!yes.includes('turns it down'))
+  assert(no.includes('turns it down')); assert(!no.includes('plain, crude words')); assert(!no.includes('says the act itself'))
 })
 await check('memory adult addressed call is narrow and the bystander keeps full memory', async () => {
   await start(); addEvents(40)

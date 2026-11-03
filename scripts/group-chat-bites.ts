@@ -346,6 +346,7 @@ const mutations: Mutation[] = [
   { name: 'router autonomy gate', check: 'group router waits', edits: [[worker, "origin === 'player' && template.is_nsfw_capable", 'template.is_nsfw_capable']] },
   { name: 'private intimacy leak', check: 'private adult traits', edits: [['src/services/group-chat/public.ts', "'intimacy', ", '']] },
   { name: 'private voice leak', check: 'private adult traits', edits: [['src/services/group-chat/public.ts', "'voice', ", '']] },
+  { name: 'adult reply need not say the act', check: 'adult prompt asks an interested', edits: [[prompt, 'At least one message says the act itself', 'At least one message']] },
   { name: 'required interest', check: 'interested is required', edits: [['src/services/group-chat/validation.ts', 'data.is_nsfw_capable || traits!.interested !== undefined', 'traits!.interested !== undefined']] },
   { name: 'boolean interest', check: 'interested is required', edits: [['src/services/group-chat/validation.ts', "typeof traits!.interested !== 'boolean'", 'false']] },
   { name: 'schema boolean interest', check: 'seed adult schema', edits: [['src/schemas/template.schema.ts', 'interested: t.Optional(t.Boolean())', 'interested: t.Optional(t.Any())']] },
