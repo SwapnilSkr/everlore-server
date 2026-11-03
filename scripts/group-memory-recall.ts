@@ -1005,7 +1005,10 @@ const WEDDING_RECALL = '@Jess June is going to be a nightmare, all i can think a
 /** Something she said long before, asked vaguely: only the scene memories can answer it. */
 const SCENE_RECALL = '@Jess remember what you told me you wanted me to do to you earlier? say it again'
 /** Direct messages: an ordinary opening, a planted secret, then the owner-passed adult lines. */
-const DIRECT_TO = 'Jess', DIRECT_OTHER = 'Priya', DIRECT_MARKER = 'persimmon'
+const SCENE_WORLD = process.env.GROUP_SCENE_WORLD || 'flat-4b'
+const IN_FLAT = SCENE_WORLD === 'flat-4b'
+const SCENE_REWIND = process.env.GROUP_SCENE_REWIND === '1'
+const DIRECT_TO = process.env.GROUP_SCENE_TO || 'Jess', DIRECT_OTHER = 'Priya', DIRECT_MARKER = 'persimmon'
 const DIRECT_OPENING = ['hey, you ok? you went quiet in the group earlier.',
   `don't tell anyone in the flat. I got fired from the hospital last week and I'm hiding it. my locker code was ${DIRECT_MARKER.toUpperCase()} and I still have the badge.`,
   'the only other person who knows is my cousin ines, she lives over in whitby.']
@@ -1346,7 +1349,7 @@ async function runProbe(): Promise<number> {
   adultModelSet = new Set(adultChain)
 
   // ---- the group, created the way a new group is
-  const group = readGroup('flat-4b')
+  const group = readGroup(SCENE === 'd' ? SCENE_WORLD : 'flat-4b')
   const template = templateFrom(group)
   validateGroup(template as never)
   assertAdults(template as never)
@@ -1510,15 +1513,15 @@ async function runProbe(): Promise<number> {
   try {
     if (SCENE === 'd') {
       await setupBonds()
-      for (const spec of CHAT.slice(0, CHAT.findIndex(entry => entry.fact === 7) + 1)) await runTurn(spec, `chat-${turnIndex + 1}`)
-      const direct = (player: string): TurnSpec => ({ player, speakers: [DIRECT_TO], direct: DIRECT_TO, rolled: true })
+      if (IN_FLAT) for (const spec of CHAT.slice(0, CHAT.findIndex(entry => entry.fact === 7) + 1)) await runTurn(spec, `chat-${turnIndex + 1}`)
+      const direct = (player: string): TurnSpec => ({ player: IN_FLAT ? player : player.replace('in the flat', 'in the guild'), speakers: [DIRECT_TO], direct: DIRECT_TO, rolled: true })
       const opening: TurnResult[] = [], adult: TurnResult[] = []
       for (const [offset, player] of DIRECT_OPENING.entries()) opening.push(await runTurn(direct(player), `direct-open-${offset + 1}`))
       for (const [offset, player] of DIRECT_ADULT.entries()) adult.push(await runTurn(direct(player), `direct-adult-${offset + 1}`))
       const recall = await runTurn(direct(DIRECT_RECALL), 'direct-recall')
       const recallName = await runTurn(direct(DIRECT_RECALL_NAME), 'direct-recall-name')
       const probes: TurnResult[] = []
-      for (const { label, spec } of DIRECT_PROBES) probes.push(await runTurn(spec, label))
+      if (IN_FLAT) for (const { label, spec } of DIRECT_PROBES) probes.push(await runTurn(spec, label))
       await mongoColl.users().updateOne({ _id: playerId }, { $set: { 'preferences.nsfw_enabled': false } } as never)
       const toggleTurn = await runTurn({ ...direct('you look good tonight'), rolled: true }, 'direct-toggle-off')
 
@@ -1571,6 +1574,12 @@ async function runProbe(): Promise<number> {
       out.push('## Failures', '', ...(failures.length ? failures.map(item => `- ${item}`) : ['- none']), '', `Private memories for ${DIRECT_TO}: ${privateAtoms.length} of ${atoms.length}.`, ...privateAtoms.map(atom => `- ${atom.text}`), '',
         `Ledger: $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}) of $${CAP_USD.toFixed(2)}.`)
       out.push('## Bonds after scene', '', JSON.stringify(await reportBonds(), null, 2))
+      if (SCENE_REWIND) {
+        // Rows are read through the real route: chat rows after the point go, player sets stay.
+        const target = await mongoColl.events().find({ instance_id: instanceId }).sort({ sequence: -1 }).skip(8).limit(1).next()
+        await memoryService.rewindToSequence(instanceId.toHexString(), PLAYER_ID, target!.sequence)
+        writeFileSync(join(RUN_DIR, 'bonds-after-rewind.json'), `${JSON.stringify({ rewound_to: target!.sequence, bonds: await bondRoute('GET') }, null, 2)}\n`)
+      }
       writeFileSync(join(RUN_DIR, 'scene.md'), `${out.join('\n')}\n`)
       writeFileSync(join(RUN_DIR, 'adult-prompts.md'), `${allTurns.flatMap(turn => writersOf(turn).map(call => `## ${turn.label} · ${call.model}\n\n${call.user}\n\n--- reply\n${call.response}\n`)).join('\n')}\n`)
       writeCuratorResponses()
