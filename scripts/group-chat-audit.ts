@@ -6,7 +6,7 @@ import { Elysia } from 'elysia'
 import { ObjectId } from 'mongodb'
 import type { Job } from 'bullmq'
 import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders, pickSceneMembers } from '../src/services/group-chat/roll'
-import { parseLines, filterLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
+import { parseLines, filterLines, sceneVoiceLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
 import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic, sceneExamples } from '../src/services/group-chat/prompt'
 import { GROUP_SCENE_MAX_WRITERS, GROUP_SCENE_DEADLINE_MS, GROUP_WRITER_TIMEOUT_MS, groupWriterHostFailed, writeGroupReply } from '../src/services/group-chat/reply'
 import { missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts, clearEverydayAdultMarks, uncoveredAdultEvents, adultRetryAtoms, adultLineAtoms } from '../src/services/group-chat/curation'
@@ -3535,6 +3535,22 @@ await check('nway scene examples are the longest lines, rotate and skip copied o
   assert(sceneExamples({ ...listed, group: { ...listed.group, voice: ['1. only numbered'] } }, 0, [], '2. last').includes('1. only numbered'))
 })
 
+await check('a scene member may send one of their longest example lines whole, once; everything else is still a copy', () => {
+  const long = 'the longest example line that this character has', short = 'no way'
+  const voiced = { ...members[2], group: { ...members[2].group, voice: [short, long, 'second longest example line here', 'third longest example line'] } }
+  const run = (text: string, previous: { name: string; text: string }[] = [], sceneMembers = [voiced.id]) => { const counts = emptyLineCounts(); const kept = filterLines([{ name: voiced.name, text }], { members: [voiced], speakers: [voiced.id], origin: 'player', previous, openings: [], sceneMembers, blocked: () => false }, counts); return [kept[0]?.text, counts.copied_example] }
+  assert.deepEqual(run(long), [long, 0])
+  assert.deepEqual(run(long.toUpperCase()), [long.toUpperCase(), 0])
+  assert.deepEqual(run(long, [{ name: voiced.name, text: long }]), [undefined, 1])
+  assert.deepEqual(run(long, [{ name: names[0], text: long }]), [long, 0])
+  assert.deepEqual(run(long, [], []), [undefined, 1])
+  assert.deepEqual(run(short), [undefined, 1])
+  assert.deepEqual(run(`hello. ${long}`), [undefined, 1])
+  const twice = emptyLineCounts()
+  assert.deepEqual(filterLines([{ name: voiced.name, text: long }, { name: voiced.name, text: long }], { members: [voiced], speakers: [voiced.id], origin: 'player', previous: [], openings: [], sceneMembers: [voiced.id], blocked: () => false }, twice).length, 1)
+  assert.deepEqual(sceneVoiceLines(voiced.group.voice), [long, 'second longest example line here', 'third longest example line'])
+})
+
 await check('numbered scraps, near copies and a sentence another character said this turn are caught', () => {
   const voiced = { ...members[2], group: { ...members[2].group, voice: ['fine. hands first, then your mouth, then you fuck me properly tonight'] } }
   const filter = (text: string, thisTurn: { name: string; text: string }[] = []) => { const counts = emptyLineCounts(); const kept = filterLines([{ name: voiced.name, text }], { members: [voiced], speakers: [voiced.id], origin: 'player', previous: [], openings: [], thisTurn, blocked: () => false }, counts); return [kept[0]?.text, counts.copied_example, counts.empty, counts.repeated_sentence, counts.duplicate] }
@@ -3642,6 +3658,8 @@ await check('nway cap deadline and empty members retain normal tag repair with t
   }
   for (const failure of ['empty', 'transport', 'voice'] as const) {
     await adultStart()
+    // A scene member may send a long example once, so this one has been sent already.
+    if (failure === 'voice') { addEvent('narration', 1); put(rows('events').at(-1)!, 'data.lines', [{ character_id: ids[1], text: members[1].group.voice![0], shown_at: new Date() }]) }
     const rejected = failure === 'transport' ? new Error('provider failed') : failure === 'voice' ? `${names[1]}: ${members[1].group.voice![0]}` : ''
     modelReplies = [`${names[0]}: First kept.`, rejected, rejected, '', `${names[1]}: Normal backup kept.`]
     await turn({ userMessage: `@${names[0]} @${names[1]}` }, never)

@@ -81,6 +81,9 @@ const NEAR_COPY_SHARE = 0.8
 const NEAR_COPY_WORDS = 6
 const NUMBERED = /^\s*\d+[.)]\s/
 
+/** A character's longest example lines: short ones are small talk. */
+export const sceneVoiceLines = (voice: string[] = []) => [...voice].sort((a, b) => b.length - a.length).slice(0, 3)
+
 export function filterLines(input: NamedLine[], options: {
   members: GroupMember[]; speakers: string[]; origin: GroupOrigin
   previous: NamedLine[]; openings: NamedLine[]
@@ -119,6 +122,10 @@ export function filterLines(input: NamedLine[], options: {
     if (member.group.voice?.some(example => {
       const copy = normalized(stripStageDirections(example))
       // Proven live: every example joined into one message passed a whole-line comparison.
+      // Proven live: retrying these copies stretched a turn to 16 s, and the copies were in voice and
+      // fitted. In a scene, one of a character's longest lines may go out whole, once.
+      if (copy === normalized(line.text) && options.sceneMembers?.includes(member.id) && sceneVoiceLines(member.group.voice).includes(example)
+        && ![...options.previous, ...kept].some(other => other.name === line.name && normalized(stripStageDirections(other.text)) === copy)) return false
       const copied = copy === normalized(line.text) || (copy.split(/\s+/).length >= 3 && wordsOnly(line.text).includes(wordsOnly(copy)))
         // Proven live: the tail of an example, sent alone, passed as a new line.
         || (wordsOnly(line.text).split(' ').length >= 5 && wordsOnly(copy).includes(wordsOnly(line.text)))
