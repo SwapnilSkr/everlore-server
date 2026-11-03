@@ -1,7 +1,7 @@
 import type { GroupLine, GroupMember, GroupOrigin, NamedLine } from './types'
 
-export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'repeated_opener' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed' | 'repeated_idea' | 'invented_detail', number>
-export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, repeated_opener: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0, repeated_idea: 0, invented_detail: 0 })
+export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'repeated_opener' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed' | 'repeated_idea' | 'invented_detail' | 'hidden_guess', number>
+export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, repeated_opener: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0, repeated_idea: 0, invented_detail: 0, hidden_guess: 0 })
 const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim()
 
 const opener = (text: string): string | undefined => {
@@ -64,7 +64,7 @@ export function trimReply(text: string, tokenLimited: boolean, adult: boolean): 
   return clean
 }
 
-const contentWords = (text: string) => new Set<string>(text.toLowerCase().match(/\p{L}{4,}/gu) || [])
+export const contentWords = (text: string) => new Set<string>(text.toLowerCase().match(/\p{L}{4,}/gu) || [])
 /** How much of this line's wording another line already holds. */
 const sharedWording = (text: string, other: string) => {
   const words = contentWords(text), held = contentWords(other)
@@ -81,6 +81,8 @@ export function filterLines(input: NamedLine[], options: {
   addressed?: string; repeatedOpener?: boolean; repeatedIdea?: boolean; oneMessage?: boolean; finishReason?: string | null
   /** Everything the writer was shown; a long number from nowhere is a guess. */
   knownText?: string
+  /** Words of the player's question that only someone else's private thread explains. */
+  hiddenWords?: string[]
 }, counts: LineCounts): NamedLine[] {
   const kept: NamedLine[] = []
   const used = new Map<string, number>()
@@ -103,6 +105,10 @@ export function filterLines(input: NamedLine[], options: {
     // Proven live: asked for a code nobody had told them, characters answered with one.
     // A character can only hold a long number by having been shown it.
     if (options.knownText !== undefined && (line.text.match(/\p{N}{3,}/gu) || []).some(number => !options.knownText!.includes(number))) { counts.invented_detail++; continue }
+    // Proven live: asked in the group about a secret told in a direct message, characters
+    // who were never told it answered anyway ("your locker code is your birthday").
+    // Asking back is fine; a statement using those words is a guess, or the secret itself.
+    if (options.hiddenWords?.length && !line.text.trim().endsWith('?') && [...contentWords(line.text)].some(word => options.hiddenWords!.includes(word))) { counts.hidden_guess++; continue }
     const previous = options.previous.filter(other => other.name === line.name).slice(-5)
     // A short reaction can fairly recur; a full sentence copied from further back can't.
     const looksBack = line.text.trim().split(/\s+/).length >= 4 ? options.previous.filter(other => other.name === line.name) : previous

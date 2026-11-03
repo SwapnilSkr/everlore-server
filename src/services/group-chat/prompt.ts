@@ -24,6 +24,7 @@ export function buildGroupDynamic(input: {
   memories: string[]; openThreads?: string[]; summaries: string[]; history: NamedLine[]
   groupContext?: NamedLine[]
   now: Date; offsetMinutes?: number; historyLimit?: number; messageRule?: string; speakers: string[]; situation: string
+  notToldAbout?: string[]
 }): string {
   const parts: string[] = []
   if (input.memories.length) parts.push(`Memories:\n${input.memories.join('\n')}`)
@@ -34,7 +35,8 @@ export function buildGroupDynamic(input: {
   parts.push(`Recent messages:\n${input.history.slice(-(input.historyLimit ?? 30)).map(line => `${line.name}: ${line.text}`).join('\n') || '(the chat opens below)'}`)
   const local = new Date(input.now.getTime() + (input.offsetMinutes || 0) * 60_000)
   const clock = new Intl.DateTimeFormat('en-GB', { weekday: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }).format(local)
-  parts.push(`Now:\nIt's ${clock}.\nOnly these people write in this reply: ${input.speakers.join(', ')}.\n${input.messageRule ?? "Each writes one or two short messages, and it's fine if someone only reacts in a few words."}\n${input.situation}`)
+  const notTold = input.notToldAbout?.length ? `\nNobody has told ${input.speakers.join(' or ')} anything about this: ${input.notToldAbout.join(', ')}. They don't know, so they ask what's meant or say they've no idea, and never supply an answer.` : ''
+  parts.push(`Now:\nIt's ${clock}.\nOnly these people write in this reply: ${input.speakers.join(', ')}.\n${input.messageRule ?? "Each writes one or two short messages, and it's fine if someone only reacts in a few words."}${notTold}\n${input.situation}`)
   return parts.join('\n\n')
 }
 

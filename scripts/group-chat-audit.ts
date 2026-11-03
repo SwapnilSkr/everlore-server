@@ -9,7 +9,7 @@ import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders } from '../
 import { parseLines, filterLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
 import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic } from '../src/services/group-chat/prompt'
 import { writeGroupReply } from '../src/services/group-chat/reply'
-import { missedDetailAtoms, dropAdultWriterClaims } from '../src/services/group-chat/curation'
+import { missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts } from '../src/services/group-chat/curation'
 import { validateGroup } from '../src/services/group-chat/validation'
 import { filterGroupAtomAudiences } from '../src/services/group-chat/curation'
 import { publicGroupData } from '../src/services/group-chat/public'
@@ -581,7 +581,7 @@ mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator'
 }))
 const { memoryProcessor, buildMemoryCurationRequest } = await import('../worker/processors/memory.processor')
 const { summaryProcessor } = await import('../worker/processors/summary.processor')
-const { loadGroupBatch, groupWriterMemory, groupWriterSummaries, groupMessages, deriveGroupAudience, groupMemoryMayMerge, raisedMemories, GROUP_MEMORY_TEXT_BUDGET, GROUP_ADULT_DIRECT_LINES, groupLineRaisesFact } = await import('../src/services/group-chat/memory')
+const { loadGroupBatch, groupWriterMemory, groupWriterSummaries, groupMessages, deriveGroupAudience, groupMemoryMayMerge, raisedMemories, GROUP_MEMORY_TEXT_BUDGET, GROUP_ADULT_DIRECT_LINES, groupLineRaisesFact, groupHiddenWords } = await import('../src/services/group-chat/memory')
 const { groupTurnProcessor } = await import('../worker/processors/group-turn.processor')
 const { instanceService } = await import('../src/services/instance.service')
 const { generationService } = await import('../src/services/generation.service')
@@ -2626,6 +2626,85 @@ await check('adult scene wiring passes the recent events to memory', async () =>
   writerCalls = []; modelReplies = [`${names[1]}: First direct adult answer.`]
   await turn({ userMessage: `@${names[1]} I want you.` }, never)
   assert(!requestText(writerCalls[0]).includes('very recent scene fact'))
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerSexual = false
+})
+await check('refile spoken facts under the player', () => {
+  const eventA = new ObjectId(), eventB = new ObjectId(), eventC = new ObjectId()
+  const message = (number: number, eventId: ObjectId, name: string, text: string, adult = false) => ({ number, eventId, name, text, adult })
+  const group = { player: 'Sam', messages: [
+    message(1, eventA, 'Sam', 'the only other person who knows is my cousin ines, she lives over in whitby.'),
+    message(2, eventA, 'Jess', 'whitby! that is a long way for a secret to travel.'),
+    message(3, eventB, 'Sam', 'I want you naked on the kitchen table tonight.', true),
+    message(4, eventB, 'Jess', 'my feet hurt and the kitchen is a mess, honestly.', true),
+    message(5, eventC, 'Sam', 'is that a tiny tattoo on your arm?'),
+    message(6, eventC, 'Jess', 'yes, a tiny tattoo on my arm.'),
+  ] } as never
+  const atom = (text: string, subjects: string[], source_messages: number[], is_nsfw = false) => ({ text, subjects, objects: [] as string[], source_messages, is_nsfw })
+  const wrong = atom('Jess has a cousin named Ines who lives over in Whitby.', ['Jess'], [1, 2])
+  const { memories, refiled } = refileSpokenFacts(group, [wrong])
+  assert.equal(refiled, 1)
+  assert.deepEqual(memories, [{ ...wrong, text: 'Sam said: the only other person who knows is my cousin ines, she lives over in whitby.', is_nsfw: false, subjects: ['player'], objects: ['Jess'], source_messages: [1] }])
+  // Citing only the reply still finds the player's line in that turn; a second reading collapses.
+  assert.equal(refileSpokenFacts(group, [wrong, atom('Jess has a cousin Ines over in Whitby.', ['Jess'], [2])]).memories.length, 1)
+  const adult = refileSpokenFacts(group, [atom('Jess is naked on the kitchen table.', ['Jess'], [3, 4], false)]).memories[0]
+  assert.equal(adult.is_nsfw, true)
+  const kept = [
+    atom('Jess said the kitchen is a mess and her feet hurt.', ['Jess'], [4]),
+    atom('Sam has a cousin Ines in Whitby.', ['Sam'], [1]),
+    atom('Sam has a cousin Ines in Whitby.', ['player'], [1]),
+    atom('Ines lives over in Whitby.', ['Ines'], [1]),
+    atom('Jess thinks secrets travel badly.', ['Jess'], [2]),
+    atom('Jess whispered about Ines at length.', ['Jess'], [1]),
+    atom('Jess has a tiny tattoo.', ['Jess'], [5, 6]),
+    atom('Jess heard about the cousin Ines over in Whitby.', ['player', 'Jess'], [1]),
+  ]
+  const unchanged = refileSpokenFacts(group, kept)
+  assert.equal(unchanged.refiled, 0); assert.deepEqual(unchanged.memories, kept)
+})
+await check('refile wiring runs before stored atoms', async () => {
+  const source = await Bun.file('worker/processors/memory.processor.ts').text()
+  assert(source.indexOf('extracted.memories = spoken.memories') > source.indexOf('extracted.memories = claims.memories'))
+  assert(source.indexOf('extracted.memories = spoken.memories') < source.indexOf('const missedDetails = missedDetailAtoms'))
+})
+await check('hidden words filter drops statements and keeps questions', () => {
+  const member = { id: 'one', name: 'Anya', group: {} } as never
+  const counts = emptyLineCounts()
+  const lines = [{ name: 'Anya', text: 'your locker code is your birthday.' }, { name: 'Anya', text: 'what locker?' }, { name: 'Anya', text: 'kettle is on.' }]
+  const kept = filterLines(lines, { members: [member], speakers: ['one'], origin: 'player', previous: [], openings: [], blocked: () => false, hiddenWords: ['locker'] }, counts)
+  assert.deepEqual(kept.map(line => line.text), ['what locker?', 'kettle is on.'])
+  assert.equal(counts.hidden_guess, 1)
+})
+await check('hidden words lookup comes from private threads only', async () => {
+  await start()
+  const iid = new ObjectId(instanceId), memory = (text: string, private_to?: string) => ({ _id: new ObjectId(), instance_id: iid, text, is_archived: false, ...(private_to ? { private_to } : {}) })
+  rows('memories').push(memory('Sam said: my locker code was PERSIMMON and the badge remains.', ids[0]), memory('Everyone saw the broken boiler downstairs.'))
+  const ask = (line: string, thread?: string, known: string[] = [], lines: Array<{ name: string; text: string }> = []) => groupHiddenWords({ instanceId: iid, thread, line, people: names, known, lines })
+  assert.deepEqual(await ask('what about the locker badge?'), ['locker', 'badge'])
+  assert.deepEqual(await ask('what about the locker badge?', ids[1]), ['locker', 'badge'])
+  assert.deepEqual(await ask('what about the locker badge?', ids[0]), [])
+  assert.deepEqual(await ask('tell me about the locker badge.'), [])
+  assert.deepEqual(await ask('what about the broken boiler?'), [])
+  assert.deepEqual(await ask('what about the locker badge?', undefined, ['The badge was lost.']), ['locker'])
+  assert.deepEqual(await ask('what about the locker badge?', undefined, [], [{ name: 'Sam', text: 'where is my locker?' }, { name: 'Tom', text: 'the badge was lost.' }]), ['locker'])
+})
+await check('hidden words turn tells the writer, drops the guess and never fails the reply', async () => {
+  await start()
+  rows('memories').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), text: 'Sam said: my locker code was PERSIMMON, by the orchard.', private_to: ids[0], is_archived: false })
+  writerCalls = []; modelReplies = [`${names[1]}: Your locker code is your birthday.`, `${names[1]}: Which locker do you mean?`]
+  await turn({ userMessage: `@${names[1]} what was my locker code?` }, never)
+  assert(requestText(writerCalls[0]).includes("anything about this: locker"))
+  assert(!requestText(writerCalls[0]).includes('PERSIMMON'))
+  assert.deepEqual(storedEvents().at(-1)!.data.lines!.map(line => line.text), ['Which locker do you mean?'])
+  // Every attempt guesses: the last one stands rather than failing the player's turn.
+  modelReplies = [`${names[1]}: The locker is on the left.`, `${names[1]}: The locker is by the door.`, `${names[1]}: The locker is behind the bins.`, `${names[1]}: The locker opens with a key.`]
+  await turn({ userMessage: `@${names[1]} where is my locker then?` }, never)
+  assert.equal(storedEvents().at(-1)!.data.lines!.length, 1)
+  // An adult prompt stays as it was: it only sees what the scene needs.
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; put(rows('users')[0], 'preferences.nsfw_enabled', true); judgeVerdict = true; routerSexual = true
+  writerCalls = []; modelReplies = [`${names[1]}: Adult answer here.`]
+  await turn({ directWith: ids[1], userMessage: 'Do you want my orchard fantasy?' }, never)
+  assert.equal(writerCalls[0].model, 'fake-adult')
+  assert(!requestText(writerCalls[0]).includes('anything about this'))
   auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerSexual = false
 })
 await check('toggle off keeps adult turns out of writer history, group context and summaries', async () => {

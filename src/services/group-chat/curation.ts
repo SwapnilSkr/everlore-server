@@ -1,6 +1,7 @@
 import { mongoColl } from '../../config/mongo'
 import type { MemoryDoc } from '../../models/memory.model'
 import { allowedGroupMemories, deriveGroupAudience, type GroupMemoryBatch } from './memory'
+import { contentWords } from './lines'
 import type { ObjectId } from 'mongodb'
 
 const strings = { type: 'array', items: { type: 'string' } }
@@ -65,6 +66,38 @@ export function dropAdultWriterClaims<T extends { is_nsfw?: unknown; source_mess
     return message.adult && message.name !== group.player
   })
   return { memories: atoms.filter(atom => !claim(atom)), adultClaims: atoms.filter(claim).length }
+}
+
+// Over five saved runs this fired only on the one wrong fact; true facts stayed below it.
+const REFILED_SHARE = 0.5
+
+/** Proven live: the player's "my cousin" was stored as the character's cousin, so asked
+ * later she denied knowing, and a rule in the curator's prompt didn't hold. A fact about a character that's
+ * worded from the player's line, more than from that character's own, is kept in the
+ * player's own words: what was said can't name the wrong person. */
+export function refileSpokenFacts<T extends { text: string; is_nsfw?: unknown; subjects: string[]; objects: string[]; source_messages: number[] }>(group: Pick<GroupMemoryBatch, 'player' | 'messages'>, atoms: T[]) {
+  const player = group.player.toLowerCase()
+  const seen = new Set<string>()
+  let refiled = 0
+  const memories = atoms.flatMap(atom => {
+    const people = new Set(atom.subjects.map(name => name.toLowerCase()))
+    const about = group.messages.filter(message => message.name.toLowerCase() !== player && people.has(message.name.toLowerCase()))
+    if (people.has(player) || people.has('player') || !about.length) return [atom]
+    const events = new Set(atom.source_messages.map(number => String(group.messages[number - 1].eventId)))
+    const same = group.messages.filter(message => events.has(String(message.eventId)))
+    const names = new Set([...people].flatMap(name => [...contentWords(name)]))
+    const words = [...contentWords(atom.text)].filter(word => !names.has(word))
+    const share = (text: string) => { const held = contentWords(text); return words.length ? words.filter(word => held.has(word)).length / words.length : 0 }
+    const best = (lines: typeof same) => Math.max(0, ...lines.map(line => share(line.text)))
+    const spoken = same.filter(message => message.name.toLowerCase() === player).sort((a, b) => share(b.text) - share(a.text))[0]
+    if (!spoken || share(spoken.text) < REFILED_SHARE || share(spoken.text) <= best(same.filter(message => people.has(message.name.toLowerCase())))) return [atom]
+    refiled++
+    const text = `${group.player} said: ${spoken.text}`.slice(0, 600)
+    if (seen.has(text)) return []
+    seen.add(text)
+    return [{ ...atom, text, is_nsfw: spoken.adult, subjects: ['player'], objects: atom.subjects, source_messages: [spoken.number] }]
+  })
+  return { memories, refiled }
 }
 
 /** Words that can't be recovered once lost: a digit in them, or typed in capitals. A

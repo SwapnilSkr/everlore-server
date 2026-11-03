@@ -16,7 +16,7 @@ import { liveInstanceExists } from '../../src/utils/live-instance'
 import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
 import { judgeGroupReply } from '../lib/group-explicit-check'
 import { stagePostProcess, dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
-import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE, groupLineRaisesFact, withoutAdultEvents } from '../../src/services/group-chat/memory'
+import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE, groupLineRaisesFact, withoutAdultEvents, groupHiddenWords } from '../../src/services/group-chat/memory'
 import { resolveGroupThread } from '../../src/services/group-chat/threads'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { buildGroupDynamic, buildAddressedStatic, buildGroupStatic, buildDirectStatic } from '../../src/services/group-chat/prompt'
@@ -164,10 +164,15 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const memory = await groupWriterMemory({ instanceId: iid, player: config.player,
             speakers: selected.map(member => member.name), thread: directWith, enabled: consented,
             memories: rag.memoryTexts, openThreads: rag.openThreads || [], raisedBy: addressedPrompt ? userMessage : undefined, recentEvents: recent.slice(-4).map(event => event._id) })
-          const dynamic = buildGroupDynamic({ memories: memory.memories, openThreads: memory.openThreads,
+          const shownHistory = consented ? history : plainHistory
+          const shownGroup = consented ? groupContext : plainGroupContext
+          const hiddenWords = origin === 'player' && !addressedPrompt ? await groupHiddenWords({ instanceId: iid, thread: directWith, line: userMessage,
+            people: [config.player, ...members.map(member => member.name)], known: [...memory.memories, ...memory.openThreads],
+            lines: [...shownHistory, ...(shownGroup || [])] }) : []
+          const dynamic = buildGroupDynamic({ notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),
-            groupContext: stillAdult ? undefined : consented ? groupContext : plainGroupContext,
-            history: [...(addressedPrompt ? addressedHistory : consented ? history : plainHistory), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
+            groupContext: stillAdult ? undefined : shownGroup,
+            history: [...(addressedPrompt ? addressedHistory : shownHistory), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
             historyLimit: split ? addressedPrompt ? 12 : directWith ? 30 : 5 : 30,
             messageRule: split ? plainQuestion && addressedPrompt ? 'Write one message, answering what was asked.' : addressedPrompt || directWith ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
             now, offsetMinutes: state.tz_offset_minutes, speakers: selected.map(member => member.name),
@@ -184,7 +189,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
               messages: [{ role: 'system', content: system }, { role: 'user', content: dynamic }],
               temperature: narrationTemperature(model), maxTokens: split ? addressedPrompt || directWith ? 300 : 60 * speakers.length : 400,
               sessionId: directWith ? `${instanceId}:direct:${directWith}` : instanceId }, [])
-            return { ...result, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: index + 1, prompt: `${system}\n${dynamic}` }
+            return { ...result, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: index + 1, prompt: `${system}\n${dynamic}`, hiddenWords }
           } catch (error) {
             if (error instanceof EmptyLLMResponseError) return { content: '', model, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: index + 1 }
             if (!stillAdult && !isRateLimitError(error)) throw error

@@ -5,6 +5,7 @@ import { mongoColl } from '../../config/mongo'
 import type { WorldEventDoc } from '../../models/world-event.model'
 import type { MemoryDoc } from '../../models/memory.model'
 import type { GroupMember, NamedLine } from './types'
+import { contentWords } from './lines'
 
 export const GROUP_MEMORY_CADENCE = 5
 export const GROUP_SUMMARY_CADENCE = 12
@@ -169,6 +170,19 @@ export async function groupLineRaisesFact(input: { instanceId: ObjectId; player:
   }).sort({ updated_at: -1 }).limit(200).toArray()
   const allowed = await allowedGroupMemories(input.instanceId, candidates, input.thread, true)
   return raisedMemories(input.line, allowed.filter(memory => memory.explicit_fact !== true), people).length > 0
+}
+
+/** Words of a player's question that only a thread this writer can't see explains. Only the
+ * player's own words come back, so the prompt and filter using them can't carry the secret.
+ * Questions don't count as knowing: asking twice about a locker doesn't explain it. */
+export async function groupHiddenWords(input: { instanceId: ObjectId; thread?: string; line: string; people: string[]; known: string[]; lines: NamedLine[] }) {
+  if (!input.line.trim().endsWith('?')) return []
+  const hidden = await mongoColl.memories().find({ instance_id: input.instanceId, is_archived: false,
+    private_to: input.thread === undefined ? { $exists: true } : { $exists: true, $ne: input.thread } }, { projection: { text: 1 } }).limit(200).toArray()
+  if (!hidden.length) return []
+  const held = contentWords(hidden.map(memory => memory.text).join('\n'))
+  const known = contentWords([...input.known, ...input.lines.filter(line => !line.text.trim().endsWith('?')).map(line => line.text), ...input.people].join('\n'))
+  return [...contentWords(input.line)].filter(word => held.has(word) && !known.has(word))
 }
 
 /** RAG is shared with story worlds; group calls verify every returned atom against Mongo. */
