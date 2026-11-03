@@ -3502,6 +3502,10 @@ await check('nway scene examples are the longest lines, rotate and skip copied o
   assert.deepEqual(sceneExamples(voiced, 0, [one]), [two, three])
   assert.deepEqual(sceneExamples({ ...voiced, group: { ...voiced.group, voice: ['only'] } }, 4), ['only'])
   assert.deepEqual(sceneExamples({ ...voiced, group: { ...voiced.group, voice: [] } }, 0), [])
+  const listed = { ...voiced, group: { ...voiced.group, voice: ['1. a long numbered example line here', 'plain example that runs long', 'another plain example here'] } }
+  assert(sceneExamples(listed, 0).includes(listed.group.voice[0]))
+  for (const seen of [0, 1, 2]) assert(!sceneExamples(listed, seen, [], '3. my last reply').includes(listed.group.voice[0]))
+  assert(sceneExamples({ ...listed, group: { ...listed.group, voice: ['1. only numbered'] } }, 0, [], '2. last').includes('1. only numbered'))
 })
 
 await check('numbered scraps, near copies and a sentence another character said this turn are caught', () => {
@@ -3513,6 +3517,10 @@ await check('numbered scraps, near copies and a sentence another character said 
   assert.deepEqual(filter('hands first, then your mouth, then you can fuck us properly'), [undefined, 1, 0, 0, 0])
   assert.deepEqual(filter('your mouth first, then you fuck me'), ['your mouth first, then you fuck me', 0, 0, 0, 0])
   const stock = 'I want you on the bed.'
+  const scene = (text: string, last: string, sceneMembers = [voiced.id]) => filterLines([{ name: voiced.name, text }], { members: [voiced], speakers: [voiced.id], origin: 'player', previous: [{ name: voiced.name, text: last }], openings: [], sceneMembers, blocked: () => false }, emptyLineCounts())[0]?.text
+  assert.equal(scene('1. Slowly. 2. Then again.', '1. Earlier list.'), 'Slowly. Then again.')
+  assert.equal(scene('1. Slowly. 2. Then again.', 'Earlier plain.'), '1. Slowly. 2. Then again.')
+  assert.equal(scene('1. Slowly. 2. Then again.', '1. Earlier list.', []), '1. Slowly. 2. Then again.')
   assert.deepEqual(filter(`${stock} Do it slowly and then come back here again.`, [{ name: names[0], text: stock }]), ['Do it slowly and then come back here again.', 0, 0, 1, 0])
   assert.deepEqual(filter(stock, [{ name: names[0], text: stock }]), [undefined, 0, 0, 0, 1])
   assert.deepEqual(filter(`Now. ${stock}`, [{ name: voiced.name, text: stock }]), [`Now. ${stock}`, 0, 0, 0, 0])
@@ -3545,8 +3553,11 @@ await check('nway real prompts own static all earlier lines per-member caps orde
     assert(content(writerCalls[index], 1).includes(`This is a sex scene between ${playerName}, ${names[member]} and `))
     assert(content(writerCalls[index], 1).includes(`${names[member]} answers ${playerName} and doesn't organise the others or talk about anything else.`))
     // The examples sit next to the turn, not only in the static prompt, and come from this member's own lines.
+    assert(content(writerCalls[index], 1).includes('Write one short message.'))
+    assert(!content(writerCalls[index], 1).includes(`Held${member} at 3.`))
+    assert(content(writerCalls[index], 1).includes(`Held${member} at 5.`))
     const nearTurn = content(writerCalls[index], 1).slice(content(writerCalls[index], 1).indexOf('Now:'))
-    assert(nearTurn.includes('says it the way these sound, in new words: "'))
+    assert(nearTurn.includes('says it the way these sound, in new words, about what\'s happening now: "'))
     assert(members[member].group.voice!.some(example => nearTurn.includes(`"${example}"`)))
     for (const other of members.filter(other => other.id !== ids[member])) assert(!other.group.voice!.some(example => nearTurn.includes(`"${example}"`)))
     const playerAction = order.map(member => `@${names[member]}`).join(' ')

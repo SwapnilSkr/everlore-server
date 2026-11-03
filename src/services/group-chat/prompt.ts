@@ -66,9 +66,13 @@ export function buildAddressedStatic(input: Parameters<typeof buildGroupStatic>[
 
 // Measured blind: rules alone left characters indistinguishable, and "own voice" wording didn't help;
 // their own lines next to the turn did. Longest first, because short examples are small talk and get sent whole.
-export function sceneExamples(member: GroupMember, seen: number, excluded: string[] = []): string[] {
+export function sceneExamples(member: GroupMember, seen: number, excluded: string[] = [], lastOwn?: string): string[] {
   const longest = (member.group.voice || []).filter(example => !excluded.includes(example)).sort((a, b) => b.length - a.length).slice(0, 3)
-  return [...new Set([longest[seen % longest.length], longest[(seen + 1) % longest.length]])].filter(Boolean)
+  // Proven live: a numbered reply plus a numbered example made every later reply a list.
+  const form = (text: string) => (text.trim().split(/\s+/)[0] || '').toLowerCase().replace(/\d+/, '#')
+  const different = longest.filter(example => lastOwn === undefined || form(example) !== form(lastOwn))
+  const pool = different.length ? different : longest
+  return [...new Set([pool[seen % pool.length], pool[(seen + 1) % pool.length]])].filter(Boolean)
 }
 
 export function buildDirectStatic(system: string, member: GroupMember, player: string): string {

@@ -79,6 +79,7 @@ const REPEATED_IDEA_SHARE = 0.5
 // Proven live: an example with one clause dropped passed as new. Short lines share common words fairly.
 const NEAR_COPY_SHARE = 0.8
 const NEAR_COPY_WORDS = 6
+const NUMBERED = /^\s*\d+[.)]\s/
 
 export function filterLines(input: NamedLine[], options: {
   members: GroupMember[]; speakers: string[]; origin: GroupOrigin
@@ -106,6 +107,10 @@ export function filterLines(input: NamedLine[], options: {
     // Proven by replay: copying a numbered example gave "1. 2. 3.". An item with nothing in it goes.
     line.text = line.text.replace(/(?<=^|\s)\d+[.)]\s+(?=\d+[.)](\s|$))/g, '')
     if (/^\s*\d+[.)]\s*$/.test(line.text)) { counts.empty++; continue }
+    // Proven live: one numbered reply in a scene made every later one a list. Dropping the numbers costs no call.
+    if (options.sceneMembers?.includes(member.id) && NUMBERED.test(line.text) && NUMBERED.test(options.previous.filter(other => other.name === line.name).at(-1)?.text ?? '')) {
+      line.text = line.text.replace(/(?<=^|\s)\d+[.)]\s+/g, '')
+    }
     if (!line.text.trim()) { counts.empty++; continue }
     if (options.blocked(line.text)) { counts.unsafe++; continue }
     // Proven live: a writer's note to itself reached the player (its own name, then "messages will reflect
