@@ -96,6 +96,22 @@ await check('a line naming its own speaker is dropped as the writer talking; oth
   assert.deepEqual(run(`${names[0]}x is not me`), [1, 0])
   assert.equal(emptyLineCounts().self_named, 0)
 })
+await check('a repeated sentence is removed from a new line; short sentences, other speakers and fully repeated lines behave', () => {
+  const stock = 'I have never felt so alive.'
+  const run = (text: string, previous = [{ name: names[0], text: `Well. ${stock} Really.` }]) => { const counts = emptyLineCounts(); const kept = filterLines([{ name: names[0], text }], { ...opts, speakers: [ids[0]], previous }, counts); return [kept[0]?.text, counts.repeated_sentence, counts.duplicate] }
+  assert.deepEqual(run(`Yes. ${stock} Put your hands on me.`), ['Yes. Put your hands on me.', 1, 0])
+  assert.deepEqual(run(`i have never, felt so alive! Put your hands on me right now, please.`), ['Put your hands on me right now, please.', 1, 0])
+  assert.deepEqual(run(`${stock} That is good.`), [undefined, 0, 1])
+  assert.deepEqual(run(stock), [undefined, 0, 1])
+  assert.deepEqual(run('Really. Put your hands on me.'), ['Really. Put your hands on me.', 0, 0])
+  assert.deepEqual(run(`${stock} Put your hands on me.`, [{ name: names[1], text: stock }]), [`${stock} Put your hands on me.`, 0, 0])
+  const moved = (text: string, other: string) => { const counts = emptyLineCounts(); return [filterLines([{ name: names[0], text }], { ...opts, speakers: [ids[0]], previous: [{ name: names[0], text: other }] }, counts).length, counts.duplicate] }
+  assert.deepEqual(moved('Oh my, yes, that feels good', 'oh my yes. that feels good'), [0, 1])
+  assert.deepEqual(moved('😈', '🔥'), [1, 0])
+  const within = emptyLineCounts()
+  assert.deepEqual(filterLines([{ name: names[0], text: stock }, { name: names[0], text: `${stock} And then a good deal more besides.` }], { ...opts, speakers: [ids[0]] }, within).map(line => line.text), [stock, 'And then a good deal more besides.'])
+  assert.equal(emptyLineCounts().repeated_sentence, 0)
+})
 await check('reply wording: a later message repeating earlier wording is dropped, the first stands', () => {
   const previous = [{ name: names[0], text: 'tongue sliding over clit, fingers gripping thighs' }]
   const run = (lines: string[], extra = {}) => { const counts = emptyLineCounts(); const kept = filterLines(lines.map(text => ({ name: names[0], text })), { ...opts, speakers: [ids[0]], addressed: ids[0], previous, repeatedIdea: true, ...extra }, counts); return [kept.map(line => line.text), counts.repeated_idea] }
@@ -794,10 +810,10 @@ await check('leading player tags strip before empty repeat and copy checks while
 })
 await check('repeat check looks back thirty lines for sentences but five for short reactions', () => {
   const counts = emptyLineCounts()
-  const older = [{ name: names[0], text: 'A full sentence said earlier today.' }, { name: names[0], text: 'lol' },
+  const older = [{ name: names[0], text: 'A full sentence said earlier today.' }, { name: names[0], text: 'Yes. No. Maybe so. Fine.' }, { name: names[0], text: 'lol' },
     ...Array.from({ length: 6 }, (_, i) => ({ name: names[0], text: `Later line ${i}` }))]
-  const kept = filterLines([{ name: names[0], text: 'a full sentence said earlier today.' }, { name: names[0], text: 'lol' }], { ...opts, player: 'Sam', previous: older }, counts)
-  assert.deepEqual(kept.map(line => line.text), ['lol']); assert.equal(counts.duplicate, 1)
+  const kept = filterLines([{ name: names[0], text: 'a full sentence said earlier today.' }, { name: names[0], text: 'yes. no. maybe so. fine.' }, { name: names[0], text: 'lol' }], { ...opts, player: 'Sam', previous: older }, counts)
+  assert.deepEqual(kept.map(line => line.text), ['lol']); assert.equal(counts.duplicate, 2)
 })
 await check('adult carry-over downgrades uninvolved morning tags no names stale participation and autonomy', async () => {
   for (const answer of ['no', 'late', 'error', 'off']) for (const target of ['uninvolved', 'none', 'stale', 'boundary', 'unprompted', 'catchup']) {

@@ -1,8 +1,12 @@
 import type { GroupLine, GroupMember, GroupOrigin, NamedLine } from './types'
 
-export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'repeated_opener' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed' | 'repeated_idea' | 'invented_detail' | 'hidden_guess' | 'self_named', number>
-export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, repeated_opener: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0, repeated_idea: 0, invented_detail: 0, hidden_guess: 0, self_named: 0 })
+export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'repeated_opener' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed' | 'repeated_idea' | 'invented_detail' | 'hidden_guess' | 'self_named' | 'repeated_sentence', number>
+export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, repeated_opener: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0, repeated_idea: 0, invented_detail: 0, hidden_guess: 0, self_named: 0, repeated_sentence: 0 })
 const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim()
+const wordsOnly = (text: string) => normalized(text).replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim()
+const sentencesOf = (text: string) => text.split(/(?<=[.!?…])\s+/u)
+// Long enough to be a phrase, short enough to catch a stock line. Explicit lines share shorter ones fairly.
+const REPEATED_SENTENCE_WORDS = 4
 
 const opener = (text: string): string | undefined => {
   const words = stripStageDirections(text).toLowerCase().match(/[\p{L}\p{N}]+/gu) || []
@@ -103,7 +107,6 @@ export function filterLines(input: NamedLine[], options: {
     if (member.group.voice?.some(example => {
       const copy = normalized(stripStageDirections(example))
       // Proven live: every example joined into one message passed a whole-line comparison.
-      const wordsOnly = (text: string) => normalized(text).replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim()
       const copied = copy === normalized(line.text) || (copy.split(/\s+/).length >= 3 && wordsOnly(line.text).includes(wordsOnly(copy)))
         // Proven live: the tail of an example, sent alone, passed as a new line.
         || (wordsOnly(line.text).split(' ').length >= 5 && wordsOnly(copy).includes(wordsOnly(line.text)))
@@ -117,11 +120,22 @@ export function filterLines(input: NamedLine[], options: {
     // who were never told it answered anyway ("your locker code is your birthday").
     // Asking back is fine; a statement using those words is a guess, or the secret itself.
     if (options.hiddenWords?.length && !line.text.trim().endsWith('?') && [...contentWords(line.text)].some(word => options.hiddenWords!.includes(word))) { counts.hidden_guess++; continue }
+    // Proven live: one stock sentence came back in four replies, each otherwise new. Removing
+    // only that sentence costs no call, and the next prompt no longer shows it to copy.
+    const said = new Set([...options.previous, ...options.openings, ...kept].filter(other => other.name === line.name).flatMap(other => sentencesOf(other.text).map(wordsOnly)))
+    const sentences = sentencesOf(line.text)
+    const fresh = sentences.filter(sentence => wordsOnly(sentence).split(' ').length < REPEATED_SENTENCE_WORDS || !said.has(wordsOnly(sentence)))
+    // Proven on a saved scene: with most of a line gone, what's left is a scrap ("That feels
+    // amazing."). A mostly repeated line is a repeat, and the writer tries again.
+    const wordCount = (texts: string[]) => wordsOnly(texts.join(' ')).split(' ').filter(Boolean).length
+    if (wordCount(fresh) < wordCount(sentences) / 2) { counts.duplicate++; continue }
+    if (fresh.length < sentences.length) { line.text = fresh.join(' '); counts.repeated_sentence++ }
     const previous = options.previous.filter(other => other.name === line.name).slice(-5)
     // A short reaction can fairly recur; a full sentence copied from further back can't.
     const looksBack = line.text.trim().split(/\s+/).length >= 4 ? options.previous.filter(other => other.name === line.name) : previous
     const duplicates = [...looksBack, ...options.openings.filter(other => other.name === line.name), ...kept.filter(other => other.name === line.name)]
-    if (duplicates.some(other => normalized(other.text) === normalized(line.text))) { counts.duplicate++; continue }
+    // Proven live: the same reply with its punctuation moved passed as new.
+    if (duplicates.some(other => normalized(other.text) === normalized(line.text) || (wordsOnly(line.text).split(' ').length >= REPEATED_SENTENCE_WORDS && wordsOnly(other.text) === wordsOnly(line.text)))) { counts.duplicate++; continue }
     const firstWords = opener(line.text)
     // Within one reply only. Proven live: against earlier turns this removed explicit
     // lines, which tend to open the same way, and once emptied a reply.
