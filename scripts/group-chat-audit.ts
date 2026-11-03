@@ -1758,6 +1758,9 @@ await check('close bond statement follows the bond and the copy check finds an e
   const filter = (text: string) => { const counts = emptyLineCounts(); return [filterLines([{ name: voiced.name, text }], { members: [voiced], speakers: [voiced.id], origin: 'player', previous: [], openings: [], blocked: () => false }, counts).length, counts.copied_example] }
   assert.deepEqual(filter('hi. Leave the door open, tonight! and more'), [0, 1])
   assert.deepEqual(filter('no way i am going out in that'), [1, 0])
+  const longer = { ...voiced, group: { ...voiced.group, voice: ['fine. shut the door, then your hands and your mouth tonight'] } }
+  const part = (text: string) => { const counts = emptyLineCounts(); return filterLines([{ name: longer.name, text }], { members: [longer], speakers: [longer.id], origin: 'player', previous: [], openings: [], blocked: () => false }, counts).length }
+  assert.equal(part('then your hands and your mouth tonight'), 0); assert.equal(part('your mouth tonight'), 1)
 })
 await check('memory adult addressed call is narrow and the bystander keeps full memory', async () => {
   await start(); addEvents(40)

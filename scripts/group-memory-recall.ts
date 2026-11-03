@@ -1535,6 +1535,8 @@ async function runProbe(): Promise<number> {
       const later = await runTurn({ player: `@${other} what colour was the parcel I left, and what was written on it?`, speakers: [other], rolled: true }, 'act-untagged-recall')
       const claim = await runTurn(action(`@${other} I put my bag down and ${other} promises to carry it all day.`), 'act-claim')
       const adult = await runTurn(action(`@${addressed} I pull you close and slide my hand between your legs.`), 'act-adult-on')
+      const adultExtra: TurnResult[] = []
+      if (process.env.GROUP_ACT_ADULT === '1') for (const [index, text] of ['I kiss you and push you back against the wall.', 'I take your clothes off, slowly.', 'I go down on you.', 'I pin your wrists above your head.', 'I fuck you against the kitchen counter.', 'I bite your neck and tell you to be quiet.', 'I pull you on top of me.', 'I roll you over and keep going.', 'I finish and stay inside you.'].entries()) adultExtra.push(await runTurn(action(`@${addressed} ${text}`), `act-adult-extra-${index + 1}`))
       // Reach the normal five-event curator boundary before testing withdrawal.
       for (let index = 0; index < 2; index++) await runTurn({ player: `@${other} can you still see my drawing?`, speakers: [other], rolled: true }, `act-memory-flush-${index + 1}`)
       const atoms = await mongoColl.memories().find({ instance_id: instanceId, is_archived: false }).toArray()
@@ -1545,7 +1547,7 @@ async function runProbe(): Promise<number> {
       const toggle = await runTurn(action(`@${addressed} I undo my shirt and touch your bare chest.`), 'act-adult-off')
       const writersOf = (turn: TurnResult) => turn.calls.filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration')
       const failures: string[] = []
-      const tested = [...ordinary, later, claim, adult, toggle]
+      const tested = [...ordinary, later, claim, adult, ...adultExtra, toggle]
       for (const turn of tested) {
         if (turn.error || !turn.lines.length) failures.push(`${turn.label}: ${turn.error || 'nobody replied'}`)
         if (turn !== later && writersOf(turn).some(call => !call.user.includes(`${PLAYER} did this: ${turn.player}`))) failures.push(`${turn.label}: action not rendered`)

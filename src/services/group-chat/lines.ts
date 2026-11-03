@@ -102,6 +102,8 @@ export function filterLines(input: NamedLine[], options: {
       // Proven live: every example joined into one message passed a whole-line comparison.
       const wordsOnly = (text: string) => normalized(text).replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim()
       const copied = copy === normalized(line.text) || (copy.split(/\s+/).length >= 3 && wordsOnly(line.text).includes(wordsOnly(copy)))
+        // Proven live: the tail of an example, sent alone, passed as a new line.
+        || (wordsOnly(line.text).split(' ').length >= 5 && wordsOnly(copy).includes(wordsOnly(line.text)))
       if (copied) options.onCopiedExample?.(example)
       return copied
     })) { counts.copied_example++; continue }

@@ -69,6 +69,8 @@ const mutations: Mutation[] = [
   { name: 'close bond ignores who speaks', check: 'close bond statement', edits: [[prompt, '.filter(member => input.speakers.includes(member.name) && closeToPlayer(member))', '.filter(closeToPlayer)']] },
   { name: 'copied example inside a message passes', check: 'close bond statement', edits: [['src/services/group-chat/lines.ts', "|| (copy.split(/\\s+/).length >= 3 && wordsOnly(line.text).includes(wordsOnly(copy)))", '']] },
   { name: 'emoji hides a copied example', check: 'close bond statement', edits: [['src/services/group-chat/lines.ts', 'wordsOnly(line.text).includes(wordsOnly(copy))', 'normalized(line.text).includes(copy)']] },
+  { name: 'part of an example passes as new', check: 'close bond statement', edits: [['src/services/group-chat/lines.ts', "|| (wordsOnly(line.text).split(' ').length >= 5 && wordsOnly(copy).includes(wordsOnly(line.text)))", '']] },
+  { name: 'short reply counted as part of an example', check: 'close bond statement', edits: [['src/services/group-chat/lines.ts', "wordsOnly(line.text).split(' ').length >= 5 && ", '']] },
   { name: 'short example counted inside a message', check: 'close bond statement', edits: [['src/services/group-chat/lines.ts', 'copy.split(/\\s+/).length >= 3 && ', '']] },
   { name: 'bond rows survive purge', check: 'bond purge', edits: [['src/services/deletion.service.ts', 'mongoColl.groupBondChanges().deleteMany({ instance_id: instanceId }),', '']] },
   { name: 'player set shown as a moment', check: 'bond HTTP', edits: [['src/services/group-chat/bonds.ts', "new ObjectId(member.id), reason: 'chat',", 'new ObjectId(member.id),']] },
