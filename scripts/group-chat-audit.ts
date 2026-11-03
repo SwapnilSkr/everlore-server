@@ -1748,6 +1748,17 @@ await check('adult prompt asks every member for the act itself with the same low
   assert.equal(yes, no)
   for (const rule of ['plain, crude words', 'without putting it off', 'says the act itself', 'Low trust and affection', 'A flat no is rare']) assert(yes.includes(rule))
 })
+await check('close bond statement follows the bond and the copy check finds an example inside a message', () => {
+  const base = { memories: [], summaries: [], history: [], now: new Date(0), speakers: [members[2].name], situation: 'x' }
+  const said = (relationship: { trust: number; affection: number; fear: number; rivalry: number }) => buildGroupDynamic({ ...base, bonds: [{ ...members[2], relationship }] })
+  assert(said({ trust: 70, affection: 60, fear: 0, rivalry: 0 }).includes('is close to the player now'))
+  for (const low of [{ trust: 69, affection: 90, fear: 0, rivalry: 0 }, { trust: 90, affection: 59, fear: 0, rivalry: 0 }, { trust: 90, affection: 90, fear: 70, rivalry: 0 }]) assert(!said(low).includes('is close to the player now'))
+  assert(!buildGroupDynamic({ ...base, speakers: [members[1].name], bonds: [{ ...members[2], relationship: { trust: 90, affection: 90, fear: 0, rivalry: 0 } }] }).includes('is close to the player now'))
+  const voiced = { ...members[2], group: { ...members[2].group, voice: ['leave the door open tonight 😈', 'no'] } }
+  const filter = (text: string) => { const counts = emptyLineCounts(); return [filterLines([{ name: voiced.name, text }], { members: [voiced], speakers: [voiced.id], origin: 'player', previous: [], openings: [], blocked: () => false }, counts).length, counts.copied_example] }
+  assert.deepEqual(filter('hi. Leave the door open, tonight! and more'), [0, 1])
+  assert.deepEqual(filter('no way i am going out in that'), [1, 0])
+})
 await check('memory adult addressed call is narrow and the bystander keeps full memory', async () => {
   await start(); addEvents(40)
   const source = storedEvents()[4]._id

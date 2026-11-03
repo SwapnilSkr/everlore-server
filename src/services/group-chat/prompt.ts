@@ -20,6 +20,12 @@ export function buildGroupStatic(input: {
   return parts.join('\n\n')
 }
 
+// Proven live: at trust and affection 90, bare meters lost to a character's written reluctance.
+const closeToPlayer = (member: GroupMember) => {
+  const bond = member.relationship
+  return !!bond && bond.trust >= 70 && bond.affection >= 60 && bond.fear < 70
+}
+
 export function buildGroupDynamic(input: {
   memories: string[]; openThreads?: string[]; summaries: string[]; history: NamedLine[]
   groupContext?: NamedLine[]
@@ -38,7 +44,9 @@ export function buildGroupDynamic(input: {
   const local = new Date(input.now.getTime() + (input.offsetMinutes || 0) * 60_000)
   const clock = new Intl.DateTimeFormat('en-GB', { weekday: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }).format(local)
   const notTold = input.notToldAbout?.length ? `\nNobody has told ${input.speakers.join(' or ')} anything about this: ${input.notToldAbout.join(', ')}. They don't know, so they ask what's meant or say they've no idea, and never supply an answer.` : ''
-  parts.push(`Now:\nIt's ${clock}.\nOnly these people write in this reply: ${input.speakers.join(', ')}.\n${input.messageRule ?? "Each writes one or two short messages, and it's fine if someone only reacts in a few words."}${notTold}\n${input.situation}`)
+  const close = (input.bonds || []).filter(member => input.speakers.includes(member.name) && closeToPlayer(member))
+    .map(member => `\n${member.name} is close to the player now. If it's sexual, whatever held ${member.name} back no longer does: they want this, say yes and say exactly what they want.`).join('')
+  parts.push(`Now:\nIt's ${clock}.\nOnly these people write in this reply: ${input.speakers.join(', ')}.\n${input.messageRule ?? "Each writes one or two short messages, and it's fine if someone only reacts in a few words."}${notTold}${close}\n${input.situation}`)
   return parts.join('\n\n')
 }
 

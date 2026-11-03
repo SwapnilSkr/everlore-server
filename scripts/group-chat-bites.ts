@@ -13,6 +13,12 @@ const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat
 const worker = 'worker/processors/group-turn.processor.ts', prompt = 'src/services/group-chat/prompt.ts'
 const worker2 = 'worker/processors/memory.processor.ts', curation = 'src/services/group-chat/curation.ts', memoryFile = 'src/services/group-chat/memory.ts'
 const mutations: Mutation[] = [
+  { name: 'close bond not stated', check: 'close bond statement', edits: [[prompt, '${notTold}${close}', '${notTold}']] },
+  { name: 'close bond ignores fear', check: 'close bond statement', edits: [[prompt, ' && bond.fear < 70', '']] },
+  { name: 'close bond ignores who speaks', check: 'close bond statement', edits: [[prompt, '.filter(member => input.speakers.includes(member.name) && closeToPlayer(member))', '.filter(closeToPlayer)']] },
+  { name: 'copied example inside a message passes', check: 'close bond statement', edits: [['src/services/group-chat/lines.ts', "|| (copy.split(/\\s+/).length >= 3 && wordsOnly(line.text).includes(wordsOnly(copy)))", '']] },
+  { name: 'emoji hides a copied example', check: 'close bond statement', edits: [['src/services/group-chat/lines.ts', 'wordsOnly(line.text).includes(wordsOnly(copy))', 'normalized(line.text).includes(copy)']] },
+  { name: 'short example counted inside a message', check: 'close bond statement', edits: [['src/services/group-chat/lines.ts', 'copy.split(/\\s+/).length >= 3 && ', '']] },
   { name: 'bond rows survive purge', check: 'bond purge', edits: [['src/services/deletion.service.ts', 'mongoColl.groupBondChanges().deleteMany({ instance_id: instanceId }),', '']] },
   { name: 'player set shown as a moment', check: 'bond HTTP', edits: [['src/services/group-chat/bonds.ts', "new ObjectId(member.id), reason: 'chat',", 'new ObjectId(member.id),']] },
   { name: 'bond telemetry purpose collapsed', check: 'bond telemetry', edits: [['src/ai/client.ts', 'purpose: req.purpose', "purpose: req.purpose === 'group_bonds' ? 'memory_curation' : req.purpose"]] },

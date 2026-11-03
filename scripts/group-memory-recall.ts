@@ -1513,7 +1513,7 @@ async function runProbe(): Promise<number> {
   try {
     if (SCENE === 'd') {
       await setupBonds()
-      if (IN_FLAT) for (const spec of CHAT.slice(0, CHAT.findIndex(entry => entry.fact === 7) + 1)) await runTurn(spec, `chat-${turnIndex + 1}`)
+      if (IN_FLAT && process.env.GROUP_SCENE_SKIP_CHAT !== '1') for (const spec of CHAT.slice(0, CHAT.findIndex(entry => entry.fact === 7) + 1)) await runTurn(spec, `chat-${turnIndex + 1}`)
       const direct = (player: string): TurnSpec => ({ player: IN_FLAT ? player : player.replace('in the flat', 'in the guild'), speakers: [DIRECT_TO], direct: DIRECT_TO, rolled: true })
       const opening: TurnResult[] = [], adult: TurnResult[] = []
       for (const [offset, player] of DIRECT_OPENING.entries()) opening.push(await runTurn(direct(player), `direct-open-${offset + 1}`))
