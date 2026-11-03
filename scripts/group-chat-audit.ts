@@ -624,8 +624,10 @@ import { Elysia } from 'elysia'; mock.module('./src/config/env.ts', () => ({ env
       model: 'sao10k/l3.1-euryale-70b', fallbacks: ['cognitivecomputations/dolphin-mistral-24b-venice-edition', 'thedrummer/skyfall-36b-v2'],
     })
   }
-  const { narrationTemperature } = await import('../src/ai/narration-profile')
-  assert.equal(narrationTemperature('sao10k/l3.1-euryale-70b'), 0.62)
+  // In its own process: this file's stand-in for the AI module also carries a temperature.
+  const temperature = Bun.spawn(['bun', '--no-env-file', '-e', `const { narrationTemperature } = await import('./src/ai/narration-profile.ts'); console.log(narrationTemperature('sao10k/l3.1-euryale-70b'))`],
+    { cwd: new URL('..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe' })
+  assert.equal((await new Response(temperature.stdout).text()).trim(), '0.62')
 })
 await check('seed adult schema accepts authored traits and rejects malformed or unknown fields', async () => {
   const { CreateTemplateBody } = await import('../src/schemas/template.schema')
