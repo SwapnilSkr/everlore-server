@@ -483,9 +483,9 @@ function promptSections(user: string): CapturedCall['sections'] {
     return user.slice(from, end).trim()
   }
   return {
-    memories: section('Memories', ['Open threads', 'Summary so far', 'Recent messages', 'Now']),
-    openThreads: section('Open threads', ['Summary so far', 'Recent messages', 'Now']),
-    summaries: section('Summary so far', ['Recent messages', 'Now']),
+    memories: section('Memories', ['Open threads', 'Summary so far', 'Group chat (read-only; everyone saw these messages)', 'Recent messages', 'Now']),
+    openThreads: section('Open threads', ['Summary so far', 'Group chat (read-only; everyone saw these messages)', 'Recent messages', 'Now']),
+    summaries: section('Summary so far', ['Group chat (read-only; everyone saw these messages)', 'Recent messages', 'Now']),
     recent: section('Recent messages', ['Now']),
   }
 }
@@ -619,7 +619,7 @@ const guardedFetchBase = async (input: Parameters<typeof fetch>[0], init?: Param
   if (MEMORIES_OFF && Array.isArray(body.messages)) {
     for (const message of body.messages as Array<{ role?: string; content?: unknown }>) {
       if (message.role === 'user' && typeof message.content === 'string') {
-        message.content = message.content.replace(/(?<=^|\n\n)(?:Memories|Open threads|Summary so far):\n[\s\S]*?\n\n(?=(?:Open threads|Summary so far|Recent messages|Now):\n)/g, '')
+        message.content = message.content.replace(/(?<=^|\n\n)(?:Memories|Open threads|Summary so far):\n[\s\S]*?\n\n(?=(?:Open threads|Summary so far|Group chat \(read-only; everyone saw these messages\)|Recent messages|Now):\n)/g, '')
       }
     }
     init = { ...init, body: JSON.stringify(body) }

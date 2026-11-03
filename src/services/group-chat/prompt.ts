@@ -29,8 +29,9 @@ export function buildGroupDynamic(input: {
   if (input.memories.length) parts.push(`Memories:\n${input.memories.join('\n')}`)
   if (input.openThreads?.length) parts.push(`Open threads:\n${input.openThreads.join('\n')}`)
   if (input.summaries.length) parts.push(`Summary so far:\n${input.summaries.join('\n')}`)
-  parts.push(`Recent messages:\n${input.history.slice(-(input.historyLimit ?? 30)).map(line => `${line.name}: ${line.text}`).join('\n') || '(the chat opens below)'}`)
+  // Proven live: last in the prompt, this block was answered as if it were the conversation.
   if (input.groupContext) parts.push(`Group chat (read-only; everyone saw these messages):\n${input.groupContext.map(line => `${line.name}: ${line.text}`).join('\n') || '(no group messages)'}`)
+  parts.push(`Recent messages:\n${input.history.slice(-(input.historyLimit ?? 30)).map(line => `${line.name}: ${line.text}`).join('\n') || '(the chat opens below)'}`)
   const local = new Date(input.now.getTime() + (input.offsetMinutes || 0) * 60_000)
   const clock = new Intl.DateTimeFormat('en-GB', { weekday: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'UTC' }).format(local)
   parts.push(`Now:\nIt's ${clock}.\nOnly these people write in this reply: ${input.speakers.join(', ')}.\n${input.messageRule ?? "Each writes one or two short messages, and it's fine if someone only reacts in a few words."}\n${input.situation}`)
@@ -41,7 +42,7 @@ export function buildAddressedStatic(input: Parameters<typeof buildGroupStatic>[
   return [buildGroupStatic({ ...input, members: [member] }),
     `You are writing only ${member.name}'s messages in this reply: one to three of them, as long as ${member.name} would really send.`,
     `How ${member.name} is about flirting and sex: ${member.group.intimacy?.replaceAll('{player}', () => input.player)}`,
-    [`How ${member.name} really texts:`, `${input.player}'s gender isn't stated, so don't assume it.`, ...(member.group.voice || []).filter(example => !excludedVoice.includes(example))].join('\n'),
+    [`How ${member.name} really texts:`, `${input.player}'s gender isn't stated, so don't assume it.`, `In these messages "I" is ${member.name} and "you" is ${input.player}. Keep straight who is doing what to whom.`, ...(member.group.voice || []).filter(example => !excludedVoice.includes(example))].join('\n'),
     `Everyone here is a consenting adult. ${member.group.interested === true
       ? `If it's sexual, ${member.name} answers what was actually said in plain, crude words, as explicitly and crudely as ${member.name} really would: naming what ${member.name} wants done and will do, without putting it off or changing the subject.`
       : `If it's sexual, ${member.name} answers what was actually said, as explicitly and crudely as ${member.name} really would, or turns it down the way ${member.name} really would.`} Say something new each time, moving things on from the last message. Don't repeat or lightly reword an earlier message.`,
@@ -49,5 +50,5 @@ export function buildAddressedStatic(input: Parameters<typeof buildGroupStatic>[
 }
 
 export function buildDirectStatic(system: string, member: GroupMember, player: string): string {
-  return `${system}\n\nThis is a private conversation between ${player} and ${member.name}. Only these two can see it. Only ${member.name} writes a reply, in one to three messages. The group chat block is read-only context, separate from this conversation.`
+  return `${system}\n\nThis is a private conversation between ${player} and ${member.name}. Only these two can see it. Only ${member.name} writes a reply, in one to three messages. Recent messages are this private conversation. The group chat block is read-only context from a separate conversation: nothing in it was said here, and each line there was said by the person named.`
 }

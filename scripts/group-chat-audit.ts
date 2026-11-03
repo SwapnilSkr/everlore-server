@@ -78,6 +78,25 @@ await check('one speaker reply with no name needs one call; two speakers still r
   await writeGroupReply({ ...input, speakers: [ids[0], ids[1]], write: async () => { calls++; return { content: calls > 1 ? `${names[0]}: named` : 'no name here', model: 'fake' } } })
   assert.equal(calls, 2)
 })
+await check('reply numbers: a long number nobody was shown is dropped', () => {
+  const run = (text: string, knownText?: string) => { const counts = emptyLineCounts(); return [filterLines([{ name: names[0], text }], { ...opts, speakers: [ids[0]], knownText }, counts).length, counts.invented_detail] }
+  assert.deepEqual(run('it was 4471', 'nothing here'), [0, 1])
+  assert.deepEqual(run('it was 4471', 'the code is 4471'), [1, 0])
+  assert.deepEqual(run('see you at 7, or 19:25', 'nothing here'), [1, 0])
+  assert.deepEqual(run('it was 4471'), [1, 0])
+  assert.equal(emptyLineCounts().invented_detail, 0)
+})
+await check('reply wording: a later message repeating earlier wording is dropped, the first stands', () => {
+  const previous = [{ name: names[0], text: 'tongue sliding over clit, fingers gripping thighs' }]
+  const run = (lines: string[], extra = {}) => { const counts = emptyLineCounts(); const kept = filterLines(lines.map(text => ({ name: names[0], text })), { ...opts, speakers: [ids[0]], addressed: ids[0], previous, repeatedIdea: true, ...extra }, counts); return [kept.map(line => line.text), counts.repeated_idea] }
+  const again = 'your tongue sliding over clit, fingers gripping thighs again'
+  assert.deepEqual(run(['something fresh entirely', again]), [['something fresh entirely'], 1])
+  assert.deepEqual(run([again, 'something fresh entirely']), [[again, 'something fresh entirely'], 0])
+  assert.deepEqual(run(['something fresh entirely', 'another different thought, tongue only']), [['something fresh entirely', 'another different thought, tongue only'], 0])
+  assert.deepEqual(run(['something fresh entirely', again], { repeatedIdea: false }), [['something fresh entirely', again], 0])
+  // Half the wording is the line: exactly half counts as repeated.
+  assert.deepEqual(run(['something fresh entirely', 'tongue clit newword otherword']), [['something fresh entirely'], 1])
+})
 await check('off-list speakers dropped', () => {
   const counts = emptyLineCounts()
   assert.equal(filterLines([{ name: names[1], text: 'off list' }], { ...opts, speakers: [ids[0]] }, counts).length, 0)
@@ -990,7 +1009,7 @@ await check('authored untagged reachability picks and speaks every member over 2
     const spoken = new Set<string>()
     for (let roll = 0; roll < 2000; roll++) {
       await start(group)
-      modelReplies = [group.seed_cast!.map(member => `${member.name}: A fresh untagged response ${roll}.`).join('\n')]
+      modelReplies = [group.seed_cast!.map(member => `${member.name}: A fresh untagged response ${String(roll).replace(/\d/g, digit => 'abcdefghij'[Number(digit)])}.`).join('\n')]
       await turn({ userMessage: 'Anyone around?' }, rng)
       for (const line of lastData().lines as Row[]) {
         const card = rows('characters').find(card => String(card._id) === line.character_id)!
@@ -1463,6 +1482,22 @@ await check('memory adult direct turn gets what the player told her, whatever th
   rows('memories').forEach(memory => { memory.private_to = undefined })
   source.data.dm_with = undefined
   assert(!(await read()).memories.includes('The most important told fact.'))
+})
+await check('memory adult scene facts wait until their messages leave the prompt', async () => {
+  await start()
+  const source = storedEvents()[0]
+  rows('memories').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), player_id: new ObjectId(playerId), text: `${names[0]} wants a recent thing.`, subjects: [names[0]], objects: [],
+    source_event_ids: [source._id], explicit_fact: true, is_nsfw: true, is_archived: false, importance: 3, updated_at: new Date() })
+  const read = (recentEvents?: ObjectId[]) => groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[0]], enabled: true, memories: [], openThreads: [], raisedBy: 'ordinary greeting', recentEvents })
+  assert.equal((await read()).memories.length, 1)
+  assert.equal((await read([source._id])).memories.length, 0)
+  assert.equal((await read([new ObjectId()])).memories.length, 1)
+})
+await check('curator attribution rule is in the group prompt', async () => {
+  await start(); addEvents(5); curatorFactory = request => ({ memories: [atom('A valid fact.', 'player', numbered(request)[0].number)] })
+  await memoryProcessor(memoryJob())
+  const system = JSON.stringify(curatorRequests.at(-1))
+  assert(system.includes('words quoted from someone to the person who said them')); assert(system.includes('not to whoever mentions it'))
 })
 await check('memory failed batches catch up from watermark with two event overlap and no duplicate atoms or vectors', async () => {
   await start(); addEvents(5); curatorReply = new Error('Stub curator failed')
@@ -2490,6 +2525,53 @@ await check('direct turns preserve all group pacing state while independent thre
   assert(!JSON.stringify(summaryRequests).includes('Other thread event.'))
   assert.equal(get(rows('worldInstances')[0], `group_state.direct_threads.${ids[0]}.curated_through_sequence`), 12)
   assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence'), 1)
+})
+await check('adult plain question mid-scene gets one message; other lines keep three', async () => {
+  await start(); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  judgeVerdict = true; routerSexual = true
+  // The scene score counts recent intimate turns, so carryover needs a run of them.
+  for (const reply of ['First direct adult answer.', 'Second direct adult answer.']) {
+    modelReplies = [`${names[1]}: ${reply}`]
+    await turn({ directWith: ids[1], userMessage: 'I want you.' }, never)
+  }
+  const reply = (first: string, second: string, third: string) => [first, second, third].map(line => `${names[1]}: ${line}`).join('\n')
+  routerSexual = false; writerCalls = []; modelReplies = [reply('The answer itself.', 'Pears ripen slowly.', 'Trains arrive late.')]
+  await turn({ directWith: ids[1], userMessage: 'what did I tell you earlier?' }, never)
+  assert.equal(writerCalls[0].model, 'fake-adult')
+  assert(requestText(writerCalls[0]).includes('Write one message, answering what was asked.'))
+  assert.deepEqual((lastData().lines as Row[]).map(line => line.text), ['The answer itself.'])
+  writerCalls = []; modelReplies = [reply('Clouds gather overhead.', 'Rivers bend southward.', 'Lamps flicker twice.')]
+  await turn({ directWith: ids[1], userMessage: 'keep telling me' }, never)
+  assert(requestText(writerCalls[0]).includes('Write one to three messages.')); assert.equal((lastData().lines as Row[]).length, 3)
+  routerSexual = true; writerCalls = []; modelReplies = [reply('Stones skip nicely.', 'Owls hunt quietly.', 'Ferns uncurl daily.')]
+  await turn({ directWith: ids[1], userMessage: 'will you touch me?' }, never)
+  assert(requestText(writerCalls[0]).includes('Write one to three messages.')); assert.equal((lastData().lines as Row[]).length, 3)
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerSexual = false
+})
+await check('direct prompt puts the conversation after the group block and a guessed number never lands', async () => {
+  await start()
+  writerCalls = []; modelReplies = [`${names[1]}: The code is 8362.\n${names[1]}: No idea, sorry.`]
+  await turn({ directWith: ids[1], userMessage: 'what was the code?' }, never)
+  const text = requestText(writerCalls[0])
+  assert(text.includes('Group chat (read-only')); assert(text.indexOf('Group chat (read-only') < text.indexOf('Recent messages:')); assert(text.indexOf('Recent messages:') < text.indexOf('Now:'))
+  assert(text.includes('nothing in it was said here'))
+  assert.deepEqual((lastData().lines as Row[]).map(line => line.text), ['No idea, sorry.'])
+  writerCalls = []; modelReplies = [`${names[1]}: You just said 7219.`]
+  await turn({ directWith: ids[1], userMessage: 'my code is 7219' }, never)
+  assert.deepEqual((lastData().lines as Row[]).map(line => line.text), ['You just said 7219.'])
+})
+await check('adult prompt says who is who', async () => {
+  const text = buildAddressedStatic({ seed_prompt: '', global_lore: '', members, player: playerName }, members[0])
+  assert(text.includes(`"I" is ${names[0]} and "you" is ${playerName}`))
+})
+await check('adult scene wiring passes the recent events to memory', async () => {
+  await start(); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; put(rows('users')[0], 'preferences.nsfw_enabled', true); judgeVerdict = true; routerSexual = true
+  rows('memories').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), player_id: new ObjectId(playerId), text: `${names[1]} has a very recent scene fact.`, subjects: [names[1]], objects: [],
+    source_event_ids: [storedEvents().at(-1)!._id], explicit_fact: true, is_nsfw: true, is_archived: false, importance: 3, updated_at: new Date() })
+  writerCalls = []; modelReplies = [`${names[1]}: First direct adult answer.`]
+  await turn({ userMessage: `@${names[1]} I want you.` }, never)
+  assert(!requestText(writerCalls[0]).includes('very recent scene fact'))
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerSexual = false
 })
 await check('direct adult route reuses consent interest carryover history and tame marking without bystanders', async () => {
   await start(); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; put(rows('users')[0], 'preferences.nsfw_enabled', true)

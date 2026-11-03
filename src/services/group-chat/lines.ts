@@ -1,7 +1,7 @@
 import type { GroupLine, GroupMember, GroupOrigin, NamedLine } from './types'
 
-export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'repeated_opener' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed', number>
-export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, repeated_opener: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0 })
+export type LineCounts = Record<'player' | 'unknown' | 'off_list' | 'over_cap' | 'duplicate' | 'repeated_opener' | 'unsafe' | 'empty' | 'stage_directions' | 'copied_example' | 'trimmed' | 'repeated_idea' | 'invented_detail', number>
+export const emptyLineCounts = (): LineCounts => ({ player: 0, unknown: 0, off_list: 0, over_cap: 0, duplicate: 0, repeated_opener: 0, unsafe: 0, empty: 0, stage_directions: 0, copied_example: 0, trimmed: 0, repeated_idea: 0, invented_detail: 0 })
 const normalized = (text: string) => text.toLowerCase().replace(/\s+/g, ' ').trim()
 
 const opener = (text: string): string | undefined => {
@@ -64,12 +64,23 @@ export function trimReply(text: string, tokenLimited: boolean, adult: boolean): 
   return clean
 }
 
+const contentWords = (text: string) => new Set<string>(text.toLowerCase().match(/\p{L}{4,}/gu) || [])
+/** How much of this line's wording another line already holds. */
+const sharedWording = (text: string, other: string) => {
+  const words = contentWords(text), held = contentWords(other)
+  return words.size ? [...words].filter(word => held.has(word)).length / words.size : 0
+}
+// Measured on a live scene: later messages that circled earlier ones shared half or more.
+const REPEATED_IDEA_SHARE = 0.5
+
 export function filterLines(input: NamedLine[], options: {
   members: GroupMember[]; speakers: string[]; origin: GroupOrigin
   previous: NamedLine[]; openings: NamedLine[]
   blocked: (text: string) => boolean
   player?: string; onCopiedExample?: (example: string) => void
-  addressed?: string; repeatedOpener?: boolean; oneMessage?: boolean; finishReason?: string | null
+  addressed?: string; repeatedOpener?: boolean; repeatedIdea?: boolean; oneMessage?: boolean; finishReason?: string | null
+  /** Everything the writer was shown; a long number from nowhere is a guess. */
+  knownText?: string
 }, counts: LineCounts): NamedLine[] {
   const kept: NamedLine[] = []
   const used = new Map<string, number>()
@@ -89,6 +100,9 @@ export function filterLines(input: NamedLine[], options: {
       if (copied) options.onCopiedExample?.(example)
       return copied
     })) { counts.copied_example++; continue }
+    // Proven live: asked for a code nobody had told them, characters answered with one.
+    // A character can only hold a long number by having been shown it.
+    if (options.knownText !== undefined && (line.text.match(/\p{N}{3,}/gu) || []).some(number => !options.knownText!.includes(number))) { counts.invented_detail++; continue }
     const previous = options.previous.filter(other => other.name === line.name).slice(-5)
     // A short reaction can fairly recur; a full sentence copied from further back can't.
     const looksBack = line.text.trim().split(/\s+/).length >= 4 ? options.previous.filter(other => other.name === line.name) : previous
@@ -99,6 +113,9 @@ export function filterLines(input: NamedLine[], options: {
     // lines, which tend to open the same way, and once emptied a reply.
     if (options.repeatedOpener && member.id === options.addressed && firstWords !== undefined
       && kept.filter(other => other.name === line.name).some(other => opener(other.text) === firstWords)) { counts.repeated_opener++; continue }
+    // The first message stands, so a line asking to hear something again still gets it.
+    if (options.repeatedIdea && member.id === options.addressed && kept.some(other => other.name === line.name) &&
+      options.previous.filter(other => other.name === line.name).some(other => sharedWording(line.text, other.text) >= REPEATED_IDEA_SHARE)) { counts.repeated_idea++; continue }
     if ((used.get(line.name) ?? 0) >= (options.oneMessage ? 1 : member.id === options.addressed ? 3 : 2) || (options.origin === 'catchup' && kept.length >= 4)) { counts.over_cap++; continue }
     used.set(line.name, (used.get(line.name) ?? 0) + 1)
     kept.push(line)

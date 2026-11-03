@@ -79,7 +79,7 @@ Respond ONLY with valid JSON matching this schema:
 const GROUP_EXTRACTION_PROMPT = `You are the memory curator for a numbered conversation among several people. Read all supplied messages and keep each personal fact about anyone in the chat, including their family, work, health, plans and promises, as its own atom even when it looks small. There is no per-exchange atom limit. Detect whether the conversation resolves any previously open thread.
 
 Rules for memory atoms:
-- Write one self-contained sentence per fact, one fact per atom. Resolve pronouns and relatives to the speaker of the cited message; keep each person's facts separate. Name people, places and objects explicitly.
+- Write one self-contained sentence per fact, one fact per atom. Resolve "I" and "my" to the speaker of the cited message, "you" to the person spoken to, and words quoted from someone to the person who said them. A fact belongs to the person it is about, not to whoever mentions it; keep each person's facts separate. Name people, places and objects explicitly.
 ${ATOM_CLASSIFICATION_RULES}
 ${ATOM_IDENTITY_RULE}
 ${ATOM_METADATA_RULES}

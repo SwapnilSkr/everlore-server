@@ -127,8 +127,11 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     const otherMessages = addressedMessages.filter(line => line.name !== config.player && line.name !== addressedName).slice(-3)
     const addressedHistory = addressedMessages.filter(line => line.name === config.player || line.name === addressedName || otherMessages.includes(line))
     const now = new Date()
+    // Proven live: asked a plain question mid-scene, she answered it, then spent the next
+    // messages steering back to sex. One message answers it and leaves the lead to the player.
+    const plainQuestion = adult && origin === 'player' && route.routerSettled && route.trace.sexual === false && userMessage.trim().endsWith('?')
     const reply = await writeGroupReply({ members, speakers: roll.picked, tags: roll.tags,
-      player: config.player, origin, direct: directWith, adult: adult && addressed ? { addressed, rng } : undefined, previous: previousLines, openings: directWith ? [] : config.opening_lines,
+      player: config.player, origin, direct: directWith, oneMessage: plainQuestion, adult: adult && addressed ? { addressed, rng } : undefined, previous: previousLines, openings: directWith ? [] : config.opening_lines,
       blocked: text => screenPlayerInput(text).blocked,
       onChecks: counts => log.info('group.line_checks', { instanceId, sequence, ...counts, writing_calls: writing.length }),
       write: async (speakers, _fallback, request) => {
@@ -148,12 +151,12 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const split = !!addressed
           const memory = await groupWriterMemory({ instanceId: iid, player: config.player,
             speakers: selected.map(member => member.name), thread: directWith, enabled: consent?.preferences?.nsfw_enabled === true,
-            memories: rag.memoryTexts, openThreads: rag.openThreads || [], raisedBy: addressedPrompt ? userMessage : undefined })
+            memories: rag.memoryTexts, openThreads: rag.openThreads || [], raisedBy: addressedPrompt ? userMessage : undefined, recentEvents: recent.slice(-4).map(event => event._id) })
           const dynamic = buildGroupDynamic({ memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : summaries, groupContext: stillAdult ? undefined : groupContext,
             history: [...(addressedPrompt ? addressedHistory : history), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
             historyLimit: split ? addressedPrompt ? 12 : directWith ? 30 : 5 : 30,
-            messageRule: split ? addressedPrompt || directWith ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
+            messageRule: split ? plainQuestion && addressedPrompt ? 'Write one message, answering what was asked.' : addressedPrompt || directWith ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
             now, offsetMinutes: state.tz_offset_minutes, speakers: selected.map(member => member.name),
             situation: origin === 'player' ? split && !addressedPrompt ? '' : `${config.player}: ${userMessage}`
               : origin === 'catchup' ? `Write up to four messages they sent while ${config.player} was away. Topic: ${topic}`
@@ -168,7 +171,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
               messages: [{ role: 'system', content: system }, { role: 'user', content: dynamic }],
               temperature: narrationTemperature(model), maxTokens: split ? addressedPrompt || directWith ? 300 : 60 * speakers.length : 400,
               sessionId: directWith ? `${instanceId}:direct:${directWith}` : instanceId }, [])
-            return { ...result, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: index + 1 }
+            return { ...result, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: index + 1, prompt: `${system}\n${dynamic}` }
           } catch (error) {
             if (error instanceof EmptyLLMResponseError) return { content: '', model, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: index + 1 }
             if (!stillAdult && !isRateLimitError(error)) throw error

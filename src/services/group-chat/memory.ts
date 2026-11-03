@@ -159,6 +159,8 @@ export async function groupWriterSummaries(instanceId: ObjectId, candidates: Arr
 export async function groupWriterMemory(input: {
   instanceId: ObjectId; player: string; speakers: string[]; enabled: boolean; thread?: string
   memories: string[]; openThreads: string[]; raisedBy?: string
+  /** Their messages are still in the prompt, so facts from them would only be said twice. */
+  recentEvents?: ObjectId[]
 }) {
   const names = [['player', input.player], ...[...new Set(input.speakers)].map(name => [name])]
   const people = names.flat()
@@ -207,7 +209,8 @@ export async function groupWriterMemory(input: {
     // The character in the scene must remember it too, once it has left the recent
     // messages. Proven live: everything said on an adult turn feeds her own dodges
     // back ("about to walk out the door to a quiz"), so only explicit facts come along.
-    const inScene = (memory: MemoryDoc) => memory.explicit_fact === true && input.speakers.some(name =>
+    const recent = new Set((input.recentEvents || []).map(String))
+    const inScene = (memory: MemoryDoc) => memory.explicit_fact === true && !(memory.source_event_ids || []).every(id => recent.has(String(id))) && input.speakers.some(name =>
       [...(memory.subjects || []), ...(memory.objects || [])].includes(name) || memory.text.includes(name))
     const limit = memories.length + GROUP_ADULT_SCENE_LINES
     // What she herself said or wants comes first, then the most important.
