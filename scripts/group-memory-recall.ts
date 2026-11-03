@@ -1481,7 +1481,7 @@ async function runProbe(): Promise<number> {
       for (const [offset, player] of DIRECT_OPENING.entries()) opening.push(await runTurn(direct(player), `direct-open-${offset + 1}`))
       for (const [offset, player] of DIRECT_ADULT.entries()) adult.push(await runTurn(direct(player), `direct-adult-${offset + 1}`))
       const recall = await runTurn(direct(DIRECT_RECALL), 'direct-recall')
-      await runTurn(direct(DIRECT_RECALL_NAME), 'direct-recall-name')
+      const recallName = await runTurn(direct(DIRECT_RECALL_NAME), 'direct-recall-name')
       const probes: TurnResult[] = []
       for (const { label, spec } of DIRECT_PROBES) probes.push(await runTurn(spec, label))
       await mongoColl.users().updateOne({ _id: playerId }, { $set: { 'preferences.nsfw_enabled': false } } as never)
@@ -1494,13 +1494,14 @@ async function runProbe(): Promise<number> {
       const failures: string[] = []
       if (!privateAtoms.length) failures.push('no private memory was stored, so the privacy checks proved nothing')
       if (!recall.lines.some(line => norm(line.text).includes(DIRECT_MARKER))) failures.push('direct-recall: the character lost the exact code')
+      if (!recallName.lines.some(line => norm(line.text).includes('whitby'))) failures.push('direct-recall-name: the character lost a fact worded differently')
       const writersOf = (turn: TurnResult) => turn.calls.filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration')
-      const allTurns = [...opening, ...adult, recall, ...probes, toggleTurn]
+      const allTurns = [...opening, ...adult, recall, recallName, ...probes, toggleTurn]
       for (const turn of allTurns) {
         if (turn.error) failures.push(`${turn.label}: ${turn.error}`)
         if (!turn.lines.length) failures.push(`${turn.label}: nobody replied`)
       }
-      for (const turn of [...opening, ...adult, recall, toggleTurn]) {
+      for (const turn of [...opening, ...adult, recall, recallName, toggleTurn]) {
         if (turn.lines.some(line => line.name !== DIRECT_TO)) failures.push(`${turn.label}: someone other than ${DIRECT_TO} replied`)
         for (const call of writersOf(turn)) {
           const narrow = call.system.includes('You are writing only')

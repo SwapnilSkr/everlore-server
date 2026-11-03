@@ -12,6 +12,7 @@ export const GROUP_MEMORY_BATCH_LIMIT = 27 // 25 new events plus the two-event o
 export const GROUP_MEMORY_TEXT_BUDGET = 12_000
 export const GROUP_ADULT_MEMORY_LINES = 4
 export const GROUP_ADULT_SCENE_LINES = 6
+export const GROUP_ADULT_DIRECT_LINES = 6
 const GROUP_RAISED_WORD_MAX_ATOMS = 3
 export type GroupWatermark = 'curated_through_sequence' | 'summarized_through_sequence'
 export interface GroupMemoryMessage extends NamedLine { number: number; eventId: ObjectId; adult: boolean }
@@ -191,6 +192,17 @@ export async function groupWriterMemory(input: {
     // full memory, and threads lose their heading because they're just facts here.
     for (const memory of raisedMemories(input.raisedBy, concerning.filter(allowed), people)) {
       if (memories.length < GROUP_ADULT_MEMORY_LINES) add(memory)
+    }
+    // Proven live: told where a cousin lives, she denied knowing, because the line asking
+    // shared no rare word with the fact. What the player told her in this thread comes
+    // along whatever the wording; her own everyday lines stay out, as below.
+    if (input.thread !== undefined) {
+      const told = (memory: MemoryDoc) => memory.private_to === input.thread && memory.explicit_fact !== true &&
+        (memory.subjects || []).some(name => names[0].includes(name))
+      const limit = memories.length + GROUP_ADULT_DIRECT_LINES
+      for (const memory of concerning.filter(allowed).filter(told).sort((a, b) => (b.importance ?? 0) - (a.importance ?? 0))) {
+        if (memories.length < limit) add(memory)
+      }
     }
     // The character in the scene must remember it too, once it has left the recent
     // messages. Proven live: everything said on an adult turn feeds her own dodges

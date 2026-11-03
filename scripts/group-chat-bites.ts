@@ -12,6 +12,12 @@ type Mutation = { name: string; check: string; edits: Edit[]; script?: string }
 const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat/lines.ts', reply = 'src/services/group-chat/reply.ts'
 const worker = 'worker/processors/group-turn.processor.ts', prompt = 'src/services/group-chat/prompt.ts'
 const mutations: Mutation[] = [
+  { name: 'adult direct: told facts dropped', check: 'memory adult direct turn gets', edits: [['src/services/group-chat/memory.ts', 'if (input.thread !== undefined) {\n      const told', 'if (false) {\n      const told']] },
+  { name: 'adult direct: other threads included', check: 'memory adult direct turn gets', edits: [['src/services/group-chat/memory.ts', 'memory.private_to === input.thread && memory.explicit_fact !== true', 'memory.explicit_fact !== true']] },
+  { name: 'adult direct: her own lines included', check: 'memory adult direct turn gets', edits: [['src/services/group-chat/memory.ts', "(memory.subjects || []).some(name => names[0].includes(name))", 'true']] },
+  { name: 'adult direct: player name not matched', check: 'memory adult direct turn gets', edits: [['src/services/group-chat/memory.ts', 'some(name => names[0].includes(name))', "some(name => name === 'player')"]] },
+  { name: 'adult direct: cap lost', check: 'memory adult direct turn gets', edits: [['src/services/group-chat/memory.ts', 'const limit = memories.length + GROUP_ADULT_DIRECT_LINES', 'const limit = Infinity']] },
+  { name: 'adult direct: importance order lost', check: 'memory adult direct turn gets', edits: [['src/services/group-chat/memory.ts', '.filter(told).sort((a, b) => (b.importance ?? 0) - (a.importance ?? 0))', '.filter(told)']] },
   { name: 'exact details: nothing kept', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', 'exactDetails(message.text).some(word', 'exactDetails(message.text).some(() => false) && [].some((word: string)']] },
   { name: 'exact details: batch atoms ignored', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', '[...atoms.map(atom => atom.text), ...stored]', 'stored']] },
   { name: 'exact details: stored facts ignored', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', '[...atoms.map(atom => atom.text), ...stored]', 'atoms.map(atom => atom.text)']] },

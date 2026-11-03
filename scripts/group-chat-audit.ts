@@ -562,7 +562,7 @@ mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator'
 }))
 const { memoryProcessor, buildMemoryCurationRequest } = await import('../worker/processors/memory.processor')
 const { summaryProcessor } = await import('../worker/processors/summary.processor')
-const { loadGroupBatch, groupWriterMemory, groupWriterSummaries, groupMessages, deriveGroupAudience, groupMemoryMayMerge, raisedMemories, GROUP_MEMORY_TEXT_BUDGET } = await import('../src/services/group-chat/memory')
+const { loadGroupBatch, groupWriterMemory, groupWriterSummaries, groupMessages, deriveGroupAudience, groupMemoryMayMerge, raisedMemories, GROUP_MEMORY_TEXT_BUDGET, GROUP_ADULT_DIRECT_LINES } = await import('../src/services/group-chat/memory')
 const { groupTurnProcessor } = await import('../worker/processors/group-turn.processor')
 const { instanceService } = await import('../src/services/instance.service')
 const { generationService } = await import('../src/services/generation.service')
@@ -1438,6 +1438,31 @@ await check('memory exact details: audience and earlier facts decide what is kep
   rows('memories').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), text: 'The flat alarm is 9317.', is_archived: false, source_event_ids: [] })
   await memoryProcessor(memoryJob())
   assert(!rows('memories').some(memory => String(memory.text).includes('said:')))
+})
+await check('memory adult direct turn gets what the player told her, whatever the wording', async () => {
+  await start()
+  const thread = ids[0], source = storedEvents()[0]
+  source.data.dm_with = thread
+  const push = (text: string, subjects: string[], extra: Row = {}) => rows('memories').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), player_id: new ObjectId(playerId),
+    text, subjects, objects: [], source_event_ids: [source._id], private_to: thread, is_nsfw: false, is_archived: false, importance: 3, updated_at: new Date(), ...extra })
+  push('Her cousin lives by the harbour.', ['player'])
+  push('Also a fact under the player name.', [playerName])
+  push('She spent an hour on the phone.', [names[0]])
+  const read = (over: Row = {}) => groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[0]], enabled: true, thread, memories: [], openThreads: [], raisedBy: 'who else knows', ...over })
+  let shown = (await read()).memories
+  assert(shown.includes('Her cousin lives by the harbour.')); assert(shown.includes('Also a fact under the player name.'))
+  assert(!shown.includes('She spent an hour on the phone.'))
+  // The narrow prompt stays narrow: a cap, the most important first, and only on direct turns.
+  for (let i = 0; i < GROUP_ADULT_DIRECT_LINES + 2; i++) push(`Filler told fact ${i}.`, ['player'], { importance: 1 })
+  push('The most important told fact.', ['player'], { importance: 5, updated_at: new Date(0) })
+  shown = (await read()).memories
+  assert.equal(shown.length, GROUP_ADULT_DIRECT_LINES); assert.equal(shown[0], 'The most important told fact.')
+  assert.deepEqual((await read({ thread: undefined })).memories, [])
+  assert.deepEqual((await read({ thread: ids[1] })).memories, [])
+  // Everyday prompts still get pins; a shared fact isn't pulled in by this rule.
+  rows('memories').forEach(memory => { memory.private_to = undefined })
+  source.data.dm_with = undefined
+  assert(!(await read()).memories.includes('The most important told fact.'))
 })
 await check('memory failed batches catch up from watermark with two event overlap and no duplicate atoms or vectors', async () => {
   await start(); addEvents(5); curatorReply = new Error('Stub curator failed')
