@@ -1,4 +1,4 @@
-import { GROUP_CURATION_SCHEMA, filterGroupAtomAudiences, closeGroupThreads, groupMemoryTextKey, missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts } from '../../src/services/group-chat/curation'
+import { GROUP_CURATION_SCHEMA, filterGroupAtomAudiences, closeGroupThreads, groupMemoryTextKey, missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts, clearEverydayAdultMarks, uncoveredAdultEvents, adultRetryAtoms, adultLineAtoms } from '../../src/services/group-chat/curation'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { allowedGroupMemories, deriveGroupAudience, groupMemoryMayMerge, withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark, type GroupMemoryBatch } from '../../src/services/group-chat/memory'
 import { log } from '../../src/utils/logger'
@@ -474,7 +474,7 @@ async function groupMemoryWork(job: Job) {
   const messages = batch.events.flatMap(event => groupMessages([event], batch.instance.group_context!.player, members, batch.thread)
     .map(line => ({ ...line, eventId: event._id, adult: event.type === 'intimate', number: 0 })))
     .map((line, index) => ({ ...line, number: index + 1 }))
-  const group: GroupMemoryBatch = { player: batch.instance.group_context!.player, messages, events: batch.events, through: batch.through, ...(batch.thread === undefined ? {} : { thread: batch.thread }) }
+  const group: GroupMemoryBatch = { player: batch.instance.group_context!.player, messages, events: batch.events, through: batch.through, overlap: batch.overlap, ...(batch.thread === undefined ? {} : { thread: batch.thread }) }
   try {
     const result = await memoryWork(job, group)
     await advanceGroupWatermark(batch.events, 'curated_through_sequence')
@@ -597,36 +597,65 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
     console.warn('Memory extraction returned invalid JSON:', result)
     return { memoriesCreated: 0 }
   }
-  let invalidCitations = 0, invalidAtoms = 0, invalidAudiences = 0, duplicates = 0
+  let invalidCitations = 0, invalidAtoms = 0, invalidAudiences = 0, duplicates = 0, adultClaims = 0, refiled = 0, marksCleared = 0, adultRetryFacts = 0, adultLinesKept = 0
   if (group) {
-    if (!extracted || !Array.isArray(extracted.memories) || (!extracted.memories.length && !extracted.closed_threads?.length)) throw new Error('Group curator returned empty memories')
-    extracted.memories = extracted.memories.slice(0, 20).filter((raw: unknown) => {
-      if (!raw || typeof raw !== 'object') { invalidAtoms++; return false }
-      const atom = raw as Record<string, unknown>
-      if (!Array.isArray(atom.source_messages) || !atom.source_messages.length ||
-        atom.source_messages.some(number => !Number.isInteger(number) || Number(number) < 1 || Number(number) > group.messages.length)) {
-        invalidCitations++; return false
+    if (!extracted || !Array.isArray(extracted.memories)) throw new Error('Group curator returned empty memories')
+    const adultBatch = uncoveredAdultEvents(group, []).uncovered.size > 0
+    if (!extracted.memories.length && !extracted.closed_threads?.length && !adultBatch) throw new Error('Group curator returned empty memories')
+    const cleanAtoms = (raws: unknown[]) => {
+      const shaped = raws.slice(0, 20).filter((raw: unknown) => {
+        if (!raw || typeof raw !== 'object') { invalidAtoms++; return false }
+        const atom = raw as Record<string, unknown>
+        if (!Array.isArray(atom.source_messages) || !atom.source_messages.length ||
+          atom.source_messages.some(number => !Number.isInteger(number) || Number(number) < 1 || Number(number) > group.messages.length)) {
+          invalidCitations++; return false
+        }
+        if ('private_to' in atom || 'dm_with' in atom) { invalidAtoms++; return false }
+        if (typeof atom.text !== 'string' || !atom.text.trim() || atom.text.length > 600 ||
+          typeof atom.type !== 'string' || !['relationship', 'promise', 'lore', 'observation', 'emotion', 'secret'].includes(atom.type) ||
+          !Number.isInteger(atom.importance) || Number(atom.importance) < 1 || Number(atom.importance) > 5 ||
+          typeof atom.is_nsfw !== 'boolean' || typeof atom.unresolved_thread !== 'boolean' ||
+          !Array.isArray(atom.subjects) || !atom.subjects.length || !Array.isArray(atom.objects) ||
+          [...atom.subjects, ...atom.objects].some(name => typeof name !== 'string' || !name.trim() || name.length > 80) ||
+          (atom.retrieval_terms !== undefined && (!Array.isArray(atom.retrieval_terms) || atom.retrieval_terms.some(term => typeof term !== 'string'))) ||
+          ['emotional_valence', 'emotional_cause', 'emotional_effect', 'relationship_delta'].some(key => atom[key] != null && typeof atom[key] !== 'string')) {
+          invalidAtoms++; return false
+        }
+        return true
+      })
+      const audiences = filterGroupAtomAudiences(group, shaped as Array<{ source_messages: number[] }>)
+      invalidAudiences += audiences.invalidAudiences
+      const marks = clearEverydayAdultMarks(group, audiences.memories as Array<{ text: string; is_nsfw?: unknown; source_messages: number[] }>)
+      marksCleared += marks.cleared
+      const claims = dropAdultWriterClaims(group, marks.memories)
+      adultClaims += claims.adultClaims
+      const spoken = refileSpokenFacts(group, claims.memories as Array<{ text: string; is_nsfw?: unknown; subjects: string[]; objects: string[]; source_messages: number[] }>)
+      refiled += spoken.refiled
+      return spoken.memories
+    }
+    extracted.memories = cleanAtoms(extracted.memories)
+    let gap = uncoveredAdultEvents(group, extracted.memories)
+    if (gap.short) {
+      // A failed second try only means the last resort below; the first answer still counts.
+      try {
+        const again = JSON.parse(await callLLM(buildMemoryCurationRequest({
+          sceneTag, roster, isSentient, protagonistName, playerPersonaName,
+          precedingAiResponse, playerInput, playerSpokenInput, playerNarrationFacts, aiResponse,
+          openThreads: [], group,
+        })))
+        const facts = adultRetryAtoms(group, gap.uncovered, extracted.memories, cleanAtoms(Array.isArray(again?.memories) ? again.memories : []))
+        adultRetryFacts = facts.length
+        extracted.memories.push(...facts)
+      } catch (error) {
+        log.warn('group.memory_adult_retry', { instanceId, error: (error as Error).message })
       }
-      if ('private_to' in atom || 'dm_with' in atom) { invalidAtoms++; return false }
-      if (typeof atom.text !== 'string' || !atom.text.trim() || atom.text.length > 600 ||
-        typeof atom.type !== 'string' || !['relationship', 'promise', 'lore', 'observation', 'emotion', 'secret'].includes(atom.type) ||
-        !Number.isInteger(atom.importance) || Number(atom.importance) < 1 || Number(atom.importance) > 5 ||
-        typeof atom.is_nsfw !== 'boolean' || typeof atom.unresolved_thread !== 'boolean' ||
-        !Array.isArray(atom.subjects) || !atom.subjects.length || !Array.isArray(atom.objects) ||
-        [...atom.subjects, ...atom.objects].some(name => typeof name !== 'string' || !name.trim() || name.length > 80) ||
-        (atom.retrieval_terms !== undefined && (!Array.isArray(atom.retrieval_terms) || atom.retrieval_terms.some(term => typeof term !== 'string'))) ||
-        ['emotional_valence', 'emotional_cause', 'emotional_effect', 'relationship_delta'].some(key => atom[key] != null && typeof atom[key] !== 'string')) {
-        invalidAtoms++; return false
+      gap = uncoveredAdultEvents(group, extracted.memories)
+      if (gap.short) {
+        const lines = adultLineAtoms(group, gap.uncovered)
+        adultLinesKept = lines.length
+        extracted.memories.push(...lines)
       }
-      return true
-    })
-    const audiences = filterGroupAtomAudiences(group, extracted.memories as Array<{ source_messages: number[] }>)
-    extracted.memories = audiences.memories
-    invalidAudiences = audiences.invalidAudiences
-    const claims = dropAdultWriterClaims(group, extracted.memories as Array<{ is_nsfw?: unknown; source_messages: number[] }>)
-    extracted.memories = claims.memories
-    const spoken = refileSpokenFacts(group, extracted.memories as Array<{ text: string; is_nsfw?: unknown; subjects: string[]; objects: string[]; source_messages: number[] }>)
-    extracted.memories = spoken.memories
+    }
     const stored = await mongoColl.memories().find({ instance_id: instanceOid, is_archived: false },
       { projection: { text: 1, private_to: 1 } }).toArray()
     const missedDetails = missedDetailAtoms(group, extracted.memories, stored.filter(memory => memory.private_to === undefined || memory.private_to === group.thread).map(memory => memory.text))
@@ -637,8 +666,8 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
       atom.subjects = atom.subjects.map(canonical)
       atom.objects = atom.objects.map(canonical)
     }
-    log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, invalidAudiences, missedDetails: missedDetails.length, adultClaims: claims.adultClaims, refiled: spoken.refiled, accepted: extracted.memories.length })
-    if (!extracted.memories.length && !extracted.closed_threads?.length && !claims.adultClaims) throw new Error('Group curator returned no valid atoms')
+    log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, invalidAudiences, missedDetails: missedDetails.length, adultClaims, refiled, marksCleared, adultRetryFacts, adultLinesKept, accepted: extracted.memories.length })
+    if (!extracted.memories.length && !extracted.closed_threads?.length && !adultClaims) throw new Error('Group curator returned no valid atoms')
     if (!await groupEventsLive(group.events)) throw new Error('Group memory source events changed')
   } else normalizePlayerFactAttribution({ extracted, isSentient, playerInput, protagonistName })
 

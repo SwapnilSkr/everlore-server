@@ -9,7 +9,7 @@ import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders } from '../
 import { parseLines, filterLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
 import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic } from '../src/services/group-chat/prompt'
 import { writeGroupReply } from '../src/services/group-chat/reply'
-import { missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts } from '../src/services/group-chat/curation'
+import { missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts, clearEverydayAdultMarks, uncoveredAdultEvents, adultRetryAtoms, adultLineAtoms } from '../src/services/group-chat/curation'
 import { validateGroup } from '../src/services/group-chat/validation'
 import { filterGroupAtomAudiences } from '../src/services/group-chat/curation'
 import { publicGroupData } from '../src/services/group-chat/public'
@@ -1391,10 +1391,10 @@ await check('memory a player line on an adult turn is kept as an adult fact and 
   await start(); addEvents(5); storedEvents()[4].type = 'intimate'
   curatorFactory = request => ({ memories: [atom('Said in the scene.', names[0], numbered(request).find(message => message.text === storedEvents()[4].data.player_input)!.number)] })
   await memoryProcessor(memoryJob())
-  assert.deepEqual(rows('memories').map(row => row.text), ['Said in the scene.'])
+  assert.equal(rows('memories')[0].text, 'Said in the scene.')
   assert.equal(rows('memories')[0].is_nsfw, true); assert.equal(rows('memories')[0].explicit_fact, undefined)
   await start(); addEvents(5)
-  curatorFactory = request => ({ memories: [atom('Called explicit.', names[0], numbered(request)[0].number, { is_nsfw: true })] })
+  curatorFactory = request => ({ memories: [atom('Asked about his cock.', names[0], numbered(request)[0].number, { is_nsfw: true })] })
   await memoryProcessor(memoryJob()); assert.equal(rows('memories')[0].explicit_fact, true)
   await start(); addEvents(5); storedEvents()[4].type = 'intimate'
   curatorFactory = request => ({ memories: [atom('Said in the scene.', names[0], numbered(request).find(message => message.text === storedEvents()[4].data.player_input)!.number)] })
@@ -2592,6 +2592,12 @@ await check('memory adult writer claims: everyday claims go, explicit lines and 
   curatorFactory = request => { const line = numbered(request).filter(row => row.speaker !== playerName).at(-1)!; return { memories: [atom('Nobody else knows.', names[0], line.number)] } }
   await memoryProcessor(memoryJob())
   assert.equal(rows('memories').filter(row => row.text === 'Nobody else knows.').length, 0)
+  // With no player line to fall back on, the batch is still finished rather than failed.
+  await start(); addEvents(5)
+  for (const event of storedEvents().slice(1)) { event.type = 'intimate'; event.data.player_input = '' }
+  curatorFactory = request => { const line = numbered(request).filter(row => row.speaker !== playerName).at(-1)!; return { memories: [atom('Nobody else knows.', names[0], line.number)] } }
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories').length, 0)
   await start(); addEvents(5)
   for (const event of storedEvents().slice(1)) event.type = 'intimate'
   curatorFactory = request => { const line = numbered(request).filter(row => row.speaker !== playerName).at(-1)!; return { memories: [atom('An explicit member line.', names[0], line.number, { is_nsfw: true })] } }
@@ -2661,10 +2667,107 @@ await check('refile spoken facts under the player', () => {
   const unchanged = refileSpokenFacts(group, kept)
   assert.equal(unchanged.refiled, 0); assert.deepEqual(unchanged.memories, kept)
 })
+await check('adult marks clear only on everyday lines with no explicit language', () => {
+  const eventId = new ObjectId()
+  const group = { messages: [{ number: 1, name: names[0], text: 'he lost his job last week', eventId, adult: false }, { number: 2, name: names[0], text: 'hard against the wall', eventId, adult: true }] }
+  const cleared = clearEverydayAdultMarks(group as never, [
+    { text: 'Sam lost his job.', is_nsfw: true, source_messages: [1] },
+    { text: 'Sam lost his job.', is_nsfw: true, source_messages: [2] },
+    { text: 'Sam touched her pussy.', is_nsfw: true, source_messages: [1] },
+    { text: 'Sam lost his job.', is_nsfw: false, source_messages: [1] },
+  ])
+  assert.deepEqual(cleared.memories.map(row => row.is_nsfw), [false, true, true, false])
+  assert.equal(cleared.cleared, 1)
+})
+await check('adult gap counts new adult turns no explicit fact cites', () => {
+  const ids = [new ObjectId(), new ObjectId(), new ObjectId(), new ObjectId()]
+  const events = ids.map(_id => ({ _id }))
+  const messages = [...ids.map((eventId, index) => ({ number: index + 1, name: playerName, text: 'x', eventId, adult: index !== 3 }))]
+  const group = { messages, events, overlap: 1 } as never
+  const atom2 = (is_nsfw: boolean, ...source_messages: number[]) => ({ is_nsfw, source_messages })
+  assert.deepEqual([...uncoveredAdultEvents(group, []).uncovered].sort(), [String(ids[1]), String(ids[2])].sort())
+  assert.equal(uncoveredAdultEvents(group, []).short, true)
+  // One of two covered is not short; a fact on the overlap or the everyday turn covers nothing.
+  assert.equal(uncoveredAdultEvents(group, [atom2(true, 2)]).short, false)
+  assert.equal(uncoveredAdultEvents(group, [atom2(true, 1), atom2(true, 4)]).short, true)
+  assert.equal(uncoveredAdultEvents(group, [atom2(false, 2), atom2(false, 3)]).short, true)
+  assert.equal(uncoveredAdultEvents({ messages: [messages[3]], events: [events[3]], overlap: 0 } as never, []).short, false)
+})
+await check('adult retry keeps only explicit new facts on uncovered turns', () => {
+  const ids = [new ObjectId(), new ObjectId()]
+  const group = { messages: ids.map((eventId, index) => ({ number: index + 1, name: names[0], text: 'x', eventId, adult: true })) } as never
+  const kept = adultRetryAtoms(group, new Set([String(ids[1])]), [{ text: 'Already  held.' }], [
+    { text: 'New fact.', is_nsfw: true, source_messages: [2] },
+    { text: 'NEW FACT.', is_nsfw: true, source_messages: [2] },
+    { text: 'already held.', is_nsfw: true, source_messages: [2] },
+    { text: 'Everyday.', is_nsfw: false, source_messages: [2] },
+    { text: 'Covered turn.', is_nsfw: true, source_messages: [1] },
+  ])
+  assert.deepEqual(kept.map(row => row.text), ['New fact.'])
+})
+await check('adult line backstop keeps only the player on uncovered turns', () => {
+  const ids = [new ObjectId(), new ObjectId()]
+  const line = (number: number, name: string, eventId: ObjectId, adult = true) => ({ number, name, text: `line ${number}`, eventId, adult })
+  const group = { player: playerName, messages: [line(1, playerName, ids[0]), line(2, names[0], ids[0]), line(3, playerName, ids[1]), line(4, playerName, ids[0], false)] } as never
+  const kept = adultLineAtoms(group, new Set([String(ids[0])]))
+  assert.deepEqual(kept.map(row => [row.text, row.source_messages, row.is_nsfw, row.subjects]), [[`${playerName} said: line 1`, [1], true, ['player']]])
+})
+await check('memory short adult batch asks again without threads and keeps the first answer', async () => {
+  const thread = (source: Row) => rows('memories').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), player_id: new ObjectId(playerId),
+    text: 'An open promise.', subjects: ['player'], objects: [], source_event_ids: [source._id], unresolved_thread: true, is_nsfw: false, is_archived: false, importance: 3, updated_at: new Date() })
+  const playerLines = (request: Row) => numbered(request).filter(row => row.speaker === playerName)
+  await start(); addEvents(5); thread(storedEvents()[0])
+  for (const event of storedEvents().slice(1)) event.type = 'intimate'
+  curatorFactory = request => curatorRequests.length === 1
+    ? { memories: [atom('The first answer.', 'player', playerLines(request)[0].number)] }
+    : { memories: playerLines(request).map((line, index) => atom(`Scene fact ${index}.`, 'player', line.number, { is_nsfw: true })) }
+  await memoryProcessor(memoryJob())
+  assert.equal(curatorRequests.length, 2)
+  const prompt = (request: Row) => String((request.messages as Row[])[1].content)
+  assert(prompt(curatorRequests[0]).includes('An open promise.'))
+  assert(!prompt(curatorRequests[1]).includes('An open promise.'))
+  const texts = rows('memories').map(row => row.text)
+  assert(texts.includes('The first answer.'))
+  assert(texts.some(text => String(text).startsWith('Scene fact')))
+  assert(!texts.some(text => String(text).includes(' said: ')))
+  assert(memoryLogs.some(row => row.name === 'group.memory_validation' && Number(row.adultRetryFacts) > 0 && row.adultLinesKept === 0))
+  assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence') > 1, true)
+  // A covered batch costs no second call, and neither does an everyday one.
+  await start(); addEvents(5)
+  for (const event of storedEvents().slice(1)) event.type = 'intimate'
+  curatorFactory = request => ({ memories: playerLines(request).map((line, index) => atom(`Covered ${index}.`, 'player', line.number, { is_nsfw: true })) })
+  await memoryProcessor(memoryJob()); assert.equal(curatorRequests.length, 1)
+  await start(); addEvents(5)
+  curatorFactory = request => ({ memories: [atom('Everyday.', 'player', numbered(request)[0].number)] })
+  await memoryProcessor(memoryJob()); assert.equal(curatorRequests.length, 1)
+  // A failed second try, or one still short, leaves the player's lines word for word.
+  for (const second of [new Error('Stub curator failed'), 'broken json', { memories: [] }]) {
+    await start(); addEvents(5)
+    for (const event of storedEvents().slice(1)) event.type = 'intimate'
+    curatorFactory = request => curatorRequests.length === 1 ? { memories: [atom('The first answer.', 'player', playerLines(request)[0].number)] } : second
+    await memoryProcessor(memoryJob())
+    const kept = rows('memories').map(row => String(row.text))
+    assert(kept.includes('The first answer.'))
+    assert(kept.some(text => text.startsWith(`${playerName} said: `)))
+    assert(rows('memories').filter(row => String(row.text).startsWith(`${playerName} said: `)).every(row => row.is_nsfw === true && row.explicit_fact === true))
+  }
+  // An empty first answer on an adult batch goes to the second try rather than failing.
+  await start(); addEvents(5)
+  for (const event of storedEvents().slice(1)) event.type = 'intimate'
+  curatorFactory = request => curatorRequests.length === 1 ? { memories: [] } : { memories: playerLines(request).map((line, index) => atom(`Scene fact ${index}.`, 'player', line.number, { is_nsfw: true })) }
+  await memoryProcessor(memoryJob()); assert(rows('memories').some(row => String(row.text).startsWith('Scene fact')))
+})
+await check('memory everyday fact marked adult is stored plain', async () => {
+  await start(); addEvents(5)
+  curatorFactory = request => ({ memories: [atom('A person lost a job.', 'player', numbered(request)[0].number, { is_nsfw: true })] })
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories')[0].is_nsfw, false); assert.equal(rows('memories')[0].explicit_fact, undefined)
+})
 await check('refile wiring runs before stored atoms', async () => {
   const source = await Bun.file('worker/processors/memory.processor.ts').text()
-  assert(source.indexOf('extracted.memories = spoken.memories') > source.indexOf('extracted.memories = claims.memories'))
-  assert(source.indexOf('extracted.memories = spoken.memories') < source.indexOf('const missedDetails = missedDetailAtoms'))
+  assert(source.indexOf('refileSpokenFacts(group, claims.memories') > source.indexOf('dropAdultWriterClaims(group, marks.memories)'))
+  assert(source.indexOf('refileSpokenFacts(group, claims.memories') < source.indexOf('const missedDetails = missedDetailAtoms'))
+  assert(source.includes('return spoken.memories'))
 })
 await check('hidden words filter drops statements and keeps questions', () => {
   const member = { id: 'one', name: 'Anya', group: {} } as never

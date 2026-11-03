@@ -17,7 +17,7 @@ export const GROUP_ADULT_DIRECT_LINES = 6
 const GROUP_RAISED_WORD_MAX_ATOMS = 3
 export type GroupWatermark = 'curated_through_sequence' | 'summarized_through_sequence'
 export interface GroupMemoryMessage extends NamedLine { number: number; eventId: ObjectId; adult: boolean }
-export interface GroupMemoryBatch { player: string; messages: GroupMemoryMessage[]; events: WorldEventDoc[]; through: number; thread?: string }
+export interface GroupMemoryBatch { player: string; messages: GroupMemoryMessage[]; events: WorldEventDoc[]; through: number; thread?: string; overlap?: number }
 
 /** Undefined is the group thread; malformed stored audiences fail closed. */
 export function validGroupThread(thread: unknown): thread is string | undefined {
@@ -67,7 +67,7 @@ export async function loadGroupBatch(instanceId: ObjectId, eventId: ObjectId, wa
     .sort({ sequence: 1 }).limit(memory ? GROUP_MEMORY_BATCH_LIMIT - overlap.length : GROUP_SUMMARY_CADENCE).toArray()
   if (fresh.length < (memory ? GROUP_MEMORY_CADENCE : GROUP_SUMMARY_CADENCE)) return null
   const events = [...overlap.reverse(), ...fresh]
-  return { instance, events, through: events.at(-1)!.sequence, ...(thread === undefined ? {} : { thread }) }
+  return { instance, events, overlap: overlap.length, through: events.at(-1)!.sequence, ...(thread === undefined ? {} : { thread }) }
 }
 
 export async function groupEventsLive(events: WorldEventDoc[]): Promise<boolean> {

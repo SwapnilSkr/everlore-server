@@ -2,6 +2,7 @@ import { mongoColl } from '../../config/mongo'
 import type { MemoryDoc } from '../../models/memory.model'
 import { allowedGroupMemories, deriveGroupAudience, type GroupMemoryBatch } from './memory'
 import { contentWords } from './lines'
+import { scoreScene } from '../../../worker/lib/nsfw-classifier'
 import type { ObjectId } from 'mongodb'
 
 const strings = { type: 'array', items: { type: 'string' } }
@@ -66,6 +67,52 @@ export function dropAdultWriterClaims<T extends { is_nsfw?: unknown; source_mess
     return message.adult && message.name !== group.player
   })
   return { memories: atoms.filter(atom => !claim(atom)), adultClaims: atoms.filter(claim).length }
+}
+
+/** Proven live: "got fired" came back marked adult on everyday lines, which hid it with the
+ * toggle off and took it out of what the character was told. On lines that aren't adult,
+ * the mark stands only if the fact or its lines hold some explicit language. */
+export function clearEverydayAdultMarks<T extends { text: string; is_nsfw?: unknown; source_messages: number[] }>(group: Pick<GroupMemoryBatch, 'messages'>, atoms: T[]) {
+  let cleared = 0
+  const memories = atoms.map(atom => {
+    const lines = atom.source_messages.map(number => group.messages[number - 1])
+    if (atom.is_nsfw !== true || lines.some(line => line.adult) || scoreScene([atom.text, ...lines.map(line => line.text)].join(' '), []).score > 0) return atom
+    cleared++
+    return { ...atom, is_nsfw: false }
+  })
+  return { memories, cleared }
+}
+
+/** New adult turns in this batch that no explicit fact cites. The two overlap events were
+ * curated last time, so they don't count either way. */
+export function uncoveredAdultEvents(group: Pick<GroupMemoryBatch, 'messages' | 'events' | 'overlap'>, atoms: Array<{ is_nsfw?: unknown; source_messages: number[] }>) {
+  const fresh = new Set(group.events.slice(group.overlap ?? 0).map(event => String(event._id)))
+  const adult = new Set(group.messages.filter(message => message.adult && fresh.has(String(message.eventId))).map(message => String(message.eventId)))
+  const total = adult.size
+  for (const atom of atoms) if (atom.is_nsfw === true) for (const number of atom.source_messages) adult.delete(String(group.messages[number - 1].eventId))
+  return { uncovered: adult, short: adult.size * 2 > total }
+}
+
+/** Replays of saved batches: with the open threads in the prompt the curator kept 0 to 2 adult
+ * facts of 24 lines, and without them 5 to 10 every time; a rule in its prompt didn't hold.
+ * So a batch that comes back short is asked once more with no threads. These are its facts worth
+ * keeping: explicit, about turns still uncovered, and not already held. */
+export function adultRetryAtoms<T extends { text: string; is_nsfw?: unknown; source_messages: number[] }>(group: Pick<GroupMemoryBatch, 'messages'>, uncovered: Set<string>, kept: Array<{ text: string }>, atoms: T[]) {
+  const held = new Set(kept.map(atom => normalizeGroupMemoryText(atom.text)))
+  return atoms.filter(atom => {
+    const key = normalizeGroupMemoryText(atom.text)
+    if (atom.is_nsfw !== true || held.has(key) || !atom.source_messages.some(number => uncovered.has(String(group.messages[number - 1].eventId)))) return false
+    held.add(key)
+    return true
+  })
+}
+
+/** Last resort, so a scene is never lost: what the player said on the uncovered turns, word for word. */
+export function adultLineAtoms(group: Pick<GroupMemoryBatch, 'player' | 'messages'>, uncovered: Set<string>) {
+  return group.messages.filter(message => message.adult && message.name === group.player && uncovered.has(String(message.eventId))).map(message => ({
+    text: `${group.player} said: ${message.text}`.slice(0, 600), type: 'observation', importance: 3, is_nsfw: true,
+    subjects: ['player'], objects: [], unresolved_thread: false, retrieval_terms: [], source_messages: [message.number],
+  }))
 }
 
 // Over five saved runs this fired only on the one wrong fact; true facts stayed below it.
