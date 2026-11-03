@@ -3003,6 +3003,7 @@ await check('direct real load socket and chronicle reads filter thread events to
     const sent: Row[] = []
     await playWsService.handleMessage(socket(sent), { action: 'load_instance', instance_id: instanceId, direct_with: thread })
     assert.equal(sent[0].type, 'instance_loaded')
+    assert.equal(sent[0].directWith, thread)
     assert.deepEqual(((sent[0].data as Row).recentEvents as Row[]).map(event => event.sequence), sequences); forbidden(sent)
     const feed = await memoryService.getEvents(instanceId, playerId, { directWith: thread, limit: 1 })
     assert.equal(feed.total, sequences.length); assert.equal(feed.events[0].sequence, sequences.at(-1)); forbidden(feed)

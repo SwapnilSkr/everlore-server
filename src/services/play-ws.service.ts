@@ -408,7 +408,8 @@ export const playWsService = {
           const responseState = state.template && !canReadTemplateAuthoring(state.template, user)
             ? { ...state, template: publicTemplate(state.template) }
             : state
-          ws.send(JSON.stringify({ type: 'instance_loaded', data: state.template?.kind === 'group' ? publicGroupData(responseState) : responseState }))
+          // Replies to concurrent loads can overtake each other, so a thread's answer names its thread.
+          ws.send(JSON.stringify({ type: 'instance_loaded', ...(directWith === undefined ? {} : { directWith }), data: state.template?.kind === 'group' ? publicGroupData(responseState) : responseState }))
         } catch (err: unknown) {
           ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.load_instance', userId: user.id }) }))
         }

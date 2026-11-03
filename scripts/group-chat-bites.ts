@@ -778,6 +778,7 @@ const notifyPolicy = 'src/services/group-chat/notification-policy.ts'
 const notifyCaps = 'src/services/group-chat/notification-caps.ts'
 const pushFcm = 'src/services/push/fcm.ts'
 const notificationMutations: Mutation[] = [
+  { name: 'load reply does not name its thread', check: 'direct real load', edits: [['src/services/play-ws.service.ts', "...(directWith === undefined ? {} : { directWith }), data: state.template", 'data: state.template']] },
   { name: 'notify rewind keeps unread message', check: 'notify rewind withdraws', edits: [['src/services/memory.service.ts', " && key !== 'pending_direct'", '']] },
   { name: 'notify push route not mounted', check: 'notify mark', edits: [['src/routes/auth.routes.ts', "  .post('/push-token', (ctx) => authController.registerPushToken(ctx))\n", '']] },
   { name: 'notify remove route not mounted', check: 'notify mark', edits: [['src/routes/auth.routes.ts', "  .delete('/push-token', (ctx) => authController.deletePushToken(ctx))\n", '']] },
