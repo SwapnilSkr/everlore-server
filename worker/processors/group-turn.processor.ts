@@ -20,7 +20,7 @@ import { stagePostProcess, dispatchPostProcessOutbox } from '../../src/services/
 import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE, groupLineRaisesFact, withoutAdultEvents, groupHiddenWords } from '../../src/services/group-chat/memory'
 import { resolveGroupThread } from '../../src/services/group-chat/threads'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
-import { buildGroupDynamic, buildAddressedStatic, buildGroupStatic, buildDirectStatic } from '../../src/services/group-chat/prompt'
+import { buildGroupDynamic, buildAddressedStatic, buildGroupStatic, buildDirectStatic, sceneExamples } from '../../src/services/group-chat/prompt'
 import { rollSpeakers, advanceSilence, pickAddressed, pickSceneMembers, mentionsMember } from '../../src/services/group-chat/roll'
 import { timeLines } from '../../src/services/group-chat/lines'
 import { writeGroupReply, GROUP_WRITER_TIMEOUT_MS, groupWriterHostFailed } from '../../src/services/group-chat/reply'
@@ -210,9 +210,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const laterInScene = addressedPrompt && sceneMembers.length > 0 && request.history.length > 0
           // Only a scene member writing alone: a bystander or a repair isn't in the scene.
           // Proven live and by replay: inviting them to answer each other gave 7 of 22 explicit, all
-          // banter between them. Answering the player, on the same history, gave 15 of 18.
+          // banter between them. Answering the player, on the same history, gave 22 of 22 live.
           const sceneOthers = selected.length === 1 && sceneMembers.includes(selected[0].id) ? sceneMembers.filter(id => id !== selected[0].id).map(id => members.find(member => member.id === id)!.name) : []
-          const dynamic = buildGroupDynamic({ sceneRule: sceneOthers.length ? `This is a sex scene between ${config.player}, ${selected[0].name} and ${sceneOthers.join(' and ')}, and it's happening now. ${selected[0].name} answers ${config.player}: what ${selected[0].name} wants done to them and what ${selected[0].name} does next, named in plain crude words. ${selected[0].name} doesn't organise the others or talk about anything else.` : undefined, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
+          const sceneVoice = sceneOthers.length ? sceneExamples(selected[0], writerHistory(speakers[0]).filter(line => line.name === selected[0].name).length, request.excludedVoice) : []
+          const dynamic = buildGroupDynamic({ sceneRule: sceneOthers.length ? `This is a sex scene between ${config.player}, ${selected[0].name} and ${sceneOthers.join(' and ')}, and it's happening now. ${selected[0].name} answers ${config.player} and doesn't organise the others or talk about anything else.${sceneVoice.length ? ` ${selected[0].name} says it the way these sound, in new words: ${sceneVoice.map(example => `"${example}"`).join(' ')}` : ''}` : undefined, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),
             groupContext: stillAdult ? undefined : shownGroup,
             history: [...(addressedPrompt ? sceneMembers.length ? writerHistory(speakers[0]) : addressedHistory : shownWriterHistory), ...(origin === 'player' && split && (laterInScene || (!addressedPrompt && (!sceneMembers.length || consented))) ? [playerLine] : []), ...(split ? sceneMembers.length && !consented ? [] : request.history : [])],

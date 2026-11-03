@@ -56,7 +56,7 @@ export async function writeGroupReply(input: {
       if (response.writer === 'adult') adultModel = response.model
       const checked = filterLines(parseLines(response.content, input.members, input.player, counts, picked.length === 1 ? input.members.find(member => member.id === picked[0])?.name : undefined), {
         // The last attempts run unfiltered: a guess is better than a reply that fails.
-        ...options, addressed: member, knownText: response.prompt, hiddenWords: index > 0 || purpose === 'addressed_fallback' || purpose === 'tag_backup' ? undefined : response.hiddenWords, repeatedOpener: response.writer === 'adult' && member !== undefined && picked.includes(member), repeatedIdea: response.writer === 'adult' && member !== undefined && picked.includes(member), onCopiedExample: example => copiedVoice.add(example), finishReason: response.finishReason, speakers: picked, previous: [...input.previous, ...lines], oneMessage: purpose === 'bystander' || (!!member && !picked.includes(member)),
+        ...options, thisTurn: lines, addressed: member, knownText: response.prompt, hiddenWords: index > 0 || purpose === 'addressed_fallback' || purpose === 'tag_backup' ? undefined : response.hiddenWords, repeatedOpener: response.writer === 'adult' && member !== undefined && picked.includes(member), repeatedIdea: response.writer === 'adult' && member !== undefined && picked.includes(member), onCopiedExample: example => copiedVoice.add(example), finishReason: response.finishReason, speakers: picked, previous: [...input.previous, ...lines], oneMessage: purpose === 'bystander' || (!!member && !picked.includes(member)),
       }, counts)
       lines = filterLines([...lines, ...checked], options, counts)
       return response.nextIndex ?? index + 1

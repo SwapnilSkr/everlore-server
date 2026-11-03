@@ -64,6 +64,13 @@ export function buildAddressedStatic(input: Parameters<typeof buildGroupStatic>[
   ].join('\n\n')
 }
 
+// Measured blind: rules alone left characters indistinguishable, and "own voice" wording didn't help;
+// their own lines next to the turn did. Longest first, because short examples are small talk and get sent whole.
+export function sceneExamples(member: GroupMember, seen: number, excluded: string[] = []): string[] {
+  const longest = (member.group.voice || []).filter(example => !excluded.includes(example)).sort((a, b) => b.length - a.length).slice(0, 3)
+  return [...new Set([longest[seen % longest.length], longest[(seen + 1) % longest.length]])].filter(Boolean)
+}
+
 export function buildDirectStatic(system: string, member: GroupMember, player: string): string {
   return `${system}\n\nThis is a private conversation between ${player} and ${member.name}. Only these two can see it. Only ${member.name} writes a reply, in one to three messages. Recent messages are this private conversation. The group chat block is read-only context from a separate conversation: nothing in it was said here, and each line there was said by the person named.`
 }

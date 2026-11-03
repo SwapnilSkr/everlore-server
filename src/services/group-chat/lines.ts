@@ -76,10 +76,14 @@ const sharedWording = (text: string, other: string) => {
 }
 // Measured on a live scene: later messages that circled earlier ones shared half or more.
 const REPEATED_IDEA_SHARE = 0.5
+// Proven live: an example with one clause dropped passed as new. Short lines share common words fairly.
+const NEAR_COPY_SHARE = 0.8
+const NEAR_COPY_WORDS = 6
 
 export function filterLines(input: NamedLine[], options: {
   members: GroupMember[]; speakers: string[]; origin: GroupOrigin
   previous: NamedLine[]; openings: NamedLine[]
+  thisTurn?: NamedLine[]
   blocked: (text: string) => boolean
   player?: string; onCopiedExample?: (example: string) => void
   addressed?: string; sceneMembers?: string[]; repeatedOpener?: boolean; repeatedIdea?: boolean; oneMessage?: boolean; finishReason?: string | null
@@ -99,6 +103,9 @@ export function filterLines(input: NamedLine[], options: {
     const withoutTag = options.player ? clean.replace(new RegExp(`^@${options.player.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])[,\\s]*`, 'iu'), '') : clean
     line.text = trimReply(withoutTag, options.finishReason === 'length' && source === input.at(-1), !!options.addressed || !!options.sceneMembers?.includes(member.id))
     if (line.text !== withoutTag) counts.trimmed++
+    // Proven by replay: copying a numbered example gave "1. 2. 3.". An item with nothing in it goes.
+    line.text = line.text.replace(/(?<=^|\s)\d+[.)]\s+(?=\d+[.)](\s|$))/g, '')
+    if (/^\s*\d+[.)]\s*$/.test(line.text)) { counts.empty++; continue }
     if (!line.text.trim()) { counts.empty++; continue }
     if (options.blocked(line.text)) { counts.unsafe++; continue }
     // Proven live: a writer's note to itself reached the player (its own name, then "messages will reflect
@@ -110,6 +117,7 @@ export function filterLines(input: NamedLine[], options: {
       const copied = copy === normalized(line.text) || (copy.split(/\s+/).length >= 3 && wordsOnly(line.text).includes(wordsOnly(copy)))
         // Proven live: the tail of an example, sent alone, passed as a new line.
         || (wordsOnly(line.text).split(' ').length >= 5 && wordsOnly(copy).includes(wordsOnly(line.text)))
+        || (contentWords(line.text).size >= NEAR_COPY_WORDS && sharedWording(line.text, copy) >= NEAR_COPY_SHARE)
       if (copied) options.onCopiedExample?.(example)
       return copied
     })) { counts.copied_example++; continue }
@@ -122,7 +130,8 @@ export function filterLines(input: NamedLine[], options: {
     if (options.hiddenWords?.length && !line.text.trim().endsWith('?') && [...contentWords(line.text)].some(word => options.hiddenWords!.includes(word))) { counts.hidden_guess++; continue }
     // Proven live: one stock sentence came back in four replies, each otherwise new. Removing
     // only that sentence costs no call, and the next prompt no longer shows it to copy.
-    const said = new Set([...options.previous, ...options.openings, ...kept].filter(other => other.name === line.name).flatMap(other => sentencesOf(other.text).map(wordsOnly)))
+    // Proven live: two characters in one scene opened on the same sentence.
+    const said = new Set([...[...options.previous, ...options.openings, ...kept].filter(other => other.name === line.name), ...(options.thisTurn || []).filter(other => other.name !== line.name)].flatMap(other => sentencesOf(other.text).map(wordsOnly)))
     const sentences = sentencesOf(line.text)
     const fresh = sentences.filter(sentence => wordsOnly(sentence).split(' ').length < REPEATED_SENTENCE_WORDS || !said.has(wordsOnly(sentence)))
     // Proven on a saved scene: with most of a line gone, what's left is a scrap ("That feels

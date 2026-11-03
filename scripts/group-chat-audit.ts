@@ -7,7 +7,7 @@ import { ObjectId } from 'mongodb'
 import type { Job } from 'bullmq'
 import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders, pickSceneMembers } from '../src/services/group-chat/roll'
 import { parseLines, filterLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
-import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic } from '../src/services/group-chat/prompt'
+import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic, sceneExamples } from '../src/services/group-chat/prompt'
 import { GROUP_SCENE_MAX_WRITERS, GROUP_SCENE_DEADLINE_MS, GROUP_WRITER_TIMEOUT_MS, groupWriterHostFailed, writeGroupReply } from '../src/services/group-chat/reply'
 import { missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts, clearEverydayAdultMarks, uncoveredAdultEvents, adultRetryAtoms, adultLineAtoms } from '../src/services/group-chat/curation'
 import { validateGroup } from '../src/services/group-chat/validation'
@@ -3495,6 +3495,29 @@ await check('nway selection covers mentions in textual order continuation narrow
   }
 })
 
+await check('nway scene examples are the longest lines, rotate and skip copied ones', () => {
+  const voiced = { ...members[0], group: { ...members[0].group, voice: ['no', 'a much longer example line here', 'the longest example line of them all here', 'a long example line'] } }
+  const [one, two, three] = [voiced.group.voice[2], voiced.group.voice[1], voiced.group.voice[3]]
+  assert.deepEqual(sceneExamples(voiced, 0), [one, two]); assert.deepEqual(sceneExamples(voiced, 1), [two, three]); assert.deepEqual(sceneExamples(voiced, 2), [three, one])
+  assert.deepEqual(sceneExamples(voiced, 0, [one]), [two, three])
+  assert.deepEqual(sceneExamples({ ...voiced, group: { ...voiced.group, voice: ['only'] } }, 4), ['only'])
+  assert.deepEqual(sceneExamples({ ...voiced, group: { ...voiced.group, voice: [] } }, 0), [])
+})
+
+await check('numbered scraps, near copies and a sentence another character said this turn are caught', () => {
+  const voiced = { ...members[2], group: { ...members[2].group, voice: ['fine. hands first, then your mouth, then you fuck me properly tonight'] } }
+  const filter = (text: string, thisTurn: { name: string; text: string }[] = []) => { const counts = emptyLineCounts(); const kept = filterLines([{ name: voiced.name, text }], { members: [voiced], speakers: [voiced.id], origin: 'player', previous: [], openings: [], thisTurn, blocked: () => false }, counts); return [kept[0]?.text, counts.copied_example, counts.empty, counts.repeated_sentence, counts.duplicate] }
+  assert.deepEqual(filter('1. 2. 3.'), [undefined, 0, 1, 0, 0])
+  assert.deepEqual(filter('1. 2. Stop now'), ['2. Stop now', 0, 0, 0, 0])
+  assert.deepEqual(filter('1. Stop. 2. Go on.'), ['1. Stop. 2. Go on.', 0, 0, 0, 0])
+  assert.deepEqual(filter('hands first, then your mouth, then you can fuck us properly'), [undefined, 1, 0, 0, 0])
+  assert.deepEqual(filter('your mouth first, then you fuck me'), ['your mouth first, then you fuck me', 0, 0, 0, 0])
+  const stock = 'I want you on the bed.'
+  assert.deepEqual(filter(`${stock} Do it slowly and then come back here again.`, [{ name: names[0], text: stock }]), ['Do it slowly and then come back here again.', 0, 0, 1, 0])
+  assert.deepEqual(filter(stock, [{ name: names[0], text: stock }]), [undefined, 0, 0, 0, 1])
+  assert.deepEqual(filter(`Now. ${stock}`, [{ name: voiced.name, text: stock }]), [`Now. ${stock}`, 0, 0, 0, 0])
+})
+
 await check('nway real prompts own static all earlier lines per-member caps ordered partial payloads and stored times', async () => {
   await adultStart()
   const order = [2, 0, 1]
@@ -3520,7 +3543,12 @@ await check('nway real prompts own static all earlier lines per-member caps orde
     }
     assert(content(writerCalls[index], 1).includes(`Held${member} at 4.`))
     assert(content(writerCalls[index], 1).includes(`This is a sex scene between ${playerName}, ${names[member]} and `))
-    assert(content(writerCalls[index], 1).includes(`${names[member]} answers ${playerName}: what ${names[member]} wants done to them and what ${names[member]} does next, named in plain crude words. ${names[member]} doesn't organise the others or talk about anything else.`))
+    assert(content(writerCalls[index], 1).includes(`${names[member]} answers ${playerName} and doesn't organise the others or talk about anything else.`))
+    // The examples sit next to the turn, not only in the static prompt, and come from this member's own lines.
+    const nearTurn = content(writerCalls[index], 1).slice(content(writerCalls[index], 1).indexOf('Now:'))
+    assert(nearTurn.includes('says it the way these sound, in new words: "'))
+    assert(members[member].group.voice!.some(example => nearTurn.includes(`"${example}"`)))
+    for (const other of members.filter(other => other.id !== ids[member])) assert(!other.group.voice!.some(example => nearTurn.includes(`"${example}"`)))
     const playerAction = order.map(member => `@${names[member]}`).join(' ')
     // First writer: the player's line closes the prompt. Later writers: it comes before this turn's replies.
     if (!index) assert(content(writerCalls[index], 1).trim().endsWith(playerAction))
