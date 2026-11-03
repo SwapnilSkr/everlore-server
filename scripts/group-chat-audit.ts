@@ -9,7 +9,7 @@ import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders } from '../
 import { parseLines, filterLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
 import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic } from '../src/services/group-chat/prompt'
 import { writeGroupReply } from '../src/services/group-chat/reply'
-import { missedDetailAtoms } from '../src/services/group-chat/curation'
+import { missedDetailAtoms, dropAdultWriterClaims } from '../src/services/group-chat/curation'
 import { validateGroup } from '../src/services/group-chat/validation'
 import { filterGroupAtomAudiences } from '../src/services/group-chat/curation'
 import { publicGroupData } from '../src/services/group-chat/public'
@@ -581,7 +581,7 @@ mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator'
 }))
 const { memoryProcessor, buildMemoryCurationRequest } = await import('../worker/processors/memory.processor')
 const { summaryProcessor } = await import('../worker/processors/summary.processor')
-const { loadGroupBatch, groupWriterMemory, groupWriterSummaries, groupMessages, deriveGroupAudience, groupMemoryMayMerge, raisedMemories, GROUP_MEMORY_TEXT_BUDGET, GROUP_ADULT_DIRECT_LINES } = await import('../src/services/group-chat/memory')
+const { loadGroupBatch, groupWriterMemory, groupWriterSummaries, groupMessages, deriveGroupAudience, groupMemoryMayMerge, raisedMemories, GROUP_MEMORY_TEXT_BUDGET, GROUP_ADULT_DIRECT_LINES, groupLineRaisesFact } = await import('../src/services/group-chat/memory')
 const { groupTurnProcessor } = await import('../worker/processors/group-turn.processor')
 const { instanceService } = await import('../src/services/instance.service')
 const { generationService } = await import('../src/services/generation.service')
@@ -1387,9 +1387,9 @@ await check('memory group prompt and required schema request preserve small pers
   assert.deepEqual(rows('memories')[0].subjects, ['player'])
   assert.deepEqual(rows('memories')[0].objects, ['player', `${playerName}'s sister`, names[0]])
 })
-await check('memory a member line on an adult turn is kept as an adult fact and hidden when the toggle is off', async () => {
+await check('memory a player line on an adult turn is kept as an adult fact and hidden when the toggle is off', async () => {
   await start(); addEvents(5); storedEvents()[4].type = 'intimate'
-  curatorFactory = request => ({ memories: [atom('Said in the scene.', names[0], numbered(request).find(message => message.text === storedEvents()[4].data.lines![0].text)!.number)] })
+  curatorFactory = request => ({ memories: [atom('Said in the scene.', names[0], numbered(request).find(message => message.text === storedEvents()[4].data.player_input)!.number)] })
   await memoryProcessor(memoryJob())
   assert.deepEqual(rows('memories').map(row => row.text), ['Said in the scene.'])
   assert.equal(rows('memories')[0].is_nsfw, true); assert.equal(rows('memories')[0].explicit_fact, undefined)
@@ -1397,7 +1397,7 @@ await check('memory a member line on an adult turn is kept as an adult fact and 
   curatorFactory = request => ({ memories: [atom('Called explicit.', names[0], numbered(request)[0].number, { is_nsfw: true })] })
   await memoryProcessor(memoryJob()); assert.equal(rows('memories')[0].explicit_fact, true)
   await start(); addEvents(5); storedEvents()[4].type = 'intimate'
-  curatorFactory = request => ({ memories: [atom('Said in the scene.', names[0], numbered(request).find(message => message.text === storedEvents()[4].data.lines![0].text)!.number)] })
+  curatorFactory = request => ({ memories: [atom('Said in the scene.', names[0], numbered(request).find(message => message.text === storedEvents()[4].data.player_input)!.number)] })
   await memoryProcessor(memoryJob())
   const hidden = await groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[0]], enabled: false, memories: [], openThreads: [] })
   assert(!hidden.memories.includes('Said in the scene.'))
@@ -2547,6 +2547,61 @@ await check('adult plain question mid-scene gets one message; other lines keep t
   await turn({ directWith: ids[1], userMessage: 'will you touch me?' }, never)
   assert(requestText(writerCalls[0]).includes('Write one to three messages.')); assert.equal((lastData().lines as Row[]).length, 3)
   auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerSexual = false
+})
+await check('adult fact question goes to the normal writer; an unrelated question stays adult', async () => {
+  await start(); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; put(rows('users')[0], 'preferences.nsfw_enabled', true); judgeVerdict = true; routerSexual = true
+  for (const reply of ['First direct adult answer.', 'Second direct adult answer.']) {
+    modelReplies = [`${names[1]}: ${reply}`]
+    await turn({ directWith: ids[1], userMessage: 'I want you.' }, never)
+  }
+  const source = storedEvents().at(-1)!
+  const fact = (text: string, extra: Row = {}) => rows('memories').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), player_id: new ObjectId(playerId), text, subjects: ['player'], objects: [],
+    source_event_ids: [source._id], private_to: ids[1], is_nsfw: false, is_archived: false, importance: 3, updated_at: new Date(), ...extra })
+  fact('The player keeps a walnut wardrobe.')
+  fact('The player craves a velvet blindfold.', { explicit_fact: true, is_nsfw: true })
+  routerSexual = false
+  const ask = async (userMessage: string, directWith: string | undefined = ids[1]) => {
+    writerCalls = []; modelReplies = [`${names[1]}: Answering ${String(rows('events').length).replace(/\d/g, digit => 'abcdefghij'[Number(digit)])}.`]
+    await turn({ directWith, userMessage }, never)
+    return { model: writerCalls[0].model, type: rows('events').at(-1)!.type }
+  }
+  assert.deepEqual(await ask('where is my wardrobe?'), { model: 'fake-safe', type: 'narration' })
+  routerSexual = true
+  assert.equal((await ask('I want you.')).model, 'fake-adult')
+  routerSexual = false
+  assert.equal((await ask('do you like my blindfold?')).model, 'fake-adult')
+  assert.equal((await ask('anything on your mind?')).model, 'fake-adult')
+  assert.equal((await ask('tell me about my wardrobe')).model, 'fake-adult')
+  // Another thread's private fact can't send a question to the normal writer.
+  assert.equal(await groupLineRaisesFact({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[0]], thread: ids[0], line: 'where is my wardrobe?' }), false)
+  assert.equal(await groupLineRaisesFact({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[1]], thread: ids[1], line: 'where is my wardrobe?' }), true)
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerSexual = false
+})
+await check('memory adult writer claims: everyday claims go, explicit lines and player lines stay', async () => {
+  const eventId = new ObjectId()
+  const message = (number: number, name: string, adult: boolean) => ({ number, name, text: 'x', eventId, adult })
+  const group = { player: playerName, messages: [message(1, names[0], true), message(2, playerName, true), message(3, names[0], false)] }
+  const atom2 = (is_nsfw: boolean, ...source_messages: number[]) => ({ is_nsfw, source_messages })
+  const kept = dropAdultWriterClaims(group, [atom2(false, 1), atom2(true, 1), atom2(false, 2), atom2(false, 3), atom2(false, 1, 2)])
+  assert.equal(kept.adultClaims, 1)
+  assert.deepEqual(kept.memories.map(row => row.source_messages), [[1], [2], [3], [1, 2]])
+  assert.equal(kept.memories[0].is_nsfw, true)
+  // A batch holding only such claims is finished, not failed, so its watermark moves on.
+  await start(); addEvents(5)
+  for (const event of storedEvents().slice(1)) event.type = 'intimate'
+  curatorFactory = request => { const line = numbered(request).filter(row => row.speaker !== playerName).at(-1)!; return { memories: [atom('Nobody else knows.', names[0], line.number)] } }
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories').filter(row => row.text === 'Nobody else knows.').length, 0)
+  await start(); addEvents(5)
+  for (const event of storedEvents().slice(1)) event.type = 'intimate'
+  curatorFactory = request => { const line = numbered(request).filter(row => row.speaker !== playerName).at(-1)!; return { memories: [atom('An explicit member line.', names[0], line.number, { is_nsfw: true })] } }
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories').filter(row => row.text === 'An explicit member line.').length, 1)
+  await start(); addEvents(5)
+  for (const event of storedEvents().slice(1)) event.type = 'intimate'
+  curatorFactory = request => { const line = numbered(request).filter(row => row.speaker !== playerName).at(-1)!; return { memories: [atom('Nobody else knows.', names[0], line.number)] } }
+  await memoryProcessor(memoryJob())
+  assert(get(rows('worldInstances')[0], 'group_state.curated_through_sequence') > 1)
 })
 await check('direct prompt puts the conversation after the group block and a guessed number never lands', async () => {
   await start()

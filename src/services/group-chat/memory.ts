@@ -155,6 +155,16 @@ export async function groupWriterSummaries(instanceId: ObjectId, candidates: Arr
   return allowed
 }
 
+/** A plain question about a stored everyday fact, tested the way an adult prompt finds facts. */
+export async function groupLineRaisesFact(input: { instanceId: ObjectId; player: string; speakers: string[]; thread?: string; line: string }) {
+  const people = ['player', input.player, ...input.speakers]
+  const candidates = await mongoColl.memories().find({ instance_id: input.instanceId, is_archived: false,
+    $or: [{ subjects: { $in: people } }, { objects: { $in: people } }],
+  }).sort({ updated_at: -1 }).limit(200).toArray()
+  const allowed = await allowedGroupMemories(input.instanceId, candidates, input.thread, true)
+  return raisedMemories(input.line, allowed.filter(memory => memory.explicit_fact !== true), people).length > 0
+}
+
 /** RAG is shared with story worlds; group calls verify every returned atom against Mongo. */
 export async function groupWriterMemory(input: {
   instanceId: ObjectId; player: string; speakers: string[]; enabled: boolean; thread?: string

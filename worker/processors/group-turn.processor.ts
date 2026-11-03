@@ -16,7 +16,7 @@ import { liveInstanceExists } from '../../src/utils/live-instance'
 import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
 import { judgeGroupReply } from '../lib/group-explicit-check'
 import { stagePostProcess, dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
-import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE } from '../../src/services/group-chat/memory'
+import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE, groupLineRaisesFact } from '../../src/services/group-chat/memory'
 import { resolveGroupThread } from '../../src/services/group-chat/threads'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { buildGroupDynamic, buildAddressedStatic, buildGroupStatic, buildDirectStatic } from '../../src/services/group-chat/prompt'
@@ -111,7 +111,13 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       && intimate.some(event => event.data.lines?.some(line => line.character_id === member.id)))
     const adultDowngrade = route.sceneClassification === 'nsfw' && !routerYes
       ? origin !== 'player' ? 'autonomous' : !involved ? 'no_involved_member' : undefined : undefined
-    const adult = route.sceneClassification === 'nsfw' && !adultDowngrade
+    const carried = route.sceneClassification === 'nsfw' && !adultDowngrade
+    const plainLine = carried && origin === 'player' && route.routerSettled && route.trace.sexual === false && userMessage.trim().endsWith('?')
+    // Proven live: told facts in its prompt, the adult writer still denied them or turned
+    // the answer to sex. Asked about a stored fact, the normal writer answers plainly.
+    const factQuestion = plainLine && await groupLineRaisesFact({ instanceId: iid, player: config.player, thread: directWith, line: userMessage,
+      speakers: members.filter(member => roll.picked.includes(member.id)).map(member => member.name) })
+    const adult = carried && !factQuestion
     const primary = adult ? template.model_preferences?.narration_nsfw || AI_MODELS.groupNsfw
       : template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw
     const fallbacks = adult ? AI_MODELS.groupNsfwFallbacks : AI_MODELS.narrationSfwFallbacks
@@ -129,7 +135,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     const now = new Date()
     // Proven live: asked a plain question mid-scene, she answered it, then spent the next
     // messages steering back to sex. One message answers it and leaves the lead to the player.
-    const plainQuestion = adult && origin === 'player' && route.routerSettled && route.trace.sexual === false && userMessage.trim().endsWith('?')
+    const plainQuestion = adult && plainLine
     const reply = await writeGroupReply({ members, speakers: roll.picked, tags: roll.tags,
       player: config.player, origin, direct: directWith, oneMessage: plainQuestion, adult: adult && addressed ? { addressed, rng } : undefined, previous: previousLines, openings: directWith ? [] : config.opening_lines,
       blocked: text => screenPlayerInput(text).blocked,

@@ -56,6 +56,17 @@ export const normalizeGroupMemoryText = (text: string) => text.replace(/\s+/g, '
 
 export const groupMemoryTextKey = (text: string, privateTo?: string) => JSON.stringify([privateTo ?? '', normalizeGroupMemoryText(text)])
 
+/** Proven live: on adult turns the writer makes things up in passing ("nobody else knows"),
+ * and stored as facts those fed later prompts. What it says about sex stays memory, as does
+ * everything the player says; its everyday claims on those turns aren't facts. */
+export function dropAdultWriterClaims<T extends { is_nsfw?: unknown; source_messages: number[] }>(group: Pick<GroupMemoryBatch, 'player' | 'messages'>, atoms: T[]) {
+  const claim = (atom: T) => atom.is_nsfw !== true && atom.source_messages.every(number => {
+    const message = group.messages[number - 1]
+    return message.adult && message.name !== group.player
+  })
+  return { memories: atoms.filter(atom => !claim(atom)), adultClaims: atoms.filter(claim).length }
+}
+
 /** Words that can't be recovered once lost: a digit in them, or typed in capitals. A
  * bare "5" is too common in passing to count on its own. */
 const exactDetails = (text: string) => (text.match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) || [])
