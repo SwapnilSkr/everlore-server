@@ -82,7 +82,7 @@ export function filterLines(input: NamedLine[], options: {
   previous: NamedLine[]; openings: NamedLine[]
   blocked: (text: string) => boolean
   player?: string; onCopiedExample?: (example: string) => void
-  addressed?: string; repeatedOpener?: boolean; repeatedIdea?: boolean; oneMessage?: boolean; finishReason?: string | null
+  addressed?: string; sceneMembers?: string[]; repeatedOpener?: boolean; repeatedIdea?: boolean; oneMessage?: boolean; finishReason?: string | null
   /** Everything the writer was shown; a long number from nowhere is a guess. */
   knownText?: string
   /** Words of the player's question that only someone else's private thread explains. */
@@ -97,7 +97,7 @@ export function filterLines(input: NamedLine[], options: {
     const clean = stripStageDirections(line.text)
     if (line.text.includes('*') && clean !== line.text.trim()) counts.stage_directions++
     const withoutTag = options.player ? clean.replace(new RegExp(`^@${options.player.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])[,\\s]*`, 'iu'), '') : clean
-    line.text = trimReply(withoutTag, options.finishReason === 'length' && source === input.at(-1), !!options.addressed)
+    line.text = trimReply(withoutTag, options.finishReason === 'length' && source === input.at(-1), !!options.addressed || !!options.sceneMembers?.includes(member.id))
     if (line.text !== withoutTag) counts.trimmed++
     if (!line.text.trim()) { counts.empty++; continue }
     if (options.blocked(line.text)) { counts.unsafe++; continue }
@@ -144,7 +144,7 @@ export function filterLines(input: NamedLine[], options: {
     // The first message stands, so a line asking to hear something again still gets it.
     if (options.repeatedIdea && member.id === options.addressed && kept.some(other => other.name === line.name) &&
       options.previous.filter(other => other.name === line.name).some(other => sharedWording(line.text, other.text) >= REPEATED_IDEA_SHARE)) { counts.repeated_idea++; continue }
-    if ((used.get(line.name) ?? 0) >= (options.oneMessage ? 1 : member.id === options.addressed ? 3 : 2) || (options.origin === 'catchup' && kept.length >= 4)) { counts.over_cap++; continue }
+    if ((used.get(line.name) ?? 0) >= (options.oneMessage ? 1 : member.id === options.addressed || options.sceneMembers?.includes(member.id) ? 3 : 2) || (options.origin === 'catchup' && kept.length >= 4)) { counts.over_cap++; continue }
     used.set(line.name, (used.get(line.name) ?? 0) + 1)
     kept.push(line)
   }

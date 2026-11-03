@@ -39,3 +39,20 @@ export function rollBystanders(picked: string[], tags: string[], addressed: stri
   const next = picked.find(id => id !== addressed)
   return next ? [next] : []
 }
+
+/** Only player adult group turns can start or carry a scene. A single mention narrows it. */
+export function pickSceneMembers(members: GroupMember[], text: string, input: {
+  adult: boolean; origin: GroupOrigin; direct?: string
+  last?: { type: string; data: { scene_members?: string[] } }
+}): string[] {
+  if (!input.adult || input.origin !== 'player' || input.direct !== undefined) return []
+  const mentioned = members.map(member => {
+    const positions = [taggedAt(text, member.name), namedAt(text, member.name)].filter(at => at >= 0)
+    return { id: member.id, at: positions.length ? Math.min(...positions) : -1 }
+  }).filter(hit => hit.at >= 0).sort((a, b) => a.at - b.at).map(hit => hit.id)
+  if (mentioned.length >= 2) return mentioned
+  if (!mentioned.length && input.last?.type === 'intimate') {
+    return [...new Set(input.last.data.scene_members || [])].filter(id => members.some(member => member.id === id))
+  }
+  return []
+}

@@ -21,10 +21,10 @@ import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemo
 import { resolveGroupThread } from '../../src/services/group-chat/threads'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { buildGroupDynamic, buildAddressedStatic, buildGroupStatic, buildDirectStatic } from '../../src/services/group-chat/prompt'
-import { rollSpeakers, advanceSilence, pickAddressed, mentionsMember } from '../../src/services/group-chat/roll'
+import { rollSpeakers, advanceSilence, pickAddressed, pickSceneMembers, mentionsMember } from '../../src/services/group-chat/roll'
 import { timeLines } from '../../src/services/group-chat/lines'
 import { writeGroupReply, GROUP_WRITER_TIMEOUT_MS, groupWriterHostFailed } from '../../src/services/group-chat/reply'
-import type { GroupOrigin, NamedLine } from '../../src/services/group-chat/types'
+import type { GroupLine, GroupOrigin, NamedLine } from '../../src/services/group-chat/types'
 import type { WorldEventDoc } from '../../src/models/world-event.model'
 import { log } from '../../src/utils/logger'
 
@@ -117,7 +117,9 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       text: origin === 'player' ? userMessage : '', recentEvents: recent })
     const routerYes = route.routerSettled && route.trace.sexual === true
     const intimate = recent.filter(event => event.type === 'intimate').slice(-2)
-    const involved = members.some(member => (directWith === member.id || mentionsMember(userMessage, member.name))
+    const sceneCandidates = pickSceneMembers(members, userMessage, { adult: true, origin, direct: directWith, last: recent.at(-1) })
+    const carriesMembers = sceneCandidates.length > 0 && !members.some(member => mentionsMember(userMessage, member.name))
+    const involved = carriesMembers || members.some(member => (directWith === member.id || mentionsMember(userMessage, member.name))
       && intimate.some(event => event.data.lines?.some(line => line.character_id === member.id)))
     const adultDowngrade = route.sceneClassification === 'nsfw' && !routerYes
       ? origin !== 'player' ? 'autonomous' : !involved ? 'no_involved_member' : undefined : undefined
@@ -136,25 +138,41 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     const factQuestion = plainLine && (recent.at(-1)?.type !== 'intimate' || await groupLineRaisesFact({ instanceId: iid, player: config.player, thread: directWith, line: userMessage,
       speakers: members.filter(member => roll.picked.includes(member.id)).map(member => member.name) }))
     const adult = carried && !factQuestion
+    const sceneMembers = adult ? sceneCandidates : []
     const primary = adult ? template.model_preferences?.narration_nsfw || AI_MODELS.groupNsfw
       : template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw
     const fallbacks = adult ? AI_MODELS.groupNsfwFallbacks : AI_MODELS.narrationSfwFallbacks
     const adultChain = [...new Set([primary, ...fallbacks].map(model => model.trim()).filter(Boolean))]
     const normalChain = [...new Set([template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw, ...AI_MODELS.narrationSfwFallbacks])]
     const writing: Array<{ writer: string; model: string; purpose: string }> = []
-    const addressed = directWith ?? (adult ? pickAddressed(members, origin === 'player' ? userMessage : '', roll.picked) : undefined)
+    const addressed = sceneMembers[0] ?? directWith ?? (adult ? pickAddressed(members, origin === 'player' ? userMessage : '', roll.picked) : undefined)
     const addressedName = members.find(member => member.id === addressed)?.name
     // A reply the check marked tame stays in the chat, but out of this writer's view,
     // so one tame reply can't set the tone for the rest of the scene.
-    const addressedMessages = recent.filter(event => event.data.model_used !== 'seed').flatMap(event =>
-      messagesFromEvents([event]).filter(line => !(event.data.tame === true && line.name === addressedName)))
-    const otherMessages = addressedMessages.filter(line => groupSpeaker(line) !== config.player && line.name !== addressedName).slice(-3)
-    const addressedHistory = addressedMessages.filter(line => groupSpeaker(line) === config.player || line.name === addressedName || otherMessages.includes(line))
+    const writerHistory = (memberId: string | undefined) => {
+      const name = members.find(member => member.id === memberId)?.name
+      const addressedMessages = recent.filter(event => event.data.model_used !== 'seed').flatMap(event =>
+        groupMessages([event], config.player, members, directWith, memberId).filter(line => !(event.data.tame === true && line.name === name)))
+      const otherMessages = addressedMessages.filter(line => groupSpeaker(line) !== config.player && line.name !== name).slice(-3)
+      return addressedMessages.filter(line => groupSpeaker(line) === config.player || line.name === name || otherMessages.includes(line))
+    }
+    const addressedHistory = writerHistory(addressed)
+    const published: GroupLine[] = []
+    const timeSceneLines = (freshLines: NamedLine[]) => timeLines(freshLines, members,
+      new Date(Math.max(Date.now(), published.length ? published.at(-1)!.shown_at.getTime() + 1500 : 0)), undefined, rng)
+    const sceneAdultAttempts = new Map<string, number>()
     const now = new Date()
     // Proven live: asked a plain question mid-scene, she answered it, then spent the next
     // messages steering back to sex. One message answers it and leaves the lead to the player.
     const plainQuestion = adult && plainLine
     const reply = await writeGroupReply({ members, speakers: roll.picked, tags: roll.tags,
+      ...(sceneMembers.length ? { sceneMembers, onMemberLines: async (freshLines: NamedLine[]) => {
+        const timed = timeSceneLines(freshLines)
+        await redis.publish(channel, JSON.stringify({ type: 'group_lines', instanceId, turnId: String(job.id), partial: true,
+          lines: timed.map(line => ({ characterId: line.character_id, name: members.find(member => member.id === line.character_id)!.name,
+            text: line.text, shownAt: line.shown_at })) }))
+        published.push(...timed)
+      } } : {}),
       player: config.player, origin, direct: directWith, oneMessage: plainQuestion, adult: adult && addressed ? { addressed, rng } : undefined, previous: previousLines, openings: directWith ? [] : config.opening_lines,
       blocked: text => screenPlayerInput(text).blocked,
       onChecks: counts => log.info('group.line_checks', { instanceId, sequence, ...counts, writing_calls: writing.length }),
@@ -172,6 +190,8 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const addressedPrompt = request.writer === 'adult' && adult && template.is_nsfw_capable && consent?.preferences?.nsfw_enabled === true && !frightened
           const stillAdult = addressedPrompt && !redirected
           if (request.writer === 'adult' && !stillAdult && !redirected) { chain = normalChain; index = 0; redirected = true }
+          const laterMember = sceneMembers.length > 0 && speakers[0] !== sceneMembers[0]
+          if (stillAdult && laterMember && (sceneAdultAttempts.get(speakers[0]) || 0) >= 2) break
           const model = chain[index]
           const split = !!addressed
           const consented = consent?.preferences?.nsfw_enabled === true
@@ -179,14 +199,18 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
             speakers: selected.map(member => member.name), thread: directWith, enabled: consented,
             memories: rag.memoryTexts, openThreads: rag.openThreads || [], raisedBy: addressedPrompt ? userMessage : undefined, recentEvents: recent.slice(-4).map(event => event._id) })
           const shownHistory = consented ? history : plainHistory
+          const shownWriterHistory = consented && selected.length === 1 && recent.some(event => event.data.tame_members?.includes(selected[0].id))
+            ? groupMessages(historyEvents, config.player, members, directWith, selected[0].id) : shownHistory
           const shownGroup = consented ? groupContext : plainGroupContext
           const hiddenWords = origin === 'player' && !addressedPrompt ? await groupHiddenWords({ instanceId: iid, thread: directWith, line: userMessage,
             people: [config.player, ...members.map(member => member.name)], known: [...memory.memories, ...memory.openThreads],
             lines: [...shownHistory, ...(shownGroup || [])] }) : []
-          const dynamic = buildGroupDynamic({ actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
+          // Only a scene member writing alone: a bystander or a repair isn't in the scene.
+          const sceneOthers = selected.length === 1 && sceneMembers.includes(selected[0].id) ? sceneMembers.filter(id => id !== selected[0].id).map(id => members.find(member => member.id === id)!.name) : []
+          const dynamic = buildGroupDynamic({ sceneRule: sceneOthers.length ? `This is a scene with ${config.player} and ${sceneOthers.join(', ')}. ${selected[0].name} can answer what they just said or did, and can do things with them too.` : undefined, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),
             groupContext: stillAdult ? undefined : shownGroup,
-            history: [...(addressedPrompt ? addressedHistory : shownHistory), ...(origin === 'player' && split && !addressedPrompt ? [playerLine] : []), ...(split ? request.history : [])],
+            history: [...(addressedPrompt ? sceneMembers.length ? writerHistory(speakers[0]) : addressedHistory : shownWriterHistory), ...(origin === 'player' && split && !addressedPrompt && (!sceneMembers.length || consented) ? [playerLine] : []), ...(split ? sceneMembers.length && !consented ? [] : request.history : [])],
             historyLimit: split ? addressedPrompt ? 12 : directWith ? 30 : 5 : 30,
             messageRule: split ? plainQuestion && addressedPrompt ? 'Write one message, answering what was asked.' : addressedPrompt || directWith ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
             now, offsetMinutes: state.tz_offset_minutes, speakers: selected.map(member => member.name),
@@ -195,8 +219,9 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
                 : `${config.player} is quiet. The group carries on. Topic: ${topic}`,
           })
           const baseSystem = addressedPrompt ? buildAddressedStatic({ ...template, members, player: config.player }, selected[0], request.excludedVoice)
-            : directWith ? buildGroupStatic({ ...template, members: selected, player: config.player }) : config.static_prompt
+            : directWith ? buildGroupStatic({ ...template, members: selected, player: config.player }) : sceneMembers.length && selected.length === 1 ? buildGroupStatic({ ...template, members: selected, player: config.player }) : config.static_prompt
           const system = directWith ? buildDirectStatic(baseSystem, selected[0], config.player) : baseSystem
+          if (stillAdult) { sceneAdultAttempts.set(speakers[0], (sceneAdultAttempts.get(speakers[0]) || 0) + 1) }
           writing.push({ writer: stillAdult ? 'adult' : 'normal', model, purpose: request.purpose })
           try {
             const result = await callLLMWithFallback({ model, purpose: 'narration',
@@ -216,7 +241,8 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     log.info('group.reply_checked', { instanceId, sequence, origin, ...reply.counts,
       writing_calls: writing.length, writing, picked_but_silent: reply.picked_but_silent, routing: route.trace, adult_downgrade: adultDowngrade })
     const gapStart = origin === 'catchup' && job.data.gapStart ? new Date(job.data.gapStart) : undefined
-    const lines = timeLines(reply.lines, members, new Date(), gapStart, rng)
+    const rest = sceneMembers.length ? timeSceneLines(reply.lines.slice(published.length)) : []
+    const lines = sceneMembers.length ? [...published, ...rest] : timeLines(reply.lines, members, new Date(), gapStart, rng)
     const usage = snapshotLLMUsage()
     const writingCalls = Math.max(writing.length, usage.filter(call => call.purpose === 'narration').length)
     const nextState = directWith ? { ...state } : { ...state, silent_for: advanceSilence(members, state.silent_for, lines.map(line => line.character_id)),
@@ -228,6 +254,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       scene_tag: 'dialogue', is_user_edited: false, edit_history: [], created_at: now,
       data: { ...(job.data.kind === 'action' ? { player_action: true as const } : {}), ...(directWith === undefined ? {} : { dm_with: directWith }), player_input: origin === 'player' ? userMessage : '',
         ai_response: reply.lines.map(line => `${line.name}: ${line.text}`).join('\n'),
+        ...(sceneMembers.length ? { scene_members: sceneMembers } : {}),
         origin, lines, group_state_after: nextState, state_mutations: {}, flag_mutations: {},
         model_used: reply.model, tokens_in: usage.reduce((sum, call) => sum + call.prompt_tokens, 0),
         tokens_out: usage.reduce((sum, call) => sum + call.completion_tokens, 0) },
@@ -262,19 +289,30 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           payload: { instanceId, playerId, eventId: idString(event._id), groupSummary: true, sceneTag: 'dialogue' } })
       }
       await redis.del(`session:${instanceId}`)
-      await redis.publish(channel, JSON.stringify({ type: 'group_lines', instanceId, ...(directWith === undefined ? {} : { directWith }), eventId: idString(event._id),
-        lines: lines.map(line => ({ characterId: line.character_id, name: members.find(member => member.id === line.character_id)!.name,
+      await redis.publish(channel, JSON.stringify({ type: 'group_lines', instanceId, ...(directWith === undefined ? {} : { directWith }), eventId: idString(event._id), ...(sceneMembers.length ? { turnId: String(job.id) } : {}),
+        lines: (sceneMembers.length ? rest : lines).map(line => ({ characterId: line.character_id, name: members.find(member => member.id === line.character_id)!.name,
           text: line.text, shownAt: line.shown_at })) }))
       await finishGenerationTurn(redis, lockKey, String(job.id), true, channel, JSON.stringify({
         type: 'generation_complete', instanceId, jobId: String(job.id),
         event: { id: idString(event._id), sequence, ...(event.data.player_action ? { player_action: true } : {}), player_input: event.data.player_input, narrative: event.data.ai_response, origin, lines },
       }))
     } finally { void dispatchPostProcessOutbox().catch(() => {}) }
-    if (addressedName && origin === 'player' && writing.some(call => call.writer === 'adult')) {
-      const said = reply.lines.filter(line => line.name === addressedName).map(line => line.text).join('\n')
-      const work = judgeGroupReply(said).then(async explicit => {
-        if (explicit === false) await mongoColl.events().updateOne({ _id: event._id }, { $set: { 'data.tame': true } })
+    if (addressedName && origin === 'player' && (sceneMembers.length || writing.some(call => call.writer === 'adult'))) {
+      const work = Promise.all((sceneMembers.length ? sceneMembers : [addressed!]).map(async memberId => {
+        const name = members.find(member => member.id === memberId)!.name
+        const said = reply.lines.filter(line => line.name === name).map(line => line.text).join('\n')
+        // Past the cap or the deadline a member may have said nothing: no call, and nothing tame.
+        if (sceneMembers.length && !said) return undefined
+        const explicit = await judgeGroupReply(said).catch(error => {
+          log.warn('group.explicit_check_failed', { instanceId, sequence, error: String(error) })
+          return undefined
+        })
         log.info('group.explicit_check', { instanceId, sequence, explicit })
+        return explicit === false ? memberId : undefined
+      })).then(async verdicts => {
+        const tame = verdicts.filter((id): id is string => id !== undefined)
+        if (tame.length) await mongoColl.events().updateOne({ _id: event._id }, { $set: sceneMembers.length
+          ? { 'data.tame_members': tame } : { 'data.tame': true } })
       }).catch(error => log.warn('group.explicit_check_failed', { instanceId, sequence, error: String(error) }))
       deps.onBackground?.(work)
     }

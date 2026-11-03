@@ -34,6 +34,7 @@ export function buildGroupDynamic(input: {
   now: Date; offsetMinutes?: number; historyLimit?: number; messageRule?: string; speakers: string[]; situation: string
   bonds?: GroupMember[]
   actionPresent?: boolean
+  sceneRule?: string
   notToldAbout?: string[]
 }): string {
   const parts: string[] = []
@@ -50,7 +51,7 @@ export function buildGroupDynamic(input: {
   const notTold = input.notToldAbout?.length ? `\nNobody has told ${input.speakers.join(' or ')} anything about this: ${input.notToldAbout.join(', ')}. They don't know, so they ask what's meant or say they've no idea, and never supply an answer.` : ''
   const close = (input.bonds || []).filter(member => input.speakers.includes(member.name) && closeToPlayer(member))
     .map(member => `\n${member.name} is close to the player now. If it's sexual, whatever held ${member.name} back no longer does: they want this, say yes and say exactly what they want.`).join('')
-  parts.push(`Now:\nIt's ${clock}.\nOnly these people write in this reply: ${input.speakers.join(', ')}.\n${input.messageRule ?? "Each writes one or two short messages, and it's fine if someone only reacts in a few words."}${notTold}${close}\n${input.situation}`)
+  parts.push(`Now:\nIt's ${clock}.\nOnly these people write in this reply: ${input.speakers.join(', ')}.\n${input.messageRule ?? "Each writes one or two short messages, and it's fine if someone only reacts in a few words."}${notTold}${close}${input.sceneRule ? `\n${input.sceneRule}` : ''}\n${input.situation}`)
   return parts.join('\n\n')
 }
 

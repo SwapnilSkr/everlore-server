@@ -44,13 +44,13 @@ import { createServer } from 'node:net'
 import { join, resolve } from 'node:path'
 import { Collection, MongoClient, ObjectId } from 'mongodb'
 import Redis from 'ioredis'
-import { ordinaryActions } from './group-chat-fixtures'
+import { ordinaryActions, nwayTurns } from './group-chat-fixtures'
 
 // ---------------------------------------------------------------- paths, cap
 
 const ROOT = resolve(import.meta.dir, '..', '..')
 /** Scenes a/b replay the passed adult scenes; d tests direct messages, act tests actions. */
-const SCENE = process.argv.find(arg => arg === '--scene=a' || arg === '--scene=b' || arg === '--scene=d' || arg === '--scene=act')?.slice('--scene='.length) as 'a' | 'b' | 'd' | 'act' | undefined
+const SCENE = process.argv.find(arg => arg === '--scene=a' || arg === '--scene=b' || arg === '--scene=d' || arg === '--scene=act' || arg === '--scene=nway')?.slice('--scene='.length) as 'a' | 'b' | 'd' | 'act' | 'nway' | undefined
 /** Strips memory from writer prompts and skips curation, to isolate what memory changes. */
 const MEMORIES_OFF = Boolean(SCENE) && process.argv.includes('--memories=off')
 const OUT_DIR = process.env.GROUP_MEMORY_RECALL_OUTPUT_DIR || join(ROOT, SCENE ? '.agents/probes/group-chat/adult-memory' : '.agents/probes/group-chat/recall')
@@ -70,7 +70,7 @@ const bondSetup = bondSetupArg ? JSON.parse(bondSetupArg) as Record<string, Reco
 if (bondSetupArg !== undefined && (!SCENE || !bondSetup || Array.isArray(bondSetup) || typeof bondSetup !== 'object')) throw new Error('--bond-setup requires a scene and a JSON object mapping names to meters')
 const args = new Set(process.argv.slice(2))
 // A misquoted flag must not fall through to the paid run.
-const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b', '--scene=d', '--scene=act', '--memories=off'].includes(arg) && !arg.startsWith('--bond-setup='))
+const unknownArgs = [...args].filter(arg => !['--selftest', '--plan', '--dry', '--scene=a', '--scene=b', '--scene=d', '--scene=act', '--scene=nway', '--memories=off'].includes(arg) && !arg.startsWith('--bond-setup='))
 if (unknownArgs.length) throw new Error(`Unknown argument(s): ${unknownArgs.join(' | ')}`)
 const MODE: 'selftest' | 'plan' | 'dry' | 'run' = args.has('--selftest') ? 'selftest' : args.has('--plan') ? 'plan'
   : args.has('--dry') ? 'dry' : 'run'
@@ -592,6 +592,7 @@ function dryResponse(purpose: PurposeKey, body: Record<string, unknown>, system:
   if (purpose === 'embedding') return { content: '', embedding: dryEmbedding(system || user) }
   if (purpose === 'router' && system.startsWith('You judge one reply')) return { content: JSON.stringify({ explicit: dryCallCounter % 2 === 0 }) }
   if (purpose === 'router') {
+    if (SCENE === 'nway') return { content: JSON.stringify({ sexual_intent: /^nway-(?:\d+|follow-up|narrow)$/.test(currentTurn) }) }
     const text = user.toLowerCase()
     return { content: JSON.stringify({ sexual_intent: /naked|make love|bed|kiss/.test(text) }) }
   }
@@ -1049,6 +1050,14 @@ function estimatePlan(): PlanEstimate {
 }
 
 function printPlan(): void {
+  if (SCENE === 'nway') {
+    console.log(['plan nway: flat-4b cast; eight sexual turns tagging two or three members, alternating messages and actions.',
+      ...nwayTurns(CAST).map((turn, index) => `  ${index + 1}: ${turn.kind || 'message'}: ${turn.player}`),
+      '  follow-up: untagged continuation; narrowing: one tag; recall: one question per member; toggle-off: one turn.',
+      '  output: each writer and model, each group_lines payload and elapsed milliseconds, full system and per-turn prompts.',
+      'plan nway: no calls made; paid execution requires a separately approved cap.'].join('\n'))
+    return
+  }
   if (SCENE === 'act') {
     console.log(['plan actions: five ordinary actions, a later question to someone not tagged, a claim about someone else, a tagged sexual action with consent on, memory flush, and a toggle-off turn.',
       ...ordinaryActions.map((text, index) => `  action ${index + 1}: ${text}`),
@@ -1465,6 +1474,21 @@ async function runProbe(): Promise<number> {
   }
 
   // ---- one real group turn
+  const nwayPublishes: Array<{ turn: string; elapsedMs: number; payload: Record<string, unknown> }> = []
+  let turnBegan = 0
+  if (SCENE === 'nway') {
+    const client = getRedisClient()
+    const publish = client.publish.bind(client)
+    client.publish = (async (channel: string, message: string) => {
+      const payload = JSON.parse(message) as Record<string, unknown>
+      if (payload.type === 'group_lines') {
+        const elapsedMs = performance.now() - turnBegan
+        nwayPublishes.push({ turn: currentTurn, elapsedMs, payload })
+        console.log(`${currentTurn}: group_lines +${elapsedMs.toFixed(1)}ms ${JSON.stringify(payload)}`)
+      }
+      return publish(channel, message)
+    }) as typeof client.publish
+  }
   let turnIndex = 0
   const background: Promise<void>[] = []
   async function runTurn(spec: TurnSpec, label: string): Promise<TurnResult> {
@@ -1485,6 +1509,7 @@ async function runProbe(): Promise<number> {
     const callStart = httpCalls.length
     const logStart = logs.length
     const started = performance.now()
+    turnBegan = started
     let result: { eventId: string; sequence: number } | null = null
     let error: string | null = null
     try {
@@ -1520,12 +1545,32 @@ async function runProbe(): Promise<number> {
     if (spec.fact) factEvents.set(spec.fact, { eventId: result?.eventId ?? '', sequence: result?.sequence ?? 0 })
     if (error) errors.push(`turn ${label}: ${error}`)
     console.log(`${label}: route=${record.route ?? 'none'} calls=${calls.length} lines=${lines.length} $${record.cost.toFixed(6)}${error ? ` error=${error}` : ''}${tags.length ? ` tags=${tags.join(',')}` : ''}`)
-    if (SCENE === 'act') for (const writer of record.writing) console.log(`${label}: writer=${writer.writer} model=${writer.model} purpose=${writer.purpose}`)
+    if (SCENE === 'nway') for (const call of calls.filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration')) console.log(`${label}: member=${/Only these people write in this reply: ([^\n]+)\./.exec(call.user)?.[1] || 'unknown'} model=${call.model}`)
+    if (SCENE === 'act' || SCENE === 'nway') for (const writer of record.writing) console.log(`${label}: writer=${writer.writer} model=${writer.model} purpose=${writer.purpose}`)
     await drainPostProcess()
     return record
   }
 
   try {
+    if (SCENE === 'nway') {
+      await setupBonds()
+      const scene: TurnResult[] = []
+      for (const [index, spec] of nwayTurns(members.map(member => member.name)).entries()) scene.push(await runTurn(spec, `nway-${index + 1}`))
+      scene.push(await runTurn({ player: 'Keep going together, just like that.', speakers: [], rolled: true }, 'nway-follow-up'))
+      scene.push(await runTurn({ player: `@${members[0].name} tell me what you want me to do next.`, speakers: [members[0].name], rolled: true }, 'nway-narrow'))
+      for (const member of members) scene.push(await runTurn({ player: `@${member.name} What did you say you wanted us to do together earlier?`, speakers: [member.name], rolled: true }, `nway-recall-${member.name}`))
+      await mongoColl.users().updateOne({ _id: playerId }, { $set: { 'preferences.nsfw_enabled': false } } as never)
+      scene.push(await runTurn({ player: `@${members[0].name} @${members[1].name} How is your evening?`, speakers: [members[0].name, members[1].name], rolled: true }, 'nway-toggle-off'))
+      const failures = scene.filter(turn => turn.error).map(turn => `${turn.label}: ${turn.error}`)
+      if (scene.at(-1)!.writing.some(call => call.writer !== 'normal')) failures.push('toggle-off used an adult writer')
+      writeFileSync(join(RUN_DIR, 'publishes.json'), `${JSON.stringify(nwayPublishes, null, 2)}\n`)
+      writeFileSync(join(RUN_DIR, 'adult-prompts.md'), `${scene.flatMap(turn => turn.calls.filter(call => call.purpose === 'narration' || call.purpose === 'adult_narration').map(call => `## ${turn.label} · ${call.model}\n\n${call.system}\n\n--- user\n${call.user}\n\n--- reply\n${call.response}\n`)).join('\n')}\n`)
+      writeFileSync(join(RUN_DIR, 'scene.md'), `${[...(DRY ? ['OFFLINE FIXTURES: replies and timing are not scored.'] : []), ...scene.flatMap(turn => [`## ${turn.label}`, turn.player, ...turn.writing.map(call => `Writer: ${call.writer}; model: ${call.model}; purpose: ${call.purpose}`), ...turn.lines.map(line => `${line.name}: ${line.text}`)]), ...failures, `Spend: $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}).`].join('\n')}\n`)
+      if (DRY && networkCalls !== 0) throw new Error('dry nway run sent a provider request')
+      writeCuratorResponses(); saveLedger()
+      console.log(`nway: ${failures.length} failure(s), ${nwayPublishes.length} publishes, $${ledger.spent_usd.toFixed(6)}`)
+      return failures.length ? 1 : 0
+    }
     if (SCENE === 'act') {
       await setupBonds()
       const addressed = process.env.GROUP_SCENE_TO || members[0].name, other = members.find(member => member.name !== addressed)!.name

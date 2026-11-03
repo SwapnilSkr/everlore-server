@@ -131,6 +131,8 @@ export interface EventDataDoc {
   lines?: import('../services/group-chat/types').GroupLine[]
   /** Group adult turn: the after-reply check found the reply wasn't explicit. Never sent to the player. */
   tame?: boolean
+  scene_members?: string[]
+  tame_members?: string[]
   player_action?: true
   group_state_after?: import('../services/group-chat/types').GroupState
   player_input: string

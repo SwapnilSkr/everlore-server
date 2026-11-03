@@ -5,10 +5,10 @@ import { mock } from 'bun:test'
 import { Elysia } from 'elysia'
 import { ObjectId } from 'mongodb'
 import type { Job } from 'bullmq'
-import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders } from '../src/services/group-chat/roll'
+import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders, pickSceneMembers } from '../src/services/group-chat/roll'
 import { parseLines, filterLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
 import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic } from '../src/services/group-chat/prompt'
-import { GROUP_WRITER_TIMEOUT_MS, groupWriterHostFailed, writeGroupReply } from '../src/services/group-chat/reply'
+import { GROUP_SCENE_MAX_WRITERS, GROUP_SCENE_DEADLINE_MS, GROUP_WRITER_TIMEOUT_MS, groupWriterHostFailed, writeGroupReply } from '../src/services/group-chat/reply'
 import { missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts, clearEverydayAdultMarks, uncoveredAdultEvents, adultRetryAtoms, adultLineAtoms } from '../src/services/group-chat/curation'
 import { validateGroup } from '../src/services/group-chat/validation'
 import { filterGroupAtomAudiences } from '../src/services/group-chat/curation'
@@ -638,7 +638,7 @@ async function turn(data: Partial<GroupTurnJob> = {}, rng?: () => number) {
 }
 function forbidden(value: unknown) {
   if (!value || typeof value !== 'object') return
-  for (const [key, entry] of Object.entries(value)) { assert(!['dm_with', 'private_to', 'start_bond', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'cost', 'cost_usd', 'tame'].includes(key), `leaked ${key}`); forbidden(entry) }
+  for (const [key, entry] of Object.entries(value)) { assert(!['dm_with', 'private_to', 'start_bond', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'cost', 'cost_usd', 'tame', 'scene_members', 'tame_members'].includes(key), `leaked ${key}`); forbidden(entry) }
 }
 await check('group adult model defaults overrides and Euryale temperature are isolated from story narration', async () => {
   const code = `import { mock } from 'bun:test'
@@ -952,7 +952,8 @@ ${names[0]}: Familiar start again here.`
 ${names[0]}: A complete new answer survives.`]
       : scenario === 'retry' ? [`${names[0]}: Familiar start was said before.`, `${names[0]}: Completely new answer after retry.`]
       : [twoLines]
-    await turn({ userMessage: scenario === 'bystander' ? `@${names[1]} @${names[0]}` : `@${names[0]}` }, never)
+    if (scenario === 'bystander') put(rows('worldInstances')[0], `group_state.silent_for.${ids[0]}`, 10)
+    await turn({ userMessage: scenario === 'bystander' ? `@${names[1]}` : `@${names[0]}` }, never)
     const data = lastData().lines as Row[]
     assert.equal(checkLogs.at(-1)!.repeated_opener, ['remaining', 'not-interested'].includes(scenario) ? 1 : 0, scenario)
     assert.equal(writerCalls.length, scenario === 'retry' || scenario === 'bystander' ? 2 : 1, scenario)
@@ -997,7 +998,8 @@ await check('normal writer seed history expires at two player messages including
     await adultStart()
     if (priorPlayers) { addEvent('narration', 1); put(rows('events').at(-1)!, 'data.player_input', 'Earlier player message.') }
     modelReplies = [`${names[0]}: Fresh addressed answer.`, `${names[1]}: Fresh bystander answer.`]
-    await turn({ userMessage: `@${names[0]} @${names[1]}` }, never)
+    put(rows('worldInstances')[0], `group_state.silent_for.${ids[1]}`, 10)
+    await turn({ userMessage: `@${names[0]}` }, never)
     assert.equal(content(writerCalls[1], 1).includes('The authored opening.'), priorPlayers === 0)
     assert(content(writerCalls[1], 1).includes('Fresh addressed answer.'))
   }
@@ -1209,16 +1211,16 @@ await check('adult optional failure preserves fresh reply and other tags get rep
   await adultStart(); modelReplies = [`${names[0]}: Another addressed reply`, new Error('optional failure')]
   draw = 0; await turn({}, () => ++draw <= members.length ? 0 : 0.9)
   assert(lastData().ai_response!.toString().includes('Another addressed reply')); assert.equal(writerCalls.length, 2)
-  await adultStart(); modelReplies = [`${names[3]}: Addressed tag`, '', '', `${names[1]}: Backup tag`]
+  await adultStart(); modelReplies = [`${names[3]}: Addressed tag`, '', '', '', `${names[1]}: Backup tag`]
   await turn({ userMessage: `@${names[3]} then @${names[1]}` }, () => 0)
-  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-safe', 'fake-safe', 'fake-safe-fallback'])
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-adult', 'fake-adult', 'fake-safe', 'fake-safe-fallback'])
   assert(content(writerCalls[0], 0).includes(members[3].group.intimacy!))
   assert(content(writerCalls[1], 1).includes(`Only these people write in this reply: ${names[1]}.`))
   assert.equal((lastData().lines as Row[]).length, 2)
   assert.equal((checkLogs.at(-1)!.writing as Row[]).at(-1)!.purpose, 'tag_backup')
-  await adultStart(); modelReplies = [`${names[3]}: First of three tags`, `${names[0]}: First other tag\n${names[1]}: Second other tag`]
+  await adultStart(); modelReplies = [`${names[3]}: First of three tags`, `${names[0]}: First other tag`, `${names[1]}: Second other tag`]
   await turn({ userMessage: `@${names[3]} @${names[0]} @${names[1]}` }, () => 0)
-  assert.equal(writerCalls.length, 2); assert.equal(writerCalls[1].maxTokens, 120); assert.equal((lastData().lines as Row[]).length, 3)
+  assert.equal(writerCalls.length, 3); assert.equal(writerCalls[1].maxTokens, 300); assert.equal((lastData().lines as Row[]).length, 3)
   await start(); modelReplies = [`${names[0]}: Normal reply`, '', `${names[1]}: Last chance normal tag`]
   await turn({ userMessage: `@${names[1]}` })
   assert.deepEqual(writerCalls.map(call => call.model), ['fake-safe', 'fake-safe', 'fake-safe-fallback'])
@@ -1689,7 +1691,8 @@ await check('memory message five and open threads reach normal addressed and bys
   put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = true
   modelReplies = [`${names[3]}: Fresh addressed response.`, `${names[2]}: Fresh bystander response.`]
   writerCalls = []
-  await turn({ userMessage: `@${names[3]} @${names[2]} keep going, the appointment and married` }, never)
+  put(rows('worldInstances')[0], `group_state.silent_for.${ids[2]}`, 10)
+  await turn({ userMessage: `@${names[3]} keep going, the appointment and married` }, never)
   assert.equal(writerCalls.length, 2)
   // The adult call lists the thread as a plain fact; the bystander keeps the full shape.
   const isAdultCall = (call: Row) => String((call.messages as Row[])[0].content).includes('You are writing only')
@@ -1739,12 +1742,13 @@ await check('memory pins include subject and object for each call speaker with f
 })
 await check('explicit check runs after the reply without delaying it and only the adult writer loses tame lines', async () => {
   await start(); addEvents(3); put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; routerSexual = true
+  put(rows('worldInstances')[0], `group_state.silent_for.${ids[3]}`, 10)
   judgeVerdict = false; judgeCalls = []; backgroundWork = []
   let release!: () => void; judgeGate = new Promise<void>(resolve => { release = resolve })
   modelReplies = [`${names[1]}: Tame maple reply.`, `${names[3]}: Copper bystander reply.`]; writerCalls = []
   // The turn finishes while the judge is still held, so the player never waits on it.
   const heldTimer = new Promise<never>((_, reject) => { setTimeout(() => reject(new Error('The turn waited on the held judge')), 5_000).unref() })
-  await Promise.race([turn({ userMessage: `@${names[1]} @${names[3]} first line` }, never), heldTimer])
+  await Promise.race([turn({ userMessage: `@${names[1]} first line` }, never), heldTimer])
   const judged = storedEvents().at(-1)!
   assert.equal(judgeCalls.length, 1); assert.equal(judgeCalls[0], 'Tame maple reply.'); assert.equal(judged.data.tame, undefined)
   release(); await Promise.all(backgroundWork); judgeGate = undefined
@@ -1752,7 +1756,8 @@ await check('explicit check runs after the reply without delaying it and only th
   assert.equal('tame' in publicGroupData(judged.data), false)
   const isAdultCall = (call: Row) => String((call.messages as Row[])[0].content).includes('You are writing only')
   judgeVerdict = true; writerCalls = []; modelReplies = [`${names[1]}: Violet second reply.`, `${names[3]}: Quiet second bystander.`]
-  await turn({ userMessage: `@${names[1]} @${names[3]} second line` }, never)
+  put(rows('worldInstances')[0], `group_state.silent_for.${ids[3]}`, 10)
+  await turn({ userMessage: `@${names[1]} second line` }, never)
   const adult = String((writerCalls.find(isAdultCall)!.messages as Row[])[1].content), bystander = String((writerCalls.find(call => !isAdultCall(call))!.messages as Row[])[1].content)
   assert(!adult.includes('Tame maple reply.')); assert(adult.includes('first line')); assert(bystander.includes('Tame maple reply.'))
   await Promise.all(backgroundWork)
@@ -1760,7 +1765,8 @@ await check('explicit check runs after the reply without delaying it and only th
   // No verdict never marks a reply.
   for (const [verdict, reply] of [['error', 'Silver orchards bloom.'], ['malformed', 'Crimson bridges sway.']] as const) {
     judgeVerdict = verdict; modelReplies = [`${names[1]}: ${reply}`, `${names[3]}: ${reply} Again and elsewhere.`]; writerCalls = []
-    await turn({ userMessage: `@${names[1]} @${names[3]} another ${verdict}` }, never); await Promise.all(backgroundWork)
+    put(rows('worldInstances')[0], `group_state.silent_for.${ids[3]}`, 10)
+    await turn({ userMessage: `@${names[1]} another ${verdict}` }, never); await Promise.all(backgroundWork)
     assert.equal('tame' in storedEvents().at(-1)!.data, false)
   }
   judgeVerdict = true; judgeCalls = []
@@ -1816,32 +1822,33 @@ await check('memory adult addressed call is narrow and the bystander keeps full 
     // The line checks refuse a repeat, so each turn's fake reply must be new.
     const [adultLine, safeLine] = fresh.shift()!
     modelReplies = [`${names[1]}: ${adultLine}`, `${names[3]}: ${safeLine}`]; writerCalls = []
+    put(rows('worldInstances')[0], `group_state.silent_for.${ids[3]}`, 10)
     await turn({ userMessage }, never); assert.equal(writerCalls.length, 2)
     return { adult: String((writerCalls.find(isAdultCall)!.messages as Row[])[1].content), bystander: String((writerCalls.find(call => !isAdultCall(call))!.messages as Row[])[1].content) }
   }
   // Nothing raised: no memory block at all, while the bystander keeps full memory.
-  const quiet = await send(`@${names[1]} @${names[3]} keep going`)
+  const quiet = await send(`@${names[1]} keep going`)
   for (const absent of ['Memories:', 'Open threads:', 'Summary so far:', 'Summary marker']) assert(!quiet.adult.includes(absent), absent)
   for (const present of ['Extra raised 6 about ticket.', 'Someone else has a wedding passport.', 'Open threads:', 'Summary marker']) assert(quiet.bystander.includes(present), present)
   // Raised: fact found through its retrieval terms, a thread as a plain fact, other people's left out.
-  const raised = await send(`@${names[1]} @${names[3]} after the wedding I need my passport`)
+  const raised = await send(`@${names[1]} after the wedding I need my passport`)
   const held = raised.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n')
   assert.deepEqual([...held].sort(), ['The addressed lost a passport.', 'The player has a family occasion.', 'Thread: the player owes a passport.'].sort())
   assert(!raised.adult.includes('Open threads:')); assert(!raised.adult.includes('Summary so far:'))
   // A word shared by many facts raises none of them; the cap holds for a rare word.
-  const common = await send(`@${names[1]} @${names[3]} where are the lanterns`)
+  const common = await send(`@${names[1]} where are the lanterns`)
   assert(!common.adult.includes('Memories:'))
-  const tickets = await send(`@${names[1]} @${names[3]} the ticket, the wedding and the passport`)
+  const tickets = await send(`@${names[1]} the ticket, the wedding and the passport`)
   assert.equal(tickets.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n').length, 4)
   // Adult facts she's part of always come along, newest first and capped; other people's don't.
   const adultRow = (text: string, subject: string, order: number) => ({ ...row(text, subject, 1), is_nsfw: true, explicit_fact: true, updated_at: new Date(1000 + order) })
   rows('memories').push(...[1, 2, 3, 4, 5, 6, 7].map(i => adultRow(`Adult scene ${i}.`, names[1], i)), { ...adultRow('Adult from the player.', 'player', 20), objects: [names[1]] }, { ...adultRow('Adult with someone else.', 'player', 9), objects: [names[3]] }, { ...adultRow('Plans said on an adult turn.', names[1], 10), explicit_fact: false })
-  const scene = await send(`@${names[1]} @${names[3]} carry on`)
+  const scene = await send(`@${names[1]} carry on`)
   const inScene = scene.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n')
   assert.deepEqual(inScene, [7, 6, 5, 4, 3, 2].map(i => `Adult scene ${i}.`))
   // With room to spare, the player's fact with someone else still stays out.
   for (const memory of rows('memories')) if (String(memory.text).startsWith('Adult scene')) memory.explicit_fact = false
-  const roomy = await send(`@${names[1]} @${names[3]} keep it up`)
+  const roomy = await send(`@${names[1]} keep it up`)
   assert.deepEqual(roomy.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n'), ['Adult from the player.'])
   // Short everyday words raise nothing; a capitalized name does.
   const everyday = raisedMemories(`what again`, [{ text: 'Priya asked what the noise was again.', importance: 1 }] as never, [])
@@ -3252,7 +3259,8 @@ await check('bond prompts hold only call speakers meters no evidence and stable 
     await bondHttp('PUT', { trust })
     rows('groupBondChanges').at(-1)!.evidence = 'Private evidence must never enter a prompt.'
     writerCalls = []; modelReplies = [`${names[0]}: Unique addressed ${trust}.`, `${names[1]}: Unique bystander ${trust}.`]
-    await turn({ userMessage: `@${names[0]} @${names[1]}` }, never)
+    put(rows('worldInstances')[0], `group_state.silent_for.${ids[1]}`, 10)
+    await turn({ userMessage: `@${names[0]}` }, never)
     for (const call of writerCalls) {
       const system = content(call, 0), dynamic = content(call, 1)
       assert(!system.includes('Bonds toward') && !requestText(call).includes('Private evidence'))
@@ -3469,6 +3477,239 @@ await check('actions memory fallback attributes to player and rewind removes act
   assert.equal(rows('memories').length, 0)
   routeUser = { id: playerId, tier: 'creator' }
   assert.deepEqual((await (await actionHttp()).json()).actions, [])
+})
+
+await check('nway selection covers mentions in textual order continuation narrowing and excluded routes', () => {
+  const last = { type: 'intimate', data: { scene_members: [ids[2], ids[0]] } }
+  const select = (text: string, extra = {}) => pickSceneMembers(members, text, { adult: true, origin: 'player', last, ...extra })
+  assert.deepEqual(select(`@${names[3]} ${names[1]} @${names[0]} ${names[3]}`), [ids[3], ids[1], ids[0]])
+  assert.deepEqual(select(`${names[2]} @${names[1]}`), [ids[2], ids[1]])
+  assert.deepEqual(select(`x@${names[0]} @${names[1]}suffix`), last.data.scene_members)
+  assert.deepEqual(select('carry on'), last.data.scene_members)
+  assert.deepEqual(select('carry on', { last: { type: 'narration', data: last.data } }), [])
+  assert.deepEqual(select('carry on', { last: { type: 'intimate', data: {} } }), [])
+  assert.deepEqual(select('carry on', { last: undefined }), [])
+  for (const text of [`@${names[0]}`, names[1]]) assert.deepEqual(select(text), [])
+  for (const extra of [{ adult: false }, { origin: 'unprompted' }, { origin: 'catchup' }, { direct: ids[0] }]) {
+    assert.deepEqual(select(`@${names[0]} @${names[1]}`, extra), [])
+  }
+})
+
+await check('nway real prompts own static all earlier lines per-member caps ordered partial payloads and stored times', async () => {
+  await adultStart()
+  const order = [2, 0, 1]
+  for (let index = 0; index < 6; index++) {
+    addEvent('narration', 0)
+    put(rows('events').at(-1)!, 'data.lines', members.map((member, at) => ({ character_id: member.id, text: `Held${at} at ${index}.`, shown_at: new Date() })))
+  }
+  modelReplies = order.map((member, index) => [0, 1, 2, 3].map(line => `${names[member]}: Fresh${line} item ${index}.`).join('\n'))
+  // An outsider is picked, but at most one normal bystander may answer.
+  put(rows('worldInstances')[0], `group_state.silent_for.${ids[3]}`, 10)
+  modelReplies.push(`${names[3]}: Outside one.\n${names[3]}: Outside two.`)
+  writerHook = () => {
+    const count = writerCalls.length
+    if (count <= 3) assert.equal(frames.filter(frame => frame.type === 'group_lines' && frame.partial).length, count - 1,
+      'earlier partial must publish before the next writer starts')
+  }
+  await turn({ kind: 'action', userMessage: order.map(member => `@${names[member]}`).join(' ') }, never)
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-adult', 'fake-adult', 'fake-safe'])
+  for (const [index, member] of order.entries()) {
+    assert.equal(content(writerCalls[index], 0), buildAddressedStatic({ ...template, members, player: playerName }, members[member]))
+    for (const other of members.filter(other => other.id !== ids[member])) {
+      assert(!content(writerCalls[index], 0).includes(other.group.intimacy!)); assert(!content(writerCalls[index], 0).includes(other.group.wants))
+    }
+    assert(content(writerCalls[index], 1).includes(`Held${member} at 4.`))
+    assert(content(writerCalls[index], 1).includes(`This is a scene with ${playerName} and `))
+    assert(content(writerCalls[index], 1).includes(`${names[member]} can answer what they just said or did, and can do things with them too.`))
+    // The player's line stays last, so the writer answers it and not the instruction.
+    assert(content(writerCalls[index], 1).trim().endsWith(order.map(member => `@${names[member]}`).join(' ')))
+    for (let prior = 0; prior < index; prior++) for (let line = 0; line < 3; line++) assert(content(writerCalls[index], 1).includes(`Fresh${line} item ${prior}.`))
+  }
+  assert(!requestText(writerCalls[3]).includes('This is a scene with '))
+  const stored = lastData().lines as Array<{ character_id: string; text: string; shown_at: Date }>
+  assert.deepEqual(lastData().scene_members, order.map(member => ids[member]))
+  for (const member of order) assert.equal(stored.filter(line => line.character_id === ids[member]).length, 3)
+  assert.equal(stored.filter(line => line.character_id === ids[3]).length, 1)
+  const publishes = frames.filter(frame => frame.type === 'group_lines')
+  assert.equal(publishes.length, 4)
+  const final = publishes.at(-1)!
+  assert.equal(final.partial, undefined); assert.equal((final.lines as Row[]).length, 1)
+  assert.equal(final.eventId, String(storedEvents().at(-1)!._id))
+  assert(publishes.slice(0, -1).every(frame => frame.partial === true && frame.eventId === undefined && frame.turnId === final.turnId))
+  const sent = publishes.flatMap(frame => frame.lines as Row[])
+  assert.deepEqual(sent.map(line => [line.characterId, line.text, line.shownAt]), stored.map(line => [line.character_id, line.text, line.shown_at.toISOString()]))
+  assert(stored.every((line, index) => !index || line.shown_at > stored[index - 1].shown_at))
+  assert.deepEqual(get(frames.find(frame => frame.type === 'generation_complete')!, 'event.lines'), JSON.parse(JSON.stringify(stored)))
+  forbidden(publicGroupData(lastData()))
+})
+
+await check('nway shown lines are saved when every repair fails, and a silent member costs no check', async () => {
+  await adultStart()
+  judgeCalls = []; backgroundWork = []
+  modelReplies = [`${names[0]}: First checked.`, ...Array.from({ length: 12 }, () => '')]
+  await turn({ userMessage: `@${names[0]} @${names[1]} hello` }, never)
+  assert.deepEqual((lastData().lines as Array<{ text: string }>).map(line => line.text), ['First checked.'])
+  assert.deepEqual(lastData().scene_members, [ids[0], ids[1]])
+  await Promise.all(backgroundWork)
+  assert.deepEqual(judgeCalls, ['First checked.'])
+})
+await check('nway cap deadline and empty members retain normal tag repair with two later adult transports', async () => {
+  assert.equal(GROUP_SCENE_MAX_WRITERS, 3); assert.equal(GROUP_SCENE_DEADLINE_MS, 30000)
+  for (const deadline of [false, true]) {
+    await adultStart()
+    const realNow = Date.now; let elapsed = 0
+    Date.now = () => realNow() + elapsed
+    try {
+      writerHook = () => { if (deadline && writerCalls.length === 1) elapsed = 30000 }
+      modelReplies = deadline ? [`${names[0]}: First checked.`, members.slice(1).map(member => `${member.name}: Repair for the rest.`).join('\n')]
+        : [`${names[0]}: First checked.`, `${names[1]}: Second checked.`, `${names[2]}: Third checked.`, `${names[3]}: Repair after cap.`]
+      await turn({ userMessage: names.map(name => `@${name}`).join(' ') }, never)
+      assert.equal(writerCalls.filter(call => call.model === 'fake-adult').length, deadline ? 1 : 3)
+      assert.equal(writerCalls.at(-1)!.model, 'fake-safe')
+      assert.equal((checkLogs.at(-1)!.writing as Row[]).at(-1)!.purpose, 'tag_repair')
+      assert.deepEqual(new Set((lastData().lines as Row[]).map(line => line.character_id)), new Set(ids))
+      assert.deepEqual(lastData().scene_members, ids)
+    } finally { Date.now = realNow }
+  }
+  for (const failure of ['empty', 'transport', 'voice'] as const) {
+    await adultStart()
+    const rejected = failure === 'transport' ? new Error('provider failed') : failure === 'voice' ? `${names[1]}: ${members[1].group.voice![0]}` : ''
+    modelReplies = [`${names[0]}: First kept.`, rejected, rejected, '', `${names[1]}: Normal backup kept.`]
+    await turn({ userMessage: `@${names[0]} @${names[1]}` }, never)
+    const later = writerCalls.filter(call => content(call, 1).includes(`Only these people write in this reply: ${names[1]}.`))
+    assert.equal(later.filter(call => String(call.model).startsWith('fake-adult')).length, 2)
+    assert.deepEqual(later.slice(-2).map(call => call.model), ['fake-safe', 'fake-safe-fallback'])
+    if (failure === 'voice') assert(!content(later[1], 0).includes(members[1].group.voice![0]))
+    assert((lastData().lines as Row[]).some(line => line.character_id === ids[1]))
+  }
+  await adultStart(); modelReplies = ['', '', '', `${names[0]}: First normal rescue.`, `${names[1]}: Next adult reply.`]
+  await turn({ userMessage: `@${names[0]} @${names[1]}` }, never)
+  assert.deepEqual(writerCalls.map(call => call.model), ['fake-adult', 'fake-adult', 'fake-adult-fallback', 'fake-safe', 'fake-adult'])
+})
+
+await check('nway fear and consent are reread per member with toggle filtering earlier adult lines', async () => {
+  for (const scenario of ['fear', 'toggle', 'retry-fear'] as const) {
+    await adultStart()
+    if (scenario === 'fear') put(rows('characters').find(row => String(row._id) === ids[1])!, 'relationship.fear', 70)
+    writerHook = () => {
+      if (scenario === 'toggle' && writerCalls.length === 1) put(rows('users')[0], 'preferences.nsfw_enabled', false)
+      if (scenario === 'retry-fear' && writerCalls.length === 2) put(rows('characters').find(row => String(row._id) === ids[1])!, 'relationship.fear', 70)
+    }
+    modelReplies = [`${names[0]}: ADULTSCENELINE.`, ...(scenario === 'retry-fear' ? [''] : []), `${names[1]}: Steady response.`, `${names[2]}: Final response.`]
+    await turn({ userMessage: `@${names[0]} @${names[1]} @${names[2]} ADULTCURRENTLINE` }, never)
+    assert.deepEqual(writerCalls.map(call => call.model), scenario === 'toggle' ? ['fake-adult', 'fake-safe', 'fake-safe']
+      : scenario === 'fear' ? ['fake-adult', 'fake-safe', 'fake-adult'] : ['fake-adult', 'fake-adult', 'fake-safe', 'fake-adult'])
+    if (scenario === 'toggle') for (const call of writerCalls.slice(1)) {
+      assert(!requestText(call).includes('ADULTSCENELINE')); assert(!requestText(call).includes('ADULTCURRENTLINE'))
+      assert(members.every(member => !content(call, 0).includes(member.group.intimacy!)))
+    }
+  }
+})
+
+await check('nway continuation counts involvement narrowing and direct exclude scene and sentence', async () => {
+  await adultStart(); modelReplies = [`${names[2]}: Initial first.`, `${names[0]}: Initial second.`]
+  await turn({ userMessage: `@${names[2]} @${names[0]}` }, never)
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'off'
+  rows('worldInstances')[0].mode = 'ardent'
+  writerCalls = []; modelReplies = [`${names[2]}: Continuing first.`, `${names[0]}: Continuing second.`]
+  await turn({ userMessage: 'Keep going together.' }, never)
+  assert.deepEqual(lastData().scene_members, [ids[2], ids[0]])
+  assert.deepEqual(writerCalls.slice(0, 2).map(call => call.model), ['fake-adult', 'fake-adult'])
+  assert.equal(checkLogs.at(-1)!.adult_downgrade, undefined)
+  writerCalls = []; modelReplies = [`${names[0]}: Narrowed answer.`]
+  await turn({ userMessage: `@${names[0]} keep going` }, never)
+  assert(!Object.hasOwn(lastData(), 'scene_members'))
+  assert(writerCalls.every(call => !requestText(call).includes('This is a scene with ')))
+  writerCalls = []; modelReplies = [`${names[0]}: Private answer.`]
+  await turn({ directWith: ids[0], userMessage: `@${names[0]} @${names[2]}` }, never)
+  assert.equal(writerCalls.length, 1); assert(!Object.hasOwn(lastData(), 'scene_members'))
+  assert(!requestText(writerCalls[0]).includes('This is a scene with '))
+})
+
+await check('nway tame members judged after completion and removed only from their own writer view', async () => {
+  await adultStart(); judgeVerdict = false; judgeCalls = []; backgroundWork = []
+  let release!: () => void; judgeGate = new Promise<void>(resolve => { release = resolve })
+  modelReplies = [`${names[0]}: Tame amber.`, `${names[1]}: Tame blue.`]
+  await turn({ userMessage: `@${names[0]} @${names[1]} first` }, never)
+  const event = storedEvents().at(-1)!
+  assert.equal(judgeCalls.length, 2); assert(frames.some(frame => frame.type === 'generation_complete'))
+  assert(!Object.hasOwn(event.data, 'tame_members')); assert(!Object.hasOwn(event.data, 'tame'))
+  release(); await Promise.all(backgroundWork.splice(0)); judgeGate = undefined
+  assert.deepEqual(event.data.tame_members, [ids[0], ids[1]])
+  // Only one member is tame: the other writer must still see their line.
+  event.data.tame_members = [ids[0]]
+  judgeVerdict = true; writerCalls = []; modelReplies = [`${names[0]}: New copper.`, `${names[1]}: New silver.`]
+  await turn({ userMessage: `@${names[0]} @${names[1]} next` }, never)
+  assert(!content(writerCalls[0], 1).includes('Tame amber.'))
+  assert(content(writerCalls[1], 1).includes('Tame amber.'))
+  assert(content(writerCalls[0], 1).includes('Tame blue.')); assert(content(writerCalls[1], 1).includes('Tame blue.'))
+  await Promise.all(backgroundWork.splice(0))
+  assert(!Object.hasOwn(lastData(), 'tame_members')); assert(!Object.hasOwn(lastData(), 'tame'))
+  assert.equal('tame_members' in publicGroupData(event.data), false)
+  judgeVerdict = true
+})
+
+await check('nway legacy adult request publish and event retain pre-scene shape and fixed trace', async () => {
+  await adultStart(); modelReplies = [`${names[0]}: Legacy single writer reply.`]
+  await turn({ userMessage: `@${names[0]} hello` }, never)
+  await Promise.all(backgroundWork.splice(0))
+  const data = lastData(), shown = frames.filter(frame => frame.type === 'group_lines')
+  assert.equal(shown.length, 1)
+  assert.deepEqual(Object.keys(shown[0]).sort(), ['eventId', 'instanceId', 'lines', 'type'])
+  for (const key of ['scene_members', 'tame_members']) assert(!Object.hasOwn(data, key))
+  assert.equal(content(writerCalls[0], 0), buildAddressedStatic({ ...template, members, player: playerName }, members[0]))
+  assert(!requestText(writerCalls[0]).includes('This is a scene with '))
+  const trace = { requests: writerCalls.map(call => ({ ...call, sessionId: 'fixture', messages: (call.messages as Row[]).map(message => ({ ...message, content: String(message.content).replace(/It's [^\n]+\./, "It's CLOCK.") })) })),
+    data: { ...data, group_state_after: 'fixture', lines: (data.lines as Row[]).map(({ shown_at: _shown, ...line }) => line) },
+    shown: shown.map(frame => ({ ...frame, instanceId: 'fixture', eventId: 'fixture', lines: (frame.lines as Row[]).map(({ shownAt: _shown, ...line }) => line) })) }
+  const hash = createHash('sha256').update(JSON.stringify(trace)).digest('hex')
+  assert.equal(hash, '53dd3535d0a1fdce0b1b88e0784ac2af519fd0d962e0dbf17f1ababdec79bbd0', hash)
+})
+
+await check('nway rewind deletion remove scene fields and real group memory never gains private_to', async () => {
+  await adultStart()
+  for (let index = 0; index < 5; index++) {
+    modelReplies = [`${names[0]}: Scene alpha ${index}.`, `${names[1]}: Scene beta ${index}.`]
+    await turn({ userMessage: `@${names[0]} @${names[1]} turn ${index}` }, never)
+  }
+  curatorFactory = request => ({ memories: [atom('The player remembers the scene.', 'player', numbered(request).at(-1)!.number)] })
+  await memoryProcessor(memoryJob())
+  assert(rows('memories').length); assert(rows('memories').every(row => !Object.hasOwn(row, 'private_to')))
+  storedEvents().at(-1)!.data.tame_members = [ids[0]]
+  mock.module('../src/services/codex-media-carryover', () => ({ snapshotCodexMedia: async () => ({}), restoreCodexMedia: async () => {} }))
+  const { characterCodexService } = await import('../src/services/character-codex.service')
+  Object.assign(characterCodexService, { applyManualIdentityRevisions: async () => {} })
+  const { entityGraphService } = await import('../src/services/entity-graph.service')
+  Object.assign(entityGraphService, { repairAfterRewind: async () => {} })
+  const { memoryService } = await import('../src/services/memory.service')
+  storedEvents()[0].time_anchor = { real_time: new Date(), sequence: 1, timeline_id: 'main' }
+  await memoryService.rewindToSequence(instanceId, playerId, 2)
+  assert(!storedEvents().some(event => event.data.scene_members || event.data.tame_members))
+  modelReplies = [`${names[0]}: New scene alpha.`, `${names[1]}: New scene beta.`]
+  await turn({ userMessage: `@${names[0]} @${names[1]}` }, never)
+  assert(lastData().scene_members)
+  await deletionService.deleteInstance(instanceId, playerId)
+  assert.equal(rows('events').length, 0)
+})
+
+await check('nway recall plan has mixed eight-turn cast sequence and requested observability without calls', async () => {
+  const { nwayTurns } = await import('./group-chat-fixtures')
+  const plan = nwayTurns(names)
+  assert.equal(plan.length, 8)
+  assert.equal(plan.filter(turn => turn.kind === 'action').length, 4)
+  assert(plan.every(turn => [2, 3].includes(turn.speakers.length)))
+  assert.deepEqual(new Set(plan.flatMap(turn => turn.speakers)), new Set(names))
+  const outputDir = `${import.meta.dir}/.nway-plan-${process.pid}`
+  try {
+    const child = Bun.spawn(['bun', '--no-env-file', 'run', 'scripts/group-memory-recall.ts', '--scene=nway', '--plan'], {
+      cwd: new URL('..', import.meta.url).pathname, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
+      env: { ...process.env, OPENROUTER_API_KEY: 'offline-fixture', OPENAI_API_KEY: 'offline-fixture', JWT_SECRET: 'offline-fixture', GROUP_MEMORY_RECALL_OUTPUT_DIR: outputDir },
+    })
+    const [output, errors, code] = await Promise.all([new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited])
+    assert.equal(code, 0, output + errors)
+    for (const expected of ['plan nway: flat-4b cast', 'untagged continuation', 'one tag', 'one question per member', 'toggle-off', 'each writer and model', 'group_lines payload and elapsed milliseconds', 'full system and per-turn prompts', 'no calls made']) assert(output.includes(expected), expected)
+    assert.equal((output.match(/  \d: (message|action):/g) || []).length, 8)
+  } finally { await rm(outputDir, { recursive: true, force: true }) }
 })
 
 Math.random = originalRandom

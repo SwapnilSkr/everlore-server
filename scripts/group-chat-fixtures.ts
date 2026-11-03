@@ -33,3 +33,11 @@ export const ordinaryActions = [
   'I put on my yellow coat.',
   'I switch on the lamp by the window.',
 ]
+
+export function nwayTurns(cast: string[]) {
+  return Array.from({ length: 8 }, (_, index) => {
+    const names = [cast[index % cast.length], cast[(index + 1) % cast.length], ...(index % 2 ? [cast[(index + 2) % cast.length]] : [])]
+    return { player: `${names.map(name => `@${name}`).join(' ')} ${index % 2 ? 'I take off your clothes and pull you onto me.' : 'Tell me exactly how you want me to fuck you, together.'}`,
+      speakers: names, ...(index % 2 ? { kind: 'action' as const } : {}), rolled: true }
+  })
+}

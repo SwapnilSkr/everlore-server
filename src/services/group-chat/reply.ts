@@ -2,6 +2,9 @@ import { emptyLineCounts, filterLines, parseLines } from './lines'
 import { rollBystanders } from './roll'
 import type { GroupMember, GroupOrigin, NamedLine } from './types'
 
+export const GROUP_SCENE_MAX_WRITERS = 3
+export const GROUP_SCENE_DEADLINE_MS = 30_000
+
 /** Proven live: one stalled host held a reply for 46 s against 5 to 13 s normally, and
  * group replies aren't streamed, so the player sees nothing while it waits. */
 export const GROUP_WRITER_TIMEOUT_MS = 20_000
@@ -25,6 +28,8 @@ export async function writeGroupReply(input: {
   previous: NamedLine[]; openings: NamedLine[]; blocked: (text: string) => boolean
   adult?: { addressed: string; rng: () => number }
   direct?: string
+  sceneMembers?: string[]
+  onMemberLines?: (lines: NamedLine[]) => Promise<void>
   oneMessage?: boolean
   onChecks?: (counts: ReturnType<typeof emptyLineCounts>, calls: number) => void
   write: (speakers: string[], fallback: boolean, request: GroupWritingRequest) => Promise<{
@@ -36,11 +41,12 @@ export async function writeGroupReply(input: {
   let model = '', adultModel = ''
   let lines: NamedLine[] = []
   const addressed = input.direct ?? input.adult?.addressed
-  const speakers = input.direct ? [input.direct] : [...new Set([...input.speakers, ...(addressed ? [addressed] : [])])]
+  const speakers = input.direct ? [input.direct] : [...new Set([...input.speakers, ...(addressed ? [addressed] : []), ...(input.sceneMembers || [])])]
   const options = { ...input, speakers, addressed }
   const copiedVoice = new Set<string>()
   let sameIndex = 0
-  const attempt = async (picked: string[], purpose: GroupWritingRequest['purpose'] = 'reply', index = 0, writer: GroupWritingRequest['writer'] = 'normal') => {
+  let shown = false
+  const attempt = async (picked: string[], purpose: GroupWritingRequest['purpose'] = 'reply', index = 0, writer: GroupWritingRequest['writer'] = 'normal', member = addressed) => {
     calls++
     sameIndex = index
     try {
@@ -50,7 +56,7 @@ export async function writeGroupReply(input: {
       if (response.writer === 'adult') adultModel = response.model
       const checked = filterLines(parseLines(response.content, input.members, input.player, counts, picked.length === 1 ? input.members.find(member => member.id === picked[0])?.name : undefined), {
         // The last attempts run unfiltered: a guess is better than a reply that fails.
-        ...options, knownText: response.prompt, hiddenWords: index > 0 || purpose === 'addressed_fallback' || purpose === 'tag_backup' ? undefined : response.hiddenWords, repeatedOpener: response.writer === 'adult' && addressed !== undefined && picked.includes(addressed), repeatedIdea: response.writer === 'adult' && addressed !== undefined && picked.includes(addressed), onCopiedExample: example => copiedVoice.add(example), finishReason: response.finishReason, speakers: picked, previous: [...input.previous, ...lines], oneMessage: purpose === 'bystander' || (!!addressed && !picked.includes(addressed)),
+        ...options, addressed: member, knownText: response.prompt, hiddenWords: index > 0 || purpose === 'addressed_fallback' || purpose === 'tag_backup' ? undefined : response.hiddenWords, repeatedOpener: response.writer === 'adult' && member !== undefined && picked.includes(member), repeatedIdea: response.writer === 'adult' && member !== undefined && picked.includes(member), onCopiedExample: example => copiedVoice.add(example), finishReason: response.finishReason, speakers: picked, previous: [...input.previous, ...lines], oneMessage: purpose === 'bystander' || (!!member && !picked.includes(member)),
       }, counts)
       lines = filterLines([...lines, ...checked], options, counts)
       return response.nextIndex ?? index + 1
@@ -61,7 +67,23 @@ export async function writeGroupReply(input: {
   }
   const missingTags = () => (input.direct ? [] : input.tags).filter(id => !lines.some(line => input.members.find(member => member.name === line.name)?.id === id))
   try {
-    if (addressed) {
+    if (input.sceneMembers?.length && input.adult && !input.direct) {
+      const began = Date.now()
+      for (const [index, member] of input.sceneMembers.slice(0, GROUP_SCENE_MAX_WRITERS).entries()) {
+        if (Date.now() - began >= GROUP_SCENE_DEADLINE_MS) break
+        const before = lines.length
+        let next = await attempt([member], 'addressed', 0, 'adult', member)
+        if (lines.length === before) next = await attempt([member], 'addressed_retry', sameIndex, 'adult', member)
+        if (index === 0) {
+          if (lines.length === before) await attempt([member], 'addressed_retry', next, 'adult', member)
+          if (lines.length === before) await attempt([member], 'addressed_fallback', 0, 'normal', member)
+          if (lines.length === before) await attempt([member], 'addressed_fallback', 1, 'normal', member)
+        }
+        if (lines.length > before) { await input.onMemberLines?.(lines.slice(before)); shown = true }
+      }
+      const others = rollBystanders(input.speakers.filter(id => !input.sceneMembers!.includes(id)), [], '', input.adult.rng)
+      if (others.length) await attempt(others, 'bystander')
+    } else if (addressed) {
       const writer = input.adult ? 'adult' : 'normal'
       let next = await attempt([addressed], 'addressed', 0, writer)
       if (!lines.length) next = await attempt([addressed], 'addressed_retry', sameIndex, writer)
@@ -77,7 +99,8 @@ export async function writeGroupReply(input: {
     }
     if (missingTags().length) await attempt(missingTags(), 'tag_repair')
     if (missingTags().length) await attempt(missingTags(), 'tag_backup', 1)
-    if (!lines.length || missingTags().length) throw new Error('The chat could not finish that reply. Please try again.')
+    // The player has already seen these lines, so they get saved even if a repair failed.
+    if (!lines.length || (missingTags().length && !shown)) throw new Error('The chat could not finish that reply. Please try again.')
     return { lines, counts, calls, model: adultModel || model, picked_but_silent: input.speakers.filter(id => !lines.some(line => input.members.find(member => member.name === line.name)?.id === id)).length }
   } finally { input.onChecks?.(counts, calls) }
 }
