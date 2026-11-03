@@ -1,4 +1,4 @@
-import { GROUP_CURATION_SCHEMA, filterGroupAtomAudiences, closeGroupThreads, groupMemoryTextKey } from '../../src/services/group-chat/curation'
+import { GROUP_CURATION_SCHEMA, filterGroupAtomAudiences, closeGroupThreads, groupMemoryTextKey, missedDetailAtoms } from '../../src/services/group-chat/curation'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { allowedGroupMemories, deriveGroupAudience, groupMemoryMayMerge, withGroupMemoryLease, loadGroupBatch, groupMessages, groupEventsLive, advanceGroupWatermark, type GroupMemoryBatch } from '../../src/services/group-chat/memory'
 import { log } from '../../src/utils/logger'
@@ -84,6 +84,7 @@ ${ATOM_CLASSIFICATION_RULES}
 ${ATOM_IDENTITY_RULE}
 ${ATOM_METADATA_RULES}
 - Every atom must include source_messages: a nonempty array of integer message numbers from the supplied numbered conversation. Cite only messages that establish that fact, never database ids.
+- Keep exact details word for word: codes, passwords, numbers, amounts, dates, times, addresses and the names of people and places. When a message gives one, write an atom that states it exactly; never summarize it away.
 - Return an empty memories array only when no message establishes any personal fact.
 
 Rules for closing open threads:
@@ -622,13 +623,17 @@ async function memoryWork(job: Job, group?: GroupMemoryBatch) {
     const audiences = filterGroupAtomAudiences(group, extracted.memories as Array<{ source_messages: number[] }>)
     extracted.memories = audiences.memories
     invalidAudiences = audiences.invalidAudiences
+    const stored = await mongoColl.memories().find({ instance_id: instanceOid, is_archived: false },
+      { projection: { text: 1, private_to: 1 } }).toArray()
+    const missedDetails = missedDetailAtoms(group, extracted.memories, stored.filter(memory => memory.private_to === undefined || memory.private_to === group.thread).map(memory => memory.text))
+    extracted.memories.push(...missedDetails)
     // Canonicalize only exact, case-insensitive player names after shape/citation validation.
     for (const atom of extracted.memories as Array<{ subjects: string[]; objects: string[] }>) {
       const canonical = (name: string) => name.toLowerCase() === group.player.toLowerCase() ? 'player' : name
       atom.subjects = atom.subjects.map(canonical)
       atom.objects = atom.objects.map(canonical)
     }
-    log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, invalidAudiences, accepted: extracted.memories.length })
+    log.info('group.memory_validation', { instanceId, invalidCitations, invalidAtoms, invalidAudiences, missedDetails: missedDetails.length, accepted: extracted.memories.length })
     if (!extracted.memories.length && !extracted.closed_threads?.length) throw new Error('Group curator returned no valid atoms')
     if (!await groupEventsLive(group.events)) throw new Error('Group memory source events changed')
   } else normalizePlayerFactAttribution({ extracted, isSentient, playerInput, protagonistName })

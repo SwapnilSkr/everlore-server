@@ -9,6 +9,7 @@ import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders } from '../
 import { parseLines, filterLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
 import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic } from '../src/services/group-chat/prompt'
 import { writeGroupReply } from '../src/services/group-chat/reply'
+import { missedDetailAtoms } from '../src/services/group-chat/curation'
 import { validateGroup } from '../src/services/group-chat/validation'
 import { filterGroupAtomAudiences } from '../src/services/group-chat/curation'
 import { publicGroupData } from '../src/services/group-chat/public'
@@ -1397,6 +1398,46 @@ await check('memory invalid citations and malformed atoms are dropped and counte
     await assert.rejects(memoryProcessor(memoryJob()), /Group curator/)
     assert.equal(get(rows('worldInstances')[0], 'group_state.curated_through_sequence'), 1)
   }
+})
+await check('memory exact details: a lost code keeps the player words, a held one does not', async () => {
+  const batch = (text: string, name = playerName) => ({ player: playerName, messages: [{ name, text, number: 4, eventId: new ObjectId(), adult: false }] })
+  const kept = missedDetailAtoms(batch('my code was ORCHARD'), [{ text: 'Sam was fired.' }], [])
+  assert.deepEqual(kept.map(atom => [atom.text, atom.source_messages, atom.subjects, atom.is_nsfw]), [[`${playerName} said: my code was ORCHARD`, [4], ['player'], false]])
+  assert.equal(missedDetailAtoms(batch('pin 4471'), [{ text: 'The pin is 4471.' }], []).length, 0)
+  assert.equal(missedDetailAtoms(batch('my code was ORCHARD'), [{ text: 'The code is Orchard.' }], []).length, 0)
+  assert.equal(missedDetailAtoms(batch('pin 4471'), [], ['The pin is 4471.']).length, 0)
+  assert.equal(missedDetailAtoms(batch('see you at 5'), [], []).length, 0)
+  assert.equal(missedDetailAtoms(batch('pin 4471', names[0]), [], []).length, 0)
+  assert.equal(missedDetailAtoms({ player: playerName, messages: [{ ...batch('fuck me at 2am').messages[0], adult: true }] }, [], [])[0].is_nsfw, true)
+  await start(); addEvents(5)
+  curatorFactory = request => ({ memories: [atom('A valid fact.', 'player', numbered(request)[0].number)] })
+  const last = rows('events').at(-1)!
+  last.data.player_input = 'the alarm code is 9317'
+  await memoryProcessor(memoryJob())
+  assert(rows('memories').some(memory => memory.text === `${playerName} said: the alarm code is 9317` && memory.source_event_ids.some((id: ObjectId) => String(id) === String(last._id))))
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories').filter(memory => String(memory.text).includes('9317')).length, 1)
+})
+await check('memory exact details: audience and earlier facts decide what is kept', async () => {
+  const curated = () => { curatorFactory = request => ({ memories: [atom('A valid fact.', 'player', numbered(request)[0].number)] }) }
+  // Told in a direct message: the kept words are private to that thread.
+  await start(); addEvents(5); curated()
+  for (const event of storedEvents().slice(1)) event.data.dm_with = ids[0]
+  storedEvents().at(-1)!.data.player_input = 'the alarm code is 9317'
+  await memoryProcessor(memoryJob())
+  assert.equal(rows('memories').find(memory => String(memory.text).includes('9317'))!.private_to, ids[0])
+  // A fact only one thread holds can't stand in for one the group thread needs.
+  await start(); addEvents(5); curated()
+  storedEvents().at(-1)!.data.player_input = 'the alarm code is 9317'
+  rows('memories').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), text: 'A private alarm fact, 9317.', private_to: ids[0], is_archived: false, source_event_ids: [] })
+  await memoryProcessor(memoryJob())
+  assert(rows('memories').some(memory => memory.text === `${playerName} said: the alarm code is 9317` && !('private_to' in memory)))
+  // A shared fact in other words already holds it.
+  await start(); addEvents(5); curated()
+  storedEvents().at(-1)!.data.player_input = 'the alarm code is 9317'
+  rows('memories').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), text: 'The flat alarm is 9317.', is_archived: false, source_event_ids: [] })
+  await memoryProcessor(memoryJob())
+  assert(!rows('memories').some(memory => String(memory.text).includes('said:')))
 })
 await check('memory failed batches catch up from watermark with two event overlap and no duplicate atoms or vectors', async () => {
   await start(); addEvents(5); curatorReply = new Error('Stub curator failed')

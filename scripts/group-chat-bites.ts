@@ -12,6 +12,18 @@ type Mutation = { name: string; check: string; edits: Edit[]; script?: string }
 const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat/lines.ts', reply = 'src/services/group-chat/reply.ts'
 const worker = 'worker/processors/group-turn.processor.ts', prompt = 'src/services/group-chat/prompt.ts'
 const mutations: Mutation[] = [
+  { name: 'exact details: nothing kept', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', 'exactDetails(message.text).some(word', 'exactDetails(message.text).some(() => false) && [].some((word: string)']] },
+  { name: 'exact details: batch atoms ignored', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', '[...atoms.map(atom => atom.text), ...stored]', 'stored']] },
+  { name: 'exact details: stored facts ignored', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', '[...atoms.map(atom => atom.text), ...stored]', 'atoms.map(atom => atom.text)']] },
+  { name: 'exact details: case must match', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', '!held.includes(word.toLowerCase())', '!held.includes(word)']] },
+  { name: 'exact details: bare numbers count', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', 'word.length >= 3 && (', 'word.length >= 1 && (']] },
+  { name: 'exact details: capitals ignored', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', ' || word === word.toUpperCase()', '']] },
+  { name: 'exact details: other speakers kept', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', 'message.name === group.player &&', 'true &&']] },
+  { name: 'exact details: adult mark lost', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', 'is_nsfw: message.adult', 'is_nsfw: false']] },
+  { name: 'exact details: citation lost', check: 'memory exact details', edits: [['src/services/group-chat/curation.ts', 'source_messages: [message.number]', 'source_messages: [1]']] },
+  { name: 'exact details: not wired', check: 'memory exact details', edits: [['worker/processors/memory.processor.ts', 'extracted.memories.push(...missedDetails)', '']] },
+  { name: 'exact details: another thread counts', check: 'memory exact details', edits: [['worker/processors/memory.processor.ts', 'memory.private_to === undefined || memory.private_to === group.thread).map(memory => memory.text))', 'true).map(memory => memory.text))']] },
+  { name: 'exact details: stored not read', check: 'memory exact details', edits: [['worker/processors/memory.processor.ts', 'memory.private_to === undefined || memory.private_to === group.thread).map(memory => memory.text))', 'false).map(memory => memory.text))']] },
   { name: 'one speaker wiring lost', check: 'one speaker reply with no name', edits: [[reply, 'picked.length === 1 ? input.members.find(member => member.id === picked[0])?.name : undefined', 'undefined']] },
   { name: 'one speaker wiring opened to several', check: 'one speaker reply with no name', edits: [[reply, 'picked.length === 1 ?', 'picked.length >= 1 ?']] },
   { name: 'one speaker: unnamed lines dropped', check: 'one speaker: lines with no name', edits: [[lines, 'else if (soleSpeaker && !rejected)', 'else if (false)']] },

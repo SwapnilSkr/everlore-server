@@ -56,6 +56,23 @@ export const normalizeGroupMemoryText = (text: string) => text.replace(/\s+/g, '
 
 export const groupMemoryTextKey = (text: string, privateTo?: string) => JSON.stringify([privateTo ?? '', normalizeGroupMemoryText(text)])
 
+/** Words that can't be recovered once lost: a digit in them, or typed in capitals. A
+ * bare "5" is too common in passing to count on its own. */
+const exactDetails = (text: string) => (text.match(/[\p{L}\p{N}][\p{L}\p{N}'-]*/gu) || [])
+  .filter(word => word.length >= 3 && (/\p{N}/u.test(word) || word === word.toUpperCase()))
+
+/** Proven live: told a locker code, the curator kept the firing and lost the code, and
+ * the character then guessed one. A player line whose exact detail no fact holds is kept
+ * in the player's own words, with the same citation and audience rules as any atom. */
+export function missedDetailAtoms(group: Pick<GroupMemoryBatch, 'player' | 'messages'>, atoms: Array<{ text: string }>, stored: string[]) {
+  const held = [...atoms.map(atom => atom.text), ...stored].join('\n').toLowerCase()
+  return group.messages.filter(message => message.name === group.player &&
+    exactDetails(message.text).some(word => !held.includes(word.toLowerCase()))).map(message => ({
+    text: `${group.player} said: ${message.text}`.slice(0, 600), type: 'observation', importance: 3, is_nsfw: message.adult,
+    subjects: ['player'], objects: [], unresolved_thread: false, retrieval_terms: [], source_messages: [message.number],
+  }))
+}
+
 /** Citation shape is checked first; this pass rejects facts spanning direct audiences. */
 export function filterGroupAtomAudiences<T extends { source_messages: number[] }>(group: GroupMemoryBatch, atoms: T[]) {
   let invalidAudiences = 0
