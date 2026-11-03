@@ -137,7 +137,12 @@ export async function groupSummarySources(instanceId: ObjectId, start: number, e
   return events[0]?.sequence === start && events.at(-1)?.sequence === end ? events : []
 }
 
-export async function groupWriterSummaries(instanceId: ObjectId, candidates: Array<{ text: string; startSequence: number; endSequence: number }>, thread?: string) {
+/** With the toggle off, adult turns leave every writer's view, not just its memory. */
+export function withoutAdultEvents<T extends { type?: string }>(events: T[]) {
+  return events.filter(event => event.type !== 'intimate')
+}
+
+export async function groupWriterSummaries(instanceId: ObjectId, candidates: Array<{ text: string; startSequence: number; endSequence: number }>, thread?: string, enabled = true) {
   if (!validGroupThread(thread)) return []
   const allowed: string[] = []
   for (const summary of candidates) {
@@ -150,7 +155,8 @@ export async function groupWriterSummaries(instanceId: ObjectId, candidates: Arr
     const audiences = new Set(stored.map(row => row.private_to))
     if (audiences.size !== 1) continue
     const events = await groupSummarySources(instanceId, summary.startSequence, summary.endSequence, stored[0].private_to)
-    if (events.length) allowed.push(summary.text)
+    // A summary keeps the adult content of its turns, so a mixed one goes whole.
+    if (events.length && (enabled || withoutAdultEvents(events).length === events.length)) allowed.push(summary.text)
   }
   return allowed
 }

@@ -16,7 +16,7 @@ import { liveInstanceExists } from '../../src/utils/live-instance'
 import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
 import { judgeGroupReply } from '../lib/group-explicit-check'
 import { stagePostProcess, dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
-import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE, groupLineRaisesFact } from '../../src/services/group-chat/memory'
+import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE, groupLineRaisesFact, withoutAdultEvents } from '../../src/services/group-chat/memory'
 import { resolveGroupThread } from '../../src/services/group-chat/threads'
 import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { buildGroupDynamic, buildAddressedStatic, buildGroupStatic, buildDirectStatic } from '../../src/services/group-chat/prompt'
@@ -64,7 +64,9 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   const playerMessages = (origin === 'player' ? 1 : 0) + await mongoColl.events().countDocuments({
     instance_id: iid, ...groupThreadFilter(directWith), 'data.model_used': { $ne: 'seed' }, 'data.player_input': { $exists: true, $ne: '' },
   }, { limit: 2 })
-  const history = messagesFromEvents(playerMessages >= 2 ? recent.filter(event => event.data.model_used !== 'seed') : recent)
+  const historyEvents = playerMessages >= 2 ? recent.filter(event => event.data.model_used !== 'seed') : recent
+  const history = messagesFromEvents(historyEvents)
+  const plainHistory = messagesFromEvents(withoutAdultEvents(historyEvents))
   const previousLines: NamedLine[] = (await Promise.all(members.map(async member => {
     const events = await mongoColl.events().find({ instance_id: iid, ...groupThreadFilter(directWith), 'data.lines.character_id': member.id })
       .sort({ sequence: -1 }).limit(30).toArray()
@@ -74,8 +76,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   const state = instance.group_state
   const config = instance.group_context
   const roll = directWith ? { picked: [directWith], tags: [] as string[] } : rollSpeakers(members, state.silent_for, origin, userMessage, rng)
-  const groupContext = directWith ? groupMessages((await mongoColl.events().find({ instance_id: iid, ...groupThreadFilter() })
-    .sort({ sequence: -1 }).limit(8).toArray()).reverse(), config.player, members).slice(-8) : undefined
+  const groupEvents = directWith ? (await mongoColl.events().find({ instance_id: iid, ...groupThreadFilter() })
+    .sort({ sequence: -1 }).limit(8).toArray()).reverse() : undefined
+  const groupContext = groupEvents && groupMessages(groupEvents, config.player, members).slice(-8)
+  const plainGroupContext = groupEvents && groupMessages(withoutAdultEvents(groupEvents), config.player, members).slice(-8)
   const topic = config.topics[state.topics_used % config.topics.length]
   const query = [...messagesFromEvents(recent).slice(-3).map(line => `${line.name}: ${line.text}`),
     origin === 'player' ? `${config.player}: ${userMessage}` : `${config.player} is quiet. Topic: ${topic}`].join('\n')
@@ -96,9 +100,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       mongoColl.sceneSummaries().findOne({ instance_id: iid, private_to: directWith ?? { $exists: false }, status: { $ne: 'stale' },
         'event_range.end_sequence': { $lt: recent[0]?.sequence || 0 } }, { sort: { 'event_range.end_sequence': -1 } }),
     ])
-    const summaries = await groupWriterSummaries(iid, [
+    const summaryCandidates = [
       ...(summary ? [{ text: summary.summary_text, startSequence: summary.event_range.start_sequence, endSequence: summary.event_range.end_sequence }] : []), ...distant,
-    ], directWith)
+    ]
+    const summaries = await groupWriterSummaries(iid, summaryCandidates, directWith)
     if (origin === 'player' && template.is_nsfw_capable && enabled) await router.wait(2000)
     // Re-read consent immediately before the first narrator, after retrieval.
     const fresh = await mongoColl.users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } })
@@ -155,12 +160,14 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const model = chain[index]
           const selected = members.filter(member => speakers.includes(member.id))
           const split = !!addressed
+          const consented = consent?.preferences?.nsfw_enabled === true
           const memory = await groupWriterMemory({ instanceId: iid, player: config.player,
-            speakers: selected.map(member => member.name), thread: directWith, enabled: consent?.preferences?.nsfw_enabled === true,
+            speakers: selected.map(member => member.name), thread: directWith, enabled: consented,
             memories: rag.memoryTexts, openThreads: rag.openThreads || [], raisedBy: addressedPrompt ? userMessage : undefined, recentEvents: recent.slice(-4).map(event => event._id) })
           const dynamic = buildGroupDynamic({ memories: memory.memories, openThreads: memory.openThreads,
-            summaries: addressedPrompt ? [] : summaries, groupContext: stillAdult ? undefined : groupContext,
-            history: [...(addressedPrompt ? addressedHistory : history), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
+            summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),
+            groupContext: stillAdult ? undefined : consented ? groupContext : plainGroupContext,
+            history: [...(addressedPrompt ? addressedHistory : consented ? history : plainHistory), ...(origin === 'player' && split && !addressedPrompt ? [{ name: config.player, text: userMessage }] : []), ...(split ? request.history : [])],
             historyLimit: split ? addressedPrompt ? 12 : directWith ? 30 : 5 : 30,
             messageRule: split ? plainQuestion && addressedPrompt ? 'Write one message, answering what was asked.' : addressedPrompt || directWith ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
             now, offsetMinutes: state.tz_offset_minutes, speakers: selected.map(member => member.name),

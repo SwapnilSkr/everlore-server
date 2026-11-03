@@ -1523,6 +1523,7 @@ async function runProbe(): Promise<number> {
       if (toggleWriters.some(call => adultModelSet?.has(String(call.model)))) failures.push('toggle off: an adult model wrote')
       const toggleText = toggleWriters.map(call => call.user).join('\n')
       if (adultPrivate.some(atom => norm(toggleText).includes(norm(String(atom.text))))) failures.push('toggle off: an adult memory reached a prompt')
+      if (allTurns.some(turn => turn.eventType === 'intimate' && turn.lines.some(line => norm(toggleText).includes(norm(line.text))))) failures.push('toggle off: an adult line reached a prompt')
 
       const out: string[] = ['# Direct messages, evening clock', '', `${turnIndex - allTurns.length} ordinary group turns came first.`, '']
       for (const turn of allTurns) {

@@ -2628,6 +2628,49 @@ await check('adult scene wiring passes the recent events to memory', async () =>
   assert(!requestText(writerCalls[0]).includes('very recent scene fact'))
   auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerSexual = false
 })
+await check('toggle off keeps adult turns out of writer history, group context and summaries', async () => {
+  await start(); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; put(rows('users')[0], 'preferences.nsfw_enabled', true); judgeVerdict = true; routerSexual = true
+  modelReplies = [`${names[1]}: Private adult marker.`]
+  await turn({ directWith: ids[1], userMessage: 'I want you privately.' }, never)
+  const privateAdult = storedEvents().at(-1)!
+  assert.equal(privateAdult.type, 'intimate')
+  modelReplies = [`${names[1]}: Group adult marker.`]
+  await turn({ userMessage: `@${names[1]} I want you here.` }, never)
+  assert.equal(storedEvents().at(-1)!.type, 'intimate')
+  await Promise.all(backgroundWork.splice(0))
+  auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerSexual = false
+  // A thread with no scene of its own: the normal writer, with the group block.
+  const plainReplies = ['Plain reply about the kettle.', 'Plain note on the bins.', 'Plain word on the rent.', 'Plain thought on dinner.']
+  const plainTurn = async (thread: string) => {
+    writerCalls = []; modelReplies = [`${names[ids.indexOf(thread)]}: ${plainReplies.shift()}`]
+    await turn({ directWith: thread, userMessage: 'Good evening.' }, never)
+    assert.equal(writerCalls.length, 1); assert.notEqual(writerCalls[0].model, 'fake-adult')
+    return requestText(writerCalls[0])
+  }
+  assert((await plainTurn(ids[0])).includes('Group adult marker.'), 'the group block is shown with the toggle on')
+  // Push the scene out of the thread's recent turns so a summary may cover it.
+  rows('sceneSummaries').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), private_to: ids[1], status: 'active', summary_text: 'Adult summary marker.',
+    event_range: { start_sequence: privateAdult.sequence, end_sequence: privateAdult.sequence } })
+  const last = storedEvents().at(-1)!.sequence
+  for (let index = 1; index <= 30; index++) rows('events').push({ ...privateAdult, _id: new ObjectId(), sequence: last + index, type: 'narration',
+    data: { ...privateAdult.data, player_input: `Filler ${index}.`, ai_response: '', lines: [] } })
+  const on = await plainTurn(ids[1])
+  assert(on.includes('Adult summary marker.'), 'the summary is shown with the toggle on')
+  put(rows('users')[0], 'preferences.nsfw_enabled', false)
+  const off = await plainTurn(ids[1])
+  assert(!off.includes('Adult summary marker.')); assert(!off.includes('Group adult marker.'))
+  // Bring one adult turn back into the thread's recent window.
+  rows('events').push({ ...privateAdult, _id: new ObjectId(), sequence: storedEvents().at(-1)!.sequence + 1 })
+  const window = await plainTurn(ids[1])
+  assert(!window.includes('Private adult marker.')); assert(!window.includes('I want you privately.'))
+  put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  writerCalls = []; modelReplies = [`${names[1]}: Carrying on.`]
+  await turn({ directWith: ids[1], userMessage: 'Good evening again.' }, never)
+  assert(requestText(writerCalls[0]).includes('Private adult marker.'), 'the line stays visible with the toggle on')
+  const source = { text: 'Adult summary marker.', startSequence: privateAdult.sequence, endSequence: privateAdult.sequence }
+  assert.deepEqual(await groupWriterSummaries(new ObjectId(instanceId), [source], ids[1]), ['Adult summary marker.'])
+  assert.deepEqual(await groupWriterSummaries(new ObjectId(instanceId), [source], ids[1], false), [])
+})
 await check('direct adult route reuses consent interest carryover history and tame marking without bystanders', async () => {
   await start(); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; put(rows('users')[0], 'preferences.nsfw_enabled', true)
   judgeVerdict = false
