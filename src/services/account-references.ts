@@ -6,7 +6,7 @@ export const PLAYER_COLLECTIONS = [
   'world_instances', 'events', 'memories', 'characters', 'entities', 'personas',
   'generation_logs', 'extractor_raw', 'projection_anomalies', 'signal_ledger',
   'relation_candidates', 'post_process_outbox', 'projection_checkpoints',
-  'media_assets', 'media_rejections', 'billing_entitlements', 'store_purchases', 'llm_calls',
+  'media_assets', 'media_rejections', 'billing_entitlements', 'store_purchases', 'llm_calls', 'push_devices',
 ] as const
 export const TELEMETRY_COLLECTIONS = ['app_events', 'app_sessions', 'app_errors'] as const
 export const JOB_USER_FIELDS = ['playerId', 'player_id', 'userId', 'user_id'] as const

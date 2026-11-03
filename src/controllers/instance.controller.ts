@@ -1,3 +1,4 @@
+import { openPendingDirect } from '../services/group-chat/notifications'
 import { listGroupActions } from '../services/group-chat/actions'
 import { getGroupBonds, setGroupBonds } from '../services/group-chat/bonds'
 import { listGroupThreads } from '../services/group-chat/threads'
@@ -9,6 +10,10 @@ import { HttpError } from '../utils/http-error'
 import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
 
 export const instanceController = {
+  openDirect: async ({ user, params }: { user: AuthUser | null; params: { id: string; characterId: string } }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    return openPendingDirect(params.id, user.id, params.characterId)
+  },
   actions: async ({ user, params, query }: { user: AuthUser | null; params: { id: string }; query: { before?: unknown; limit?: unknown } }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     return listGroupActions(params.id, user.id, query)

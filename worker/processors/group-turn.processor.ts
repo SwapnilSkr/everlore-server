@@ -1,3 +1,5 @@
+import { recordGroupPlayerWrite } from '../../src/services/group-chat/notifications'
+import { reserveUnpromptedCall, utcDay } from '../../src/services/group-chat/notification-caps'
 import { groupPlayerLine, groupLineText, groupSpeaker, validateGroupAction } from '../../src/services/group-chat/actions'
 import type { Job } from 'bullmq'
 import { ObjectId } from 'mongodb'
@@ -31,11 +33,13 @@ import { log } from '../../src/utils/logger'
 export interface GroupTurnJob {
   instanceId: string; playerId: string; userMessage: string
   kind?: 'action'
+  unpromptedCallDay?: string
+  unpromptedCallReserved?: boolean
   directWith?: string
   origin?: GroupOrigin; gapStart?: string; priorTurnId?: string
 }
 
-export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: () => number; onBackground?: (work: Promise<void>) => void } = {}) {
+export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: () => number; now?: () => Date; onBackground?: (work: Promise<void>) => void } = {}) {
   const { instanceId, playerId, userMessage, origin = 'player' } = job.data
   if (!['player', 'unprompted', 'catchup'].includes(origin)) throw new Error('Invalid group turn origin')
   const rng = deps.rng ?? Math.random
@@ -57,7 +61,9 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   validateGroupAction(job.data.kind, true, job.data.directWith, userMessage)
   if (job.data.kind && origin !== 'player') throw new Error('Send an action as the player.')
   const directWith = await resolveGroupThread(instance, job.data.directWith)
-  if (directWith && origin !== 'player') throw new Error('Send a message to keep this chat going.')
+  if (directWith && origin === 'catchup') throw new Error('Send a message to keep this chat going.')
+  if (origin === 'player') await recordGroupPlayerWrite(instance, directWith, (deps.now ?? (() => new Date()))())
+  let reservedCall = job.data.unpromptedCallReserved === true && job.data.unpromptedCallDay === utcDay((deps.now ?? (() => new Date()))())
   const members = await loadGroupMembers(instance)
   const latest = await mongoColl.events().findOne({ instance_id: iid }, { sort: { sequence: -1 } })
   const recent = await mongoColl.events().find({ instance_id: iid, ...groupThreadFilter(directWith) }).sort({ sequence: -1 }).limit(30).toArray()
@@ -122,7 +128,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     const involved = carriesMembers || members.some(member => (directWith === member.id || mentionsMember(userMessage, member.name))
       && intimate.some(event => event.data.lines?.some(line => line.character_id === member.id)))
     const adultDowngrade = route.sceneClassification === 'nsfw' && !routerYes
-      ? origin !== 'player' ? 'autonomous' : !involved ? 'no_involved_member' : undefined : undefined
+      ? origin !== 'player' && !directWith ? 'autonomous' : !involved ? 'no_involved_member' : undefined : undefined
     // Proven live: straight after an adult turn, kissing someone and pushing them against a wall
     // reached the normal writer, which changed the subject. The router rightly calls a kiss alone
     // romance, and one adult turn is below scene momentum. An action on someone already in it
@@ -244,6 +250,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
             : directWith ? buildGroupStatic({ ...template, members: selected, player: config.player }) : sceneMembers.length && selected.length === 1 ? buildGroupStatic({ ...template, members: selected, player: config.player }) : config.static_prompt
           const system = directWith ? buildDirectStatic(baseSystem, selected[0], config.player) : baseSystem
           if (stillAdult) { sceneAdultAttempts.set(speakers[0], (sceneAdultAttempts.get(speakers[0]) || 0) + 1) }
+          if (origin === 'unprompted' && directWith) {
+            if (!reservedCall && !await reserveUnpromptedCall(playerId, (deps.now ?? (() => new Date()))())) break
+            reservedCall = false
+          }
           writing.push({ writer: stillAdult ? 'adult' : 'normal', model, purpose: request.purpose })
           try {
             const result = await callLLMWithFallback({ model, purpose: 'narration',
@@ -271,6 +281,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       topics_used: state.topics_used + (origin === 'player' ? 0 : 1),
       unprompted_since_player: origin === 'player' ? 0 : state.unprompted_since_player + 1,
       writing_calls: (state.writing_calls || 0) + writingCalls }
+    if (directWith) {
+      nextState.unprompted_since_player = origin === 'player' ? 0 : state.unprompted_since_player
+    }
+    delete nextState.pending_direct
     const event: WorldEventDoc = {
       _id: new ObjectId(), instance_id: iid, player_id: pid, sequence, type: adult ? 'intimate' : 'narration',
       scene_tag: 'dialogue', is_user_edited: false, edit_history: [], created_at: now,
@@ -286,7 +300,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     await mongoColl.events().insertOne(event)
     try {
       const updated = await mongoColl.worldInstances().updateOne({ _id: iid, player_id: pid }, {
-        $set: { ...Object.fromEntries(Object.entries(nextState).filter(([key]) => !['curated_through_sequence', 'summarized_through_sequence', 'direct_threads'].includes(key)).map(([key, value]) => [`group_state.${key}`, value])), 'meta.total_events': sequence, 'meta.last_active_at': now, updated_at: now },
+        $set: { ...Object.fromEntries(Object.entries(nextState).filter(([key]) => !['curated_through_sequence', 'summarized_through_sequence', 'direct_threads', 'pending_direct', 'last_direct_notified_at', 'last_seen_at', 'tz_offset_minutes'].includes(key)).map(([key, value]) => [`group_state.${key}`, value])), 'meta.total_events': sequence, 'meta.last_active_at': now, updated_at: now },
         $inc: { 'meta.total_tokens_consumed': event.data.tokens_in + event.data.tokens_out },
       })
       if (!updated.matchedCount) {
@@ -341,6 +355,8 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     return { eventId: idString(event._id), sequence }
   } finally {
     router.cancel()
-    flushLLMTracesLater(snapshotLLMTrace(), sequence)
+    const traces = snapshotLLMTrace()
+    if (origin === 'unprompted') for (const trace of traces) trace.call.group_origin = 'unprompted'
+    flushLLMTracesLater(traces, sequence)
   }
 }

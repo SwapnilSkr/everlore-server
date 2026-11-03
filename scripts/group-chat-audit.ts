@@ -420,7 +420,7 @@ function put(row: Row, path: string, value: unknown) {
   for (const key of keys.slice(0, -1)) { current[key] ??= {}; current = current[key] as Row }
   current[keys.at(-1)!] = value
 }
-const eq = (a: unknown, b: unknown) => a instanceof ObjectId && b instanceof ObjectId ? a.equals(b) : a === b
+const eq = (a: unknown, b: unknown) => a instanceof Date && b instanceof Date ? a.getTime() === b.getTime() : a instanceof ObjectId && b instanceof ObjectId ? a.equals(b) : a === b
 function matches(row: Row, filter: Row): boolean {
   return Object.entries(filter).every(([key, expected]) => {
     if (key === '$text') return String(row.text || '').includes(String((expected as Row).$search))
@@ -445,6 +445,7 @@ const clone = <T>(input: T): T => {
   if (Array.isArray(input)) return input.map(clone) as T
   return Object.fromEntries(Object.entries(input).map(([key, value]) => [key, clone(value)])) as T
 }
+let pushWriteFailure: Error | undefined
 let consentReadHook: (() => void) | undefined
 function collection(name: string) {
   return {
@@ -481,13 +482,14 @@ function collection(name: string) {
     async countDocuments(filter: Row) { return rows(name).filter(row => matches(row, filter)).length },
     async insertOne(row: Row) { rows(name).push(clone(row)); return { insertedId: row._id } },
     async updateOne(filter: Row, update: Row, options?: { upsert?: boolean }) {
+      if (name === 'pushDevices' && pushWriteFailure) throw pushWriteFailure
       let row = rows(name).find(row => matches(row, filter)); const existed = !!row
       if (!row && options?.upsert) { row = Object.fromEntries(Object.entries(filter).filter(([, value]) => !value || typeof value !== 'object' || value instanceof ObjectId || value instanceof Date)); rows(name).push(row); Object.assign(row, clone(update.$setOnInsert)) }
       if (row) {
         for (const [key, value] of Object.entries((update.$set || {}) as Row)) put(row, key, clone(value))
         for (const [key, value] of Object.entries((update.$inc || {}) as Row)) put(row, key, Number(get(row, key) || 0) + Number(value))
         for (const [key, value] of Object.entries((update.$max || {}) as Row)) if (get(row, key) === undefined || Number(get(row, key)) < Number(value)) put(row, key, value)
-        for (const key of Object.keys((update.$unset || {}) as Row)) delete row[key]
+        for (const key of Object.keys((update.$unset || {}) as Row)) { const parts = key.split('.'); const parent = parts.length > 1 ? get(row, parts.slice(0, -1).join('.')) as Row : row; if (parent) delete parent[parts.at(-1)!] }
       }
       return { matchedCount: existed ? 1 : 0, modifiedCount: existed ? 1 : 0 }
     },
@@ -497,7 +499,7 @@ function collection(name: string) {
       return { modifiedCount }
     },
     async deleteMany(filter: Row) { const list = rows(name); const kept = list.filter(row => !matches(row, filter)); list.splice(0, list.length, ...kept); return { deletedCount: list.length - kept.length } },
-    async deleteOne(filter: Row) { const index = rows(name).findIndex(row => matches(row, filter)); if (index >= 0) rows(name).splice(index, 1); return { deletedCount: index >= 0 ? 1 : 0 } },
+    async deleteOne(filter: Row) { if (name === 'pushDevices' && pushWriteFailure) throw pushWriteFailure; const index = rows(name).findIndex(row => matches(row, filter)); if (index >= 0) rows(name).splice(index, 1); return { deletedCount: index >= 0 ? 1 : 0 } },
   }
 }
 const frames: Row[] = [], outbox: Row[] = [], locks = new Map<string, string>(), queued: Row[] = []
@@ -517,9 +519,9 @@ const redis = {
 }
 const unavailable = (): never => { throw new Error('Unexpected external dependency in group audit') }
 globalThis.fetch = Object.assign(async () => unavailable(), { preconnect: unavailable })
-const auditEnv = { NSFW_SAME_TURN_ROUTER: 'off', NSFW_SAME_TURN_ROUTER_MODEL: 'fake-router', NSFW_SAME_TURN_ROUTER_HOST: 'fixture' }
+const auditEnv = { GROUP_NOTIFICATIONS_ENABLED: false, FCM_SERVICE_ACCOUNT_JSON: '', NSFW_SAME_TURN_ROUTER: 'off', NSFW_SAME_TURN_ROUTER_MODEL: 'fake-router', NSFW_SAME_TURN_ROUTER_HOST: 'fixture' }
 let routerRequests = 0, routerDelay = 0, routerSexual = true, routerError = false
-mock.module('../src/config/env', () => ({ env: { ...auditEnv, get NSFW_SAME_TURN_ROUTER() { return auditEnv.NSFW_SAME_TURN_ROUTER }, CDN_BASE_URL: 'https://fixture.invalid', JWT_SECRET: 'audit-only', MEDIA_VOICE_ENABLED: false } }))
+mock.module('../src/config/env', () => ({ env: { ...auditEnv, get GROUP_NOTIFICATIONS_ENABLED() { return auditEnv.GROUP_NOTIFICATIONS_ENABLED }, get NSFW_SAME_TURN_ROUTER() { return auditEnv.NSFW_SAME_TURN_ROUTER }, CDN_BASE_URL: 'https://fixture.invalid', JWT_SECRET: 'audit-only', MEDIA_VOICE_ENABLED: false } }))
 mock.module('../src/config/mongo', () => ({ mongoColl: new Proxy({}, { get: (_target, key) => () => collection(String(key)) }) }))
 mock.module('../src/config/redis', () => ({ getRedisClient: () => redis, getQueueRedisClient: unavailable, getRedisSubscriber: unavailable }))
 let judgeVerdict: boolean | 'error' | 'malformed' = true, judgeCalls: string[] = [], judgeGate: Promise<void> | undefined
@@ -568,7 +570,8 @@ mock.module('../src/middleware/auth', () => ({ verifyWsToken: unavailable,
 }))
 mock.module('../src/middleware/rate-limit', () => ({ rateLimit: async () => ({ allowed: true }) }))
 mock.module('../src/services/last-active.service', () => ({ recordLastActive: () => {} }))
-mock.module('../src/queues', () => ({ getMemoryCurationQueue: unavailable, removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { queued.push(data); return { id: options.jobId } } }), getSceneSummaryQueue: () => ({ add: async (_name: string, data: Row) => { queued.push(data) } }), QUEUE_RETENTION: { sceneSummary: {}, generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
+let generationAddError: Error | undefined
+mock.module('../src/queues', () => ({ getMemoryCurationQueue: unavailable, removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { if (generationAddError) throw generationAddError; queued.push(data); return { id: options.jobId } } }), getSceneSummaryQueue: () => ({ add: async (_name: string, data: Row) => { queued.push(data) } }), QUEUE_RETENTION: { sceneSummary: {}, generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
 let writerHook: ((request: Row) => void | Promise<void>) | undefined
 let bondReply: unknown = { changes: [] }, bondRequests: Row[] = [], bondHook: (() => Promise<void>) | undefined
 let curatorReply: unknown = { memories: [] }, curatorRequests: Row[] = [], summaryRequests: Row[] = []
@@ -624,6 +627,7 @@ Math.random = () => 0
 const playerId = '300000000000000000000001'
 let instanceId = ''
 async function start(source = groupTemplate(), player = playerName) {
+  auditEnv.GROUP_NOTIFICATIONS_ENABLED = false; generationAddError = undefined
   bondReply = { changes: [] }; bondRequests = []; bondHook = undefined; ragSummaryHits = []; tables.clear(); vectors.clear(); curatorRequests = []; summaryRequests = []; summaryReply = 'A named summary.'; curatorHook = undefined; summaryHook = undefined; embedHook = undefined; curatorFactory = undefined; ragMemoryTexts = ['Remembered group fact.']; ragOpenThreads = []; ragCalls = []; memoryLogs.length = 0; backgroundScopes.length = 0; frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0; routerSexual = true; routerError = false
   rows('users').push({ _id: new ObjectId(playerId), preferences: { nsfw_enabled: false, player_name: player } })
   rows('worldTemplates').push(clone(source) as unknown as Row)
@@ -632,9 +636,9 @@ async function start(source = groupTemplate(), player = playerName) {
   return created
 }
 let backgroundWork: Promise<void>[] = []
-async function turn(data: Partial<GroupTurnJob> = {}, rng?: () => number) {
+async function turn(data: Partial<GroupTurnJob> = {}, rng?: () => number, now?: () => Date) {
   const id = crypto.randomUUID(); locks.set(`lock:gen:${playerId}:${instanceId}`, JSON.stringify({ owner: id, phase: 'running' }))
-  return groupTurnProcessor({ id, data: { instanceId, playerId, userMessage: 'A player message', ...data } } as Job<GroupTurnJob>, { rng, onBackground: work => { backgroundWork.push(work) } })
+  return groupTurnProcessor({ id, data: { instanceId, playerId, userMessage: 'A player message', ...data } } as Job<GroupTurnJob>, { rng, now, onBackground: work => { backgroundWork.push(work) } })
 }
 function forbidden(value: unknown) {
   if (!value || typeof value !== 'object') return
@@ -2566,8 +2570,9 @@ await check('direct turns preserve all group pacing state while independent thre
   for (let i = 1; i <= 12; i++) {
     modelReplies = [`${names[0]}: Direct event number ${i}.`]
     await turn({ directWith: ids[0], userMessage: `Thread input ${i}` }, never)
-    assert.deepEqual(rows('worldInstances')[0].group_state, before)
-    assert.deepEqual(storedEvents().at(-1)!.data.group_state_after, before)
+    const expected = { ...(before as Row), unprompted_since_player: 0, last_seen_at: get(rows('worldInstances')[0], 'group_state.last_seen_at') }
+    assert.deepEqual(rows('worldInstances')[0].group_state, expected)
+    assert.deepEqual(storedEvents().at(-1)!.data.group_state_after, expected)
     if (i === 6) { modelReplies = [`${names[1]}: Other thread event.`]; await turn({ directWith: ids[1] }, never) }
   }
   assert.equal(outbox.filter(job => job.kind === 'memory_curation').length, 2)
@@ -3125,9 +3130,10 @@ await check('direct rewind removes later real turns from every thread and restor
     await turn({ directWith: thread, userMessage: `@${names[thread === ids[1] ? 1 : 0]} continue.` }, never)
   }
   put(rows('worldInstances')[0], `group_state.direct_threads.${ids[1]}.curated_through_sequence`, 6)
+  const lastSeen = get(rows('worldInstances')[0], 'group_state.last_seen_at')
   await memoryService.rewindToSequence(instanceId, playerId, 4)
   assert.deepEqual(storedEvents().map(event => event.sequence), [1, 2, 3])
-  assert.deepEqual(rows('worldInstances')[0].group_state, keep)
+  assert.deepEqual(rows('worldInstances')[0].group_state, { ...keep, last_seen_at: lastSeen })
 })
 
 async function bondHttp(method: string, body?: unknown, characterId = ids[0]) {
@@ -3797,6 +3803,330 @@ await check('nway recall plan has a steady group of three, mixed turns and reque
     for (const expected of ['plan nway: flat-4b cast', 'untagged continuation', 'one tag', 'one question per member', 'toggle-off', 'each writer and model', 'group_lines payload and elapsed milliseconds', 'full system and per-turn prompts', 'no calls made']) assert(output.includes(expected), expected)
     assert.equal((output.match(/  \d: (message|action):/g) || []).length, 6)
   } finally { await rm(outputDir, { recursive: true, force: true }) }
+})
+
+const { scheduleDirectNotifications, openPendingDirect, pendingDirectFrom } = await import('../src/services/group-chat/notifications')
+const { eligibleDirectNotification, pickDirectSender, DIRECT_PENDING_MS } = await import('../src/services/group-chat/notification-policy')
+const { createFcmSender } = await import('../src/services/push/fcm')
+const { registerPushDevice, removePushDevice } = await import('../src/services/push/devices')
+const { authController } = await import('../src/controllers/auth.controller')
+const { authRoutes: pushAuthRoutes } = await import('../src/routes/auth.routes')
+const { instanceRoutes: directInstanceRoutes } = await import('../src/routes/instance.routes')
+const { instanceController: notifyController } = await import('../src/controllers/instance.controller')
+const notifyNow = new Date('2026-11-04T12:00:00Z')
+const notifyTime = () => notifyNow
+const notifyToken = 'audit-device-only-never-log'
+const fakeSender = (send: () => Promise<boolean> = async () => true) => ({ configured: () => true, send })
+async function notifyStart() {
+  await start()
+  auditEnv.GROUP_NOTIFICATIONS_ENABLED = true
+  put(rows('worldInstances')[0], 'group_state.last_seen_at', new Date(notifyNow.getTime() - 4 * 3_600_000))
+  await registerPushDevice(playerId, { token: notifyToken, platform: 'android', tz_offset_minutes: 0 }, notifyNow)
+}
+async function notifyPending() {
+  await notifyStart()
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: fakeSender() })
+  assert.equal(get(rows('worldInstances')[0], 'group_state.pending_direct.member_id'), ids[0])
+}
+const auditState = () => rows('worldInstances')[0].group_state as unknown as import('../src/services/group-chat/types').GroupState
+
+await check('notify mark 1 zero models throughout schedule and send', async () => {
+  await notifyStart()
+  let sends = 0
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: fakeSender(async () => { sends++; return true }) })
+  assert.equal(sends, 1)
+  assert.equal(writerCalls.length + routerRequests + curatorRequests.length + summaryRequests.length + bondRequests.length, 0)
+  assert.equal(queued.length, 0); assert.equal(ragCalls.length, 0)
+  assert.equal(storedEvents().length, 1)
+  assert.equal(auditState().unprompted_since_player, 1)
+  assert.equal(pickDirectSender(members.map(member => ({ ...member, relationship: { trust: 0, affection: 0, fear: 70 } })), () => 0), undefined)
+  assert.equal(pickDirectSender(members.map(member => ({ ...member, relationship: { trust: 0, affection: 0, fear: 0 } })), () => 0.999)?.id, ids.at(-1))
+  const weighted = members.map((member, i) => ({ ...member, relationship: { trust: i === 1 ? 100 : 0, affection: 0, fear: 0 } }))
+  assert.equal(pickDirectSender(weighted, () => 0.5)?.id, ids[1])
+})
+await check('notify mark 2 every eligibility gate and chance independently', async () => {
+  await notifyStart()
+  const baseline = { enabled: true, hasDevice: true, optedOut: false, state: { ...clone(auditState()), tz_offset_minutes: 0 }, now: notifyNow, sentToday: 0, spendToday: 0 }
+  assert.equal(eligibleDirectNotification(baseline), true)
+  const variants = [
+    { enabled: false }, { hasDevice: false }, { optedOut: true }, { sentToday: 3 }, { spendToday: 5 }, { spendToday: NaN },
+    ...[
+      { last_seen_at: undefined }, { last_seen_at: new Date(NaN) },
+      { last_seen_at: new Date(notifyNow.getTime() - 3 * 3_600_000 + 1) },
+      { last_seen_at: new Date(notifyNow.getTime() - 14 * 86_400_000 - 1) },
+      { tz_offset_minutes: undefined }, { tz_offset_minutes: NaN },
+      { tz_offset_minutes: -240 }, { tz_offset_minutes: 600 },
+      { pending_direct: { member_id: ids[0], scheduled_at: notifyNow, notified_at: notifyNow } },
+      { last_direct_notified_at: new Date(notifyNow.getTime() - 12 * 3_600_000 + 1) },
+      { unprompted_since_player: 2 },
+    ].map(changes => ({ state: { ...baseline.state, ...changes } })),
+  ]
+  for (const variant of variants) {
+    assert.equal(eligibleDirectNotification({ ...baseline, ...variant }), false, JSON.stringify(variant))
+    await notifyStart()
+    const input = { ...baseline, ...variant }
+    auditEnv.GROUP_NOTIFICATIONS_ENABLED = input.enabled
+    if (!input.hasDevice) rows('pushDevices').length = 0
+    put(rows('users')[0], 'preferences.group_notifications', !input.optedOut)
+    put(rows('users')[0], 'group_notification_usage', { day: '2026-11-04', sent: input.sentToday, calls: 0 })
+    rows('worldInstances')[0].group_state = clone(input.state) as unknown as Row
+    if (rows('pushDevices')[0]) rows('pushDevices')[0].tz_offset_minutes = input.state.tz_offset_minutes
+    if (input.spendToday !== 0) rows('llmCalls').push({ group_origin: 'unprompted', created_at: notifyNow, cost_usd: input.spendToday })
+    let attempted = 0
+    await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: fakeSender(async () => { attempted++; return true }) })
+    assert.equal(attempted, 0, JSON.stringify(variant))
+  }
+  await notifyStart()
+  for (const hours of [3, 14 * 24]) assert(eligibleDirectNotification({ ...baseline, state: { ...baseline.state, last_seen_at: new Date(notifyNow.getTime() - hours * 3_600_000) } }))
+  let sends = 0
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0.25, sender: fakeSender(async () => { sends++; return true }) })
+  assert.equal(sends, 0)
+  // Enforce the same cap across separate saves, with concurrent scheduler runs.
+  const original = rows('worldInstances')[0]
+  const cards = clone(rows('characters'))
+  for (let i = 0; i < 4; i++) {
+    const _id = new ObjectId()
+    rows('worldInstances').push({ ...clone(original), _id })
+    rows('characters').push(...cards.map(card => ({ ...clone(card), instance_id: _id })))
+  }
+  await Promise.all([1, 2].map(() => scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: fakeSender(async () => { sends++; return true }) })))
+  assert.equal(sends, 3)
+  assert.equal(get(rows('users')[0], 'group_notification_usage.sent'), 3)
+})
+await check('notify mark 3 real FCM payload and snapshot never contain planted prose', async () => {
+  await notifyStart()
+  const planted = 'EXPLICIT_PRIVATE_LINE_NOT_FOR_LOCK_SCREEN'
+  put(rows('events')[0], 'data.ai_response', planted)
+  put(rows('events')[0], 'data.lines', [{ character_id: ids[0], text: planted, shown_at: notifyNow }])
+  rows('memories').push({ text: planted })
+  const { generateKeyPairSync, verify } = await import('node:crypto')
+  const key = generateKeyPairSync('rsa', { modulusLength: 2048 })
+  const payloads: Row[] = [], urls: string[] = []
+  const sender = createFcmSender({ enabled: () => true, now: notifyTime,
+    credentials: () => JSON.stringify({ project_id: 'audit-project', client_email: 'audit@example.invalid', private_key: key.privateKey.export({ format: 'pem', type: 'pkcs8' }).toString() }),
+    fetch: Object.assign(async (url: string | URL | Request, init?: RequestInit) => {
+      urls.push(String(url))
+      if (String(url).includes('oauth2')) {
+        const assertion = new URLSearchParams(String(init?.body)).get('assertion')!
+        const parts = assertion.split('.')
+        assert(verify('RSA-SHA256', Buffer.from(parts.slice(0, 2).join('.')), key.publicKey, Buffer.from(parts[2], 'base64url')))
+        const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString())
+        assert.equal(claims.scope, 'https://www.googleapis.com/auth/firebase.messaging')
+        assert.equal(claims.exp - claims.iat, 3600)
+        return Response.json({ access_token: 'audit-bearer', expires_in: 3600 })
+      }
+      assert.equal((init?.headers as Row).Authorization, 'Bearer audit-bearer')
+      payloads.push(JSON.parse(String(init?.body)))
+      return Response.json({ name: 'audit-message' })
+    }, { preconnect: unavailable }) as typeof fetch,
+  })
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender })
+  assert.deepEqual(urls, ['https://oauth2.googleapis.com/token', 'https://fcm.googleapis.com/v1/projects/audit-project/messages:send'])
+  assert.deepEqual(payloads, [{ message: { token: notifyToken,
+    notification: { title: template.title, body: `${names[0]} sent you a message` },
+    data: { type: 'group_direct', instanceId, characterId: ids[0] } } }])
+  assert(!JSON.stringify(payloads).includes(planted))
+  assert.equal(writerCalls.length + routerRequests + curatorRequests.length + summaryRequests.length, 0)
+  const projected = publicGroupData({ instance: rows('worldInstances')[0] }, notifyNow)
+  assert.deepEqual(projected.instance.pending_from, [ids[0]])
+  assert(!JSON.stringify(projected).includes('scheduled_at')); assert(!JSON.stringify(projected).includes('notified_at'))
+  assert.deepEqual(pendingDirectFrom(auditState(), new Date(notifyNow.getTime() + DIRECT_PENDING_MS)), [])
+  const future = new Date(notifyNow.getTime() + DIRECT_PENDING_MS)
+  assert.deepEqual(await openPendingDirect(instanceId, playerId, ids[0], future), { writing: false })
+  assert.equal(auditState().pending_direct, undefined); assert.equal(queued.length, 0)
+})
+await check('notify mark 4 open is atomic lock preserving owner only and capped', async () => {
+  await notifyPending()
+  locks.set(`lock:gen:${playerId}:${instanceId}`, JSON.stringify({ owner: 'other', phase: 'tail' }))
+  assert.deepEqual(await openPendingDirect(instanceId, playerId, ids[0], notifyNow), { writing: false })
+  assert(auditState().pending_direct)
+  locks.delete(`lock:gen:${playerId}:${instanceId}`)
+  await assert.rejects(openPendingDirect(instanceId, '300000000000000000000002', ids[0], notifyNow), error => (error as { statusCode: number }).statusCode === 404)
+  assert.deepEqual(await openPendingDirect(instanceId, playerId, ids[1], notifyNow), { writing: false })
+  const results = await Promise.all([1, 2].map(() => openPendingDirect(instanceId, playerId, ids[0], notifyNow)))
+  assert.equal(results.filter(result => result.writing).length, 1)
+  assert.equal(queued.length, 1); assert.equal(queued[0].origin, 'unprompted'); assert.equal(queued[0].directWith, ids[0])
+  assert.equal(auditState().pending_direct, undefined)
+  await notifyPending()
+  generationAddError = new Error('Queue unavailable')
+  await assert.rejects(openPendingDirect(instanceId, playerId, ids[0], notifyNow))
+  generationAddError = undefined
+  assert(auditState().pending_direct); assert.equal(get(rows('users')[0], 'group_notification_usage.calls'), 0)
+  assert(!locks.has(`lock:gen:${playerId}:${instanceId}`))
+  for (const cap of ['calls', 'spend', 'reserved']) {
+    await notifyPending()
+    if (cap === 'calls') for (let i = 0; i < 30; i++) rows('llmCalls').push({ player_id: new ObjectId(playerId), group_origin: 'unprompted', purpose: 'narration', created_at: notifyNow, cost_usd: 0 })
+    if (cap === 'spend') rows('llmCalls').push({ group_origin: 'unprompted', created_at: notifyNow, cost_usd: 5 })
+    if (cap === 'reserved') put(rows('users')[0], 'group_notification_usage', { day: '2026-11-04', sent: 1, calls: 30 })
+    assert.deepEqual(await openPendingDirect(instanceId, playerId, ids[0], notifyNow), { writing: false })
+    assert.equal(auditState().pending_direct, undefined); assert.equal(queued.length, 0)
+  }
+})
+await check('notify mark 5 toggle off open uses only the normal direct writer', async () => {
+  await notifyPending()
+  await turn({ directWith: ids[0], userMessage: 'A private earlier line.' })
+  await turn({ directWith: ids[0], userMessage: 'Another private earlier line.' })
+  for (const event of rows('events').slice(-2)) { event.type = 'intimate'; put(event, 'data.dm_with', ids[0]) }
+  put(rows('worldInstances')[0], 'group_state.pending_direct', { member_id: ids[0], scheduled_at: notifyNow, notified_at: notifyNow })
+  writerCalls = []; routerRequests = 0
+  assert.deepEqual(await openPendingDirect(instanceId, playerId, ids[0], notifyNow), { writing: true })
+  modelReplies = [`${names[0]}: A fresh private greeting.`]
+  await turn({ ...queued[0], userMessage: '' } as Partial<GroupTurnJob>, undefined, notifyTime)
+  assert(writerCalls.length > 0); assert(writerCalls.every(call => String(call.model).startsWith('fake-safe')))
+  assert.equal(routerRequests, 0)
+  assert.equal(lastData().dm_with, ids[0]); assert.equal(lastData().player_input, '')
+  assert((lastData().lines as Row[]).every(line => line.character_id === ids[0]))
+  put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  for (const event of rows('events').slice(-3)) event.type = 'intimate'
+  writerCalls = []; modelReplies = [`${names[0]}: A fresh answer from the same scene.`]
+  await turn({ origin: 'unprompted', directWith: ids[0], userMessage: '' }, undefined, notifyTime)
+  assert.equal(writerCalls[0].model, 'fake-adult'); assert.equal(routerRequests, 0)
+})
+await check('notify mark 6 real reservation and settlement charge zero Ink', async () => {
+  await notifyPending(); rows('users')[0].token_balance = 42
+  assert.deepEqual(await openPendingDirect(instanceId, playerId, ids[0], notifyNow), { writing: true })
+  const reservation = queued[0].billingReservationId as string
+  const ledger = rows('inkLedger')
+  assert.equal(ledger.length, 1); assert.equal(ledger[0].delta, 0); assert.equal(ledger[0].reference, 'group_turn')
+  const { billingService } = await import('../src/services/billing.service')
+  await billingService.settle(playerId, reservation)
+  assert.equal(rows('users')[0].token_balance, 42)
+  assert(ledger.every(row => Number(row.delta) === 0))
+})
+await check('notify mark 7 player writing first cancels pending without an autonomous writer', async () => {
+  await notifyPending()
+  const bondsBefore = clone(rows('characters'))
+  modelReplies = [`${names[0]}: I heard you.`]
+  await turn({ directWith: ids[0], userMessage: 'I wrote before opening.' })
+  assert.equal(auditState().pending_direct, undefined); assert.equal(auditState().unprompted_since_player, 0)
+  assert(auditState().last_seen_at)
+  const calls = writerCalls.length
+  assert.deepEqual(await openPendingDirect(instanceId, playerId, ids[0], notifyNow), { writing: false })
+  assert.equal(queued.length, 0); assert.equal(writerCalls.length, calls)
+  assert.equal(rows('events').at(-1)!.data && lastData().origin, 'player')
+  assert.deepEqual(rows('characters'), bondsBefore)
+  await notifyPending()
+  await deletionService.resetInstance(instanceId, playerId)
+  assert.equal(auditState().pending_direct, undefined)
+})
+await check('notify rewind withdraws an unread message', async () => {
+  mock.module('../src/services/codex-media-carryover', () => ({ snapshotCodexMedia: async () => ({}), restoreCodexMedia: async () => {} }))
+  const { characterCodexService } = await import('../src/services/character-codex.service')
+  Object.assign(characterCodexService, { applyManualIdentityRevisions: async () => {} })
+  const { entityGraphService } = await import('../src/services/entity-graph.service')
+  Object.assign(entityGraphService, { repairAfterRewind: async () => {} })
+  const { memoryService } = await import('../src/services/memory.service')
+  await notifyStart()
+  await turn({}, never)
+  modelReplies = [`${names[0]}: Surviving reply.`]; await turn({ userMessage: `@${names[0]} carry on.` }, never)
+  storedEvents().at(-1)!.time_anchor = { real_time: new Date(), sequence: 3, timeline_id: 'main' }
+  modelReplies = [`${names[0]}: Later reply.`]; await turn({ userMessage: `@${names[0]} continue.` }, never)
+  put(rows('worldInstances')[0], 'group_state.pending_direct', { member_id: ids[0], scheduled_at: notifyNow, notified_at: notifyNow })
+  await memoryService.rewindToSequence(instanceId, playerId, 4)
+  assert.equal(auditState().pending_direct, undefined)
+})
+await check('notify timezone comes from the newest device and reaches the open turn', async () => {
+  await notifyStart()
+  await registerPushDevice(playerId, { token: 'second-device', platform: 'android', tz_offset_minutes: 600 }, new Date(notifyNow.getTime() - 3_600_000))
+  rows('pushDevices')[0].tz_offset_minutes = 0
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: fakeSender() })
+  assert(auditState().pending_direct); assert.equal(auditState().tz_offset_minutes, 0)
+  await notifyStart()
+  await registerPushDevice(playerId, { token: 'second-device', platform: 'android', tz_offset_minutes: 600 }, new Date(notifyNow.getTime() + 3_600_000))
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: fakeSender() })
+  assert.equal(auditState().pending_direct, undefined)
+  await notifyStart()
+  await registerPushDevice(playerId, { token: notifyToken, platform: 'android' }, notifyNow)
+  assert.equal(rows('pushDevices')[0].tz_offset_minutes, 0)
+})
+await check('notify mark 8 bad tokens failures disabled switch and missing credentials', async () => {
+  await notifyStart()
+  let hits = 0
+  const missing = createFcmSender({ credentials: () => '', enabled: () => true, fetch: Object.assign(async () => { hits++; throw new Error('must not fetch') }, { preconnect: unavailable }) as typeof fetch })
+  const beforeMissing = JSON.stringify(rows('worldInstances'))
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: missing })
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: missing })
+  assert.equal(hits, 0); assert.equal(memoryLogs.filter(log => log.name === 'push.credentials_missing').length, 1)
+  assert.equal(JSON.stringify(rows('worldInstances')), beforeMissing)
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: fakeSender(async () => false) })
+  assert.equal(auditState().pending_direct, undefined); assert.equal(get(rows('users')[0], 'group_notification_usage.sent'), 0)
+  assert.equal(auditState().unprompted_since_player, 0); assert.equal(auditState().last_direct_notified_at, undefined)
+  auditEnv.GROUP_NOTIFICATIONS_ENABLED = false
+  const off = JSON.stringify([...tables])
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: fakeSender(async () => { hits++; return true }) })
+  assert.equal(JSON.stringify([...tables]), off); assert.equal(hits, 0)
+  assert.equal((publicGroupData(rows('worldInstances')[0]) as Row).pending_from, undefined)
+  const { generateKeyPairSync } = await import('node:crypto')
+  const key = generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey.export({ format: 'pem', type: 'pkcs8' }).toString()
+  await notifyStart()
+  let movedRequests = 0
+  const moved = createFcmSender({ enabled: () => true, now: notifyTime,
+    credentials: () => JSON.stringify({ project_id: 'audit-project', client_email: 'audit@example.invalid', private_key: key }),
+    fetch: Object.assign(async () => {
+      movedRequests++
+      rows('pushDevices')[0].player_id = new ObjectId('300000000000000000000002')
+      return Response.json({ access_token: 'audit', expires_in: 3600 })
+    }, { preconnect: unavailable }) as typeof fetch,
+  })
+  await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: moved })
+  assert.equal(movedRequests, 1); assert.equal(auditState().pending_direct, undefined)
+  for (const errorCode of ['UNREGISTERED', 'INVALID_ARGUMENT', 'UNAVAILABLE']) {
+    await notifyStart()
+    let requests = 0
+    const bad = createFcmSender({ enabled: () => true, now: notifyTime,
+      credentials: () => JSON.stringify({ project_id: 'audit-project', client_email: 'audit@example.invalid', private_key: key }),
+      fetch: Object.assign(async (url: string | URL | Request) => { requests++; return String(url).includes('oauth2') ? Response.json({ access_token: 'audit', expires_in: 3600 }) : Response.json({ error: { details: [{ '@type': 'type.googleapis.com/google.firebase.fcm.v1.FcmError', errorCode }] } }, { status: 400 }) }, { preconnect: unavailable }) as typeof fetch,
+    })
+    await scheduleDirectNotifications({ now: notifyTime, rng: () => 0, sender: bad })
+    assert.equal(requests, 2); assert.equal(rows('pushDevices').length, errorCode === 'UNAVAILABLE' ? 1 : 0)
+    assert.equal(auditState().pending_direct, undefined); assert.equal(get(rows('users')[0], 'group_notification_usage.sent'), 0)
+    assert(!JSON.stringify(memoryLogs).includes(notifyToken))
+  }
+})
+await check('notify mark 9 handler auth validation token ownership and no log leaks', async () => {
+  await notifyStart()
+  const app = new Elysia().onError(({ error, set }) => {
+    set.status = (error as { statusCode?: number }).statusCode ?? 500
+    return { message: 'Please try again.' }
+  }).use(pushAuthRoutes).use(directInstanceRoutes)
+  routeUser = null
+  for (const [method, path] of [['POST', '/auth/push-token'], ['DELETE', '/auth/push-token'], ['POST', `/instances/${instanceId}/group/threads/${ids[0]}/open`]]) {
+    const response = await app.handle(new Request(`http://localhost${path}`, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: notifyToken, platform: 'android' }) }))
+    assert.equal(response.status, 401, `${method} ${path}`)
+    assert(!await response.text().then(text => text.includes(notifyToken)))
+  }
+  for (const handler of [authController.registerPushToken, authController.deletePushToken]) await assert.rejects(handler({ user: null, body: { token: notifyToken, platform: 'android' } }), error => (error as { statusCode: number }).statusCode === 401)
+  await assert.rejects(notifyController.openDirect({ user: null, params: { id: instanceId, characterId: ids[0] } }), error => (error as { statusCode: number }).statusCode === 401)
+  for (const body of [{ token: '', platform: 'android' }, { token: 'x'.repeat(4097), platform: 'android' }, { token: 'two words', platform: 'android' }, { token: notifyToken, platform: 'ios' }, { token: notifyToken, platform: 'android', extra: 1 }, ...['0', 1.5, 841, -841].map(tz_offset_minutes => ({ token: notifyToken, platform: 'android', tz_offset_minutes }))]) await assert.rejects(registerPushDevice(playerId, body))
+  rows('users').push({ _id: new ObjectId('300000000000000000000002'), preferences: {} })
+  await removePushDevice('300000000000000000000002', { token: notifyToken }); assert.equal(rows('pushDevices').length, 1)
+  const response = await authController.registerPushToken({ user: { id: '300000000000000000000002', tier: 'free' }, body: { token: notifyToken, platform: 'android' } })
+  assert.equal(rows('pushDevices').length, 1); assert.equal(String(rows('pushDevices')[0].player_id), '300000000000000000000002')
+  assert(!JSON.stringify(response).includes(notifyToken))
+  await removePushDevice(playerId, { token: notifyToken }); assert.equal(rows('pushDevices').length, 1)
+  await authController.deletePushToken({ user: { id: '300000000000000000000002', tier: 'free' }, body: { token: notifyToken } })
+  assert.equal(rows('pushDevices').length, 0)
+  routeUser = { id: playerId, tier: 'creator' }
+  for (const method of ['POST', 'DELETE']) {
+    const response = await app.handle(new Request('http://localhost/auth/push-token', { method,
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: notifyToken, ...(method === 'POST' ? { platform: 'android' } : {}) }),
+    }))
+    assert.equal(response.status, 200); assert.deepEqual(await response.json(), { success: true })
+  }
+  routeUser = null
+  pushWriteFailure = new Error(`Database duplicate key ${notifyToken}`)
+  for (const handler of [authController.registerPushToken, authController.deletePushToken]) {
+    await assert.rejects(handler({ user: { id: playerId, tier: 'creator' }, body: { token: notifyToken, ...(handler === authController.registerPushToken ? { platform: 'android' } : {}) } }), error => {
+      const failure = error as { statusCode?: number; message: string }
+      return failure.statusCode === 503 && !failure.message.includes(notifyToken)
+    })
+  }
+  pushWriteFailure = undefined
+  rows('users')[0].guest = true
+  await assert.rejects(registerPushDevice(playerId, { token: notifyToken, platform: 'android' }))
+  assert(!JSON.stringify(memoryLogs).includes(notifyToken))
+  const source = await readFile(new URL('../src/services/push/fcm.ts', import.meta.url), 'utf8')
+  assert(!/log\.(?:info|warn|error)\([^\n]*device\.token/.test(source))
 })
 
 Math.random = originalRandom

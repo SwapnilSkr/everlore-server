@@ -22,6 +22,10 @@ const STUCK_SUMMARY_MS = 10 * 60 * 1000
 export async function maintenanceProcessor(job: Job) {
   const { task } = job.data
   switch (task) {
+    case 'group_direct_notifications': {
+      const { scheduleDirectNotifications } = await import('../../src/services/group-chat/notifications')
+      return scheduleDirectNotifications()
+    }
     case 'expire_guests': {
       const { expireGuests } = await import('../../src/services/guest-expiry.service')
       return expireGuests()

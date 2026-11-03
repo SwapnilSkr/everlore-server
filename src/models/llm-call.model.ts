@@ -9,6 +9,7 @@ export interface LLMCallDoc {
   player_id?: ObjectId
   sequence?: number
   phase: 'before_reply' | 'reply' | 'after_reply' | 'background'
+  group_origin?: 'unprompted'
   purpose: string
   role: 'primary' | 'hedge' | 'fallback'
   won?: boolean

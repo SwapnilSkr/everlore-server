@@ -1,3 +1,4 @@
+import { registerPushDevice, removePushDevice } from '../services/push/devices'
 import { idString } from '../utils/mongo-id'
 import { guestService } from '../services/guest.service'
 import { authService } from '../services/auth.service'
@@ -94,6 +95,16 @@ export const authController = {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     const dbUser = await authService.getUserById(user.id)
     return authService.serializeUser(dbUser)
+  },
+
+  registerPushToken: async ({ user, body }: { user: AuthUser | null; body: unknown }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    return registerPushDevice(user.id, body)
+  },
+
+  deletePushToken: async ({ user, body }: { user: AuthUser | null; body: unknown }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    return removePushDevice(user.id, body)
   },
 
   updatePreferences: async ({

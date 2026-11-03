@@ -206,6 +206,17 @@ async function main() {
     removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
   })
 
+  if (!env.GROUP_NOTIFICATIONS_ENABLED) {
+    for (const job of await maintenanceQueue.getRepeatableJobs()) {
+      if (job.name === 'group-direct-notifications') await maintenanceQueue.removeRepeatableByKey(job.key)
+    }
+  }
+  if (env.GROUP_NOTIFICATIONS_ENABLED) await maintenanceQueue.add('group-direct-notifications', { task: 'group_direct_notifications' }, {
+    repeat: { pattern: '*/15 * * * *' }, attempts: 1,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+  })
+
   // Graceful shutdown
   const shutdown = async () => {
     console.log('Shutting down workers...')

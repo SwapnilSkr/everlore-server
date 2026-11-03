@@ -12,6 +12,8 @@ const mutations: Array<{ name: string; file: string; before: string; after: stri
     before: 'const claimed = await guestService.claim(guestId, identity, provider)', after: 'const claimed = null', failure: /assert.equal\(claimed.body.user.id/ },
   { name: 'persona omitted from merge', file: 'src/services/account-references.ts',
     before: "'characters', 'entities', 'personas',", after: "'characters', 'entities',", failure: /did not move personas/ },
+  { name: 'push devices omitted from merge and deletion', file: 'src/services/account-references.ts',
+    before: "'llm_calls', 'push_devices',", after: "'llm_calls',", failure: /did not move push_devices/ },
   { name: 'existing interests overwritten', file: 'src/services/guest.service.ts',
     before: "{ _id: target._id, $or: [\n            { 'preferences.interests': { $exists: false } }, { 'preferences.interests': { $size: 0 } },\n          ] }",
     after: '{ _id: target._id }', failure: /existing-interest/ },

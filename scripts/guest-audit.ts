@@ -361,7 +361,7 @@ try {
   // or removing one, cannot silently reduce what "everything moved" means.
   const playerCollections = ['world_instances', 'events', 'memories', 'characters', 'entities', 'personas', 'generation_logs', 'extractor_raw',
     'projection_anomalies', 'signal_ledger', 'relation_candidates', 'post_process_outbox', 'projection_checkpoints', 'media_assets', 'media_rejections',
-    'billing_entitlements', 'store_purchases', 'llm_calls', 'ink_ledger', 'media_usage']
+    'billing_entitlements', 'store_purchases', 'llm_calls', 'push_devices', 'ink_ledger', 'media_usage']
   const telemetryCollections = ['app_events', 'app_sessions', 'app_errors']
   async function seedInventory(source: ObjectId, target: ObjectId) {
     const iid = id(), templateId = id()
@@ -376,6 +376,7 @@ try {
         if (name === 'media_assets') { doc.cache_key = String(doc._id); doc.asset_key = `audit/${doc._id}` }
         if (name === 'media_usage') { doc.day = '2026-10-31'; doc.kind = 'portrait'; doc.slot = 1 }
         if (name === 'ink_ledger') { doc.idempotency_key = 'reserve:story_turn:collision'; doc.delta = label === 'source' ? -1 : 17; doc.reference = 'reserve:story_turn:original'; doc.reason = 'reserve' }
+        if (name === 'push_devices') doc.token = String(doc._id)
         if (name === 'store_purchases') { doc.provider = 'google_play'; doc.purchase_token = String(doc._id) }
         if (name === 'post_process_outbox') { doc.event_id = id(); doc.kind = 'audit'; doc.payload = { playerId: String(player_id) } }
         if (name === 'relation_candidates') { doc.source_event_id = id(); doc.character_entity_id = id(); doc.relation = 'audit' }

@@ -28,6 +28,8 @@ export interface GroupState {
   direct_threads?: Record<string, { curated_through_sequence?: number; summarized_through_sequence?: number }>
   writing_calls?: number
   tz_offset_minutes?: number
+  pending_direct?: { member_id: string; scheduled_at: Date; notified_at: Date }
+  last_direct_notified_at?: Date
   last_seen_at?: Date
   last_catchup_at?: Date
 }

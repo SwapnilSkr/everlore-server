@@ -28,6 +28,8 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
 
   .get('/:id/threads', (ctx) => instanceController.threads(ctx))
 
+  .post('/:id/group/threads/:characterId/open', (ctx) => instanceController.openDirect(ctx))
+
   .get('/:id', (ctx) => instanceController.getById(ctx))
 
   .post('/', (ctx) => instanceController.create(ctx), {

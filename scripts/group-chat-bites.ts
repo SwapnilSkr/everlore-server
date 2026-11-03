@@ -2,8 +2,8 @@ import assert from 'node:assert/strict'
 import { cp, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
-// Mutants live under scripts/, inside this task's writable paths. Only source
-// and audit files are copied; no environment files or credentials are read.
+// Mutants live under scripts/, which the identity scan of product code does not
+// walk. Only source and audit files are copied; no environment files or credentials are read.
 const root = await mkdtemp(join(import.meta.dir, '.group-chat-bites-'))
 const server = new URL('..', import.meta.url).pathname
 const auditFiles = ['group-chat-audit.ts', 'group-memory-recall.ts', 'group-memory-trace-audit.ts', 'group-memory-dedup-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'narrator-harness-audit.ts']
@@ -327,7 +327,7 @@ const mutations: Mutation[] = [
   { name: 'audience chronicle full text markers', check: 'audience chronicle real', edits: [['src/services/memory.service.ts', '      return group ? publicGroupData(found) : found', '      return found']] },
   { name: 'audience chronicle normal rows changed', check: 'audience chronicle real', edits: [['src/services/memory.service.ts', 'return group ? publicGroupData(found) : found', 'return publicGroupData(found)']] },
   { name: 'audience rewind snapshot coverage', check: 'audience private rewind', edits: [['src/services/memory.service.ts', "...(groupSnapshot?.direct_threads ? { direct_threads: groupSnapshot.direct_threads } : {}),", '']] },
-  { name: 'audience rewind absent coverage', check: 'audience private rewind', edits: [['src/services/memory.service.ts', "Object.fromEntries(Object.entries(instance.group_state || {}).filter(([key]) => key !== 'direct_threads'))", 'instance.group_state']] },
+  { name: 'audience rewind absent coverage', check: 'audience private rewind', edits: [['src/services/memory.service.ts', "Object.fromEntries(Object.entries(instance.group_state || {}).filter(([key]) => key !== 'direct_threads' && key !== 'pending_direct'))", 'instance.group_state']] },
   { name: 'audience summary direct rendering', check: 'audience summary jobs', edits: [['worker/processors/summary.processor.ts', 'members, groupBatch?.thread)', 'members)']] },
   { name: 'audience summary local shared selection', check: 'audience summary jobs', edits: [[worker, "private_to: directWith ?? { $exists: false }, status: { $ne: 'stale' }", "status: { $ne: 'stale' }"]] },
   { name: 'audience summary stored label', check: 'audience summary jobs', edits: [['worker/processors/summary.processor.ts', '...(groupBatch?.thread === undefined ? {} : { private_to: groupBatch.thread }),', '']] },
@@ -497,7 +497,7 @@ const mutations: Mutation[] = [
   { name: 'carry-over accepts unnamed member', check: 'adult carry-over downgrades', edits: [[worker, '(directWith === member.id || mentionsMember(userMessage, member.name))', 'true']] },
   { name: 'carry-over accepts stale participant', check: 'adult carry-over downgrades', edits: [[worker, "recent.filter(event => event.type === 'intimate').slice(-2)", "recent.filter(event => event.type === 'intimate')"]] },
   { name: 'carry-over accepts uninvolved member', check: 'adult carry-over downgrades', edits: [[worker, 'line.character_id === member.id', 'true']] },
-  { name: 'carry-over autonomous route retained', check: 'adult carry-over downgrades', edits: [[worker, "origin !== 'player' ? 'autonomous'", "origin !== 'player' ? undefined"]] },
+  { name: 'carry-over autonomous route retained', check: 'adult carry-over downgrades', edits: [[worker, "origin !== 'player' && !directWith ? 'autonomous'", "origin !== 'player' && !directWith ? undefined"]] },
   { name: 'action carry-on lost', check: 'an action on someone', edits: [[worker, "!adultDowngrade || continuesScene", "!adultDowngrade"]] },
   { name: 'action carry-on covers messages', check: 'an action on someone', edits: [[worker, "origin === 'player' && job.data.kind === 'action' && template.is_nsfw_capable", "origin === 'player' && template.is_nsfw_capable"]] },
   { name: 'action carry-on ignores consent', check: 'an action on someone', edits: [[worker, "template.is_nsfw_capable && fresh?.preferences?.nsfw_enabled === true\n      && recent", "template.is_nsfw_capable\n      && recent"]] },
@@ -773,6 +773,66 @@ const mutations: Mutation[] = [
   { name: "nway recall turn count", check: "nway recall plan", edits: [['scripts/group-chat-fixtures.ts', "    { player: `${tags} what do you want to do to each other while I watch?` },\n", ""]] },
   { name: "nway recall actions lost", check: "nway recall plan", edits: [['scripts/group-chat-fixtures.ts', "pull ${names[2]} closer.`, kind: 'action' as const }", "pull ${names[2]} closer.` }"]] },
 ]
+const notify = 'src/services/group-chat/notifications.ts'
+const notifyPolicy = 'src/services/group-chat/notification-policy.ts'
+const notifyCaps = 'src/services/group-chat/notification-caps.ts'
+const pushFcm = 'src/services/push/fcm.ts'
+const notificationMutations: Mutation[] = [
+  { name: 'notify rewind keeps unread message', check: 'notify rewind withdraws', edits: [['src/services/memory.service.ts', " && key !== 'pending_direct'", '']] },
+  { name: 'notify push route not mounted', check: 'notify mark', edits: [['src/routes/auth.routes.ts', "  .post('/push-token', (ctx) => authController.registerPushToken(ctx))\n", '']] },
+  { name: 'notify remove route not mounted', check: 'notify mark', edits: [['src/routes/auth.routes.ts', "  .delete('/push-token', (ctx) => authController.deletePushToken(ctx))\n", '']] },
+  { name: 'notify open route not mounted', check: 'notify mark', edits: [['src/routes/instance.routes.ts', "  .post('/:id/group/threads/:characterId/open', (ctx) => instanceController.openDirect(ctx))\n", '']] },
+  { name: 'notify oldest device decides timezone', check: 'notify timezone', edits: [[notify, 'device.updated_at > best.updated_at', 'device.updated_at < best.updated_at']] },
+  { name: 'notify scheduler ignores device timezone', check: 'notify timezone', edits: [[notify, "state: { ...instance.group_state, tz_offset_minutes: tz }, now,", 'state: instance.group_state, now,']] },
+  { name: 'notify timezone not kept for the open turn', check: 'notify timezone', edits: [[notify, ", 'group_state.tz_offset_minutes': tz }", ' }']] },
+  { name: 'notify registration without zone erases it', check: 'notify timezone', edits: [['src/services/push/devices.ts', "...(tz_offset_minutes !== undefined ? { tz_offset_minutes } : {}) }", 'tz_offset_minutes }']] },
+  { name: 'notify zone range unchecked', check: 'notify mark', edits: [['src/services/push/devices.ts', "Math.abs(input.tz_offset_minutes as number) > 14 * 60", 'false']] },
+  { name: 'notify mark 1 model on schedule', check: 'notify mark 1', edits: [[notify, 'const payload = directNotification(', "await (await import('../../ai')).callLLMWithFallback({ model: 'audit', purpose: 'narration', messages: [] }, []); const payload = directNotification("]] },
+  { name: 'notify mark 1 fear ignored', check: 'notify mark 1', edits: [[notifyPolicy, '(member.relationship?.fear ?? 0) < 70', 'true']] },
+  { name: 'notify mark 1 weight ignored', check: 'notify mark 1', edits: [[notifyPolicy, 'Math.max(1, (member.relationship?.trust ?? 0) + (member.relationship?.affection ?? 0))', '1']] },
+  { name: 'notify mark 1 floor removed', check: 'notify mark 1', edits: [[notifyPolicy, 'Math.max(1, (member.relationship?.trust ?? 0) + (member.relationship?.affection ?? 0))', 'Math.max(0, (member.relationship?.trust ?? 0) + (member.relationship?.affection ?? 0))']] },
+  ...[
+    ['switch', 'input.enabled && ', ''], ['device', 'input.hasDevice && ', ''], ['preference', '!input.optedOut && ', ''],
+    ['minimum absence', 'gap >= 3 * HOUR && ', ''], ['maximum absence', 'gap <= 14 * 24 * HOUR && ', ''],
+    ['unknown timezone', 'const offset = state.tz_offset_minutes', 'const offset = state.tz_offset_minutes ?? 0'],
+    ['morning quiet hours', 'hour >= 9 && ', ''], ['night quiet hours', 'hour < 22 && ', ''],
+    ['pending', '!state.pending_direct &&', 'true &&'],
+    ['cooldown', 'now.getTime() - state.last_direct_notified_at.getTime() >= 12 * HOUR', 'true'],
+    ['unanswered', 'state.unprompted_since_player < 2', 'true'], ['daily notifications', 'input.sentToday < 3', 'true'],
+    ['spend', 'input.spendToday < 5', 'true'],
+  ].map(([name, from, to]): Mutation => ({ name: `notify mark 2 ${name}`, check: 'notify mark 2', edits: [[notifyPolicy, from, to]] })),
+  { name: 'notify mark 2 scheduler bypasses eligibility', check: 'notify mark 2', edits: [[notify, 'if (!eligibleDirectNotification({', 'if (false && !eligibleDirectNotification({']] },
+  { name: 'notify mark 2 chance ignored', check: 'notify mark 2', edits: [[notify, ' || rng() >= 0.25', '']] },
+  { name: 'notify mark 3 body extra prose', check: 'notify mark 3', edits: [[pushFcm, '`${name} sent you a message`', '`${name} sent you a message: EXPLICIT_PRIVATE_LINE_NOT_FOR_LOCK_SCREEN`']] },
+  { name: 'notify mark 3 data extra field', check: 'notify mark 3', edits: [[pushFcm, "data: { type: 'group_direct', instanceId, characterId }", "data: { type: 'group_direct', instanceId, characterId, topic: 'private' }"]] },
+  { name: 'notify mark 3 snapshot missing sender', check: 'notify mark 3', edits: [['src/services/group-chat/public.ts', '? [pending.member_id] : []', '? [] : []']] },
+  { name: 'notify mark 3 pending never expires', check: 'notify mark 3', edits: [[notify, 'now.getTime() - pending.scheduled_at.getTime() < DIRECT_PENDING_MS', 'true']] },
+  { name: 'notify mark 4 held lock ignored', check: 'notify mark 4', edits: [['src/services/group-chat/dispatch.ts', 'if (!await acquireGenerationTurn(redis, key, turnId, directWith === undefined))', 'if (false && !await acquireGenerationTurn(redis, key, turnId, directWith === undefined))']] },
+  { name: 'notify mark 4 ownership absent', check: 'notify mark 4', edits: [[notify, '_id: parseObjectId(instanceId), player_id: parseObjectId(playerId)', '_id: parseObjectId(instanceId)']] },
+  { name: 'notify mark 4 pending claim omitted', check: 'notify mark 4', edits: [[notify, "}, { $unset: { 'group_state.pending_direct': '' } })\n          if (!claimed.modifiedCount)", "}, { $set: {} })\n          if (!claimed.modifiedCount)"]] },
+  { name: 'notify mark 4 call cap ignored', check: 'notify mark 4', edits: [[notifyCaps, 'caps.calls >= 30', 'false'], [notifyCaps, "$max: { 'group_notification_usage.calls': caps.calls }", "$max: { 'group_notification_usage.calls': 0 }"]] },
+  { name: 'notify mark 4 spend cap ignored', check: 'notify mark 4', edits: [[notifyCaps, 'caps.spend >= 5', 'false']] },
+  { name: 'notify mark 4 queued calls uncapped', check: 'notify mark 4', edits: [[notifyCaps, "'group_notification_usage.calls': { $lt: 30 },", "'group_notification_usage.calls': { $lt: 300 },"]] },
+  { name: 'notify mark 5 adult writer without consent', check: 'notify mark 5', edits: [[worker, 'template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw', 'AI_MODELS.groupNsfw']] },
+  { name: 'notify mark 6 Ink debit on dispatch', check: 'notify mark 6', edits: [['src/services/group-chat/dispatch.ts', 'reservation = (await billingService.reserveGroupTurn', "await mongoColl.users().updateOne({ _id: parseObjectId(playerId) }, { $inc: { token_balance: -1 } }); reservation = (await billingService.reserveGroupTurn"]] },
+  { name: 'notify mark 7 player cancellation absent', check: 'notify mark 7', edits: [[worker, "if (origin === 'player') await recordGroupPlayerWrite(instance, directWith, (deps.now ?? (() => new Date()))())", 'void 0']] },
+  { name: 'notify mark 8 failed send keeps pending', check: 'notify mark 8', edits: [[notify, "if (!results.some(result => result.status === 'fulfilled' && result.value))", "if (false && !results.some(result => result.status === 'fulfilled' && result.value))"]] },
+  { name: 'notify mark 8 moved token receives old push', check: 'notify mark 8', edits: [[pushFcm, 'if (!await mongoColl.pushDevices().findOne({ token: device.token, player_id: device.player_id, updated_at: device.updated_at })) return false', '']] },
+  { name: 'notify mark 8 bad token retained', check: 'notify mark 8', edits: [[pushFcm, 'if (invalid) await', 'if (false && invalid) await']] },
+  { name: 'notify mark 8 switch ignored', check: 'notify mark 8', edits: [[notify, 'if (!env.GROUP_NOTIFICATIONS_ENABLED) return', 'if (false) return'], [notifyPolicy, 'input.enabled && ', '']] },
+  { name: 'notify mark 8 credentials log repeated', check: 'notify mark 8', edits: [[pushFcm, 'if (!warned) { warned = true;', 'if (true) { warned = true;']] },
+  { name: 'notify mark 8 failed send counts', check: 'notify mark 8', edits: [[notify, "$inc: { 'group_notification_usage.sent': -1 }", "$inc: { 'group_notification_usage.sent': 0 }"]] },
+  { name: 'notify mark 9 raw database error leaks', check: 'notify mark 9', edits: [['src/services/push/devices.ts', "catch { throw new HttpError(503, 'Please try again in a moment.') }", "catch (error) { throw error }"]] },
+  { name: 'notify mark 9 token logged', check: 'notify mark 9', edits: [['src/services/push/devices.ts', 'return { success: true }', "(await import('../../utils/logger')).log.info('push.device', { token }); return { success: true }"]] },
+  { name: 'notify mark 9 registration auth absent', check: 'notify mark 9', edits: [['src/controllers/auth.controller.ts', "if (!user) throw new HttpError(401, 'Sign in to continue.')\n    return registerPushDevice", 'return registerPushDevice']] },
+  { name: 'notify mark 9 deletion auth absent', check: 'notify mark 9', edits: [['src/controllers/auth.controller.ts', "if (!user) throw new HttpError(401, 'Sign in to continue.')\n    return removePushDevice", 'return removePushDevice']] },
+  { name: 'notify mark 9 open auth absent', check: 'notify mark 9', edits: [['src/controllers/instance.controller.ts', "if (!user) throw new HttpError(401, 'Sign in to continue.')\n    return openPendingDirect", 'return openPendingDirect']] },
+  { name: 'notify mark 9 token returned', check: 'notify mark 9', edits: [['src/services/push/devices.ts', 'return { success: true }', 'return { success: true, token }']] },
+  { name: 'notify mark 9 token delete ownership absent', check: 'notify mark 9', edits: [['src/services/push/devices.ts', 'deleteOne({ player_id: parseObjectId(playerId), token })', 'deleteOne({ token })']] },
+  { name: 'notify mark 9 token bound omitted', check: 'notify mark 9', edits: [['src/services/push/devices.ts', ' || input.token.length > 4096', '']] },
+]
+mutations.push(...notificationMutations)
+
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {
   const missing: string[] = []

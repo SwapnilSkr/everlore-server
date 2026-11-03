@@ -49,6 +49,7 @@ export function coll<T extends Document = Document>(name: string): Collection<T>
  * reads are still full document types with `_id` (e.g. {@link UserDoc}).
  */
 export const mongoColl = {
+  pushDevices: () => coll<import('../models/push-device.model').PushDeviceDoc>(COLLECTIONS.push_devices),
   mediaAssets: () => coll<import('../models/media.model').MediaAssetDoc>(COLLECTIONS.media_assets),
   mediaUsage: () => coll<import('../models/media.model').MediaUsageDoc>(COLLECTIONS.media_usage),
   mediaRejections: () => coll<import('../models/media.model').MediaRejectionDoc>(COLLECTIONS.media_rejections),
@@ -104,6 +105,8 @@ export async function connectMongo(): Promise<Db> {
   database = client.db()
 
   await ensureEverloreIndexes(database)
+  await database.collection(COLLECTIONS.push_devices).createIndex({ token: 1 }, { unique: true, name: 'push_token_unique' })
+  await database.collection(COLLECTIONS.push_devices).createIndex({ player_id: 1 })
   await database.collection(COLLECTIONS.group_bond_changes).createIndexes([
     { key: { instance_id: 1, created_at: 1, _id: 1 }, name: 'group_bond_fold' },
     { key: { instance_id: 1, character_id: 1, thread: 1, batch_end_sequence: 1 }, name: 'group_bond_chat_once', unique: true, partialFilterExpression: { reason: 'chat' } },

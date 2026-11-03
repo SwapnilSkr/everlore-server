@@ -1906,7 +1906,7 @@ export const memoryService = {
     const rewindLocation = last?.location_anchor || null
     const groupSnapshot = last?.data.group_state_after
     const rewindGroupState = template.kind === 'group' ? {
-      ...Object.fromEntries(Object.entries(instance.group_state || {}).filter(([key]) => key !== 'direct_threads')),
+      ...Object.fromEntries(Object.entries(instance.group_state || {}).filter(([key]) => key !== 'direct_threads' && key !== 'pending_direct')),
       ...(groupSnapshot?.direct_threads ? { direct_threads: groupSnapshot.direct_threads } : {}),
       silent_for: groupSnapshot?.silent_for || Object.fromEntries(Object.keys(instance.group_state?.silent_for || {}).map(id => [id, 0])),
       topics_used: groupSnapshot?.topics_used || 0,

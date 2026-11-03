@@ -37,4 +37,8 @@ export const authRoutes = new Elysia({ prefix: '/auth' })
     body: UpdatePreferencesBody,
   })
 
+  .post('/push-token', (ctx) => authController.registerPushToken(ctx))
+
+  .delete('/push-token', (ctx) => authController.deletePushToken(ctx))
+
   .delete('/account', (ctx) => authController.deleteAccount(ctx))

@@ -6,6 +6,7 @@ export type UserAccountStatus = 'active' | 'banned'
 export type PlayerGender = 'male' | 'female' | 'non_binary'
 
 export interface UserPreferences {
+  group_notifications?: boolean
   nsfw_enabled: boolean
   preferred_model: string
   theme: string
@@ -101,6 +102,7 @@ export interface UserDoc {
   blocked_user_ids?: ObjectId[]
   /** Individual worlds hidden by this player, without blocking the creator. */
   blocked_template_ids?: ObjectId[]
+  group_notification_usage?: { day: string; sent: number; calls: number }
   last_active_at?: Date
   created_at: Date
   updated_at: Date

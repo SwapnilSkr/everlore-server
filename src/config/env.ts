@@ -139,6 +139,8 @@ const optionalEnvVars = {
 } as const
 
 export interface Env {
+  GROUP_NOTIFICATIONS_ENABLED: boolean
+  FCM_SERVICE_ACCOUNT_JSON: string
   PORT: number
   JWT_SECRET: string
   MONGODB_URI: string
@@ -276,6 +278,8 @@ function loadEnv(): Env {
     : Number(optionalEnvVars.KEEP_WARM_PINECONE_WIDTH)
 
   return {
+    GROUP_NOTIFICATIONS_ENABLED: process.env.GROUP_NOTIFICATIONS_ENABLED === 'true',
+    FCM_SERVICE_ACCOUNT_JSON: process.env.FCM_SERVICE_ACCOUNT_JSON || '',
     VECTOR_LAYOUT: vectorLayout,
     PINECONE_SHARED_NAMESPACE: process.env.PINECONE_SHARED_NAMESPACE || 'everlore',
     PORT: Number(process.env.PORT || optionalEnvVars.PORT),
