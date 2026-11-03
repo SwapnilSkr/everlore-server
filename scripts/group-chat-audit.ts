@@ -8,7 +8,7 @@ import type { Job } from 'bullmq'
 import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders } from '../src/services/group-chat/roll'
 import { parseLines, filterLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
 import { buildGroupStatic, buildGroupDynamic, buildAddressedStatic } from '../src/services/group-chat/prompt'
-import { writeGroupReply } from '../src/services/group-chat/reply'
+import { GROUP_WRITER_TIMEOUT_MS, groupWriterHostFailed, writeGroupReply } from '../src/services/group-chat/reply'
 import { missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts, clearEverydayAdultMarks, uncoveredAdultEvents, adultRetryAtoms, adultLineAtoms } from '../src/services/group-chat/curation'
 import { validateGroup } from '../src/services/group-chat/validation'
 import { filterGroupAtomAudiences } from '../src/services/group-chat/curation'
@@ -2550,6 +2550,20 @@ await check('adult plain question mid-scene gets one message; other lines keep t
   assert(requestText(writerCalls[0]).includes('Write one to three messages.')); assert.equal((lastData().lines as Row[]).length, 3)
   auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerSexual = false
 })
+await check('group writer stall moves on to the next model within the limit', async () => {
+  assert.equal(groupWriterHostFailed(Object.assign(new Error('x'), { name: 'APIConnectionTimeoutError' })), true)
+  assert.equal(groupWriterHostFailed(new Error('Request timed out.')), true)
+  assert.equal(groupWriterHostFailed(new Error('Broken response')), false)
+  assert.equal(groupWriterHostFailed(Object.assign(new Error('Bad gateway'), { status: 502 })), true)
+  assert.equal(groupWriterHostFailed(Object.assign(new Error('Bad request'), { status: 400 })), false)
+  await start(); writerCalls = []
+  modelReplies = [new Error('Request timed out.'), `${names[0]}: After the stall.`]
+  await turn({ userMessage: 'anyone about', directWith: ids[0] }, never)
+  assert.deepEqual(writerCalls.map(call => call.timeoutMs), [GROUP_WRITER_TIMEOUT_MS, GROUP_WRITER_TIMEOUT_MS])
+  assert.equal(GROUP_WRITER_TIMEOUT_MS, 20_000)
+  assert.notEqual(writerCalls[0].model, writerCalls[1].model)
+  assert.equal(rows('events').at(-1)!.data.lines?.at(-1)?.text, 'After the stall.')
+})
 await check('adult fact question goes to the normal writer; an unrelated question stays adult', async () => {
   await start(); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; put(rows('users')[0], 'preferences.nsfw_enabled', true); judgeVerdict = true; routerSexual = true
   for (const reply of ['First direct adult answer.', 'Second direct adult answer.']) {
@@ -2574,6 +2588,14 @@ await check('adult fact question goes to the normal writer; an unrelated questio
   assert.equal((await ask('do you like my blindfold?')).model, 'fake-adult')
   assert.equal((await ask('anything on your mind?')).model, 'fake-adult')
   assert.equal((await ask('tell me about my wardrobe')).model, 'fake-adult')
+  // The question after a plain answer is plain too, whatever its words; after an adult turn it isn't.
+  assert.equal((await ask('where is my wardrobe?')).model, 'fake-safe')
+  assert.deepEqual(await ask('anything on your mind?'), { model: 'fake-safe', type: 'narration' })
+  routerSexual = true
+  await ask('I want you.')
+  assert.equal((await ask('I want you now.')).model, 'fake-adult')
+  routerSexual = false
+  assert.equal((await ask('anything on your mind?')).model, 'fake-adult')
   // Another thread's private fact can't send a question to the normal writer.
   assert.equal(await groupLineRaisesFact({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[0]], thread: ids[0], line: 'where is my wardrobe?' }), false)
   assert.equal(await groupLineRaisesFact({ instanceId: new ObjectId(instanceId), player: playerName, speakers: [names[1]], thread: ids[1], line: 'where is my wardrobe?' }), true)

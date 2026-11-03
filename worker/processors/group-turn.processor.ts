@@ -22,7 +22,7 @@ import { loadGroupMembers } from '../../src/services/group-chat/instance'
 import { buildGroupDynamic, buildAddressedStatic, buildGroupStatic, buildDirectStatic } from '../../src/services/group-chat/prompt'
 import { rollSpeakers, advanceSilence, pickAddressed, mentionsMember } from '../../src/services/group-chat/roll'
 import { timeLines } from '../../src/services/group-chat/lines'
-import { writeGroupReply } from '../../src/services/group-chat/reply'
+import { writeGroupReply, GROUP_WRITER_TIMEOUT_MS, groupWriterHostFailed } from '../../src/services/group-chat/reply'
 import type { GroupOrigin, NamedLine } from '../../src/services/group-chat/types'
 import type { WorldEventDoc } from '../../src/models/world-event.model'
 import { log } from '../../src/utils/logger'
@@ -119,9 +119,11 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     const carried = route.sceneClassification === 'nsfw' && !adultDowngrade
     const plainLine = carried && origin === 'player' && route.routerSettled && route.trace.sexual === false && userMessage.trim().endsWith('?')
     // Proven live: told facts in its prompt, the adult writer still denied them or turned
-    // the answer to sex. Asked about a stored fact, the normal writer answers plainly.
-    const factQuestion = plainLine && await groupLineRaisesFact({ instanceId: iid, player: config.player, thread: directWith, line: userMessage,
-      speakers: members.filter(member => roll.picked.includes(member.id)).map(member => member.name) })
+    // the answer to sex. Asked about a stored fact, the normal writer answers plainly. So does
+    // the next question: proven live, "who else knows about it?" holds no word of the fact,
+    // reached the adult writer straight after a plain answer, and it named the wrong person.
+    const factQuestion = plainLine && (recent.at(-1)?.type !== 'intimate' || await groupLineRaisesFact({ instanceId: iid, player: config.player, thread: directWith, line: userMessage,
+      speakers: members.filter(member => roll.picked.includes(member.id)).map(member => member.name) }))
     const adult = carried && !factQuestion
     const primary = adult ? template.model_preferences?.narration_nsfw || AI_MODELS.groupNsfw
       : template.model_preferences?.narration_sfw || AI_MODELS.narrationSfw
@@ -188,11 +190,11 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
             const result = await callLLMWithFallback({ model, purpose: 'narration',
               messages: [{ role: 'system', content: system }, { role: 'user', content: dynamic }],
               temperature: narrationTemperature(model), maxTokens: split ? addressedPrompt || directWith ? 300 : 60 * speakers.length : 400,
-              sessionId: directWith ? `${instanceId}:direct:${directWith}` : instanceId }, [])
+              sessionId: directWith ? `${instanceId}:direct:${directWith}` : instanceId, timeoutMs: GROUP_WRITER_TIMEOUT_MS }, [])
             return { ...result, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: index + 1, prompt: `${system}\n${dynamic}`, hiddenWords }
           } catch (error) {
             if (error instanceof EmptyLLMResponseError) return { content: '', model, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: index + 1 }
-            if (!stillAdult && !isRateLimitError(error)) throw error
+            if (!stillAdult && !isRateLimitError(error) && !groupWriterHostFailed(error)) throw error
             if (index === chain.length - 1) return { content: '', model, writer: stillAdult ? 'adult' as const : 'normal' as const, nextIndex: chain.length }
           }
         }
