@@ -3,7 +3,7 @@ import { readFile, readdir, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import { Elysia } from 'elysia'
-import { ObjectId } from 'mongodb'
+import { MongoClient, ObjectId, type Db } from 'mongodb'
 import type { Job } from 'bullmq'
 import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders, pickSceneMembers } from '../src/services/group-chat/roll'
 import { parseLines, filterLines, sceneVoiceLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
@@ -313,7 +313,7 @@ await check('retrieval audience gates every source before ranking and access whi
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
-import { ObjectId } from 'mongodb'
+import { MongoClient, ObjectId, type Db } from 'mongodb'
 const iid = '100000000000000000000001', tid = '100000000000000000000002'
 const own = '200000000000000000000001', other = '200000000000000000000002'
 const entity = '300000000000000000000001', location = '300000000000000000000002'
@@ -481,7 +481,16 @@ function collection(name: string) {
     },
     async findOne(filter: Row, options?: { sort?: Record<string, number>; projection?: Row }) { if (name === 'users' && options?.projection) consentReadHook?.(); let cursor = this.find(filter); if (options?.sort) cursor = cursor.sort(options.sort); return (await cursor.toArray())[0] || null },
     async countDocuments(filter: Row) { return rows(name).filter(row => matches(row, filter)).length },
-    async insertOne(row: Row) { rows(name).push(clone(row)); if (name === 'worldInstances') await instanceInsertedHook?.(row); return { insertedId: row._id } },
+    async insertOne(row: Row) {
+      // Simulate driver 11000 for report tests only. This does not prove Mongo index enforcement.
+      if (name === 'contentReports') {
+        if (rows(name).some(existing => ['open', 'reviewing'].includes(String(existing.status)) &&
+          ['reporter_id', 'target_type', 'target_id', 'target_line'].every(key => eq(existing[key], row[key])))) {
+          throw Object.assign(new Error('Simulated duplicate report'), { code: 11000 })
+        }
+        row = { _id: new ObjectId(), ...row }
+      }
+      rows(name).push(clone(row)); if (name === 'worldInstances') await instanceInsertedHook?.(row); return { insertedId: row._id } },
     async updateOne(filter: Row, update: Row, options?: { upsert?: boolean }) {
       if (name === 'pushDevices' && pushWriteFailure) throw pushWriteFailure
       let row = rows(name).find(row => matches(row, filter)); const existed = !!row
@@ -493,6 +502,10 @@ function collection(name: string) {
         for (const key of Object.keys((update.$unset || {}) as Row)) { const parts = key.split('.'); const parent = parts.length > 1 ? get(row, parts.slice(0, -1).join('.')) as Row : row; if (parent) delete parent[parts.at(-1)!] }
       }
       return { matchedCount: existed ? 1 : 0, modifiedCount: existed ? 1 : 0 }
+    },
+    async findOneAndUpdate(filter: Row, update: Row) {
+      await this.updateOne(filter, update)
+      return this.findOne(filter)
     },
     async updateMany(filter: Row, update: Row) {
       let modifiedCount = 0
@@ -523,7 +536,8 @@ globalThis.fetch = Object.assign(async () => unavailable(), { preconnect: unavai
 const auditEnv = { GROUP_NOTIFICATIONS_ENABLED: false, FCM_SERVICE_ACCOUNT_JSON: '', NSFW_SAME_TURN_ROUTER: 'off', NSFW_SAME_TURN_ROUTER_MODEL: 'fake-router', NSFW_SAME_TURN_ROUTER_HOST: 'fixture' }
 let routerRequests = 0, routerDelay = 0, routerSexual = true, routerError = false
 mock.module('../src/config/env', () => ({ env: { ...auditEnv, get GROUP_NOTIFICATIONS_ENABLED() { return auditEnv.GROUP_NOTIFICATIONS_ENABLED }, get NSFW_SAME_TURN_ROUTER() { return auditEnv.NSFW_SAME_TURN_ROUTER }, CDN_BASE_URL: 'https://fixture.invalid', JWT_SECRET: 'audit-only', MEDIA_VOICE_ENABLED: false } }))
-mock.module('../src/config/mongo', () => ({ mongoColl: new Proxy({}, { get: (_target, key) => () => collection(String(key)) }) }))
+let reportMongoDb: Db | undefined
+mock.module('../src/config/mongo', () => ({ mongoColl: new Proxy({}, { get: (_target, key) => () => key === 'contentReports' && reportMongoDb ? reportMongoDb.collection('content_reports') : collection(String(key)) }) }))
 mock.module('../src/config/redis', () => ({ getRedisClient: () => redis, getQueueRedisClient: unavailable, getRedisSubscriber: unavailable }))
 let judgeVerdict: boolean | 'error' | 'malformed' = true, judgeCalls: string[] = [], judgeGate: Promise<void> | undefined
 const routerClient = { chat: { completions: { create: async (params: { messages: Array<{ content: string }> }) => {
@@ -545,7 +559,7 @@ let ragMemoryTexts = ['Remembered group fact.'], ragOpenThreads: string[] = [], 
 mock.module('../src/providers/rag.provider', () => ({ queryRag: async (...args: unknown[]) => { ragCalls.push(args); return { memoryTexts: ragMemoryTexts, openThreads: ragOpenThreads } }, querySummaries: async () => ragSummaryHits }))
 mock.module('../src/services/post-process-outbox.service', () => ({ stagePostProcess: async (input: Row) => { outbox.push(input) }, dispatchPostProcessOutbox: async () => 0 }))
 mock.module('../src/services/media/attribution', () => ({ ATTRIBUTION_RULE_VERSION: 'audit', mediaRevision: () => 'audit' }))
-mock.module('../src/services/moderation.service', () => ({ moderationService: { discoveryFilter: async () => ({}) } }))
+// Moderation reports below exercise the real service; discovery is isolated after import.
 const checkLogs: Row[] = [], memoryLogs: Row[] = []
 mock.module('../src/utils/logger', () => ({ log: { info: (name: string, data: Row) => { if (name === 'group.reply_checked') checkLogs.push(data); memoryLogs.push({ name, ...data }) }, warn: (name: string, data: Row) => { memoryLogs.push({ name, ...data }) }, error: () => {} } }))
 mock.module('../src/services/time.service', () => ({ timeService: { initialAnchor: async (input: Row) => { if (input.templateId !== undefined) assert.notEqual(rows('worldTemplates').find(row => String(row._id) === input.templateId)?.kind, 'group'); return { real_time: new Date(), sequence: 0, timeline_id: 'main' } } } }))
@@ -621,6 +635,8 @@ const { deletionService } = await import('../src/services/deletion.service')
 const { templateService } = await import('../src/services/template.service')
 const { playWsService } = await import('../src/services/play-ws.service')
 const { billingService } = await import('../src/services/billing.service')
+const { moderationService } = await import('../src/services/moderation.service')
+moderationService.discoveryFilter = async () => ({})
 const { dispatchGroupTurn } = await import('../src/services/group-chat/dispatch')
 const { validateEntry } = await import('./seed-catalog')
 const originalRandom = Math.random
@@ -4062,6 +4078,8 @@ await check('notify mark 6 real reservation and settlement charge zero Ink', asy
   const ledger = rows('inkLedger')
   assert.equal(ledger.length, 1); assert.equal(ledger[0].delta, 0); assert.equal(ledger[0].reference, 'group_turn')
   const { billingService } = await import('../src/services/billing.service')
+const { moderationService } = await import('../src/services/moderation.service')
+moderationService.discoveryFilter = async () => ({})
   await billingService.settle(playerId, reservation)
   assert.equal(rows('users')[0].token_balance, 42)
   assert(ledger.every(row => Number(row.delta) === 0))
@@ -4433,5 +4451,220 @@ await check('art no asset key reaches the preview or a chats row', async () => {
   noAssetKey(preview); noAssetKey(row)
 })
 
+// Line-report safety checks use saved events and the real moderation service/controller.
+async function reportFixture() {
+  await start(); addEvents(1)
+  const event = storedEvents().at(-1)!
+  event.data.player_input = 'PLAYER_INPUT_ONLY'
+  event.data.lines = [
+    { character_id: ids[0], text: 'Saved first line.', shown_at: new Date() },
+    { character_id: ids[1], text: 'Saved second line.', shown_at: new Date() },
+  ]
+  return { event, input: { reporterId: playerId, targetType: 'group_line' as const, targetId: String(event._id),
+    characterId: ids[0], text: event.data.lines[0].text, reason: 'harassment_or_hate' as const } }
+}
+const reportError = (status: number, message?: string) => (error: unknown) =>
+  error instanceof Error && 'statusCode' in error && error.statusCode === status && (message === undefined || error.message === message)
+await check('line report saved text snapshot is server owned and response stays private', async () => {
+  const { event, input } = await reportFixture()
+  // Even the group's catalog owner may report generated words.
+  rows('worldTemplates')[0].creator_id = new ObjectId(playerId)
+  // Validation reads the string three times; selection reads it once. A later
+  // snapshot read of the request must not replace the saved evidence.
+  let textReads = 0
+  Object.defineProperty(input, 'text', { configurable: true, get: () => ++textReads <= 4 ? 'Saved first line.' : 'FORGED_REQUEST_TEXT' })
+  const result = await moderationService.report(input)
+  Object.defineProperty(input, 'text', { configurable: true, writable: true, value: 'Saved first line.' })
+  assert.deepEqual(Object.keys(result).sort(), ['duplicate', 'report_id', 'reported'])
+  assert.equal(result.duplicate, false); assert.equal(result.reported, true)
+  const doc = rows('contentReports')[0]
+  assert(!('target_creator_id' in doc))
+  assert.equal(doc.target_line, createHash('sha256').update(JSON.stringify([ids[0], event.data.lines![0].text])).digest('hex'))
+  assert.deepEqual(doc.target_snapshot, { title: template.title, speaker: names[0], description: 'Saved first line.',
+    context: [...storedEvents()[0].data.lines!.map(line => `${names[ids.indexOf(line.character_id)]}: ${line.text}`), `${playerName}: PLAYER_INPUT_ONLY`].slice(-6).join('\n'),
+    thread: 'group', is_nsfw_capable: Boolean(template.is_nsfw_capable) })
+  input.text = 'Changed request after submission'
+  event.data.lines![0].text = 'Changed event after submission'
+  assert.equal(get(doc, 'target_snapshot.description'), 'Saved first line.')
+  const payloads = [await generationService.loadInstance(instanceId, playerId),
+    await (await import('../src/services/memory.service')).memoryService.getEvents(instanceId, playerId, {})]
+  for (const payload of payloads) for (const key of ['target_snapshot', 'target_line', 'speaker', 'context', 'target_creator_id']) {
+    assert(!JSON.stringify(payload).includes(`"${key}":`), `player payload leaked ${key}`)
+  }
+})
+for (const scenario of ['foreign', 'missing', 'wrong character', 'altered text', 'non-group', 'player input'] as const) {
+  await check(`line report uniform 404 ${scenario}`, async () => {
+    const { event, input } = await reportFixture()
+    if (scenario === 'foreign') rows('worldInstances')[0].player_id = new ObjectId()
+    if (scenario === 'missing') input.targetId = String(new ObjectId())
+    if (scenario === 'wrong character') input.characterId = String(new ObjectId())
+    if (scenario === 'altered text') input.text += ' forged'
+    if (scenario === 'non-group') { delete rows('worldInstances')[0].group_state; rows('worldTemplates')[0].kind = 'narrator' }
+    if (scenario === 'player input') input.text = event.data.player_input!
+    await assert.rejects(moderationService.report(input), reportError(404, 'That line could not be found.'))
+    assert.equal(rows('contentReports').length, 0)
+  })
+}
+await check('line report distinct lines repeat 11000 and legacy missing line stay duplicate', async () => {
+  const { event, input } = await reportFixture()
+  const first = await moderationService.report(input)
+  const secondInput = { ...input, characterId: ids[1], text: event.data.lines![1].text }
+  const second = await moderationService.report(secondInput)
+  assert.notEqual(first.report_id, second.report_id)
+  rows('contentReports')[0].status = 'reviewing'
+  assert.deepEqual(await moderationService.report(input), { ...first, duplicate: true })
+  assert.deepEqual(await moderationService.report(secondInput), { ...second, duplicate: true })
+  for (const targetType of ['world', 'user'] as const) {
+    const targetId = targetType === 'world' ? String(template._id) : String(new ObjectId())
+    if (targetType === 'user') rows('users').push({ _id: new ObjectId(targetId), username: 'Reported creator' })
+    const legacy = { _id: new ObjectId(), reporter_id: new ObjectId(playerId), target_type: targetType,
+      target_id: new ObjectId(targetId), status: 'open' }
+    rows('contentReports').push(legacy)
+    const duplicate = await moderationService.report({ reporterId: playerId, targetType, targetId, reason: 'spam_or_misleading' })
+    assert.equal(duplicate.duplicate, true); assert.equal(duplicate.report_id, String(legacy._id))
+    rows('contentReports').splice(rows('contentReports').indexOf(legacy), 1)
+    const fresh = await moderationService.report({ reporterId: playerId, targetType, targetId, reason: 'spam_or_misleading' })
+    assert.equal(fresh.duplicate, false)
+    assert(!('target_line' in rows('contentReports').at(-1)!))
+  }
+  await assert.rejects(moderationService.report({ reporterId: playerId, targetType: 'user', targetId: playerId, reason: 'spam_or_misleading' }), reportError(400))
+  rows('worldTemplates')[0].creator_id = new ObjectId(playerId)
+  await assert.rejects(moderationService.report({ reporterId: playerId, targetType: 'world', targetId: String(template._id), reason: 'spam_or_misleading' }), reportError(400))
+})
+await check('line report context bounded preceding and confined to exact thread', async () => {
+  for (const thread of [undefined, ids[0]]) {
+    const { event, input } = await reportFixture()
+    event.sequence = 20
+    if (thread !== undefined) event.data.dm_with = thread
+    for (let sequence = 3; sequence < 20; sequence++) rows('events').push({ ...clone(event) as unknown as Row,
+      _id: new ObjectId(), sequence, data: { dm_with: sequence % 2 ? thread : ids[2],
+        player_input: sequence % 2 ? `prior player ${sequence}` : 'FOREIGN_THREAD',
+        lines: [{ character_id: ids[0], text: sequence % 2 ? `prior saved ${sequence}` : 'FOREIGN_THREAD', shown_at: new Date() }],
+        tame_members: [ids[0]] } })
+    input.characterId = ids[1]; input.text = event.data.lines![1].text
+    await moderationService.report(input)
+    const snapshot = rows('contentReports')[0].target_snapshot as Row
+    assert.equal(snapshot.thread, thread === undefined ? 'group' : 'direct')
+    assert.equal(snapshot.context, `${playerName}: prior player 17\n${names[0]}: prior saved 17\n${playerName}: prior player 19\n${names[0]}: prior saved 19\n${playerName}: PLAYER_INPUT_ONLY\n${names[0]}: Saved first line.`)
+    assert(!String(snapshot.context).includes('FOREIGN_THREAD')); assert(!String(snapshot.context).includes('Saved second line.'))
+  }
+})
+await check('line report critical snapshot survives event and save deletion', async () => {
+  const { input } = await reportFixture()
+  const result = await moderationService.report({ ...input, reason: 'sexual_content_involving_minors' })
+  assert.equal(rows('contentReports')[0].is_critical, true)
+  const before = await moderationService.getReport(result.report_id!)
+  assert.equal(before.report.priority, 'CRITICAL'); assert.equal(before.creator, null)
+  assert(!('target_creator_id' in before.report))
+  assert.equal(before.report.target_snapshot.description, 'Saved first line.')
+  assert.equal(before.report.target_snapshot.speaker, names[0])
+  await deletionService.deleteInstance(instanceId, playerId)
+  assert.equal(storedEvents().length, 0)
+  const after = await moderationService.getReport(result.report_id!)
+  assert.deepEqual(after.report.target_snapshot, before.report.target_snapshot)
+  assert.equal(after.report.target_line, before.report.target_line)
+})
+await check('line report resolve only none and both terminal statuses work', async () => {
+  const { input } = await reportFixture()
+  const result = await moderationService.report(input)
+  // A malformed/legacy creator field must never authorize a ban for generated words.
+  rows('contentReports')[0].target_creator_id = new ObjectId(playerId)
+  for (const action of ['content_hidden', 'content_unpublished', 'content_deleted', 'creator_banned'] as const) {
+    await assert.rejects(moderationService.resolveReport(result.report_id!, { action }), reportError(400))
+    assert.equal(rows('contentReports')[0].status, 'open')
+  }
+  for (const status of ['actioned', 'dismissed'] as const) {
+    const resolved = await moderationService.resolveReport(result.report_id!, { action: 'none', status })
+    assert.equal(resolved.report!.status, status); assert.deepEqual(resolved.effects, [])
+  }
+})
+await check('line report HTTP validates bounds required fields refuses world and user extras and block type', async () => {
+  const { input } = await reportFixture()
+  const { moderationController } = await import('../src/controllers/moderation.controller')
+  const { CreateReportBody, BlockBody, AdminReportQuery } = await import('../src/schemas/moderation.schema')
+  const app = new Elysia().onError(({ error, set }) => { set.status = 'statusCode' in error ? Number(error.statusCode) : 400; return { error: error.message } })
+    .post('/report', ({ body }) => moderationController.createReport({ user: { id: playerId, tier: 'creator' }, body }), { body: CreateReportBody })
+    .post('/block', () => ({ blocked: true }), { body: BlockBody })
+    .get('/queue', ({ query }) => query, { query: AdminReportQuery })
+  const request = (body: Row, path = '/report') => app.handle(new Request(`http://localhost${path}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  }))
+  const body = { target_type: 'group_line', target_id: input.targetId, character_id: input.characterId, text: input.text, reason: input.reason }
+  assert.equal((await request(body)).status, 200)
+  assert.equal((await app.handle(new Request('http://localhost/queue?target_type=group_line'))).status, 200)
+  for (const patch of [{ character_id: undefined }, { text: undefined }, { text: '' }, { character_id: '' },
+    { text: 'x'.repeat(4001) }, { character_id: 'x'.repeat(65) }, { details: 'x'.repeat(1001) }]) {
+    assert.equal((await request({ ...body, ...patch })).status, 400)
+  }
+  for (const targetType of ['world', 'user'] as const) for (const extra of [{ character_id: ids[0] }, { text: input.text }]) {
+    assert.equal((await request({ target_type: targetType, target_id: String(template._id), reason: input.reason, ...extra })).status, 400)
+    await assert.rejects(moderationService.report({ ...input, targetType, targetId: String(template._id),
+      characterId: extra.character_id, text: extra.text }), reportError(400))
+  }
+  for (const patch of [{ text: '' }, { text: 'x'.repeat(4001) }, { characterId: '' }, { characterId: 'x'.repeat(65) }, { details: 'x'.repeat(1001) }]) {
+    await assert.rejects(moderationService.report({ ...input, ...patch }), reportError(400))
+  }
+  await assert.rejects(moderationService.report({ ...input, reason: 'other', details: '   ' }), reportError(400))
+  assert.equal((await request({ target_type: 'group_line', target_id: input.targetId }, '/block')).status, 400)
+  await assert.rejects(moderationController.createReport({ user: null, body }), reportError(401))
+})
+await check('line report index gains line key new name deprecated old and unresolved scope', async () => {
+  const { EVERLORE_INDEXES, DEPRECATED_INDEXES } = await import('../src/config/mongo-indexes')
+  const index = EVERLORE_INDEXES.find(index => index.options?.name === 'uniq_content_reports_open_per_reporter_line')!
+  assert(index); assert.equal(index.collection, 'content_reports')
+  assert.deepEqual(index.key, { reporter_id: 1, target_type: 1, target_id: 1, target_line: 1 })
+  assert.equal(index.options!.unique, true)
+  assert.deepEqual(index.options!.partialFilterExpression, { status: { $in: ['open', 'reviewing'] } })
+  assert(DEPRECATED_INDEXES.some(index => index.collection === 'content_reports' && index.name === 'uniq_content_reports_open_per_reporter'))
+})
+
+if (process.env.GROUP_REPORT_MONGO === '1') await check('line report real Mongo migration duplicate path and legacy reports', async () => {
+  // The explicit opt-in is confined to a disposable database on the brief's sole allowed port.
+  const client = new MongoClient('mongodb://127.0.0.1:27029', { serverSelectionTimeoutMS: 2000 })
+  const db = client.db(`everlore_line_report_audit_${crypto.randomUUID().replaceAll('-', '')}`)
+  try {
+    await client.connect()
+    const { EVERLORE_INDEXES, ensureEverloreIndexes } = await import('../src/config/mongo-indexes')
+    const reports = db.collection('content_reports')
+    await reports.createIndex({ reporter_id: 1, target_type: 1, target_id: 1 }, {
+      name: 'uniq_content_reports_open_per_reporter', unique: true,
+      partialFilterExpression: { status: { $in: ['open', 'reviewing'] } },
+    })
+    const { event, input } = await reportFixture()
+    const user = new ObjectId()
+    rows('users').push({ _id: user, username: 'Legacy target' })
+    const legacy = ['world', 'user'].map(target_type => ({ reporter_id: new ObjectId(playerId), target_type,
+      target_id: target_type === 'world' ? template._id : user, status: 'open' }))
+    await reports.insertMany(legacy)
+    await ensureEverloreIndexes(db)
+    await ensureEverloreIndexes(db)
+    const indexes = await reports.listIndexes().toArray()
+    assert(!indexes.some(index => index.name === 'uniq_content_reports_open_per_reporter'))
+    const desired = EVERLORE_INDEXES.find(index => index.options?.name === 'uniq_content_reports_open_per_reporter_line')!
+    assert.deepEqual(indexes.find(index => index.name === desired.options!.name)!.key, desired.key)
+    reportMongoDb = db
+    const first = await moderationService.report(input)
+    const secondInput = { ...input, characterId: ids[1], text: event.data.lines![1].text }
+    const second = await moderationService.report(secondInput)
+    assert.equal(first.duplicate, false); assert.equal(second.duplicate, false); assert.notEqual(first.report_id, second.report_id)
+    await reports.updateOne({ _id: new ObjectId(first.report_id!) }, { $set: { status: 'reviewing' } })
+    assert.deepEqual(await moderationService.report(input), { ...first, duplicate: true })
+    assert.deepEqual(await moderationService.report(secondInput), { ...second, duplicate: true })
+    for (const target of legacy) {
+      const result = await moderationService.report({ reporterId: playerId, targetType: target.target_type as 'world' | 'user',
+        targetId: String(target.target_id), reason: 'spam_or_misleading' })
+      assert.equal(result.duplicate, true)
+      assert(!('target_line' in (await reports.findOne({ _id: new ObjectId(result.report_id!) }))!))
+    }
+    await moderationService.resolveReport(first.report_id!, { action: 'none', status: 'actioned' })
+    assert.equal((await moderationService.report(input)).duplicate, false)
+    console.log('PASS real Mongo: old index migrated; repeated startup; two distinct lines; 11000 open/reviewing; legacy world/user duplicates; resolved re-report')
+  } finally {
+    reportMongoDb = undefined
+    await db.dropDatabase()
+    await client.close()
+  }
+})
+
 Math.random = originalRandom
-console.log(`group-chat audit: ${passed}/${passed} passed (pure; fake writer; no connections or paid calls)`)
+console.log(`group-chat audit: ${passed}/${passed} passed (${process.env.GROUP_REPORT_MONGO === '1' ? 'scratch Mongo on 27029; fake writer; no paid calls' : 'pure; fake writer; no connections or paid calls'})`)

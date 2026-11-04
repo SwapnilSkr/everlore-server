@@ -533,10 +533,10 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   // again after the first report has been resolved.
   {
     collection: COLLECTIONS.content_reports,
-    key: { reporter_id: 1, target_type: 1, target_id: 1 },
+    key: { reporter_id: 1, target_type: 1, target_id: 1, target_line: 1 },
     options: {
       unique: true,
-      name: "uniq_content_reports_open_per_reporter",
+      name: "uniq_content_reports_open_per_reporter_line",
       partialFilterExpression: { status: { $in: ["open", "reviewing"] } },
     },
   },
@@ -668,6 +668,8 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
  * only handles same-key option drift). Startup drops these if present.
  */
 export const DEPRECATED_INDEXES: Array<{ collection: string; name: string }> = [
+  // A new key needs a new name; the old event-wide key would reject a second line.
+  { collection: COLLECTIONS.content_reports, name: "uniq_content_reports_open_per_reporter" },
   // Replaced by idx_entity_edges_assertion (label joined the unique key).
   { collection: COLLECTIONS.entity_edges, name: "idx_entity_edges_endpoints_type" },
   // Replaced by idx_memories_instance_timeline_sequence (parent-branch clamps by sequence).

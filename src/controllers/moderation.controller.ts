@@ -15,7 +15,7 @@ export const moderationController = {
     body,
   }: {
     user: AuthUser | null
-    body: { target_type: ReportTargetType; target_id: string; reason: ReportReason; details?: string }
+    body: { target_type: ReportTargetType; target_id: string; reason: ReportReason; details?: string; character_id?: string; text?: string }
   }) => {
     const actor = requireUser(user)
 
@@ -32,6 +32,8 @@ export const moderationController = {
       targetId: body.target_id,
       reason: body.reason,
       details: body.details,
+      characterId: body.character_id,
+      text: body.text,
     })
   },
 
@@ -43,7 +45,7 @@ export const moderationController = {
     body,
   }: {
     user: AuthUser | null
-    body: { target_type: ReportTargetType; target_id: string }
+    body: { target_type: 'world' | 'user'; target_id: string }
   }) => {
     const actor = requireUser(user)
     return body.target_type === 'user'

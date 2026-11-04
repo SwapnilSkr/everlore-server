@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { ObjectId, type UpdateFilter, type WithoutId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { HttpError } from '../utils/http-error'
@@ -13,6 +14,8 @@ import {
 } from '../models/content-report.model'
 import type { WorldTemplateDoc } from '../models/world-template.model'
 import { deletionService } from './deletion.service'
+import { loadGroupMembers } from './group-chat/instance'
+import { groupMessages, groupThreadFilter, validGroupThread } from './group-chat/memory'
 import { discoveryReviewFilter } from '../utils/world-review'
 
 const users = () => mongoColl.users()
@@ -197,10 +200,23 @@ export const moderationService = {
     targetId: string
     reason: ReportReason
     details?: string
+    characterId?: string
+    text?: string
   }) {
     const reporter = parseObjectId(input.reporterId)
     const target = parseObjectId(input.targetId)
-    const details = String(input.details || '').trim().slice(0, 1000)
+    if (input.details !== undefined && (typeof input.details !== 'string' || input.details.length > 1000)) {
+      throw new HttpError(400, 'Report details must be at most 1000 characters.')
+    }
+    if (input.targetType === 'group_line') {
+      if (typeof input.characterId !== 'string' || !input.characterId.length || input.characterId.length > 64 ||
+          typeof input.text !== 'string' || !input.text.length || input.text.length > 4000) {
+        throw new HttpError(400, 'Choose a saved character line to report.')
+      }
+    } else if (input.characterId !== undefined || input.text !== undefined) {
+      throw new HttpError(400, 'Character and text apply to line reports only.')
+    }
+    const details = String(input.details || '').trim()
 
     if (input.reason === 'other' && details.length === 0) {
       throw new HttpError(400, 'Tell us what is wrong so we can act on this report.')
@@ -208,8 +224,35 @@ export const moderationService = {
 
     const snapshot: ContentReportDoc['target_snapshot'] = {}
     let creatorId: ObjectId | undefined
+    let targetLine: string | undefined
 
-    if (input.targetType === 'world') {
+    if (input.targetType === 'group_line') {
+      const notFound = () => new HttpError(404, 'That line could not be found.')
+      const event = await mongoColl.events().findOne({ _id: target })
+      if (!event) throw notFound()
+      const instance = await mongoColl.worldInstances().findOne({ _id: event.instance_id, player_id: reporter })
+      if (!instance?.group_state || !instance.group_context || !validGroupThread(event.data.dm_with)) throw notFound()
+      const template = await worldTemplates().findOne({ _id: instance.template_id })
+      if (template?.kind !== 'group') throw notFound()
+      const lineIndex = (event.data.lines || []).findIndex(line => line.character_id === input.characterId && line.text === input.text)
+      if (lineIndex < 0) throw notFound()
+      const line = event.data.lines![lineIndex]
+      const members = await loadGroupMembers(instance)
+      const speaker = members.find(member => member.id === line.character_id)
+      if (!speaker) throw notFound()
+      const thread = event.data.dm_with
+      const before = await mongoColl.events().find({ instance_id: instance._id, ...groupThreadFilter(thread), sequence: { $lt: event.sequence } })
+        .sort({ sequence: -1 }).limit(6).toArray()
+      const preceding = { ...event, data: { ...event.data, lines: event.data.lines!.slice(0, lineIndex) } }
+      snapshot.title = template.title
+      snapshot.speaker = speaker.name
+      snapshot.description = line.text
+      snapshot.context = groupMessages([...before.reverse(), preceding], instance.group_context.player, members, thread)
+        .slice(-6).map(line => `${line.name}: ${line.text}`).join('\n')
+      snapshot.thread = thread === undefined ? 'group' : 'direct'
+      snapshot.is_nsfw_capable = Boolean(template.is_nsfw_capable)
+      targetLine = createHash('sha256').update(JSON.stringify([line.character_id, line.text])).digest('hex')
+    } else if (input.targetType === 'world') {
       const template = await worldTemplates().findOne({ _id: target })
       if (!template) throw new HttpError(404, 'World not found')
       assertNotSelf(reporter, template.creator_id, 'report a world you created from')
@@ -240,7 +283,8 @@ export const moderationService = {
         reporter_id: reporter,
         target_type: input.targetType,
         target_id: target,
-        target_creator_id: creatorId,
+        ...(creatorId === undefined ? {} : { target_creator_id: creatorId }),
+        ...(targetLine === undefined ? {} : { target_line: targetLine }),
         target_snapshot: snapshot,
         reason: input.reason,
         details: details || undefined,
@@ -258,6 +302,7 @@ export const moderationService = {
           reporter_id: reporter,
           target_type: input.targetType,
           target_id: target,
+          target_line: targetLine === undefined ? { $exists: false } : targetLine,
           status: { $in: ['open', 'reviewing'] },
         })
         return {
@@ -331,6 +376,7 @@ export const moderationService = {
       contentReports().countDocuments({
         target_type: report.target_type,
         target_id: report.target_id,
+        ...(report.target_line === undefined ? {} : { target_line: report.target_line }),
       }),
     ])
 
@@ -399,6 +445,10 @@ export const moderationService = {
     const by = String(input.resolved_by || 'admin').slice(0, 120)
     const now = new Date()
     const effects: string[] = []
+
+    if (report.target_type === 'group_line' && input.action !== 'none') {
+      throw new HttpError(400, 'Line reports can only be resolved without a content action.')
+    }
 
     if (input.action !== 'none' && report.target_type !== 'world' && input.action !== 'creator_banned') {
       throw new HttpError(400, 'Content actions apply to reported worlds only.')
@@ -558,7 +608,10 @@ function serializeReport(report: ContentReportDoc) {
     reporter_id: idString(report.reporter_id),
     target_type: report.target_type,
     target_id: idString(report.target_id),
-    target_creator_id: report.target_creator_id ? idString(report.target_creator_id) : null,
+    ...(report.target_line === undefined ? {} : { target_line: report.target_line }),
+    ...(report.target_type === 'group_line' ? {} : {
+      target_creator_id: report.target_creator_id ? idString(report.target_creator_id) : null,
+    }),
     target_title: report.target_snapshot?.title || report.target_snapshot?.creator_username || '',
     target_snapshot: report.target_snapshot || {},
     reason: report.reason,

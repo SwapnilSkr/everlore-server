@@ -5,12 +5,26 @@ const ReportReasonSchema = t.Union(REPORT_REASONS.map((reason) => t.Literal(reas
 
 const TargetTypeSchema = t.Union([t.Literal('world'), t.Literal('user')])
 
-export const CreateReportBody = t.Object({
-  target_type: TargetTypeSchema,
+const ReportFields = {
   target_id: t.String({ minLength: 1, maxLength: 64 }),
   reason: ReportReasonSchema,
   details: t.Optional(t.String({ maxLength: 1000 })),
-})
+}
+
+export const CreateReportBody = t.Union([
+  t.Object({
+    ...ReportFields,
+    target_type: TargetTypeSchema,
+    character_id: t.Optional(t.Never()),
+    text: t.Optional(t.Never()),
+  }),
+  t.Object({
+    ...ReportFields,
+    target_type: t.Literal('group_line'),
+    character_id: t.String({ minLength: 1, maxLength: 64 }),
+    text: t.String({ minLength: 1, maxLength: 4000 }),
+  }),
+])
 
 export const BlockBody = t.Object({
   target_type: TargetTypeSchema,
@@ -31,7 +45,7 @@ export const AdminReportQuery = t.Object({
     ]),
   ),
   reason: t.Optional(ReportReasonSchema),
-  target_type: t.Optional(TargetTypeSchema),
+  target_type: t.Optional(t.Union([TargetTypeSchema, t.Literal('group_line')])),
   critical: t.Optional(t.Union([t.Boolean(), t.String()])),
 })
 

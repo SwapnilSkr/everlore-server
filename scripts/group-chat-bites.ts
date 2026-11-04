@@ -857,6 +857,42 @@ const artMutations: Mutation[] = [
 ]
 mutations.push(...artMutations)
 
+const moderation = 'src/services/moderation.service.ts', moderationSchema = 'src/schemas/moderation.schema.ts'
+const reportIndex = 'src/config/mongo-indexes.ts'
+const lineReportMutations: Mutation[] = [
+  { name: 'line report trusts request text', check: 'line report saved text', edits: [[moderation, 'snapshot.description = line.text', 'snapshot.description = input.text']] },
+  { name: 'line report assigns generated words a creator', check: 'line report saved text', edits: [[moderation, '...(creatorId === undefined ? {} : { target_creator_id: creatorId }),', '...{ target_creator_id: creatorId || reporter },']] },
+  { name: 'line report leaks snapshot response', check: 'line report saved text', edits: [[moderation, 'return { reported: true, report_id: idString(inserted.insertedId), duplicate: false }', 'return { reported: true, report_id: idString(inserted.insertedId), duplicate: false, target_snapshot: snapshot }']] },
+  { name: 'line report hash omits speaker', check: 'line report saved text', edits: [[moderation, 'JSON.stringify([line.character_id, line.text])', 'JSON.stringify([line.text])']] },
+  { name: 'line report ownership missing', check: 'line report uniform 404 foreign', edits: [[moderation, '_id: event.instance_id, player_id: reporter', '_id: event.instance_id']] },
+  { name: 'line report missing event accepted', check: 'line report uniform 404 missing', edits: [[moderation, 'if (!event) throw notFound()', "if (!event) return { reported: true, report_id: '', duplicate: false }"]] },
+  { name: 'line report wrong speaker accepted', check: 'line report uniform 404 wrong character', edits: [[moderation, 'line.character_id === input.characterId && line.text === input.text', 'line.text === input.text']] },
+  { name: 'line report altered text accepted', check: 'line report uniform 404 altered text', edits: [[moderation, 'line.character_id === input.characterId && line.text === input.text', 'line.character_id === input.characterId']] },
+  { name: 'line report ordinary event accepted', check: 'line report uniform 404 non-group', edits: [[moderation, '!instance?.group_state ||', '!instance ||'], [moderation, "if (template?.kind !== 'group') throw notFound()", 'if (!template) throw notFound()']] },
+  { name: 'line report player input accepted', check: 'line report uniform 404 player input', edits: [[moderation, 'line.character_id === input.characterId && line.text === input.text', 'line.character_id === input.characterId && (line.text === input.text || input.text === event.data.player_input)']] },
+  { name: 'line report duplicate finds another line', check: 'line report distinct lines', edits: [[moderation, 'target_line: targetLine === undefined ? { $exists: false } : targetLine,', '']] },
+  { name: 'line report legacy writes null', check: 'line report distinct lines', edits: [[moderation, '...(targetLine === undefined ? {} : { target_line: targetLine }),', '...{ target_line: targetLine ?? null },']] },
+  { name: 'line report 11000 path lost', check: 'line report distinct lines', edits: [[moderation, 'if ((error as { code?: number }).code === 11000)', 'if (false)']] },
+  { name: 'line report wrong thread context', check: 'line report context', edits: [[moderation, 'instance.group_context.player, members, thread)', 'instance.group_context.player, members)']] },
+  { name: 'line report context exceeds six', check: 'line report context', edits: [[moderation, '.slice(-6).map(line =>', '.slice(-7).map(line =>']] },
+  { name: 'line report context includes target and later words', check: 'line report context', edits: [[moderation, 'event.data.lines!.slice(0, lineIndex)', 'event.data.lines!']] },
+  { name: 'line report critical priority lost', check: 'line report critical', edits: [[moderation, 'is_critical: CRITICAL_REPORT_REASONS.has(input.reason)', 'is_critical: false']] },
+  { name: 'line report admin snapshot lost', check: 'line report critical', edits: [[moderation, 'target_snapshot: report.target_snapshot || {}', 'target_snapshot: {}']] },
+  { name: 'line report ban accepted', check: 'line report resolve', edits: [[moderation, "if (report.target_type === 'group_line' && input.action !== 'none')", 'if (false)']] },
+  { name: 'line report hide accepted', check: 'line report resolve', edits: [[moderation, "if (report.target_type === 'group_line' && input.action !== 'none')", 'if (false)'], [moderation, "report.target_type !== 'world' && input.action", "report.target_type !== 'world' && report.target_type !== 'group_line' && input.action"]] },
+  { name: 'line report actioned none lost', check: 'line report resolve', edits: [[moderation, "input.status || (input.action === 'none' ? 'dismissed' : 'actioned')", "(input.action === 'none' ? 'dismissed' : 'actioned')"]] },
+  { name: 'line report controller loses chosen line', check: 'line report HTTP', edits: [['src/controllers/moderation.controller.ts', 'characterId: body.character_id,', '']] },
+  { name: 'line report HTTP text length not bounded', check: 'line report HTTP', edits: [[moderationSchema, 'text: t.String({ minLength: 1, maxLength: 4000 })', 'text: t.String({ minLength: 1 })'], [moderation, " || input.text.length > 4000", '']] },
+  { name: 'line report HTTP details length not bounded', check: 'line report HTTP', edits: [[moderationSchema, 'details: t.Optional(t.String({ maxLength: 1000 }))', 'details: t.Optional(t.String())'], [moderation, " || input.details.length > 1000", '']] },
+  { name: 'line report world and user extras accepted', check: 'line report HTTP', edits: [[moderationSchema, 't.Optional(t.Never())', 't.Optional(t.String())'], [moderation, 'input.characterId !== undefined || input.text !== undefined', 'false']] },
+  { name: 'line report block allows line', check: 'line report HTTP', edits: [[moderationSchema, 'export const BlockBody = t.Object({\n  target_type: TargetTypeSchema,', "export const BlockBody = t.Object({\n  target_type: t.Union([TargetTypeSchema, t.Literal('group_line')]),"]] },
+  { name: 'line report index omits line', check: 'line report index', edits: [[reportIndex, 'target_id: 1, target_line: 1', 'target_id: 1']] },
+  { name: 'line report index reuses old name', check: 'line report index', edits: [[reportIndex, 'name: "uniq_content_reports_open_per_reporter_line"', 'name: "uniq_content_reports_open_per_reporter"']] },
+  { name: 'line report index old name not deprecated', check: 'line report index', edits: [[reportIndex, '{ collection: COLLECTIONS.content_reports, name: "uniq_content_reports_open_per_reporter" },', '']] },
+  { name: 'line report index not unique', check: 'line report index', edits: [[reportIndex, 'unique: true,\n      name: "uniq_content_reports_open_per_reporter_line"', 'unique: false,\n      name: "uniq_content_reports_open_per_reporter_line"']] },
+]
+mutations.push(...lineReportMutations)
+
 
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {

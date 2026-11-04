@@ -1,11 +1,7 @@
 import type { ObjectId } from 'mongodb'
 
-/**
- * What a player is reporting. Worlds are the only content one account can put
- * in front of another, so they are the primary target; `user` covers reporting
- * a creator for a pattern rather than for one world.
- */
-export type ReportTargetType = 'world' | 'user'
+/** Player reports cover published content, creators and saved group character lines. */
+export type ReportTargetType = 'world' | 'user' | 'group_line'
 
 /**
  * Report reasons, kept deliberately small and mapped to the categories Google
@@ -78,8 +74,10 @@ export interface ContentReportDoc {
   _id: ObjectId
   reporter_id: ObjectId
   target_type: ReportTargetType
-  /** world_templates._id for 'world', users._id for 'user'. */
+  /** World, user or saved group event id, according to target_type. */
   target_id: ObjectId
+  /** Hash of the saved character id and exact text; omitted on legacy targets. */
+  target_line?: string
   /** Owner of the reported content; denormalized so triage needs no join. */
   target_creator_id?: ObjectId
   /**
@@ -89,6 +87,9 @@ export interface ContentReportDoc {
   target_snapshot?: {
     title?: string
     description?: string
+    speaker?: string
+    context?: string
+    thread?: 'group' | 'direct'
     image_url?: string
     is_nsfw_capable?: boolean
     creator_username?: string
