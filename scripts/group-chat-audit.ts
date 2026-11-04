@@ -447,6 +447,7 @@ const clone = <T>(input: T): T => {
 }
 let pushWriteFailure: Error | undefined
 let consentReadHook: (() => void) | undefined
+let instanceInsertedHook: ((row: Row) => Promise<void>) | undefined
 function collection(name: string) {
   return {
     aggregate(pipeline: Row[]) {
@@ -480,7 +481,7 @@ function collection(name: string) {
     },
     async findOne(filter: Row, options?: { sort?: Record<string, number>; projection?: Row }) { if (name === 'users' && options?.projection) consentReadHook?.(); let cursor = this.find(filter); if (options?.sort) cursor = cursor.sort(options.sort); return (await cursor.toArray())[0] || null },
     async countDocuments(filter: Row) { return rows(name).filter(row => matches(row, filter)).length },
-    async insertOne(row: Row) { rows(name).push(clone(row)); return { insertedId: row._id } },
+    async insertOne(row: Row) { rows(name).push(clone(row)); if (name === 'worldInstances') await instanceInsertedHook?.(row); return { insertedId: row._id } },
     async updateOne(filter: Row, update: Row, options?: { upsert?: boolean }) {
       if (name === 'pushDevices' && pushWriteFailure) throw pushWriteFailure
       let row = rows(name).find(row => matches(row, filter)); const existed = !!row
@@ -547,7 +548,7 @@ mock.module('../src/services/media/attribution', () => ({ ATTRIBUTION_RULE_VERSI
 mock.module('../src/services/moderation.service', () => ({ moderationService: { discoveryFilter: async () => ({}) } }))
 const checkLogs: Row[] = [], memoryLogs: Row[] = []
 mock.module('../src/utils/logger', () => ({ log: { info: (name: string, data: Row) => { if (name === 'group.reply_checked') checkLogs.push(data); memoryLogs.push({ name, ...data }) }, warn: (name: string, data: Row) => { memoryLogs.push({ name, ...data }) }, error: () => {} } }))
-mock.module('../src/services/time.service', () => ({ timeService: { initialAnchor: async (input: Row) => { assert.equal(input.templateId, undefined); return { real_time: new Date(), sequence: 0, timeline_id: 'main' } } } }))
+mock.module('../src/services/time.service', () => ({ timeService: { initialAnchor: async (input: Row) => { if (input.templateId !== undefined) assert.notEqual(rows('worldTemplates').find(row => String(row._id) === input.templateId)?.kind, 'group'); return { real_time: new Date(), sequence: 0, timeline_id: 'main' } } } }))
 mock.module('../src/services/opening-place.service', () => ({ extractOpeningPlace: unavailable }))
 mock.module('../src/services/character-codex.service', () => ({ characterCodexService: { seedProtagonist: unavailable }, foldDelta: unavailable, newFoldState: unavailable, isEphemeralPersonDescriptor: unavailable, isNonPersonRole: unavailable, rankCodexForInjection: unavailable, identityKey: unavailable }))
 mock.module('../src/services/kinship-graph.service', () => ({ kinshipGraphService: { seedPremiseKinship: unavailable } }))
@@ -684,6 +685,77 @@ await check('creation seeds cast, state, one opening and no model; guests refuse
   assert.equal((await instanceService.create(playerId, template._id.toHexString(), 'creator')).instance._id.toHexString(), instanceId)
   rows('users')[0].guest = true
   await assert.rejects(instanceService.create(playerId, template._id.toHexString(), 'creator'), /sign in/)
+})
+function limitWorldTemplate(kind: 'world' | 'character' | undefined) {
+  const { kind: _groupKind, topics: _topics, opening_lines: _lines, ...source } = groupTemplate()
+  const world: WorldTemplateDoc = { ...source, _id: new ObjectId(), is_sentient: false, seed_cast: [], opening_line: '' }
+  if (kind !== undefined) world.kind = kind
+  rows('worldTemplates').push(clone(world) as unknown as Row)
+  return world
+}
+function limitWorldSaves(count: number, world: WorldTemplateDoc) {
+  const { group_template_id: _groupTemplate, group_state: _state, group_context: _context, ...save } = rows('worldInstances')[0]
+  return Array.from({ length: count }, () => ({ ...clone(save), _id: new ObjectId(), template_id: world._id }))
+}
+await check('world limit free player at ordinary capacity can join and rejoin a group', async () => {
+  await start()
+  const world = limitWorldTemplate('world')
+  const worlds = limitWorldSaves(3, world)
+  rows('worldInstances').splice(0, rows('worldInstances').length, ...worlds)
+  const joined = await instanceService.create(playerId, template._id.toHexString(), 'free')
+  assert(joined.instance.group_state); assert(joined.instance.group_template_id?.equals(template._id))
+  assert.equal(rows('worldInstances').length, 4); assert.equal(writerCalls.length, 0)
+  const reused = await instanceService.create(playerId, template._id.toHexString(), 'free')
+  assert(reused.instance._id.equals(joined.instance._id)); assert.equal(rows('worldInstances').length, 4)
+})
+await check('world limit several groups leave room for every ordinary kind before group state exists', async () => {
+  for (const kind of ['world', 'character', undefined] as const) {
+    await start()
+    for (let i = 0; i < 2; i++) {
+      const group = { ...groupTemplate(), _id: new ObjectId() }
+      rows('worldTemplates').push(clone(group) as unknown as Row)
+      await instanceService.create(playerId, group._id.toHexString(), 'free')
+    }
+    const world = limitWorldTemplate(kind)
+    rows('worldInstances').push(...limitWorldSaves(2, world))
+    const [archived, foreign] = limitWorldSaves(2, world)
+    put(archived, 'meta.is_archived', true); foreign.player_id = new ObjectId()
+    rows('worldInstances').push(archived, foreign)
+    const group = { ...groupTemplate(), _id: new ObjectId() }
+    rows('worldTemplates').push(clone(group) as unknown as Row)
+    let checkedWindow = false
+    instanceInsertedHook = async pending => {
+      instanceInsertedHook = undefined
+      // Exercise the real count between insertOne and seedGroupOpening.
+      assert.equal(pending.group_state, undefined)
+      assert((pending.group_template_id as ObjectId).equals(group._id))
+      const created = await instanceService.create(playerId, world._id.toHexString(), 'free')
+      assert(created.instance.template_id.equals(world._id)); assert.equal(created.instance.group_template_id, undefined)
+      checkedWindow = true
+    }
+    try { await instanceService.create(playerId, group._id.toHexString(), 'free') }
+    finally { instanceInsertedHook = undefined }
+    assert(checkedWindow); assert.equal(writerCalls.length, 0)
+    assert.equal(rows('worldInstances').filter(row => row.group_template_id !== undefined).length, 4)
+    assert.equal(rows('worldInstances').filter(row => matches(row, { player_id: new ObjectId(playerId), 'meta.is_archived': { $ne: true }, group_template_id: { $exists: false } })).length, 3)
+  }
+})
+await check('world limit ordinary saves still refused at unchanged tier capacities', async () => {
+  for (const [tier, limit] of [['free', 3], ['premium', 20], ['creator', 50], ['unknown', 3]] as const) {
+    for (const kind of ['world', 'character', undefined] as const) {
+      await start()
+      const world = limitWorldTemplate(kind)
+      rows('worldInstances').push(...limitWorldSaves(limit, world))
+      const count = rows('worldInstances').length
+      await assert.rejects(instanceService.create(playerId, world._id.toHexString(), tier), error => {
+        assert(error instanceof Error && 'statusCode' in error)
+        assert.equal(error.statusCode, 403)
+        assert.equal(error.message, 'You are already keeping as many worlds as this membership allows.')
+        return true
+      })
+      assert.equal(rows('worldInstances').length, count); assert.equal(writerCalls.length, 0)
+    }
+  }
 })
 await check('fake-model player turn writes reply, emits real safe frames and preserves location/travel/presence/choices/stats', async () => {
   await start()

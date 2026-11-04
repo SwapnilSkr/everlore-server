@@ -70,13 +70,17 @@ export const instanceService = {
       }
     }
 
-    const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
-    const instanceCount = await worldInstances().countDocuments({
-      player_id: playerOid,
-      'meta.is_archived': { $ne: true },
-    })
-    if (instanceCount >= limits.max_instances) {
-      throw new HttpError(403, 'You are already keeping as many worlds as this membership allows.')
+    if (template.kind !== 'group') {
+      const limits = TIER_LIMITS[tier] || TIER_LIMITS.free
+      const instanceCount = await worldInstances().countDocuments({
+        player_id: playerOid,
+        'meta.is_archived': { $ne: true },
+        // Written with the save itself, before group_state is seeded.
+        group_template_id: { $exists: false },
+      })
+      if (instanceCount >= limits.max_instances) {
+        throw new HttpError(403, 'You are already keeping as many worlds as this membership allows.')
+      }
     }
 
     const worldState: Record<string, number> = {}

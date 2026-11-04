@@ -13,6 +13,12 @@ const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat
 const worker = 'worker/processors/group-turn.processor.ts', prompt = 'src/services/group-chat/prompt.ts'
 const worker2 = 'worker/processors/memory.processor.ts', curation = 'src/services/group-chat/curation.ts', memoryFile = 'src/services/group-chat/memory.ts'
 const mutations: Mutation[] = [
+  { name: 'world limit group admission checked', check: 'world limit free player', edits: [['src/services/instance.service.ts', "if (template.kind !== 'group') {\n      const limits", 'if (true) {\n      const limits']] },
+  { name: 'world limit groups counted', check: 'world limit several groups', edits: [['src/services/instance.service.ts', 'group_template_id: { $exists: false },', '']] },
+  { name: 'world limit only initialized groups excluded', check: 'world limit several groups', edits: [['src/services/instance.service.ts', 'group_template_id: { $exists: false },', 'group_state: { $exists: false },']] },
+  { name: 'world limit insert loses group marker', check: 'world limit several groups', edits: [['src/services/instance.service.ts', "...(template.kind === 'group' ? { group_template_id: templateOid } : {}),", '...{},']] },
+  { name: 'world limit ordinary admission bypassed', check: 'world limit ordinary saves', edits: [['src/services/instance.service.ts', 'if (instanceCount >= limits.max_instances)', 'if (false)']] },
+  { name: 'world limit ordinary capacity off by one', check: 'world limit ordinary saves', edits: [['src/services/instance.service.ts', 'if (instanceCount >= limits.max_instances)', 'if (instanceCount > limits.max_instances)']] },
 
   { name: 'actions summary sees speech', check: 'actions transcript', edits: [['worker/processors/summary.processor.ts', 'groupMessages([event], groupInstance.group_context!.player, members, groupBatch?.thread)', 'groupMessages([event], groupInstance.group_context!.player, members, groupBatch?.thread).map(line => ({ ...line, name: groupInstance.group_context!.player }))']] },
   { name: 'actions direct read only block sees speech', check: 'actions transcript', edits: [[prompt, 'input.groupContext.map(line => `${line.name}: ${line.text}`)', "input.groupContext.map(line => `${line.name.replace(/ did this$/, '')}: ${line.text}`)"]] },
