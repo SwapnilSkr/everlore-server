@@ -900,10 +900,10 @@ async function authoredGroups(): Promise<WorldTemplateDoc[]> {
     validateEntry(data, file)
     groups.push({ ...groupTemplate(), ...data })
   }
-  assert.equal(groups.reduce((sum, group) => sum + group.seed_cast!.length, 0), 15)
+  assert.equal(groups.reduce((sum, group) => sum + group.seed_cast!.length, 0), 16)
   return groups
 }
-await check('authored player placeholders resolve per call for all fifteen addressed prompts', async () => {
+await check('authored player placeholders resolve per call for every addressed prompt', async () => {
   let checked = 0
   for (const group of await authoredGroups()) for (const member of group.seed_cast!) {
     for (const player of [playerName, 'Rae $&']) {
@@ -920,7 +920,7 @@ await check('authored player placeholders resolve per call for all fifteen addre
     }
     checked++
   }
-  assert.equal(checked, 15)
+  assert.equal(checked, 16)
   const member = { ...members[0], group: { ...members[0].group, intimacy: 'Interested in {player}; asks {player} directly.' } }
   assert(buildAddressedStatic({ ...template, members, player: 'Rae $&' }, member).includes('Interested in Rae $&; asks Rae $& directly.'))
 })
@@ -1046,7 +1046,7 @@ await check('authored tagged reachability covers every member and interest routi
       cases++
     }
   }
-  assert.equal(cases, 75)
+  assert.equal(cases, 80)
   console.log(`authored tagged reachability: ${cases}/75 cases produced the tagged member's line`)
 })
 await check('authored untagged reachability picks and speaks every member over 2000 seeded processor rolls per group', async () => {
@@ -1855,7 +1855,7 @@ await check('memory adult addressed call is narrow and the bystander keeps full 
   const roomy = await send(`@${names[1]} keep it up`)
   assert.deepEqual(roomy.adult.split('Memories:\n')[1].split('\n\n')[0].split('\n'), ['Adult from the player.'])
   // Short everyday words raise nothing; a capitalized name does.
-  const everyday = raisedMemories(`what again`, [{ text: 'Priya asked what the noise was again.', importance: 1 }] as never, [])
+  const everyday = raisedMemories(`what again`, [{ text: 'Elena asked what the noise was again.', importance: 1 }] as never, [])
   assert.deepEqual(everyday, [])
   assert.equal(raisedMemories(`how is mira`, [{ text: 'The sister Mira is well.', importance: 1 }] as never, []).length, 1)
   // The player's tag and name are never what makes a fact count as raised.
@@ -2016,11 +2016,11 @@ await check('memory normal curator requests retain fixed pre-change hashes for G
 // These fixtures exercise stored audiences independently of turn dispatch.
 async function audienceFixture() {
   const source = groupTemplate()
-  source.seed_cast![0].name = 'Jess'; source.seed_cast![1].name = 'Priya'
+  source.seed_cast![0].name = 'Jess'; source.seed_cast![1].name = 'Elena'
   source.opening_lines = [{ name: 'Jess', text: 'An audience fixture opens.' }]
   await start(source); addEvents(40)
   const cast = members.map((member, index) => ({ ...member, name: source.seed_cast![index].name }))
-  return { cast, jess: cast[0], priya: cast[1] }
+  return { cast, jess: cast[0], elena: cast[1] }
 }
 const requestText = (request: Row) => (request.messages as Array<{ content: string }>).map(message => message.content).join('\n')
 async function fixtureDirectPrompt(cast: typeof members, thread: string, memories: string[], openThreads: string[], raisedBy?: string, summaries: string[] = []) {
@@ -2052,7 +2052,7 @@ await check('audience derivation narrows group direct mixed and drops two direct
   assert.deepEqual(deriveGroupAudience([other]), { valid: false })
 })
 for (const channel of ['pins', 'retrieval', 'raised', 'scene', 'open threads']) await check(`audience ${channel} private facts enter only Jess direct requests`, async () => {
-  const { cast, jess, priya } = await audienceFixture()
+  const { cast, jess, elena } = await audienceFixture()
   const source = storedEvents()[2]; source.data.dm_with = jess.id
   const text = 'The albatross keeps a violet envelope.'
   const raisedBy = channel === 'raised' ? 'albatross' : channel === 'scene' ? 'ordinary greeting' : undefined
@@ -2063,9 +2063,9 @@ for (const channel of ['pins', 'retrieval', 'raised', 'scene', 'open threads']) 
   ragMemoryTexts = channel === 'retrieval' ? [text] : []
   ragOpenThreads = channel === 'open threads' ? [text] : []
   assert((await fixtureDirectPrompt(cast, jess.id, ragMemoryTexts, ragOpenThreads, raisedBy)).includes(text))
-  assert(!(await fixtureDirectPrompt(cast, priya.id, ragMemoryTexts, ragOpenThreads, raisedBy)).includes(text))
+  assert(!(await fixtureDirectPrompt(cast, elena.id, ragMemoryTexts, ragOpenThreads, raisedBy)).includes(text))
   // The same helper is used by ordinary group, addressed and bystander calls.
-  for (const speakers of [[jess.name], [priya.name], [jess.name, priya.name]]) {
+  for (const speakers of [[jess.name], [elena.name], [jess.name, elena.name]]) {
     const memory = await groupWriterMemory({ instanceId: new ObjectId(instanceId), player: playerName,
       speakers, enabled: true, thread: undefined, memories: ragMemoryTexts, openThreads: ragOpenThreads, raisedBy })
     assert(!JSON.stringify(memory).includes(text))
@@ -2074,8 +2074,8 @@ for (const channel of ['pins', 'retrieval', 'raised', 'scene', 'open threads']) 
   await turn({ userMessage: '@Jess continue' }, never)
   assert(writerCalls.length); assert(writerCalls.every(request => !requestText(request).includes(text)))
   put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'
-  writerCalls = []; modelReplies = ['Jess: Another shared reply.', 'Priya: A bystander reply.']
-  await turn({ userMessage: '@Jess @Priya albatross' }, never)
+  writerCalls = []; modelReplies = ['Jess: Another shared reply.', 'Elena: A bystander reply.']
+  await turn({ userMessage: '@Jess @Elena albatross' }, never)
   assert.equal(writerCalls.length, 2)
   assert(writerCalls.every(request => !requestText(request).includes(text)))
 })
@@ -2096,7 +2096,7 @@ await check('audience unknown mismatched mature and missing sources fail closed 
   assert((await fixtureDirectPrompt(cast, jess.id, [base.text], [])).includes(base.text))
 })
 await check('audience recent messages and stored local retrieved summaries stay in their own thread', async () => {
-  const { cast, jess, priya } = await audienceFixture()
+  const { cast, jess, elena } = await audienceFixture()
   const source = storedEvents().at(-1)!
   source.data.dm_with = jess.id; source.data.player_input = 'Private recent envelope marker.'
   source.data.lines = [{ character_id: jess.id, text: 'Private Jess recent answer.', shown_at: new Date() }]
@@ -2106,7 +2106,7 @@ await check('audience recent messages and stored local retrieved summaries stay 
   ragSummaryHits = [{ id: 'fixture-private-summary', tier: 'scene', text: privateSummary, startSequence: source.sequence, endSequence: source.sequence }]
   const summaryInput = ragSummaryHits
   assert.deepEqual(await groupWriterSummaries(new ObjectId(instanceId), summaryInput, jess.id), [privateSummary])
-  for (const thread of [undefined, priya.id]) {
+  for (const thread of [undefined, elena.id]) {
     assert.deepEqual(await groupWriterSummaries(new ObjectId(instanceId), summaryInput, thread), [])
     assert(!JSON.stringify(groupMessages(storedEvents(), playerName, cast, thread)).includes('Private recent envelope marker.'))
   }
@@ -2123,8 +2123,8 @@ await check('audience recent messages and stored local retrieved summaries stay 
   storedEvents().at(-1)!.data.dm_with = jess.id
   storedEvents().at(-1)!.data.player_input = 'Private recent envelope marker.'
   put(rows('users')[0], 'preferences.nsfw_enabled', true); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'
-  writerCalls = []; modelReplies = ['Jess: A public addressed answer.', 'Priya: A public bystander answer.']
-  await turn({ userMessage: '@Jess @Priya continue' }, never)
+  writerCalls = []; modelReplies = ['Jess: A public addressed answer.', 'Elena: A public bystander answer.']
+  await turn({ userMessage: '@Jess @Elena continue' }, never)
   assert.equal(writerCalls.length, 2)
   assert(writerCalls.every(request => !/Private recent envelope|Private Jess recent|Private Jess summary/.test(requestText(request))))
 })
@@ -2161,7 +2161,7 @@ await check('audience curator batches separate messages open threads overlap and
   assert.deepEqual(batch!.events.slice(0, 2).map(event => event.sequence), [12, 15])
 })
 await check('audience summary jobs store direct scenes private and shared interleaved ranges reach only their audience', async () => {
-  const { cast, jess, priya } = await audienceFixture()
+  const { cast, jess, elena } = await audienceFixture()
   // Start a fresh 24-event window, with twelve messages in each thread.
   rows('events').splice(1); addEvents(24)
   const events = storedEvents().slice(1)
@@ -2188,12 +2188,12 @@ await check('audience summary jobs store direct scenes private and shared interl
     startSequence: Number(get(row, 'event_range.start_sequence')), endSequence: Number(get(row, 'event_range.end_sequence')) }))
   const iid = new ObjectId(instanceId)
   assert.deepEqual(await groupWriterSummaries(iid, candidates), ['Shared scene summary marker.'])
-  assert.deepEqual(await groupWriterSummaries(iid, candidates, priya.id), ['Shared scene summary marker.'])
+  assert.deepEqual(await groupWriterSummaries(iid, candidates, elena.id), ['Shared scene summary marker.'])
   const own = await groupWriterSummaries(iid, candidates, jess.id)
   assert.deepEqual(own, ['Private scene summary marker.', 'Shared scene summary marker.'])
   const directRequest = await fixtureDirectPrompt(cast, jess.id, [], [], undefined, own)
   assert(directRequest.includes('Private scene summary marker.'))
-  const otherRequest = await fixtureDirectPrompt(cast, priya.id, [], [], undefined, await groupWriterSummaries(iid, candidates, priya.id))
+  const otherRequest = await fixtureDirectPrompt(cast, elena.id, [], [], undefined, await groupWriterSummaries(iid, candidates, elena.id))
   assert(!otherRequest.includes('Private scene summary marker.'))
   // Move summaries outside the recent window and exercise the real group writer.
   addEvents(35); writerCalls = []; ragSummaryHits = []
@@ -2202,7 +2202,7 @@ await check('audience summary jobs store direct scenes private and shared interl
   assert(writerCalls.some(request => requestText(request).includes('Shared scene summary marker.')))
   assert(writerCalls.every(request => !requestText(request).includes('Private scene summary marker.')))
   // Retrieval cannot invent an audience, text or coverage on a stored row.
-  for (const invalid of [null, 'unknown', priya.id]) {
+  for (const invalid of [null, 'unknown', elena.id]) {
     direct.private_to = invalid
     assert.deepEqual(await groupWriterSummaries(iid, [candidates[0]], jess.id), [])
   }
@@ -2506,12 +2506,12 @@ await check('direct local summaries and adult last twelve history use only their
   assert(!requestText(writerCalls[0]).includes('Older direct summary marker.'))
   assert(!requestText(writerCalls[0]).includes('filler 1'))
 })
-await check('direct real Jess and Priya prompts separate history memories summaries retrieval context and group block', async () => {
-  const { jess, priya } = await audienceFixture()
+await check('direct real Jess and Elena prompts separate history memories summaries retrieval context and group block', async () => {
+  const { jess, elena } = await audienceFixture()
   const events = storedEvents()
   const secret = events[2], other = events[3]
   secret.data.dm_with = jess.id; secret.data.player_input = 'Private Jess envelope.'; secret.data.lines![0].text = 'Private Jess reply.'
-  other.data.dm_with = priya.id; other.data.player_input = 'Private Priya copper.'; other.data.lines![0].character_id = priya.id; other.data.lines![0].text = 'Private Priya reply.'
+  other.data.dm_with = elena.id; other.data.player_input = 'Private Elena copper.'; other.data.lines![0].character_id = elena.id; other.data.lines![0].text = 'Private Elena reply.'
   const summaryText = 'Private Jess old summary.'
   rows('sceneSummaries').push({ _id: new ObjectId(), instance_id: new ObjectId(instanceId), private_to: jess.id, summary_text: summaryText,
     event_range: { start_sequence: secret.sequence, end_sequence: secret.sequence }, status: 'active' })
@@ -2519,30 +2519,30 @@ await check('direct real Jess and Priya prompts separate history memories summar
   const mem = (text: string, source: typeof secret, privateTo?: string) => ({ _id: new ObjectId(), instance_id: new ObjectId(instanceId),
     player_id: new ObjectId(playerId), text, subjects: ['player'], objects: [], is_archived: false, importance: 4,
     source_event_ids: [source._id], ...(privateTo ? { private_to: privateTo } : {}), updated_at: new Date() })
-  rows('memories').push(mem('Shared memory marker.', events[1]), mem('Jess memory marker.', secret, jess.id), mem('Priya memory marker.', other, priya.id))
-  const expectedBlock = groupMessages(events, playerName, [jess, priya, ...members.slice(2)]).slice(-8).map(line => `${line.name}: ${line.text}`).join('\n')
+  rows('memories').push(mem('Shared memory marker.', events[1]), mem('Jess memory marker.', secret, jess.id), mem('Elena memory marker.', other, elena.id))
+  const expectedBlock = groupMessages(events, playerName, [jess, elena, ...members.slice(2)]).slice(-8).map(line => `${line.name}: ${line.text}`).join('\n')
   modelReplies = ['Jess: A direct reply from her.']; writerCalls = []; ragCalls = []
   await turn({ directWith: jess.id, userMessage: 'Jess current private line.' }, never)
   const body = requestText(writerCalls[0])
   for (const value of ['Private Jess envelope.', 'Private Jess reply.', summaryText, 'Jess memory marker.', 'Shared memory marker.', expectedBlock]) assert(body.includes(value), value)
-  for (const value of ['Private Priya copper.', 'Private Priya reply.', 'Priya memory marker.']) assert(!body.includes(value), value)
+  for (const value of ['Private Elena copper.', 'Private Elena reply.', 'Elena memory marker.']) assert(!body.includes(value), value)
   assert.deepEqual(ragCalls[0][9], { thread: jess.id })
   assert.equal(ragCalls[0][2], `${playerName}: Private Jess envelope.\nJess: Private Jess reply.\n${playerName}: Jess current private line.`)
   const boundary = storedEvents().length
   addEvents(8, jess)
   for (const event of storedEvents().slice(boundary)) event.data.dm_with = jess.id
-  writerCalls = []; ragCalls = []; modelReplies = ['Priya: A direct reply from her.']
-  await turn({ directWith: priya.id, userMessage: 'Priya current private line.' }, never)
+  writerCalls = []; ragCalls = []; modelReplies = ['Elena: A direct reply from her.']
+  await turn({ directWith: elena.id, userMessage: 'Elena current private line.' }, never)
   const priyaBody = requestText(writerCalls[0])
   assert(priyaBody.includes(expectedBlock))
-  for (const value of ['Private Priya copper.', 'Private Priya reply.', 'Priya memory marker.', 'Shared memory marker.']) assert(priyaBody.includes(value), value)
+  for (const value of ['Private Elena copper.', 'Private Elena reply.', 'Elena memory marker.', 'Shared memory marker.']) assert(priyaBody.includes(value), value)
   assert(!/Private Jess|Jess memory marker|Jess current private/.test(priyaBody))
-  assert.deepEqual(ragCalls[0][9], { thread: priya.id })
+  assert.deepEqual(ragCalls[0][9], { thread: elena.id })
   assert(!String(ragCalls[0][2]).includes('Jess'))
   writerCalls = []; ragCalls = []; modelReplies = ['Jess: A shared fresh reply.']
   await turn({ userMessage: '@Jess Hello group.' }, never)
-  assert(writerCalls.every(request => !/Private Jess|Private Priya|memory marker\.|current private|Group chat \(read-only/.test(requestText(request).replace('Shared memory marker.', ''))))
-  assert(ragCalls.every(call => !/Private Jess|Private Priya|current private/.test(String(call[2]))))
+  assert(writerCalls.every(request => !/Private Jess|Private Elena|memory marker\.|current private|Group chat \(read-only/.test(requestText(request).replace('Shared memory marker.', ''))))
+  assert(ragCalls.every(call => !/Private Jess|Private Elena|current private/.test(String(call[2]))))
   assert(ragCalls.every(call => call.length === 10 && (call[9] as Row).thread === undefined))
 })
 await check('direct repeat histories are isolated both ways including the group block and seed openings', async () => {

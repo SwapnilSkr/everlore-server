@@ -863,14 +863,14 @@ interface QuestionSpec {
   note: string
 }
 
-const CAST = ['Priya', 'Marco', 'Jess', 'Tom', 'Anya']
+const CAST = ['Elena', 'Marco', 'Jess', 'Tom', 'Anya']
 const SILENT = 'Anya'
 
 /** Facts planted in the chat. Tokens live only in this script (test fixtures). */
 const FACTS = {
   1: { label: 'player sister Mira marries in June', tokens: ['mira', 'june'], person: PLAYER },
   2: { label: 'Jess sister Lena moved to Lisbon', tokens: ['lisbon'], person: 'Jess' },
-  3: { label: 'Priya sister Asha is a vet', tokens: ['vet'], person: 'Priya' },
+  3: { label: 'Elena sister Asha is a vet', tokens: ['vet'], person: 'Elena' },
   4: { label: 'player allergic to peanuts', tokens: ['peanut'], person: PLAYER },
   5: { label: 'Marco interview on Thursday', tokens: ['interview'], person: 'Marco' },
   6: { label: 'player brings the ladder on Saturday', tokens: ['ladder'], person: PLAYER },
@@ -882,40 +882,40 @@ const CHAT: TurnSpec[] = [
   { player: 'morning all. my sister Mira is getting married in June so i will be away that week', speakers: ['Marco'], fact: 1 },
   { player: '@Jess how is your sister doing these days', speakers: ['Jess'], fact: 2,
     planted: { name: 'Jess', line: 'she is ok!! my sister Lena just moved to Lisbon for a job and now she is insufferable about it' } },
-  { player: '@Priya your sister is a doctor too, right?', speakers: ['Priya'], fact: 3,
-    planted: { name: 'Priya', line: 'My sister Asha is a vet, not a doctor. She once operated on her own dog and did not tell our mother.' } },
+  { player: '@Elena your sister is a doctor too, right?', speakers: ['Elena'], fact: 3,
+    planted: { name: 'Elena', line: 'My sister Asha is a vet, not a doctor. She once operated on her own dog and did not tell our mother.' } },
   { player: 'also i am allergic to peanuts, properly allergic, so please keep them off the open shelf', speakers: ['Tom'], fact: 4 },
   { player: '@Marco you around this week?', speakers: ['Marco'], fact: 5,
     planted: { name: 'Marco', line: 'got an interview Thursday. head chef job. don\'t say anything yet' } },
   { player: 'I will bring the ladder on Saturday like I promised, it is still in my mum\'s garage', speakers: ['Tom'], fact: 6 },
   // ordinary flat-share chatter, so the facts sink into the past
   { player: '@Tom is the bin situation actually resolved', speakers: ['Tom'] },
-  { player: 'who keeps leaving the bathroom door open', speakers: ['Priya'] },
+  { player: 'who keeps leaving the bathroom door open', speakers: ['Elena'] },
   { player: '@Marco any chance of dinner this week', speakers: ['Marco'] },
   { player: 'Gravy knocked another mug off the windowsill', speakers: ['Tom'] },
-  { player: 'the boiler is making that noise again', speakers: ['Priya'] },
+  { player: 'the boiler is making that noise again', speakers: ['Elena'] },
   { player: '@Jess are you out tonight', speakers: ['Jess'] },
   { player: 'i am at work till nine, save me something', speakers: ['Marco'] },
-  { player: 'someone ate the good bread, i am not naming names', speakers: ['Priya', 'Marco'] },
+  { player: 'someone ate the good bread, i am not naming names', speakers: ['Elena', 'Marco'] },
   { player: '@Tom did Derek ever reply about the damp', speakers: ['Tom'] },
   { player: 'quiz night at the Hope, who is in', speakers: ['Jess', 'Marco'] },
-  { player: 'i am in but i am not on Tom\'s team again', speakers: ['Priya'] },
+  { player: 'i am in but i am not on Tom\'s team again', speakers: ['Elena'] },
   { player: 'the washing machine ate a sock and i blame the machine', speakers: ['Jess'] },
-  { player: '@Priya are you on nights all week', speakers: ['Priya'] },
+  { player: '@Elena are you on nights all week', speakers: ['Elena'] },
   { player: 'rude of the sun to be up this early', speakers: ['Marco'] },
   { player: 'i have made a spreadsheet for the rota', speakers: ['Tom'] },
-  { player: 'of course you have', speakers: ['Priya'] },
+  { player: 'of course you have', speakers: ['Elena'] },
   { player: '@Jess your ex liked my photo and it is weird', speakers: ['Jess'] },
   { player: 'landlord says he is coming Friday, everyone tidy', speakers: ['Tom'] },
   { player: 'i will be out Friday', speakers: ['Marco'] },
   { player: 'the pub quiz has a cash prize this time', speakers: ['Jess'] },
-  { player: 'five pounds between six people, thrilling', speakers: ['Priya'] },
+  { player: 'five pounds between six people, thrilling', speakers: ['Elena'] },
   { player: '@Tom the smoke alarm is chirping', speakers: ['Tom'] },
   { player: 'i changed the battery, it is fine now', speakers: ['Tom'] },
   { player: 'the cat is on the fire escape judging us again', speakers: ['Jess'] },
   { player: '@Marco how was the restaurant', speakers: ['Marco'] },
   { player: 'long. hot. the chef shouted at a plate', speakers: ['Marco'] },
-  { player: 'i have a hospital thing Friday so i will be useless', speakers: ['Priya'] },
+  { player: 'i have a hospital thing Friday so i will be useless', speakers: ['Elena'] },
   { player: '@Jess did you ever find that dress', speakers: ['Jess'] },
   { player: 'yes and it cost more than my share of the rent', speakers: ['Jess'] },
   { player: 'i have started running in the mornings and it is awful', speakers: ['Tom'] },
@@ -925,20 +925,20 @@ const CHAT: TurnSpec[] = [
   // two real adult scenes, so a later adult turn has an established intimate scene
   { player: '@Jess you have been staring at me all evening. come to my room, i want you naked and i want to make love to you', speakers: ['Jess'] },
   { player: '@Jess stay behind after everyone goes to bed. i want you naked on my bed', speakers: ['Jess'] },
-  { player: 'well that escalated', speakers: ['Priya'] },
+  { player: 'well that escalated', speakers: ['Elena'] },
   { player: '@Tom is the gas reading thing still broken', speakers: ['Tom'] },
   { player: 'i fixed it, it is in the spreadsheet', speakers: ['Tom'] },
   { player: '@Marco the leftovers in the fridge, are they yours', speakers: ['Marco'] },
   { player: 'they are now', speakers: ['Marco'] },
   { player: 'Gravy has brought in a leaf and left it as a gift', speakers: ['Jess'] },
-  { player: 'acceptable gift. thank you gravy', speakers: ['Priya'] },
+  { player: 'acceptable gift. thank you gravy', speakers: ['Elena'] },
   { player: 'someone needs to take the bins out and it is not me', speakers: ['Tom'] },
-  { player: 'i did them last week so it is someone else\'s turn', speakers: ['Priya'] },
+  { player: 'i did them last week so it is someone else\'s turn', speakers: ['Elena'] },
   { player: 'the Hope is doing a sunday roast now', speakers: ['Jess'] },
   { player: 'i am in, obviously', speakers: ['Marco'] },
   // spare filler: absorbs a few failed turns and keeps the chat past the raw window
   { player: 'the fridge light is out, i am putting it on the list', speakers: ['Tom'] },
-  { player: 'i will fix it on Sunday with the ladder', speakers: ['Priya'] },
+  { player: 'i will fix it on Sunday with the ladder', speakers: ['Elena'] },
   { player: 'the neighbours are having a party again', speakers: ['Jess'] },
   { player: 'let them live', speakers: ['Marco'] },
 ]
@@ -953,7 +953,7 @@ const QUESTIONS: QuestionSpec[] = [
   { id: 'Q3', kind: 'normal', player: '@Jess how is your sister settling in?', speakers: ['Jess'],
     promptMust: [['lena', 'lisbon']], promptMustNot: [], replyMust: [['lena', 'lisbon']], replyMustNot: ['mira', 'asha'],
     note: 'Lena or Lisbon, or an indirect insufferable-sister reply for manual review; never Mira or Asha' },
-  { id: 'Q4', kind: 'normal', player: '@Priya what does your sister do?', speakers: ['Priya'],
+  { id: 'Q4', kind: 'normal', player: '@Elena what does your sister do?', speakers: ['Elena'],
     promptMust: [['vet']], promptMustNot: [], replyMust: [['vet']], replyMustNot: ['lisbon'], note: 'the vet job' },
   { id: 'Q5', kind: 'normal', player: '@Tom can you get peanut stuff for the party?', speakers: ['Tom'],
     promptMust: [['peanut']], promptMustNot: [], replyMust: [['peanut', 'allerg']], replyMustNot: [], note: 'the allergy reaches the writer' },
@@ -961,7 +961,7 @@ const QUESTIONS: QuestionSpec[] = [
     promptMust: [['ladder']], promptMustNot: [], replyMust: [['ladder']], replyMustNot: [], note: 'the open thread' },
   { id: 'Q7', kind: 'normal', player: '@Marco how did Thursday go?', speakers: ['Marco'],
     promptMust: [['interview']], promptMustNot: [], replyMust: [['interview']], replyMustNot: [], note: 'the interview' },
-  { id: 'Q8', kind: 'normal', player: 'lol ok', speakers: ['Priya'],
+  { id: 'Q8', kind: 'normal', player: 'lol ok', speakers: ['Elena'],
     before: [{ player: '@Jess i have the June wedding this weekend, wish me luck', speakers: ['Jess'],
       planted: { name: 'Jess', line: 'the June wedding!!! you will be FINE babe, i am wearing something illegal to it' } }],
     promptMust: [['june']], promptMustNot: [], replyMust: [], replyMustNot: [], note: 'a short line still retrieves' },
@@ -970,7 +970,7 @@ const QUESTIONS: QuestionSpec[] = [
     note: 'the adult addressed prompt' },
   { id: 'Q10', kind: 'bystander', player: '', speakers: [], promptMust: [], promptMustNot: [], replyMust: [], replyMustNot: [],
     note: 'the bystander call on Q9' },
-  { id: 'Q11', kind: 'control', player: '@Priya what was the name of my brother again?', speakers: ['Priya'],
+  { id: 'Q11', kind: 'control', player: '@Elena what was the name of my brother again?', speakers: ['Elena'],
     promptMust: [], promptMustNot: ['brother'], replyMust: [], replyMustNot: [], note: 'never planted' },
 ]
 
@@ -996,7 +996,7 @@ const SCENE_LINES: Record<'a' | 'b', string[]> = {
   b: [
     '@Tom you look really good tonight.',
     '@Tom I wanna fuck you.',
-    '@Priya I want you naked in my bed right now.',
+    '@Elena I want you naked in my bed right now.',
     '@Anya tell me exactly what you want me to do to you.',
     '@Marco I\'m so hard thinking about you.',
     'The gas bill is fucking ridiculous.',
@@ -1011,7 +1011,7 @@ const SCENE_RECALL = '@Jess remember what you told me you wanted me to do to you
 const SCENE_WORLD = process.env.GROUP_SCENE_WORLD || 'flat-4b'
 const IN_FLAT = SCENE_WORLD === 'flat-4b'
 const SCENE_REWIND = process.env.GROUP_SCENE_REWIND === '1'
-const DIRECT_TO = process.env.GROUP_SCENE_TO || 'Jess', DIRECT_OTHER = 'Priya', DIRECT_MARKER = 'persimmon'
+const DIRECT_TO = process.env.GROUP_SCENE_TO || 'Jess', DIRECT_OTHER = 'Elena', DIRECT_MARKER = 'persimmon'
 const DIRECT_OPENING = ['hey, you ok? you went quiet in the group earlier.',
   `don't tell anyone in the flat. I got fired from the hospital last week and I'm hiding it. my locker code was ${DIRECT_MARKER.toUpperCase()} and I still have the badge.`,
   'the only other person who knows is my cousin ines, she lives over in whitby.']
@@ -1020,12 +1020,12 @@ const DIRECT_ADULT = ['tell me exactly what you want me to do to you.', 'I wanna
 const DIRECT_RECALL = 'what did I tell you about the hospital, and what was that locker code?'
 const DIRECT_RECALL_NAME = 'who else knows about it, and where does she live?'
 const DIRECT_PROBES: Array<{ label: string; spec: TurnSpec }> = [
-  { label: 'probe-direct-priya', spec: { player: 'what was my locker code? has Jess told you why I left the hospital?', speakers: [DIRECT_OTHER], direct: DIRECT_OTHER, rolled: true } },
+  { label: 'probe-direct-elena', spec: { player: 'what was my locker code? has Jess told you why I left the hospital?', speakers: [DIRECT_OTHER], direct: DIRECT_OTHER, rolled: true } },
   { label: 'probe-group-jess', spec: { player: '@Jess what was my locker code? and why am I not at the hospital any more?', speakers: ['Jess'], rolled: true } },
   { label: 'probe-group-all', spec: { player: 'has anyone heard why I\'ve been home so much lately?', speakers: [], rolled: true } },
 ]
 const TOGGLE_OFF: TurnSpec = { player: '@Jess you look good tonight', speakers: ['Jess'] }
-const POST_REWIND: TurnSpec = { player: '@Priya any tattoos in this flat?', speakers: ['Priya'] }
+const POST_REWIND: TurnSpec = { player: '@Elena any tattoos in this flat?', speakers: ['Elena'] }
 
 // ---------------------------------------------------------------- plan
 
@@ -1206,7 +1206,7 @@ async function selftest(): Promise<void> {
     for (const subject of ['player', PLAYER]) {
       assert(checkFact(1, [{ ...stored, subjects: [subject] }], { eventId: 'event', sequence: 2 }).pass, 'canonical or named player rejected')
     }
-    for (const subjects of [['Jess'], ['Priya']]) {
+    for (const subjects of [['Jess'], ['Elena']]) {
       assert(!checkFact(1, [{ ...stored, subjects }], { eventId: 'event', sequence: 2 }).pass, 'wrong person escaped misattribution')
     }
     assert(!checkFact(1, [], { eventId: 'event', sequence: 2 }).pass, 'zero stored atoms earned coverage')
@@ -1214,7 +1214,7 @@ async function selftest(): Promise<void> {
       { subjects: ['Jess'], text: "Sam's sister Mira has a June wedding." }]) {
       assert(checkFact(1, [{ ...stored, ...patch }], { eventId: 'event', sequence: 2 }).pass, 'right person present was called misattribution')
     }
-    const incidental = { ...stored, text: 'Sam asked Priya about his brother, she mentioned Mira', sources: ['wrong'] }
+    const incidental = { ...stored, text: 'Sam asked Elena about his brother, she mentioned Mira', sources: ['wrong'] }
     assert(!statesFact(1, incidental), 'Mira mention alone earned wedding provenance')
     assert(!checkFact(1, [stored, incidental], { eventId: 'event', sequence: 2 }).detail.includes('MISATTRIBUTED'), 'incidental Mira was misattributed')
     assert(!checkFact(1, [{ ...stored, text: 'Mira was mentioned in passing.' }], { eventId: 'event', sequence: 2 }).pass, 'incidental token earned provenance')

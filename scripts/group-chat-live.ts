@@ -787,7 +787,7 @@ const SCENE_A: PlannedTurn[] = [
 const SCENE_B: PlannedTurn[] = [
   { line: '@Tom you look really good tonight.', expected: 'adult' },
   { line: '@Tom I wanna fuck you.', expected: 'adult' },
-  { line: '@Priya I want you naked in my bed right now.', expected: 'adult' },
+  { line: '@Elena I want you naked in my bed right now.', expected: 'adult' },
   { line: '@Anya tell me exactly what you want me to do to you.', expected: 'adult' },
   { line: '@Marco I\'m so hard thinking about you.', expected: 'adult' },
   { line: 'The gas bill is fucking ridiculous.', expected: 'normal' },
