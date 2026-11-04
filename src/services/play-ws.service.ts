@@ -1,4 +1,4 @@
-import { publicGroupData } from './group-chat/public'
+import { publicGroupPayload } from './group-chat/public'
 import { recordLastActive } from './last-active.service'
 import { getRedisClient, getRedisSubscriber } from '../config/redis'
 import { generationService } from './generation.service'
@@ -409,7 +409,8 @@ export const playWsService = {
             ? { ...state, template: publicTemplate(state.template) }
             : state
           // Replies to concurrent loads can overtake each other, so a thread's answer names its thread.
-          ws.send(JSON.stringify({ type: 'instance_loaded', ...(directWith === undefined ? {} : { directWith }), data: state.template?.kind === 'group' ? publicGroupData(responseState) : responseState }))
+          // Faces come from the template read on this request, so art published later still reaches an old save.
+          ws.send(JSON.stringify({ type: 'instance_loaded', ...(directWith === undefined ? {} : { directWith }), data: state.template?.kind === 'group' ? publicGroupPayload(responseState, state.template) : responseState }))
         } catch (err: unknown) {
           ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.load_instance', userId: user.id }) }))
         }

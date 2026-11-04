@@ -14,6 +14,9 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
     query: InstanceQueryParams,
   })
 
+  // Must precede /:id, or the list would be read as an instance id.
+  .get('/group-chats', (ctx) => instanceController.groupChats(ctx))
+
   .get('/play-status/:templateId', (ctx) => instanceController.playStatus(ctx))
 
   .get('/by-template/:templateId', (ctx) => instanceController.listByTemplate(ctx))

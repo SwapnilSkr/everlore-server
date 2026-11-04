@@ -1,3 +1,4 @@
+import { listGroupChats } from '../services/group-chat/chats'
 import { openPendingDirect } from '../services/group-chat/notifications'
 import { listGroupActions } from '../services/group-chat/actions'
 import { getGroupBonds, setGroupBonds } from '../services/group-chat/bonds'
@@ -29,6 +30,10 @@ export const instanceController = {
   threads: async ({ user, params }: { user: AuthUser | null; params: { id: string } }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     return listGroupThreads(params.id, user.id)
+  },
+  groupChats: async ({ user }: { user: AuthUser | null }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    return listGroupChats(user.id)
   },
 
   list: async ({ user, query }: { user: AuthUser | null; query: { include_archived?: boolean } }) => {

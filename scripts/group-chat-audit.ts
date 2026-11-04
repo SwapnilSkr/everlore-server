@@ -4130,5 +4130,236 @@ await check('notify mark 9 handler auth validation token ownership and no log le
   assert(!/log\.(?:info|warn|error)\([^\n]*device\.token/.test(source))
 })
 
+/** A cast the artist has already painted the first two faces for. */
+function facedTemplate() {
+  const source = groupTemplate()
+  source.seed_cast = source.seed_cast!.map((member, index) => index < 2 ? { ...member,
+    portrait: { asset_key: `castface_${index}.png`, source: 'authored' as const, appearance_version: 1, painted_at: new Date('2026-01-01Z') },
+  } : member)
+  return source
+}
+const faces = ['https://fixture.invalid/castface_0.png', 'https://fixture.invalid/castface_1.png']
+const noAssetKey = (value: unknown) => assert(!/"asset_key"\s*:/.test(JSON.stringify(value)), 'asset key reached the player')
+
+await check('art room cards carry authored faces and never a stored portrait', async () => {
+  await start(facedTemplate())
+  rows('characters')[0].portrait = { asset_key: 'save_face.png', source: 'generated', appearance_version: 1, painted_at: new Date() }
+  const sent: Row[] = []
+  await playWsService.handleMessage(socket(sent), { action: 'load_instance', instance_id: instanceId })
+  assert.equal(sent[0].type, 'instance_loaded')
+  const cast = (sent[0].data as Row).characters as Row[]
+  const card = (name: string) => cast.find(entry => entry.canonical_name === name)!
+  assert.equal(card(names[0]).portrait_url, faces[0]); assert.equal(card(names[1]).portrait_url, faces[1])
+  assert(!('portrait' in card(names[0])), 'a stored portrait was sent with its asset key')
+  assert(!('portrait_url' in card(names[2])))
+  noAssetKey(sent)
+  // The template is read live, so art published later reaches this same save.
+  rows('worldTemplates')[0].seed_cast[3].portrait = { asset_key: 'castface_3.png', source: 'authored', appearance_version: 1, painted_at: new Date() }
+  const again: Row[] = []
+  await playWsService.handleMessage(socket(again), { action: 'load_instance', instance_id: instanceId })
+  assert.equal(((again[0].data as Row).characters as Row[]).find(entry => entry.canonical_name === names[3])!.portrait_url, 'https://fixture.invalid/castface_3.png')
+})
+
+await check('art public group template lists members with faces and no authored traits', async () => {
+  await start(facedTemplate())
+  const { templateController } = await import('../src/controllers/template.controller')
+  const preview = await templateController.getById({ params: { id: template._id.toHexString() }, user: null }) as Row
+  assert.equal(preview.kind, 'group')
+  assert.deepEqual(preview.members, [
+    { name: names[0], role: 'member 0', portrait_url: faces[0] },
+    { name: names[1], role: 'member 1', portrait_url: faces[1] },
+    { name: names[2], role: 'member 2' },
+    { name: names[3], role: 'member 3' },
+  ])
+  for (const key of ['persona', 'voice', 'wants', 'intimacy', 'start_bond', 'talkativeness', 'group', 'topics', 'opening_lines', 'seed_cast', 'seed_prompt']) {
+    assert(!(key in preview), `preview leaked ${key}`)
+  }
+  noAssetKey(preview)
+})
+
+await check('art non-group template keeps its exact public shape', async () => {
+  const { publicGroupTemplate } = await import('../src/services/group-chat/public')
+  const { publicTemplate } = await import('../src/utils/template-public-projection')
+  const { seed_cast: _cast, ...world } = { ...groupTemplate(), kind: 'world' as const }
+  assert.deepEqual(publicGroupTemplate(world), publicTemplate(world))
+  assert(!('members' in publicGroupTemplate(world)))
+})
+
+await check('art future line hidden from chats and threads behind the earlier visible one', async () => {
+  await start()
+  const now = Date.now(), seed = clone(rows('events')[0])
+  rows('events').push({ ...seed, _id: new ObjectId(), sequence: 2, created_at: new Date(now - 60_000), data: {
+    player_input: '', model_used: 'fake',
+    lines: [
+      { character_id: ids[0], text: 'Earlier visible line', shown_at: new Date(now - 55_000) },
+      { character_id: ids[1], text: 'Future secret line', shown_at: new Date(now + 3_600_000) },
+    ],
+  } })
+  rows('events').push({ ...seed, _id: new ObjectId(), sequence: 3, created_at: new Date(now - 50_000), data: {
+    dm_with: ids[2], player_input: 'Private hello', model_used: 'fake',
+    lines: [
+      { character_id: ids[2], text: 'Older private reply', shown_at: new Date(now - 45_000) },
+      { character_id: ids[2], text: 'Future private reply', shown_at: new Date(now + 3_600_000) },
+    ],
+  } })
+  const { instanceRoutes } = await import('../src/routes/instance.routes')
+  const app = new Elysia().onError(({ error, set }) => {
+    set.status = 'statusCode' in error ? Number(error.statusCode) : 500
+    return { message: error.message }
+  }).use(instanceRoutes)
+  routeUser = { id: playerId, tier: 'creator' }
+  const listResponse = await app.handle(new Request('http://localhost/instances/group-chats'))
+  assert.equal(listResponse.status, 200)
+  const row = ((await listResponse.json()) as { chats: Row[] }).chats[0]
+  assert.equal((row.last as Row).text, 'Earlier visible line')
+  assert.equal((row.threads as Row[]).length, 1)
+  assert.equal(((row.threads as Row[])[0].last as Row).text, 'Older private reply')
+  assert.equal((row.threads as Row[])[0].message_count, 2)
+  const threadResponse = await app.handle(new Request(`http://localhost/instances/${instanceId}/threads`))
+  assert.equal(threadResponse.status, 200)
+  const thread = ((await threadResponse.json()) as Row[])[0]
+  assert.equal(thread.lastLine, 'Older private reply'); assert.equal(thread.messageCount, 2)
+  assert(!JSON.stringify([row, thread]).includes('Future'), 'a message ahead of the clock was shown')
+  assert.deepEqual(row.pending_from, [])
+  routeUser = null
+  assert.equal((await app.handle(new Request('http://localhost/instances/group-chats'))).status, 401)
+  routeUser = { id: new ObjectId().toHexString(), tier: 'creator' }
+  assert.deepEqual(await (await app.handle(new Request('http://localhost/instances/group-chats'))).json(), { chats: [] })
+  routeUser = { id: playerId, tier: 'creator' }
+  put(rows('worldInstances')[0], 'meta.is_archived', true)
+  assert.deepEqual(await (await app.handle(new Request('http://localhost/instances/group-chats'))).json(), { chats: [] })
+})
+
+await check('art toggle off keeps adult words out of every list preview', async () => {
+  await start()
+  const now = Date.now(), seed = clone(rows('events')[0])
+  const push = (sequence: number, type: string, at: number, data: Row) => rows('events').push({ ...seed, _id: new ObjectId(), sequence,
+    created_at: new Date(at), type, data: { model_used: 'fake', player_input: '', ...data } })
+  // Room: an ordinary line, then an adult turn whose only words are the player's.
+  push(2, 'narration', now - 80_000, { player_input: 'Earlier room input',
+    lines: [{ character_id: ids[0], text: 'Earlier room line', shown_at: new Date(now - 79_000) }] })
+  push(3, 'intimate', now - 20_000, { player_input: 'Adult room player words', lines: [] })
+  // One thread: an ordinary line, then an adult one. Another thread: adult only.
+  push(4, 'narration', now - 70_000, { dm_with: ids[1], player_input: 'Earlier private input',
+    lines: [{ character_id: ids[1], text: 'Earlier private line', shown_at: new Date(now - 69_000) }] })
+  push(5, 'intimate', now - 60_000, { dm_with: ids[1], player_input: 'Adult private player words',
+    lines: [{ character_id: ids[1], text: 'Adult private line', shown_at: new Date(now - 59_000) }] })
+  push(6, 'intimate', now - 50_000, { dm_with: ids[2], player_input: 'Only adult words',
+    lines: [{ character_id: ids[2], text: 'Only adult line', shown_at: new Date(now - 49_000) }] })
+
+  const { instanceRoutes } = await import('../src/routes/instance.routes')
+  const app = new Elysia().onError(({ error, set }) => {
+    set.status = 'statusCode' in error ? Number(error.statusCode) : 500
+    return { message: error.message }
+  }).use(instanceRoutes)
+  const chatList = async () => {
+    const response = await app.handle(new Request('http://localhost/instances/group-chats'))
+    assert.equal(response.status, 200)
+    return ((await response.json()) as { chats: Row[] }).chats[0]
+  }
+  const threadList = async () => {
+    const response = await app.handle(new Request(`http://localhost/instances/${instanceId}/threads`))
+    assert.equal(response.status, 200)
+    return (await response.json()) as Row[]
+  }
+  const threadRow = (row: Row, id: string) => (row.threads as Row[]).find(thread => thread.member_id === id)!
+  routeUser = { id: playerId, tier: 'creator' }
+
+  let reads = 0
+  consentReadHook = () => { reads++ }
+  const off = await chatList()
+  assert.equal(reads, 1, 'the chat list must read the toggle once, not once per chat')
+  assert.equal((off.last as Row).text, 'Earlier room line')
+  assert.equal((threadRow(off, ids[1]).last as Row).text, 'Earlier private line')
+  assert.equal(threadRow(off, ids[1]).message_count, 4)
+  // The all-adult thread keeps its row, reachable, with nothing to preview.
+  assert.equal(threadRow(off, ids[2]).last, undefined)
+  assert.equal(threadRow(off, ids[2]).message_count, 2)
+  reads = 0
+  const offThreads = await threadList()
+  assert.equal(reads, 1, 'the thread list must read the toggle once')
+  const offLine = (id: string) => offThreads.find(thread => thread.memberId === id)!
+  assert.equal(offLine(ids[1]).lastLine, 'Earlier private line'); assert.equal(offLine(ids[1]).messageCount, 4)
+  assert.equal(offLine(ids[2]).lastLine, ''); assert.equal(+new Date(String(offLine(ids[2]).lastAt)), now - 50_000)
+  assert(!/Adult private line|Only adult line|Adult room player words/.test(JSON.stringify([off, offThreads])))
+  consentReadHook = undefined
+
+  put(rows('users')[0], 'preferences.nsfw_enabled', true)
+  const on = await chatList()
+  assert.equal((on.last as Row).text, 'Adult room player words'); assert.equal((on.last as Row).from, 'player')
+  assert.equal((threadRow(on, ids[1]).last as Row).text, 'Adult private line')
+  assert.equal((threadRow(on, ids[2]).last as Row).text, 'Only adult line')
+  const onThreads = await threadList()
+  assert.equal(onThreads.find(thread => thread.memberId === ids[1])!.lastLine, 'Adult private line')
+  assert.equal(onThreads.find(thread => thread.memberId === ids[2])!.lastLine, 'Only adult line')
+})
+
+await check('art direct message never becomes the room last', async () => {
+  const { buildGroupChatRow } = await import('../src/services/group-chat/chats')
+  const now = new Date()
+  const row = buildGroupChatRow({
+    instance: { _id: new ObjectId(), template_id: template._id, seed_cast_snapshot: template.seed_cast },
+    template,
+    cards: members.map(member => ({ _id: new ObjectId(member.id), canonical_name: member.name })) as never,
+    mainEvents: [
+      { sequence: 1, created_at: now, data: { lines: [{ character_id: ids[0], text: 'Room line', shown_at: now }] } },
+      { sequence: 2, created_at: now, data: { dm_with: ids[1], player_input: 'Private words',
+        lines: [{ character_id: ids[1], text: 'Private reply', shown_at: now }] } },
+    ],
+    threadEvents: [],
+    adultAllowed: false,
+  }, now)
+  assert.equal(row.last?.text, 'Room line')
+  assert.deepEqual(row.threads, [])
+})
+
+await check('art stored portraits stay valid and a body portrait never reaches storage', async () => {
+  const faced = facedTemplate()
+  validateGroup(faced)
+  const { _id, creator_id, slug: _slug, version: _version, created_at: _created, updated_at: _updated,
+    is_published: _published, visibility: _visibility, review_status: _review, ...body } = faced
+  validateEntry({ ...body, slug: 'fixture', cover: 'fixture.png' }, 'fixture')
+  await start(faced)
+  const joined = await instanceService.create(playerId, template._id.toHexString(), 'creator')
+  assert.equal(joined.instance._id.toHexString(), instanceId)
+  const { CreateTemplateBody } = await import('../src/schemas/template.schema')
+  const app = new Elysia().post('/template', ({ body: accepted }) => accepted, { body: CreateTemplateBody })
+  const response = await app.handle(new Request('http://localhost/template', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ...body, seed_cast: body.seed_cast!.map((member, index) => index ? member
+      : { ...member, portrait: { asset_key: 'player_supplied.png', source: 'generated', appearance_version: 1, painted_at: new Date() } }) }),
+  }))
+  assert.equal(response.status, 200)
+  const accepted = (await response.json()) as Row
+  assert(!('portrait' in (accepted.seed_cast as Row[])[0]))
+  noAssetKey(accepted)
+})
+
+await check('art cast size four and ten pass while three and eleven fail', () => {
+  const base = groupTemplate()
+  const cast = (count: number) => ({
+    ...base,
+    seed_cast: Array.from({ length: count }, (_, index) => ({ ...structuredClone(base.seed_cast![index % 4]), name: `Cast ${index}` })),
+    opening_lines: [{ name: 'Cast 0', text: 'The authored opening.' }],
+  })
+  for (const count of [4, 10]) validateGroup(cast(count))
+  for (const count of [3, 11]) assert.throws(() => validateGroup(cast(count)))
+})
+
+await check('art no asset key reaches the preview or a chats row', async () => {
+  await start(facedTemplate())
+  const { templateController } = await import('../src/controllers/template.controller')
+  const { buildGroupChatRow } = await import('../src/services/group-chat/chats')
+  const preview = await templateController.getById({ params: { id: template._id.toHexString() }, user: null })
+  const row = buildGroupChatRow({
+    instance: rows('worldInstances')[0] as never,
+    template: rows('worldTemplates')[0] as never,
+    cards: rows('characters') as never,
+    mainEvents: [], threadEvents: [],
+    adultAllowed: false,
+  }, new Date())
+  noAssetKey(preview); noAssetKey(row)
+})
+
 Math.random = originalRandom
 console.log(`group-chat audit: ${passed}/${passed} passed (pure; fake writer; no connections or paid calls)`)

@@ -12,7 +12,8 @@ import { idString } from '../utils/mongo-id'
 import { billingService } from '../services/billing.service'
 import { canForge } from '../utils/can-forge'
 import { isWorldListed } from '../utils/world-review'
-import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
+import { canReadTemplateAuthoring } from '../utils/template-public-projection'
+import { publicGroupTemplate } from '../services/group-chat/public'
 import type { Genre } from '../utils/genre'
 
 type CreateBody = Static<typeof CreateTemplateBody>
@@ -46,7 +47,7 @@ export const templateController = {
         sort: query.sort,
       },
     )
-    return { ...result, templates: result.templates.map(publicTemplate) }
+    return { ...result, templates: result.templates.map(publicGroupTemplate) }
   },
 
   listGenres: async ({ user }: { user: AuthUser | null }) => {
@@ -69,7 +70,7 @@ export const templateController = {
       throw new HttpError(404, 'That world could not be found.')
     }
 
-    return template.kind !== 'group' && canReadTemplateAuthoring(template, user) ? template : publicTemplate(template)
+    return template.kind !== 'group' && canReadTemplateAuthoring(template, user) ? template : publicGroupTemplate(template)
   },
 
   // Generate a preview image from a (creator-edited) prompt → returns CDN url.

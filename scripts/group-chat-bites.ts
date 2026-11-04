@@ -834,6 +834,24 @@ const notificationMutations: Mutation[] = [
 ]
 mutations.push(...notificationMutations)
 
+const groupPublic = 'src/services/group-chat/public.ts', groupChats = 'src/services/group-chat/chats.ts'
+const artMutations: Mutation[] = [
+  { name: 'art room faces dropped', check: 'art room cards', edits: [[groupPublic, 'Array.isArray(characters)', 'false']] },
+  { name: 'art stored portrait sent', check: 'art room cards', edits: [[groupPublic, 'const { portrait: _portrait, ...rest } = card as T & { portrait?: unknown }', 'const rest = card as T & { portrait?: unknown }']] },
+  { name: 'art preview members omitted', check: 'art public group template', edits: [[groupPublic, 'return { ...base, members: groupPreviewMembers(template) }', 'return base']] },
+  { name: 'art preview portrait omitted', check: 'art public group template', edits: [[groupPublic, '...(portrait ? { portrait_url: portrait } : {}),', '...{},']] },
+  { name: 'art non-group gains members', check: 'art non-group template', edits: [[groupPublic, "if (template.kind !== 'group') return base", 'if (false) return base']] },
+  { name: 'art future line shown', check: 'art future line', edits: [[groupChats, 'return !line.shown_at || new Date(line.shown_at).getTime() <= now.getTime()', 'return true']] },
+  { name: 'art direct message becomes the room last', check: 'art direct message', edits: [[groupChats, "ordered(source.mainEvents.filter(event => event.data.dm_with === undefined))", 'ordered(source.mainEvents)']] },
+  { name: 'art stored portrait rejected', check: 'art stored portraits', edits: [['src/services/group-chat/validation.ts', 'const traits = member.group', "if (member.portrait) fail('portrait')\n    const traits = member.group"]] },
+  { name: 'art cast of eleven accepted', check: 'art cast size', edits: [['src/services/group-chat/validation.ts', 'cast.length > 10', 'cast.length > 11']] },
+  { name: 'art asset key reaches the payload', check: 'art no asset key', edits: [[groupPublic, '...(portrait ? { portrait_url: portrait } : {}),', '...(portrait ? { portrait_url: portrait } : {}), ...(entry.portrait ? { portrait: entry.portrait } : {}),']] },
+  { name: 'art adult preview leaks', check: 'art toggle off keeps adult', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return undefined", '']] },
+  { name: 'art adult player words leak', check: 'art toggle off keeps adult', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return undefined", "if (!adultAllowed && event.type === 'intimate' && event.data.lines?.length) return undefined"]] },
+]
+mutations.push(...artMutations)
+
+
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {
   const missing: string[] = []
