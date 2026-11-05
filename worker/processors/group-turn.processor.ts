@@ -18,6 +18,8 @@ import { finishGenerationTurn, generationLockKey, waitForPriorGeneration } from 
 import { liveInstanceExists } from '../../src/utils/live-instance'
 import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
 import { judgeGroupReply } from '../lib/group-explicit-check'
+import { startGroupSelfies } from '../lib/group-selfies'
+import { publicGroupData } from '../../src/services/group-chat/public'
 import { stagePostProcess, dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
 import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE, groupLineRaisesFact, withoutAdultEvents, groupHiddenWords } from '../../src/services/group-chat/memory'
 import { resolveGroupThread } from '../../src/services/group-chat/threads'
@@ -39,7 +41,7 @@ export interface GroupTurnJob {
   origin?: GroupOrigin; gapStart?: string; priorTurnId?: string
 }
 
-export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: () => number; now?: () => Date; onBackground?: (work: Promise<void>) => void } = {}) {
+export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: () => number; selfieRng?: () => number; now?: () => Date; onBackground?: (work: Promise<void>) => void } = {}) {
   const { instanceId, playerId, userMessage, origin = 'player' } = job.data
   if (!['player', 'unprompted', 'catchup'].includes(origin)) throw new Error('Invalid group turn origin')
   const rng = deps.rng ?? Math.random
@@ -70,7 +72,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   recent.reverse()
   const sequence = (latest?.sequence || 0) + 1
   setLLMTraceSequence(sequence)
-  const messagesFromEvents = (events: typeof recent): NamedLine[] => groupMessages(events, instance.group_context!.player, members, directWith)
+  const messagesFromEvents = (events: typeof recent): NamedLine[] => groupMessages(events, instance.group_context!.player, members, directWith, undefined, true)
   const playerMessages = (origin === 'player' ? 1 : 0) + await mongoColl.events().countDocuments({
     instance_id: iid, ...groupThreadFilter(directWith), 'data.model_used': { $ne: 'seed' }, 'data.player_input': { $exists: true, $ne: '' },
   }, { limit: 2 })
@@ -89,8 +91,8 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   const roll = directWith ? { picked: [directWith], tags: [] as string[] } : rollSpeakers(members, state.silent_for, origin, userMessage, rng)
   const groupEvents = directWith ? (await mongoColl.events().find({ instance_id: iid, ...groupThreadFilter() })
     .sort({ sequence: -1 }).limit(8).toArray()).reverse() : undefined
-  const groupContext = groupEvents && groupMessages(groupEvents, config.player, members).slice(-8)
-  const plainGroupContext = groupEvents && groupMessages(withoutAdultEvents(groupEvents), config.player, members).slice(-8)
+  const groupContext = groupEvents && groupMessages(groupEvents, config.player, members, undefined, undefined, true).slice(-8)
+  const plainGroupContext = groupEvents && groupMessages(withoutAdultEvents(groupEvents), config.player, members, undefined, undefined, true).slice(-8)
   const topic = config.topics[state.topics_used % config.topics.length]
   const query = [...messagesFromEvents(recent).slice(-3).map(line => groupLineText(line)),
     origin === 'player' ? groupLineText(playerLine) : `${config.player} is quiet. Topic: ${topic}`].join('\n')
@@ -158,7 +160,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     const writerHistory = (memberId: string | undefined) => {
       const name = members.find(member => member.id === memberId)?.name
       const addressedMessages = recent.filter(event => event.data.model_used !== 'seed').flatMap(event =>
-        groupMessages([event], config.player, members, directWith, memberId).filter(line => !(event.data.tame === true && line.name === name)))
+        groupMessages([event], config.player, members, directWith, memberId, true).filter(line => !(event.data.tame === true && line.name === name && !line.picture_sent)))
       const otherMessages = addressedMessages.filter(line => groupSpeaker(line) !== config.player && line.name !== name).slice(-3)
       return addressedMessages.filter(line => groupSpeaker(line) === config.player || line.name === name || otherMessages.includes(line))
     }
@@ -218,7 +220,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
             memories: rag.memoryTexts, openThreads: rag.openThreads || [], raisedBy: addressedPrompt ? userMessage : undefined, recentEvents: recent.slice(-4).map(event => event._id) })
           const shownHistory = consented ? history : plainHistory
           const shownWriterHistory = consented && selected.length === 1 && recent.some(event => event.data.tame_members?.includes(selected[0].id))
-            ? groupMessages(historyEvents, config.player, members, directWith, selected[0].id) : shownHistory
+            ? groupMessages(historyEvents, config.player, members, directWith, selected[0].id, true) : shownHistory
           const shownGroup = consented ? groupContext : plainGroupContext
           const hiddenWords = origin === 'player' && !addressedPrompt ? await groupHiddenWords({ instanceId: iid, thread: directWith, line: userMessage,
             people: [config.player, ...members.map(member => member.name)], known: [...memory.memories, ...memory.openThreads],
@@ -325,14 +327,17 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           payload: { instanceId, playerId, eventId: idString(event._id), groupSummary: true, sceneTag: 'dialogue' } })
       }
       await redis.del(`session:${instanceId}`)
+      const shown = publicGroupData(event.data).lines!
       await redis.publish(channel, JSON.stringify({ type: 'group_lines', instanceId, ...(directWith === undefined ? {} : { directWith }), eventId: idString(event._id), ...(sceneMembers.length ? { turnId: String(job.id) } : {}),
-        lines: (sceneMembers.length ? rest : lines).map(line => ({ characterId: line.character_id, name: members.find(member => member.id === line.character_id)!.name,
-          text: line.text, shownAt: line.shown_at })) }))
+        lines: (sceneMembers.length ? shown.slice(published.length) : shown).map(line => ({ characterId: line.character_id, name: members.find(member => member.id === line.character_id)!.name,
+          text: line.text, shownAt: line.shown_at, line_id: line.line_id, ...(line.selfie ? { selfie: line.selfie } : {}) })) }))
       await finishGenerationTurn(redis, lockKey, String(job.id), true, channel, JSON.stringify({
         type: 'generation_complete', instanceId, jobId: String(job.id),
-        event: { id: idString(event._id), sequence, ...(event.data.player_action ? { player_action: true } : {}), player_input: event.data.player_input, narrative: event.data.ai_response, origin, lines },
+        event: { id: idString(event._id), sequence, ...(event.data.player_action ? { player_action: true } : {}), player_input: event.data.player_input, narrative: event.data.ai_response, origin, lines: shown },
       }))
     } finally { void dispatchPostProcessOutbox().catch(() => {}) }
+    const selfies = startGroupSelfies(event, { rng: deps.selfieRng, now: deps.now })
+    deps.onBackground?.(selfies)
     if (addressedName && origin === 'player' && (sceneMembers.length || writing.some(call => call.writer === 'adult'))) {
       const work = Promise.all((sceneMembers.length ? sceneMembers : [addressed!]).map(async memberId => {
         const name = members.find(member => member.id === memberId)!.name

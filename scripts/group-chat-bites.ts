@@ -954,7 +954,7 @@ const selfieMutations: Mutation[] = [
   { name: 'selfie access non group', check: 'selfie access', edits: [[selfieFile, "if (template?.kind !== 'group') throw notFound()", 'if (!template) throw notFound()']] },
   { name: 'selfie access protagonist', check: 'selfie access', edits: [[selfieFile, ' || card.is_protagonist', '']] },
   { name: 'selfie access saved player', check: 'selfie access', edits: [[selfieFile, 'index < 0 || !member ||', 'index < 0 ||']] },
-  { name: 'selfie slots bypass', check: 'selfie slots', edits: [[selfieFile, "const reserved = await reserveMedia({ _id: asset._id, player_id: ctx.pid, instance_id: ctx.iid, event_id: ctx.eid, kind: 'picture' })", 'const reserved = true']] },
+  { name: 'selfie slots bypass', check: 'selfie slots', edits: [[selfieFile, ": await reserveMedia({ _id: asset._id, player_id: ctx.pid, instance_id: ctx.iid, event_id: ctx.eid, kind: 'picture' })", ': true']] },
   { name: 'selfie slots resting not recorded', check: 'selfie slots', edits: [[selfieFile, 'const saved = await mongoColl.events().updateOne(eventFence(ctx.event), { $set: { [`data.group_selfies.${lineId}`]: selfie } })', "const saved = reserved ? await mongoColl.events().updateOne(eventFence(ctx.event), { $set: { [`data.group_selfies.${lineId}`]: selfie } }) : { matchedCount: 1 }"]] },
   { name: 'selfie idempotence cached image refused', check: 'selfie idempotence', edits: [[selfieFile, 'if (existing) return reply(existing)', 'if (existing) throw notFound()']] },
   { name: 'selfie idempotence line absent from cache', check: 'selfie idempotence', edits: [[selfieFile, '`${eventId}:selfie:${lineId}:${revision}`', '`${eventId}:selfie:${revision}`']] },
@@ -981,6 +981,40 @@ const selfieMutations: Mutation[] = [
   { name: 'selfie retention original used as evidence', check: 'selfie retention', edits: [['src/services/media/selfie-evidence.ts', 'try { return await visualEffects.upload(image.data, image.contentType, { key }) }', "try { return { key: '', url } }"]] },
 ]
 mutations.push(...selfieMutations)
+
+const selfieStarts = 'worker/lib/group-selfies.ts', selfieCheck = 'worker/lib/group-selfie-check.ts'
+mutations.push(
+  { name: 'selfie-auto frames saved identity absent', check: 'selfie-auto frames', edits: [[worker, 'line_id: line.line_id, ...(line.selfie', 'line_id: undefined, ...(line.selfie']] },
+  { name: 'selfie-auto frames completion identity absent', check: 'selfie-auto frames', edits: [[worker, 'origin, lines: shown', 'origin, lines']] },
+  { name: 'selfie-auto frames saved selfie absent', check: 'selfie-auto frames', edits: [[worker, '...(line.selfie ? { selfie: line.selfie } : {})', '...{}']] },
+  { name: 'selfie-auto frames completion selfie absent', check: 'selfie-auto frames', edits: [[worker, 'origin, lines: shown', 'origin, lines: publicGroupData({ lines }).lines']] },
+  { name: 'selfie-auto agreement wrong speaker', check: 'selfie-auto agreement', edits: [[selfieStarts, 'lines[position - 1]', 'lines[0]']] },
+  { name: 'selfie-auto agreement before publish', check: 'selfie-auto agreement', edits: [[worker, 'await mongoColl.events().insertOne(event)', 'await mongoColl.events().insertOne(event)\n    const earlySelfies = startGroupSelfies(event, { rng: deps.selfieRng, now: deps.now })'], [worker, 'const selfies = startGroupSelfies(event, { rng: deps.selfieRng, now: deps.now })', 'const selfies = earlySelfies']] },
+  { name: 'selfie-auto agreement check held by turn', check: 'selfie-auto agreement', edits: [[worker, 'const selfies = startGroupSelfies(event,', 'const selfies = await startGroupSelfies(event,']] },
+  { name: 'selfie-auto agreement only adult turns', check: 'selfie-auto agreement', edits: [[selfieStarts, "if (event.data.origin === 'player')", "if (event.data.origin === 'player' && event.type === 'intimate')"]] },
+  { name: 'selfie-auto agreement id in model input', check: 'selfie-auto agreement', edits: [[selfieCheck, '({ position: index + 1, text })', "({ position: index + 1, text, id: 'forbidden' })"]] },
+  { name: 'selfie-auto agreement token cap lost', check: 'selfie-auto agreement', edits: [[selfieCheck, 'maxTokens: 32', 'maxTokens: 4096']] },
+  { name: 'selfie-auto agreement allows second own start', check: 'selfie-auto agreement', edits: [[selfieStarts, '        return\n      }', '        // Deliberate mutation: fall through\n      }']] },
+  { name: 'selfie-auto no invalid position accepted', check: 'selfie-auto no', edits: [[selfieCheck, 'verdict.position < 1 || verdict.position > lines.length', 'false']] },
+  { name: 'selfie-auto no extra model fields accepted', check: 'selfie-auto no', edits: [[selfieCheck, "Object.keys(verdict).join() !== 'position' ||", '']] },
+  { name: 'selfie-auto no failure escapes background', check: 'selfie-auto no', edits: [[selfieStarts, "log.warn('group.selfie_start_failed'", "throw error; log.warn('group.selfie_start_failed'"]] },
+  { name: 'selfie-auto own chance changed', check: 'selfie-auto own chance', edits: [[selfieStarts, 'GROUP_OWN_SELFIE_CHANCE = 1 / 25', 'GROUP_OWN_SELFIE_CHANCE = 1 / 20']] },
+  { name: 'selfie-auto own speaker changed', check: 'selfie-auto own chance', edits: [[selfieStarts, 'const line = lines.at(-1)', 'const line = lines[0]']] },
+  { name: 'selfie-auto own reference absent', check: 'selfie-auto own chance', edits: [[selfieFile, 'if (!portrait?.asset_key || !isReferenceAllowed(portrait.source)) return undefined', 'void portrait']] },
+  { name: 'selfie-auto own daily third attempt allowed', check: 'selfie-auto own daily', edits: [[selfieFile, 'attempt < 2', 'attempt < 3']] },
+  { name: 'selfie-auto own daily failed attempt forgotten', check: 'selfie-auto own daily', edits: [[selfieFile, 'if (!started) await mongoColl.mediaUsage().deleteOne({ _id: attempt })', 'if (true) await mongoColl.mediaUsage().deleteOne({ _id: attempt })']] },
+  { name: 'selfie-auto own last three guard weakened', check: 'selfie-auto own last', edits: [[selfieFile, 'Array.from({ length: 3 }, () => new ObjectId())', 'Array.from({ length: 2 }, () => new ObjectId())']] },
+  { name: 'selfie-auto own last repaired guards accepted', check: 'selfie-auto own last', edits: [[selfieFile, "await mongoColl.mediaUsage().countDocuments({ _id: { $in: guards }, status: 'reserved' }) !== guards.length", 'false']] },
+  { name: 'selfie-auto own last limits leave resting frame', check: 'selfie-auto own last', edits: [[selfieFile, 'if (ownAt && !reserved)', 'if (false)']] },
+  { name: 'selfie-auto resting error treated as failure', check: 'selfie-auto resting', edits: [[selfieStarts, 'if (!(error instanceof HttpError && error.statusCode === 429)) throw error', 'throw error']] },
+  { name: 'selfie-auto painted render regresses', check: 'selfie-auto painted', edits: [[selfieFile, 'Semi-realistic glamorous digital painting, softly painted textures and cinematic light', 'bright modern anime illustration']] },
+  { name: 'selfie-auto memory direct leaks to room', check: 'selfie-auto memory', edits: [[memoryFile, 'validGroupThread(thread) && event.data.dm_with === thread', 'validGroupThread(thread)']] },
+  { name: 'selfie-auto memory queued counts as sent', check: 'selfie-auto memory', edits: [[memoryFile, "event.data.group_selfies?.[groupLineId(line)]?.status === 'ready'", '!!event.data.group_selfies?.[groupLineId(line)]']] },
+  { name: 'selfie-auto memory curator transcript changed', check: 'selfie-auto memory', edits: [[memoryFile, 'pictures = false', 'pictures = true']] },
+  { name: 'selfie-auto memory writer note absent', check: 'selfie-auto memory', edits: [[worker, 'directWith, undefined, true)', 'directWith, undefined, false)']] },
+  { name: 'selfie-auto memory filtered writer note absent', check: 'selfie-auto memory', edits: [[worker, 'directWith, selected[0].id, true)', 'directWith, selected[0].id)']] },
+  { name: 'selfie-auto memory tame prose hides picture', check: 'selfie-auto memory', edits: [[worker, ' && !line.picture_sent', '']] },
+)
 
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {

@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb'
+import { createHash } from 'node:crypto'
 import { mongoColl } from '../../config/mongo'
 import type { MediaAssetDoc } from '../../models/media.model'
 import type { WorldEventDoc } from '../../models/world-event.model'
@@ -7,7 +8,6 @@ import { groupLineId } from '../group-chat/public'
 import { groupThreadFilter, validGroupThread } from '../group-chat/memory'
 import { loadGroupMembers } from '../group-chat/instance'
 import { requireIdentity } from '../guest-policy'
-import { templateMediaStyle } from '../image.service'
 import { HttpError } from '../../utils/http-error'
 import { parseObjectId } from '../../utils/mongo-id'
 import { asMediaImageReference, imageExtensionFor, ProviderRefusalError } from '../../ai/image'
@@ -22,6 +22,41 @@ import { providerReason, unseeMedia, UnseenError, visualEffects } from './visual
 
 const notFound = () => new HttpError(404, 'That moment could not be found.')
 export type SelfieReply = { status: 'ready'; media_id: string; url: string } | { status: 'queued'; media_id: string }
+
+/** _id uniqueness is the per-player cap, independent of saves and failed jobs.
+ * Released rows own no picture slot and survive event/save purges. */
+async function reserveOwnAttempt(player_id: ObjectId, now: Date): Promise<ObjectId | undefined> {
+  const { day } = utcMediaDay(now)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const _id = new ObjectId(createHash('sha256').update(`group-own-selfie:${player_id}:${day}:${attempt}`).digest('hex').slice(0, 24))
+    try {
+      await mongoColl.mediaUsage().insertOne({ _id, player_id, day, kind: 'picture', status: 'released', created_at: now })
+      return _id
+    } catch (error) { if (!duplicateKey(error)) throw error }
+  }
+  return undefined
+}
+
+/** Hold three guard slots until the real slot and daily attempt are reserved.
+ * Counting then reserving would let concurrent turns spend the last pictures.
+ * These are ordinary orphan-repairable reservations, never player-facing state. */
+async function reserveOwnPicture(asset: MediaAssetDoc, now: Date): Promise<boolean> {
+  const attempt = await reserveOwnAttempt(asset.player_id, now)
+  if (!attempt) return false
+  const guards = Array.from({ length: 3 }, () => new ObjectId())
+  let started = false
+  try {
+    for (const _id of guards) if (!await reserveMedia({ _id, player_id: asset.player_id, kind: 'picture' }, now)) return false
+    const reserved = await reserveMedia({ _id: asset._id, player_id: asset.player_id, instance_id: asset.instance_id, event_id: asset.event_id, kind: 'picture' }, now)
+    if (!reserved || await mongoColl.mediaUsage().countDocuments({ _id: { $in: guards }, status: 'reserved' }) !== guards.length) return false
+    started = true
+    return true
+  } finally {
+    await mongoColl.mediaUsage().deleteMany({ _id: { $in: guards } })
+    if (!started) await mongoColl.mediaUsage().deleteOne({ _id: attempt })
+    // The caller removes the real reservation on an unsuccessful start.
+  }
+}
 
 async function context(playerId: string, instanceId: string, eventId: string, line: { character_id: string; text: string }) {
   const pid = parseObjectId(playerId), iid = parseObjectId(instanceId), eid = parseObjectId(eventId)
@@ -45,11 +80,24 @@ function eventFence(event: WorldEventDoc) {
     ...groupThreadFilter(event.data.dm_with) }
 }
 
-/** Shared start for taps and the next task's after-reply starts; resting is durable. */
+/** Shared start for taps and after-reply agreements; resting is durable. */
 export async function requestSelfie(playerId: string, instanceId: string, eventId: string, line: { character_id: string; text: string }): Promise<SelfieReply> {
+  return (await startSelfie(playerId, instanceId, eventId, line))!
+}
+
+export async function requestOwnSelfie(playerId: string, instanceId: string, eventId: string, line: { character_id: string; text: string }, now = new Date()): Promise<SelfieReply | undefined> {
+  return startSelfie(playerId, instanceId, eventId, line, now)
+}
+
+async function startSelfie(playerId: string, instanceId: string, eventId: string, line: { character_id: string; text: string }, ownAt?: Date): Promise<SelfieReply | undefined> {
   await requireIdentity(playerId)
   if (!mediaEnabled('picture')) throw notFound()
   const ctx = await context(playerId, instanceId, eventId, line)
+  if (ownAt) {
+    const holder = await resolvePortraitHolder(ctx.instance, ctx.card, { isSentient: false })
+    const portrait = holder.portrait ?? ctx.card.portrait
+    if (!portrait?.asset_key || !isReferenceAllowed(portrait.source)) return undefined
+  }
   const lineId = groupLineId(line)
   const revision = mediaRevision(ctx.event.data.ai_response, ctx.event.data.player_input)
   // Model and toggle changes must not create a second live selfie for this line.
@@ -71,7 +119,13 @@ export async function requestSelfie(playerId: string, instanceId: string, eventI
     return reply(winner)
   }
   try {
-    const reserved = await reserveMedia({ _id: asset._id, player_id: ctx.pid, instance_id: ctx.iid, event_id: ctx.eid, kind: 'picture' })
+    const reserved = ownAt ? await reserveOwnPicture(asset, ownAt)
+      : await reserveMedia({ _id: asset._id, player_id: ctx.pid, instance_id: ctx.iid, event_id: ctx.eid, kind: 'picture' })
+    if (ownAt && !reserved) {
+      await mongoColl.mediaUsage().deleteOne({ _id: asset._id })
+      await mongoColl.mediaAssets().deleteOne({ _id: asset._id })
+      return undefined
+    }
     const selfie: GroupSelfie = reserved ? { status: 'queued', media_id: String(asset._id) }
       : { status: 'resting', resets_at: utcMediaDay().resets_at }
     const saved = await mongoColl.events().updateOne(eventFence(ctx.event), { $set: { [`data.group_selfies.${lineId}`]: selfie } })
@@ -154,8 +208,8 @@ export const selfieHeat = (mature: boolean) => mature
   ? 'Sensual and suggestive to the full allowed limit: revealing but covered clothing on adults, never nudity or a sexual act.'
   : 'Everyday, fully clothed, friendly, not flirty; no romantic, sensual or suggestive pose or clothing.'
 
-export function selfieImagePrompt(description: string, render: string, mature: boolean): string {
-  return `${description}. ${render}. Match the reference portrait exactly: the same fictional person, face, hair and illustrated look. A phone selfie at arm’s length, exactly one person, no other people and no player visible. ${selfieHeat(mature)} Vertical 9:16, clearly an illustration, never a photograph; no text, lettering, logos or signage.`
+export function selfieImagePrompt(description: string, mature: boolean): string {
+  return `${description}. Semi-realistic glamorous digital painting, softly painted textures and cinematic light. Match the reference portrait exactly: the same fictional person, face, hair and illustrated look. A phone selfie at arm’s length, exactly one person, no other people and no player visible. ${selfieHeat(mature)} Vertical 9:16, clearly an illustration, never a photograph; no text, lettering, logos or signage.`
 }
 
 export async function processSelfie(mediaId: string): Promise<void> {
@@ -194,7 +248,7 @@ export async function processSelfie(mediaId: string): Promise<void> {
       moodLines, heat: selfieHeat(mature) })
     const pre = await moderateDescription(description, !mature)
     if (pre.verdict !== 'allow') throw new UnseenError('pre', pre.reason_code)
-    const prompt = selfieImagePrompt(description, templateMediaStyle(ctx.template).render, mature)
+    const prompt = selfieImagePrompt(description, mature)
     // The fixed framing and heat are part of what the image model receives, and gated too.
     const promptGate = await moderateDescription(prompt, !mature)
     if (promptGate.verdict !== 'allow') throw new UnseenError('pre', promptGate.reason_code)

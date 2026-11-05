@@ -1,4 +1,5 @@
 import { groupPlayerLine } from './actions'
+import { groupLineId } from './public'
 import { ObjectId } from 'mongodb'
 import { randomUUID } from 'node:crypto'
 import { getRedisClient } from '../../config/redis'
@@ -38,12 +39,15 @@ export function deriveGroupAudience(events: WorldEventDoc[]): { valid: boolean; 
   return { valid: true, ...(privateTo === undefined ? {} : { privateTo }) }
 }
 
-export function groupMessages(events: WorldEventDoc[], player: string, members: GroupMember[], thread?: string, writer?: string): NamedLine[] {
+export function groupMessages(events: WorldEventDoc[], player: string, members: GroupMember[], thread?: string, writer?: string, pictures = false): Array<NamedLine & { picture_sent?: true }> {
   return events.filter(event => validGroupThread(thread) && event.data.dm_with === thread).flatMap(event => [
     ...(event.data.player_input ? [groupPlayerLine(player, event.data.player_input, event.data.player_action)] : []),
     ...(event.data.lines || []).flatMap(line => {
       const member = members.find(member => member.id === line.character_id)
-      return member && !(writer === line.character_id && event.data.tame_members?.includes(writer)) ? [{ name: member.name, text: line.text }] : []
+      if (!member) return []
+      const sent = pictures && event.data.group_selfies?.[groupLineId(line)]?.status === 'ready'
+      return [...(writer === line.character_id && event.data.tame_members?.includes(writer) ? [] : [{ name: member.name, text: line.text }]), ...(sent ? [{ name: member.name,
+        text: `${member.name} sent a picture of themselves ${thread === undefined ? 'to the group' : `to ${player} in this private chat`}.`, picture_sent: true as const }] : [])]
     }),
   ])
 }
