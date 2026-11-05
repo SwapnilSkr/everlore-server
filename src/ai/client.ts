@@ -110,6 +110,9 @@ interface LLMRequest {
   timeoutMs?: number
   signal?: AbortSignal
   reasoningEffort?: 'low' | 'medium' | 'high'
+  /** For a short answer: hidden reasoning counts against maxTokens, and can use
+   * all of it and leave an empty reply. */
+  noReasoning?: boolean
   /** Stable OpenRouter conversation key. It keeps a story on the provider that
    * has its prompt/KV cache warm. */
   sessionId?: string
@@ -174,7 +177,7 @@ function routingParamsFor(req: LLMRequest, model: string, stream: boolean): Reco
       prose,
     ),
     // Hybrid narrators must emit words immediately, including hedge/fallback attempts.
-    ...(stream && prose && !isNextGenOpenAIModel(model) ? { reasoning: { enabled: false } } : {}),
+    ...((stream && prose) || req.noReasoning) && !isNextGenOpenAIModel(model) ? { reasoning: { enabled: false } } : {},
     ...(req.sessionId ? { session_id: req.sessionId.slice(0, 256) } : {}),
   }
 }

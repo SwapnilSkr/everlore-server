@@ -46,7 +46,9 @@ export function groupIdeaTexts(raw: string, input: {
   members: Pick<GroupMember, 'name'>[]; player: string; playerLines: string[]; worldText?: string
 }): string[] {
   let parsed: unknown
-  try { parsed = JSON.parse(raw) } catch { return [] }
+  // A writer with no schema may wrap the object in words of its own.
+  const object = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)
+  try { parsed = JSON.parse(object) } catch { return [] }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return []
   const list = (parsed as { ideas?: unknown }).ideas
   if (!Array.isArray(list)) return []
@@ -95,7 +97,12 @@ export async function startGroupReplyIdeas(event: WorldEventDoc, input: {
           messages: [{ role: 'system', content: [GROUP_IDEAS_PROMPT, ...(input.adult ? [GROUP_IDEAS_ADULT_RULE] : [])].join('\n') },
             { role: 'user', content: JSON.stringify({ player: input.player, messages }) }],
           maxTokens: GROUP_IDEAS_MAX_TOKENS, timeoutMs: GROUP_IDEAS_TIMEOUT_MS,
-          responseSchema: GROUP_IDEAS_SCHEMA, responseFormat: { type: 'json_schema', json_schema: { name: 'group_reply_ideas', strict: true } },
+          // The adult writer's hosts refuse a schema or a reasoning switch with a
+          // 404, so it gets plain words and the prompt's JSON instruction alone.
+          ...(input.adult ? {} : {
+            noReasoning: true, responseSchema: GROUP_IDEAS_SCHEMA,
+            responseFormat: { type: 'json_schema', json_schema: { name: 'group_reply_ideas', strict: true } },
+          }),
         }, [])).content
       } catch (error) { failure = error }
       return snapshotLLMTrace()
