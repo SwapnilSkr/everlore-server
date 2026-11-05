@@ -116,6 +116,8 @@ export interface FrameCheck {
 export const safetyEffects = {
   call: callLLM,
   judge: judgeFrame,
+  /** Injected for audits; production sleeps for real. */
+  wait: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
   /** First/middle/last PNG frames of a video, via temp files (seekable, no pipe fragility). */
   frames: async (video: Buffer): Promise<Buffer[]> => {
     const { mkdtemp, writeFile, readFile, rm } = await import('node:fs/promises')
@@ -224,6 +226,21 @@ async function visionFrame(image: Buffer, contentType: string, reference?: { dat
   return validateFrameCheck(await safetyEffects.judge(image, contentType, reference, everyday))
 }
 
+/** A rate limit or a 5xx is transport, never a verdict: the same pixels are
+ * asked again. A refusal (any other 4xx) and a final failure still fail closed. */
+const VISION_RETRY_WAIT_MS = [1500, 4000] as const
+const VISION_RETRY_AFTER_CAP_MS = 10_000
+
+/** Retry-After is delta-seconds or an HTTP date; nothing waits past the cap. */
+function retryAfterMs(header: string | null): number | null {
+  if (!header) return null
+  const seconds = Number(header)
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.min(seconds * 1000, VISION_RETRY_AFTER_CAP_MS)
+  const at = Date.parse(header)
+  if (Number.isNaN(at)) return null
+  return Math.min(Math.max(0, at - Date.now()), VISION_RETRY_AFTER_CAP_MS)
+}
+
 /** Injectable for audits; production judges through the vision model. */
 async function judgeFrame(image: Buffer, contentType: string, reference?: { data: Buffer; contentType: string }, everyday = false): Promise<FrameCheck> {
   // Callers sniff every image (JPEG from Flux 3, older PNG portraits, WebP):
@@ -237,34 +254,40 @@ async function judgeFrame(image: Buffer, contentType: string, reference?: { data
     parts.push({ type: 'image_url', image_url: { url: `data:${reference.contentType};base64,${reference.data.toString('base64')}` } })
   }
   // The OpenAI SDK types no image_url parts; call the REST endpoint directly.
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://everloreapp.com',
-      'X-Title': 'Everlore',
-    },
-    body: JSON.stringify({
-      model: visionModel(),
-      messages: [{
-        role: 'user',
-        content: parts,
-      }],
-      response_format: {
-        type: 'json_schema',
-        json_schema: { name: 'frame_check', strict: false, schema: VISION_SCHEMA },
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.OPENROUTER_API_KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://everloreapp.com',
+        'X-Title': 'Everlore',
       },
-      max_tokens: 256,
-      temperature: 0,
-    }),
-    signal: AbortSignal.timeout(60000),
-  })
-  const json = await res.json().catch(() => ({})) as {
-    choices?: Array<{ message?: { content?: string } }>; error?: { message?: string }
+      body: JSON.stringify({
+        model: visionModel(),
+        messages: [{
+          role: 'user',
+          content: parts,
+        }],
+        response_format: {
+          type: 'json_schema',
+          json_schema: { name: 'frame_check', strict: false, schema: VISION_SCHEMA },
+        },
+        max_tokens: 256,
+        temperature: 0,
+      }),
+      signal: AbortSignal.timeout(60000),
+    })
+    const json = await res.json().catch(() => ({})) as {
+      choices?: Array<{ message?: { content?: string } }>; error?: { message?: string }
+    }
+    if (res.ok) return parseFrameCheck(json.choices?.[0]?.message?.content ?? '')
+    const retryable = res.status === 429 || res.status >= 500
+    if (!retryable || attempt >= VISION_RETRY_WAIT_MS.length) {
+      throw new Error(`Vision gate failed (${res.status}): ${(json.error?.message || '').slice(0, 200)}`)
+    }
+    await safetyEffects.wait(retryAfterMs(res.headers.get('retry-after')) ?? VISION_RETRY_WAIT_MS[attempt])
   }
-  if (!res.ok) throw new Error(`Vision gate failed (${res.status}): ${(json.error?.message || '').slice(0, 200)}`)
-  return parseFrameCheck(json.choices?.[0]?.message?.content ?? '')
 }
 
 /** Gate after generation on one image. Throws on a provider failure: an

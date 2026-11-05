@@ -3,7 +3,7 @@ import sharp from 'sharp'
 import { storageService } from './storage.service'
 import { HttpError } from '../utils/http-error'
 import { screenImagePrompt } from '../utils/input-guard'
-import { encodeUserImage } from '../utils/image-encoding'
+import { encodeGeneratedStill, encodeUserImage } from '../utils/image-encoding'
 
 /**
  * Generated-media orchestration: decorate a visual-description core with the
@@ -157,7 +157,8 @@ export const imageService = {
     } catch (e) {
       throw new HttpError(502, `Image generation failed: ${(e as Error).message}`)
     }
-    return storageService.upload(img.data, img.contentType, { prefix: 'previews' })
+    const stored = await encodeGeneratedStill(img, 'preview')
+    return storageService.upload(stored.data, stored.contentType, { prefix: 'previews' })
   },
 
   /**

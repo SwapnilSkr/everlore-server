@@ -11,6 +11,7 @@ import { requireIdentity } from '../guest-policy'
 import { HttpError } from '../../utils/http-error'
 import { parseObjectId } from '../../utils/mongo-id'
 import { asMediaImageReference, imageExtensionFor, ProviderRefusalError } from '../../ai/image'
+import { encodeGeneratedStill } from '../../utils/image-encoding'
 import { mediaRevision } from './attribution'
 import { imageModel, mediaEnabled } from './config'
 import { utcMediaDay } from './policy'
@@ -273,11 +274,12 @@ export async function processSelfie(mediaId: string): Promise<void> {
     }
     if (!await mayDeliver()) throw new Error('Picture moment passed')
     stage = 'upload'
-    const key = `media/picture/${asset.player_id}/${asset.instance_id}/${asset._id}${imageExtensionFor(image.contentType)}`
+    const stored = await encodeGeneratedStill(image, 'selfie')
+    const key = `media/picture/${asset.player_id}/${asset.instance_id}/${asset._id}${imageExtensionFor(stored.contentType)}`
     const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key, input: description, reference_asset_key: portrait.asset_key } })
     if (!staged.matchedCount) throw new Error('Picture removed')
     uploaded = key
-    const result = await visualEffects.upload(image.data, image.contentType, { key })
+    const result = await visualEffects.upload(stored.data, stored.contentType, { key })
     uploaded = result.key
     if (!await mayDeliver()) throw new Error('Picture moment passed')
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: {

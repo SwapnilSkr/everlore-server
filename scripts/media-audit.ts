@@ -1,6 +1,7 @@
 import type { WorldInstanceDoc } from '../src/models/world-instance.model'
 import type { WorldTemplateDoc } from '../src/models/world-template.model'
 import assert from 'node:assert/strict'
+import sharp from 'sharp'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import { writeFile } from 'node:fs/promises'
@@ -14,6 +15,9 @@ import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOf
 import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, ensurePersonaFaceReady, ensurePassingFaceReady, passingFaceKey, PASSING_FACE_RULE_VERSION, requestTurnVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, fillUnknownLook, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
 import { portraitLookEvidence } from '../src/services/media/look-evidence'
 import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, logRejection, describeMoment, MEDIA_VISUAL_POLICY, buildSafetyPrompts, visualPolicyLine } from '../src/services/media/safety'
+import { processSelfie } from '../src/services/media/selfie'
+import { snapshotSelfieImage } from '../src/services/media/selfie-evidence'
+import { groupLineId } from '../src/services/group-chat/public'
 import { assembleDialogueFreeCut, buildCutGraph, cutEffects } from '../src/services/media/cut'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt, POLICY_SENTENCE, SCENE_TEMPLATES } from '../src/services/media/scene-templates'
 import { directScene, directorEffects, validateDirectorPlan, DIRECTOR_SYSTEM_PROMPT, type DirectorInput, DIRECTOR_DIALOGUE_FREE_PROMPT } from '../src/services/media/director'
@@ -1129,6 +1133,131 @@ check('image_safety_tolerance', async () => {
   }
 })
 
+check('selfie_stored_webp', async () => {
+  // A generated selfie is stored as bounded WebP, but the vision gate must have
+  // judged the generator's exact bytes — compression never precedes the check.
+  const jpeg = await sharp({ create: { width: 64, height: 96, channels: 3, background: { r: 120, g: 90, b: 70 } } }).jpeg().toBuffer()
+  const f = fixture()
+  const template = f.db.worldTemplates.rows[0]
+  Object.assign(template, { kind: 'group', global_lore: 'A bright studio apartment.', is_nsfw_capable: false })
+  Object.assign(f.db.worldInstances.rows[0], {
+    group_state: { silent_for: {}, unprompted_since_player: 0, topics_used: 0 },
+    group_context: { player: 'Alex', static_prompt: '', topics: [], opening_lines: [] },
+    seed_cast_snapshot: [{ name: 'Speaker', group: { age: 30, talkativeness: 5, speech: 'Warm', wants: 'Company', start_bond: 'stranger' } }],
+  })
+  Object.assign(f.card, {
+    portrait: { asset_key: 'media/portrait/old.png', source: 'generated', appearance_version: 1, painted_at: new Date() },
+    appearance: 'Grey eyes, dark braids, a plain jumper',
+  })
+  const line = { character_id: String(f.character), text: 'Come with me.', shown_at: new Date() }
+  const lineId = groupLineId(line)
+  const assetId = new ObjectId()
+  const event = f.db.events.rows[0]
+  const eventData = event.data as Record<string, unknown>
+  event.data = { ...eventData, lines: [line], group_selfies: { [lineId]: { status: 'queued', media_id: String(assetId) } } }
+  const asset: MediaAssetDoc = {
+    _id: assetId, player_id: f.player, instance_id: f.instance, event_id: f.event,
+    kind: 'picture', group_selfie: true, line_id: lineId, character_id: f.character,
+    source: 'generated', model: 'black-forest-labs/flux-3-image-klein', cache_key: 'selfie-webp-fixture',
+    revision: mediaRevision(eventData.ai_response as string, eventData.player_input as string), input: '',
+    cost_usd: 0.009, cost_source: 'catalogue', status: 'queued', created_at: new Date(),
+  }
+  f.db.mediaAssets.rows.push(asset as unknown as Record<string, unknown>)
+  assert.equal(await reserveMedia(asset), true)
+  let judged: Buffer | undefined, judgedType = ''
+  let uploaded: { data: Buffer; contentType: string; key: string } | undefined
+  safetyEffects.call = async (req) => req.purpose === 'media_selfie_mood'
+    ? 'warm and cheerful'
+    : req.purpose === 'media_selfie_description'
+      ? 'A grown adult smiles in a bright room, wearing a plain jumper.'
+      : JSON.stringify({ verdict: 'allow', reason_code: 'ok' })
+  safetyEffects.judge = async (image, contentType) => {
+    judged = Buffer.from(image); judgedType = contentType
+    return { verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false }
+  }
+  visualEffects.download = async (url) => Buffer.from(url.startsWith('https://example.test/') && uploaded ? uploaded.data : jpeg)
+  visualEffects.image = async () => ({ data: Buffer.from(jpeg), contentType: 'image/jpeg', generationId: null, costUsd: 0.009 })
+  visualEffects.upload = async (data, contentType, opts) => {
+    const key = opts?.key || ''
+    uploaded = { data: Buffer.from(data), contentType, key }
+    return { key, url: `https://example.test/${key}` }
+  }
+  await processSelfie(String(asset._id))
+  assert.equal(f.db.mediaAssets.rows[0].status, 'ready')
+  assert.ok(judged?.equals(jpeg), 'the gate judged the generator bytes')
+  assert.equal(judgedType, 'image/jpeg')
+  assert.equal(uploaded?.contentType, 'image/webp')
+  assert.ok(uploaded?.key.endsWith('.webp'), `the key carries the stored extension: ${uploaded?.key}`)
+  assert.equal(sniffImageContentType(uploaded!.data), 'image/webp')
+  assert.equal(f.db.mediaAssets.rows[0].asset_key, uploaded?.key)
+  // Evidence reads the stored picture afterwards: WebP is sniffed and kept.
+  const stored = uploaded!
+  const evidence = await snapshotSelfieImage(`https://example.test/${stored.key}`)
+  assert.ok(evidence.key.startsWith('moderation/selfies/') && evidence.key.endsWith('.webp'))
+  assert.ok(uploaded!.data.equals(stored.data), 'evidence stores the same WebP bytes')
+})
+check('vision_retry', async () => {
+  // A rate limit or a 5xx is transport, never a verdict: retry, then fail closed.
+  // A refusal and a real rejection are answered once.
+  const realFetch = globalThis.fetch
+  const priorJudge = safetyEffects.judge
+  const realWait = safetyEffects.wait
+  const realKey = env.OPENROUTER_API_KEY
+  const allow = { verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: false, text_visible: false }
+  const reply = () => new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(allow) } }] }))
+  const failure = (status: number, retryAfter?: string) => ({
+    ok: false, status, statusText: '', headers: { get: (name: string) => name.toLowerCase() === 'retry-after' ? retryAfter ?? null : null },
+    json: async () => ({}),
+  }) as unknown as Response
+  const waits: number[] = []
+  let calls = 0
+  try {
+    env.OPENROUTER_API_KEY = 'audit'
+    safetyEffects.judge = realFrameJudge
+    safetyEffects.wait = async (ms) => { waits.push(ms) }
+    // 429 then pass: two calls, the first wait.
+    globalThis.fetch = (async () => { calls++; return calls === 1 ? failure(429) : reply() }) as unknown as typeof fetch
+    assert.equal((await checkImage(Buffer.from(PNG_BYTES), 'image/png')).verdict, 'allow')
+    assert.equal(calls, 2)
+    assert.deepEqual(waits, [1500])
+    // Retry-After seconds are honoured; a huge one is capped at ten seconds.
+    calls = 0; waits.length = 0
+    globalThis.fetch = (async () => { calls++; return calls === 1 ? failure(503, '3') : reply() }) as unknown as typeof fetch
+    await checkImage(Buffer.from(PNG_BYTES), 'image/png')
+    assert.deepEqual(waits, [3000])
+    calls = 0; waits.length = 0
+    globalThis.fetch = (async () => { calls++; return calls === 1 ? failure(429, '99') : reply() }) as unknown as typeof fetch
+    await checkImage(Buffer.from(PNG_BYTES), 'image/png')
+    assert.deepEqual(waits, [10000])
+    // Three 429s fail closed after the two fixed waits.
+    calls = 0; waits.length = 0
+    globalThis.fetch = (async () => { calls++; return failure(429) }) as unknown as typeof fetch
+    await assert.rejects(checkImage(Buffer.from(PNG_BYTES), 'image/png'), /Vision gate failed \(429\)/)
+    assert.equal(calls, 3)
+    assert.deepEqual(waits, [1500, 4000])
+    // A refusal (any other 4xx) is called once and fails closed.
+    calls = 0; waits.length = 0
+    globalThis.fetch = (async () => { calls++; return failure(403) }) as unknown as typeof fetch
+    await assert.rejects(checkImage(Buffer.from(PNG_BYTES), 'image/png'), /Vision gate failed \(403\)/)
+    assert.equal(calls, 1)
+    assert.deepEqual(waits, [])
+    // A rejection verdict is returned at once and is never retried.
+    calls = 0; waits.length = 0
+    globalThis.fetch = (async () => {
+      calls++
+      return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ ...allow, verdict: 'reject', reason_code: 'nudity' }) } }] }))
+    }) as unknown as typeof fetch
+    const rejected = await checkImage(Buffer.from(PNG_BYTES), 'image/png')
+    assert.equal(rejected.verdict, 'reject')
+    assert.equal(calls, 1)
+    assert.deepEqual(waits, [])
+  } finally {
+    globalThis.fetch = realFetch
+    safetyEffects.judge = priorJudge
+    safetyEffects.wait = realWait
+    env.OPENROUTER_API_KEY = realKey
+  }
+})
 check('director_verbatim', () => {
   // The director prompt is the contract text, byte for byte, so it can't drift.
   const md = readFileSync(process.env.EVERLORE_DOCS_ROOT ? `${process.env.EVERLORE_DOCS_ROOT}/server/MEDIA_DIRECTOR_PROMPT.md` : new URL('../../everlore-docs/server/MEDIA_DIRECTOR_PROMPT.md', import.meta.url), 'utf8')

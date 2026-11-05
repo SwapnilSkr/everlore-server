@@ -4,8 +4,9 @@ import { identityKey } from '../character-codex.service'
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
 import { getMediaQueue, QUEUE_RETENTION } from '../../queues'
-import { asMediaImageReference, imageExtensionFor, ProviderRefusalError } from '../../ai/image'
+import { asMediaImageReference, imageExtensionFor, ProviderRefusalError, sniffImageContentType } from '../../ai/image'
 import { generateMediaImage, mediaImageReferenceLimit } from './image'
+import sharp from 'sharp'
 import { submitVideo, awaitVideo, downloadVideo } from '../../ai/video'
 import { AI_MODELS } from '../../ai/models'
 import { HttpError } from '../../utils/http-error'
@@ -32,6 +33,7 @@ import { portraitLookEvidence } from './look-evidence'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
 import type { PersonaDoc } from '../../models/persona.model'
 import { PAINTED_STYLE_KEY, resolveMediaStyle, templateMediaStyle } from '../image.service'
+import { encodeGeneratedStill } from '../../utils/image-encoding'
 
 export type QueuedReply = { status: 'ready'; url: string; duration_ms?: number } | { status: 'queued'; media_id: string }
 
@@ -289,8 +291,9 @@ export async function ensurePortraitReady(
           reference = asMediaImageReference(await visualEffects.download(portraitUrl(holder.portrait.asset_key)))
         }
         const image = await generatePortraitBytes(appearance, card.canonical_name, '', model, style.render, reference)
-        const key = `media/portrait/${pid.toHexString()}/${iid.toHexString()}/${id.toHexString()}${imageExtensionFor(image.contentType)}`
-        const result = await visualEffects.upload(image.data, image.contentType, { key })
+        const stored = await encodeGeneratedStill(image, 'portrait')
+        const key = `media/portrait/${pid.toHexString()}/${iid.toHexString()}/${id.toHexString()}${imageExtensionFor(stored.contentType)}`
+        const result = await visualEffects.upload(stored.data, stored.contentType, { key })
         const portrait = withStyleKey({ asset_key: result.key, source: 'generated', appearance_version: version, painted_at: new Date() }, style.key)
         await storePortrait(instance, card, holder, portrait, appearance, {
           ...(instance.persona_id ? { personaId: instance.persona_id } : {}),
@@ -387,11 +390,12 @@ export async function ensurePassingFaceReady(asset: MediaAssetDoc, event: WorldE
         const appearance = old?.appearance || await visualEffects.fill({ canonical_name: speakerSubject(handle), appearance: '' }, event.data.ai_response)
         await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, { $set: { appearance, input: appearance } })
         const image = await generatePortraitBytes(appearance, speakerSubject(handle), '', model, style.render)
-        const key = `media/passing_face/${asset.player_id}/${instance._id}/${id}${imageExtensionFor(image.contentType)}`
+        const stored = await encodeGeneratedStill(image, 'passing_face')
+        const key = `media/passing_face/${asset.player_id}/${instance._id}/${id}${imageExtensionFor(stored.contentType)}`
         const staged = await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, { $set: { asset_key: key } })
         if (!staged.matchedCount || !await liveMedia(asset)) throw new Error('Face moment passed')
         uploaded = key
-        const result = await visualEffects.upload(image.data, image.contentType, { key })
+        const result = await visualEffects.upload(stored.data, stored.contentType, { key })
         uploaded = result.key
         if (!await liveMedia(asset)) throw new Error('Face moment passed')
         const saved = await mongoColl.mediaAssets().updateOne({ _id: id, status: 'processing' }, { $set: {
@@ -694,12 +698,13 @@ export async function processPortrait(mediaId: string): Promise<void> {
       }
       throw error
     }
-    const key = `media/portrait/${asset.player_id.toHexString()}/${asset.instance_id.toHexString()}/${asset._id.toHexString()}${imageExtensionFor(image.contentType)}`
+    const stored = await encodeGeneratedStill(image, 'portrait')
+    const key = `media/portrait/${asset.player_id.toHexString()}/${asset.instance_id.toHexString()}/${asset._id.toHexString()}${imageExtensionFor(stored.contentType)}`
     const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key } })
     if (!staged.matchedCount) throw new Error('Portrait removed')
     stage = 'upload'
     uploaded = key
-    const result = await visualEffects.upload(image.data, image.contentType, { key })
+    const result = await visualEffects.upload(stored.data, stored.contentType, { key })
     uploaded = result.key
     const version = (holder.portrait?.appearance_version ?? holder.appearanceVersion) + (holder.portrait ? 1 : 0) || 1
     const portrait = withStyleKey({ asset_key: result.key, source: 'generated', appearance_version: version, painted_at: new Date() }, style.key)
@@ -871,12 +876,13 @@ async function processPersonaPortrait(asset: MediaAssetDoc): Promise<void> {
       }
       throw error
     }
-    const key = `media/persona/${asset.player_id.toHexString()}/${asset._id.toHexString()}${imageExtensionFor(image.contentType)}`
+    const stored = await encodeGeneratedStill(image, 'persona')
+    const key = `media/persona/${asset.player_id.toHexString()}/${asset._id.toHexString()}${imageExtensionFor(stored.contentType)}`
     const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key } })
     if (!staged.matchedCount) throw new Error('Portrait removed')
     stage = 'upload'
     uploaded = key
-    const result = await visualEffects.upload(image.data, image.contentType, { key })
+    const result = await visualEffects.upload(stored.data, stored.contentType, { key })
     uploaded = result.key
     await storePersonaFace(persona._id, styleKey, result.key, nextPersonaFaceVersion(persona, personaFaceForStyle(persona, styleKey)))
     const cost = image.costUsd ?? asset.cost_usd
@@ -936,8 +942,9 @@ export async function ensurePersonaFaceReady(
       reference = asMediaImageReference(await visualEffects.download(portraitUrl(kept.asset_key)))
     }
     const image = await generatePortraitBytes(appearance, persona.name, '', imageModel(), render, reference)
-    const key = `media/persona/${pid.toHexString()}/${id.toHexString()}${imageExtensionFor(image.contentType)}`
-    const result = await visualEffects.upload(image.data, image.contentType, { key })
+    const stored = await encodeGeneratedStill(image, 'persona')
+    const key = `media/persona/${pid.toHexString()}/${id.toHexString()}${imageExtensionFor(stored.contentType)}`
+    const result = await visualEffects.upload(stored.data, stored.contentType, { key })
     const version = nextPersonaFaceVersion(persona, face)
     await storePersonaFace(persona._id, styleKey, result.key, version)
     const model = imageModel()
@@ -1103,12 +1110,13 @@ export async function processPicture(mediaId: string): Promise<void> {
       await unseeMedia(asset, 'post', post.verdict !== 'allow' ? post.reason_code : 'picture_text_visible')
       return
     }
-    const key = `media/picture/${asset.player_id.toHexString()}/${asset.instance_id.toHexString()}/${asset._id.toHexString()}${imageExtensionFor(image.contentType)}`
+    const stored = await encodeGeneratedStill(image, 'picture')
+    const key = `media/picture/${asset.player_id.toHexString()}/${asset.instance_id.toHexString()}/${asset._id.toHexString()}${imageExtensionFor(stored.contentType)}`
     const staged = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, { $set: { asset_key: key } })
     if (!staged.matchedCount) throw new Error('Picture removed')
     stage = 'upload'
     uploaded = key
-    const result = await visualEffects.upload(image.data, image.contentType, { key })
+    const result = await visualEffects.upload(stored.data, stored.contentType, { key })
     uploaded = result.key
     stage = 'save'
     const saved = await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'processing' }, {
@@ -1495,6 +1503,19 @@ const sceneStillKeys = (shots: ShotOutcome[]): string[] =>
   shots.flatMap((s) => s.stillKey ? [s.stillKey] : [])
 
 /**
+ * HeyGen documents PNG and JPEG portraits, while stored portraits are WebP
+ * after the encode step. Convert at this consumer only, and hand the key back
+ * so the copy is deleted with the cut's other inputs. A legacy JPEG/PNG
+ * portrait passes through untouched.
+ */
+async function linePortraitReference(portrait: Buffer, url: string, asset: MediaAssetDoc, saveId: ObjectId): Promise<{ url: string; key: string }> {
+  if (sniffImageContentType(portrait) !== 'image/webp') return { url, key: '' }
+  const key = `media/still/${asset.player_id.toHexString()}/${saveId.toHexString()}/${asset._id.toHexString()}-portrait.png`
+  const uploaded = await visualEffects.upload(await sharp(portrait).png().toBuffer(), 'image/png', { key })
+  return { url: uploaded.url, key: uploaded.key }
+}
+
+/**
  * One frame of a finished film, uploaded next to it as its Keepsakes poster.
  * A poster failure never fails the film: the cut still delivers, without one.
  */
@@ -1529,6 +1550,7 @@ export async function processVideo(mediaId: string): Promise<void> {
   let uploaded = ''
   let posterKey = ''
   let excerptKey = ''
+  let linePortraitKey = ''
   const renderStarted = Date.now()
   let planRecord: Record<string, unknown> = {}
   let stage = 'prepare'
@@ -1576,6 +1598,8 @@ export async function processVideo(mediaId: string): Promise<void> {
       asset.player_id.toHexString(), asset.instance_id.toHexString(),
       asset.event_id.toHexString(), asset.line_id)
     const portraitBytes = await visualEffects.download(portraitUrlStr)
+    const linePortrait = await linePortraitReference(portraitBytes, portraitUrlStr, asset, saveId)
+    linePortraitKey = linePortrait.key
     const timing = await measureLineSentences(line.voice.spoken_text, clip.bytes)
     // The director pass.
     const prose = event.data.ai_response
@@ -1636,7 +1660,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       model: asset.model,
       speakerName: line.voice.speaker_name,
       spokenText: excerptText,
-      portraitUrl: portraitUrlStr,
+      portraitUrl: linePortrait.url,
       audioUrl: excerptUpload.url,
     })
     // Observe a refusal immediately while sibling scene shots are running;
@@ -1666,7 +1690,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       lineVideo = done.video
       cost += done.cost
     } catch (error) {
-      await deleteSceneStills(asset, [...sceneStillKeys(shots), excerptKey])
+      await deleteSceneStills(asset, [...sceneStillKeys(shots), excerptKey, linePortraitKey].filter(Boolean))
       if (error instanceof ProviderRefusalError) {
         await unseeMedia(asset, 'provider', providerReason(error), undefined, { message: error.message, status: error.status })
         return
@@ -1688,7 +1712,7 @@ export async function processVideo(mediaId: string): Promise<void> {
         || lineFrames.find((f) => f.text_visible)
         || lineFrames.find((f) => f.people_count !== 1)
       await unseeMedia(asset, 'post', bad ? bad.reason_code : 'line_shot_rejected')
-      await deleteSceneStills(asset, [...sceneStillKeys(shots), excerptKey])
+      await deleteSceneStills(asset, [...sceneStillKeys(shots), excerptKey, linePortraitKey].filter(Boolean))
       return
     }
     // Assemble: scene shots that survived, then the line, degraded never broken.
@@ -1745,7 +1769,7 @@ export async function processVideo(mediaId: string): Promise<void> {
     if (!saved.modifiedCount) throw new Error('Video removed')
     // The cut is assembled: its still inputs are deleted (item 5). Their URLs
     // stay in the stored plan as telemetry, but the objects are gone.
-    await deleteSceneStills(asset, [...sceneStillKeys(shots), excerptKey])
+    await deleteSceneStills(asset, [...sceneStillKeys(shots), excerptKey, linePortraitKey].filter(Boolean))
     await settleMedia(asset._id)
     await notifyMedia({ ...asset, status: 'ready', url: result.url, duration_ms: Math.round(actualS * 1000) })
   } catch (error) {
@@ -1760,7 +1784,7 @@ export async function processVideo(mediaId: string): Promise<void> {
       try { await mediaEffects.remove(posterKey) } catch { /* retained for maintenance */ }
     }
     // A video that fails after its shots still deletes their stills (item 5).
-    await deleteSceneStills(asset, [...sceneStillKeys((planRecord.shots as ShotOutcome[] | undefined) || []), excerptKey].filter(Boolean))
+    await deleteSceneStills(asset, [...sceneStillKeys((planRecord.shots as ShotOutcome[] | undefined) || []), excerptKey, linePortraitKey].filter(Boolean))
     // Keep the telemetry: plan, prompts and shot checks survive the failure.
     await mongoColl.mediaAssets().updateOne({ _id: asset._id }, {
       $set: { plan: { ...planRecord, render_ms: Date.now() - renderStarted } },
