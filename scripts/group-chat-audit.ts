@@ -4995,6 +4995,7 @@ let selfieRequests: import('../src/ai/client').LLMRequest[] = []
 let selfiePrompts: string[] = [], selfieDownloads: string[] = [], selfieEnqueued: string[] = []
 let selfieImageHook: (() => Promise<void>) | undefined, selfieUploadHook: (() => Promise<void>) | undefined
 let selfieImageError: Error | undefined, selfieQueueError: Error | undefined
+let selfieDescriptionRefusals = 0
 let selfiePreReject: false | 'mood' | 'description' = false, selfiePeople = 1, selfieTextVisible = false, selfieEveryday: boolean[] = []
 let selfieMood = 'warm and cheerful'
 const fixtureDescription = 'A person smiles in a bright room with covered everyday clothing. Warm light softens the illustrated face.'
@@ -5003,7 +5004,7 @@ safetyEffects.call = async request => {
   if (request.purpose === 'media_selfie_mood') return selfieMood
   if (request.purpose === 'media_selfie_description') return fixtureDescription
   assert.equal(request.purpose, 'media_safety_pre')
-  const reject = selfiePreReject === 'mood' ? request.messages[1].content === selfieMood : selfiePreReject === 'description' && request.messages[1].content === fixtureDescription
+  const reject = selfiePreReject === 'mood' ? request.messages[1].content === `An adult person with this expression: ${selfieMood}` : request.messages[1].content === fixtureDescription && (selfiePreReject === 'description' || selfieDescriptionRefusals-- > 0)
   return JSON.stringify({ verdict: reject ? 'reject' : 'allow', reason_code: reject ? 'sexual_act' : 'ok' })
 }
 safetyEffects.judge = async (_image, _type, _reference, everyday) => {
@@ -5135,12 +5136,12 @@ await check('selfie heat server toggle both gates single speaker portrait and is
     assert.equal(selfiePrompts.length, 1)
     assert(selfiePrompts[0].includes(mature ? 'revealing but covered' : 'Everyday, fully clothed, friendly, not flirty'))
     assert(selfiePrompts[0].includes('arm’s length') && selfiePrompts[0].includes('exactly one person') && selfiePrompts[0].includes('never a photograph'))
-    assert(selfiePrompts[0].includes('Semi-realistic glamorous digital painting'))
+    assert(selfiePrompts[0].includes('digital painting') && selfiePrompts[0].includes('Semi-realistic'))
     assert(!selfiePrompts[0].includes('anime'))
     assert.deepEqual(selfieEveryday, [!mature])
     const gates = selfieRequests.filter(request => request.purpose === 'media_safety_pre')
     assert.equal(gates.length, 3)
-    assert.equal(gates.at(-1)!.messages[0].content.includes('Additional everyday-selfie gate'), !mature)
+    assert.equal(gates.at(-1)!.messages[0].content.includes('Additional everyday-selfie rule'), !mature)
     const description = selfieRequests.find(request => request.purpose === 'media_selfie_description')!
     const prompt = JSON.stringify(description.messages)
     const described = JSON.parse(description.messages[1].content)
@@ -5166,18 +5167,44 @@ await check('selfie heat server toggle both gates single speaker portrait and is
   assert.equal(rows('mediaAssets')[0].status, 'ready')
   assert.equal(selfieDownloads[0], 'https://fixture.invalid/card/face.png')
 })
+await check('selfie description refused is written again and a refused one is never painted', async () => {
+  const { ask } = await selfieFixture()
+  selfieDescriptionRefusals = 2
+  const result = await ask(); await selfieRun(result.media_id)
+  assert.equal(selfieRequests.filter(request => request.purpose === 'media_selfie_description').length, 3)
+  assert.equal(rows('mediaAssets')[0].status, 'ready'); assert.equal(selfiePrompts.length, 1)
+  selfieDescriptionRefusals = 0
+  const again = await selfieFixture()
+  selfiePreReject = 'description'
+  const refused = await again.ask(); await selfieRun(refused.media_id)
+  assert.equal(selfieRequests.filter(request => request.purpose === 'media_selfie_description').length, 3)
+  assert.equal(selfiePrompts.length, 0); assert.equal(rows('mediaAssets')[0].status, 'unseen')
+})
+
+await check('selfie mood refused is left out and the picture still comes', async () => {
+  const { ask } = await selfieFixture()
+  selfiePreReject = 'mood'
+  const result = await ask(); await selfieRun(result.media_id)
+  const gate = selfieRequests.find(request => request.purpose === 'media_safety_pre')!
+  assert(gate.messages[1].content.startsWith('An adult person with this expression: '), 'the gate hears the mood as a face')
+  const description = selfieRequests.find(request => request.purpose === 'media_selfie_description')!
+  assert(!('mood' in JSON.parse(description.messages[1].content)), 'a refused mood never reaches the description')
+  assert(!JSON.stringify(description.messages).includes(selfieMood))
+  assert.equal(rows('mediaAssets')[0].status, 'ready')
+})
+
 await check('selfie safety rejections unseen release retry and no second person or visible text', async () => {
-  for (const failure of ['pre', 'people', 'text', 'provider', 'mood'] as const) {
+  for (const failure of ['pre', 'people', 'text', 'provider'] as const) {
     const { ask, event, line } = await selfieFixture()
     const result = await ask()
-    if (failure === 'pre' || failure === 'mood') selfiePreReject = failure === 'pre' ? 'description' : 'mood'
+    if (failure === 'pre') selfiePreReject = 'description'
     if (failure === 'people') selfiePeople = 2
     if (failure === 'text') selfieTextVisible = true
     if (failure === 'provider') selfieImageError = new ProviderRefusalError(400, 'content_filter', 'fixture content refusal')
     await selfieRun(result.media_id)
-    assert.equal(event.data.group_selfies?.[groupLineId(line)]?.status, failure === 'mood' ? 'failed' : 'unseen')
+    assert.equal(event.data.group_selfies?.[groupLineId(line)]?.status, 'unseen')
     assert.equal(rows('mediaUsage')[0].status, 'released'); assert.equal(storedObjects.size, 0)
-    if (failure === 'pre' || failure === 'mood') assert.equal(selfiePrompts.length, 0)
+    if (failure === 'pre') assert.equal(selfiePrompts.length, 0)
     const retry = await ask(); assert.notEqual(retry.media_id, result.media_id)
   }
 })
@@ -5513,7 +5540,7 @@ await check('selfie-auto painted prompt ignores romcom narrative render on real 
   assert.equal(source.narrative_style, 'romcom')
   const result = await ask(); await selfieRun(result.media_id)
   assert.equal(selfiePrompts.length, 1)
-  assert(selfiePrompts[0].includes('Semi-realistic glamorous digital painting'))
+  assert(selfiePrompts[0].includes('digital painting') && selfiePrompts[0].includes('Semi-realistic'))
   assert(selfiePrompts[0].includes('Match the reference portrait exactly'))
   assert(selfiePrompts[0].includes('illustration, never a photograph'))
   assert(!selfiePrompts[0].includes('anime'))

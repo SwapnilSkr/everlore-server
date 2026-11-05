@@ -204,12 +204,14 @@ export async function notifySelfieReady(asset: MediaAssetDoc): Promise<void> {
   await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'ready' }, { $set: { notified_at: new Date() } })
 }
 
+const SELFIE_DESCRIPTION_TRIES = 3
+
 export const selfieHeat = (mature: boolean) => mature
   ? 'Sensual and suggestive to the full allowed limit: revealing but covered clothing on adults, never nudity or a sexual act.'
-  : 'Everyday, fully clothed, friendly, not flirty; no romantic, sensual or suggestive pose or clothing.'
+  : 'Everyday, fully clothed, friendly, not flirty: a plain T-shirt or jumper in place of any clothing the look mentions, and nothing said about their figure; no romantic, sensual or suggestive pose or clothing.'
 
 export function selfieImagePrompt(description: string, mature: boolean): string {
-  return `${description}. Semi-realistic glamorous digital painting, softly painted textures and cinematic light. Match the reference portrait exactly: the same fictional person, face, hair and illustrated look. A phone selfie at arm’s length, exactly one person, no other people and no player visible. ${selfieHeat(mature)} Vertical 9:16, clearly an illustration, never a photograph; no text, lettering, logos or signage.`
+  return `${description}. Semi-realistic ${mature ? 'glamorous ' : ''}digital painting, softly painted textures and cinematic light. Match the reference portrait exactly: the same fictional adult, face, hair and illustrated look. A phone selfie at arm’s length, exactly one person, no other people and no player visible. ${selfieHeat(mature)} Vertical 9:16, clearly an illustration, never a photograph; no text, lettering, logos or signage.`
 }
 
 export async function processSelfie(mediaId: string): Promise<void> {
@@ -244,14 +246,24 @@ export async function processSelfie(mediaId: string): Promise<void> {
       ...groupThreadFilter(event.data.dm_with), sequence: { $lt: event.sequence } }).sort({ sequence: -1 }).limit(3).toArray()
     const moodLines = [...before.reverse().flatMap(turn => (turn.data.lines || []).map(line => line.text)),
       ...event.data.lines!.slice(0, ctx.index + 1).map(line => line.text)].slice(-4)
-    const description = await describeSelfie({ look: holder.appearance, setting: ctx.template.global_lore,
-      moodLines, heat: selfieHeat(mature) })
-    const pre = await moderateDescription(description, !mature)
-    if (pre.verdict !== 'allow') throw new UnseenError('pre', pre.reason_code)
-    const prompt = selfieImagePrompt(description, mature)
-    // The fixed framing and heat are part of what the image model receives, and gated too.
-    const promptGate = await moderateDescription(prompt, !mature)
-    if (promptGate.verdict !== 'allow') throw new UnseenError('pre', promptGate.reason_code)
+    // The description is written fresh each try and sometimes drifts past the line
+    // (the look's own clothing, usually). The gate still decides; a refused one is
+    // written again before the picture is given up, and nothing refused is painted.
+    let prompt: string | undefined
+    let description = ''
+    let refusal = 'selfie_description'
+    for (let attempt = 0; attempt < SELFIE_DESCRIPTION_TRIES && !prompt; attempt++) {
+      description = await describeSelfie({ look: holder.appearance, setting: ctx.template.global_lore,
+        moodLines, heat: selfieHeat(mature) })
+      const pre = await moderateDescription(description, !mature)
+      if (pre.verdict !== 'allow') { refusal = pre.reason_code; continue }
+      const candidate = selfieImagePrompt(description, mature)
+      // The fixed framing and heat are part of what the image model receives, and gated too.
+      const promptGate = await moderateDescription(candidate, !mature)
+      if (promptGate.verdict !== 'allow') { refusal = promptGate.reason_code; continue }
+      prompt = candidate
+    }
+    if (!prompt) throw new UnseenError('pre', refusal)
     if (!await liveSelfie(asset)) throw new Error('Picture moment passed')
     stage = 'generate'
     const image = await visualEffects.image(prompt, { model: asset.model, aspectRatio: '9:16', reference })
