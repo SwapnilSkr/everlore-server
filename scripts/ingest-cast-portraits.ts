@@ -16,6 +16,14 @@
  * exact `$set`, and makes no writes — no Mongo updates and no S3 uploads.
  * `--apply` refuses unless `--yes-db` matches the database the env points at,
  * so a copy-pasted command can't write to the wrong database.
+ *
+ * Authored portraits are stored as WebP (about 240 KB instead of about 2.8 MB
+ * of PNG): the drop folder stays PNG, the checks run on the original, and the
+ * uploaded bytes are the shared bounded encoding. The key revision is the
+ * hash of the original PNG, so the same art always addresses the same key.
+ * A world already pointing at the PNG of the same art is moved to the WebP
+ * key by changing `asset_key` alone — no repaint, no new look — and the PNG
+ * object is left in place for references and caches that still use it.
  */
 import { createHash } from 'crypto'
 import { readFile } from 'fs/promises'
@@ -25,6 +33,7 @@ import type { UpdateFilter, WithoutId } from 'mongodb'
 import { connectMongo, getDb, mongoColl } from '../src/config/mongo'
 import { identityKey } from '../src/services/character-codex.service'
 import { storageService } from '../src/services/storage.service'
+import { encodeUserImage } from '../src/utils/image-encoding'
 import type { PortraitRef } from '../src/models/media.model'
 import type {
   ProtagonistDoc,
@@ -110,13 +119,23 @@ export function nameKey(name: string): string {
 }
 
 /**
- * Revisioned key for authored portrait bytes. The content hash is the
- * revision: re-running with the same bytes addresses the same key (a no-op),
- * and new bytes can never overwrite a published key.
+ * Revision for authored portrait art. It is the content hash of the ORIGINAL
+ * PNG, not of the encoded WebP: the same art then addresses the same key on
+ * every run and with every encoder, so a re-run is a no-op or a move, and new
+ * art can never overwrite a published key.
  */
-export function assetKeyFor(slug: string, name: string, bytes: Buffer, ext: string): string {
-  const sha12 = createHash('sha256').update(bytes).digest('hex').slice(0, 12)
-  return `media/portrait/authored/${slug}/${nameKey(name)}-${sha12}.${ext}`
+export function portraitRevision(bytes: Buffer): string {
+  return createHash('sha256').update(bytes).digest('hex').slice(0, 12)
+}
+
+/** Revisioned WebP key for authored portrait bytes (the uploaded encoding). */
+export function assetKeyFor(slug: string, name: string, bytes: Buffer): string {
+  return `media/portrait/authored/${slug}/${nameKey(name)}-${portraitRevision(bytes)}.webp`
+}
+
+/** The PNG key an earlier run of this script published for the same art. */
+export function pngKeyFor(slug: string, name: string, bytes: Buffer): string {
+  return `media/portrait/authored/${slug}/${nameKey(name)}-${portraitRevision(bytes)}.png`
 }
 
 /**
@@ -157,17 +176,55 @@ export function samePortraitIgnoringTime(a?: PortraitRef, b?: PortraitRef): bool
 }
 
 /**
+ * What to write for one face: nothing, the whole portrait ref (new art, a new
+ * style, an out-of-date version), or just the key when the same art is only
+ * moving from its PNG key to its WebP key.
+ */
+export type PortraitPlan =
+  | { kind: 'none' }
+  | { kind: 'paint'; portrait: PortraitRef }
+  | { kind: 'move'; assetKey: string }
+
+/**
+ * True when `current` is the PNG of this exact art and nothing else about the
+ * ref differs. Swapping that key is not a repaint: `painted_at`, the style and
+ * the version stay untouched, so no save regenerates or reports a new look.
+ */
+function isSameArtPng(current: PortraitRef, candidate: PortraitRef, pngKey: string): boolean {
+  return current.asset_key === pngKey
+    && current.source === candidate.source
+    && current.appearance_version === candidate.appearance_version
+    && (current.art_style || 'painted') === (candidate.art_style || 'painted')
+}
+
+export function planPortrait(
+  current: PortraitRef | undefined,
+  key: string,
+  pngKey: string,
+  entry: Pick<CastEntry, 'appearance_version'>,
+  narrativeStyle: string | undefined,
+  paintedAt: Date,
+): PortraitPlan {
+  const candidate = buildAuthoredPortrait(key, entry, narrativeStyle, paintedAt)
+  if (current && samePortraitIgnoringTime(current, candidate)) return { kind: 'none' }
+  if (current && isSameArtPng(current, candidate, pngKey)) return { kind: 'move', assetKey: key }
+  return { kind: 'paint', portrait: candidate }
+}
+
+/**
  * The positional `$set` for one entry: only its `appearance` and `portrait`
- * keys, nothing else on the template. Empty means fully no-op.
+ * keys, nothing else on the template. A move writes the single nested
+ * `asset_key` so nothing else on the portrait changes. Empty means no-op.
  */
 export function buildEntrySet(
   base: string,
   appearance: string | null,
-  portrait: PortraitRef | null,
+  plan: PortraitPlan,
 ): Record<string, unknown> {
   const $set: Record<string, unknown> = {}
   if (appearance !== null) $set[`${base}.appearance`] = appearance
-  if (portrait !== null) $set[`${base}.portrait`] = portrait
+  if (plan.kind === 'paint') $set[`${base}.portrait`] = plan.portrait
+  else if (plan.kind === 'move') $set[`${base}.portrait.asset_key`] = plan.assetKey
   return $set
 }
 
@@ -318,11 +375,10 @@ async function selfTest(): Promise<void> {
   )
 
   // 5. $set touches only the one entry's appearance + portrait.
-  const $set = buildEntrySet(
-    'seed_cast.2',
-    'a look',
-    { asset_key: 'k', source: 'authored', appearance_version: 1, painted_at: new Date(0) },
-  )
+  const $set = buildEntrySet('seed_cast.2', 'a look', {
+    kind: 'paint',
+    portrait: { asset_key: 'k', source: 'authored', appearance_version: 1, painted_at: new Date(0) },
+  })
   check(
     Object.keys($set).length === 2
       && 'seed_cast.2.appearance' in $set
@@ -330,14 +386,12 @@ async function selfTest(): Promise<void> {
     'positional $set keys for a seed entry',
   )
   check(
-    Object.keys(buildEntrySet('protagonist', null, null)).length === 0,
+    Object.keys(buildEntrySet('protagonist', null, { kind: 'none' })).length === 0,
     'no changes means an empty $set (no-op)',
   )
   const proSet = buildEntrySet('protagonist', null, {
-    asset_key: 'k',
-    source: 'authored',
-    appearance_version: 1,
-    painted_at: new Date(0),
+    kind: 'paint',
+    portrait: { asset_key: 'k', source: 'authored', appearance_version: 1, painted_at: new Date(0) },
   })
   check(
     Object.keys(proSet).length === 1 && 'protagonist.portrait' in proSet,
@@ -379,23 +433,27 @@ async function selfTest(): Promise<void> {
     'absent art_style matches an omitted one (painted default)',
   )
 
-  // 7. Revisioned keys are stable per bytes and namespaced per world/face.
+  // 7. Revisioned keys are stable per bytes, keyed by the PNG hash, WebP ext.
   const bytes = Buffer.from('same-bytes')
-  const keyA = assetKeyFor('my-world', 'Maya Chen', bytes, 'png')
+  const keyA = assetKeyFor('my-world', 'Maya Chen', bytes)
   check(
-    keyA === assetKeyFor('my-world', 'Maya Chen', Buffer.from('same-bytes'), 'png'),
+    keyA === assetKeyFor('my-world', 'Maya Chen', Buffer.from('same-bytes')),
     'same bytes give the same key',
   )
   check(
-    keyA !== assetKeyFor('my-world', 'Maya Chen', Buffer.from('other-bytes'), 'png'),
+    keyA !== assetKeyFor('my-world', 'Maya Chen', Buffer.from('other-bytes')),
     'new bytes give a new key (never overwrite)',
   )
   check(
     keyA.startsWith('media/portrait/authored/my-world/maya-chen-')
-      && keyA.endsWith('.png')
-      && /^media\/portrait\/authored\/my-world\/maya-chen-[0-9a-f]{12}\.png$/.test(keyA),
-    'key shape carries slug, name key and a 12-hex content revision',
+      && /^media\/portrait\/authored\/my-world\/maya-chen-[0-9a-f]{12}\.webp$/.test(keyA),
+    'key shape carries slug, name key, a 12-hex content revision and .webp',
     keyA,
+  )
+  check(
+    pngKeyFor('my-world', 'Maya Chen', bytes) === keyA.replace(/\.webp$/, '.png'),
+    'the PNG key of the same art shares the revision',
+    pngKeyFor('my-world', 'Maya Chen', bytes),
   )
 
   // 8. PNG verification on synthetic buffers (sharp writes, no files).
@@ -420,6 +478,60 @@ async function selfTest(): Promise<void> {
   check(!jpegResult.ok && /PNG/.test(jpegResult.reason || ''), 'non-PNG bytes are rejected')
   const garbage = await verifyPortraitBytes(Buffer.from('not an image at all'))
   check(!garbage.ok && /decode/.test(garbage.reason || ''), 'undecodable bytes are rejected')
+
+  // 9. A re-run on the PNG of the same art moves; the WebP is then a no-op.
+  const world = 'my-world'
+  const name = 'Maya Chen'
+  const art = Buffer.from('same-bytes')
+  const webpKey = assetKeyFor(world, name, art)
+  const pngKey = pngKeyFor(world, name, art)
+  const paintedAt = new Date('2026-10-01T00:00:00Z')
+  const rerunAt = new Date('2026-11-05T00:00:00Z')
+  const version = { appearance_version: 2 }
+  const paintedPng: PortraitRef = {
+    asset_key: pngKey,
+    source: 'authored',
+    appearance_version: 2,
+    art_style: 'noir',
+    painted_at: paintedAt,
+  }
+  const movePlan = planPortrait(paintedPng, webpKey, pngKey, version, 'noir', rerunAt)
+  check(
+    movePlan.kind === 'move' && movePlan.assetKey === webpKey,
+    'a PNG of the same art plans a move to WebP',
+    movePlan,
+  )
+  const moveSet = buildEntrySet('seed_cast.0', null, movePlan)
+  check(
+    JSON.stringify(moveSet) === JSON.stringify({ 'seed_cast.0.portrait.asset_key': webpKey }),
+    'a move changes only asset_key',
+    moveSet,
+  )
+  const movedRef: PortraitRef = { ...paintedPng, asset_key: webpKey }
+  check(
+    planPortrait(movedRef, webpKey, pngKey, version, 'noir', rerunAt).kind === 'none',
+    'a re-run on the WebP is a no-op',
+  )
+  const newArt = Buffer.from('other-bytes')
+  const newKey = assetKeyFor(world, name, newArt)
+  const repaintPlan = planPortrait(paintedPng, newKey, pngKeyFor(world, name, newArt), version, 'noir', rerunAt)
+  check(
+    repaintPlan.kind === 'paint' && repaintPlan.portrait.asset_key === newKey,
+    'different art still repaints to its own key',
+    repaintPlan,
+  )
+  const freshPlan = planPortrait(undefined, webpKey, pngKey, version, 'noir', rerunAt)
+  check(
+    freshPlan.kind === 'paint' && freshPlan.portrait.asset_key === webpKey,
+    'a first portrait is a paint',
+  )
+  const restyledPlan = planPortrait(movedRef, webpKey, pngKey, version, 'painted', rerunAt)
+  check(restyledPlan.kind === 'paint', 'a style change still repaints')
+
+  // 10. The uploaded bytes are the shared bounded WebP encoding.
+  const encoded = await encodeUserImage(sharp(good))
+  const encodedMeta = await sharp(encoded).metadata()
+  check(encodedMeta.format === 'webp', 'the upload encoding is WebP', encodedMeta.format)
 
   if (process.exitCode) {
     console.error('\nSELF-TEST FAILED')
@@ -475,6 +587,7 @@ async function main(): Promise<void> {
   let missingTemplate = 0
   let missingEntry = 0
   let invalidPng = 0
+  let encodeFailed = 0
   let failed = 0
 
   for (const c of wanted) {
@@ -498,9 +611,11 @@ async function main(): Promise<void> {
 
     const appearance = decideAppearance(match.entry, c.look, c.keep_look === true)
 
-    // Portrait: a missing file skips the face but not the look.
-    let portrait: PortraitRef | null = null
-    let pngNote = ''
+    // Portrait: a missing or unsuitable file skips the face but not the look.
+    // The checks run on the original PNG; what gets uploaded is the WebP.
+    let plan: PortraitPlan = { kind: 'none' }
+    let portraitNote = ''
+    let upload: Buffer | null = null
     const pngPath = join(manifest.drop_folder, c.file)
     let bytes: Buffer | null = null
     try {
@@ -510,49 +625,65 @@ async function main(): Promise<void> {
     }
     if (!bytes) {
       missingPng++
-      pngNote = `portrait: MISSING FILE ${c.file}`
+      portraitNote = `portrait: MISSING FILE ${c.file}`
     } else {
       const checkPng = await verifyPortraitBytes(bytes)
       if (!checkPng.ok) {
         invalidPng++
-        pngNote = `portrait: INVALID ${c.file} (${checkPng.reason})`
-        bytes = null
+        portraitNote = `portrait: INVALID ${c.file} (${checkPng.reason})`
       } else {
-        const ext = (c.file.split('.').pop() || 'png').toLowerCase()
-        const key = assetKeyFor(c.slug, c.name, bytes, ext)
-        const candidate = buildAuthoredPortrait(
+        try {
+          upload = await encodeUserImage(sharp(bytes))
+        } catch (e) {
+          // Never fall back to the PNG: a .webp key must hold WebP bytes.
+          // Report the character and skip it.
+          encodeFailed++
+          console.log(`ENCODE FAILED  ${tag}  portrait: ${c.file} (${(e as Error).message})`)
+          continue
+        }
+        const key = assetKeyFor(c.slug, c.name, bytes)
+        plan = planPortrait(
+          match.entry.portrait,
           key,
+          pngKeyFor(c.slug, c.name, bytes),
           match.entry,
           template.narrative_style || undefined,
           new Date(),
         )
-        if (match.entry.portrait && samePortraitIgnoringTime(match.entry.portrait, candidate)) {
-          pngNote = `portrait: current (${key})`
+        const size = `${Math.round(bytes.length / 1024)} KB PNG -> ${Math.round(upload.length / 1024)} KB WebP`
+        if (plan.kind === 'none') {
+          portraitNote = `portrait: current (${key})`
+        } else if (plan.kind === 'move') {
+          const was = match.entry.portrait?.asset_key
+          portraitNote = `portrait: ${args.apply ? 'MOVED TO WEBP' : 'WOULD MOVE TO WEBP'} ${key} (was ${was}; ${size})`
         } else {
-          portrait = candidate
-          pngNote = `portrait: ${match.entry.portrait ? 'REPAINT' : 'NEW'} ${key} (${checkPng.width}x${checkPng.height})`
+          portraitNote = `portrait: ${match.entry.portrait ? 'REPAINT' : 'NEW'} ${key} (${checkPng.width}x${checkPng.height}; ${size})`
         }
       }
     }
 
-    const $set = buildEntrySet(match.base, appearance, portrait)
+    const $set = buildEntrySet(match.base, appearance, plan)
     if (Object.keys($set).length === 0) {
       noop++
-      console.log(`NOOP           ${tag}  ${pngNote}`)
+      console.log(`NOOP           ${tag}  ${portraitNote}`)
       continue
     }
 
     if (!args.apply) {
-      console.log(`WOULD SET      ${tag}  ${pngNote}`)
+      console.log(`WOULD SET      ${tag}  ${portraitNote}`)
       console.log(`  $set: ${JSON.stringify(printableSet($set))}`)
       continue
     }
 
     try {
       // Upload first: a failed upload must not leave a pointer at a key
-      // whose bytes never landed.
-      if (portrait && bytes) {
-        await storageService.upload(bytes, 'image/png', { key: portrait.asset_key })
+      // whose bytes never landed. A move uploads the new WebP under the new
+      // key and leaves the old PNG object in place for existing references.
+      const uploadKey = plan.kind === 'paint'
+        ? plan.portrait.asset_key
+        : plan.kind === 'move' ? plan.assetKey : null
+      if (uploadKey && upload) {
+        await storageService.upload(upload, 'image/webp', { key: uploadKey })
       }
       // One positional update on the named entry only. The key shape is
       // asserted in --self-test, so this single cast is the only untyped
@@ -560,7 +691,7 @@ async function main(): Promise<void> {
       const update = { $set } as unknown as UpdateFilter<WithoutId<WorldTemplateDoc>>
       await mongoColl.worldTemplates().updateOne({ _id: template._id }, update)
       ok++
-      console.log(`APPLIED        ${tag}  ${pngNote}`)
+      console.log(`APPLIED        ${tag}  ${portraitNote}`)
       console.log(`  $set: ${JSON.stringify(printableSet($set))}`)
     } catch (e) {
       failed++
@@ -570,7 +701,8 @@ async function main(): Promise<void> {
 
   console.log(
     `\n${wanted.length} character(s): ${ok} applied, ${noop} no-op, ${missingPng} missing PNG, `
-      + `${invalidPng} invalid PNG, ${missingTemplate} missing template, ${missingEntry} missing entry, ${failed} failed.`,
+      + `${invalidPng} invalid PNG, ${encodeFailed} encode failed, ${missingTemplate} missing template, `
+      + `${missingEntry} missing entry, ${failed} failed.`,
   )
   if (!args.apply) console.log('Dry run — re-run with --apply --yes-db <name> to write.')
   process.exit(failed > 0 ? 1 : 0)
