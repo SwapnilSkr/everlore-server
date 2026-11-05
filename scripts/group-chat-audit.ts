@@ -5915,9 +5915,7 @@ await check('ideas catalog requires written first texts and statuses on every me
   for (const file of ['alder-lane-watch.json', 'flat-4b.json', 'last-light-guild.json']) {
     const authored = JSON.parse(await readFile(`${dir}/${file}`, 'utf8'))
     assert(!('base_stats_template' in authored), `${file} must keep the real catalog shape`)
-    // SWITCH ON HERE once the orchestrator writes the fields into the catalog:
-    // drop the decoration and assert on `authored.seed_cast` itself.
-    const fixture = { ...authored, seed_cast: authored.seed_cast.map((member: Row) => ({ ...member, ...writtenIdeas(String(member.name)) })) }
+    const fixture = authored
     for (const member of fixture.seed_cast) { assertWrittenMember(member); counted++ }
     const source = { ...groupTemplate(), ...fixture, base_stats_template: undefined } as WorldTemplateDoc
     validateGroup(source)
