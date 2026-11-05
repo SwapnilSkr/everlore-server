@@ -198,6 +198,7 @@ export const EVENT_SCHEMA: Record<string, { props: Record<string, PropDef> }> = 
       attempt: { rule: int(1, 2), required: true },
     },
   },
+  push_opened: { props: {} },
   reminder_opened: {
     props: { nth: { rule: int(1, 3), required: true } },
   },
