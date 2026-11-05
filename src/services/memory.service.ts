@@ -1614,6 +1614,14 @@ export const memoryService = {
     })
     if (!instance) throw new Error('Instance not found')
 
+    // A group chat's first event is its seeded opening, and it cannot be
+    // regenerated. Rewinding it would leave an empty room with no way back, so
+    // refuse before anything is deleted. Checked here, not in the controller,
+    // so a direct caller cannot get past it either.
+    if (instance.group_state && sequence <= 1) {
+      throw new HttpError(400, "The start of this chat can't be rewound.")
+    }
+
     const template = await worldTemplates().findOne({
       _id: instance.template_id,
     })

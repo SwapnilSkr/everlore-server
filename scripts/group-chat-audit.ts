@@ -3224,6 +3224,54 @@ await check('direct rewind removes later real turns from every thread and restor
   assert.deepEqual(storedEvents().map(event => event.sequence), [1, 2, 3])
   assert.deepEqual(rows('worldInstances')[0].group_state, { ...keep, last_seen_at: lastSeen })
 })
+await check('rewind floor refuses sequence one on a group save before deleting anything while later turns and normal saves still rewind', async () => {
+  // Existing rewind collaborators are local no-op projections; the event/state code is real.
+  mock.module('../src/services/codex-media-carryover', () => ({ snapshotCodexMedia: async () => ({}), restoreCodexMedia: async () => {} }))
+  const { characterCodexService } = await import('../src/services/character-codex.service')
+  Object.assign(characterCodexService, { applyManualIdentityRevisions: async () => {} })
+  const { entityGraphService } = await import('../src/services/entity-graph.service')
+  Object.assign(entityGraphService, { repairAfterRewind: async () => {} })
+  const { memoryService } = await import('../src/services/memory.service')
+  const { instanceRoutes } = await import('../src/routes/instance.routes')
+  const { chronicleRoutes } = await import('../src/routes/chronicle.routes')
+  const app = new Elysia().onError(({ error, set }) => {
+    set.status = 'statusCode' in error ? Number(error.statusCode) : 500
+    return { message: error.message }
+  }).use(instanceRoutes).use(chronicleRoutes)
+  const rewind = (sequence: number) => app.handle(new Request(`http://localhost/chronicle/rewind/${instanceId}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sequence }),
+  }))
+  const sequences = () => storedEvents().map(event => event.sequence)
+  routeUser = { id: playerId, tier: 'creator' }
+
+  await start(); addEvents(3)
+  storedEvents()[0].time_anchor = { real_time: new Date(), sequence: 1, timeline_id: 'main' }
+  const before = clone(storedEvents())
+  const refused = await rewind(1)
+  assert.equal(refused.status, 400)
+  assert.equal((await refused.json() as Row).message, "The start of this chat can't be rewound.")
+  assert.deepEqual(storedEvents(), before)
+  assert(!locks.has(`lock:gen:${playerId}:${instanceId}`), 'the refused rewind must release the generation lock')
+  // A direct caller is stopped at the same place the controller is.
+  await assert.rejects(memoryService.rewindToSequence(instanceId, playerId, 1),
+    (error: unknown) => (error as { statusCode?: number }).statusCode === 400 && (error as Error).message === "The start of this chat can't be rewound.")
+  assert.deepEqual(storedEvents(), before)
+
+  const later = await rewind(2)
+  assert.equal(later.status, 200)
+  assert.deepEqual(sequences(), [1])
+
+  // An ordinary save has no seeded opening to protect: sequence one rewinds as it always did.
+  await start()
+  const world = { ...groupTemplate(), _id: new ObjectId(), kind: 'world' as const }
+  rows('worldTemplates').push(world as unknown as Row)
+  rows('worldInstances')[0].template_id = world._id
+  delete rows('worldInstances')[0].group_state
+  addEvents(2)
+  const normal = await rewind(1)
+  assert.equal(normal.status, 200)
+  assert.deepEqual(sequences(), [])
+})
 
 async function bondHttp(method: string, body?: unknown, characterId = ids[0]) {
   const { instanceRoutes } = await import('../src/routes/instance.routes')
