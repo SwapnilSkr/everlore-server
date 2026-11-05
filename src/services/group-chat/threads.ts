@@ -5,6 +5,7 @@ import { HttpError } from '../../utils/http-error'
 import { parseObjectId } from '../../utils/mongo-id'
 import { loadGroupMembers } from './instance'
 import { groupLineShown, groupAdultAllowed, lastVisibleMessage } from './chats'
+import { refreshGroupTimezone } from './ideas'
 
 /** All entry points validate against this save's cast, never the global cast. */
 export async function resolveGroupThread(instance: WorldInstanceDoc, value: unknown): Promise<string | undefined> {
@@ -22,6 +23,10 @@ export async function resolveGroupThread(instance: WorldInstanceDoc, value: unkn
 export async function listGroupThreads(instanceId: string, playerId: string, now = new Date()) {
   const instance = await mongoColl.worldInstances().findOne({ _id: parseObjectId(instanceId), player_id: parseObjectId(playerId) })
   if (!instance?.group_state) throw new HttpError(404, 'That chat could not be found.')
+  // This read precedes opening a thread, so it also freshens the zone the status
+  // is picked from to the newest device's. A failed refresh must not cost the
+  // player the list.
+  await refreshGroupTimezone(playerId, now).catch(() => undefined)
   const members = await loadGroupMembers(instance)
   const adultAllowed = await groupAdultAllowed(instance.player_id)
   const events = await mongoColl.events().find({ instance_id: instance._id, player_id: instance.player_id,

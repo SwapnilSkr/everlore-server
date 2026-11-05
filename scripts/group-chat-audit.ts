@@ -13,6 +13,8 @@ import { missedDetailAtoms, dropAdultWriterClaims, refileSpokenFacts, clearEvery
 import { validateGroup } from '../src/services/group-chat/validation'
 import { filterGroupAtomAudiences } from '../src/services/group-chat/curation'
 import { publicGroupData } from '../src/services/group-chat/public'
+import { GROUP_IDEA_MAX_CHARS, pickStatus, statusPeriod } from '../src/services/group-chat/ideas'
+import { beginLLMTrace, settleLLMTrace } from '../src/ai/usage'
 import { members as priorMembers, groupTemplate as priorGroupTemplate, owenReply } from './group-chat-fixtures'
 const members = priorMembers.map(member => { const { interested: _old, ...group } = member.group as typeof member.group & { interested?: boolean }; return { ...member, group: { ...group, start_bond: 'acquaintance' as const } } })
 function groupTemplate(): WorldTemplateDoc { return { ...priorGroupTemplate(), seed_cast: members.map(({ id, ...member }) => structuredClone(member)) } }
@@ -573,7 +575,7 @@ const routerClient = { chat: { completions: { create: async (params: { messages:
 } } } }
 mock.module('../src/config/openai', () => ({ getOpenRouter: () => ({ withOptions: () => routerClient }), getOpenAI: unavailable }))
 const backgroundScopes: Row[] = []
-mock.module('../src/services/llm-trace.service', () => ({ flushLLMTracesLater: () => {}, flushLLMTraces: async () => {}, traceStore: () => ({ calls: collection('llmCalls'), bodies: collection('llmBodies') }), runBackgroundLLMTrace: async (scope: Row, fn: () => Promise<unknown>) => { backgroundScopes.push(scope); return fn() } }))
+mock.module('../src/services/llm-trace.service', () => ({ flushLLMTracesLater: (records: Row[]) => { flushedTraces.push(records) }, flushLLMTraces: async () => {}, traceStore: () => ({ calls: collection('llmCalls'), bodies: collection('llmBodies') }), runBackgroundLLMTrace: async (scope: Row, fn: () => Promise<unknown>) => { backgroundScopes.push(scope); return fn() } }))
 let ragSummaryHits: Array<{ id: string; tier: 'scene' | 'chapter' | 'arc'; text: string; startSequence: number; endSequence: number }> = []
 let ragMemoryTexts = ['Remembered group fact.'], ragOpenThreads: string[] = [], ragCalls: unknown[][] = []
 mock.module('../src/providers/rag.provider', () => ({ queryRag: async (...args: unknown[]) => { ragCalls.push(args); return { memoryTexts: ragMemoryTexts, openThreads: ragOpenThreads } }, querySummaries: async () => ragSummaryHits }))
@@ -634,6 +636,8 @@ function curatorResponse(request: Row, result: unknown): unknown {
   return { ...result, memories: ((result as Row).memories as Row[]).map(({ source_messages: _citations, ...atom }) => atom) }
 }
 let modelReplies: Array<string | Error | { content: string; finishReason: string }> = [], writerCalls: Row[] = [], turnNumber = 0
+let ideaReplies: Array<string | Error> = [], ideaCalls: Row[] = [], ideaGate: Promise<void> | undefined
+let onIdeaCall: (() => void) | undefined, flushedTraces: Row[][] = []
 mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator', sceneSummary: 'fixture-summary', chapterSummary: 'fixture-chapter', arcSummary: 'fixture-arc', narrationSfw: 'fake-safe', narrationNsfw: 'fake-story-adult', groupNsfw: 'fake-adult', groupNsfwFallbacks: ['fake-adult-fallback', 'fake-adult-last'], narrationSfwFallbacks: ['fake-safe-fallback'], narrationNsfwFallbacks: ['fake-adult-fallback'] }, narrationTemperature: () => 0.62, snapshotLLMUsage: () => [],
   embed: async () => { await embedHook?.(); return [1, 0] },
   callLLM: async (request: Row) => {
@@ -649,7 +653,19 @@ mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator'
     const response = curatorResponse(request, result)
     return typeof response === 'string' ? response : JSON.stringify(response)
   },
-  callLLMWithFallback: async (request: Row) => { writerCalls.push(request); await writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; if (response && typeof response === 'object') return { ...response, model: request.model }; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
+  callLLMWithFallback: async (request: Row) => {
+    // The ideas call is its own background pass: it must never take a narration
+    // reply from the shared queue, nor count as a writer call.
+    if (request.purpose === 'group_reply_ideas') {
+      ideaCalls.push(request); onIdeaCall?.(); await ideaGate
+      const queued = ideaReplies.shift()
+      const content = typeof queued === 'string' ? queued : JSON.stringify({ ideas: [] })
+      const trace = beginLLMTrace({ model: String(request.model), purpose: 'group_reply_ideas', streamed: false, messages: request.messages as Row[], params: {} })
+      if (trace) { trace.response = content; if (queued instanceof Error) settleLLMTrace(trace, queued) }
+      if (queued instanceof Error) throw queued
+      return { content, model: request.model }
+    }
+    writerCalls.push(request); await writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; if (response && typeof response === 'object') return { ...response, model: request.model }; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
 }))
 const { memoryProcessor, buildMemoryCurationRequest } = await import('../worker/processors/memory.processor')
 const { summaryProcessor } = await import('../worker/processors/summary.processor')
@@ -671,7 +687,7 @@ const playerId = '300000000000000000000001'
 let instanceId = ''
 async function start(source = groupTemplate(), player = playerName) {
   auditEnv.GROUP_NOTIFICATIONS_ENABLED = false; generationAddError = undefined
-  bondReply = { changes: [] }; bondRequests = []; bondHook = undefined; ragSummaryHits = []; tables.clear(); vectors.clear(); curatorRequests = []; summaryRequests = []; summaryReply = 'A named summary.'; curatorHook = undefined; summaryHook = undefined; embedHook = undefined; curatorFactory = undefined; ragMemoryTexts = ['Remembered group fact.']; ragOpenThreads = []; ragCalls = []; memoryLogs.length = 0; backgroundScopes.length = 0; frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0; routerSexual = true; routerError = false
+  bondReply = { changes: [] }; bondRequests = []; bondHook = undefined; ragSummaryHits = []; tables.clear(); vectors.clear(); curatorRequests = []; summaryRequests = []; summaryReply = 'A named summary.'; curatorHook = undefined; summaryHook = undefined; embedHook = undefined; curatorFactory = undefined; ragMemoryTexts = ['Remembered group fact.']; ragOpenThreads = []; ragCalls = []; memoryLogs.length = 0; backgroundScopes.length = 0; frames.length = 0; locks.clear(); queued.length = 0; outbox.length = 0; writerCalls = []; modelReplies = []; writerHook = undefined; consentReadHook = undefined; checkLogs.length = 0; ideaReplies = []; ideaCalls = []; ideaGate = undefined; onIdeaCall = undefined; flushedTraces = []; auditEnv.NSFW_SAME_TURN_ROUTER = 'off'; routerRequests = 0; routerDelay = 0; routerSexual = true; routerError = false
   rows('users').push({ _id: new ObjectId(playerId), preferences: { nsfw_enabled: false, player_name: player } })
   rows('worldTemplates').push(clone(source) as unknown as Row)
   const created = await instanceService.create(playerId, template._id.toHexString(), 'creator')
@@ -5540,6 +5556,386 @@ await check('selfie-auto memory ready private audience prompt rewind and curatio
     assert(!storedEvents().some(saved => saved._id.equals(event._id)))
     assert.equal(line.character_id, characterId)
   }
+})
+
+/** Written lines the catalog has to carry, shaped exactly like the real members. */
+function writtenIdeas(name: string) {
+  return {
+    first_texts: [`Hey, it's ${name}.`, `Are you around later?`, `${name} here, got a minute?`],
+    statuses: { morning: `${name} is up early with coffee.`, afternoon: `${name} is out running errands.`,
+      evening: `${name} is home and winding down.`, night: `${name} is in bed with the phone.` },
+  }
+}
+
+/** The real catalog shape — no base_stats_template — with the written lines the
+ *  orchestrator is adding to the three authored worlds. */
+async function ideasSource(file = 'flat-4b.json'): Promise<WorldTemplateDoc> {
+  const dir = process.env.GROUP_CHAT_DATA_DIR
+  assert(dir, 'GROUP_CHAT_DATA_DIR must point at the real catalog')
+  const authored = JSON.parse(await readFile(`${dir}/${file}`, 'utf8'))
+  assert(!('base_stats_template' in authored), 'the fixture must have the real catalog shape')
+  return { ...authored, is_published: true, _id: template._id, creator_id: template.creator_id,
+    created_at: new Date(), updated_at: new Date(),
+    seed_cast: authored.seed_cast.map((entry: Row) => ({ ...entry, ...writtenIdeas(String(entry.name)) })) } as WorldTemplateDoc
+}
+
+/** The save's cast with the ids the instance's cards actually got. */
+function ideaCast() {
+  const snapshot = rows('worldInstances')[0].seed_cast_snapshot as Row[]
+  const cards = rows('characters') as Row[]
+  return snapshot.map(entry => {
+    const card = cards.find(card => String(card.canonical_name).toLowerCase() === String(entry.name).toLowerCase())!
+    return { id: String(card._id), name: String(entry.name), first_texts: entry.first_texts as string[], statuses: entry.statuses as Row }
+  })
+}
+
+/** A fresh catalogue-shaped save with the written lines, and no selfie agreement
+ *  left over from an earlier check. */
+async function ideasStart(file?: string) {
+  selfieVerdict = { position: null }; selfieCheckError = false
+  await start(await ideasSource(file))
+}
+
+async function ideasTurn(input: { line: string; ideas?: string; data?: Row; ideasReplies?: Array<string | Error>; speaker?: number }) {
+  const cast = ideaCast()
+  const speaker = cast[input.speaker ?? 0]
+  modelReplies = [`${speaker.name}: ${input.line}`]
+  ideaReplies = input.ideasReplies ?? (input.ideas ? [JSON.stringify({ ideas: [input.ideas] })] : [])
+  await turn(input.data ?? { userMessage: `@${speaker.name} hello` }, never)
+  await Promise.all(backgroundWork.splice(0))
+  return storedEvents().at(-1)!
+}
+
+await check('ideas start after the selfie check and never hold the completion', async () => {
+  await ideasStart()
+  const cast = ideaCast()
+  selfieCheckRequests.length = 0; selfieVerdict = { position: 1 }
+  let release!: () => void
+  ideaGate = new Promise<void>(resolve => { release = resolve })
+  let atCall: { complete: boolean; checks: number } | undefined
+  onIdeaCall = () => { atCall = { complete: frames.some(frame => frame.type === 'generation_complete'), checks: selfieCheckRequests.length } }
+  ideaReplies = [JSON.stringify({ ideas: ['Ask how her day went.', 'Send a photo back.', 'Say goodnight.'] })]
+  modelReplies = [`${cast[0].name}: Yes, sending you my picture now.`]
+  let deadline: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([turn({ userMessage: `@${cast[0].name} send me your picture?` }, never, undefined, () => 0),
+      new Promise<never>((_resolve, reject) => { deadline = setTimeout(() => reject(new Error('the reply waited for the ideas call')), 2000) })])
+  } finally { clearTimeout(deadline) }
+  assert(atCall?.complete, 'the completion frame must be out before the ideas call')
+  assert.equal(atCall?.checks, 1, 'the selfie check must be started before the ideas call')
+  assert.equal(ideaCalls.length, 1)
+  release(); await Promise.all(backgroundWork.splice(0)); onIdeaCall = undefined; ideaGate = undefined
+  const saved = storedEvents().at(-1)!
+  assert.deepEqual(saved.data.reply_ideas, ['Ask how her day went.', 'Send a photo back.', 'Say goodnight.'])
+  const frame = frames.filter(row => row.type === 'group_ideas').at(-1)!
+  assert.deepEqual(Object.keys(frame).sort(), ['eventId', 'ideas', 'instanceId', 'type'])
+  assert.equal(frame.eventId, String(saved._id)); assert.equal(frame.instanceId, instanceId)
+})
+
+await check('ideas writer route follows the turn and never reaches adult with the toggle off', async () => {
+  const source = await ideasSource()
+  selfieVerdict = { position: null }
+  await start(source)
+  const cast = ideaCast()
+  rows('events').push(...[2, 3].map(sequence => ({ ...clone(rows('events')[0]), _id: new ObjectId(), sequence, type: 'intimate' })))
+  await ideasTurn({ line: 'A plain reply.', ideas: 'A plain idea.' , data: { userMessage: `@${cast[0].name} hello` } })
+  assert.equal(ideaCalls.length, 1)
+  assert.equal(ideaCalls[0].purpose, 'group_reply_ideas')
+  assert.equal(ideaCalls[0].model, 'fake-safe')
+  assert.equal(ideaCalls[0].maxTokens, 200)
+  assert.equal(ideaCalls[0].timeoutMs, 8000)
+  await adultStart(source)
+  const adultCast = ideaCast()
+  rows('events').push(...[2, 3].map(sequence => ({ ...clone(rows('events')[0]), _id: new ObjectId(), sequence, type: 'intimate' })))
+  await ideasTurn({ line: 'An explicit reply.', ideas: 'An explicit idea.', data: { userMessage: `@${adultCast[0].name} keep going` } })
+  assert.equal(ideaCalls.at(-1)!.model, 'fake-adult')
+  // Consent withdrawn during the turn: the route the turn actually took is normal.
+  await adultStart(source)
+  const withdrawnCast = ideaCast()
+  rows('events').push(...[2, 3].map(sequence => ({ ...clone(rows('events')[0]), _id: new ObjectId(), sequence, type: 'intimate' })))
+  writerHook = () => put(rows('users')[0], 'preferences.nsfw_enabled', false)
+  modelReplies = [new Error('unavailable'), `${withdrawnCast[0].name}: Normal after withdrawal`]
+  ideaReplies = [JSON.stringify({ ideas: ['A withdrawn idea.'] })]
+  await turn({ userMessage: `@${withdrawnCast[0].name} keep going` }, () => 0)
+  await Promise.all(backgroundWork.splice(0))
+  writerHook = undefined
+  assert.equal(ideaCalls.at(-1)!.model, 'fake-safe')
+})
+
+await check('ideas bad writer output is dropped rather than sent', async () => {
+  const source = await ideasSource()
+  const cases: Array<[string, string[]]> = [
+    ['not json', []],
+    ['{"ideas":"one"}', []],
+    ['{"ideas":[{"text":"An object."}]}', []],
+    ['{"ideas":[""]}', []],
+    [`{"ideas":["${'x'.repeat(GROUP_IDEA_MAX_CHARS + 1)}"]}`, []],
+    [`{"ideas":["${'x'.repeat(GROUP_IDEA_MAX_CHARS)}"]}`, ['x'.repeat(GROUP_IDEA_MAX_CHARS)]],
+    ['{"ideas":["Elena: I do."]}', []],
+    ['{"ideas":["  Same   idea.  ","same idea.","Another idea."]}', ['Same idea.', 'Another idea.']],
+    ['{"ideas":["One idea.","Two idea.","Three idea.","Four idea."]}', ['One idea.', 'Two idea.', 'Three idea.']],
+    ['{"ideas":["Hug my sister tight.","A plain line."]}', ['A plain line.']],
+  ]
+  selfieVerdict = { position: null }
+  for (const [reply, expected] of cases) {
+    await start(source)
+    try { await ideasTurn({ line: 'A plain reply.', ideasReplies: [reply] }) }
+    catch (error) { throw new Error(`writer reply for ${JSON.stringify(reply)}: ${String(error)}`) }
+    const saved = storedEvents().at(-1)!
+    assert.deepEqual(saved.data.reply_ideas, expected.length ? expected : undefined, reply)
+    assert.equal('reply_ideas' in saved.data, expected.length > 0, reply)
+    assert.equal(frames.filter(row => row.type === 'group_ideas').length, expected.length ? 1 : 0, reply)
+  }
+})
+
+await check('ideas failure leaves the turn complete and never stops the selfie', async () => {
+  const source = await ideasSource()
+  await start(source)
+  const cast = ideaCast()
+  selfieCheckRequests.length = 0
+  ideaReplies = [new Error('writer unavailable')]
+  modelReplies = [`${cast[0].name}: A plain reply.`]
+  const result = await turn({ userMessage: `@${cast[0].name} hello` }, never)
+  await Promise.all(backgroundWork.splice(0))
+  assert(result.eventId)
+  assert(frames.some(frame => frame.type === 'generation_complete'))
+  assert(!('reply_ideas' in storedEvents().at(-1)!.data))
+  assert(!frames.some(frame => frame.type === 'group_ideas'))
+  assert(memoryLogs.some(entry => entry.name === 'group.ideas_call_failed'))
+  assert.equal(selfieCheckRequests.length, 1, 'a failing ideas call never stops the selfie start')
+  // The other way round: a failing selfie check leaves the ideas saved.
+  await start(source)
+  const secondCast = ideaCast()
+  selfieCheckError = true; selfieVerdict = { position: 1 }
+  await ideasTurn({ line: 'A reply beside a failed check.', ideas: 'Still here.', data: { userMessage: `@${secondCast[0].name} picture?` } })
+  selfieCheckError = false
+  assert.deepEqual(storedEvents().at(-1)!.data.reply_ideas, ['Still here.'])
+  assert(memoryLogs.some(entry => entry.name === 'group.selfie_start_failed'))
+})
+
+await check('ideas are sent for the newest event of a thread only, never from the chronicle', async () => {
+  await ideasStart()
+  await ideasTurn({ line: 'First reply.', ideas: 'First idea.' })
+  await ideasTurn({ line: 'Second reply.', ideas: 'Second idea.' })
+  const loaded = await generationService.loadInstance(instanceId, playerId)
+  assert.equal(loaded.recentEvents.at(-1)!.data.reply_ideas![0], 'Second idea.')
+  for (const older of loaded.recentEvents.slice(0, -1)) assert(!('reply_ideas' in older.data))
+  const sent: Row[] = []
+  await playWsService.handleMessage(socket(sent), { action: 'load_instance', instance_id: instanceId })
+  const sentEvents = (sent[0].data as Row).recentEvents as Row[]
+  assert.equal((sentEvents.at(-1)!.data as Row).reply_ideas![0], 'Second idea.')
+  assert(sentEvents.slice(0, -1).every(event => !('reply_ideas' in (event.data as Row))))
+  const { memoryService } = await import('../src/services/memory.service')
+  const feed = await memoryService.getEvents(instanceId, playerId, {})
+  assert(!JSON.stringify(feed).includes('Second idea.') && !JSON.stringify(feed).includes('First idea.'))
+})
+
+await check('ideas in a direct thread name their thread and never reach the room', async () => {
+  await ideasStart()
+  const cast = ideaCast()
+  await ideasTurn({ line: 'A private reply.', ideas: 'A private idea.', data: { directWith: cast[0].id, userMessage: 'hello' } })
+  const frame = frames.filter(row => row.type === 'group_ideas').at(-1)!
+  assert.equal(frame.directWith, cast[0].id)
+  const room = await generationService.loadInstance(instanceId, playerId)
+  assert(!JSON.stringify(room).includes('A private idea.'))
+  assert(!('reply_ideas' in room.recentEvents.at(-1)!.data))
+  const thread = await generationService.loadInstance(instanceId, playerId, cast[0].id)
+  assert.equal(thread.recentEvents.at(-1)!.data.reply_ideas![0], 'A private idea.')
+})
+
+await check('ideas are labelled for usage and an unprompted turn stamps its origin', async () => {
+  await ideasStart()
+  const cast = ideaCast()
+  flushedTraces = []
+  await ideasTurn({ line: 'A player-turn reply.', ideas: 'A player idea.', data: { userMessage: `@${cast[0].name} hello` } })
+  const playerTrace = flushedTraces.flat()[0]
+  assert(playerTrace, 'the ideas call must be traced')
+  assert.equal(playerTrace.call.purpose, 'group_reply_ideas')
+  assert.equal(playerTrace.call.phase, 'background')
+  assert.equal(String(playerTrace.call.instance_id), instanceId)
+  assert.equal(playerTrace.call.group_origin, undefined)
+  flushedTraces = []
+  modelReplies = [`${cast[0].name}: An unprompted reply.`]
+  ideaReplies = [JSON.stringify({ ideas: ['An unprompted idea.'] })]
+  await turn({ origin: 'unprompted', userMessage: '' }, () => 0)
+  await Promise.all(backgroundWork.splice(0))
+  const unprompted = flushedTraces.flat()[0]
+  assert.equal(unprompted.call.group_origin, 'unprompted')
+  assert.equal(unprompted.call.purpose, 'group_reply_ideas')
+})
+
+await check('ideas rewind removes them and a rewound event is never recreated', async () => {
+  await ideasStart()
+  const cast = ideaCast()
+  await ideasTurn({ line: 'First reply.', ideas: 'First idea.' })
+  // The surviving turn's own anchor, as the other rewind checks set it.
+  storedEvents().at(-1)!.time_anchor = { real_time: new Date(), sequence: 2, timeline_id: 'main' }
+  let release!: () => void
+  ideaGate = new Promise<void>(resolve => { release = resolve })
+  modelReplies = [`${cast[0].name}: Second reply.`]
+  ideaReplies = [JSON.stringify({ ideas: ['After the rewind.'] })]
+  await turn({ userMessage: `@${cast[0].name} again` }, never)
+  const held = storedEvents().at(-1)!
+  mock.module('../src/services/codex-media-carryover', () => ({ snapshotCodexMedia: async () => ({}), restoreCodexMedia: async () => {} }))
+  const { characterCodexService } = await import('../src/services/character-codex.service')
+  Object.assign(characterCodexService, { applyManualIdentityRevisions: async () => {} })
+  const { entityGraphService } = await import('../src/services/entity-graph.service')
+  Object.assign(entityGraphService, { repairAfterRewind: async () => {} })
+  const { memoryService } = await import('../src/services/memory.service')
+  await memoryService.rewindToSequence(instanceId, playerId, held.sequence)
+  release(); await Promise.all(backgroundWork.splice(0)); ideaGate = undefined
+  assert(!storedEvents().some(event => event._id.equals(held._id)))
+  assert(!frames.some(frame => frame.type === 'group_ideas' && frame.eventId === String(held._id)))
+  const loaded = await generationService.loadInstance(instanceId, playerId)
+  assert(!JSON.stringify(loaded).includes('After the rewind.'))
+  assert.equal(loaded.recentEvents.at(-1)!.data.reply_ideas![0], 'First idea.')
+})
+
+await check('ideas writer is given no id at all', async () => {
+  await ideasStart()
+  const cast = ideaCast()
+  const saved = await ideasTurn({ line: 'A plain reply.', ideas: 'A plain idea.' })
+  assert.equal(ideaCalls.length, 1)
+  const payload = JSON.stringify(ideaCalls[0])
+  for (const id of [instanceId, String(saved._id), ...cast.map(member => member.id)]) assert(!payload.includes(id), 'an id reached the ideas writer')
+  assert(!/character_id|instanceId|eventId|dm_with|shown_at/.test(payload))
+  const body = JSON.parse(String((ideaCalls[0].messages as Row[])[1].content))
+  assert.deepEqual(Object.keys(body).sort(), ['messages', 'player'])
+  assert(body.messages.every((message: Row) => Object.keys(message).sort().join() === 'from,text'))
+})
+
+await check('ideas first texts only on an empty direct thread, gone after the first line and while one is pending', async () => {
+  await ideasStart()
+  const cast = ideaCast()
+  const empty = await generationService.loadInstance(instanceId, playerId, cast[0].id)
+  const card = (empty.characters as Row[]).find(card => String(card.canonical_name) === cast[0].name)!
+  assert.deepEqual(card.first_texts, cast[0].first_texts)
+  const other = (empty.characters as Row[]).find(card => String(card.canonical_name) === cast[1].name)!
+  assert.deepEqual(other.first_texts, cast[1].first_texts)
+  // The real socket payload carries them through its own projection.
+  const sent: Row[] = []
+  await playWsService.handleMessage(socket(sent), { action: 'load_instance', instance_id: instanceId, direct_with: cast[0].id })
+  const sentCard = ((sent[0].data as Row).characters as Row[]).find(card => String(card.canonical_name) === cast[0].name)!
+  assert.deepEqual(sentCard.first_texts, cast[0].first_texts)
+  // The room opens seeded, so it is never empty.
+  const room = await generationService.loadInstance(instanceId, playerId)
+  const roomText = JSON.stringify(room)
+  assert(!roomText.includes('first_texts'), roomText.slice(Math.max(0, roomText.indexOf('first_texts') - 300), roomText.indexOf('first_texts') + 100))
+  await ideasTurn({ line: 'A first line.', data: { directWith: cast[0].id, userMessage: 'hi' } })
+  assert(!JSON.stringify(await generationService.loadInstance(instanceId, playerId, cast[0].id)).includes('first_texts'))
+  await ideasStart()
+  const pendingCast = ideaCast()
+  auditEnv.GROUP_NOTIFICATIONS_ENABLED = true
+  put(rows('worldInstances')[0], 'group_state.pending_direct', { member_id: pendingCast[1].id, scheduled_at: new Date(), notified_at: new Date() })
+  assert(!JSON.stringify(await generationService.loadInstance(instanceId, playerId, pendingCast[1].id)).includes('first_texts'))
+  assert(!JSON.stringify((await generationService.loadInstance(instanceId, playerId, pendingCast[0].id)).instance.seed_cast_snapshot).includes('first_texts'))
+  auditEnv.GROUP_NOTIFICATIONS_ENABLED = false
+})
+
+await check('ideas status is picked per read from the newest device zone and never stored', async () => {
+  const cast = (await ideasSource()).seed_cast!
+  const statuses = cast[0].statuses!
+  assert.equal(statusPeriod(0, new Date('2026-11-05T04:59:00Z')), 'night')
+  assert.equal(statusPeriod(0, new Date('2026-11-05T05:00:00Z')), 'morning')
+  assert.equal(statusPeriod(0, new Date('2026-11-05T11:59:00Z')), 'morning')
+  assert.equal(statusPeriod(0, new Date('2026-11-05T12:00:00Z')), 'afternoon')
+  assert.equal(statusPeriod(0, new Date('2026-11-05T16:59:00Z')), 'afternoon')
+  assert.equal(statusPeriod(0, new Date('2026-11-05T17:00:00Z')), 'evening')
+  assert.equal(statusPeriod(0, new Date('2026-11-05T21:59:00Z')), 'evening')
+  assert.equal(statusPeriod(0, new Date('2026-11-05T22:00:00Z')), 'night')
+  // A local day that has already turned over, and one that has not yet begun.
+  assert.equal(statusPeriod(300, new Date('2026-11-05T02:00:00Z')), 'morning')
+  assert.equal(statusPeriod(-300, new Date('2026-11-05T02:00:00Z')), 'evening')
+  assert.equal(pickStatus(statuses, undefined), undefined)
+  assert.equal(pickStatus(undefined, 0), undefined)
+  await ideasStart()
+  const saved = ideaCast()
+  const unknown = await generationService.loadInstance(instanceId, playerId)
+  assert(!JSON.stringify(unknown.characters).includes('"status"'), 'no status without a known offset')
+  await registerPushDevice(playerId, { token: 'ideas-zone', platform: 'android', tz_offset_minutes: 330 }, new Date())
+  // The read before opening a chat freshens the zone from the newest device.
+  const { listGroupThreads } = await import('../src/services/group-chat/threads')
+  await listGroupThreads(instanceId, playerId)
+  const loaded = await generationService.loadInstance(instanceId, playerId)
+  const card = (loaded.characters as Row[]).find(card => String(card.canonical_name) === saved[0].name)!
+  assert.equal(card.status, pickStatus(saved[0].statuses as never, 330))
+  assert(!('status' in rows('worldInstances')[0].group_state), 'the picked line is never stored')
+  assert(!JSON.stringify(rows('worldInstances')[0].group_state).includes('is up early'))
+  // The second projection (the socket payload) keeps it.
+  const sent: Row[] = []
+  await playWsService.handleMessage(socket(sent), { action: 'load_instance', instance_id: instanceId })
+  const sentCard = ((sent[0].data as Row).characters as Row[]).find(card => String(card.canonical_name) === saved[0].name)!
+  assert.equal(sentCard.status, card.status)
+})
+
+await check('ideas status reaches only that member\'s direct thread prompt', async () => {
+  await ideasStart()
+  const cast = ideaCast()
+  put(rows('worldInstances')[0], 'group_state.tz_offset_minutes', 0)
+  await ideasTurn({ line: 'A room reply.', data: { userMessage: `@${cast[0].name} hello` } })
+  assert(!content(writerCalls.at(-1)!, 1).includes("'s status right now says"))
+  const first = pickStatus(cast[0].statuses as never, 0)!
+  await ideasTurn({ line: 'A direct reply.', data: { directWith: cast[0].id, userMessage: 'hello' } })
+  const prompt = content(writerCalls.at(-1)!, 1)
+  assert(prompt.includes(`${cast[0].name}'s status right now says: "${first}"`))
+  assert(!prompt.includes(`${cast[1].name}'s status right now says`))
+  assert(!('status' in (storedEvents().at(-1)!.data as Row)), 'the picked status is never written to a turn')
+  assert(!('status' in rows('worldInstances')[0].group_state), 'the picked status is never written to the save')
+  const second = pickStatus(cast[1].statuses as never, 0)!
+  await ideasTurn({ line: 'Another direct reply.', speaker: 1, data: { directWith: cast[1].id, userMessage: 'hello' } })
+  const other = content(writerCalls.at(-1)!, 1)
+  assert(other.includes(`${cast[1].name}'s status right now says: "${second}"`))
+  assert(!other.includes(`${cast[0].name}'s status right now says`))
+  // Unknown zone: no status in the prompt either.
+  await ideasStart()
+  const noZone = ideaCast()
+  await ideasTurn({ line: 'A zone-free reply.', data: { directWith: noZone[0].id, userMessage: 'hello' } })
+  assert(!content(writerCalls.at(-1)!, 1).includes("'s status right now says"))
+})
+
+function assertWrittenMember(member: Row) {
+  const name = String(member.name)
+  assert(Array.isArray(member.first_texts) && member.first_texts.length === 3, `${name} needs exactly three first texts`)
+  for (const text of member.first_texts as unknown[]) {
+    assert(typeof text === 'string' && text.trim() && !/[\r\n]/u.test(text) && Array.from(text).length <= GROUP_IDEA_MAX_CHARS, `${name} first text is not one written line`)
+  }
+  const statuses = member.statuses as Row
+  assert(statuses && typeof statuses === 'object' && !Array.isArray(statuses), `${name} needs statuses`)
+  assert.deepEqual(Object.keys(statuses).sort(), ['afternoon', 'evening', 'morning', 'night'], `${name} needs all four parts of the day`)
+  for (const period of ['morning', 'afternoon', 'evening', 'night']) {
+    const text = statuses[period]
+    assert(typeof text === 'string' && text.trim() && !/[\r\n]/u.test(text) && Array.from(text).length <= GROUP_IDEA_MAX_CHARS, `${name}'s ${period} status is not one written line`)
+  }
+}
+
+await check('ideas catalog requires written first texts and statuses on every member of all three worlds', async () => {
+  const dir = process.env.GROUP_CHAT_DATA_DIR
+  assert(dir, 'GROUP_CHAT_DATA_DIR must point at the real catalog')
+  let counted = 0
+  for (const file of ['alder-lane-watch.json', 'flat-4b.json', 'last-light-guild.json']) {
+    const authored = JSON.parse(await readFile(`${dir}/${file}`, 'utf8'))
+    assert(!('base_stats_template' in authored), `${file} must keep the real catalog shape`)
+    // SWITCH ON HERE once the orchestrator writes the fields into the catalog:
+    // drop the decoration and assert on `authored.seed_cast` itself.
+    const fixture = { ...authored, seed_cast: authored.seed_cast.map((member: Row) => ({ ...member, ...writtenIdeas(String(member.name)) })) }
+    for (const member of fixture.seed_cast) { assertWrittenMember(member); counted++ }
+    const source = { ...groupTemplate(), ...fixture, base_stats_template: undefined } as WorldTemplateDoc
+    validateGroup(source)
+    validateEntry(fixture, file)
+    const first = fixture.seed_cast[0] as Row
+    const broken: Row[] = [
+      { ...first, first_texts: (first.first_texts as string[]).slice(0, 2) },
+      { ...first, first_texts: [...(first.first_texts as string[]).slice(0, 2), ' '] },
+      { ...first, first_texts: [...(first.first_texts as string[]).slice(0, 2), 'x'.repeat(GROUP_IDEA_MAX_CHARS + 1)] },
+      { ...first, statuses: { ...(first.statuses as Row), night: '' } },
+      { ...first, statuses: { morning: (first.statuses as Row).morning, afternoon: (first.statuses as Row).afternoon, evening: (first.statuses as Row).evening } },
+      { ...first, statuses: { ...(first.statuses as Row), dawn: 'An extra part of the day.' } },
+    ]
+    for (const entry of broken) {
+      assert.throws(() => validateGroup({ ...source, seed_cast: [entry, ...fixture.seed_cast.slice(1)] } as unknown as WorldTemplateDoc), file)
+    }
+  }
+  assert.equal(counted, 16)
 })
 
 Math.random = originalRandom

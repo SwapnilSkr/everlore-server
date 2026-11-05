@@ -55,6 +55,10 @@ export interface TemplateCastCharacterDoc {
   portrait?: import('./media.model').PortraitRef
   persona?: string
   immutable_facts?: string[]
+  /** Written first text ideas for an empty direct thread; no model call. */
+  first_texts?: string[]
+  /** Written status by part of the player's day; the line for now is picked in code. */
+  statuses?: import('../services/group-chat/types').GroupStatusLines
   /** Grounded starting bond toward the player, copied into each instance at sequence 0. */
   relationship_initialization?: RelationshipInitialization
   relationship_state?: RelationshipState

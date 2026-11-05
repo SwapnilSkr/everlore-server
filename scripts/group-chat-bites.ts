@@ -1016,6 +1016,87 @@ mutations.push(
   { name: 'selfie-auto memory tame prose hides picture', check: 'selfie-auto memory', edits: [[worker, ' && !line.picture_sent', '']] },
 )
 
+const ideaLib = 'worker/lib/group-reply-ideas.ts', ideaPublic = 'src/services/group-chat/public.ts'
+const ideaService = 'src/services/group-chat/ideas.ts', ideaValidation = 'src/services/group-chat/validation.ts'
+const ideaCompletion = 'ideas start after the selfie check and never hold the completion'
+const ideaRoute = 'ideas writer route follows the turn and never reaches adult with the toggle off'
+const ideaBadOutput = 'ideas bad writer output is dropped rather than sent'
+const ideaFailure = 'ideas failure leaves the turn complete and never stops the selfie'
+const ideaNewest = 'ideas are sent for the newest event of a thread only, never from the chronicle'
+const ideaDirect = 'ideas in a direct thread name their thread and never reach the room'
+const ideaUsage = 'ideas are labelled for usage and an unprompted turn stamps its origin'
+const ideaRewind = 'ideas rewind removes them and a rewound event is never recreated'
+const ideaNoId = 'ideas writer is given no id at all'
+const ideaFirstTexts = 'ideas first texts only on an empty direct thread, gone after the first line and while one is pending'
+const ideaStatus = 'ideas status is picked per read from the newest device zone and never stored'
+const ideaStatusPrompt = "ideas status reaches only that member's direct thread prompt"
+const ideaCatalog = 'ideas catalog requires written first texts and statuses on every member of all three worlds'
+const ideaMutations: Mutation[] = [
+  { name: 'ideas completion held by the ideas call', check: ideaCompletion, edits: [[worker, 'const ideas = startGroupReplyIdeas(event,', 'const ideas = await startGroupReplyIdeas(event,']] },
+  { name: 'ideas start before the selfie check', check: ideaCompletion, edits: [[worker,
+    `    const selfies = startGroupSelfies(event, { rng: deps.selfieRng, now: deps.now })
+    deps.onBackground?.(selfies)
+    // Independent of the selfies: one failing never stops the other, and neither
+    // is waited on once the reply's completion has gone out.
+    const ideas = startGroupReplyIdeas(event, { members, player: config.player, template, adult: adult && latestConsent })
+    deps.onBackground?.(ideas)`,
+    `    const ideas = startGroupReplyIdeas(event, { members, player: config.player, template, adult: adult && latestConsent })
+    deps.onBackground?.(ideas)
+    const selfies = startGroupSelfies(event, { rng: deps.selfieRng, now: deps.now })
+    deps.onBackground?.(selfies)`]] },
+  { name: 'ideas toggle off reaches the adult writer', check: ideaRoute, edits: [[ideaLib, 'const model = input.adult', 'const model = true']] },
+  { name: 'ideas adult turn uses the normal writer', check: ideaRoute, edits: [[ideaLib, 'const model = input.adult', 'const model = false']] },
+  { name: 'ideas token cap raised', check: ideaRoute, edits: [[ideaLib, 'maxTokens: GROUP_IDEAS_MAX_TOKENS,', 'maxTokens: 4096,']] },
+  { name: 'ideas length cap removed', check: ideaBadOutput, edits: [[ideaLib, 'if (length < 1 || length > GROUP_IDEA_MAX_CHARS) continue', 'if (length < 1) continue']] },
+  { name: 'ideas duplicates kept', check: ideaBadOutput, edits: [[ideaLib, 'if (!key || seen.has(key)) continue', 'if (!key) continue']] },
+  { name: 'ideas line spoken as a character kept', check: ideaBadOutput, edits: [[ideaLib, 'if (SPEAKER_PREFIX.test(text)) continue', 'if (false) continue']] },
+  { name: 'ideas invented kin kept', check: ideaBadOutput, edits: [[ideaLib, 'if (classifyChoiceGrounding(text, grounding).length) continue', 'if (false) continue']] },
+  { name: 'ideas failure saves an empty list', check: ideaFailure, edits: [[ideaLib,
+    "if (failure !== undefined) { log.warn('group.ideas_call_failed', { instanceId, eventId, error: String(failure) }); return }",
+    "if (failure !== undefined) { log.warn('group.ideas_call_failed', { instanceId, eventId, error: String(failure) }); await mongoColl.events().updateOne({ _id: event._id }, { $set: { 'data.reply_ideas': [] } }); return }"]] },
+  { name: 'ideas newest-only projection flipped', check: ideaNewest, edits: [[ideaPublic,
+    'const newest = Array.isArray(events) ? events.at(-1) as { data?: Record<string, unknown> } | undefined : undefined',
+    'const newest = Array.isArray(events) ? events[0] as { data?: Record<string, unknown> } | undefined : undefined']] },
+  { name: 'ideas reach the chronicle', check: ideaNewest, edits: [[ideaPublic, "'group_notification_usage', 'reply_ideas']", "'group_notification_usage']"]] },
+  { name: 'ideas direct frame loses its thread', check: ideaDirect, edits: [[ideaLib, '...(directWith === undefined ? {} : { directWith }), eventId, ideas }))', 'eventId, ideas }))']] },
+  { name: 'ideas writer given member ids', check: ideaNoId, edits: [[ideaLib,
+    'return name && line.text?.trim() ? [{ from: name, text: line.text.slice(0, GROUP_IDEA_MESSAGE_CHARS) }] : []',
+    'return name && line.text?.trim() ? [{ from: name, id: line.character_id, text: line.text.slice(0, GROUP_IDEA_MESSAGE_CHARS) }] : []']] },
+  { name: 'ideas first texts on a thread with lines', check: ideaFirstTexts, edits: [[ideaPublic,
+    'firstTexts: !hasLines && !!state && groupPendingFrom(state, now).length === 0,',
+    'firstTexts: !!state && groupPendingFrom(state, now).length === 0,']] },
+  { name: 'ideas first texts while a message is pending', check: ideaFirstTexts, edits: [[ideaPublic,
+    'firstTexts: !hasLines && !!state && groupPendingFrom(state, now).length === 0,',
+    'firstTexts: !hasLines && !!state,']] },
+  { name: 'ideas status without a known zone', check: ideaStatus, edits: [[ideaService,
+    "if (!statuses || typeof offsetMinutes !== 'number' || !Number.isFinite(offsetMinutes)) return undefined",
+    'if (!statuses) return undefined']] },
+  { name: 'ideas status boundary moved', check: ideaStatus, edits: [[ideaService, "if (hour >= 5 && hour < 12) return 'morning'", "if (hour >= 5 && hour < 13) return 'morning'"]] },
+  { name: 'ideas status written to the turn', check: ideaStatusPrompt, edits: [[worker,
+    "...(directWith === undefined ? {} : { dm_with: directWith }), player_input: origin === 'player' ? userMessage : '',",
+    "...(directWith === undefined ? {} : { dm_with: directWith }), ...(directStatus ? { status: directStatus } : {}), player_input: origin === 'player' ? userMessage : '',"]] },
+  { name: 'ideas status in the room prompt', check: ideaStatusPrompt, edits: [[worker,
+    'const directMember = directWith ? members.find(member => member.id === directWith) : undefined',
+    'const directMember = directWith ? members.find(member => member.id === directWith) : members[0]']] },
+  { name: 'ideas status from the wrong member', check: ideaStatusPrompt, edits: [[worker,
+    'const directStatus = directMember?.statuses ? pickStatus(directMember.statuses, state.tz_offset_minutes, now) : undefined',
+    'const directStatus = members[0]?.statuses ? pickStatus(members[0].statuses, state.tz_offset_minutes, now) : undefined']] },
+  { name: 'ideas catalog first texts need not be three', check: ideaCatalog, edits: [[ideaValidation,
+    "if (!Array.isArray(member.first_texts) || member.first_texts.length !== 3) fail('first_texts must contain exactly three lines')",
+    "if (!Array.isArray(member.first_texts) || member.first_texts.length < 2) fail('first_texts must contain exactly three lines')"]] },
+  { name: 'ideas catalog statuses may be incomplete', check: ideaCatalog, edits: [[ideaValidation,
+    "for (const period of ['morning', 'afternoon', 'evening', 'night'] as const) written(member.statuses[period], `the ${period} status`)",
+    "for (const period of ['morning', 'afternoon', 'evening', 'night'] as const) if (member.statuses[period] !== undefined) written(member.statuses[period], `the ${period} status`)"]] },
+  { name: 'ideas usage purpose unlabelled', check: ideaUsage, edits: [[ideaLib, "model, purpose: 'group_reply_ideas',", "model, purpose: 'narration',"]] },
+  { name: 'ideas unprompted origin not stamped', check: ideaUsage, edits: [[ideaLib,
+    "if (event.data.origin === 'unprompted') for (const trace of traces) trace.call.group_origin = 'unprompted'",
+    "if (false) for (const trace of traces) trace.call.group_origin = 'unprompted'"]] },
+  { name: 'ideas rewound event recreated', check: ideaRewind, edits: [[ideaLib,
+    "{ $set: { 'data.reply_ideas': ideas } })", "{ $set: { 'data.reply_ideas': ideas } }, { upsert: true })"],
+    [ideaLib, '    if (!saved.matchedCount) return\n', '']] },
+]
+mutations.push(...ideaMutations)
+
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {
   const missing: string[] = []

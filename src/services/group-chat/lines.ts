@@ -13,6 +13,10 @@ const opener = (text: string): string | undefined => {
   return words.length >= 2 ? words.slice(0, 2).join(' ') : undefined
 }
 
+/** The structural rule for a line spoken as a character: `Name: words`. It is
+ *  never decided from a list of names — an unknown prefix is still a speaker. */
+export const SPEAKER_PREFIX = /^\*{0,2}([^:*\n]+?)\*{0,2}\s*:\s*(.*)$/u
+
 export function parseLines(raw: string, members: GroupMember[], player: string, counts: LineCounts, soleSpeaker?: string): NamedLine[] {
   const names = new Map(members.map(member => [member.name.toLowerCase(), member.name]))
   const lines: NamedLine[] = []
@@ -22,7 +26,7 @@ export function parseLines(raw: string, members: GroupMember[], player: string, 
   for (const source of raw.split(/\r?\n/)) {
     const text = source.trim()
     if (!text) continue
-    const prefix = text.match(/^\*{0,2}([^:*\n]+?)\*{0,2}\s*:\s*(.*)$/u)
+    const prefix = text.match(SPEAKER_PREFIX)
     if (prefix) {
       const key = prefix[1].trim().toLowerCase()
       const name = names.get(key)

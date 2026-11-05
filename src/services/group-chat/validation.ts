@@ -10,11 +10,24 @@ export function validateGroup(data: Partial<WorldTemplateDoc>): void {
   const cast = data.seed_cast || []
   if (cast.length < 4 || cast.length > 10) fail('4–10 cast members required')
   const names = new Set<string>()
+  // Written lines a member may carry: first texts for an empty thread, and one
+  // status for each part of the player's day. Optional, but exact when present.
+  const written = (value: unknown, label: string): void => {
+    if (typeof value !== 'string' || !value.trim() || /[\r\n]/u.test(value) || Array.from(value).length > 120) fail(`${label} must be one written line`)
+  }
   for (const member of cast) {
     const name = member.name?.trim().toLowerCase()
     if (!name || names.has(name)) fail('cast names must be unique')
     if (member.name !== member.name.trim() || /[:\r\n*@]/u.test(member.name)) fail('cast names must be valid message prefixes')
     names.add(name)
+    if (member.first_texts !== undefined) {
+      if (!Array.isArray(member.first_texts) || member.first_texts.length !== 3) fail('first_texts must contain exactly three lines')
+      for (const text of member.first_texts) written(text, 'every first text')
+    }
+    if (member.statuses !== undefined) {
+      if (!member.statuses || typeof member.statuses !== 'object' || Object.keys(member.statuses).some(key => !['morning', 'afternoon', 'evening', 'night'].includes(key))) fail('statuses must name morning, afternoon, evening and night')
+      for (const period of ['morning', 'afternoon', 'evening', 'night'] as const) written(member.statuses[period], `the ${period} status`)
+    }
     const traits = member.group
     if (!traits || !Number.isFinite(traits.age) || traits.age < 18) fail('every member must be 18 or older')
     if (!Number.isFinite(traits!.talkativeness) || traits!.talkativeness < 0 || traits!.talkativeness > 1) fail('talkativeness must be 0–1')

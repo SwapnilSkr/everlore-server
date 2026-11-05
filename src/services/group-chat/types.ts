@@ -10,6 +10,16 @@ export interface GroupTraits {
   voice?: string[]
 }
 
+/** A member's written status for each part of the player's day. */
+export interface GroupStatusLines {
+  morning: string
+  afternoon: string
+  evening: string
+  night: string
+}
+
+export type GroupStatusPeriod = keyof GroupStatusLines
+
 export interface GroupMember {
   id: string
   name: string
@@ -17,6 +27,10 @@ export interface GroupMember {
   persona?: string
   relationship?: import('../../models/character-profile.model').RelationshipMeters
   group: GroupTraits
+  /** Written first text ideas, sent only on a direct thread with nothing in it yet. */
+  first_texts?: string[]
+  /** Written status lines; the line for now is picked per read, never stored. */
+  statuses?: GroupStatusLines
 }
 
 export interface GroupState {

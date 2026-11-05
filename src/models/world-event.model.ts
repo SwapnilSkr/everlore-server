@@ -133,6 +133,8 @@ export interface EventDataDoc {
   lines?: import('../services/group-chat/types').GroupLine[]
   /** Group adult turn: the after-reply check found the reply wasn't explicit. Never sent to the player. */
   tame?: boolean
+  /** Up to three things the player could say next, in their own voice. Only the newest event of a thread sends them. */
+  reply_ideas?: string[]
   scene_members?: string[]
   tame_members?: string[]
   player_action?: true

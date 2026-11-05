@@ -5,6 +5,7 @@ import type { WorldInstanceDoc } from '../../models/world-instance.model'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
 import { idString, parseObjectId } from '../../utils/mongo-id'
 import { groupFaces, groupPendingFrom } from './public'
+import { refreshGroupTimezone } from './ideas'
 
 /** The Chats list reads a small window of the room and the direct threads'
  *  messages, so one row never costs a whole room history. */
@@ -178,6 +179,10 @@ export async function listGroupChats(playerId: string, now = new Date()): Promis
     } },
   ).sort({ 'meta.last_active_at': -1, _id: -1 }).limit(GROUP_CHATS_LIMIT).toArray()
   if (!instances.length) return { chats: [] }
+  // The list is the read before opening anything, so the zone the status is
+  // picked from is freshened from the newest device here. A failed refresh must
+  // not cost the player the list.
+  await refreshGroupTimezone(playerId, now).catch(() => undefined)
   const adultAllowed = await groupAdultAllowed(parseObjectId(playerId))
 
   const templateIds = [...new Map(instances.map(instance => [instance.template_id.toHexString(), instance.template_id])).values()]

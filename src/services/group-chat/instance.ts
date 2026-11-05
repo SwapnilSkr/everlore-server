@@ -21,7 +21,8 @@ export async function loadGroupMembers(instance: WorldInstanceDoc): Promise<Grou
   return (instance.seed_cast_snapshot || []).map(member => {
     const card = cards.find(card => card.canonical_name.toLowerCase() === member.name.toLowerCase())
     if (!card || !member.group) throw new Error('The group is still getting ready. Try again in a moment.')
-    return { id: idString(card._id), name: member.name, role: member.role, persona: member.persona, group: member.group, relationship: card.relationship }
+    return { id: idString(card._id), name: member.name, role: member.role, persona: member.persona, group: member.group, relationship: card.relationship,
+      ...(member.first_texts?.length ? { first_texts: member.first_texts } : {}), ...(member.statuses ? { statuses: member.statuses } : {}) }
   })
 }
 

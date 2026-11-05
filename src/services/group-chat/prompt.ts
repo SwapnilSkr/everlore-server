@@ -37,6 +37,9 @@ export function buildGroupDynamic(input: {
   actionPresent?: boolean
   sceneRule?: string; askedRule?: string
   notToldAbout?: string[]
+  /** The directly-addressed member's written status for now, so the reply doesn't
+   *  contradict the status shown beside their name. */
+  status?: { name: string; text: string }
 }): string {
   const parts: string[] = []
   if (input.actionPresent || input.history.slice(-(input.historyLimit ?? 30)).some(line => line.player_action) || input.groupContext?.some(line => line.player_action)) parts.push(GROUP_ACTION_RULE)
@@ -52,7 +55,8 @@ export function buildGroupDynamic(input: {
   const notTold = input.notToldAbout?.length ? `\nNobody has told ${input.speakers.join(' or ')} anything about this: ${input.notToldAbout.join(', ')}. They don't know, so they ask what's meant or say they've no idea, and never supply an answer.` : ''
   const close = (input.bonds || []).filter(member => input.speakers.includes(member.name) && closeToPlayer(member))
     .map(member => `\n${member.name} is close to the player now. If it's sexual, whatever held ${member.name} back no longer does: they want this, say yes and say exactly what they want.`).join('')
-  parts.push(`Now:\nIt's ${clock}.\nOnly these people write in this reply: ${input.speakers.join(', ')}.\n${input.messageRule ?? "Each writes one or two short messages, and it's fine if someone only reacts in a few words."}${notTold}${close}${input.askedRule ? `\n${input.askedRule}` : ''}${input.sceneRule ? `\n${input.sceneRule}` : ''}\n${input.situation}`)
+  const status = input.status ? `\n${input.status.name}'s status right now says: "${input.status.text}".` : ''
+  parts.push(`Now:\nIt's ${clock}.\nOnly these people write in this reply: ${input.speakers.join(', ')}.\n${input.messageRule ?? "Each writes one or two short messages, and it's fine if someone only reacts in a few words."}${notTold}${close}${status}${input.askedRule ? `\n${input.askedRule}` : ''}${input.sceneRule ? `\n${input.sceneRule}` : ''}\n${input.situation}`)
   return parts.join('\n\n')
 }
 

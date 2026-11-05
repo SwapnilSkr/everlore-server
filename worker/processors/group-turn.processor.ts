@@ -19,6 +19,8 @@ import { liveInstanceExists } from '../../src/utils/live-instance'
 import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
 import { judgeGroupReply } from '../lib/group-explicit-check'
 import { startGroupSelfies } from '../lib/group-selfies'
+import { startGroupReplyIdeas } from '../lib/group-reply-ideas'
+import { pickStatus } from '../../src/services/group-chat/ideas'
 import { publicGroupData } from '../../src/services/group-chat/public'
 import { stagePostProcess, dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
 import { groupThreadFilter, groupWriterSummaries, groupMessages, groupWriterMemory, GROUP_MEMORY_CADENCE, GROUP_SUMMARY_CADENCE, groupLineRaisesFact, withoutAdultEvents, groupHiddenWords } from '../../src/services/group-chat/memory'
@@ -178,6 +180,9 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
       return `${config.player} is asking ${name} directly, so ${name} writes first and answers exactly what's asked. ${own.length ? `If it's about what ${name} said, it comes from all of these and not only the latest thing. ${name}'s own earlier messages, oldest first:\n${own.join('\n')}` : `${name} hasn't said anything recently.`}`
     }
     const published: GroupLine[] = []
+    // The ideas call takes the turn's own writer route, so a withdrawn toggle can
+    // never reach the adult writer; false until an actual attempt has consented.
+    let latestConsent = false
     const timeSceneLines = (freshLines: NamedLine[]) => timeLines(freshLines, members,
       new Date(Math.max(Date.now(), published.length ? published.at(-1)!.shown_at.getTime() + 1500 : 0)), undefined, rng)
     const sceneAdultAttempts = new Map<string, number>()
@@ -185,6 +190,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     // Proven live: asked a plain question mid-scene, she answered it, then spent the next
     // messages steering back to sex. One message answers it and leaves the lead to the player.
     const plainQuestion = adult && plainLine
+    // A direct thread shows the member's written status beside their name; the
+    // reply is told the same line so it cannot contradict it.
+    const directMember = directWith ? members.find(member => member.id === directWith) : undefined
+    const directStatus = directMember?.statuses ? pickStatus(directMember.statuses, state.tz_offset_minutes, now) : undefined
     const reply = await writeGroupReply({ members, speakers: roll.picked, tags: roll.tags,
       ...(sceneMembers.length ? { sceneMembers, onMemberLines: async (freshLines: NamedLine[]) => {
         const timed = timeSceneLines(freshLines)
@@ -215,6 +224,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const model = chain[index]
           const split = !!addressed
           const consented = consent?.preferences?.nsfw_enabled === true
+          latestConsent = consented
           const memory = await groupWriterMemory({ instanceId: iid, player: config.player,
             speakers: selected.map(member => member.name), thread: directWith, enabled: consented,
             memories: rag.memoryTexts, openThreads: rag.openThreads || [], raisedBy: addressedPrompt ? userMessage : undefined, recentEvents: recent.slice(-4).map(event => event._id) })
@@ -244,6 +254,7 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
             historyLimit: split ? addressedPrompt ? 12 : directWith ? 30 : 5 : 30,
             messageRule: split ? plainQuestion && addressedPrompt ? 'Write one message, answering what was asked.' : sceneOthers.length ? 'Write one short message.' : addressedPrompt || directWith ? 'Write one to three messages.' : 'Each writes one short message.' : undefined,
             now, offsetMinutes: state.tz_offset_minutes, speakers: selected.map(member => member.name),
+            status: directStatus && directMember ? { name: directMember.name, text: directStatus } : undefined,
             situation: origin === 'player' ? split && (!addressedPrompt || laterInScene) ? '' : groupLineText(playerLine)
               : origin === 'catchup' ? `Write up to four messages they sent while ${config.player} was away. Topic: ${topic}`
                 : `${config.player} is quiet. The group carries on. Topic: ${topic}`,
@@ -338,6 +349,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
     } finally { void dispatchPostProcessOutbox().catch(() => {}) }
     const selfies = startGroupSelfies(event, { rng: deps.selfieRng, now: deps.now })
     deps.onBackground?.(selfies)
+    // Independent of the selfies: one failing never stops the other, and neither
+    // is waited on once the reply's completion has gone out.
+    const ideas = startGroupReplyIdeas(event, { members, player: config.player, template, adult: adult && latestConsent })
+    deps.onBackground?.(ideas)
     if (addressedName && origin === 'player' && (sceneMembers.length || writing.some(call => call.writer === 'adult'))) {
       const work = Promise.all((sceneMembers.length ? sceneMembers : [addressed!]).map(async memberId => {
         const name = members.find(member => member.id === memberId)!.name

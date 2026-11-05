@@ -2,7 +2,8 @@ import { createHash } from 'node:crypto'
 import { env } from '../../config/env'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
 import { publicTemplate } from '../../utils/template-public-projection'
-import type { GroupLine, GroupSelfie, GroupState } from './types'
+import { withMemberReadings } from './ideas'
+import type { GroupLine, GroupSelfie, GroupState, GroupStatusLines } from './types'
 import { DIRECT_PENDING_MS } from './notification-policy'
 
 /** The one pending direct message this player has not read yet, if any. The
@@ -13,13 +14,15 @@ export function groupPendingFrom(state: GroupState | undefined, now = new Date()
   return now.getTime() - new Date(pending.scheduled_at).getTime() < DIRECT_PENDING_MS ? [pending.member_id] : []
 }
 
-/** A save carries a copy of the authored cast. Its stored portrait is internal —
- *  the room card carries the URL. The template's own cast keeps its portrait. */
-function withoutPortraits(value: unknown, now: Date): unknown {
+/** A save's cast keeps its stored portrait internal — the room card carries the
+ *  URL, and the template's cast still carries the portrait that names it. The
+ *  written first texts and statuses only ever travel on the member's card. */
+function withoutCastFields(value: unknown, keys: string[], now: Date): unknown {
   if (!Array.isArray(value)) return value
   return value.map(entry => {
     if (!entry || typeof entry !== 'object') return entry
-    const { portrait: _portrait, ...rest } = entry as Record<string, unknown>
+    const rest = { ...(entry as Record<string, unknown>) }
+    for (const key of keys) delete rest[key]
     return publicGroupData(rest, now)
   })
 }
@@ -43,6 +46,43 @@ function publicGroupLine(value: unknown, selfies: Record<string, GroupSelfie> | 
   } } : {}) }
 }
 
+interface HistoryMember {
+  name: string
+  first_texts?: string[]
+  statuses?: GroupStatusLines
+}
+
+interface HistoryRead {
+  newestIdeas: string[] | undefined
+  firstTexts: boolean
+  members: HistoryMember[]
+  offsetMinutes: number | undefined
+}
+
+/** A loaded history is the only payload that carries reply ideas and member
+ *  readings. The newest event of the thread sends its ideas; an empty thread
+ *  (which can only be a direct one, since a room opens seeded) offers the
+ *  members' written first texts. */
+function historyRead(value: Record<string, unknown>, now: Date): HistoryRead | undefined {
+  const recent = value.recentEvents
+  if (!Array.isArray(recent)) return undefined
+  const instance = value.instance as { group_state?: GroupState; seed_cast_snapshot?: HistoryMember[] } | undefined
+  const state = instance?.group_state
+  const newest = recent.at(-1) as { data?: { reply_ideas?: unknown } } | undefined
+  const ideas = newest?.data?.reply_ideas
+  const hasLines = recent.some(event => {
+    const data = (event as { data?: { lines?: unknown[]; player_input?: unknown } })?.data
+    return (Array.isArray(data?.lines) && data.lines.length > 0) ||
+      (typeof data?.player_input === 'string' && data.player_input.length > 0)
+  })
+  return {
+    newestIdeas: Array.isArray(ideas) ? ideas.filter((idea): idea is string => typeof idea === 'string') : undefined,
+    firstTexts: !hasLines && !!state && groupPendingFrom(state, now).length === 0,
+    members: instance?.seed_cast_snapshot || [],
+    offsetMinutes: state?.tz_offset_minutes,
+  }
+}
+
 /** Only plain documents are copied; dates and database ids keep their encoding. */
 export function publicGroupData<T>(value: T, now = new Date()): T {
   if (Array.isArray(value)) return value.map(entry => publicGroupData(entry, now)) as T
@@ -50,9 +90,22 @@ export function publicGroupData<T>(value: T, now = new Date()): T {
   const selfies = (value as { group_selfies?: Record<string, GroupSelfie> }).group_selfies
   const state = (value as { group_state?: GroupState }).group_state
   const extra = env.GROUP_NOTIFICATIONS_ENABLED && state ? { pending_from: groupPendingFrom(state, now) } : {}
-  return { ...Object.fromEntries(Object.entries(value).filter(([key]) =>
-    !['group_selfies', 'dm_with', 'private_to', 'start_bond', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'group_template_id', 'cost', 'cost_usd', 'tame', 'scene_members', 'tame_members', 'pending_direct', 'scheduled_at', 'notified_at', 'last_direct_notified_at', 'group_notification_usage'].includes(key),
-  ).map(([key, entry]) => [key, key === 'seed_cast_snapshot' ? withoutPortraits(entry, now) : key === 'lines' && Array.isArray(entry) ? entry.map(line => publicGroupLine(line, selfies, now)) : publicGroupData(entry, now)])), ...extra } as T
+  const history = historyRead(value as Record<string, unknown>, now)
+  const output = { ...Object.fromEntries(Object.entries(value).filter(([key]) =>
+    !['group_selfies', 'dm_with', 'private_to', 'start_bond', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'group_template_id', 'cost', 'cost_usd', 'tame', 'scene_members', 'tame_members', 'pending_direct', 'scheduled_at', 'notified_at', 'last_direct_notified_at', 'group_notification_usage', 'reply_ideas'].includes(key),
+  ).map(([key, entry]) => [key, key === 'seed_cast_snapshot' ? withoutCastFields(entry, ['portrait', 'first_texts', 'statuses'], now)
+    : key === 'seed_cast' ? withoutCastFields(entry, ['first_texts', 'statuses'], now)
+    : key === 'lines' && Array.isArray(entry) ? entry.map(line => publicGroupLine(line, selfies, now)) : publicGroupData(entry, now)])), ...extra } as T
+  if (history) {
+    const row = output as Record<string, unknown>
+    if (Array.isArray(row.characters)) row.characters = withMemberReadings(row.characters as Array<{ canonical_name?: string }>, history.members, {
+      ...(history.offsetMinutes === undefined ? {} : { offsetMinutes: history.offsetMinutes }), firstTexts: history.firstTexts, now,
+    })
+    const events = row.recentEvents
+    const newest = Array.isArray(events) ? events.at(-1) as { data?: Record<string, unknown> } | undefined : undefined
+    if (history.newestIdeas?.length && newest?.data) newest.data = { ...newest.data, reply_ideas: history.newestIdeas }
+  }
+  return output
 }
 
 /** A face's absolute address. The same join as `portraitUrl()`, kept here
