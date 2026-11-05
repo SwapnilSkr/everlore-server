@@ -50,6 +50,7 @@ export function coll<T extends Document = Document>(name: string): Collection<T>
  */
 export const mongoColl = {
   pushDevices: () => coll<import('../models/push-device.model').PushDeviceDoc>(COLLECTIONS.push_devices),
+  playerNotifications: () => coll<WithoutId<import('../models/notification.model').PlayerNotificationDoc>>(COLLECTIONS.player_notifications),
   mediaAssets: () => coll<import('../models/media.model').MediaAssetDoc>(COLLECTIONS.media_assets),
   mediaUsage: () => coll<import('../models/media.model').MediaUsageDoc>(COLLECTIONS.media_usage),
   mediaRejections: () => coll<import('../models/media.model').MediaRejectionDoc>(COLLECTIONS.media_rejections),

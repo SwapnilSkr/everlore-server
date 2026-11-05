@@ -8,6 +8,7 @@ import { groupLineId } from '../group-chat/public'
 import { groupThreadFilter, validGroupThread } from '../group-chat/memory'
 import { loadGroupMembers } from '../group-chat/instance'
 import { requireIdentity } from '../guest-policy'
+import { recordSelfieReady } from '../notifications.service'
 import { HttpError } from '../../utils/http-error'
 import { parseObjectId } from '../../utils/mongo-id'
 import { asMediaImageReference, imageExtensionFor, ProviderRefusalError } from '../../ai/image'
@@ -81,16 +82,22 @@ function eventFence(event: WorldEventDoc) {
     ...groupThreadFilter(event.data.dm_with) }
 }
 
-/** Shared start for taps and after-reply agreements; resting is durable. */
+/** The player tapped for this picture: they are watching for it, so it is never news. */
 export async function requestSelfie(playerId: string, instanceId: string, eventId: string, line: { character_id: string; text: string }): Promise<SelfieReply> {
+  return (await startSelfie(playerId, instanceId, eventId, line, undefined, true))!
+}
+
+/** A speaker agreed to send one in the saved reply: the player did not tap. */
+export async function requestAgreedSelfie(playerId: string, instanceId: string, eventId: string, line: { character_id: string; text: string }): Promise<SelfieReply> {
   return (await startSelfie(playerId, instanceId, eventId, line))!
 }
 
+/** Nobody asked: the character sent one on their own. Resting is durable. */
 export async function requestOwnSelfie(playerId: string, instanceId: string, eventId: string, line: { character_id: string; text: string }, now = new Date()): Promise<SelfieReply | undefined> {
   return startSelfie(playerId, instanceId, eventId, line, now)
 }
 
-async function startSelfie(playerId: string, instanceId: string, eventId: string, line: { character_id: string; text: string }, ownAt?: Date): Promise<SelfieReply | undefined> {
+async function startSelfie(playerId: string, instanceId: string, eventId: string, line: { character_id: string; text: string }, ownAt?: Date, tapped = false): Promise<SelfieReply | undefined> {
   await requireIdentity(playerId)
   if (!mediaEnabled('picture')) throw notFound()
   const ctx = await context(playerId, instanceId, eventId, line)
@@ -107,7 +114,7 @@ async function startSelfie(playerId: string, instanceId: string, eventId: string
   if (existing) return reply(existing)
   const asset: MediaAssetDoc = {
     _id: new ObjectId(), player_id: ctx.pid, instance_id: ctx.iid, event_id: ctx.eid,
-    kind: 'picture', group_selfie: true, line_id: lineId, character_id: ctx.card._id,
+    kind: 'picture', group_selfie: true, ...(tapped ? { tapped: true as const } : {}), line_id: lineId, character_id: ctx.card._id,
     ...(ctx.event.data.dm_with === undefined ? {} : { direct_with: ctx.event.data.dm_with }),
     source: 'generated', model: imageModel(), cache_key: cacheKey, revision, input: '',
     cost_usd: 0.009, cost_source: 'catalogue', status: 'queued', created_at: new Date(),
@@ -202,6 +209,8 @@ export async function notifySelfieReady(asset: MediaAssetDoc): Promise<void> {
   if (!await storeSelfieState(asset, 'ready', asset.url)) return
   await mediaEffects.publish(String(asset.player_id), { type: 'media_ready', instanceId: String(asset.instance_id),
     eventId: String(asset.event_id), media_id: String(asset._id), kind: 'picture', url: asset.url, ...selfieFrame(asset) }).catch(() => {})
+  // Before the notified_at stamp, so the bell row is written exactly once.
+  await recordSelfieReady(String(asset._id))
   await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'ready' }, { $set: { notified_at: new Date() } })
 }
 

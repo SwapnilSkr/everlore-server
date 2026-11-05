@@ -38,17 +38,15 @@ const GuideFlowProgressBody = t.Object({
   at: t.String({ maxLength: 40 }),
 })
 
+/**
+ * Only what the app writes and the server reads (`PREFERENCE_UPDATE_KEYS` in
+ * auth.service.ts). Older keys — preferred_model, theme, narration_length,
+ * auto_memory_curation — were never read and are refused by the service.
+ */
 export const UpdatePreferencesBody = t.Object({
   age_confirmed: t.Optional(t.Boolean()),
   nsfw_enabled: t.Optional(t.Boolean()),
-  preferred_model: t.Optional(t.String()),
-  theme: t.Optional(t.String()),
-  narration_length: t.Optional(t.Union([
-    t.Literal('concise'),
-    t.Literal('detailed'),
-    t.Literal('verbose'),
-  ])),
-  auto_memory_curation: t.Optional(t.Boolean()),
+  group_notifications: t.Optional(t.Boolean()),
   player_name: t.Optional(t.String({ minLength: 2, maxLength: 40 })),
   gender: t.Optional(t.Union([
     t.Literal('male'),

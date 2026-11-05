@@ -9,6 +9,7 @@ import { authRoutes } from './routes/auth.routes'
 import { templateRoutes } from './routes/template.routes'
 import { moderationRoutes } from './routes/moderation.routes'
 import { instanceRoutes } from './routes/instance.routes'
+import { notificationRoutes } from './routes/notifications.routes'
 import { personaRoutes } from './routes/persona.routes'
 import { chronicleRoutes } from './routes/chronicle.routes'
 import { adminRoutes } from './routes/admin.routes'
@@ -141,6 +142,7 @@ async function main() {
     .use(templateRoutes)
     .use(moderationRoutes)
     .use(instanceRoutes)
+    .use(notificationRoutes)
     .use(mediaRoutes)
     .use(personaRoutes)
     .use(chronicleRoutes)

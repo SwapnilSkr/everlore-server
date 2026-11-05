@@ -11,6 +11,23 @@ import { guestService } from './guest.service'
 /** Ceiling on stored guide arcs; the app declares roughly a dozen. */
 const MAX_GUIDE_FLOWS = 64
 
+/**
+ * Every preference key the app writes and the server reads. `updatePreferences`
+ * used to store whatever it was handed, which let a client grow the account
+ * document without bound; anything outside this list is now refused with a 400.
+ * `age_confirmed` is the one key that is consumed rather than stored.
+ */
+export const PREFERENCE_UPDATE_KEYS = [
+  'age_confirmed',
+  'nsfw_enabled',
+  'group_notifications',
+  'player_name',
+  'gender',
+  'interests',
+  'guide_progress',
+  'guide_opt_out',
+] as const
+
 export function defaultUserPreferences(): UserDoc['preferences'] {
   return {
     nsfw_enabled: false,
@@ -203,6 +220,8 @@ export const authService = {
   },
 
   async updatePreferences(userId: string, body: Record<string, unknown>) {
+    const unknown = Object.keys(body).filter(key => !(PREFERENCE_UPDATE_KEYS as readonly string[]).includes(key))
+    if (unknown.length) throw new HttpError(400, 'That setting could not be changed.')
     const user = await this.getUserById(userId)
     if (body.nsfw_enabled === true && !user.age_confirmed_at && body.age_confirmed !== true) {
       throw new HttpError(400, "Please confirm you're 18 or older to allow mature themes.", { code: 'age_confirmation_required' })

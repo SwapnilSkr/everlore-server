@@ -33,6 +33,7 @@ import { portraitLookEvidence } from './look-evidence'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
 import type { PersonaDoc } from '../../models/persona.model'
 import { PAINTED_STYLE_KEY, resolveMediaStyle, templateMediaStyle } from '../image.service'
+import { recordFilmReady } from '../notifications.service'
 import { encodeGeneratedStill } from '../../utils/image-encoding'
 
 export type QueuedReply = { status: 'ready'; url: string; duration_ms?: number } | { status: 'queued'; media_id: string }
@@ -479,6 +480,8 @@ async function notifyMedia(asset: MediaAssetDoc): Promise<void> {
     ...(asset.line_id ? { line_id: asset.line_id } : {}),
     ...(asset.character_id ? { character_id: asset.character_id.toHexString() } : {}),
   }).catch(() => {})
+  // A finished film gets a bell row too; before the stamp, so exactly once.
+  if (asset.kind === 'video') await recordFilmReady(asset._id.toHexString())
   await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'ready' }, { $set: { notified_at: new Date() } })
 }
 

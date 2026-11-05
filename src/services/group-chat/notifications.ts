@@ -5,6 +5,7 @@ import { acquireGenerationTurn, generationLockKey, releaseGenerationLock } from 
 import { parseObjectId } from '../../utils/mongo-id'
 import { HttpError } from '../../utils/http-error'
 import { fcmSender, directNotification } from '../push/fcm'
+import { markThreadRead, recordDirectMessage } from '../notifications.service'
 import { loadGroupMembers } from './instance'
 import { resolveGroupThread } from './threads'
 import { eligibleDirectNotification, pickDirectSender, DIRECT_PENDING_MS } from './notification-policy'
@@ -89,6 +90,9 @@ export async function scheduleDirectNotifications(deps: {
         })
         return
       }
+      // The bell row rides with the push: the same moment, the same words, and
+      // its own failure never undoes the pending message.
+      await recordDirectMessage({ playerId, instanceId: String(instance._id), characterId: member.id, name: member.name })
     } finally { await releaseGenerationLock(redis, key, owner) }
   })
 }
@@ -97,6 +101,8 @@ export async function openPendingDirect(instanceId: string, playerId: string, ch
   const instance = await mongoColl.worldInstances().findOne({ _id: parseObjectId(instanceId), player_id: parseObjectId(playerId) })
   if (!instance?.group_state) throw new HttpError(404, 'That chat could not be found.')
   await resolveGroupThread(instance, characterId)
+  // Opening the thread is reading its bell rows, whatever push is set to.
+  await markThreadRead({ playerId, instanceId, characterId })
   if (!env.GROUP_NOTIFICATIONS_ENABLED) return { writing: false }
   const player = await mongoColl.users().findOne({ _id: instance.player_id })
   if (!player || player.guest || player.account_status === 'banned') throw new HttpError(403, 'Sign in to continue.')

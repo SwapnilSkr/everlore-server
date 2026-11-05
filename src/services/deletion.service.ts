@@ -334,6 +334,7 @@ export const deletionService = {
     await purgeCardPortraits(instanceId)
     await this.deleteInstanceData(instanceId, instanceIdStr)
     await Promise.all([
+      mongoColl.playerNotifications().deleteMany({ instance_id: instanceId }),
       memories().deleteMany({ instance_id: instanceId }),
       sceneSummaries().deleteMany({ instance_id: instanceId }),
       mongoColl.chapterSummaries().deleteMany({ instance_id: instanceId }),

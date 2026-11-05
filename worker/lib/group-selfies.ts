@@ -1,5 +1,5 @@
 import type { WorldEventDoc } from '../../src/models/world-event.model'
-import { requestOwnSelfie, requestSelfie } from '../../src/services/media/selfie'
+import { requestAgreedSelfie, requestOwnSelfie } from '../../src/services/media/selfie'
 import { HttpError } from '../../src/utils/http-error'
 import { log } from '../../src/utils/logger'
 import { checkGroupSelfie } from './group-selfie-check'
@@ -16,7 +16,7 @@ export async function startGroupSelfies(event: WorldEventDoc, deps: { rng?: () =
       const position = await checkGroupSelfie(event.data.player_input, lines.map(line => line.text))
       if (position !== null) {
         if (!Number.isInteger(position) || position < 1 || position > lines.length) return
-        try { await requestSelfie(playerId, instanceId, eventId, lines[position - 1]) }
+        try { await requestAgreedSelfie(playerId, instanceId, eventId, lines[position - 1]) }
         catch (error) {
           if (!(error instanceof HttpError && error.statusCode === 429)) throw error
         }

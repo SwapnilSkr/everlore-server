@@ -4,6 +4,7 @@
  */
 const PURE_AUDITS = [
   'audit:group-chat',
+  'audit:notifications',
   'audit:media',
   'audit:openrouter-routing',
   'audit:intent-router',

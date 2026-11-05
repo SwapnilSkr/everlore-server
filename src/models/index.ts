@@ -21,6 +21,7 @@ export type {
   EventEditHistoryEntry,
   WorldEventDoc,
 } from './world-event.model'
+export type { NotificationType, PlayerNotificationDoc } from './notification.model'
 export type { MemoryDoc } from './memory.model'
 export type { LocationAnchorDoc } from './location.model'
 export type { CharacterProfileDoc } from './character-profile.model'

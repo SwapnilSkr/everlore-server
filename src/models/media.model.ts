@@ -50,6 +50,10 @@ export interface MediaAssetDoc {
   persona_id?: ObjectId
   /** Group selfies remain pictures for limits and Keepsakes. */
   group_selfie?: true
+  /** The player tapped for this selfie. Only an agree or an unprompted one
+   *  becomes a bell row; a tap is the player already watching for it. Omitted
+   *  (never false) on every other row. */
+  tapped?: true
   direct_with?: string
   source: 'generated' | 'authored'
   model: string

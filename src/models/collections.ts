@@ -4,6 +4,7 @@
  */
 export const COLLECTIONS = {
   push_devices: 'push_devices',
+  player_notifications: 'player_notifications',
   media_assets: 'media_assets',
   media_usage: 'media_usage',
   media_rejections: 'media_rejections',

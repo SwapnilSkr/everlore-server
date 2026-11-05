@@ -43,6 +43,16 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
   { collection: COLLECTIONS.users, key: { install_id: 1 },
     options: { unique: true, name: 'idx_users_guest_install', partialFilterExpression: { guest: true } } },
   { collection: COLLECTIONS.users, key: { guest: 1, created_at: 1 }, options: { name: 'idx_users_guest_expiry' } },
+  // player_notifications — what happened while the player was elsewhere. The
+  // bell reads newest first, paged by `_id`; unread is a count. A row is kept
+  // 30 days and no more. The per-player 100 cap is code-side (it deletes the
+  // oldest rows, which an index cannot express).
+  { collection: COLLECTIONS.player_notifications, key: { player_id: 1, _id: 1 },
+    options: { name: 'idx_player_notifications_player_id' } },
+  { collection: COLLECTIONS.player_notifications, key: { player_id: 1, read_at: 1 },
+    options: { name: 'idx_player_notifications_player_unread' } },
+  { collection: COLLECTIONS.player_notifications, key: { created_at: 1 },
+    options: { name: 'ttl_player_notifications_30d', expireAfterSeconds: 60 * 60 * 24 * 30 } },
   { collection: COLLECTIONS.media_assets, key: { cache_key: 1 }, options: { unique: true } },
   { collection: COLLECTIONS.media_assets, key: { instance_id: 1, event_id: 1 } },
   { collection: COLLECTIONS.media_assets, key: { player_id: 1, status: 1, created_at: -1 },
