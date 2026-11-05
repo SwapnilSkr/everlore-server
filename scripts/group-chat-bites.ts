@@ -897,6 +897,54 @@ const lineReportMutations: Mutation[] = [
 ]
 mutations.push(...lineReportMutations)
 
+const chatSnapshot = 'chat report snapshot', chatContext = 'chat report context'
+const chatReportMutations: Mutation[] = [
+  { name: 'chat report target refused', check: chatSnapshot, edits: [[moderationSchema, "target_type: t.Union([TargetTypeSchema, t.Literal('chat_line')]),", 'target_type: TargetTypeSchema,']] },
+  { name: 'chat report response shortened', check: chatSnapshot, edits: [[moderation, 'snapshot.description = event.data.ai_response', 'snapshot.description = event.data.ai_response.slice(0, 2000)']] },
+  { name: 'chat report response trimmed', check: chatSnapshot, edits: [[moderation, 'snapshot.description = event.data.ai_response', 'snapshot.description = event.data.ai_response.trim()']] },
+  { name: 'chat report player input substituted', check: chatSnapshot, edits: [[moderation, 'snapshot.description = event.data.ai_response', 'snapshot.description = event.data.player_input']] },
+  { name: 'chat report edited false lost', check: chatSnapshot, edits: [[moderation, 'snapshot.is_user_edited = Boolean(event.is_user_edited)', 'snapshot.is_user_edited = true']] },
+  { name: 'chat report edited true lost', check: chatSnapshot, edits: [[moderation, 'snapshot.is_user_edited = Boolean(event.is_user_edited)', 'snapshot.is_user_edited = false']] },
+  { name: 'chat report mature mark lost', check: chatSnapshot, edits: [[moderation, 'snapshot.is_nsfw_capable = Boolean(template.is_nsfw_capable)', 'snapshot.is_nsfw_capable = false']] },
+  { name: 'chat report world title lost', check: chatSnapshot, edits: [[moderation, 'snapshot.title = template.title', "snapshot.title = ''"]] },
+  { name: 'chat report creator stored', check: chatSnapshot, edits: [[moderation, 'snapshot.is_user_edited = Boolean(event.is_user_edited)', 'snapshot.is_user_edited = Boolean(event.is_user_edited); creatorId = template.creator_id']] },
+  { name: 'chat report creator username stored', check: chatSnapshot, edits: [[moderation, 'snapshot.is_user_edited = Boolean(event.is_user_edited)', "snapshot.is_user_edited = Boolean(event.is_user_edited); snapshot.creator_username = 'DO_NOT_ATTRIBUTE'"]] },
+  { name: 'chat report null line stored', check: chatSnapshot, edits: [[moderation, '...(targetLine === undefined ? {} : { target_line: targetLine }),', '...{ target_line: targetLine ?? null },']] },
+  { name: 'chat report private snapshot in response', check: chatSnapshot, edits: [[moderation, 'return { reported: true, report_id: idString(inserted.insertedId), duplicate: false }', 'return { reported: true, report_id: idString(inserted.insertedId), duplicate: false, target_snapshot: snapshot }']] },
+  { name: 'chat report context four turns', check: chatContext, edits: [[moderation, '.limit(3).toArray()', '.limit(4).toArray()']] },
+  { name: 'chat report context newest first', check: chatContext, edits: [[moderation, 'snapshot.context = before.reverse().map(turn =>', 'snapshot.context = before.map(turn =>']] },
+  { name: 'chat report context earlier bound lost', check: chatContext, edits: [[moderation, 'instance_id: instance._id, sequence: { $lt: event.sequence }', 'instance_id: instance._id']] },
+  { name: 'chat report context foreign save', check: chatContext, edits: [[moderation, 'instance_id: instance._id, sequence: { $lt: event.sequence }', 'sequence: { $lt: event.sequence }']] },
+  { name: 'chat report context input unbounded', check: chatContext, edits: [[moderation, "(turn.data.player_input || '').slice(0, 1000)", "(turn.data.player_input || '')"]] },
+  { name: 'chat report context response unbounded', check: chatContext, edits: [[moderation, "(turn.data.ai_response || '').slice(0, 1000)", "(turn.data.ai_response || '')"]] },
+  { name: 'chat report ownership missing', check: 'chat report uniform 404 foreign', edits: [[moderation, '_id: event.instance_id, player_id: reporter', '_id: event.instance_id']] },
+  { name: 'chat report missing event changes error', check: 'chat report uniform 404 missing', edits: [[moderation, 'if (!event) throw notFound()', "if (!event) throw new HttpError(400, 'Missing event')"]] },
+  { name: 'chat report missing save changes error', check: 'chat report uniform 404 missing save', edits: [[moderation, 'if (!instance || instance.group_template_id || instance.group_state) throw notFound()', 'if (instance && (instance.group_template_id || instance.group_state)) throw notFound()']] },
+  { name: 'chat report missing template changes error', check: 'chat report uniform 404 missing template', edits: [[moderation, "if (!template || template.kind === 'group') throw notFound()", "if (template?.kind === 'group') throw notFound()"]] },
+  { name: 'chat report empty accepted', check: 'chat report uniform 404 empty', edits: [[moderation, "if (typeof event.data.ai_response !== 'string' || !event.data.ai_response.trim()) throw notFound()", 'if (false) throw notFound()']] },
+  { name: 'chat report whitespace accepted', check: 'chat report uniform 404 whitespace', edits: [[moderation, '!event.data.ai_response.trim()', '!event.data.ai_response']] },
+  { name: 'chat report absent response changes error', check: 'chat report uniform 404 absent response', edits: [[moderation, "typeof event.data.ai_response !== 'string' || ", '']] },
+  { name: 'chat report group template accepted', check: 'chat report uniform 404 group', edits: [[moderation, "if (!template || template.kind === 'group') throw notFound()", 'if (!template) throw notFound()']] },
+  { name: 'chat report group marker accepted', check: 'chat report uniform 404 group marker', edits: [[moderation, ' || instance.group_template_id', '']] },
+  { name: 'chat report group state accepted', check: 'chat report uniform 404 group state', edits: [[moderation, ' || instance.group_state) throw notFound()', ') throw notFound()']] },
+  { name: 'chat report supplied character accepted', check: 'chat report HTTP', edits: [[moderationSchema, 'character_id: t.Optional(t.Never())', 'character_id: t.Optional(t.String())'], [moderation, 'input.characterId !== undefined || input.text !== undefined', 'input.text !== undefined']] },
+  { name: 'chat report supplied text accepted', check: 'chat report HTTP', edits: [[moderationSchema, 'text: t.Optional(t.Never())', 'text: t.Optional(t.String())'], [moderation, 'input.characterId !== undefined || input.text !== undefined', 'input.characterId !== undefined']] },
+  { name: 'chat report block accepted', check: 'chat report HTTP', edits: [[moderationSchema, 'export const BlockBody = t.Object({\n  target_type: TargetTypeSchema,', "export const BlockBody = t.Object({\n  target_type: t.Union([TargetTypeSchema, t.Literal('chat_line')]),"]] },
+  { name: 'chat report duplicate path lost', check: 'chat report duplicate', edits: [[moderation, 'if ((error as { code?: number }).code === 11000)', 'if (false)']] },
+  { name: 'chat report duplicate null lookup', check: 'chat report duplicate', edits: [[moderation, 'target_line: targetLine === undefined ? { $exists: false } : targetLine,', 'target_line: targetLine ?? null,']] },
+  { name: 'chat report critical flag lost', check: 'chat report critical', edits: [[moderation, 'is_critical: CRITICAL_REPORT_REASONS.has(input.reason)', 'is_critical: false']] },
+  { name: 'chat report admin creator id leaked', check: 'chat report critical', edits: [[moderation, "report.target_type === 'group_line' || report.target_type === 'chat_line' ? {}", "report.target_type === 'group_line' ? {}"]] },
+  { name: 'chat report admin creator joined', check: 'chat report critical', edits: [[moderation, "report.target_type !== 'chat_line' && report.target_creator_id", 'report.target_creator_id']] },
+  { name: 'chat report admin filter refused', check: 'chat report critical', edits: [[moderationSchema, "t.Literal('group_line'), t.Literal('chat_line')", "t.Literal('group_line')"]] },
+  { name: 'chat report admin filter ignored', check: 'chat report critical', edits: [[moderation, 'if (opts.target_type) filter.target_type = opts.target_type', '']] },
+  { name: 'chat report admin snapshot lost', check: 'chat report critical', edits: [[moderation, 'target_snapshot: report.target_snapshot || {}', 'target_snapshot: {}']] },
+  { name: 'chat report creator ban accepted', check: 'chat report resolve', edits: [[moderation, "if (report.target_type === 'chat_line' && input.action !== 'none')", 'if (false)']] },
+  { name: 'chat report content actions accepted', check: 'chat report resolve', edits: [[moderation, "if (report.target_type === 'chat_line' && input.action !== 'none')", 'if (false)'], [moderation, "report.target_type !== 'world' && input.action", "report.target_type !== 'world' && report.target_type !== 'chat_line' && input.action"]] },
+  { name: 'chat report upheld none lost', check: 'chat report resolve', edits: [[moderation, "input.status || (input.action === 'none' ? 'dismissed' : 'actioned')", "(input.action === 'none' ? 'dismissed' : 'actioned')"]] },
+  { name: 'chat report evidence requires live event', check: 'chat report survives', edits: [[moderation, 'async getReport(reportId: string) {', "async getReport(reportId: string) {\n    const liveReport = await contentReports().findOne({ _id: parseObjectId(reportId) })\n    if (liveReport?.target_type === 'chat_line' && !await mongoColl.events().findOne({ _id: liveReport.target_id })) throw new HttpError(404, 'Report not found')"]] },
+]
+mutations.push(...chatReportMutations)
+
 
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {

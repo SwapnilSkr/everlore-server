@@ -226,7 +226,25 @@ export const moderationService = {
     let creatorId: ObjectId | undefined
     let targetLine: string | undefined
 
-    if (input.targetType === 'group_line') {
+    if (input.targetType === 'chat_line') {
+      const notFound = () => new HttpError(404, 'That line could not be found.')
+      const event = await mongoColl.events().findOne({ _id: target })
+      if (!event) throw notFound()
+      const instance = await mongoColl.worldInstances().findOne({ _id: event.instance_id, player_id: reporter })
+      if (!instance || instance.group_template_id || instance.group_state) throw notFound()
+      const template = await worldTemplates().findOne({ _id: instance.template_id })
+      if (!template || template.kind === 'group') throw notFound()
+      if (typeof event.data.ai_response !== 'string' || !event.data.ai_response.trim()) throw notFound()
+      const before = await mongoColl.events().find({ instance_id: instance._id, sequence: { $lt: event.sequence } })
+        .sort({ sequence: -1 }).limit(3).toArray()
+      snapshot.title = template.title
+      snapshot.description = event.data.ai_response
+      snapshot.context = before.reverse().map(turn =>
+        `Player: ${(turn.data.player_input || '').slice(0, 1000)}\nResponse: ${(turn.data.ai_response || '').slice(0, 1000)}`,
+      ).join('\n')
+      snapshot.is_user_edited = Boolean(event.is_user_edited)
+      snapshot.is_nsfw_capable = Boolean(template.is_nsfw_capable)
+    } else if (input.targetType === 'group_line') {
       const notFound = () => new HttpError(404, 'That line could not be found.')
       const event = await mongoColl.events().findOne({ _id: target })
       if (!event) throw notFound()
@@ -367,7 +385,7 @@ export const moderationService = {
 
     const [reporter, creator, related] = await Promise.all([
       users().findOne({ _id: report.reporter_id }, { projection: { username: 1, email: 1, account_status: 1 } }),
-      report.target_creator_id
+      report.target_type !== 'chat_line' && report.target_creator_id
         ? users().findOne(
             { _id: report.target_creator_id },
             { projection: { username: 1, email: 1, account_status: 1, tier: 1 } },
@@ -447,6 +465,9 @@ export const moderationService = {
     const effects: string[] = []
 
     if (report.target_type === 'group_line' && input.action !== 'none') {
+      throw new HttpError(400, 'Line reports can only be resolved without a content action.')
+    }
+    if (report.target_type === 'chat_line' && input.action !== 'none') {
       throw new HttpError(400, 'Line reports can only be resolved without a content action.')
     }
 
@@ -609,7 +630,7 @@ function serializeReport(report: ContentReportDoc) {
     target_type: report.target_type,
     target_id: idString(report.target_id),
     ...(report.target_line === undefined ? {} : { target_line: report.target_line }),
-    ...(report.target_type === 'group_line' ? {} : {
+    ...(report.target_type === 'group_line' || report.target_type === 'chat_line' ? {} : {
       target_creator_id: report.target_creator_id ? idString(report.target_creator_id) : null,
     }),
     target_title: report.target_snapshot?.title || report.target_snapshot?.creator_username || '',

@@ -4666,6 +4666,196 @@ await check('line report index gains line key new name deprecated old and unreso
   assert(DEPRECATED_INDEXES.some(index => index.collection === 'content_reports' && index.name === 'uniq_content_reports_open_per_reporter'))
 })
 
+// Player requests use the actual route; admin requests use the same schema/service
+// handlers as the line-report checks above, without importing unrelated admin surfaces.
+async function chatReportHttp(path: string, method = 'GET', body?: Row) {
+  const { moderationRoutes } = await import('../src/routes/moderation.routes')
+  const { AdminReportQuery, AdminResolveReportBody } = await import('../src/schemas/moderation.schema')
+  const app = new Elysia().onError(({ error, set }) => {
+    set.status = 'statusCode' in error ? Number(error.statusCode) : 400
+    return { message: error.message }
+  }).use(moderationRoutes)
+    .get('/admin/reports', ({ query }) => moderationService.listReports(query), { query: AdminReportQuery })
+    .get('/admin/reports/:reportId', ({ params }) => moderationService.getReport(params.reportId))
+    .patch('/admin/reports/:reportId', ({ params, body }) => moderationService.resolveReport(params.reportId, body), { body: AdminResolveReportBody })
+  return app.handle(new Request(`http://localhost${path}`, {
+    method, ...(body === undefined ? {} : { headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }),
+  }))
+}
+async function chatReportFixture() {
+  await start(); addEvents(5)
+  const instance = rows('worldInstances')[0]
+  for (const key of ['group_template_id', 'group_state', 'group_context']) delete instance[key]
+  rows('worldTemplates')[0].kind = 'world'
+  // The author may also be the player: generated passages still have no creator.
+  rows('worldTemplates')[0].creator_id = new ObjectId(playerId)
+  rows('users')[0].username = 'DO_NOT_ATTRIBUTE'
+  const events = storedEvents()
+  for (const event of events) {
+    event.data = { ...event.data, player_input: `Player turn ${event.sequence}`, ai_response: `Response turn ${event.sequence}` }
+    event.time_anchor = { real_time: new Date(), sequence: event.sequence, timeline_id: 'main' }
+  }
+  const event = events.at(-1)!
+  event.data.ai_response = `  Full saved passage ${'x'.repeat(5000)}  `
+  routeUser = { id: playerId, tier: 'creator' }
+  return { event, body: { target_type: 'chat_line', target_id: String(event._id), reason: 'harassment_or_hate' } }
+}
+async function fileChatReport(body: Row) {
+  const response = await chatReportHttp('/moderation/reports', 'POST', body)
+  assert.equal(response.status, 200)
+  const result = await response.json() as { reported: boolean; report_id: string; duplicate: boolean }
+  assert.deepEqual(Object.keys(result).sort(), ['duplicate', 'report_id', 'reported'])
+  assert.equal(result.reported, true)
+  return result
+}
+await check('chat report snapshot stores whole saved response and both edit and mature marks without attribution', async () => {
+  for (const edited of [false, true]) {
+    const { event, body } = await chatReportFixture()
+    event.is_user_edited = edited
+    rows('worldTemplates')[0].is_nsfw_capable = edited
+    const original = event.data.ai_response
+    const result = await fileChatReport({ ...body, details: '  Saved evidence  ' })
+    assert.equal(result.duplicate, false)
+    const doc = rows('contentReports')[0]
+    assert.equal(String(doc.reporter_id), playerId); assert.equal(String(doc.target_id), body.target_id)
+    assert.equal(doc.target_type, 'chat_line'); assert.equal(doc.reason, body.reason)
+    assert.equal(doc.details, 'Saved evidence'); assert.equal(doc.status, 'open'); assert.equal(doc.is_critical, false)
+    assert(!('target_line' in doc)); assert(!('target_creator_id' in doc))
+    assert.deepEqual(doc.target_snapshot, { title: template.title, description: original,
+      context: [3, 4, 5].map(sequence => `Player: Player turn ${sequence}\nResponse: Response turn ${sequence}`).join('\n'),
+      is_user_edited: edited, is_nsfw_capable: edited })
+    event.data.ai_response = 'Changed after report'
+    assert.equal(get(doc, 'target_snapshot.description'), original)
+  }
+})
+await check('chat report context only three earlier turns oldest first each part capped at 1000', async () => {
+  const { event, body } = await chatReportFixture()
+  const earlier = storedEvents().find(turn => turn.sequence === 4)!
+  earlier.data.player_input = 'p'.repeat(1100); earlier.data.ai_response = 'r'.repeat(1200)
+  // Deliberately insert out of order, with another save and a future turn.
+  rows('events').reverse()
+  rows('events').push({ ...clone(event) as unknown as Row, _id: new ObjectId(), instance_id: new ObjectId(), sequence: 5.5,
+    data: { player_input: 'FOREIGN_INPUT', ai_response: 'FOREIGN_RESPONSE' } },
+  { ...clone(event) as unknown as Row, _id: new ObjectId(), sequence: 7, data: { player_input: 'FUTURE', ai_response: 'FUTURE' } })
+  await fileChatReport(body)
+  assert.equal(get(rows('contentReports')[0], 'target_snapshot.context'),
+    `Player: Player turn 3\nResponse: Response turn 3\nPlayer: ${'p'.repeat(1000)}\nResponse: ${'r'.repeat(1000)}\nPlayer: Player turn 5\nResponse: Response turn 5`)
+  // No prior turn is also valid.
+  rows('contentReports').length = 0; event.sequence = 1
+  await fileChatReport(body)
+  assert.equal(get(rows('contentReports')[0], 'target_snapshot.context'), '')
+})
+for (const scenario of ['foreign', 'missing', 'missing save', 'missing template', 'empty', 'whitespace', 'absent response', 'group', 'group marker', 'group state'] as const) {
+  await check(`chat report uniform 404 ${scenario}`, async () => {
+    const { event, body } = await chatReportFixture()
+    if (scenario === 'foreign') rows('worldInstances')[0].player_id = new ObjectId()
+    if (scenario === 'missing') body.target_id = String(new ObjectId())
+    if (scenario === 'missing save') rows('worldInstances').length = 0
+    if (scenario === 'missing template') rows('worldTemplates').length = 0
+    if (scenario === 'empty') event.data.ai_response = ''
+    if (scenario === 'whitespace') event.data.ai_response = ' \n\t '
+    if (scenario === 'absent response') delete (event.data as Partial<typeof event.data>).ai_response
+    if (scenario === 'group') rows('worldTemplates')[0].kind = 'group'
+    if (scenario === 'group marker') rows('worldInstances')[0].group_template_id = template._id
+    if (scenario === 'group state') rows('worldInstances')[0].group_state = {}
+    const response = await chatReportHttp('/moderation/reports', 'POST', body)
+    assert.equal(response.status, 404)
+    assert.deepEqual(await response.json(), { message: 'That line could not be found.' })
+    assert.equal(rows('contentReports').length, 0)
+  })
+}
+await check('chat report HTTP refuses supplied text character bounds and block type and requires sign in', async () => {
+  const { body } = await chatReportFixture()
+  for (const patch of [{ character_id: ids[0] }, { text: 'FORGED' }, { details: 'x'.repeat(1001) },
+    { target_id: '' }, { reason: 'unknown' }, { reason: 'other', details: '   ' }]) {
+    assert.equal((await chatReportHttp('/moderation/reports', 'POST', { ...body, ...patch })).status, 400)
+  }
+  assert.equal((await chatReportHttp('/moderation/blocks', 'POST', { target_type: 'chat_line', target_id: body.target_id })).status, 400)
+  routeUser = null
+  assert.equal((await chatReportHttp('/moderation/reports', 'POST', body)).status, 401)
+})
+await check('chat report duplicate missing line key finds same turn open and reviewing', async () => {
+  const { body } = await chatReportFixture()
+  const first = await fileChatReport(body)
+  const earlier = storedEvents()[1]
+  const other = await fileChatReport({ ...body, target_id: String(earlier._id) })
+  assert.notEqual(first.report_id, other.report_id)
+  for (const status of ['open', 'reviewing']) {
+    rows('contentReports')[0].status = status
+    assert.deepEqual(await fileChatReport(body), { ...first, duplicate: true })
+    assert.equal(rows('contentReports').length, 2)
+  }
+  rows('contentReports')[0].status = 'dismissed'
+  const fresh = await fileChatReport(body)
+  assert.equal(fresh.duplicate, false); assert.notEqual(fresh.report_id, first.report_id)
+})
+await check('chat report critical reasons and admin filter preserve evidence without creator output', async () => {
+  for (const reason of ['sexual_content_involving_minors', 'non_consensual_sexual_content', 'self_harm']) {
+    const { body } = await chatReportFixture()
+    const result = await fileChatReport({ ...body, reason })
+    assert.equal(rows('contentReports')[0].is_critical, true)
+    // Old or malformed attribution cannot expose a creator in the admin detail.
+    rows('contentReports')[0].target_creator_id = new ObjectId(playerId)
+    const detail = await chatReportHttp(`/admin/reports/${result.report_id}`)
+    assert.equal(detail.status, 200)
+    const data = await detail.json() as Row
+    assert.equal(data.creator, null)
+    assert(!('target_creator_id' in (data.report as Row)))
+    assert.equal(get(data, 'report.priority'), 'CRITICAL')
+    assert.deepEqual(get(data, 'report.target_snapshot'), rows('contentReports')[0].target_snapshot)
+    assert(!JSON.stringify(data).includes('creator_username'))
+    rows('contentReports').push({ ...clone(rows('contentReports')[0]), _id: new ObjectId(), target_type: 'world' })
+    const queue = await chatReportHttp('/admin/reports?target_type=chat_line')
+    assert.equal(queue.status, 200)
+    const listed = await queue.json() as { total: number; items: Row[] }
+    assert.equal(listed.total, 1); assert.equal(listed.items.length, 1)
+    assert(!('target_creator_id' in listed.items[0])); assert.equal(listed.items[0].target_type, 'chat_line')
+  }
+})
+await check('chat report resolve refuses every content action even with creator and allows both none statuses', async () => {
+  const { body } = await chatReportFixture()
+  const result = await fileChatReport(body)
+  rows('contentReports')[0].target_creator_id = new ObjectId(playerId)
+  for (const action of ['content_hidden', 'content_unpublished', 'content_deleted', 'creator_banned']) {
+    const response = await chatReportHttp(`/admin/reports/${result.report_id}`, 'PATCH', { action })
+    assert.equal(response.status, 400)
+    assert.equal(rows('contentReports')[0].status, 'open')
+    assert.equal(rows('worldInstances').length, 1)
+    assert(!rows('users')[0].account_status)
+  }
+  for (const status of ['actioned', 'dismissed']) {
+    const response = await chatReportHttp(`/admin/reports/${result.report_id}`, 'PATCH', { action: 'none', status })
+    assert.equal(response.status, 200)
+    assert.equal(rows('contentReports')[0].status, status)
+    assert.equal(rows('contentReports')[0].action_taken, 'none')
+  }
+})
+await check('chat report survives real rewind reset and save deletion with unchanged snapshot', async () => {
+  mock.module('../src/services/codex-media-carryover', () => ({ snapshotCodexMedia: async () => ({}), restoreCodexMedia: async () => {} }))
+  const { characterCodexService } = await import('../src/services/character-codex.service')
+  Object.assign(characterCodexService, { applyManualIdentityRevisions: async () => {} })
+  const { entityGraphService } = await import('../src/services/entity-graph.service')
+  Object.assign(entityGraphService, { repairAfterRewind: async () => {} })
+  const { chronicleRoutes } = await import('../src/routes/chronicle.routes')
+  for (const action of ['rewind', 'reset', 'delete']) {
+    const { event, body } = await chatReportFixture()
+    const result = await fileChatReport(body), before = clone(rows('contentReports')[0])
+    if (action === 'rewind') {
+      const app = new Elysia().use(chronicleRoutes)
+      const response = await app.handle(new Request(`http://localhost/chronicle/rewind/${instanceId}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sequence: event.sequence - 1 }),
+      }))
+      assert.equal(response.status, 200)
+    } else if (action === 'reset') await deletionService.resetInstance(instanceId, playerId)
+    else await deletionService.deleteInstance(instanceId, playerId)
+    assert(!storedEvents().some(turn => turn._id.equals(event._id)))
+    assert.deepEqual(rows('contentReports'), [before])
+    const response = await chatReportHttp(`/admin/reports/${result.report_id}`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(get(await response.json() as Row, 'report.target_snapshot'), before.target_snapshot)
+  }
+})
+
 if (process.env.GROUP_REPORT_MONGO === '1') await check('line report real Mongo migration duplicate path and legacy reports', async () => {
   // The explicit opt-in is confined to a disposable database on the brief's sole allowed port.
   const client = new MongoClient('mongodb://127.0.0.1:27029', { serverSelectionTimeoutMS: 2000 })

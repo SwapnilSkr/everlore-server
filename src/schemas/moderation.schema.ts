@@ -14,7 +14,7 @@ const ReportFields = {
 export const CreateReportBody = t.Union([
   t.Object({
     ...ReportFields,
-    target_type: TargetTypeSchema,
+    target_type: t.Union([TargetTypeSchema, t.Literal('chat_line')]),
     character_id: t.Optional(t.Never()),
     text: t.Optional(t.Never()),
   }),
@@ -45,7 +45,7 @@ export const AdminReportQuery = t.Object({
     ]),
   ),
   reason: t.Optional(ReportReasonSchema),
-  target_type: t.Optional(t.Union([TargetTypeSchema, t.Literal('group_line')])),
+  target_type: t.Optional(t.Union([TargetTypeSchema, t.Literal('group_line'), t.Literal('chat_line')])),
   critical: t.Optional(t.Union([t.Boolean(), t.String()])),
 })
 

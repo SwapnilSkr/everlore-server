@@ -1,7 +1,7 @@
 import type { ObjectId } from 'mongodb'
 
-/** Player reports cover published content, creators and saved group character lines. */
-export type ReportTargetType = 'world' | 'user' | 'group_line'
+/** Player reports cover published content, creators and saved chat passages. */
+export type ReportTargetType = 'world' | 'user' | 'group_line' | 'chat_line'
 
 /**
  * Report reasons, kept deliberately small and mapped to the categories Google
@@ -74,9 +74,9 @@ export interface ContentReportDoc {
   _id: ObjectId
   reporter_id: ObjectId
   target_type: ReportTargetType
-  /** World, user or saved group event id, according to target_type. */
+  /** World, user or saved event id, according to target_type. */
   target_id: ObjectId
-  /** Hash of the saved character id and exact text; omitted on legacy targets. */
+  /** Hash of the saved group character id and exact text; omitted on other targets. */
   target_line?: string
   /** Owner of the reported content; denormalized so triage needs no join. */
   target_creator_id?: ObjectId
@@ -92,6 +92,7 @@ export interface ContentReportDoc {
     thread?: 'group' | 'direct'
     image_url?: string
     is_nsfw_capable?: boolean
+    is_user_edited?: boolean
     creator_username?: string
   }
   reason: ReportReason
