@@ -161,6 +161,8 @@ export function sanitizeMediaError(message: string): string {
 }
 
 export async function failMedia(asset: MediaAssetDoc, cause: MediaFailure): Promise<void> {
+  const selfie = asset.group_selfie ? await import('./selfie') : undefined
+  if (selfie && !await selfie.liveSelfie(asset)) { await selfie.discardSelfie(asset); return }
   const message = sanitizeMediaError(cause.message)
   log.warn('media.process_failed', { kind: asset.kind, media_id: asset._id.toHexString(), stage: cause.stage, error: message })
   const [instance, event, player] = await Promise.all([
@@ -180,7 +182,8 @@ export async function failMedia(asset: MediaAssetDoc, cause: MediaFailure): Prom
   } })
   await releaseMedia(asset._id)
   if (asset.kind === 'passing_face') return
-  await mediaEffects.publish(asset.player_id.toHexString(), { type: 'media_failed', ...(asset.instance_id ? { instanceId: asset.instance_id.toHexString() } : {}), ...(asset.event_id ? { eventId: asset.event_id.toHexString() } : {}), media_id: asset._id.toHexString(), kind: asset.kind }).catch(() => {})
+  if (selfie && !await selfie.storeSelfieState(asset, 'failed')) return
+  await mediaEffects.publish(asset.player_id.toHexString(), { type: 'media_failed', ...(asset.instance_id ? { instanceId: asset.instance_id.toHexString() } : {}), ...(asset.event_id ? { eventId: asset.event_id.toHexString() } : {}), media_id: asset._id.toHexString(), kind: asset.kind, ...(selfie ? selfie.selfieFrame(asset) : {}) }).catch(() => {})
 }
 export async function processVoice(mediaId: string): Promise<void> {
   const _id = parseObjectId(mediaId)
@@ -238,6 +241,7 @@ export async function processVoice(mediaId: string): Promise<void> {
 }
 
 async function notifyReady(asset: MediaAssetDoc): Promise<void> {
+  if (asset.group_selfie) return (await import('./selfie')).notifySelfieReady(asset)
   if (!await liveVoice(asset) || !await mongoColl.mediaAssets().findOne({ _id: asset._id, status: 'ready' })) return
   await mediaEffects.publish(asset.player_id.toHexString(), { type: 'media_ready', ...(asset.instance_id ? { instanceId: asset.instance_id.toHexString() } : {}), eventId: asset.event_id?.toHexString(), media_id: String(asset._id), kind: asset.kind, line_id: asset.line_id, url: asset.url })
   await mongoColl.mediaAssets().updateOne({ _id: asset._id, status: 'ready' }, { $set: { notified_at: new Date() } })

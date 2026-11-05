@@ -10,6 +10,11 @@ import { storageService } from '../storage.service'
 export async function purgeMedia(filter: Filter<Pick<MediaAssetDoc, 'player_id' | 'instance_id' | 'event_id'>>, retainUsageFor?: ObjectId): Promise<void> {
   await mongoColl.mediaAssets().updateMany(filter, { $set: { status: 'failed' } })
   const assets = await mongoColl.mediaAssets().find(filter).toArray()
+  // Edits keep the event itself; clear its line states too, including resting
+  // entries that have no media row. Late jobs are now fenced by the missing id.
+  const { event_id, ...eventScope } = filter
+  const eventFilter: Record<string, unknown> = { ...eventScope, ...(event_id ? { _id: event_id } : {}) }
+  await mongoColl.events().updateMany(eventFilter, { $unset: { 'data.group_selfies': '' } })
   for (const asset of assets) {
     if (asset.asset_key) await storageService.deleteStrict(asset.asset_key)
     // Scene-still inputs a failed cut never got to delete (item 5).

@@ -1,3 +1,4 @@
+import { publicGroupData } from '../group-chat/public'
 import { ATTRIBUTION_RULE_VERSION, mediaRevision } from './attribution'
 import { getRedisClient } from '../../config/redis'
 import { mongoColl } from '../../config/mongo'
@@ -21,6 +22,7 @@ export async function publishSpokenLines(event: WorldEventDoc): Promise<void> {
 /** The per-turn keys the server owns, on a turn, in an edit snapshot, or on a
  *  replay variant. */
 type InternalTurnFields = Pick<EventDataDoc,
+  | 'group_selfies'
   | 'voice_attribution'
   | 'media_revision'
   | 'interaction_signals'
@@ -58,6 +60,7 @@ type InternalTurnFields = Pick<EventDataDoc,
  * a turn, its edit snapshots and their variants.
  */
 function stripInternalTurnFields(data: InternalTurnFields): void {
+  delete data.group_selfies
   delete data.voice_attribution
   delete data.media_revision
   delete data.interaction_signals
@@ -81,6 +84,7 @@ export function publicMediaEvent<T extends WorldEventDoc>(event: T): T {
   if (mediaEnabled('voice')) {
     event.data.spoken_lines = wireSpokenLines(event.data.spoken_lines || detectSpokenLines(event.data.ai_response, event.data.player_spoken_input ?? event.data.player_input), event.data.voice_attribution as VoiceAttribution | undefined)
   } else delete event.data.spoken_lines
+  if (event.data.lines) event.data.lines = (publicGroupData(event.data)).lines
   stripInternalTurnFields(event.data)
   for (const edit of event.edit_history || []) {
     // An edit snapshot never carries lines: they belong to the prose it was
@@ -107,6 +111,7 @@ function toTurnMedia(row: MediaAssetDoc): TurnMediaItem | null {
   // Voice, portraits and passing faces never ride on a turn; failed and
   // unseen rows never appear. The kind/status filter below already scopes
   // this, so an unexpected kind here is a structural refusal, not a default.
+  if (row.group_selfie) return null
   if (row.kind !== 'picture' && row.kind !== 'video') return null
   if (row.status !== 'ready' && row.status !== 'queued' && row.status !== 'processing') return null
   const item: TurnMediaItem = {

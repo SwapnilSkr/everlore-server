@@ -128,6 +128,8 @@ export interface EventDataDoc {
   /** Group direct thread. Internal; absent means the group thread. */
   dm_with?: string
   origin?: import('../services/group-chat/types').GroupOrigin
+  /** Internal line-keyed state; public projection attaches only the contracted fields. */
+  group_selfies?: Record<string, import('../services/group-chat/types').GroupSelfie>
   lines?: import('../services/group-chat/types').GroupLine[]
   /** Group adult turn: the after-reply check found the reply wasn't explicit. Never sent to the player. */
   tame?: boolean

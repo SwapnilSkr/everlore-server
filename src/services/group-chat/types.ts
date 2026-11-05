@@ -34,7 +34,16 @@ export interface GroupState {
   last_catchup_at?: Date
 }
 
+export interface GroupSelfie {
+  media_id?: string
+  status: 'queued' | 'processing' | 'ready' | 'unseen' | 'failed' | 'resting'
+  url?: string
+  resets_at?: string
+}
+
 export interface GroupLine {
+  line_id?: string
+  selfie?: GroupSelfie
   character_id: string
   text: string
   shown_at: Date

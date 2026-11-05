@@ -1,5 +1,6 @@
 import { Elysia, t } from 'elysia'
 import { authPlugin } from '../middleware/auth'
+import { requestSelfie } from '../services/media/selfie'
 import { requestVoice } from '../services/media/service'
 import { requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, requestTurnVideo } from '../services/media/visual'
 import { hideKeepsake, listKeepsakes } from '../services/media/keepsakes'
@@ -42,6 +43,14 @@ export const mediaRoutes = new Elysia()
       throw error
     }
   }, { params: t.Object({ id: t.String({ pattern: '^[a-fA-F0-9]{24}$' }), eventId: t.String({ pattern: '^[a-fA-F0-9]{24}$' }), lineId: t.String({ pattern: '^l[0-9]+$' }) }) })
+  .post('/instances/:id/events/:eventId/selfie', async ({ user, params, body, set }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    try { return queued(await requestSelfie(user.id, params.id, params.eventId, body), set) }
+    catch (error) { return resting(error, set) }
+  }, { params: t.Object(idParams), body: t.Object({
+    character_id: t.String({ minLength: 1, maxLength: 64 }),
+    text: t.String({ minLength: 1, maxLength: 4000 }),
+  }) })
   .post('/instances/:id/events/:eventId/picture', async ({ user, params, set }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     try {

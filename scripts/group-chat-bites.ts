@@ -947,6 +947,41 @@ const chatReportMutations: Mutation[] = [
 mutations.push(...chatReportMutations)
 
 
+const selfieFile = 'src/services/media/selfie.ts'
+const selfieMutations: Mutation[] = [
+  { name: 'selfie access foreign save', check: 'selfie access', edits: [[selfieFile, 'const instance = await mongoColl.worldInstances().findOne({ _id: iid, player_id: pid })', 'const instance = await mongoColl.worldInstances().findOne({ _id: iid })']] },
+  { name: 'selfie access foreign event', check: 'selfie access', edits: [[selfieFile, 'const event = await mongoColl.events().findOne({ _id: eid, instance_id: iid, player_id: pid })', 'const event = await mongoColl.events().findOne({ _id: eid, instance_id: iid })']] },
+  { name: 'selfie access non group', check: 'selfie access', edits: [[selfieFile, "if (template?.kind !== 'group') throw notFound()", 'if (!template) throw notFound()']] },
+  { name: 'selfie access protagonist', check: 'selfie access', edits: [[selfieFile, ' || card.is_protagonist', '']] },
+  { name: 'selfie access saved player', check: 'selfie access', edits: [[selfieFile, 'index < 0 || !member ||', 'index < 0 ||']] },
+  { name: 'selfie slots bypass', check: 'selfie slots', edits: [[selfieFile, "const reserved = await reserveMedia({ _id: asset._id, player_id: ctx.pid, instance_id: ctx.iid, event_id: ctx.eid, kind: 'picture' })", 'const reserved = true']] },
+  { name: 'selfie slots resting not recorded', check: 'selfie slots', edits: [[selfieFile, 'const saved = await mongoColl.events().updateOne(eventFence(ctx.event), { $set: { [`data.group_selfies.${lineId}`]: selfie } })', "const saved = reserved ? await mongoColl.events().updateOne(eventFence(ctx.event), { $set: { [`data.group_selfies.${lineId}`]: selfie } }) : { matchedCount: 1 }"]] },
+  { name: 'selfie idempotence cached image refused', check: 'selfie idempotence', edits: [[selfieFile, 'if (existing) return reply(existing)', 'if (existing) throw notFound()']] },
+  { name: 'selfie idempotence line absent from cache', check: 'selfie idempotence', edits: [[selfieFile, '`${eventId}:selfie:${lineId}:${revision}`', '`${eventId}:selfie:${revision}`']] },
+  { name: 'selfie idempotence failed slot held', check: 'selfie idempotence', edits: [['src/services/media/service.ts', '  await releaseMedia(asset._id)', "  if (!asset.group_selfie) await releaseMedia(asset._id)"]] },
+  { name: 'selfie heat opt in ignored', check: 'selfie heat', edits: [[selfieFile, 'user?.preferences?.nsfw_enabled === true && ctx.template.is_nsfw_capable === true', 'ctx.template.is_nsfw_capable === true']] },
+  { name: 'selfie heat capability ignored', check: 'selfie heat', edits: [[selfieFile, 'user?.preferences?.nsfw_enabled === true && ctx.template.is_nsfw_capable === true', 'user?.preferences?.nsfw_enabled === true']] },
+  { name: 'selfie heat vision everyday gate omitted', check: 'selfie heat', edits: [[selfieFile, 'checkImage(image.data, image.contentType, !mature)', 'checkImage(image.data, image.contentType)']] },
+  { name: 'selfie heat late revocation ignored', check: 'selfie heat', edits: [[selfieFile, "if (!await mayDeliver()) throw new Error('Picture moment passed')", "if (!await liveSelfie(asset)) throw new Error('Picture moment passed')"]] },
+  { name: 'selfie heat description raw dialogue', check: 'selfie heat', edits: [['src/services/media/safety.ts', 'JSON.stringify({ look: input.look, setting: input.setting, mood })', 'JSON.stringify({ look: input.look, setting: input.setting, mood, dialogue: input.moodLines })']] },
+  { name: 'selfie safety multiple people accepted', check: 'selfie safety', edits: [[selfieFile, ' || post.people_count !== 1', '']] },
+  { name: 'selfie safety text accepted', check: 'selfie safety', edits: [[selfieFile, ' || post.text_visible || post.people_count', ' || post.people_count']] },
+  { name: 'selfie safety pre gate ignored', check: 'selfie safety', edits: [[selfieFile, "if (pre.verdict !== 'allow') throw new UnseenError('pre', pre.reason_code)", 'void pre']] },
+  { name: 'selfie privacy internal map leaked', check: 'selfie privacy', edits: [['src/services/group-chat/public.ts', "!['group_selfies', 'dm_with'", "!['dm_with'"], ['src/services/media/events.ts', '  delete data.group_selfies', '']] },
+  { name: 'selfie privacy duplicated in turn media', check: 'selfie privacy', edits: [['src/services/media/events.ts', '  if (row.group_selfie) return null', '']] },
+  { name: 'selfie privacy line hash missing', check: 'selfie privacy', edits: [['src/services/group-chat/public.ts', 'line_id: lineId, ...(selfie', '...(selfie']] },
+  { name: 'selfie direct lifecycle thread missing', check: 'selfie direct', edits: [[selfieFile, '...(asset.direct_with === undefined ? {} : { directWith: asset.direct_with })', '...{}']] },
+  { name: 'selfie rewind edited line accepted', check: 'selfie rewind', edits: [[selfieFile, '!event.data.lines?.some(line => line.character_id === String(asset.character_id) && groupLineId(line) === asset.line_id)', 'false']] },
+  { name: 'selfie rewind uploaded image retained', check: 'selfie rewind', edits: [[selfieFile, 'try { await mediaEffects.remove(key) }', 'try { void key }']] },
+  { name: 'selfie edit state survives purge', check: 'selfie edit', edits: [['src/services/media/deletion.ts', "await mongoColl.events().updateMany(eventFilter, { $unset: { 'data.group_selfies': '' } })", 'void eventFilter']] },
+  { name: 'selfie repair failure state missing', check: 'selfie repair', edits: [['src/services/media/service.ts', "if (selfie && !await selfie.storeSelfieState(asset, 'failed')) return", 'void selfie']] },
+  { name: 'selfie reports foreign owner accepted', check: 'selfie reports', edits: [[moderation, "{ _id: target, player_id: reporter, group_selfie: true, kind: 'picture', status: 'ready' }", "{ _id: target, group_selfie: true, kind: 'picture', status: 'ready' }"], [moderation, '{ _id: asset.event_id, player_id: reporter, instance_id: asset.instance_id }', '{ _id: asset.event_id, instance_id: asset.instance_id }'], [moderation, '{ _id: asset.instance_id, player_id: reporter }', '{ _id: asset.instance_id }']] },
+  { name: 'selfie reports content actions permitted', check: 'selfie reports', edits: [[moderation, "if (report.target_type === 'group_selfie' && input.action !== 'none')", 'if (false)'], [moderation, "report.target_type !== 'world' && input.action", "report.target_type !== 'world' && report.target_type !== 'group_selfie' && input.action"]] },
+  { name: 'selfie reports snapshot line missing', check: 'selfie reports', edits: [[moderation, 'snapshot.description = line.text', "snapshot.description = ''"]] },
+  { name: 'selfie retention original used as evidence', check: 'selfie retention', edits: [['src/services/media/selfie-evidence.ts', 'try { return await visualEffects.upload(image.data, image.contentType, { key }) }', "try { return { key: '', url } }"]] },
+]
+mutations.push(...selfieMutations)
+
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {
   const missing: string[] = []

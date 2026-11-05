@@ -1,7 +1,7 @@
 import type { ObjectId } from 'mongodb'
 
 /** Player reports cover published content, creators and saved chat passages. */
-export type ReportTargetType = 'world' | 'user' | 'group_line' | 'chat_line'
+export type ReportTargetType = 'world' | 'user' | 'group_line' | 'chat_line' | 'group_selfie'
 
 /**
  * Report reasons, kept deliberately small and mapped to the categories Google

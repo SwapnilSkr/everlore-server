@@ -1,7 +1,8 @@
+import { createHash } from 'node:crypto'
 import { env } from '../../config/env'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
 import { publicTemplate } from '../../utils/template-public-projection'
-import type { GroupState } from './types'
+import type { GroupLine, GroupSelfie, GroupState } from './types'
 import { DIRECT_PENDING_MS } from './notification-policy'
 
 /** The one pending direct message this player has not read yet, if any. The
@@ -23,15 +24,35 @@ function withoutPortraits(value: unknown, now: Date): unknown {
   })
 }
 
+/** The same identity used by group-line reports; independent of display timing. */
+export const groupLineId = (line: { character_id: string; text: string }): string =>
+  createHash('sha256').update(JSON.stringify([line.character_id, line.text])).digest('hex')
+
+/** Repeated projection (history then controller) preserves only the wire shape. */
+function publicGroupLine(value: unknown, selfies: Record<string, GroupSelfie> | undefined, now: Date): unknown {
+  if (!value || typeof value !== 'object' || !('character_id' in value) || !('text' in value) ||
+      typeof value.character_id !== 'string' || typeof value.text !== 'string') return publicGroupData(value, now)
+  const line = value as GroupLine
+  const { selfie: prior, ...rest } = line
+  const lineId = groupLineId(line)
+  const selfie = selfies?.[lineId] ?? prior
+  return { ...publicGroupData(rest, now), line_id: lineId, ...(selfie ? { selfie: {
+    status: selfie.status, ...(selfie.media_id ? { media_id: selfie.media_id } : {}),
+    ...(selfie.status === 'ready' && selfie.url ? { url: selfie.url } : {}),
+    ...(selfie.status === 'resting' && selfie.resets_at ? { resets_at: selfie.resets_at } : {}),
+  } } : {}) }
+}
+
 /** Only plain documents are copied; dates and database ids keep their encoding. */
 export function publicGroupData<T>(value: T, now = new Date()): T {
   if (Array.isArray(value)) return value.map(entry => publicGroupData(entry, now)) as T
   if (!value || typeof value !== 'object' || Object.getPrototypeOf(value) !== Object.prototype) return value
+  const selfies = (value as { group_selfies?: Record<string, GroupSelfie> }).group_selfies
   const state = (value as { group_state?: GroupState }).group_state
   const extra = env.GROUP_NOTIFICATIONS_ENABLED && state ? { pending_from: groupPendingFrom(state, now) } : {}
   return { ...Object.fromEntries(Object.entries(value).filter(([key]) =>
-    !['dm_with', 'private_to', 'start_bond', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'group_template_id', 'cost', 'cost_usd', 'tame', 'scene_members', 'tame_members', 'pending_direct', 'scheduled_at', 'notified_at', 'last_direct_notified_at', 'group_notification_usage'].includes(key),
-  ).map(([key, entry]) => [key, key === 'seed_cast_snapshot' ? withoutPortraits(entry, now) : publicGroupData(entry, now)])), ...extra } as T
+    !['group_selfies', 'dm_with', 'private_to', 'start_bond', 'intimacy', 'voice', 'wants', 'talkativeness', 'topics', 'group_state', 'group_state_after', 'group_context', 'group_template_id', 'cost', 'cost_usd', 'tame', 'scene_members', 'tame_members', 'pending_direct', 'scheduled_at', 'notified_at', 'last_direct_notified_at', 'group_notification_usage'].includes(key),
+  ).map(([key, entry]) => [key, key === 'seed_cast_snapshot' ? withoutPortraits(entry, now) : key === 'lines' && Array.isArray(entry) ? entry.map(line => publicGroupLine(line, selfies, now)) : publicGroupData(entry, now)])), ...extra } as T
 }
 
 /** A face's absolute address. The same join as `portraitUrl()`, kept here

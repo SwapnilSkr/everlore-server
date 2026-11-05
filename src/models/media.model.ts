@@ -48,6 +48,9 @@ export interface MediaAssetDoc {
   character_id?: ObjectId
   /** The persona a persona portrait is painted for; never combined with character_id. */
   persona_id?: ObjectId
+  /** Group selfies remain pictures for limits and Keepsakes. */
+  group_selfie?: true
+  direct_with?: string
   source: 'generated' | 'authored'
   model: string
   /** Voice id for voice/video; undefined for picture/portrait. Omitted, never null. */

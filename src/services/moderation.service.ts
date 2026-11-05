@@ -225,8 +225,39 @@ export const moderationService = {
     const snapshot: ContentReportDoc['target_snapshot'] = {}
     let creatorId: ObjectId | undefined
     let targetLine: string | undefined
+    let evidence: { key: string; url: string } | undefined
 
-    if (input.targetType === 'chat_line') {
+    if (input.targetType === 'group_selfie') {
+      const notFound = () => new HttpError(404, 'That line could not be found.')
+      const asset = await mongoColl.mediaAssets().findOne({ _id: target, player_id: reporter, group_selfie: true, kind: 'picture', status: 'ready' })
+      if (!asset?.event_id || !asset.url) throw notFound()
+      const event = await mongoColl.events().findOne({ _id: asset.event_id, player_id: reporter, instance_id: asset.instance_id })
+      const instance = await mongoColl.worldInstances().findOne({ _id: asset.instance_id, player_id: reporter })
+      if (!event || !instance?.group_state || !instance.group_context || !validGroupThread(event.data.dm_with) || event.data.dm_with !== asset.direct_with) throw notFound()
+      const template = await worldTemplates().findOne({ _id: instance.template_id })
+      const { groupLineId } = await import('./group-chat/public')
+      const lineIndex = (event.data.lines || []).findIndex(line => groupLineId(line) === asset.line_id && line.character_id === String(asset.character_id))
+      if (template?.kind !== 'group' || lineIndex < 0 || event.data.group_selfies?.[asset.line_id]?.media_id !== String(asset._id)) throw notFound()
+      const line = event.data.lines![lineIndex]
+      const members = await loadGroupMembers(instance)
+      const speaker = members.find(member => member.id === line.character_id)
+      if (!speaker) throw notFound()
+      const thread = event.data.dm_with
+      const before = await mongoColl.events().find({ instance_id: instance._id, player_id: reporter, ...groupThreadFilter(thread), sequence: { $lt: event.sequence } })
+        .sort({ sequence: -1 }).limit(6).toArray()
+      const preceding = { ...event, data: { ...event.data, lines: event.data.lines!.slice(0, lineIndex) } }
+      snapshot.title = template.title
+      snapshot.speaker = speaker.name
+      snapshot.description = line.text
+      snapshot.context = groupMessages([...before.reverse(), preceding], instance.group_context.player, members, thread)
+        .slice(-6).map(line => `${line.name}: ${line.text}`).join('\n')
+      snapshot.thread = thread === undefined ? 'group' : 'direct'
+      snapshot.is_nsfw_capable = Boolean(template.is_nsfw_capable)
+      const existing = await contentReports().findOne({ reporter_id: reporter, target_type: 'group_selfie', target_id: target, status: { $in: ['open', 'reviewing'] } })
+      if (existing) return { reported: true, report_id: idString(existing._id), duplicate: true }
+      evidence = await (await import('./media/selfie-evidence')).snapshotSelfieImage(asset.url)
+      snapshot.image_url = evidence.url
+    } else if (input.targetType === 'chat_line') {
       const notFound = () => new HttpError(404, 'That line could not be found.')
       const event = await mongoColl.events().findOne({ _id: target })
       if (!event) throw notFound()
@@ -313,6 +344,7 @@ export const moderationService = {
       })
       return { reported: true, report_id: idString(inserted.insertedId), duplicate: false }
     } catch (error) {
+      if (evidence) await (await import('./media/service')).mediaEffects.remove(evidence.key)
       // 11000 = the unique partial index above: this reporter already has an
       // unresolved report open on this target.
       if ((error as { code?: number }).code === 11000) {
@@ -385,7 +417,7 @@ export const moderationService = {
 
     const [reporter, creator, related] = await Promise.all([
       users().findOne({ _id: report.reporter_id }, { projection: { username: 1, email: 1, account_status: 1 } }),
-      report.target_type !== 'chat_line' && report.target_creator_id
+      report.target_type !== 'group_selfie' && report.target_type !== 'chat_line' && report.target_creator_id
         ? users().findOne(
             { _id: report.target_creator_id },
             { projection: { username: 1, email: 1, account_status: 1, tier: 1 } },
@@ -464,6 +496,9 @@ export const moderationService = {
     const now = new Date()
     const effects: string[] = []
 
+    if (report.target_type === 'group_selfie' && input.action !== 'none') {
+      throw new HttpError(400, 'Picture reports can only be resolved without a content action.')
+    }
     if (report.target_type === 'group_line' && input.action !== 'none') {
       throw new HttpError(400, 'Line reports can only be resolved without a content action.')
     }
@@ -630,7 +665,7 @@ function serializeReport(report: ContentReportDoc) {
     target_type: report.target_type,
     target_id: idString(report.target_id),
     ...(report.target_line === undefined ? {} : { target_line: report.target_line }),
-    ...(report.target_type === 'group_line' || report.target_type === 'chat_line' ? {} : {
+    ...(report.target_type === 'group_selfie' || report.target_type === 'group_line' || report.target_type === 'chat_line' ? {} : {
       target_creator_id: report.target_creator_id ? idString(report.target_creator_id) : null,
     }),
     target_title: report.target_snapshot?.title || report.target_snapshot?.creator_username || '',

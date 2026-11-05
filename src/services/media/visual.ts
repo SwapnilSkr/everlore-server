@@ -490,6 +490,8 @@ export async function unseeMedia(
   uploadedKey?: string,
   provider?: { message: string; status: number },
 ): Promise<void> {
+  const selfie = asset.group_selfie ? await import('./selfie') : undefined
+  if (selfie && !await selfie.liveSelfie(asset)) { await selfie.discardSelfie(asset); return }
   if (uploadedKey) {
     try {
       await mediaEffects.remove(uploadedKey)
@@ -510,7 +512,9 @@ export async function unseeMedia(
   if (message !== undefined && provider) {
     log.warn('media.provider_refused', { kind: asset.kind, media_id: asset._id.toHexString(), status: provider.status, message })
   }
+  if (selfie && !await selfie.storeSelfieState(asset, 'unseen')) return
   await mediaEffects.publish(asset.player_id.toHexString(), {
+    ...(selfie ? selfie.selfieFrame(asset) : {}),
     type: 'media_unseen',
     ...(asset.instance_id ? { instanceId: asset.instance_id.toHexString() } : {}),
     eventId: asset.event_id?.toHexString(),
@@ -995,6 +999,8 @@ async function momentPlace(instance: WorldInstanceDoc, event: WorldEventDoc): Pr
 }
 
 export async function processPicture(mediaId: string): Promise<void> {
+  const queued = await mongoColl.mediaAssets().findOne({ _id: parseObjectId(mediaId), status: 'queued' })
+  if (queued?.group_selfie) return (await import('./selfie')).processSelfie(mediaId)
   const asset = await mongoColl.mediaAssets().findOneAndUpdate(
     { _id: parseObjectId(mediaId), status: 'queued' }, { $set: { status: 'processing', started_at: new Date() } }, { returnDocument: 'after' })
   if (!asset) return

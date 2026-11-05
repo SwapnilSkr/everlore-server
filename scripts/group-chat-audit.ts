@@ -3,7 +3,7 @@ import { readFile, readdir, rm } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import { Elysia } from 'elysia'
-import { MongoClient, ObjectId, type Db } from 'mongodb'
+import { MongoClient, MongoServerError, ObjectId, type Db } from 'mongodb'
 import type { Job } from 'bullmq'
 import { rollSpeakers, advanceSilence, pickAddressed, rollBystanders, pickSceneMembers } from '../src/services/group-chat/roll'
 import { parseLines, filterLines, sceneVoiceLines, timeLines, emptyLineCounts, trimReply } from '../src/services/group-chat/lines'
@@ -482,6 +482,11 @@ function collection(name: string) {
     async findOne(filter: Row, options?: { sort?: Record<string, number>; projection?: Row }) { if (name === 'users' && options?.projection) consentReadHook?.(); let cursor = this.find(filter); if (options?.sort) cursor = cursor.sort(options.sort); return (await cursor.toArray())[0] || null },
     async countDocuments(filter: Row) { return rows(name).filter(row => matches(row, filter)).length },
     async insertOne(row: Row) {
+      if ((name === 'mediaAssets' && rows(name).some(existing => eq(existing.cache_key, row.cache_key))) ||
+          (name === 'mediaUsage' && rows(name).some(existing => eq(existing._id, row._id) || (row.slot !== undefined &&
+            ['player_id', 'kind', 'day', 'slot'].every(key => eq(existing[key], row[key])))))) {
+        throw new MongoServerError({ code: 11000, message: 'Simulated media unique key' })
+      }
       // Simulate driver 11000 for report tests only. This does not prove Mongo index enforcement.
       if (name === 'contentReports') {
         if (rows(name).some(existing => ['open', 'reviewing'].includes(String(existing.status)) &&
@@ -504,8 +509,10 @@ function collection(name: string) {
       return { matchedCount: existed ? 1 : 0, modifiedCount: existed ? 1 : 0 }
     },
     async findOneAndUpdate(filter: Row, update: Row) {
+      const before = await this.findOne(filter)
+      if (!before) return null
       await this.updateOne(filter, update)
-      return this.findOne(filter)
+      return this.findOne({ _id: before._id })
     },
     async updateMany(filter: Row, update: Row) {
       let modifiedCount = 0
@@ -558,13 +565,13 @@ let ragSummaryHits: Array<{ id: string; tier: 'scene' | 'chapter' | 'arc'; text:
 let ragMemoryTexts = ['Remembered group fact.'], ragOpenThreads: string[] = [], ragCalls: unknown[][] = []
 mock.module('../src/providers/rag.provider', () => ({ queryRag: async (...args: unknown[]) => { ragCalls.push(args); return { memoryTexts: ragMemoryTexts, openThreads: ragOpenThreads } }, querySummaries: async () => ragSummaryHits }))
 mock.module('../src/services/post-process-outbox.service', () => ({ stagePostProcess: async (input: Row) => { outbox.push(input) }, dispatchPostProcessOutbox: async () => 0 }))
-mock.module('../src/services/media/attribution', () => ({ ATTRIBUTION_RULE_VERSION: 'audit', mediaRevision: () => 'audit' }))
+mock.module('../src/services/media/attribution', () => ({ ATTRIBUTION_RULE_VERSION: 'audit', mediaRevision: (prose: string, input = '') => createHash('sha256').update(JSON.stringify([prose, input])).digest('hex'), attributeEvent: unavailable, resolveAttributedSpeaker: unavailable }))
 // Moderation reports below exercise the real service; discovery is isolated after import.
 const checkLogs: Row[] = [], memoryLogs: Row[] = []
 mock.module('../src/utils/logger', () => ({ log: { info: (name: string, data: Row) => { if (name === 'group.reply_checked') checkLogs.push(data); memoryLogs.push({ name, ...data }) }, warn: (name: string, data: Row) => { memoryLogs.push({ name, ...data }) }, error: () => {} } }))
 mock.module('../src/services/time.service', () => ({ timeService: { initialAnchor: async (input: Row) => { if (input.templateId !== undefined) assert.notEqual(rows('worldTemplates').find(row => String(row._id) === input.templateId)?.kind, 'group'); return { real_time: new Date(), sequence: 0, timeline_id: 'main' } } } }))
 mock.module('../src/services/opening-place.service', () => ({ extractOpeningPlace: unavailable }))
-mock.module('../src/services/character-codex.service', () => ({ characterCodexService: { seedProtagonist: unavailable }, foldDelta: unavailable, newFoldState: unavailable, isEphemeralPersonDescriptor: unavailable, isNonPersonRole: unavailable, rankCodexForInjection: unavailable, identityKey: unavailable }))
+mock.module('../src/services/character-codex.service', () => ({ characterCodexService: { seedProtagonist: unavailable }, foldDelta: unavailable, newFoldState: (cards: Array<{ canonical_name: string }>) => ({ byName: new Map(cards.map(card => [card.canonical_name.toLowerCase(), card])) }), isEphemeralPersonDescriptor: unavailable, isNonPersonRole: unavailable, rankCodexForInjection: unavailable, identityKey: (text: string) => text.trim().toLowerCase() }))
 mock.module('../src/services/kinship-graph.service', () => ({ kinshipGraphService: { seedPremiseKinship: unavailable } }))
 mock.module('../src/services/template-cast.service', () => ({ materializeTemplateCast: async (input: { instanceId: string; template: WorldTemplateDoc }) => { const cast = input.template.seed_cast!; rows('characters').push(...cast.map((member, index) => ({ _id: new ObjectId((index + 1).toString(16).padStart(24, '0')), instance_id: new ObjectId(input.instanceId), canonical_name: member.name }))); return cast.length } }))
 mock.module('../worker/lib/template-cast-extractor', () => ({ extractTemplateCast: unavailable }))
@@ -572,10 +579,16 @@ const vectors = new Map<string, Row>()
 mock.module('../src/services/vector-store', () => ({ vectorStore: { replaceLore: unavailable, deleteScope: async () => { vectors.clear() }, fetch: async (_scope: Row, ids: string[]) => ({ records: Object.fromEntries(ids.filter(id => vectors.has(id)).map(id => [id, vectors.get(id)])) }), upsert: async (_scope: Row, values: Row[]) => { for (const value of values) vectors.set(String(value.id), value) }, deleteIds: async (_scope: Row, ids: string[]) => { for (const id of ids) vectors.delete(id) } } }))
 mock.module('../src/services/entity-graph.service', () => ({ normalizeEntityName: (text: string) => text.toLowerCase(), entityGraphService: { ensurePlayerEntity: async () => ({ _id: new ObjectId() }), resolveOrCreateEntities: async () => new Map(), upsertNarrativeEdge: async () => {} } }))
 mock.module('../src/constants/default-cover', () => ({ isDefaultCoverUrl: () => false, resolveTemplateImageUrl: async () => 'https://fixture.invalid/cover.webp' }))
-mock.module('../src/services/media/deletion', () => ({ purgeMedia: async () => {}, purgeCardPortraits: async () => {}, purgeTemplatePortraits: async () => {} }))
+
 mock.module('../src/services/telemetry/ingest.service', () => ({ telemetryService: { purgeUser: async () => {} } }))
 mock.module('../src/services/account-references', () => ({ purgeAccountReferences: async () => {} }))
-mock.module('../src/services/storage.service', () => ({ storageService: {} }))
+const storedObjects = new Map<string, Buffer>()
+const fixturePng = Buffer.from('89504e470d0a1a0a0000000d49484452', 'hex')
+mock.module('../src/services/storage.service', () => ({ storageService: {
+  upload: async (data: Buffer, _type: string, opts: { key: string }) => { storedObjects.set(opts.key, data); return { key: opts.key, url: `https://fixture.invalid/${opts.key}` } },
+  deleteStrict: async (key: string) => { storedObjects.delete(key) },
+  delete: async (key: string) => { storedObjects.delete(key) },
+} }))
 mock.module('../src/services/billing-config.service', () => ({ resolveProfile: unavailable, effectiveBilling: async () => ({ promo: { unlimited: true, daily_turn_cap: 500 }, costs: { story_turn: 1 } }) }))
 mock.module('../src/services/google-play.service', () => ({ googlePlayService: { configured: () => false } }))
 mock.module('../src/services/auth.service', () => ({ authService: { getLiveAccess: async () => ({ tier: 'creator', account_status: 'active' }) }, defaultUserPreferences: () => ({}) }))
@@ -586,7 +599,7 @@ mock.module('../src/middleware/auth', () => ({ verifyWsToken: unavailable,
 mock.module('../src/middleware/rate-limit', () => ({ rateLimit: async () => ({ allowed: true }) }))
 mock.module('../src/services/last-active.service', () => ({ recordLastActive: () => {} }))
 let generationAddError: Error | undefined
-mock.module('../src/queues', () => ({ getMemoryCurationQueue: unavailable, removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { if (generationAddError) throw generationAddError; queued.push(data); return { id: options.jobId } } }), getSceneSummaryQueue: () => ({ add: async (_name: string, data: Row) => { queued.push(data) } }), QUEUE_RETENTION: { sceneSummary: {}, generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
+mock.module('../src/queues', () => ({ getMediaQueue: unavailable, getMemoryCurationQueue: unavailable, removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { if (generationAddError) throw generationAddError; queued.push(data); return { id: options.jobId } } }), getSceneSummaryQueue: () => ({ add: async (_name: string, data: Row) => { queued.push(data) } }), QUEUE_RETENTION: { sceneSummary: {}, generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
 let writerHook: ((request: Row) => void | Promise<void>) | undefined
 let bondReply: unknown = { changes: [] }, bondRequests: Row[] = [], bondHook: (() => Promise<void>) | undefined
 let curatorReply: unknown = { memories: [] }, curatorRequests: Row[] = [], summaryRequests: Row[] = []
@@ -4933,6 +4946,323 @@ if (process.env.GROUP_REPORT_MONGO === '1') await check('line report real Mongo 
     reportMongoDb = undefined
     await db.dropDatabase()
     await client.close()
+  }
+})
+
+// Selfies exercise the real request, worker dispatch, portrait resolver, gates,
+// projections and purge. The catalog's actual shape is intentional: it has no stats.
+const { requestSelfie } = await import('../src/services/media/selfie')
+const { groupLineId } = await import('../src/services/group-chat/public')
+const { visualEffects, processPicture } = await import('../src/services/media/visual')
+const { safetyEffects } = await import('../src/services/media/safety')
+const { publicMediaEvent, withTurnMedia } = await import('../src/services/media/events')
+const { purgeMedia } = await import('../src/services/media/deletion')
+const { ProviderRefusalError } = await import('../src/ai/image')
+const { mediaEffects, repairMediaReservations } = await import('../src/services/media/service')
+const { mediaProcessor } = await import('../worker/processors/media.processor')
+let selfieRequests: import('../src/ai/client').LLMRequest[] = []
+let selfiePrompts: string[] = [], selfieDownloads: string[] = [], selfieEnqueued: string[] = []
+let selfieImageHook: (() => Promise<void>) | undefined, selfieUploadHook: (() => Promise<void>) | undefined
+let selfieImageError: Error | undefined, selfieQueueError: Error | undefined
+let selfiePreReject: false | 'mood' | 'description' = false, selfiePeople = 1, selfieTextVisible = false, selfieEveryday: boolean[] = []
+let selfieMood = 'warm and cheerful'
+const fixtureDescription = 'A person smiles in a bright room with covered everyday clothing. Warm light softens the illustrated face.'
+safetyEffects.call = async request => {
+  selfieRequests.push(request)
+  if (request.purpose === 'media_selfie_mood') return selfieMood
+  if (request.purpose === 'media_selfie_description') return fixtureDescription
+  assert.equal(request.purpose, 'media_safety_pre')
+  const reject = selfiePreReject === 'mood' ? request.messages[1].content === selfieMood : selfiePreReject === 'description' && request.messages[1].content === fixtureDescription
+  return JSON.stringify({ verdict: reject ? 'reject' : 'allow', reason_code: reject ? 'sexual_act' : 'ok' })
+}
+safetyEffects.judge = async (_image, _type, _reference, everyday) => {
+  selfieEveryday.push(everyday === true)
+  return { verdict: 'allow', reason_code: 'ok', people_count: selfiePeople, face_close_up: true, text_visible: selfieTextVisible }
+}
+visualEffects.enqueue = async (_kind, asset) => { if (selfieQueueError) throw selfieQueueError; selfieEnqueued.push(String(asset._id)); return {} as never }
+visualEffects.download = async url => { selfieDownloads.push(url); return storedObjects.get(url.replace('https://fixture.invalid/', '')) ?? fixturePng }
+visualEffects.image = async prompt => { selfiePrompts.push(prompt); await selfieImageHook?.(); if (selfieImageError) throw selfieImageError; return { data: fixturePng, contentType: 'image/png', generationId: null } }
+visualEffects.upload = async (data, _type, opts) => {
+  const key = opts?.key || 'missing-key'
+  await selfieUploadHook?.()
+  storedObjects.set(key, data)
+  return { key, url: `https://fixture.invalid/${key}` }
+}
+async function selfieFixture(direct = false) {
+  const dir = process.env.GROUP_CHAT_DATA_DIR
+  assert(dir, 'GROUP_CHAT_DATA_DIR must point at the real catalog')
+  const authored = JSON.parse(await readFile(`${dir}/flat-4b.json`, 'utf8'))
+  assert(!('base_stats_template' in authored))
+  const source = { ...authored, is_published: true, _id: template._id, creator_id: template.creator_id, created_at: new Date(), updated_at: new Date(),
+    seed_cast: authored.seed_cast.map((entry: Row, index: number) => ({ ...entry, portrait: { asset_key: `authored/${index}.png`, source: 'authored', appearance_version: 1, painted_at: new Date() } })) } as WorldTemplateDoc
+  await start(source)
+  storedObjects.clear(); selfieRequests = []; selfiePrompts = []; selfieDownloads = []; selfieEnqueued = []; selfieEveryday = []
+  selfieImageHook = undefined; selfieUploadHook = undefined; selfieImageError = undefined; selfieQueueError = undefined
+  selfiePreReject = false; selfiePeople = 1; selfieTextVisible = false; selfieMood = 'warm and cheerful'
+  process.env.MEDIA_DAILY_PICTURE = '15'
+  const opening = storedEvents()[0]
+  opening.time_anchor = { real_time: new Date(), sequence: 1, timeline_id: 'main' }
+  const characterId = String(rows('characters')[0]._id)
+  const second = String(rows('characters')[1]._id)
+  const event = { ...clone(opening), _id: new ObjectId(), sequence: 2,
+    data: { ...clone(opening.data), player_input: 'PLAYER_PRIVATE_DIALOGUE', ai_response: 'SPEAKERS_RESPONSE',
+      lines: [{ character_id: characterId, text: 'RAW_DIALOGUE_MUST_NOT_REACH_DESCRIPTION', shown_at: new Date() },
+        { character_id: second, text: 'Another speaker in the same turn.', shown_at: new Date() }],
+      ...(direct ? { dm_with: characterId } : {}) } }
+  rows('events').push(event as unknown as Row)
+  const line = event.data.lines[0]
+  const ask = () => requestSelfie(playerId, instanceId, String(event._id), line)
+  return { event, line, ask, characterId, source }
+}
+async function rewindSelfie(event: import('../src/models/world-event.model').WorldEventDoc) {
+  mock.module('../src/services/codex-media-carryover', () => ({ snapshotCodexMedia: async () => ({}), restoreCodexMedia: async () => {} }))
+  const { characterCodexService } = await import('../src/services/character-codex.service')
+  Object.assign(characterCodexService, { applyManualIdentityRevisions: async () => {} })
+  const { entityGraphService } = await import('../src/services/entity-graph.service')
+  Object.assign(entityGraphService, { repairAfterRewind: async () => {} })
+  const { memoryService } = await import('../src/services/memory.service')
+  await memoryService.rewindToSequence(instanceId, playerId, event.sequence)
+}
+const selfieRun = (id: string) => mediaProcessor({ name: 'picture', data: { mediaId: id, instanceId } } as Job<{ mediaId: string; instanceId: string }>)
+const selfieApp = new Elysia().onError(({ error, set }) => { set.status = 'statusCode' in error ? Number(error.statusCode) : 400; return { message: error.message } })
+  .use((await import('../src/routes/media.routes')).mediaRoutes)
+const selfieHttp = (eventId: string, body: unknown, save = instanceId) => selfieApp.handle(new Request(`http://localhost/instances/${save}/events/${eventId}/selfie`, {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+}))
+await check('selfie access same 404 and authentication on the real route', async () => {
+  const { event, line } = await selfieFixture()
+  routeUser = { id: playerId, tier: 'creator' }
+  const missing = async (body: unknown, eventId = String(event._id), save = instanceId) => {
+    const response = await selfieHttp(eventId, body, save)
+    assert.equal(response.status, 404); assert.deepEqual(await response.json(), { message: 'That moment could not be found.' })
+  }
+  await missing({ ...line, text: 'absent' }); await missing({ ...line, character_id: playerId })
+  event.data.lines!.push({ character_id: playerId, text: 'Saved player line', shown_at: new Date() })
+  await missing({ character_id: playerId, text: 'Saved player line' })
+  await missing(line, String(new ObjectId())); await missing(line, String(event._id), String(new ObjectId()))
+  event.player_id = new ObjectId(); await missing(line); event.player_id = new ObjectId(playerId)
+  const instance = rows('worldInstances')[0]
+  const owner = instance.player_id; instance.player_id = new ObjectId(); await missing(line); instance.player_id = owner
+  rows('worldTemplates')[0].kind = 'character'; await missing(line); rows('worldTemplates')[0].kind = 'group'
+  rows('characters')[0].is_protagonist = true; await missing(line); delete rows('characters')[0].is_protagonist
+  const valid = await selfieHttp(String(event._id), { character_id: line.character_id, text: line.text, nsfw_enabled: true })
+  assert.equal(valid.status, 202); assert.equal((await valid.json() as Row).status, 'queued')
+  routeUser = null
+  assert.equal((await selfieHttp(String(event._id), line)).status, 401)
+})
+await check('selfie slots shared allowance resting and next tap retry', async () => {
+  const { event, line, ask } = await selfieFixture()
+  process.env.MEDIA_DAILY_PICTURE = '1'
+  rows('mediaUsage').push({ _id: new ObjectId(), player_id: new ObjectId(playerId), kind: 'picture', day: new Date().toISOString().slice(0, 10), slot: 0, status: 'settled' })
+  routeUser = { id: playerId, tier: 'creator' }
+  const response = await selfieHttp(String(event._id), line)
+  assert.equal(response.status, 429)
+  const rest = await response.json() as Row
+  assert.equal(rest.status, 'resting'); assert.equal(rest.kind, 'picture'); assert.equal(typeof rest.resets_at, 'string')
+  assert.deepEqual(event.data.group_selfies?.[groupLineId(line)], { status: 'resting', resets_at: rest.resets_at })
+  assert.equal(selfieEnqueued.length, 0); assert.equal(rows('mediaAssets').length, 0)
+  assert.equal((frames.at(-1)!.selfie as Row).status, 'resting')
+  rows('mediaUsage').length = 0
+  const result = await ask(); assert.equal(result.status, 'queued')
+  assert.equal(rows('mediaUsage').length, 1); assert.equal(rows('mediaUsage')[0].kind, 'picture'); assert.equal(rows('mediaUsage')[0].status, 'reserved')
+  await selfieRun(result.media_id)
+  assert.equal(rows('mediaUsage')[0].status, 'settled')
+})
+await check('selfie idempotence one live image per line retries release failures', async () => {
+  const { event, ask } = await selfieFixture()
+  const results = await Promise.all([ask(), ask()]); assert.equal(results[0].media_id, results[1].media_id)
+  assert.equal(selfieEnqueued.length, 1); assert.equal(rows('mediaUsage').length, 1)
+  selfieImageError = new Error('fixture provider failure')
+  await selfieRun(results[0].media_id)
+  assert.equal(rows('mediaUsage')[0].status, 'released'); assert(!('slot' in rows('mediaUsage')[0]))
+  assert.equal(event.data.group_selfies?.[groupLineId(event.data.lines![0])]?.status, 'failed')
+  assert.equal(frames.at(-1)!.type, 'media_failed')
+  selfieImageError = undefined
+  const retry = await ask(); assert.notEqual(retry.media_id, results[0].media_id)
+  await selfieRun(retry.media_id)
+  const again = await ask(); assert.equal(again.status, 'ready'); assert.equal(again.media_id, retry.media_id)
+  const slots = rows('mediaUsage').length; await ask(); assert.equal(rows('mediaUsage').length, slots)
+  const other = event.data.lines![1]
+  const second = await requestSelfie(playerId, instanceId, String(event._id), other)
+  assert.notEqual(second.media_id, retry.media_id)
+  selfieQueueError = new Error('fixture queue failure')
+  event.data.lines!.push({ character_id: other.character_id, text: 'Third saved line', shown_at: new Date() })
+  const third = event.data.lines!.at(-1)!
+  await assert.rejects(requestSelfie(playerId, instanceId, String(event._id), third), /fixture queue/)
+  assert.equal(event.data.group_selfies?.[groupLineId(third)]?.status, 'failed')
+  assert.equal(rows('mediaUsage').at(-1)!.status, 'released')
+})
+await check('selfie heat server toggle both gates single speaker portrait and isolated mood', async () => {
+  for (const [enabled, capable] of [[false, true], [true, false], [true, true]]) {
+    const { ask, event, source } = await selfieFixture()
+    ;(rows('users')[0].preferences as Row).nsfw_enabled = enabled
+    rows('worldTemplates')[0].is_nsfw_capable = capable
+    const result = await ask(); await selfieRun(result.media_id)
+    const mature = enabled && capable
+    assert.equal(rows('mediaAssets')[0].status, 'ready')
+    assert.equal(selfiePrompts.length, 1)
+    assert(selfiePrompts[0].includes(mature ? 'revealing but covered' : 'Everyday, fully clothed, friendly, not flirty'))
+    assert(selfiePrompts[0].includes('arm’s length') && selfiePrompts[0].includes('exactly one person') && selfiePrompts[0].includes('never a photograph'))
+    assert(selfiePrompts[0].includes('bright modern anime illustration'))
+    assert.deepEqual(selfieEveryday, [!mature])
+    const gates = selfieRequests.filter(request => request.purpose === 'media_safety_pre')
+    assert.equal(gates.length, 3)
+    assert.equal(gates.at(-1)!.messages[0].content.includes('Additional everyday-selfie gate'), !mature)
+    const description = selfieRequests.find(request => request.purpose === 'media_selfie_description')!
+    const prompt = JSON.stringify(description.messages)
+    const described = JSON.parse(description.messages[1].content)
+    assert.equal(described.look, source.seed_cast![0].appearance); assert.equal(described.setting, source.global_lore); assert.equal(described.mood, selfieMood)
+    assert(!prompt.includes(event.data.lines![0].text)); assert(!prompt.includes(String(event._id))); assert(!prompt.includes(event.data.lines![0].character_id))
+    assert.equal(selfieDownloads.length, 1); assert(selfieDownloads[0].endsWith('authored/0.png'))
+    assert.equal(rows('mediaAssets')[0].reference_asset_key, 'authored/0.png')
+  }
+  for (const at of ['image', 'upload'] as const) {
+    const { ask, event, line } = await selfieFixture()
+    ;(rows('users')[0].preferences as Row).nsfw_enabled = true
+    const revoke = async () => { (rows('users')[0].preferences as Row).nsfw_enabled = false }
+    if (at === 'image') selfieImageHook = revoke; else selfieUploadHook = revoke
+    const result = await ask(); await selfieRun(result.media_id)
+    assert.equal(event.data.group_selfies?.[groupLineId(line)]?.status, 'failed')
+    assert.equal(rows('mediaUsage')[0].status, 'released'); assert.equal(storedObjects.size, 0)
+    assert(!frames.some(frame => frame.type === 'media_ready'))
+  }
+  const fallback = await selfieFixture()
+  delete (rows('worldTemplates')[0].seed_cast as Row[])[0].portrait
+  rows('characters')[0].portrait = { asset_key: 'card/face.png', source: 'generated', appearance_version: 1, painted_at: new Date() }
+  const result = await fallback.ask(); await selfieRun(result.media_id)
+  assert.equal(rows('mediaAssets')[0].status, 'ready')
+  assert.equal(selfieDownloads[0], 'https://fixture.invalid/card/face.png')
+})
+await check('selfie safety rejections unseen release retry and no second person or visible text', async () => {
+  for (const failure of ['pre', 'people', 'text', 'provider', 'mood'] as const) {
+    const { ask, event, line } = await selfieFixture()
+    const result = await ask()
+    if (failure === 'pre' || failure === 'mood') selfiePreReject = failure === 'pre' ? 'description' : 'mood'
+    if (failure === 'people') selfiePeople = 2
+    if (failure === 'text') selfieTextVisible = true
+    if (failure === 'provider') selfieImageError = new ProviderRefusalError(400, 'content_filter', 'fixture content refusal')
+    await selfieRun(result.media_id)
+    assert.equal(event.data.group_selfies?.[groupLineId(line)]?.status, failure === 'mood' ? 'failed' : 'unseen')
+    assert.equal(rows('mediaUsage')[0].status, 'released'); assert.equal(storedObjects.size, 0)
+    if (failure === 'pre' || failure === 'mood') assert.equal(selfiePrompts.length, 0)
+    const retry = await ask(); assert.notEqual(retry.media_id, result.media_id)
+  }
+})
+await check('selfie privacy history completion projection and writer transcript', async () => {
+  const { ask, event, line } = await selfieFixture()
+  const result = await ask(); await selfieRun(result.media_id)
+  const lineId = groupLineId(line)
+  const projected = publicGroupData(await withTurnMedia([clone(event)]))[0]
+  assert.equal(projected.data.lines![0].line_id, lineId)
+  assert.deepEqual(projected.data.lines![0].selfie, { media_id: result.media_id, status: 'ready', url: (rows('mediaAssets')[0].url) })
+  assert(!('group_selfies' in projected.data)); assert.deepEqual((projected.data as unknown as Row).media, [])
+  const eventProjection = publicMediaEvent(clone(event))
+  assert.equal(eventProjection.data.lines![0].selfie?.status, 'ready'); assert(!('group_selfies' in eventProjection.data))
+  const completion = publicGroupData({ type: 'group_turn_complete', data: clone(event.data) })
+  assert.equal(completion.data.lines![0].selfie?.media_id, result.media_id)
+  const keepsakes = await (await import('../src/services/media/keepsakes')).listKeepsakes(playerId)
+  assert.equal(keepsakes.items[0].media_id, result.media_id)
+  const publicData = JSON.stringify([projected, eventProjection, completion, keepsakes, frames])
+  assert(!publicData.includes(fixtureDescription)); assert(!publicData.includes('media_selfie_description')); assert(!publicData.includes('group_selfies'))
+  const transcript = groupMessages([event], playerName, await (await import('../src/services/group-chat/instance')).loadGroupMembers(rows('worldInstances')[0] as never))
+  const writerPrompt = buildGroupDynamic({ history: transcript, memories: [], summaries: [], speakers: [], now: new Date(), offsetMinutes: 0 })
+  assert(!writerPrompt.includes(fixtureDescription)); assert(!writerPrompt.includes(result.media_id))
+})
+await check('selfie direct every lifecycle frame stays in its thread', async () => {
+  for (const status of ['ready', 'failed', 'unseen'] as const) {
+    const { ask, characterId } = await selfieFixture(true)
+    const result = await ask()
+    if (status === 'failed') selfieImageError = new Error('fixture failure')
+    if (status === 'unseen') selfiePeople = 2
+    await selfieRun(result.media_id)
+    const selfieFrames = frames.filter(frame => frame.media_id === result.media_id || frame.type === 'selfie_started')
+    assert.equal(selfieFrames.length, 2)
+    for (const frame of selfieFrames) { assert.equal(frame.directWith, characterId); assert.equal(frame.character_id, characterId); assert.equal(typeof frame.line_id, 'string') }
+    assert.equal(selfieFrames[1].type, `media_${status}`)
+  }
+})
+await check('selfie rewind jobs fenced before and after upload and edits', async () => {
+  for (const at of ['image', 'upload', 'edit'] as const) {
+    const { ask, event } = await selfieFixture()
+    const result = await ask()
+    const erase = async () => {
+      if (at === 'edit') event.data.lines![0].text = 'edited source'
+      else {
+        await rewindSelfie(event)
+      }
+    }
+    if (at === 'upload') selfieUploadHook = erase; else selfieImageHook = erase
+    await selfieRun(result.media_id)
+    assert.equal(storedObjects.size, 0)
+    assert.equal(rows('mediaAssets').length, 0)
+    assert.equal(frames.filter(frame => ['media_ready', 'media_unseen', 'media_failed'].includes(String(frame.type))).length, 0)
+    assert(!rows('mediaUsage').some(row => row.status === 'reserved'))
+  }
+})
+await check('selfie edit purge clears ready and resting state with the surviving event', async () => {
+  for (const resting of [false, true]) {
+    const { ask, event } = await selfieFixture()
+    if (resting) { process.env.MEDIA_DAILY_PICTURE = '0'; await assert.rejects(ask(), reportError(429)) }
+    else { const result = await ask(); await selfieRun(result.media_id) }
+    assert(event.data.group_selfies)
+    await purgeMedia({ event_id: event._id })
+    assert(!('group_selfies' in event.data))
+    assert.equal(storedObjects.size, 0)
+  }
+})
+await check('selfie repair failed state releases reservation and remains retryable', async () => {
+  const { ask, event, line } = await selfieFixture(true)
+  const first = await ask()
+  rows('mediaAssets')[0].created_at = new Date(Date.now() - 600000)
+  await repairMediaReservations()
+  assert.equal(event.data.group_selfies?.[groupLineId(line)]?.status, 'failed')
+  assert.equal(frames.at(-1)!.directWith, line.character_id)
+  assert.equal(rows('mediaUsage')[0].status, 'released')
+  assert.notEqual((await ask()).media_id, first.media_id)
+})
+await check('selfie reports ownership snapshot no creator action none and HTTP shape', async () => {
+  const { ask, event, line } = await selfieFixture(true)
+  const result = await ask(); await selfieRun(result.media_id)
+  const input = { reporterId: playerId, targetType: 'group_selfie' as const, targetId: result.media_id, reason: 'harassment_or_hate' as const }
+  await assert.rejects(moderationService.report({ ...input, reporterId: String(new ObjectId()) }), reportError(404, 'That line could not be found.'))
+  await assert.rejects(moderationService.report({ ...input, targetId: String(event._id) }), reportError(404))
+  await assert.rejects(moderationService.report({ ...input, characterId: line.character_id }), reportError(400))
+  const first = await moderationService.report(input)
+  assert.equal((await moderationService.report(input)).report_id, first.report_id)
+  const report = rows('contentReports')[0]
+  assert(!('target_creator_id' in report)); assert(!('target_line' in report))
+  const snap = report.target_snapshot as Row
+  assert.equal(snap.description, line.text); assert.equal(snap.thread, 'direct'); assert.equal(snap.title, rows('worldTemplates')[0].title)
+  assert.equal(snap.speaker, rows('characters')[0].canonical_name)
+  assert(String(snap.image_url).includes('/moderation/selfies/'))
+  assert(!String(snap.context).includes(storedEvents()[0].data.lines![0].text))
+  for (const action of ['creator_banned', 'content_deleted', 'content_hidden', 'content_unpublished'] as const) await assert.rejects(moderationService.resolveReport(first.report_id!, { action }), reportError(400))
+  await moderationService.resolveReport(first.report_id!, { action: 'none', status: 'actioned' })
+  const { CreateReportBody, AdminReportQuery } = await import('../src/schemas/moderation.schema')
+  const app = new Elysia().post('/report', ({ body }) => body, { body: CreateReportBody }).get('/queue', ({ query }) => query, { query: AdminReportQuery })
+  const body = { target_type: 'group_selfie', target_id: result.media_id, reason: input.reason }
+  const send = (value: unknown) => app.handle(new Request('http://localhost/report', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(value) }))
+  assert.equal((await send(body)).status, 200)
+  assert.notEqual((await send({ ...body, text: line.text })).status, 200)
+  assert.notEqual((await send({ ...body, character_id: line.character_id })).status, 200)
+  assert.equal((await app.handle(new Request('http://localhost/queue?target_type=group_selfie'))).status, 200)
+})
+await check('selfie retention evidence survives rewind reset save and account deletion', async () => {
+  for (const scope of ['rewind', 'reset', 'save', 'account'] as const) {
+    const { ask, event } = await selfieFixture()
+    const result = await ask(); await selfieRun(result.media_id)
+    const input = { reporterId: playerId, targetType: 'group_selfie' as const, targetId: result.media_id, reason: 'harassment_or_hate' as const }
+    const filed = await moderationService.report(input)
+    const evidenceUrl = String((rows('contentReports')[0].target_snapshot as Row).image_url)
+    const evidenceKey = evidenceUrl.replace('https://fixture.invalid/', '')
+    const sourceKey = String(rows('mediaAssets')[0].asset_key)
+    if (scope === 'rewind') await rewindSelfie(event)
+    else if (scope === 'reset') await deletionService.resetInstance(instanceId, playerId)
+    else if (scope === 'save') await deletionService.deleteInstance(instanceId, playerId)
+    else await deletionService.deleteAccount(playerId)
+    assert(!storedEvents().some(turn => turn._id.equals(event._id)))
+    assert(!storedObjects.has(sourceKey)); assert(storedObjects.has(evidenceKey))
+    assert.equal((await moderationService.getReport(filed.report_id!)).report.target_snapshot.image_url, evidenceUrl)
   }
 })
 
