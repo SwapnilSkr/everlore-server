@@ -1867,7 +1867,7 @@ export const memoryService = {
     // 4. Replay survivors from template defaults to rebuild state.
     const statLimits: Record<string, { min: number; max: number }> = {}
     let worldState: Record<string, number> = {}
-    for (const [key, def] of Object.entries(template.base_stats_template)) {
+    for (const [key, def] of Object.entries(template.base_stats_template || {})) {
       worldState[key] = def.default
       statLimits[key] = { min: def.min, max: def.max }
     }

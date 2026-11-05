@@ -3272,6 +3272,38 @@ await check('rewind floor refuses sequence one on a group save before deleting a
   assert.equal(normal.status, 200)
   assert.deepEqual(sequences(), [])
 })
+await check('rewind restores a group save whose template row has no base_stats_template key', async () => {
+  // Existing rewind collaborators are local no-op projections; the event/state code is real.
+  mock.module('../src/services/codex-media-carryover', () => ({ snapshotCodexMedia: async () => ({}), restoreCodexMedia: async () => {} }))
+  const { characterCodexService } = await import('../src/services/character-codex.service')
+  Object.assign(characterCodexService, { applyManualIdentityRevisions: async () => {} })
+  const { entityGraphService } = await import('../src/services/entity-graph.service')
+  Object.assign(entityGraphService, { repairAfterRewind: async () => {} })
+  const { instanceRoutes } = await import('../src/routes/instance.routes')
+  const { chronicleRoutes } = await import('../src/routes/chronicle.routes')
+  const app = new Elysia().onError(({ error, set }) => {
+    set.status = 'statusCode' in error ? Number(error.statusCode) : 500
+    return { message: error.message }
+  }).use(instanceRoutes).use(chronicleRoutes)
+
+  // Group validation forbids stats, and the catalog files carry none, so a
+  // seeded row simply has no key at all. Creation must not invent one.
+  const noStats = groupTemplate() as Partial<WorldTemplateDoc>
+  delete noStats.base_stats_template
+  await start(noStats as WorldTemplateDoc)
+  assert(!('base_stats_template' in rows('worldTemplates')[0]))
+  storedEvents()[0].time_anchor = { real_time: new Date(), sequence: 1, timeline_id: 'main' }
+  addEvents(3)
+  const keep = clone(storedEvents()[1].data.group_state_after)
+  routeUser = { id: playerId, tier: 'creator' }
+  const response = await app.handle(new Request(`http://localhost/chronicle/rewind/${instanceId}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sequence: 3 }),
+  }))
+  assert.equal(response.status, 200)
+  assert.deepEqual(storedEvents().map(event => event.sequence), [1, 2])
+  assert.deepEqual(rows('worldInstances')[0].group_state, { ...keep as Row, writing_calls: 0 })
+  assert.deepEqual(rows('worldInstances')[0].world_state, {})
+})
 
 async function bondHttp(method: string, body?: unknown, characterId = ids[0]) {
   const { instanceRoutes } = await import('../src/routes/instance.routes')
