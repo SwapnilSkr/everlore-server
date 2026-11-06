@@ -28,6 +28,11 @@ export function storyReplyNotification(title: string, body: string, instanceId: 
   return { notification: { title, body }, data: { type: 'story_reply', instanceId, ...(thread ? { thread } : {}) } }
 }
 
+/** A finished film: the row's own words, and the film a tap opens. */
+export function filmReadyNotification(title: string, body: string, instanceId: string, mediaId: string): PushPayload {
+  return { notification: { title, body }, data: { type: 'film_ready', instanceId, mediaId } }
+}
+
 /** No provider response or thrown transport error is logged: either may echo a token. */
 export function createFcmSender(deps: {
   credentials?: () => string; enabled?: () => boolean; now?: () => Date; fetch?: typeof fetch

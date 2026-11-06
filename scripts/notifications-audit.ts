@@ -9,13 +9,16 @@
  * or change nothing; paging and the unread count; the 100-row cap; both purge
  * paths; the frame reaching only its owner; read on open; read by film; a
  * record failure never failing the send; updatePreferences refusing an unknown
- * key; and the story row: written only when no socket watches the save, one
- * unread per save, tied to its turn so a rewind removes it, pushed only with
- * the switch on, and marked read when the save is opened. Every check is shown
- * to bite by a reversible source mutation (see the task report).
+ * key; the story row: written only when no socket watches the save, one unread
+ * per save, tied to its turn so a rewind removes it, pushed only with the switch
+ * on, and marked read when the save is opened; its picture (the group's first
+ * speaker, or the world's cover); a finished film's push; a pressed Continue
+ * counting as a player turn; and the socket's lifecycle frame, where a
+ * backgrounded app stops watching and coming back takes the save again. Every
+ * check is shown to bite by a reversible source mutation (see the task report).
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import { Elysia } from 'elysia'
@@ -73,6 +76,18 @@ const clone = <T>(input: T): T => {
 
 /** Only the bell's own insert can be made to fail, for the "never fails the send" check. */
 let notificationInsertError: Error | undefined
+/** A face only when its character has one, like the real resolver. */
+let portraitMissing = false
+
+/** Mongo's two mutations the service uses: set a value, or leave the key out. */
+function applyUpdate(row: Row, update: Row) {
+  for (const [key, value] of Object.entries((update.$set || {}) as Row)) put(row, key, clone(value))
+  for (const key of Object.keys((update.$unset || {}) as Row)) {
+    const parts = key.split('.')
+    const parent = parts.length === 1 ? row : get(row, parts.slice(0, -1).join('.')) as Row | undefined
+    if (parent && typeof parent === 'object') delete parent[parts.at(-1)!]
+  }
+}
 
 function collection(name: string) {
   return {
@@ -118,13 +133,13 @@ function collection(name: string) {
     async updateOne(filter: Row, update: Row) {
       const row = rows(name).find(row => matches(row, filter))
       if (!row) return { matchedCount: 0, modifiedCount: 0 }
-      for (const [key, value] of Object.entries((update.$set || {}) as Row)) put(row, key, clone(value))
+      applyUpdate(row, update)
       return { matchedCount: 1, modifiedCount: 1 }
     },
     async updateMany(filter: Row, update: Row) {
       let modifiedCount = 0
       for (const row of rows(name).filter(row => matches(row, filter))) {
-        for (const [key, value] of Object.entries((update.$set || {}) as Row)) put(row, key, clone(value))
+        applyUpdate(row, update)
         modifiedCount++
       }
       return { modifiedCount }
@@ -166,7 +181,7 @@ const mocks: Array<[string, () => unknown]> = [
   ['../src/services/media/portraits', () => ({
     portraitUrl: (assetKey: string) => `https://fixture.invalid/${assetKey}`,
     resolvePortraitHolder: async () => ({ kind: 'world_cast', appearance: 'a face', appearanceVersion: 1,
-      portrait: { asset_key: 'cast/face.png', source: 'generated', appearance_version: 1, painted_at: new Date() } }),
+      ...(portraitMissing ? {} : { portrait: { asset_key: 'cast/face.png', source: 'generated', appearance_version: 1, painted_at: new Date() } }) }),
   })],
   ['../src/services/media/attribution', () => ({ ATTRIBUTION_RULE_VERSION: 'audit',
     mediaRevision: (prose: string, input = '') => createHash('sha256').update(JSON.stringify([prose, input])).digest('hex'),
@@ -178,7 +193,8 @@ const mocks: Array<[string, () => unknown]> = [
   ['../src/services/kinship-graph.service', () => ({ kinshipGraphService: { seedPremiseKinship: async () => {} } })],
   ['../src/services/vector-store', () => ({ vectorStore: { deleteScope: async () => {}, deleteIds: async () => {} } })],
   ['../src/queues', () => ({ removeQueuedJobsForInstance: async () => {}, getMediaQueue: unavailable,
-    getMemoryCurationQueue: unavailable, getGenerationQueue: unavailable, getSceneSummaryQueue: unavailable })],
+    getMemoryCurationQueue: unavailable, getGenerationQueue: unavailable, getSceneSummaryQueue: unavailable,
+    QUEUE_RETENTION: { generation: {}, media: {}, maintenance: {} } })],
   ['../src/services/storage.service', () => ({ storageService: { deleteStrict: async () => {}, delete: async () => {},
     upload: async () => ({ key: '', url: '' }), keyFromUrl: () => undefined } })],
   ['../src/services/telemetry/ingest.service', () => ({ telemetryService: { purgeUser: async () => {} } })],
@@ -211,12 +227,14 @@ mock.module('../src/middleware/auth', () => ({
 const { recordNotification, recordDirectMessage, recordSelfieReady, recordFilmReady, recordStoryReply,
   attachDirectRowEvent, markThreadRead, markSaveStoryRepliesRead, purgeNotificationsForEvents,
   markWatching, clearWatching, isWatching, markPlayerOnline, clearPlayerOnline, isPlayerOnline,
-  notificationWords, NOTIFICATIONS_MAX_PER_PLAYER } = await import('../src/services/notifications.service')
+  notificationWords, isStoryTurn, NOTIFICATIONS_MAX_PER_PLAYER } = await import('../src/services/notifications.service')
 const { deletionService } = await import('../src/services/deletion.service')
 const { purgeAccountReferences } = await import('../src/services/account-references')
 const { authService, PREFERENCE_UPDATE_KEYS } = await import('../src/services/auth.service')
 const { UpdatePreferencesBody } = await import('../src/schemas/user.schema')
 const { notificationRoutes } = await import('../src/routes/notifications.routes')
+// The socket's own frame handling: presence is decided there, not in the bell.
+const { playWsService } = await import('../src/services/play-ws.service')
 
 // ── harness ────────────────────────────────────────────────────────────────
 let passed = 0, failed = 0
@@ -231,11 +249,11 @@ const asRowId = (value: unknown) => hex(value as ObjectId)
 const timeOf = (value: unknown) => value instanceof Date ? value.getTime() : undefined
 
 const WORLD_TITLE = 'A Quiet World'
-function seedInstance(id: ObjectId, playerId: string, title = WORLD_TITLE) {
+function seedInstance(id: ObjectId, playerId: string, title = WORLD_TITLE, cover?: string) {
   const templateId = objectId(900)
   rows('world_instances').push({ _id: id, player_id: new ObjectId(playerId), template_id: templateId })
   if (!rows('world_templates').some(row => asRowId(row._id) === hex(templateId))) {
-    rows('world_templates').push({ _id: templateId, title })
+    rows('world_templates').push({ _id: templateId, title, ...(cover ? { image_url: cover } : {}) })
   }
 }
 function seedCard(id: ObjectId, instanceId: ObjectId, name: string) {
@@ -252,7 +270,7 @@ async function settle(until: () => boolean = () => true) {
 }
 function reset() {
   tables.clear(); published.length = 0; warnLogs.length = 0; notificationInsertError = undefined
-  stored.clear(); pushes.length = 0
+  stored.clear(); pushes.length = 0; portraitMissing = false
 }
 
 const app = new Elysia().onError(({ error, set }) => {
@@ -343,6 +361,42 @@ await check('a film row leads with the world title, carries its film, and never 
   await recordFilmReady(hex(objectId(42)))
   assert.equal(rows('player_notifications').length, 0)
 })
+await check('a finished film is pushed with the film\'s id, and only with messages on', async () => {
+  reset()
+  const playerId = player(31), instanceId = objectId(101)
+  seedInstance(instanceId, playerId); seedDevice(playerId)
+  rows('users').push({ _id: new ObjectId(playerId), preferences: {} })
+  rows('media_assets').push({ _id: objectId(102), kind: 'video', player_id: new ObjectId(playerId), instance_id: instanceId })
+  await recordFilmReady(hex(objectId(102)))
+  await settle(() => pushes.length > 0)
+  assert.equal(pushes.length, 1, 'the switch is on')
+  assert.deepEqual(pushes[0].payload, {
+    notification: { title: WORLD_TITLE, body: 'Your film is ready' },
+    data: { type: 'film_ready', instanceId: hex(instanceId), mediaId: hex(objectId(102)) },
+  })
+  // Nothing else rides along: the row's own words and the film a tap opens.
+  assert.deepEqual(Object.keys(pushes[0].payload.data as Row).sort(), ['instanceId', 'mediaId', 'type'])
+  assert.deepEqual(Object.keys(pushes[0].payload.notification as Row).sort(), ['body', 'title'])
+  // The switch off: no push, but the bell still fills.
+  reset()
+  seedInstance(instanceId, playerId); seedDevice(playerId)
+  rows('users').push({ _id: new ObjectId(playerId), preferences: { group_notifications: false } })
+  rows('media_assets').push({ _id: objectId(103), kind: 'video', player_id: new ObjectId(playerId), instance_id: instanceId })
+  await recordFilmReady(hex(objectId(103)))
+  await settle()
+  assert.equal(pushes.length, 0, 'the switch is off')
+  assert.equal(rows('player_notifications').length, 1, 'the bell is not the push')
+  // A guest and a banned player are not reached, exactly as for a reply.
+  for (const account of [{ guest: true }, { account_status: 'banned' }]) {
+    reset()
+    seedInstance(instanceId, playerId); seedDevice(playerId)
+    rows('users').push({ _id: new ObjectId(playerId), preferences: {}, ...account })
+    rows('media_assets').push({ _id: objectId(104), kind: 'video', player_id: new ObjectId(playerId), instance_id: instanceId })
+    await recordFilmReady(hex(objectId(104)))
+    await settle()
+    assert.equal(pushes.length, 0, JSON.stringify(account))
+  }
+})
 await check('a story reply is only news when no socket of the player is on that save', async () => {
   reset()
   const playerId = player(20), instanceId = objectId(60)
@@ -389,6 +443,37 @@ await check('one unread story row per save: a newer reply replaces the older one
   seedInstance(instanceId, playerId)
   await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'room' })
   assert.equal(rows('player_notifications').length, 0)
+})
+await check('a story row leads with the group speaker\'s face, or the world\'s cover', async () => {
+  reset()
+  const playerId = player(32), instanceId = objectId(105), characterId = objectId(106), otherId = objectId(107)
+  seedInstance(instanceId, playerId); seedCard(characterId, instanceId, 'Bea')
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'room', characterId: hex(characterId), name: 'Bea' })
+  assert.equal(rows('player_notifications')[0].image_url, 'https://fixture.invalid/cast/face.png',
+    'a group reply shows the first speaker')
+  // A normal world has no speaker: its own cover stands in, the one the library shows.
+  reset()
+  seedInstance(instanceId, playerId, WORLD_TITLE, 'https://fixture.invalid/cover.jpg')
+  await recordStoryReply({ playerId, instanceId: hex(instanceId) })
+  assert.equal(rows('player_notifications')[0].image_url, 'https://fixture.invalid/cover.jpg')
+  // Neither a face nor a cover: the key is left out, never a default nobody authored.
+  reset()
+  seedInstance(instanceId, playerId); seedCard(characterId, instanceId, 'Wren')
+  portraitMissing = true
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'room', characterId: hex(characterId), name: 'Wren' })
+  portraitMissing = false
+  assert.ok(!('image_url' in rows('player_notifications')[0]), 'no face, no picture')
+  // A replaced row does not keep the face of the reply it replaced.
+  reset()
+  seedInstance(instanceId, playerId)
+  seedCard(characterId, instanceId, 'Bea'); seedCard(otherId, instanceId, 'Wren')
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'room', characterId: hex(characterId), name: 'Bea' })
+  assert.ok('image_url' in rows('player_notifications')[0])
+  portraitMissing = true
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'room', characterId: hex(otherId), name: 'Wren' })
+  portraitMissing = false
+  assert.equal(rows('player_notifications').length, 1)
+  assert.ok(!('image_url' in rows('player_notifications')[0]), 'the old face goes with the old words')
 })
 await check('a story reply is pushed only with messages switched on, and carries no reply text', async () => {
   reset()
@@ -738,6 +823,69 @@ await check('every event path calls a bell helper where it already tells the app
   assert.ok(group.indexOf('await recordStoryReply(') > group.indexOf('await finishGenerationTurn('),
     'a finished group turn records after its completion goes out')
   assert.ok(group.includes("origin === 'unprompted' && directWith"), 'an unprompted message ties its row, never a story row')
+})
+
+await check('a continue the player pressed records a row, and a replay or a group turn does not', () => {
+  assert.equal(isStoryTurn({ isContinuation: true }), true, "a pressed Continue is the player's turn")
+  assert.equal(isStoryTurn({}), true, 'a typed line and a confirmed action are story turns')
+  assert.equal(isStoryTurn({ mode: 'replay' }), false, 'a replay rewrites a turn already told')
+  assert.equal(isStoryTurn({ session: { kind: 'group' } }), false, 'a group save writes its own row')
+  const worker = readFileSync('worker/index.ts', 'utf8')
+  assert.ok(worker.indexOf('await recordStoryReply(') > worker.indexOf('const result = await generationProcessor(job)'),
+    'the row is written after the turn finishes')
+  assert.ok(worker.includes('isStoryTurn(job.data)'), 'the completion hook asks the one predicate')
+  assert.ok(!/!job\.data\?\.isContinuation/.test(worker), 'a continuation is not filtered out')
+  // Nothing but the socket's `continue` action enqueues a continuation, so every
+  // continuation is a press: there is no automatic one to tell apart.
+  const sources = ['src', 'worker'].flatMap(dir =>
+    readdirSync(dir, { recursive: true, encoding: 'utf8' }).map(file => `${dir}/${file}`))
+    .filter(file => file.endsWith('.ts'))
+  const producers = sources.filter(file => /isContinuation:\s*true/.test(readFileSync(file, 'utf8'))).sort()
+  assert.deepEqual(producers, ['src/services/play-ws.service.ts'], 'only the Continue action dispatches one')
+  const socket = readFileSync('src/services/play-ws.service.ts', 'utf8')
+  const continuation = socket.slice(socket.indexOf("case 'continue'"), socket.indexOf("case 'world_action'"))
+  assert.ok(continuation.includes('isContinuation: true'), 'the Continue action marks its job')
+})
+await check('a backgrounded app is not watching: the reply becomes a row, and coming back stops it', async () => {
+  reset()
+  const playerId = player(33), instanceId = objectId(108)
+  seedInstance(instanceId, playerId)
+  rows('users').push({ _id: new ObjectId(playerId), account_status: 'active', tier: 'creator' })
+  const sent: Row[] = []
+  const send = (text: string) => sent.push(JSON.parse(text) as Row)
+  const socket = {
+    data: { _user: { id: playerId, tier: 'creator' } },
+    raw: { send }, send, close: () => {},
+  }
+  // The socket is on a save, as it is after a load: any frame naming it claims it.
+  await playWsService.handleMessage(socket, { action: 'ping', instance_id: hex(instanceId) })
+  assert.equal(await isWatching(playerId, hex(instanceId)), true, 'a socket on a save is watching it')
+  assert.equal(await isPlayerOnline(playerId), true, 'a socket frame keeps the player online')
+  assert.equal(sent.length, 1, 'the ping is answered')
+  sent.length = 0
+  const presence = (foreground: unknown) => playWsService.handleMessage(socket, { type: 'presence', foreground })
+  await presence(false)
+  assert.equal(await isWatching(playerId, hex(instanceId)), false, 'the app is open but not looking')
+  assert.equal(await isPlayerOnline(playerId), true, 'a lifecycle frame leaves presence alone')
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), eventId: hex(objectId(109)) })
+  assert.equal(rows('player_notifications').length, 1, 'a reply that lands in the background is news')
+  await presence(true)
+  assert.equal(await isWatching(playerId, hex(instanceId)), true, 'coming back takes the save again')
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), eventId: hex(objectId(110)) })
+  assert.equal(rows('player_notifications').length, 1, 'watched again, nothing new is written')
+  // An unknown shape is ignored, never an error, and changes nothing.
+  await presence(undefined)
+  await presence('yes')
+  await playWsService.handleMessage(socket, { type: 'presence' })
+  assert.equal(await isWatching(playerId, hex(instanceId)), true, 'an unknown shape changes nothing')
+  assert.equal(sent.length, 0, 'a lifecycle frame is never answered with an error')
+  // Opening a save is looking at it, whatever the app said before, and a
+  // backgrounded socket stops renewing the claim on every other frame.
+  const ws = readFileSync('src/services/play-ws.service.ts', 'utf8')
+  assert.ok(ws.includes("if (action === 'load_instance') getWsData(ws).foreground = true"),
+    'a load brings the socket back to the front')
+  assert.ok(ws.includes("else if (watched && getWsData(ws).foreground !== false) await markWatching(user.id, watched)"),
+    'a backgrounded socket does not renew its claim')
 })
 
 // ── (9) updatePreferences refuses unknown keys ─────────────────────────────

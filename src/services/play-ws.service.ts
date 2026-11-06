@@ -86,6 +86,8 @@ type WsUpgradeData = {
   _user?: AuthUser
   /** The save this socket last loaded or acted in; the bell reads it as "watching". */
   instanceId?: string
+  /** A backgrounded app is not watching: false until a true or a new load. */
+  foreground?: boolean
 }
 
 function getWsData(ws: { data: WsUpgradeData }): WsUpgradeData {
@@ -103,18 +105,49 @@ function getRawSocket(ws: PlayWs): RawWs {
  * leaves the bell alone).
  */
 async function watchSave(ws: PlayWs, userId: string, instanceId: string): Promise<void> {
+  const data = getWsData(ws)
   const raw = getRawSocket(ws)
-  const previous = getWsData(ws).instanceId
+  const previous = data.instanceId
+  data.instanceId = instanceId
+  // The app went to the background: it still knows which save it is on, but it
+  // is not looking at it, so nothing is claimed or renewed until it comes back.
+  if (data.foreground === false) return
   let sockets = watchedBySocket.get(userId)
   if (!sockets) { sockets = new Map(); watchedBySocket.set(userId, sockets) }
   sockets.set(raw, instanceId)
-  getWsData(ws).instanceId = instanceId
   // Leaving a save for another stops watching the first, unless another socket
   // of this player is still there.
   if (previous && previous !== instanceId && ![...sockets.values()].includes(previous)) {
     await clearWatching(userId, previous)
   }
   await markWatching(userId, instanceId)
+}
+
+/**
+ * The app's lifecycle frame: `foreground: false` means this socket is no longer
+ * looking at the save it has open, so a reply that lands while the phone is in
+ * the background becomes a bell row. `true` takes the save back. Presence
+ * (`online:<player>`) is deliberately untouched — the socket is still open.
+ */
+async function setSocketForeground(ws: PlayWs, userId: string, foreground: boolean): Promise<void> {
+  const data = getWsData(ws)
+  const raw = getRawSocket(ws)
+  data.foreground = foreground
+  if (foreground) {
+    if (!data.instanceId) return
+    let sockets = watchedBySocket.get(userId)
+    if (!sockets) { sockets = new Map(); watchedBySocket.set(userId, sockets) }
+    sockets.set(raw, data.instanceId)
+    await markWatching(userId, data.instanceId)
+    return
+  }
+  const sockets = watchedBySocket.get(userId)
+  sockets?.delete(raw)
+  if (!sockets?.size) watchedBySocket.delete(userId)
+  // Another socket of this player may still be on the same save.
+  if (data.instanceId && !(watchedBySocket.get(userId) && [...watchedBySocket.get(userId)!.values()].includes(data.instanceId))) {
+    await clearWatching(userId, data.instanceId)
+  }
 }
 
 /**
@@ -212,13 +245,24 @@ export const playWsService = {
       user.tier = live.tier
     }
 
+    // A lifecycle frame from the app: in front, or sent to the background.
+    // Only a boolean `foreground` is honoured; an unknown shape is ignored,
+    // never an error.
+    const frame = data as { type?: unknown; action?: unknown; instance_id?: unknown; foreground?: unknown }
+    if (frame.type === 'presence' || frame.action === 'presence') {
+      if (typeof frame.foreground === 'boolean') await setSocketForeground(ws, user.id, frame.foreground)
+      return
+    }
+
     // Any frame keeps the player "open", and any frame naming a save moves the
     // socket's claim to it; a bare ping renews whichever save it is already on.
     await markPlayerOnline(user.id)
-    const frameInstance = (data as { instance_id?: unknown }).instance_id
+    // Opening a save is looking at it, whatever the app said before.
+    if (action === 'load_instance') getWsData(ws).foreground = true
+    const frameInstance = frame.instance_id
     const watched = getWsData(ws).instanceId
     if (typeof frameInstance === 'string' && frameInstance) await watchSave(ws, user.id, frameInstance)
-    else if (watched) await markWatching(user.id, watched)
+    else if (watched && getWsData(ws).foreground !== false) await markWatching(user.id, watched)
 
     if (action !== 'ping') {
       log.info('ws.message', {

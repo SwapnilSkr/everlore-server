@@ -4,7 +4,7 @@ import { getRedisClient } from '../config/redis'
 import { log } from '../utils/logger'
 import { HttpError } from '../utils/http-error'
 import { parseObjectId } from '../utils/mongo-id'
-import { storyReplyNotification } from './push/fcm'
+import { filmReadyNotification, storyReplyNotification } from './push/fcm'
 import { pushToPlayerDevices } from './push/devices'
 import type { NotificationThread, NotificationType, PlayerNotificationDoc } from '../models/notification.model'
 
@@ -20,9 +20,9 @@ import type { NotificationThread, NotificationType, PlayerNotificationDoc } from
  * never lost because a bell row could not be written.
  *
  * Rows hold no chat text. `title`/`body` come only from the contract's words
- * and a character's name; `image_url` is that character's portrait or the
- * film's cover. Optional keys are omitted rather than written null, and
- * `event_id` is internal: it is never on the wire.
+ * and a character's name; `image_url` is that character's portrait, the film's
+ * poster or the world's cover. Optional keys are omitted rather than written
+ * null, and `event_id` is internal: it is never on the wire.
  */
 
 export const NOTIFICATIONS_PAGE_SIZE = 30
@@ -100,14 +100,17 @@ async function trimToCap(playerId: ObjectId): Promise<void> {
   }
 }
 
-/** The save's own title: the world's, or a group's. Both live on its template. */
-async function worldTitle(instanceId: string): Promise<string | undefined> {
+/** The save's own title and cover: the world's, or a group's. Both live on its
+ *  template, which is also where the app's library row reads them. */
+async function worldHeader(instanceId: string): Promise<{ title: string; cover?: string } | undefined> {
   const instance = await mongoColl.worldInstances().findOne({ _id: parseObjectId(instanceId) },
     { projection: { template_id: 1 } })
   if (!instance) return undefined
   const template = await mongoColl.worldTemplates().findOne({ _id: instance.template_id },
-    { projection: { title: 1 } })
-  return typeof template?.title === 'string' && template.title ? template.title : undefined
+    { projection: { title: 1, image_url: 1 } })
+  if (typeof template?.title !== 'string' || !template.title) return undefined
+  return { title: template.title,
+    ...(typeof template.image_url === 'string' && template.image_url ? { cover: template.image_url } : {}) }
 }
 
 /** A character's stored face, if they have one. A missing face is no image, never an error. */
@@ -132,6 +135,7 @@ async function memberPortrait(playerId: string, instanceId: string, characterId:
 /**
  * The one writer. It trims, counts and publishes the frame, and it never
  * throws: a caller's message, picture or film must survive a bell failure.
+ * Returns the row it wrote, so a push can carry exactly the bell's words.
  */
 export async function recordNotification(input: {
   playerId: string
@@ -145,10 +149,10 @@ export async function recordNotification(input: {
   eventId?: string
   mediaId?: string
   thread?: NotificationThread
-}): Promise<void> {
+}): Promise<PlayerNotificationDoc | undefined> {
   try {
     const words = notificationWords(input.type, { name: input.name, title: input.title })
-    if (!words) return
+    if (!words) return undefined
     const row: PlayerNotificationDoc = {
       _id: new ObjectId(),
       player_id: parseObjectId(input.playerId),
@@ -170,8 +174,10 @@ export async function recordNotification(input: {
     // and only this player's channel.
     await getRedisClient().publish(`user:${input.playerId}:events`,
       JSON.stringify({ type: 'notification', item: publicNotification(row), unread }))
+    return row
   } catch (error) {
     log.warn('notification.record_failed', { type: input.type, error: error instanceof Error ? error.message : String(error) })
+    return undefined
   }
 }
 
@@ -200,21 +206,37 @@ export async function recordSelfieReady(mediaId: string): Promise<void> {
   }
 }
 
-/** A film finished, in any world. Its cover stands in for a face. */
+/** A film finished, in any world. Its cover stands in for a face, and the push
+ *  is the row's own words with the film's id — never a line of the story. */
 export async function recordFilmReady(mediaId: string): Promise<void> {
   try {
-    const row = await mongoColl.mediaAssets().findOne({ _id: parseObjectId(mediaId) })
-    if (!row || row.kind !== 'video' || row.notified_at || !row.instance_id) return
-    const instanceId = row.instance_id.toHexString()
-    const title = await worldTitle(instanceId)
-    if (!title) return
-    await recordNotification({ playerId: row.player_id.toHexString(), type: 'film_ready', instanceId, title,
-      mediaId: row._id.toHexString(),
-      ...(row.event_id ? { eventId: row.event_id.toHexString() } : {}),
-      ...(row.poster_url ? { imageUrl: row.poster_url } : {}) })
+    const asset = await mongoColl.mediaAssets().findOne({ _id: parseObjectId(mediaId) })
+    if (!asset || asset.kind !== 'video' || asset.notified_at || !asset.instance_id) return
+    const instanceId = asset.instance_id.toHexString()
+    const header = await worldHeader(instanceId)
+    if (!header) return
+    const playerId = asset.player_id.toHexString()
+    const row = await recordNotification({ playerId, type: 'film_ready', instanceId, title: header.title,
+      mediaId: asset._id.toHexString(),
+      ...(asset.event_id ? { eventId: asset.event_id.toHexString() } : {}),
+      ...(asset.poster_url ? { imageUrl: asset.poster_url } : {}) })
+    // Sent after the row, and never awaited: a slow provider must not hold the
+    // media pipeline open.
+    if (row) void pushToPlayerDevices(playerId,
+      filmReadyNotification(row.title, row.body, instanceId, asset._id.toHexString()))
   } catch (error) {
     log.warn('notification.record_failed', { type: 'film_ready', error: error instanceof Error ? error.message : String(error) })
   }
+}
+
+/**
+ * Whether a finished generation job is a story the player may have missed.
+ * A `continue` is the player's own press — nothing enqueues one on its own —
+ * so it counts like a typed line. A replay rewrites a turn already told, and a
+ * group save writes its own row inside its processor.
+ */
+export function isStoryTurn(job: { mode?: string; session?: { kind?: string } }): boolean {
+  return job.mode !== 'replay' && job.session?.kind !== 'group'
 }
 
 /**
@@ -223,6 +245,9 @@ export async function recordFilmReady(mediaId: string): Promise<void> {
  * reply arrive, so nothing is written and nothing is pushed. One unread row per
  * save — a newer reply replaces the older unread one's time and words instead of
  * stacking a second.
+ *
+ * Its picture is the group's first speaker, or the world's cover; a face or a
+ * cover that does not exist is left out rather than filled with a default.
  */
 export async function recordStoryReply(input: {
   playerId: string
@@ -235,25 +260,32 @@ export async function recordStoryReply(input: {
 }): Promise<void> {
   try {
     if (await isWatching(input.playerId, input.instanceId)) return
-    const title = await worldTitle(input.instanceId)
-    if (!title) return
+    const header = await worldHeader(input.instanceId)
+    if (!header) return
     // A group row names its speaker; without one there is no honest sentence.
     if (input.thread && !input.name) return
-    const words = notificationWords('story_reply', { title, name: input.thread ? input.name : undefined })
+    const words = notificationWords('story_reply', { title: header.title, name: input.thread ? input.name : undefined })
     if (!words) return
+    const imageUrl = input.thread && input.characterId
+      ? await memberPortrait(input.playerId, input.instanceId, input.characterId)
+      : header.cover
     const pid = parseObjectId(input.playerId), iid = parseObjectId(input.instanceId)
     const coll = mongoColl.playerNotifications()
     const next = {
       ...(input.eventId ? { event_id: parseObjectId(input.eventId) } : {}),
       ...(input.characterId ? { character_id: input.characterId } : {}),
       ...(input.thread ? { thread: input.thread } : {}),
+      ...(imageUrl ? { image_url: imageUrl } : {}),
       title: words.title,
       body: words.body,
       created_at: new Date(),
     }
     const older = await coll.findOne({ player_id: pid, instance_id: iid, type: 'story_reply', read_at: { $exists: false } })
-    if (older) await coll.updateOne({ _id: older._id }, { $set: next })
-    else {
+    if (older) {
+      // The replaced row may have carried a face the new reply has not got.
+      const staleImage = imageUrl ? {} : older.image_url ? { $unset: { image_url: 1 as const } } : {}
+      await coll.updateOne({ _id: older._id }, { $set: next, ...staleImage })
+    } else {
       await coll.insertOne({ _id: new ObjectId(), player_id: pid, instance_id: iid, type: 'story_reply', ...next } as PlayerNotificationDoc)
       await trimToCap(pid)
     }
