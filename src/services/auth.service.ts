@@ -6,7 +6,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { phoneVerifyError, sendPhoneOtp, verifyPhoneOtp } from '../providers/auth.provider'
 import { verifyFirebaseIdToken } from '../providers/firebase-auth.provider'
 import { canForge } from '../utils/can-forge'
-import { guestService } from './guest.service'
+import { guestService, usernameFromSeed } from './guest.service'
 
 /** Ceiling on stored guide arcs; the app declares roughly a dozen. */
 const MAX_GUIDE_FLOWS = 64
@@ -36,15 +36,6 @@ export function defaultUserPreferences(): UserDoc['preferences'] {
     narration_length: 'detailed',
     auto_memory_curation: true,
   }
-}
-
-function usernameFromSeed(seed: string): string {
-  const base = seed
-    .toLowerCase()
-    .replace(/[^a-z0-9_]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 20) || 'player'
-  return `${base}_${Date.now().toString(36)}`
 }
 
 export type JwtUserPayload = {
@@ -163,7 +154,7 @@ export const authService = {
     let newAccount = false
     if (!userDoc) {
       try {
-        const claimed = await guestService.claim(guestId, identity, provider)
+        const claimed = await guestService.claim(guestId, identity, provider, seed)
         if (claimed) return { userDoc: claimed, newAccount: true }
         // A fenced transfer must finish at its original destination.
         const guest = await guestService.eligible(guestId)

@@ -6,6 +6,30 @@ import type { UserDoc, UserInsertDoc } from '../models/user.model'
 import { HttpError } from '../utils/http-error'
 import { defaultUserPreferences } from './auth.service'
 
+/** A duplicate username is a generated collision, not a failed sign-in. */
+function duplicateKey(error: unknown): boolean {
+  return !!error && typeof error === 'object' && 'code' in error && error.code === 11000
+}
+
+/**
+ * A username base from a sign-in seed. A phone number sanitizes to digits only,
+ * and a username must never expose it, so a seed with no letters gets the
+ * neutral base instead.
+ */
+function usernameBase(seed: string): string {
+  const base = seed
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 20)
+  return /[a-z]/.test(base) ? base : 'player'
+}
+
+/** The suffix is a parameter so a caller can retry a duplicate with a fresh one. */
+export function usernameFromSeed(seed: string, suffix = Date.now().toString(36)): string {
+  return `${usernameBase(seed)}_${suffix}`
+}
+
 const users = () => mongoColl.users()
 export const guestService = {
   async create(installId: string, sessionUserId?: string): Promise<UserDoc> {
@@ -35,13 +59,21 @@ export const guestService = {
     return users().findOne({ _id: new ObjectId(userId), guest: true, account_status: { $ne: 'banned' }, guest_purging: { $ne: true } })
   },
 
-  async claim(userId: string | undefined, identity: { email?: string; google_sub?: string; firebase_uid?: string; phone?: string }, provider: string): Promise<UserDoc | null> {
+  async claim(userId: string | undefined, identity: { email?: string; google_sub?: string; firebase_uid?: string; phone?: string }, provider: string, seed: string): Promise<UserDoc | null> {
     const guest = await this.eligible(userId)
     if (!guest) return null
-    return users().findOneAndUpdate({ _id: guest._id, guest: true, guest_merge_target: { $exists: false }, guest_purging: { $ne: true } }, {
-      $set: { ...identity, providers: [provider], signed_up_at: guest.signed_up_at ?? new Date(), updated_at: new Date() },
+    const set = (username?: string) => users().findOneAndUpdate({ _id: guest._id, guest: true, guest_merge_target: { $exists: false }, guest_purging: { $ne: true } }, {
+      $set: { ...identity, ...(username === undefined ? {} : { username }), providers: [provider], signed_up_at: guest.signed_up_at ?? new Date(), updated_at: new Date() },
       $unset: { guest: '', guest_turns: '', install_id: '' },
     }, { returnDocument: 'after' })
+    // A username the player chose is theirs; only the minted guest name is replaced.
+    if (typeof guest.username !== 'string' || !guest.username.startsWith('guest_')) return set()
+    try {
+      return await set(usernameFromSeed(seed))
+    } catch (error) {
+      if (!duplicateKey(error)) throw error
+      return set(usernameFromSeed(seed, new ObjectId().toHexString().slice(0, 10)))
+    }
   },
 
   async merge(userId: string | undefined, target: UserDoc): Promise<UserDoc> {

@@ -37,7 +37,7 @@ const mutations: Mutation[] = [
   { name: 'actions failed dispatch retains reservation', check: 'actions socket', edits: [['src/services/play-ws.service.ts', 'await billingService.release(user.id, reservationId)', 'void 0']] },
   { name: 'actions event marker dropped', check: 'actions socket', edits: [[worker, "...(job.data.kind === 'action' ? { player_action: true as const } : {}),", '...{},']] },
   { name: 'actions complete marker dropped', check: 'actions socket', edits: [[worker, '...(event.data.player_action ? { player_action: true } : {}),', '...{},']] },
-  { name: 'actions public marker stripped', check: 'actions socket', edits: [['src/services/group-chat/public.ts', "!['dm_with'", "!['player_action', 'dm_with'"]] },
+  { name: 'actions public marker stripped', check: 'actions socket', edits: [['src/services/group-chat/public.ts', "!['group_selfies', 'dm_with'", "!['group_selfies', 'player_action', 'dm_with'"]] },
   { name: 'actions messages gain marker', check: 'actions legacy', edits: [[worker, "...(job.data.kind === 'action' ? { player_action: true as const } : {}),", '...{ player_action: true as const },']] },
   { name: 'actions legacy line decorated', check: 'actions legacy', edits: [['src/services/group-chat/actions.ts', 'name: action ? `${player} did this` : player', 'name: `${player} did this`']] },
   { name: 'actions shared form speech', check: 'actions transcript', edits: [['src/services/group-chat/actions.ts', '`${player} did this`', '`${player}`']] },
@@ -267,10 +267,10 @@ const mutations: Mutation[] = [
   {"name": "direct direct helper no bystanders", "check": "direct reply helper", "edits": [["src/services/group-chat/reply.ts", "input.direct ? [] : rollBystanders", "rollBystanders"]]},
   {"name": "direct private static prompt", "check": "direct addressed retry", "edits": [["worker/processors/group-turn.processor.ts", "const system = directWith ? buildDirectStatic(baseSystem, selected[0], config.player) : baseSystem", "const system = baseSystem"]]},
   {"name": "direct read only group block", "check": "direct addressed retry", "edits": [["src/services/group-chat/prompt.ts", "if (input.groupContext) parts.push", "if (false) parts.push"]]},
-  {"name": "direct block eight messages", "check": "direct real Jess and Elena", "edits": [["worker/processors/group-turn.processor.ts", "config.player, members).slice(-8)", "config.player, members).slice(-7)"]]},
+  {"name": "direct block eight messages", "check": "direct real Jess and Elena", "edits": [["worker/processors/group-turn.processor.ts", "config.player, members, undefined, undefined, true).slice(-8)", "config.player, members, undefined, undefined, true).slice(-7)"]]},
   {"name": "direct block shared filter", "check": "direct real Jess and Elena", "edits": [["worker/processors/group-turn.processor.ts", "find({ instance_id: iid, ...groupThreadFilter() })", "find({ instance_id: iid })"]]},
   {"name": "direct recent thread filter", "check": "direct real Jess and Elena", "edits": [["worker/processors/group-turn.processor.ts", "find({ instance_id: iid, ...groupThreadFilter(directWith) }).sort", "find({ instance_id: iid }).sort"]]},
-  {"name": "direct history rendered thread", "check": "direct real Jess and Elena", "edits": [["worker/processors/group-turn.processor.ts", "groupMessages(events, instance.group_context!.player, members, directWith)", "groupMessages(events, instance.group_context!.player, members)"]]},
+  {"name": "direct history rendered thread", "check": "direct real Jess and Elena", "edits": [["worker/processors/group-turn.processor.ts", "groupMessages(events, instance.group_context!.player, members, directWith, undefined, true)", "groupMessages(events, instance.group_context!.player, members, undefined, undefined, true)"]]},
   {"name": "direct duplicate history thread", "check": "direct repeat histories", "edits": [["worker/processors/group-turn.processor.ts", "find({ instance_id: iid, ...groupThreadFilter(directWith), 'data.lines.character_id': member.id })", "find({ instance_id: iid, 'data.lines.character_id': member.id })"]]},
   {"name": "direct seed not direct duplicate history", "check": "direct repeat histories", "edits": [["worker/processors/group-turn.processor.ts", "openings: directWith ? [] : config.opening_lines,", "openings: config.opening_lines,"]]},
   {"name": "direct memory call thread", "check": "direct real Jess and Elena", "edits": [["worker/processors/group-turn.processor.ts", "thread: directWith, enabled:", "thread: undefined, enabled:"]]},
@@ -282,7 +282,7 @@ const mutations: Mutation[] = [
   {"name": "direct curation source event thread", "check": "direct turns preserve", "edits": [["worker/processors/group-turn.processor.ts", "payload: { instanceId, playerId, eventId: idString(event._id), groupMemory: true", "payload: { instanceId, playerId, eventId: idString(recent[0]._id), groupMemory: true"]]},
   {"name": "direct summary cadence", "check": "direct turns preserve", "edits": [["worker/processors/group-turn.processor.ts", "if (threadEvents % GROUP_SUMMARY_CADENCE === 0)", "if (false)"]]},
   { name: 'direct fear gate', check: 'bond fear', edits: [[worker, ' && !frightened', '']] },
-  {"name": "direct tame history", "check": "direct adult route", "edits": [["worker/processors/group-turn.processor.ts", "!(event.data.tame === true && line.name === name)", "true"]]},
+  {"name": "direct tame history", "check": "direct adult route", "edits": [["worker/processors/group-turn.processor.ts", "!(event.data.tame === true && line.name === name && !line.picture_sent)", "true"]]},
   {"name": "direct carryover member needs no tag", "check": "direct adult route", "edits": [["worker/processors/group-turn.processor.ts", "(directWith === member.id || mentionsMember(userMessage, member.name))", "mentionsMember(userMessage, member.name)"]]},
   {"name": "direct frame public thread", "check": "direct addressed retry", "edits": [["worker/processors/group-turn.processor.ts", "type: 'group_lines', instanceId, ...(directWith === undefined ? {} : { directWith }),", "type: 'group_lines', instanceId,"]]},
   {"name": "direct socket load thread", "check": "direct real load socket", "edits": [["src/services/play-ws.service.ts", "generationService.loadInstance(instanceId!, user.id, directWith)", "generationService.loadInstance(instanceId!, user.id)"]]},
@@ -769,14 +769,14 @@ const mutations: Mutation[] = [
   { name: "nway toggle earlier adult lines", check: "nway fear and consent", edits: [[worker, "sceneMembers.length && !consented ? [] : request.history", "request.history"]] },
   { name: "nway partial publish lost", check: "nway real prompts", edits: [[worker, "await redis.publish(channel, JSON.stringify({ type: 'group_lines', instanceId, turnId:", "void (channel, JSON.stringify({ type: 'group_lines', instanceId, turnId:"]] },
   { name: "nway stored time changed", check: "nway real prompts", edits: [[worker, "const lines = sceneMembers.length ? [...published, ...rest] :", "const lines = sceneMembers.length ? timeLines(reply.lines, members, new Date(), undefined, rng) :"]] },
-  { name: "nway final duplicates partial", check: "nway real prompts", edits: [[worker, "(sceneMembers.length ? rest : lines).map", "lines.map"]] },
-  { name: "nway complete loses partial", check: "nway real prompts", edits: [[worker, "narrative: event.data.ai_response, origin, lines }", "narrative: event.data.ai_response, origin, lines: rest }"]] },
+  { name: "nway final duplicates partial", check: "nway real prompts", edits: [[worker, "(sceneMembers.length ? shown.slice(published.length) : shown).map", "shown.map"]] },
+  { name: "nway complete loses partial", check: "nway real prompts", edits: [[worker, "narrative: event.data.ai_response, origin, lines: shown }", "narrative: event.data.ai_response, origin, lines: rest }"]] },
   { name: "nway scene storage dropped", check: "nway real prompts", edits: [[worker, "...(sceneMembers.length ? { scene_members: sceneMembers } : {}),", "...{},"]] },
   { name: "nway empty scene key", check: "nway legacy", edits: [[worker, "...(sceneMembers.length ? { scene_members: sceneMembers } : {}),", "scene_members: sceneMembers,"]] },
   { name: "nway continuation involvement", check: "nway continuation", edits: [[worker, "const involved = carriesMembers || members.some", "const involved = members.some"]] },
   { name: "nway tame other views removed", check: "nway tame members", edits: [[memoryFile, "writer === line.character_id && event.data.tame_members?.includes(writer)", "event.data.tame_members?.includes(line.character_id)"]] },
   { name: "nway tame own view kept", check: "nway tame members", edits: [[memoryFile, "writer === line.character_id && event.data.tame_members?.includes(writer)", "false"]] },
-  { name: "nway tame writer not passed", check: "nway tame members", edits: [[worker, "members, directWith, memberId)", "members, directWith)"]] },
+  { name: "nway tame writer not passed", check: "nway tame members", edits: [[worker, "members, directWith, memberId, true)", "members, directWith, undefined, true)"]] },
   { name: "nway tame wrong event key", check: "nway tame members", edits: [[worker, "{ 'data.tame_members': tame }", "{ 'data.tame': true }"]] },
   { name: "nway tame empty array", check: "nway tame members", edits: [[worker, "if (tame.length) await", "if (true) await"]] },
   { name: "nway judge single member", check: "nway tame members", edits: [[worker, "sceneMembers.length ? sceneMembers : [addressed!]", "sceneMembers.length ? sceneMembers.slice(0, 1) : [addressed!]"]] },
@@ -900,7 +900,7 @@ mutations.push(...lineReportMutations)
 
 const chatSnapshot = 'chat report snapshot', chatContext = 'chat report context'
 const chatReportMutations: Mutation[] = [
-  { name: 'chat report target refused', check: chatSnapshot, edits: [[moderationSchema, "target_type: t.Union([TargetTypeSchema, t.Literal('chat_line')]),", 'target_type: TargetTypeSchema,']] },
+  { name: 'chat report target refused', check: chatSnapshot, edits: [[moderationSchema, "target_type: t.Union([TargetTypeSchema, t.Literal('chat_line'), t.Literal('group_selfie')]),", 'target_type: TargetTypeSchema,']] },
   { name: 'chat report response shortened', check: chatSnapshot, edits: [[moderation, 'snapshot.description = event.data.ai_response', 'snapshot.description = event.data.ai_response.slice(0, 2000)']] },
   { name: 'chat report response trimmed', check: chatSnapshot, edits: [[moderation, 'snapshot.description = event.data.ai_response', 'snapshot.description = event.data.ai_response.trim()']] },
   { name: 'chat report player input substituted', check: chatSnapshot, edits: [[moderation, 'snapshot.description = event.data.ai_response', 'snapshot.description = event.data.player_input']] },
@@ -1034,6 +1034,7 @@ const ideaDirect = 'ideas in a direct thread name their thread and never reach t
 const ideaUsage = 'ideas are labelled for usage and an unprompted turn stamps its origin'
 const ideaRewind = 'ideas rewind removes them and a rewound event is never recreated'
 const ideaNoId = 'ideas writer is given no id at all'
+const ideaRequest = 'ideas call carries a schema and no hidden reasoning only for the normal writer'
 const ideaFirstTexts = 'ideas first texts only on an empty direct thread, gone after the first line and while one is pending'
 const ideaStatus = 'ideas status is picked per read from the newest device zone and never stored'
 const ideaStatusPrompt = "ideas status reaches only that member's direct thread prompt"
@@ -1054,6 +1055,15 @@ const ideaMutations: Mutation[] = [
   { name: 'ideas toggle off reaches the adult writer', check: ideaRoute, edits: [[ideaLib, 'const model = input.adult', 'const model = true']] },
   { name: 'ideas adult turn uses the normal writer', check: ideaRoute, edits: [[ideaLib, 'const model = input.adult', 'const model = false']] },
   { name: 'ideas token cap raised', check: ideaRoute, edits: [[ideaLib, 'maxTokens: GROUP_IDEAS_MAX_TOKENS,', 'maxTokens: 4096,']] },
+  { name: 'ideas normal writer loses the no-reasoning switch', check: ideaRequest, edits: [[ideaLib, 'noReasoning: true, responseSchema: GROUP_IDEAS_SCHEMA,', 'responseSchema: GROUP_IDEAS_SCHEMA,']] },
+  { name: 'ideas normal writer loses the schema', check: ideaRequest, edits: [
+    [ideaLib, 'noReasoning: true, responseSchema: GROUP_IDEAS_SCHEMA,', 'noReasoning: true,'],
+    [ideaLib, "responseFormat: { type: 'json_schema', json_schema: { name: 'group_reply_ideas', strict: true } },\n", '']] },
+  { name: 'ideas adult writer given the schema', check: ideaRequest, edits: [[ideaLib, '...(input.adult ? {} : {', '...(false ? {} : {']] },
+  { name: 'ideas adult writer given a reasoning switch', check: ideaRequest, edits: [[ideaLib, '...(input.adult ? {} : {', '...(input.adult ? { noReasoning: true } : {']] },
+  { name: 'ideas transport ignores the no-reasoning switch', check: ideaRequest, edits: [['src/ai/client.ts', '...((stream && prose) || req.noReasoning) &&', '...(stream && prose) &&']] },
+  { name: 'ideas prose or fenced reply dropped', check: ideaBadOutput, edits: [[ideaLib, "const object = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)", 'const object = raw']] },
+  { name: 'ideas unparseable reply invents an idea', check: ideaBadOutput, edits: [[ideaLib, 'try { parsed = JSON.parse(object) } catch { return [] }', "try { parsed = JSON.parse(object) } catch { return ['An invented idea.'] }"]] },
   { name: 'ideas length cap removed', check: ideaBadOutput, edits: [[ideaLib, 'if (length < 1 || length > GROUP_IDEA_MAX_CHARS) continue', 'if (length < 1) continue']] },
   { name: 'ideas duplicates kept', check: ideaBadOutput, edits: [[ideaLib, 'if (!key || seen.has(key)) continue', 'if (!key) continue']] },
   { name: 'ideas line spoken as a character kept', check: ideaBadOutput, edits: [[ideaLib, 'if (SPEAKER_PREFIX.test(text)) continue', 'if (false) continue']] },

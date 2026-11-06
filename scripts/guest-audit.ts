@@ -244,7 +244,8 @@ try {
   await check('legacy mature opt-in stays on without a timestamp; unrelated updates do not migrate it', async () => {
     const source = (await authService.signInWithGoogle('google:legacy-age@example.test')).userDoc
     await users.updateOne({ _id: source._id }, { $set: { 'preferences.nsfw_enabled': true } })
-    await authService.updatePreferences(String(source._id), { theme: 'dark' })
+    // `theme` left the writable key list; any allowed unrelated key serves.
+    await authService.updatePreferences(String(source._id), { gender: 'female' })
     const saved = await authService.getUserById(String(source._id))
     assert.equal(authService.serializeUser(saved).preferences.nsfw_enabled, true)
     assert.equal(Object.hasOwn(saved, 'age_confirmed_at'), false)
@@ -342,6 +343,7 @@ try {
     const claimed = await post('google', { id_token: 'google:claim@example.test', guest_token: guestToken }, guestToken)
     assert.equal(claimed.status, 200); assert.equal(claimed.body.user.id, guestId); assert.equal(claimed.body.new_account, true)
     assert.equal(claimed.body.user.guest, false); assert.equal(claimed.body.user.preferences.player_name, 'Guest name')
+    assert.match(claimed.body.user.username, /^claim_[a-z0-9]+$/, 'claim kept the guest username')
     assert.deepEqual(claimed.body.user.preferences.interests, ['fantasy'])
     assert.equal(claimed.body.user.preferences.nsfw_enabled, true, 'claim lost guest mature choice')
     assert.equal(claimed.body.user.age_confirmed_at, guestAge, 'claim lost age confirmation')
@@ -425,9 +427,70 @@ try {
     const created = await post('guest', { install_id: crypto.randomUUID() })
     const claimed = await post('otp/verify', { phone: '+15555550101', code: '123456', guest_token: created.body.token })
     assert.equal(claimed.status, 200); assert.equal(claimed.body.user.id, created.body.user.id)
+    assert.match(claimed.body.user.username, /^player_[a-z0-9]+$/, 'phone claim does not use a neutral base')
+    assert(!claimed.body.user.username.includes('15555550101'), 'phone claim exposed the number')
     const invalid = await post('google', { id_token: 'google:invalid-token@example.test', guest_token: 'forged' })
     assert.equal(invalid.status, 200); assert.notEqual(invalid.body.user.id, guestId)
     await assert.rejects(authService.signInWithPhoneOtp('+15555550101', 'bad', guestId))
+  })
+  await check('claim replaces a minted guest name from the seed; a chosen name is kept; a duplicate retries once', async () => {
+    const emailGuest = await newGuest()
+    const emailClaim = await authService.signInWithGoogle('google:named.claim@example.test', String(emailGuest._id))
+    assert.match(emailClaim.userDoc.username, /^named_claim_[a-z0-9]+$/, 'email claim kept the guest username')
+    assert(!emailClaim.userDoc.username.startsWith('guest_'))
+
+    const phoneGuest = await newGuest()
+    const phoneClaim = await authService.signInWithPhoneOtp('+15555550144', '123456', String(phoneGuest._id))
+    assert.match(phoneClaim.userDoc.username, /^player_[a-z0-9]+$/, 'phone claim does not use a neutral base')
+    assert(!phoneClaim.userDoc.username.includes('15555550144'), 'phone claim exposed the number')
+
+    const chosenGuest = await newGuest()
+    await users.updateOne({ _id: chosenGuest._id }, { $set: { username: 'chosen_name_1' } })
+    const kept = await authService.signInWithGoogle('google:kept.name@example.test', String(chosenGuest._id))
+    assert.equal(kept.userDoc.username, 'chosen_name_1', 'claim replaced a chosen username')
+
+    // Freeze the clock so the generated suffix is known: the first attempt must
+    // collide, and the retry must still complete the sign-in under a new name.
+    const { usernameFromSeed } = await import('../src/services/guest.service')
+    const realNow = Date.now, fixed = 1_700_000_000_000
+    Date.now = () => fixed
+    try {
+      const collidingGuest = await newGuest()
+      const collision = usernameFromSeed('duplicate.seed')
+      await users.insertOne({ _id: id(), username: collision, guest: false })
+      let claimed: Awaited<ReturnType<typeof authService.signInWithGoogle>> | undefined
+      try { claimed = await authService.signInWithGoogle('google:duplicate.seed@example.test', String(collidingGuest._id)) }
+      catch (error) { assert.fail(`duplicate username retry threw: ${String(error)}`) }
+      assert.ok(claimed)
+      assert.match(claimed.userDoc.username, /^duplicate_seed_/, 'duplicate retry lost the seed base')
+      assert.notEqual(claimed.userDoc.username, collision, 'duplicate retry reused the colliding username')
+      assert.equal(await users.countDocuments({ username: collision }), 1, 'duplicate retry wrote a null or duplicate name')
+    } finally { Date.now = realNow }
+  })
+  await check('fix-guest-usernames selects only signed-in guest_ names, dry runs by default and needs --yes-db', async () => {
+    const { repairGuestUsernames, repairSeed } = await import('./fix-guest-usernames')
+    const emailRow = id(), noEmailRow = id()
+    await users.insertMany([
+      { _id: emailRow, username: 'guest_emailcase', email: 'local.part@example.test' },
+      { _id: noEmailRow, username: 'guest_noemailcase', phone: '+15555550166' },
+      { _id: id(), username: 'already_named_1', guest: false },
+    ])
+    const guest = await newGuest()
+    const before = await users.find({ _id: { $in: [emailRow, noEmailRow, guest._id] } }).sort({ _id: 1 }).toArray()
+    const dry = await repairGuestUsernames(users, { apply: false, dbName: db.databaseName })
+    assert(dry.ids.includes(String(emailRow)) && dry.ids.includes(String(noEmailRow)), 'dry run missed a signed-in guest name')
+    assert(!dry.ids.includes(String(guest._id)), 'dry run selected a live guest')
+    assert.equal(dry.selected, 2); assert.equal(dry.renamed, 0, 'dry run wrote')
+    assert.deepEqual(await users.find({ _id: { $in: before.map(row => row._id) } }).sort({ _id: 1 }).toArray(), before, 'dry run wrote')
+    assert.equal(repairSeed({}), 'player'); assert.equal(repairSeed({ email: 'A.B@example.test' }), 'A.B')
+    await assert.rejects(repairGuestUsernames(users, { apply: true, dbName: db.databaseName }), /--yes-db/, 'apply without --yes-db was allowed')
+    await assert.rejects(repairGuestUsernames(users, { apply: true, yesDb: `${db.databaseName}_other`, dbName: db.databaseName }), /--yes-db/, 'apply accepted another database name')
+    const applied = await repairGuestUsernames(users, { apply: true, yesDb: db.databaseName, dbName: db.databaseName })
+    assert.equal(applied.renamed, 2)
+    assert.match((await users.findOne({ _id: emailRow }))!.username, /^local_part_[a-z0-9]+$/)
+    assert.match((await users.findOne({ _id: noEmailRow }))!.username, /^player_[a-z0-9]+$/)
+    assert(!(await users.findOne({ _id: noEmailRow }))!.username.includes('15555550166'))
+    assert.ok(await users.findOne({ _id: guest._id, username: { $regex: '^guest_' } }), 'apply renamed a live guest')
   })
   await check('merge moves every inventoried reference, preserves target rows, invalidates caches and is a no-op on retry', async () => {
     const source = await newGuest()
@@ -450,6 +513,7 @@ try {
     assert.equal(result.userDoc.age_confirmed_at?.getTime(), sourceAge.getTime(), 'merge lost guest age confirmation')
     assert.equal(result.userDoc.preferences.nsfw_enabled, false, 'merge overwrote target mature choice')
     assert.equal(result.userDoc.preferences.player_name, 'Existing name'); assert.deepEqual(result.userDoc.preferences.interests, ['existing-interest'])
+    assert.equal(result.userDoc.username, targetBefore!.username, 'merge changed the target username')
     assert.equal((await db.collection('content_reports').findOne({ _id: duplicateReport._id }))!.status, 'dismissed')
     assert.equal(result.userDoc.token_balance, 9001); assert.equal(result.userDoc.created_at.getTime(), targetBefore!.created_at.getTime())
     for (const { collection, doc } of fixtures.preserved) assert.deepEqual(await db.collection(collection).findOne({ _id: doc._id }), doc, `overwrote target ${collection}`)

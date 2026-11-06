@@ -665,7 +665,7 @@ mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator'
       if (queued instanceof Error) throw queued
       return { content, model: request.model }
     }
-    writerCalls.push(request); await writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; if (response && typeof response === 'object') return { ...response, model: request.model }; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, isEmbedTimeout: () => false,
+    writerCalls.push(request); await writerHook?.(request); const response = modelReplies.shift(); if (response instanceof Error) throw response; if (response && typeof response === 'object') return { ...response, model: request.model }; return { content: response ?? `${names[0]}: Fresh response ${turnNumber++}`, model: request.model } }, embedQuery: unavailable, embedBatch: unavailable, callLLMStream: unavailable, callLLMStreamWithFallback: unavailable, generateImage: unavailable, isEmbedTimeout: () => false,
 }))
 const { memoryProcessor, buildMemoryCurationRequest } = await import('../worker/processors/memory.processor')
 const { summaryProcessor } = await import('../worker/processors/summary.processor')
@@ -5689,10 +5689,37 @@ await check('ideas writer route follows the turn and never reaches adult with th
   assert.equal(ideaCalls.at(-1)!.model, 'fake-safe')
 })
 
+await check('ideas call carries a schema and no hidden reasoning only for the normal writer', async () => {
+  const { buildChatRequest } = await import('../src/ai/client')
+  const transport = (request: Row) => buildChatRequest(request as unknown as Parameters<typeof buildChatRequest>[0]).params as Row
+  const source = await ideasSource()
+  await ideasStart()
+  const cast = ideaCast()
+  await ideasTurn({ line: 'A plain reply.', ideas: 'A plain idea.', data: { userMessage: `@${cast[0].name} hello` } })
+  assert.equal(ideaCalls.length, 1)
+  assert.equal(ideaCalls[0].model, 'fake-safe')
+  const normal = transport(ideaCalls[0])
+  assert.equal(normal.response_format.type, 'json_schema', 'the normal writer must receive the ideas schema')
+  assert.equal(normal.response_format.json_schema.name, 'group_reply_ideas')
+  assert.equal(normal.response_format.json_schema.strict, true)
+  assert.deepEqual(normal.response_format.json_schema.schema, ideaCalls[0].responseSchema)
+  assert.deepEqual(normal.reasoning, { enabled: false }, 'the normal writer must not spend the short budget on hidden reasoning')
+  await adultStart(source)
+  const adultCast = ideaCast()
+  rows('events').push(...[2, 3].map(sequence => ({ ...clone(rows('events')[0]), _id: new ObjectId(), sequence, type: 'intimate' })))
+  await ideasTurn({ line: 'An explicit reply.', ideas: 'An explicit idea.', data: { userMessage: `@${adultCast[0].name} keep going` } })
+  assert.equal(ideaCalls.at(-1)!.model, 'fake-adult')
+  const adult = transport(ideaCalls.at(-1)!)
+  assert.equal(Object.hasOwn(adult, 'response_format'), false, 'the adult writer refuses a schema')
+  assert.equal(Object.hasOwn(adult, 'reasoning'), false, 'the adult writer refuses a reasoning switch')
+})
+
 await check('ideas bad writer output is dropped rather than sent', async () => {
   const source = await ideasSource()
   const cases: Array<[string, string[]]> = [
     ['not json', []],
+    ['Here you go: {"ideas":["A wrapped idea."]} Enjoy.', ['A wrapped idea.']],
+    ['```json\n{"ideas":["A fenced idea."]}\n```', ['A fenced idea.']],
     ['{"ideas":"one"}', []],
     ['{"ideas":[{"text":"An object."}]}', []],
     ['{"ideas":[""]}', []],
