@@ -1,4 +1,5 @@
 import { recordGroupPlayerWrite } from '../../src/services/group-chat/notifications'
+import { attachDirectRowEvent, recordStoryReply } from '../../src/services/notifications.service'
 import { reserveUnpromptedCall, utcDay } from '../../src/services/group-chat/notification-caps'
 import { groupPlayerLine, groupLineText, groupSpeaker, validateGroupAction } from '../../src/services/group-chat/actions'
 import type { Job } from 'bullmq'
@@ -346,6 +347,18 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
         type: 'generation_complete', instanceId, jobId: String(job.id),
         event: { id: idString(event._id), sequence, ...(event.data.player_action ? { player_action: true } : {}), player_input: event.data.player_input, narrative: event.data.ai_response, origin, lines: shown },
       }))
+      // A reply the player started is news for them once it has finished; an
+      // unprompted message's bell row is tied to the turn it became.
+      if (origin === 'player') {
+        const first = shown[0]
+        const speaker = first ? members.find(member => member.id === first.character_id) : undefined
+        await recordStoryReply({ playerId, instanceId, eventId: idString(event._id),
+          thread: directWith === undefined ? 'room' : 'direct',
+          ...(first ? { characterId: first.character_id } : {}),
+          ...(speaker ? { name: speaker.name } : {}) })
+      } else if (origin === 'unprompted' && directWith) {
+        await attachDirectRowEvent({ playerId, instanceId, characterId: directWith, eventId: idString(event._id) })
+      }
     } finally { void dispatchPostProcessOutbox().catch(() => {}) }
     const selfies = startGroupSelfies(event, { rng: deps.selfieRng, now: deps.now })
     deps.onBackground?.(selfies)

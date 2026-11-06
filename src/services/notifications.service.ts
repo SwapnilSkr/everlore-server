@@ -4,25 +4,34 @@ import { getRedisClient } from '../config/redis'
 import { log } from '../utils/logger'
 import { HttpError } from '../utils/http-error'
 import { parseObjectId } from '../utils/mongo-id'
-import type { NotificationType, PlayerNotificationDoc } from '../models/notification.model'
+import { storyReplyNotification } from './push/fcm'
+import { pushToPlayerDevices } from './push/devices'
+import type { NotificationThread, NotificationType, PlayerNotificationDoc } from '../models/notification.model'
 
 /**
  * The in-app bell (group-chat.md, "In-app notifications").
  *
- * Three events leave a row: an unprompted direct message is scheduled, a
- * picture the player did not tap for is ready, and a film finishes. Every row
- * is written through {@link recordNotification} in the same path that already
- * tells the app, and a failure there is only ever logged — the message, picture
- * or film is never lost because a bell row could not be written.
+ * Four events leave a row: an unprompted direct message is scheduled, a picture
+ * the player did not tap for is ready, a film finishes, and a reply the player
+ * started finishes while no socket of theirs is on that save. Every row is
+ * written through {@link recordNotification} (or {@link recordStoryReply}, which
+ * replaces rather than stacks) in the same path that already tells the app, and
+ * a failure there is only ever logged — the message, picture, film or reply is
+ * never lost because a bell row could not be written.
  *
  * Rows hold no chat text. `title`/`body` come only from the contract's words
  * and a character's name; `image_url` is that character's portrait or the
- * film's cover. Optional keys are omitted rather than written null.
+ * film's cover. Optional keys are omitted rather than written null, and
+ * `event_id` is internal: it is never on the wire.
  */
 
 export const NOTIFICATIONS_PAGE_SIZE = 30
 export const NOTIFICATIONS_MAX_PER_PLAYER = 100
 export const NOTIFICATIONS_READ_IDS_MAX = 100
+/** How long a socket's claim on one save outlives its last frame. */
+export const WATCHING_TTL_SECONDS = 120
+/** How long a player counts as having the app open; every frame renews it. */
+export const ONLINE_TTL_SECONDS = 15 * 60
 
 /** What one row looks like on the wire: dates are ISO, ids are hex strings. */
 export interface NotificationItem {
@@ -30,6 +39,8 @@ export interface NotificationItem {
   type: NotificationType
   instance_id: string
   character_id?: string
+  thread?: NotificationThread
+  media_id?: string
   title: string
   body: string
   image_url?: string
@@ -37,11 +48,22 @@ export interface NotificationItem {
   read_at?: string
 }
 
-/** The contract's words, and the character's name as the row's heading. */
-export function notificationWords(type: NotificationType, name?: string): { title: string; body: string } | undefined {
-  if (type === 'film_ready') return { title: 'Your film is ready', body: 'Your film is ready' }
-  if (!name) return undefined
-  return { title: name, body: `${name} sent you ${type === 'group_direct' ? 'a message' : 'a picture'}` }
+/**
+ * The contract's words. A film and a story row lead with the save's own title;
+ * a group reply names the speaker and a normal-world reply cannot. A group
+ * without a speaker has no honest sentence, so it is refused.
+ */
+export function notificationWords(
+  type: NotificationType,
+  options: { name?: string; title?: string } = {},
+): { title: string; body: string } | undefined {
+  if (type === 'film_ready') return options.title ? { title: options.title, body: 'Your film is ready' } : undefined
+  if (type === 'story_reply') {
+    if (!options.title) return undefined
+    return { title: options.title, body: options.name ? `${options.name} replied` : 'Your story has moved on' }
+  }
+  if (!options.name) return undefined
+  return { title: options.name, body: `${options.name} sent you ${type === 'group_direct' ? 'a message' : 'a picture'}` }
 }
 
 export function publicNotification(row: PlayerNotificationDoc): NotificationItem {
@@ -50,6 +72,8 @@ export function publicNotification(row: PlayerNotificationDoc): NotificationItem
     type: row.type,
     instance_id: row.instance_id.toHexString(),
     ...(row.character_id ? { character_id: row.character_id } : {}),
+    ...(row.thread ? { thread: row.thread } : {}),
+    ...(row.media_id ? { media_id: row.media_id } : {}),
     title: row.title,
     body: row.body,
     ...(row.image_url ? { image_url: row.image_url } : {}),
@@ -74,6 +98,16 @@ async function trimToCap(playerId: ObjectId): Promise<void> {
   if (oldest.length) {
     await mongoColl.playerNotifications().deleteMany({ _id: { $in: oldest.map(row => row._id) } })
   }
+}
+
+/** The save's own title: the world's, or a group's. Both live on its template. */
+async function worldTitle(instanceId: string): Promise<string | undefined> {
+  const instance = await mongoColl.worldInstances().findOne({ _id: parseObjectId(instanceId) },
+    { projection: { template_id: 1 } })
+  if (!instance) return undefined
+  const template = await mongoColl.worldTemplates().findOne({ _id: instance.template_id },
+    { projection: { title: 1 } })
+  return typeof template?.title === 'string' && template.title ? template.title : undefined
 }
 
 /** A character's stored face, if they have one. A missing face is no image, never an error. */
@@ -106,9 +140,14 @@ export async function recordNotification(input: {
   characterId?: string
   name?: string
   imageUrl?: string
+  title?: string
+  /** Internal: the event this row is about. Never sent. */
+  eventId?: string
+  mediaId?: string
+  thread?: NotificationThread
 }): Promise<void> {
   try {
-    const words = notificationWords(input.type, input.name)
+    const words = notificationWords(input.type, { name: input.name, title: input.title })
     if (!words) return
     const row: PlayerNotificationDoc = {
       _id: new ObjectId(),
@@ -116,6 +155,9 @@ export async function recordNotification(input: {
       type: input.type,
       instance_id: parseObjectId(input.instanceId),
       ...(input.characterId ? { character_id: input.characterId } : {}),
+      ...(input.eventId ? { event_id: parseObjectId(input.eventId) } : {}),
+      ...(input.mediaId ? { media_id: input.mediaId } : {}),
+      ...(input.thread ? { thread: input.thread } : {}),
       title: words.title,
       body: words.body,
       ...(input.imageUrl ? { image_url: input.imageUrl } : {}),
@@ -133,9 +175,9 @@ export async function recordNotification(input: {
   }
 }
 
-/** A character's unprompted message is scheduled (the same path that pushes). */
+/** A character's unprompted message is scheduled: always a direct thread. */
 export async function recordDirectMessage(input: { playerId: string; instanceId: string; characterId: string; name: string }): Promise<void> {
-  await recordNotification({ ...input, type: 'group_direct',
+  await recordNotification({ ...input, type: 'group_direct', thread: 'direct',
     imageUrl: await memberPortrait(input.playerId, input.instanceId, input.characterId) })
 }
 
@@ -150,6 +192,8 @@ export async function recordSelfieReady(mediaId: string): Promise<void> {
     const playerId = row.player_id.toHexString(), instanceId = row.instance_id.toHexString()
     await recordNotification({ playerId, type: 'group_selfie', instanceId,
       characterId: row.character_id.toHexString(), name: card.canonical_name,
+      thread: row.direct_with === undefined ? 'room' : 'direct',
+      ...(row.event_id ? { eventId: row.event_id.toHexString() } : {}),
       imageUrl: await memberPortrait(playerId, instanceId, row.character_id.toHexString()) })
   } catch (error) {
     log.warn('notification.record_failed', { type: 'group_selfie', error: error instanceof Error ? error.message : String(error) })
@@ -161,10 +205,134 @@ export async function recordFilmReady(mediaId: string): Promise<void> {
   try {
     const row = await mongoColl.mediaAssets().findOne({ _id: parseObjectId(mediaId) })
     if (!row || row.kind !== 'video' || row.notified_at || !row.instance_id) return
-    await recordNotification({ playerId: row.player_id.toHexString(), type: 'film_ready',
-      instanceId: row.instance_id.toHexString(), ...(row.poster_url ? { imageUrl: row.poster_url } : {}) })
+    const instanceId = row.instance_id.toHexString()
+    const title = await worldTitle(instanceId)
+    if (!title) return
+    await recordNotification({ playerId: row.player_id.toHexString(), type: 'film_ready', instanceId, title,
+      mediaId: row._id.toHexString(),
+      ...(row.event_id ? { eventId: row.event_id.toHexString() } : {}),
+      ...(row.poster_url ? { imageUrl: row.poster_url } : {}) })
   } catch (error) {
     log.warn('notification.record_failed', { type: 'film_ready', error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+/**
+ * A reply the player started has finished. The bell row is for the player who
+ * is elsewhere: when a socket of theirs is on that save they are watching the
+ * reply arrive, so nothing is written and nothing is pushed. One unread row per
+ * save — a newer reply replaces the older unread one's time and words instead of
+ * stacking a second.
+ */
+export async function recordStoryReply(input: {
+  playerId: string
+  instanceId: string
+  eventId?: string
+  /** Set for a group save: which place a tap opens. */
+  thread?: NotificationThread
+  characterId?: string
+  name?: string
+}): Promise<void> {
+  try {
+    if (await isWatching(input.playerId, input.instanceId)) return
+    const title = await worldTitle(input.instanceId)
+    if (!title) return
+    // A group row names its speaker; without one there is no honest sentence.
+    if (input.thread && !input.name) return
+    const words = notificationWords('story_reply', { title, name: input.thread ? input.name : undefined })
+    if (!words) return
+    const pid = parseObjectId(input.playerId), iid = parseObjectId(input.instanceId)
+    const coll = mongoColl.playerNotifications()
+    const next = {
+      ...(input.eventId ? { event_id: parseObjectId(input.eventId) } : {}),
+      ...(input.characterId ? { character_id: input.characterId } : {}),
+      ...(input.thread ? { thread: input.thread } : {}),
+      title: words.title,
+      body: words.body,
+      created_at: new Date(),
+    }
+    const older = await coll.findOne({ player_id: pid, instance_id: iid, type: 'story_reply', read_at: { $exists: false } })
+    if (older) await coll.updateOne({ _id: older._id }, { $set: next })
+    else {
+      await coll.insertOne({ _id: new ObjectId(), player_id: pid, instance_id: iid, type: 'story_reply', ...next } as PlayerNotificationDoc)
+      await trimToCap(pid)
+    }
+    const saved = await coll.findOne({ player_id: pid, instance_id: iid, type: 'story_reply', read_at: { $exists: false } })
+    if (!saved) return
+    // The frame is only worth sending to a player who has the app open.
+    if (await isPlayerOnline(input.playerId)) {
+      const unread = await unreadCount(pid)
+      await getRedisClient().publish(`user:${input.playerId}:events`,
+        JSON.stringify({ type: 'notification', item: publicNotification(saved), unread }))
+    }
+    // Sent after the row and the frame, and never awaited: a slow provider must
+    // not hold a finished turn (or its lock) open.
+    void pushToPlayerDevices(input.playerId,
+      storyReplyNotification(words.title, words.body, input.instanceId, input.thread))
+  } catch (error) {
+    log.warn('notification.record_failed', { type: 'story_reply', error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+/** The reply a scheduled direct message was waiting for now exists: tie the row
+ *  to it, so a rewind over that reply removes the row with it. */
+export async function attachDirectRowEvent(input: { playerId: string; instanceId: string; characterId: string; eventId: string }): Promise<void> {
+  try {
+    await mongoColl.playerNotifications().updateOne({
+      player_id: parseObjectId(input.playerId),
+      instance_id: parseObjectId(input.instanceId),
+      character_id: input.characterId,
+      type: 'group_direct',
+      read_at: { $exists: false },
+      event_id: { $exists: false },
+    }, { $set: { event_id: parseObjectId(input.eventId) } })
+  } catch (error) {
+    log.warn('notification.mark_failed', { error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+/**
+ * A socket is looking at a save. Redis is the shared place the worker can read,
+ * since the sockets live in the server process; a claim expires on its own, so
+ * a crash can only delay a bell row by {@link WATCHING_TTL_SECONDS}.
+ */
+export async function markWatching(playerId: string, instanceId: string): Promise<void> {
+  try { await getRedisClient().set(`watching:${playerId}:${instanceId}`, '1', 'EX', WATCHING_TTL_SECONDS) } catch { /* the bell is not worth failing a frame */ }
+}
+
+/** The last socket on that save closed. */
+export async function clearWatching(playerId: string, instanceId: string): Promise<void> {
+  try { await getRedisClient().del(`watching:${playerId}:${instanceId}`) } catch { /* see markWatching */ }
+}
+
+export async function isWatching(playerId: string, instanceId: string): Promise<boolean> {
+  try { return (await getRedisClient().get(`watching:${playerId}:${instanceId}`)) !== null } catch { return false }
+}
+
+/** A player has the app open somewhere; renewed by every socket frame. */
+export async function markPlayerOnline(playerId: string): Promise<void> {
+  try { await getRedisClient().set(`online:${playerId}`, '1', 'EX', ONLINE_TTL_SECONDS) } catch { /* see markWatching */ }
+}
+
+export async function clearPlayerOnline(playerId: string): Promise<void> {
+  try { await getRedisClient().del(`online:${playerId}`) } catch { /* see markWatching */ }
+}
+
+export async function isPlayerOnline(playerId: string): Promise<boolean> {
+  try { return (await getRedisClient().get(`online:${playerId}`)) !== null } catch { return false }
+}
+
+/**
+ * A rewind removes turns: the rows tied to them go with the media, so the bell
+ * never opens something the player just un-wrote. Called next to the media
+ * purge; a failure leaves the rows and is only logged.
+ */
+export async function purgeNotificationsForEvents(instanceId: ObjectId, eventIds: ObjectId[]): Promise<void> {
+  if (!eventIds.length) return
+  try {
+    await mongoColl.playerNotifications().deleteMany({ instance_id: instanceId, event_id: { $in: eventIds } })
+  } catch (error) {
+    log.warn('notification.purge_failed', { error: error instanceof Error ? error.message : String(error) })
   }
 }
 
@@ -187,15 +355,26 @@ export async function listNotifications(playerId: string, query: { before?: unkn
 }
 
 /**
- * `POST /notifications/read`. Another player's id is silently not touched: the
- * filter is the player's own rows, so a stranger's id matches nothing.
+ * `POST /notifications/read` with `{ ids }`, `{ all: true }` or `{ media_id }`
+ * (a film opened from Keepsakes). Another player's id or film is silently not
+ * touched: the filter is the player's own rows. Mixing `media_id` with ids or
+ * all is refused, so one call always means one thing.
  */
 export async function markNotificationsRead(playerId: string, body: unknown): Promise<{ unread: number }> {
   const pid = parseObjectId(playerId)
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'That request could not be read.')
   const input = body as Record<string, unknown>
-  if (Object.keys(input).some(key => key !== 'ids' && key !== 'all')) throw new HttpError(400, 'That request could not be read.')
+  const keys = Object.keys(input)
+  if (keys.some(key => key !== 'ids' && key !== 'all' && key !== 'media_id')) throw new HttpError(400, 'That request could not be read.')
   if (input.all !== undefined && input.all !== true) throw new HttpError(400, 'That request could not be read.')
+  if (input.media_id !== undefined) {
+    if (keys.length !== 1) throw new HttpError(400, 'That request could not be read.')
+    if (typeof input.media_id !== 'string' || !/^[a-fA-F0-9]{24}$/u.test(input.media_id)) throw new HttpError(400, 'That request could not be read.')
+    await mongoColl.playerNotifications().updateMany({
+      player_id: pid, type: 'film_ready', media_id: input.media_id, read_at: { $exists: false },
+    }, { $set: { read_at: new Date() } })
+    return { unread: await unreadCount(pid) }
+  }
   if (input.all === true && input.ids !== undefined) throw new HttpError(400, 'That request could not be read.')
   if (input.all === true) {
     await mongoColl.playerNotifications().updateMany({ player_id: pid, read_at: { $exists: false } }, { $set: { read_at: new Date() } })
@@ -221,6 +400,21 @@ export async function markThreadRead(input: { playerId: string; instanceId: stri
       player_id: parseObjectId(input.playerId),
       instance_id: parseObjectId(input.instanceId),
       character_id: input.characterId,
+      read_at: { $exists: false },
+    }, { $set: { read_at: new Date() } })
+  } catch (error) {
+    log.warn('notification.mark_failed', { error: error instanceof Error ? error.message : String(error) })
+  }
+}
+
+/** Opening a save clears the reply rows it gathered while the player was away.
+ *  Its thread rows are cleared by the thread's own open call. */
+export async function markSaveStoryRepliesRead(input: { playerId: string; instanceId: string }): Promise<void> {
+  try {
+    await mongoColl.playerNotifications().updateMany({
+      player_id: parseObjectId(input.playerId),
+      instance_id: parseObjectId(input.instanceId),
+      type: 'story_reply',
       read_at: { $exists: false },
     }, { $set: { read_at: new Date() } })
   } catch (error) {

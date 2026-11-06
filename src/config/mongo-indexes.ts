@@ -51,6 +51,9 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     options: { name: 'idx_player_notifications_player_id' } },
   { collection: COLLECTIONS.player_notifications, key: { player_id: 1, read_at: 1 },
     options: { name: 'idx_player_notifications_player_unread' } },
+  // A rewind deletes the rows tied to the turns it removes, in one pass.
+  { collection: COLLECTIONS.player_notifications, key: { instance_id: 1, event_id: 1 },
+    options: { name: 'idx_player_notifications_instance_event' } },
   { collection: COLLECTIONS.player_notifications, key: { created_at: 1 },
     options: { name: 'ttl_player_notifications_30d', expireAfterSeconds: 60 * 60 * 24 * 30 } },
   { collection: COLLECTIONS.media_assets, key: { cache_key: 1 }, options: { unique: true } },

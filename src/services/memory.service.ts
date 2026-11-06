@@ -3,6 +3,7 @@ import { resolveGroupThread } from './group-chat/threads'
 import { groupThreadFilter } from './group-chat/memory'
 import { publicGroupData } from './group-chat/public'
 import { purgeMedia } from './media/deletion'
+import { purgeNotificationsForEvents } from './notifications.service'
 import { spokenLineUpdate, publishSpokenLines, publicMediaEvent, withTurnMedia, wireSpokenLines } from './media/events'
 import { randomUUID } from 'crypto'
 import { env } from '../config/env'
@@ -1710,6 +1711,9 @@ export const memoryService = {
       sequence: { $gte: sequence },
     })
     await purgeMedia({ instance_id: iid, event_id: { $in: doomedIds } })
+    // The bell rows tied to those turns go with their media: nothing may open
+    // a reply the player just un-wrote.
+    await purgeNotificationsForEvents(iid, doomedIds)
 
     // 3b. Rebuild the character codex as an EXACT projection of the surviving
     // ledger. The per-turn codex deltas are stored on each event (like

@@ -11,11 +11,15 @@ import { acquireGenerationTurn, releaseGenerationLock, generationLockKey } from 
 import { billingService } from './billing.service'
 import { authService } from './auth.service'
 import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
+import { clearPlayerOnline, clearWatching, markPlayerOnline, markSaveStoryRepliesRead, markWatching } from './notifications.service'
 
 /** Underlying Bun socket — stable identity; Elysia passes a new `ElysiaWS` wrapper per event. */
 type RawWs = { send: (data: string) => void }
 
 const activeConnections = new Map<string, Set<RawWs>>()
+/** Which save each socket is looking at, so a close can tell whether another
+ *  socket of the same player still watches it. */
+const watchedBySocket = new Map<string, Map<RawWs, string>>()
 
 /** Closes all WebSocket connections for a user (e.g. after account deletion). */
 export function disconnectUserSockets(userId: string): void {
@@ -31,6 +35,8 @@ export function disconnectUserSockets(userId: string): void {
   }
 
   activeConnections.delete(userId)
+  watchedBySocket.delete(userId)
+  void clearPlayerOnline(userId)
   getRedisSubscriber()
     .unsubscribe(`user:${userId}:events`)
     .catch(() => {})
@@ -78,6 +84,8 @@ type WsUpgradeData = {
   query?: { token?: string }
   jwt: { verify: (t: string) => Promise<unknown> }
   _user?: AuthUser
+  /** The save this socket last loaded or acted in; the bell reads it as "watching". */
+  instanceId?: string
 }
 
 function getWsData(ws: { data: WsUpgradeData }): WsUpgradeData {
@@ -86,6 +94,27 @@ function getWsData(ws: { data: WsUpgradeData }): WsUpgradeData {
 
 function getRawSocket(ws: PlayWs): RawWs {
   return (ws as unknown as { raw: RawWs }).raw
+}
+
+/**
+ * The socket is on this save: remember it on the socket (so a close can tell
+ * whether the player still watches it elsewhere) and in Redis (so the worker,
+ * which never sees this process's sockets, knows the reply is being watched and
+ * leaves the bell alone).
+ */
+async function watchSave(ws: PlayWs, userId: string, instanceId: string): Promise<void> {
+  const raw = getRawSocket(ws)
+  const previous = getWsData(ws).instanceId
+  let sockets = watchedBySocket.get(userId)
+  if (!sockets) { sockets = new Map(); watchedBySocket.set(userId, sockets) }
+  sockets.set(raw, instanceId)
+  getWsData(ws).instanceId = instanceId
+  // Leaving a save for another stops watching the first, unless another socket
+  // of this player is still there.
+  if (previous && previous !== instanceId && ![...sockets.values()].includes(previous)) {
+    await clearWatching(userId, previous)
+  }
+  await markWatching(userId, instanceId)
 }
 
 /**
@@ -154,6 +183,7 @@ export const playWsService = {
       await subscriber.subscribe(`user:${user.id}:events`)
     }
 
+    await markPlayerOnline(user.id)
     ws.send(JSON.stringify({ type: 'connected', userId: user.id }))
   },
 
@@ -181,6 +211,14 @@ export const playWsService = {
       recordLastActive(user.id)
       user.tier = live.tier
     }
+
+    // Any frame keeps the player "open", and any frame naming a save moves the
+    // socket's claim to it; a bare ping renews whichever save it is already on.
+    await markPlayerOnline(user.id)
+    const frameInstance = (data as { instance_id?: unknown }).instance_id
+    const watched = getWsData(ws).instanceId
+    if (typeof frameInstance === 'string' && frameInstance) await watchSave(ws, user.id, frameInstance)
+    else if (watched) await markWatching(user.id, watched)
 
     if (action !== 'ping') {
       log.info('ws.message', {
@@ -411,6 +449,9 @@ export const playWsService = {
           // Replies to concurrent loads can overtake each other, so a thread's answer names its thread.
           // Faces come from the template read on this request, so art published later still reaches an old save.
           ws.send(JSON.stringify({ type: 'instance_loaded', ...(directWith === undefined ? {} : { directWith }), data: state.template?.kind === 'group' ? publicGroupPayload(responseState, state.template) : responseState }))
+          // Entering a save is opening it: the replies it gathered while the
+          // player was away have been seen.
+          if (instanceId) await markSaveStoryRepliesRead({ playerId: user.id, instanceId })
         } catch (err: unknown) {
           ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.load_instance', userId: user.id }) }))
         }
@@ -429,18 +470,26 @@ export const playWsService = {
     }
   },
 
-  handleClose(ws: PlayWs) {
+  async handleClose(ws: PlayWs) {
     const user = getWsData(ws)._user
-    if (user) {
-      const connections = activeConnections.get(user.id)
-      if (connections) {
-        connections.delete(getRawSocket(ws))
-        if (connections.size === 0) {
-          activeConnections.delete(user.id)
-          const subscriber = getRedisSubscriber()
-          subscriber.unsubscribe(`user:${user.id}:events`).catch(() => {})
-        }
-      }
+    if (!user) return
+    const raw = getRawSocket(ws)
+    const instanceId = getWsData(ws).instanceId
+    const watched = watchedBySocket.get(user.id)
+    watched?.delete(raw)
+    if (!watched?.size) watchedBySocket.delete(user.id)
+    // Another socket of this player may still be on the same save.
+    if (instanceId && !(watched && [...watched.values()].includes(instanceId))) {
+      await clearWatching(user.id, instanceId)
+    }
+    const connections = activeConnections.get(user.id)
+    if (!connections) return
+    connections.delete(raw)
+    if (connections.size === 0) {
+      activeConnections.delete(user.id)
+      await clearPlayerOnline(user.id)
+      const subscriber = getRedisSubscriber()
+      subscriber.unsubscribe(`user:${user.id}:events`).catch(() => {})
     }
   },
 }

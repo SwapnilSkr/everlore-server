@@ -6,6 +6,7 @@ import { connectMongo } from '../src/config/mongo'
 import { connectRedis, getQueueRedisClient, getRedisClient } from '../src/config/redis'
 import { env } from '../src/config/env'
 import { generationProcessor } from './processors/generation.processor'
+import { recordStoryReply } from '../src/services/notifications.service'
 import { generationLockKey, releaseGenerationLock, startGenerationLockHeartbeat } from '../src/utils/generation-lock'
 import { memoryProcessor } from './processors/memory.processor'
 import { summaryProcessor } from './processors/summary.processor'
@@ -84,7 +85,13 @@ async function main() {
       String(job.id),
     )
     try {
-      return await generationProcessor(job)
+      const result = await generationProcessor(job)
+      // A turn the player started has finished. Group turns leave their own
+      // row inside the group processor, and a replay rewrites an old turn.
+      if (result?.eventId && !job.data?.isContinuation && job.data?.mode !== 'replay' && job.data?.session?.kind !== 'group') {
+        await recordStoryReply({ playerId, instanceId, eventId: result.eventId })
+      }
+      return result
     } finally {
       stopHeartbeat()
       // Success has already promoted the successor atomically. Failure (also

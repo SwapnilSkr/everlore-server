@@ -7,9 +7,12 @@
  *
  * Covered: the exact words with no chat text; another player's GET and read see
  * or change nothing; paging and the unread count; the 100-row cap; both purge
- * paths; the frame reaching only its owner; read on open; a record failure
- * never failing the send; and updatePreferences refusing an unknown key. Every
- * check is shown to bite by a reversible source mutation (see the task report).
+ * paths; the frame reaching only its owner; read on open; read by film; a
+ * record failure never failing the send; updatePreferences refusing an unknown
+ * key; and the story row: written only when no socket watches the save, one
+ * unread per save, tied to its turn so a rewind removes it, pushed only with
+ * the switch on, and marked read when the save is opened. Every check is shown
+ * to bite by a reversible source mutation (see the task report).
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -136,11 +139,12 @@ function collection(name: string) {
 }
 
 const published: Array<{ channel: string; frame: Row }> = []
+const stored = new Map<string, string>()
 const redis = {
   async publish(channel: string, text: string) { published.push({ channel, frame: JSON.parse(text) }); return 1 },
-  async get() { return null },
-  async set() { return 'OK' },
-  async del() { return 1 },
+  async get(key: string) { return stored.get(key) ?? null },
+  async set(key: string, value: string, ..._args: unknown[]) { stored.set(key, value); return 'OK' },
+  async del(key: string) { return stored.delete(key) ? 1 : 0 },
 }
 const unavailable = (): never => { throw new Error('Unexpected external dependency in notifications audit') }
 globalThis.fetch = Object.assign(async () => unavailable(), { preconnect: unavailable })
@@ -188,14 +192,26 @@ const mocks: Array<[string, () => unknown]> = [
 ]
 for (const [path, factory] of mocks) mock.module(path, factory)
 
+// The push sender is a recorder; the payload builders stay the real ones, so
+// what is asserted below really is what the phone would receive.
+const realPush = await import('../src/services/push/fcm')
+const pushes: Array<{ device: Row; payload: Row }> = []
+const fakeSender = {
+  configured: () => true,
+  async send(device: Row, payload: Row) { pushes.push({ device, payload }); return true },
+}
+mock.module('../src/services/push/fcm', () => ({ ...realPush, fcmSender: fakeSender, createFcmSender: () => fakeSender }))
+
 let routeUser: { id: string; tier: string } | null = null
 mock.module('../src/middleware/auth', () => ({
   authPlugin: new Elysia().derive({ as: 'scoped' }, () => ({ user: routeUser })),
   verifyWsToken: unavailable,
 }))
 
-const { recordNotification, recordDirectMessage, recordSelfieReady, recordFilmReady,
-  markThreadRead, notificationWords, NOTIFICATIONS_MAX_PER_PLAYER } = await import('../src/services/notifications.service')
+const { recordNotification, recordDirectMessage, recordSelfieReady, recordFilmReady, recordStoryReply,
+  attachDirectRowEvent, markThreadRead, markSaveStoryRepliesRead, purgeNotificationsForEvents,
+  markWatching, clearWatching, isWatching, markPlayerOnline, clearPlayerOnline, isPlayerOnline,
+  notificationWords, NOTIFICATIONS_MAX_PER_PLAYER } = await import('../src/services/notifications.service')
 const { deletionService } = await import('../src/services/deletion.service')
 const { purgeAccountReferences } = await import('../src/services/account-references')
 const { authService, PREFERENCE_UPDATE_KEYS } = await import('../src/services/auth.service')
@@ -212,14 +228,32 @@ const objectId = (n: number) => new ObjectId(n.toString(16).padStart(24, '0'))
 const player = (n: number) => objectId(0x100 + n).toHexString()
 const hex = (id: ObjectId) => id.toHexString()
 const asRowId = (value: unknown) => hex(value as ObjectId)
+const timeOf = (value: unknown) => value instanceof Date ? value.getTime() : undefined
 
-function seedInstance(id: ObjectId, playerId: string) {
-  rows('world_instances').push({ _id: id, player_id: new ObjectId(playerId), template_id: objectId(900) })
+const WORLD_TITLE = 'A Quiet World'
+function seedInstance(id: ObjectId, playerId: string, title = WORLD_TITLE) {
+  const templateId = objectId(900)
+  rows('world_instances').push({ _id: id, player_id: new ObjectId(playerId), template_id: templateId })
+  if (!rows('world_templates').some(row => asRowId(row._id) === hex(templateId))) {
+    rows('world_templates').push({ _id: templateId, title })
+  }
 }
 function seedCard(id: ObjectId, instanceId: ObjectId, name: string) {
   rows('characters').push({ _id: id, instance_id: instanceId, canonical_name: name })
 }
-function reset() { tables.clear(); published.length = 0; warnLogs.length = 0; notificationInsertError = undefined }
+function seedDevice(playerId: string, token = 'device-token') {
+  rows('push_devices').push({ player_id: new ObjectId(playerId), token, platform: 'android', updated_at: new Date() })
+}
+/** The push is deliberately not awaited by the writer; give it a moment. The
+ *  trailing pause also lets a push that should NOT happen arrive, if it would. */
+async function settle(until: () => boolean = () => true) {
+  for (let attempt = 0; attempt < 50 && !until(); attempt++) await new Promise(resolve => setTimeout(resolve, 2))
+  await new Promise(resolve => setTimeout(resolve, 20))
+}
+function reset() {
+  tables.clear(); published.length = 0; warnLogs.length = 0; notificationInsertError = undefined
+  stored.clear(); pushes.length = 0
+}
 
 const app = new Elysia().onError(({ error, set }) => {
   set.status = 'statusCode' in error ? Number(error.statusCode) : 500
@@ -234,8 +268,10 @@ const http = async (path: string, body?: unknown) => {
 }
 const asPlayer = (playerId: string | null) => { routeUser = playerId ? { id: playerId, tier: 'creator' } : null }
 
-const STORED_KEYS = ['_id', 'player_id', 'type', 'instance_id', 'character_id', 'title', 'body', 'image_url', 'created_at']
-const ITEM_KEYS = ['id', 'type', 'instance_id', 'character_id', 'title', 'body', 'image_url', 'created_at', 'read_at']
+const STORED_KEYS = ['_id', 'player_id', 'type', 'instance_id', 'character_id', 'event_id', 'media_id', 'thread',
+  'title', 'body', 'image_url', 'created_at', 'read_at']
+const ITEM_KEYS = ['id', 'type', 'instance_id', 'character_id', 'thread', 'media_id', 'title', 'body', 'image_url',
+  'created_at', 'read_at']
 const REQUIRED_ITEM_KEYS = ['id', 'type', 'instance_id', 'title', 'body', 'created_at']
 
 // ── (1) the exact words, and no chat text ──────────────────────────────────
@@ -253,8 +289,9 @@ await check('a direct message row carries the contract words and no chat text', 
   assert.equal(row.image_url, 'https://fixture.invalid/cast/face.png')
   assert.ok(row.created_at instanceof Date)
   assert.ok(!('read_at' in row), 'a new row is unread')
-  assert.deepEqual(Object.keys(row).sort(), STORED_KEYS.sort())
-  assert.deepEqual(notificationWords('group_direct', 'Bea'), { title: 'Bea', body: 'Bea sent you a message' })
+  assert.equal(row.thread, 'direct', 'a scheduled direct message opens that thread')
+  assert.ok(Object.keys(row).every(key => STORED_KEYS.includes(key)), `no key beyond the stored contract: ${Object.keys(row).join()}`)
+  assert.deepEqual(notificationWords('group_direct', { name: 'Bea' }), { title: 'Bea', body: 'Bea sent you a message' })
 })
 await check('a selfie row says a picture arrived, and only an untapped one is news', async () => {
   reset()
@@ -271,24 +308,243 @@ await check('a selfie row says a picture arrived, and only an untapped one is ne
   const [row] = rows('player_notifications')
   assert.equal(row.title, 'Wren'); assert.equal(row.body, 'Wren sent you a picture')
   assert.equal(row.type, 'group_selfie')
+  assert.equal(row.thread, 'room', 'a picture in the room opens the room')
   // The bell never shows the picture itself: only a face or a cover may ride here.
   assert.equal(row.image_url, 'https://fixture.invalid/cast/face.png')
+  // A picture sent in a direct thread opens that thread, not the room.
+  pending(objectId(32), { direct_with: hex(characterId) })
+  await recordSelfieReady(hex(objectId(32)))
+  assert.equal(rows('player_notifications')[1].thread, 'direct')
   // The notified_at stamp keeps a repair pass from repeating a row.
   rows('media_assets').find(asset => (asset._id as ObjectId).equals(objectId(31)))!.notified_at = new Date()
   await recordSelfieReady(hex(objectId(31)))
-  assert.equal(rows('player_notifications').length, 1)
+  assert.equal(rows('player_notifications').length, 2, 'the stamp keeps a repair pass from adding a third')
 })
-await check('a film row uses the film cover and its own words', async () => {
+await check('a film row leads with the world title, carries its film, and never a film without a title', async () => {
   reset()
-  const playerId = player(3), instanceId = objectId(12)
+  const playerId = player(3), instanceId = objectId(12), eventId = objectId(41)
+  seedInstance(instanceId, playerId)
   rows('media_assets').push({ _id: objectId(40), kind: 'video', player_id: new ObjectId(playerId), instance_id: instanceId,
-    poster_url: 'https://fixture.invalid/film-cover.jpg' })
+    event_id: eventId, poster_url: 'https://fixture.invalid/film-cover.jpg' })
   await recordFilmReady(hex(objectId(40)))
   const [row] = rows('player_notifications')
-  assert.equal(row.type, 'film_ready'); assert.equal(row.title, 'Your film is ready'); assert.equal(row.body, 'Your film is ready')
+  assert.equal(row.type, 'film_ready')
+  assert.equal(row.title, WORLD_TITLE, "the world's title is the heading")
+  assert.equal(row.body, 'Your film is ready')
+  assert.equal(row.media_id, hex(objectId(40)), 'a tap needs the film itself')
+  assert.equal(asRowId(row.event_id), hex(eventId), 'the film is tied to its turn, hidden from the wire')
   assert.equal(row.image_url, 'https://fixture.invalid/film-cover.jpg')
   assert.ok(!('character_id' in row), 'optional keys are omitted, never null')
-  assert.deepEqual(notificationWords('film_ready'), { title: 'Your film is ready', body: 'Your film is ready' })
+  assert.ok(!('thread' in row), 'a film is not a thread')
+  assert.deepEqual(notificationWords('film_ready', { title: WORLD_TITLE }), { title: WORLD_TITLE, body: 'Your film is ready' })
+  // A film whose save no longer has a title is not turned into words nobody authored.
+  reset()
+  rows('media_assets').push({ _id: objectId(42), kind: 'video', player_id: new ObjectId(playerId), instance_id: instanceId })
+  await recordFilmReady(hex(objectId(42)))
+  assert.equal(rows('player_notifications').length, 0)
+})
+await check('a story reply is only news when no socket of the player is on that save', async () => {
+  reset()
+  const playerId = player(20), instanceId = objectId(60)
+  seedInstance(instanceId, playerId)
+  await markWatching(playerId, hex(instanceId))
+  assert.equal(await isWatching(playerId, hex(instanceId)), true)
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), eventId: hex(objectId(61)) })
+  assert.equal(rows('player_notifications').length, 0, 'the player is watching the reply arrive')
+  await clearWatching(playerId, hex(instanceId))
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), eventId: hex(objectId(61)) })
+  const [row] = rows('player_notifications')
+  assert.equal(row.type, 'story_reply')
+  assert.equal(row.title, WORLD_TITLE, "the world's title is the heading")
+  assert.equal(row.body, 'Your story has moved on')
+  assert.equal(asRowId(row.event_id), hex(objectId(61)), 'tied to the turn, hidden from the wire')
+  assert.ok(!('thread' in row), 'a normal-world reply has no thread to open')
+  assert.ok(!('image_url' in row), 'no picture is invented for it')
+})
+await check('one unread story row per save: a newer reply replaces the older one', async () => {
+  reset()
+  const playerId = player(21), instanceId = objectId(62)
+  seedInstance(instanceId, playerId)
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'room', characterId: hex(objectId(63)), name: 'Bea', eventId: hex(objectId(64)) })
+  const [first] = rows('player_notifications')
+  const firstAt = (first.created_at as Date).getTime()
+  assert.equal(first.body, 'Bea replied')
+  await new Promise(resolve => setTimeout(resolve, 2))
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'direct', characterId: hex(objectId(65)), name: 'Wren', eventId: hex(objectId(66)) })
+  const all = rows('player_notifications')
+  assert.equal(all.length, 1, 'replaced, not stacked')
+  assert.equal(all[0]._id, first._id, 'the same row, new time and words')
+  assert.equal(all[0].body, 'Wren replied')
+  assert.equal(all[0].thread, 'direct')
+  assert.equal(all[0].character_id, hex(objectId(65)))
+  assert.equal(asRowId(all[0].event_id), hex(objectId(66)))
+  assert.ok((all[0].created_at as Date).getTime() > firstAt)
+  await markSaveStoryRepliesRead({ playerId, instanceId: hex(instanceId) })
+  assert.ok(all[0].read_at instanceof Date)
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'room', characterId: hex(objectId(63)), name: 'Bea', eventId: hex(objectId(67)) })
+  assert.equal(rows('player_notifications').length, 2, 'a reply after reading starts a fresh unread row')
+  assert.equal(rows('player_notifications').filter(row => !('read_at' in row)).length, 1)
+  // A group row without a speaker has no honest sentence, so it is not written.
+  reset()
+  seedInstance(instanceId, playerId)
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'room' })
+  assert.equal(rows('player_notifications').length, 0)
+})
+await check('a story reply is pushed only with messages switched on, and carries no reply text', async () => {
+  reset()
+  const playerId = player(22), instanceId = objectId(68)
+  seedInstance(instanceId, playerId); seedDevice(playerId)
+  rows('users').push({ _id: new ObjectId(playerId), preferences: {} })
+  await recordStoryReply({ playerId, instanceId: hex(instanceId) })
+  await settle(() => pushes.length > 0)
+  assert.equal(pushes.length, 1)
+  assert.deepEqual(pushes[0].payload, {
+    notification: { title: WORLD_TITLE, body: 'Your story has moved on' },
+    data: { type: 'story_reply', instanceId: hex(instanceId) },
+  })
+  // The switch off: no push, but the bell still fills.
+  reset()
+  seedInstance(instanceId, playerId); seedDevice(playerId)
+  rows('users').push({ _id: new ObjectId(playerId), preferences: { group_notifications: false } })
+  await recordStoryReply({ playerId, instanceId: hex(instanceId) })
+  await settle()
+  assert.equal(pushes.length, 0, 'the switch is off')
+  assert.equal(rows('player_notifications').length, 1, 'the bell is not the push')
+  // A group reply names its speaker and the thread a tap opens.
+  reset()
+  seedInstance(instanceId, playerId); seedDevice(playerId)
+  rows('users').push({ _id: new ObjectId(playerId), preferences: {} })
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'direct', characterId: hex(objectId(69)), name: 'Bea' })
+  await settle(() => pushes.length > 0)
+  assert.deepEqual(pushes[0].payload.data, { type: 'story_reply', instanceId: hex(instanceId), thread: 'direct' })
+  assert.equal(pushes[0].payload.notification.body, 'Bea replied')
+  // A guest and a banned player are not reached.
+  for (const account of [{ guest: true }, { account_status: 'banned' }]) {
+    reset()
+    seedInstance(instanceId, playerId); seedDevice(playerId)
+    rows('users').push({ _id: new ObjectId(playerId), preferences: {}, ...account })
+    await recordStoryReply({ playerId, instanceId: hex(instanceId) })
+    await settle()
+    assert.equal(pushes.length, 0)
+  }
+  // A save with no device is not pushed to either.
+  reset()
+  seedInstance(instanceId, playerId)
+  rows('users').push({ _id: new ObjectId(playerId), preferences: {} })
+  await recordStoryReply({ playerId, instanceId: hex(instanceId) })
+  await settle()
+  assert.equal(pushes.length, 0)
+})
+await check('the live frame reaches a player with the app open, and nobody without one', async () => {
+  reset()
+  const playerId = player(23), instanceId = objectId(70)
+  seedInstance(instanceId, playerId)
+  await recordStoryReply({ playerId, instanceId: hex(instanceId) })
+  assert.equal(published.length, 0, 'a frame nobody could receive is not sent')
+  reset()
+  seedInstance(instanceId, playerId)
+  await markPlayerOnline(playerId)
+  await recordStoryReply({ playerId, instanceId: hex(instanceId) })
+  assert.equal(published.length, 1)
+  assert.equal(published[0].channel, `user:${playerId}:events`)
+  assert.equal(published[0].frame.type, 'notification')
+  assert.equal((published[0].frame.item as Row).type, 'story_reply')
+  assert.equal(published[0].frame.unread, 1)
+  assert.ok(!('event_id' in (published[0].frame.item as Row)), 'the internal event id never leaves the server')
+  await clearPlayerOnline(playerId)
+  assert.equal(await isPlayerOnline(playerId), false)
+})
+await check('opening a film marks that film\'s row, and only its owner\'s', async () => {
+  reset()
+  const owner = player(24), stranger = player(25), instanceId = objectId(71)
+  seedInstance(instanceId, owner)
+  for (const media of [objectId(72), objectId(73)]) {
+    rows('media_assets').push({ _id: media, kind: 'video', player_id: new ObjectId(owner), instance_id: instanceId })
+    await recordFilmReady(hex(media))
+  }
+  asPlayer(owner)
+  const marked = await http('/notifications/read', { media_id: hex(objectId(72)) })
+  assert.equal(marked.status, 200); assert.equal(marked.body!.unread, 1)
+  const [one, two] = rows('player_notifications')
+  assert.ok(one.read_at instanceof Date); assert.ok(!('read_at' in two), 'the other film stays unread')
+  asPlayer(stranger)
+  assert.equal((await http('/notifications/read', { media_id: hex(objectId(73)) })).status, 200)
+  assert.ok(!('read_at' in rows('player_notifications')[1]), "a stranger's film changes nothing")
+  asPlayer(owner)
+  for (const body of [{ media_id: hex(objectId(72)), ids: [] }, { media_id: hex(objectId(72)), all: true },
+    { media_id: 'nope' }, { media_id: 42 }, { media_id: null }]) {
+    assert.equal((await http('/notifications/read', body)).status, 400, JSON.stringify(body))
+  }
+  // Reading it twice is harmless and never resurrects it.
+  await http('/notifications/read', { media_id: hex(objectId(72)) })
+  assert.equal((timeOf(rows('player_notifications')[0].read_at)), (timeOf(one.read_at)))
+})
+await check('opening a save reads only that save\'s story rows', async () => {
+  reset()
+  const playerId = player(27), a = objectId(78), b = objectId(79)
+  seedInstance(a, playerId); seedInstance(b, playerId)
+  await recordStoryReply({ playerId, instanceId: hex(a) })
+  await recordStoryReply({ playerId, instanceId: hex(b) })
+  await recordNotification({ playerId, type: 'group_direct', instanceId: hex(a), characterId: hex(objectId(80)), name: 'Bea' })
+  await markSaveStoryRepliesRead({ playerId, instanceId: hex(a) })
+  const storyA = rows('player_notifications').find(row => row.type === 'story_reply' && asRowId(row.instance_id) === hex(a))!
+  const storyB = rows('player_notifications').find(row => row.type === 'story_reply' && asRowId(row.instance_id) === hex(b))!
+  const direct = rows('player_notifications').find(row => row.type === 'group_direct')!
+  assert.ok(storyA.read_at instanceof Date)
+  assert.ok(!('read_at' in storyB), 'another save stays unread')
+  assert.ok(!('read_at' in direct), 'a thread row is the thread open call\'s business')
+})
+await check('a scheduled direct message is tied to the turn it became', async () => {
+  reset()
+  const playerId = player(28), instanceId = objectId(95), characterId = hex(objectId(96)), eventId = objectId(97)
+  seedInstance(instanceId, playerId)
+  await recordDirectMessage({ playerId, instanceId: hex(instanceId), characterId, name: 'Bea' })
+  const [row] = rows('player_notifications')
+  assert.ok(!('event_id' in row), 'the turn did not exist when the message was scheduled')
+  await attachDirectRowEvent({ playerId, instanceId: hex(instanceId), characterId, eventId: hex(eventId) })
+  assert.equal(row.event_id instanceof ObjectId ? asRowId(row.event_id) : undefined, hex(eventId))
+  // A rewind over that turn now removes the row with it.
+  await purgeNotificationsForEvents(instanceId, [eventId])
+  assert.equal(rows('player_notifications').length, 0)
+  // A row the player has already read is history and is not re-pointed.
+  await recordDirectMessage({ playerId, instanceId: hex(instanceId), characterId, name: 'Bea' })
+  await markThreadRead({ playerId, instanceId: hex(instanceId), characterId })
+  await attachDirectRowEvent({ playerId, instanceId: hex(instanceId), characterId, eventId: hex(objectId(98)) })
+  assert.ok(!('event_id' in rows('player_notifications')[0]))
+})
+await check('a rewind removes the rows tied to the turns it removed, and only those', async () => {
+  reset()
+  const playerId = player(26), instanceId = objectId(74), doomed = [objectId(75), objectId(76)], kept = objectId(77)
+  seedInstance(instanceId, playerId)
+  for (const eventId of [...doomed, kept]) {
+    await recordNotification({ playerId, type: 'group_selfie', instanceId: hex(instanceId), name: 'Bea', eventId: hex(eventId) })
+  }
+  await purgeNotificationsForEvents(instanceId, doomed)
+  const left = rows('player_notifications')
+  assert.equal(left.length, 1)
+  assert.equal(asRowId(left[0].event_id), hex(kept))
+  // A row that names no turn cannot be swept by a rewind of turns.
+  reset()
+  seedInstance(instanceId, playerId)
+  await recordNotification({ playerId, type: 'group_selfie', instanceId: hex(instanceId), name: 'Bea' })
+  await purgeNotificationsForEvents(instanceId, doomed)
+  assert.equal(rows('player_notifications').length, 1)
+})
+await check('the rewind deletes the tied rows next to the media purge', () => {
+  const source = readFileSync('src/services/memory.service.ts', 'utf8')
+  const purge = source.indexOf('await purgeMedia({ instance_id: iid, event_id: { $in: doomedIds } })')
+  assert.ok(purge > 0, 'the media purge is still there')
+  const bell = source.indexOf('await purgeNotificationsForEvents(iid, doomedIds)', purge)
+  assert.ok(bell > purge, 'the bell purge runs right after the media purge')
+})
+await check('opening a save marks its story rows read in the load path', () => {
+  const source = readFileSync('src/services/play-ws.service.ts', 'utf8')
+  const load = source.slice(source.indexOf("case 'load_instance'"))
+  assert.ok(load.includes('await markSaveStoryRepliesRead({ playerId: user.id, instanceId })'),
+    'the one play load marks the save read')
+  const open = source.slice(source.indexOf('async function watchSave'))
+  assert.ok(open.includes('await markWatching(userId, instanceId)'), 'loading a save is watching it')
+  assert.ok(source.includes('await clearWatching(user.id, instanceId)'), 'closing the last socket stops watching it')
 })
 await check('no row ever carries chat text: the service cannot read prose', () => {
   const source = readFileSync('src/services/notifications.service.ts', 'utf8')
@@ -322,7 +578,7 @@ await check("another player's GET and read see or change nothing", async () => {
 await check('paging is 30 at a time, newest first, with the whole unread count', async () => {
   reset()
   const playerId = player(6), instanceId = hex(objectId(14))
-  for (let i = 1; i <= 35; i++) await recordNotification({ playerId, type: 'film_ready', instanceId })
+  for (let i = 1; i <= 35; i++) await recordNotification({ playerId, type: 'group_direct', instanceId, name: 'Bea' })
   asPlayer(playerId)
   const first = await http('/notifications')
   assert.equal(first.status, 200); assert.equal(first.body!.items.length, 30); assert.equal(first.body!.unread, 35)
@@ -366,10 +622,10 @@ await check('at most 100 rows per player: the oldest go first, and only that pla
   const playerId = player(8), other = player(9), instanceId = hex(objectId(15))
   const ids: string[] = []
   for (let i = 1; i <= 105; i++) {
-    await recordNotification({ playerId, type: 'film_ready', instanceId })
+    await recordNotification({ playerId, type: 'group_direct', instanceId, name: 'Bea' })
     ids.push(asRowId(rows('player_notifications').at(-1)!._id))
   }
-  await recordNotification({ playerId: other, type: 'film_ready', instanceId })
+  await recordNotification({ playerId: other, type: 'group_direct', instanceId, name: 'Bea' })
   const kept = rows('player_notifications').filter(row => asRowId(row.player_id) === playerId).map(row => asRowId(row._id))
   assert.equal(kept.length, NOTIFICATIONS_MAX_PER_PLAYER)
   assert.deepEqual(kept.sort(), ids.slice(5).sort(), 'the five oldest went, every other row stayed')
@@ -380,7 +636,7 @@ await check('at most 100 rows per player: the oldest go first, and only that pla
 await check('deleting a save removes its rows and leaves the others', async () => {
   reset()
   const playerId = player(10), instanceA = objectId(16), instanceB = objectId(17)
-  for (const instance of [instanceA, instanceB]) await recordNotification({ playerId, type: 'film_ready', instanceId: hex(instance) })
+  for (const instance of [instanceA, instanceB]) await recordNotification({ playerId, type: 'group_direct', instanceId: hex(instance), name: 'Bea' })
   await deletionService.purgeInstancePayload(instanceA, hex(instanceA))
   const left = rows('player_notifications')
   assert.equal(left.length, 1)
@@ -389,8 +645,8 @@ await check('deleting a save removes its rows and leaves the others', async () =
 await check('deleting the account removes its rows and leaves another player untouched', async () => {
   reset()
   const playerId = player(11), other = player(12), instanceId = hex(objectId(18))
-  await recordNotification({ playerId, type: 'film_ready', instanceId })
-  await recordNotification({ playerId: other, type: 'film_ready', instanceId })
+  await recordNotification({ playerId, type: 'group_direct', instanceId, name: 'Bea' })
+  await recordNotification({ playerId: other, type: 'group_direct', instanceId, name: 'Bea' })
   await purgeAccountReferences(new ObjectId(playerId), false)
   const left = rows('player_notifications')
   assert.equal(left.length, 1)
@@ -455,22 +711,33 @@ await check('a record failure never fails the message, picture or film', async (
   rows('media_assets').push({ _id: objectId(51), kind: 'picture', group_selfie: true, player_id: new ObjectId(playerId),
     instance_id: instanceId, character_id: characterId, url: 'https://fixture.invalid/selfie.png' })
   notificationInsertError = new Error('fixture bell write failed')
+  rows('users').push({ _id: new ObjectId(playerId), preferences: {} })
   await recordDirectMessage({ playerId, instanceId: hex(instanceId), characterId: hex(characterId), name: 'Ada' })
   await recordSelfieReady(hex(objectId(51)))
   await recordFilmReady(hex(objectId(50)))
+  await recordStoryReply({ playerId, instanceId: hex(instanceId) })
   assert.equal(rows('player_notifications').length, 0)
-  assert.equal(warnLogs.filter(entry => entry.name === 'notification.record_failed').length, 3)
+  assert.equal(warnLogs.filter(entry => entry.name === 'notification.record_failed').length, 4)
   assert.equal(published.length, 0)
-  // Nothing was thrown, so the caller (message, selfie, film) carries on.
+  // Nothing was thrown, so the caller (message, selfie, film, reply) carries on.
 })
-await check('the three event paths call the one helper where they already tell the app', () => {
+await check('every event path calls a bell helper where it already tells the app', () => {
   const direct = readFileSync('src/services/group-chat/notifications.ts', 'utf8')
   const selfie = readFileSync('src/services/media/selfie.ts', 'utf8')
   const film = readFileSync('src/services/media/visual.ts', 'utf8')
+  const story = readFileSync('worker/index.ts', 'utf8')
+  const group = readFileSync('worker/processors/group-turn.processor.ts', 'utf8')
   assert.ok(direct.indexOf('await recordDirectMessage(') > direct.indexOf('results.some(result => result.status'),
     'the row is written only after a push that landed')
   assert.ok(selfie.includes('await recordSelfieReady(String(asset._id))'), 'a ready selfie records')
   assert.ok(film.includes("if (asset.kind === 'video') await recordFilmReady("), 'a finished film records')
+  assert.ok(story.indexOf('await recordStoryReply(') > story.indexOf('const result = await generationProcessor(job)'),
+    'a finished normal-world turn records after its completion goes out')
+  assert.ok(!readFileSync('worker/processors/generation.processor.ts', 'utf8').includes('recordStoryReply'),
+    'the normal-world processor stays untouched: the worker records what it finished')
+  assert.ok(group.indexOf('await recordStoryReply(') > group.indexOf('await finishGenerationTurn('),
+    'a finished group turn records after its completion goes out')
+  assert.ok(group.includes("origin === 'unprompted' && directWith"), 'an unprompted message ties its row, never a story row')
 })
 
 // ── (9) updatePreferences refuses unknown keys ─────────────────────────────
@@ -517,6 +784,32 @@ await check('one item, printed for the app contract', async () => {
   assert.ok(Object.keys(row).every(key => ITEM_KEYS.includes(key)), 'an item carries no key beyond the contract')
   assert.equal(Object.keys(row).filter(key => !STORED_KEYS.includes(key)).join(), 'id')
   assert.ok(!('read_at' in row))
+  assert.ok(!('event_id' in row), 'the internal event id never leaves the server')
+  assert.ok(!('player_id' in row), "the owner's id is never echoed")
+})
+
+// ── one item of every type, as the app receives it ─────────────────────────
+await check('every type on the wire, printed for the app contract', async () => {
+  reset()
+  const playerId = player(30), instanceId = objectId(90), characterId = objectId(91)
+  seedInstance(instanceId, playerId); seedCard(characterId, instanceId, 'Bea')
+  rows('media_assets').push({ _id: objectId(92), kind: 'video', player_id: new ObjectId(playerId), instance_id: instanceId })
+  await recordDirectMessage({ playerId, instanceId: hex(instanceId), characterId: hex(characterId), name: 'Bea' })
+  rows('media_assets').push({ _id: objectId(93), kind: 'picture', group_selfie: true, player_id: new ObjectId(playerId),
+    instance_id: instanceId, character_id: characterId, url: 'https://fixture.invalid/selfie.png', direct_with: hex(characterId) })
+  await recordSelfieReady(hex(objectId(93)))
+  await recordFilmReady(hex(objectId(92)))
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'direct', characterId: hex(characterId),
+    name: 'Bea', eventId: hex(objectId(94)) })
+  asPlayer(playerId)
+  const listed = await http('/notifications')
+  const items = listed.body!.items as Array<Row>
+  console.log(`ITEMS ${JSON.stringify(items)}`)
+  assert.deepEqual(items.map(item => item.type).sort(), ['film_ready', 'group_direct', 'group_selfie', 'story_reply'])
+  for (const item of items) {
+    assert.ok(!('event_id' in item), 'no item names an event')
+    assert.ok(Object.keys(item).every(key => ITEM_KEYS.includes(key)))
+  }
 })
 
 console.log(`\nnotifications audit: ${failed === 0 ? 'ALL GREEN' : 'FAILURES'} (${passed} passed, ${failed} failed)`)

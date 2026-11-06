@@ -1,7 +1,10 @@
 import type { ObjectId } from 'mongodb'
 
 /** The only kinds a bell row may carry (group-chat.md, "In-app notifications"). */
-export type NotificationType = 'group_direct' | 'group_selfie' | 'film_ready'
+export type NotificationType = 'group_direct' | 'group_selfie' | 'film_ready' | 'story_reply'
+
+/** Which place in a group save a row opens. Absent outside group saves. */
+export type NotificationThread = 'room' | 'direct'
 
 /**
  * player_notifications — one row per thing that happened while the player was
@@ -15,8 +18,16 @@ export interface PlayerNotificationDoc {
   player_id: ObjectId
   type: NotificationType
   instance_id: ObjectId
-  /** The group member the row is about; absent on film rows. */
+  /** The group member the row is about; absent on film and story rows. */
   character_id?: string
+  /** The event this row is about. Internal: never sent to the player. A rewind
+   *  deletes the rows for the turns it removes by this key. */
+  event_id?: ObjectId
+  /** The film a `film_ready` row is about, so a tap opens that film. */
+  media_id?: string
+  /** Where a tap goes inside a group save (`group_direct`, `group_selfie`, and a
+   *  group `story_reply`). Omitted on everything else. */
+  thread?: NotificationThread
   title: string
   body: string
   image_url?: string

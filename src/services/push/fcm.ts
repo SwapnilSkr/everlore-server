@@ -9,8 +9,23 @@ export interface DirectNotification {
   data: { type: 'group_direct'; instanceId: string; characterId: string }
 }
 
+/** Every push the server sends. The phone routes by `data.type` and ignores the
+ *  rest. Nothing from a reply's text is ever carried: `notification` is the
+ *  bell row's own words. */
+export interface PushPayload {
+  notification: { title: string; body: string }
+  data:
+    | { type: 'group_direct'; instanceId: string; characterId: string }
+    | { type: 'story_reply'; instanceId: string; thread?: 'room' | 'direct' }
+    | { type: 'film_ready'; instanceId: string; mediaId: string }
+}
+
 export function directNotification(title: string, name: string, instanceId: string, characterId: string): DirectNotification {
   return { notification: { title, body: `${name} sent you a message` }, data: { type: 'group_direct', instanceId, characterId } }
+}
+
+export function storyReplyNotification(title: string, body: string, instanceId: string, thread?: 'room' | 'direct'): PushPayload {
+  return { notification: { title, body }, data: { type: 'story_reply', instanceId, ...(thread ? { thread } : {}) } }
 }
 
 /** No provider response or thrown transport error is logged: either may echo a token. */
@@ -50,7 +65,7 @@ export function createFcmSender(deps: {
     })()
     try { return await authorizing } finally { authorizing = undefined }
   }
-  async function send(device: PushDeviceDoc, payload: DirectNotification): Promise<boolean> {
+  async function send(device: PushDeviceDoc, payload: PushPayload): Promise<boolean> {
     if (!configured()) return false
     try {
       const account = JSON.parse(credentials()) as { project_id: string; client_email: string; private_key: string }
