@@ -243,8 +243,9 @@ export function isStoryTurn(job: { mode?: string; session?: { kind?: string } })
  * A reply the player started has finished. The bell row is for the player who
  * is elsewhere: when a socket of theirs is on that save they are watching the
  * reply arrive, so nothing is written and nothing is pushed. One unread row per
- * save — a newer reply replaces the older unread one's time and words instead of
- * stacking a second.
+ * save — a newer reply takes the older unread one's place instead of stacking a
+ * second, and carries an id of its own: the list pages by `_id`, so the newest
+ * news has to sort first.
  *
  * Its picture is the group's first speaker, or the world's cover; a face or a
  * cover that does not exist is left out rather than filled with a default.
@@ -271,7 +272,17 @@ export async function recordStoryReply(input: {
       : header.cover
     const pid = parseObjectId(input.playerId), iid = parseObjectId(input.instanceId)
     const coll = mongoColl.playerNotifications()
-    const next = {
+    // Written before the older row goes, so the save is never left without an
+    // unread row; a fresh `_id` is what puts the new reply at the top of a list
+    // that pages by id. The row it supersedes is deleted by that id only, and
+    // only while still unread: a row the player has read in the meantime is
+    // history and stays.
+    const older = await coll.findOne({ player_id: pid, instance_id: iid, type: 'story_reply', read_at: { $exists: false } })
+    const row: PlayerNotificationDoc = {
+      _id: new ObjectId(),
+      player_id: pid,
+      instance_id: iid,
+      type: 'story_reply',
       ...(input.eventId ? { event_id: parseObjectId(input.eventId) } : {}),
       ...(input.characterId ? { character_id: input.characterId } : {}),
       ...(input.thread ? { thread: input.thread } : {}),
@@ -280,22 +291,14 @@ export async function recordStoryReply(input: {
       body: words.body,
       created_at: new Date(),
     }
-    const older = await coll.findOne({ player_id: pid, instance_id: iid, type: 'story_reply', read_at: { $exists: false } })
-    if (older) {
-      // The replaced row may have carried a face the new reply has not got.
-      const staleImage = imageUrl ? {} : older.image_url ? { $unset: { image_url: 1 as const } } : {}
-      await coll.updateOne({ _id: older._id }, { $set: next, ...staleImage })
-    } else {
-      await coll.insertOne({ _id: new ObjectId(), player_id: pid, instance_id: iid, type: 'story_reply', ...next } as PlayerNotificationDoc)
-      await trimToCap(pid)
-    }
-    const saved = await coll.findOne({ player_id: pid, instance_id: iid, type: 'story_reply', read_at: { $exists: false } })
-    if (!saved) return
+    await coll.insertOne(row)
+    if (older) await coll.deleteOne({ _id: older._id, read_at: { $exists: false } })
+    await trimToCap(pid)
     // The frame is only worth sending to a player who has the app open.
     if (await isPlayerOnline(input.playerId)) {
       const unread = await unreadCount(pid)
       await getRedisClient().publish(`user:${input.playerId}:events`,
-        JSON.stringify({ type: 'notification', item: publicNotification(saved), unread }))
+        JSON.stringify({ type: 'notification', item: publicNotification(row), unread }))
     }
     // Sent after the row and the frame, and never awaited: a slow provider must
     // not hold a finished turn (or its lock) open.

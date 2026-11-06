@@ -10,7 +10,8 @@
  * paths; the frame reaching only its owner; read on open; read by film; a
  * record failure never failing the send; updatePreferences refusing an unknown
  * key; the story row: written only when no socket watches the save, one unread
- * per save, tied to its turn so a rewind removes it, pushed only with the switch
+ * per save, a replaced row taking a fresh id so it heads the list, tied to its
+ * turn so a rewind removes it, pushed only with the switch
  * on, and marked read when the save is opened; its picture (the group's first
  * speaker, or the world's cover); a finished film's push; a pressed Continue
  * counting as a player turn; and the socket's lifecycle frame, where a
@@ -143,6 +144,12 @@ function collection(name: string) {
         modifiedCount++
       }
       return { modifiedCount }
+    },
+    async deleteOne(filter: Row) {
+      const list = rows(name), index = list.findIndex(row => matches(row, filter))
+      if (index < 0) return { deletedCount: 0 }
+      list.splice(index, 1)
+      return { deletedCount: 1 }
     },
     async deleteMany(filter: Row) {
       const list = rows(name), kept = list.filter(row => !matches(row, filter))
@@ -415,19 +422,20 @@ await check('a story reply is only news when no socket of the player is on that 
   assert.ok(!('thread' in row), 'a normal-world reply has no thread to open')
   assert.ok(!('image_url' in row), 'no picture is invented for it')
 })
-await check('one unread story row per save: a newer reply replaces the older one', async () => {
+await check('one unread story row per save: a newer reply takes the older one\'s place', async () => {
   reset()
   const playerId = player(21), instanceId = objectId(62)
   seedInstance(instanceId, playerId)
   await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'room', characterId: hex(objectId(63)), name: 'Bea', eventId: hex(objectId(64)) })
   const [first] = rows('player_notifications')
-  const firstAt = (first.created_at as Date).getTime()
+  const firstAt = (first.created_at as Date).getTime(), firstId = asRowId(first._id)
   assert.equal(first.body, 'Bea replied')
   await new Promise(resolve => setTimeout(resolve, 2))
   await recordStoryReply({ playerId, instanceId: hex(instanceId), thread: 'direct', characterId: hex(objectId(65)), name: 'Wren', eventId: hex(objectId(66)) })
   const all = rows('player_notifications')
   assert.equal(all.length, 1, 'replaced, not stacked')
-  assert.equal(all[0]._id, first._id, 'the same row, new time and words')
+  assert.notEqual(asRowId(all[0]._id), firstId, 'a fresh id, not a row rewritten in place')
+  assert.ok(asRowId(all[0]._id) > firstId, 'the new id sorts above the one it replaced')
   assert.equal(all[0].body, 'Wren replied')
   assert.equal(all[0].thread, 'direct')
   assert.equal(all[0].character_id, hex(objectId(65)))
@@ -474,6 +482,39 @@ await check('a story row leads with the group speaker\'s face, or the world\'s c
   portraitMissing = false
   assert.equal(rows('player_notifications').length, 1)
   assert.ok(!('image_url' in rows('player_notifications')[0]), 'the old face goes with the old words')
+})
+await check('a replaced story row heads the list, newer than every row written since', async () => {
+  reset()
+  const playerId = player(34), instanceId = objectId(120)
+  seedInstance(instanceId, playerId)
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), eventId: hex(objectId(121)) })
+  const staleId = asRowId(rows('player_notifications')[0]._id)
+  // Rows that landed after it, as they do while the player is elsewhere: they
+  // sit above the old id, which is exactly what hides a row rewritten in place.
+  for (let i = 0; i < 3; i++) {
+    await recordNotification({ playerId, type: 'group_direct', instanceId: hex(instanceId), name: 'Bea' })
+  }
+  asPlayer(playerId)
+  const before = (await http('/notifications')).body!.items as Row[]
+  assert.equal(before.length, 4)
+  assert.equal(before[0].type, 'group_direct', 'before the replace, the story row sits below them')
+  assert.ok(before.some(item => item.id === staleId), 'and it is there to be replaced')
+  await recordStoryReply({ playerId, instanceId: hex(instanceId), eventId: hex(objectId(122)) })
+  const listed = await http('/notifications')
+  const items = listed.body!.items as Row[]
+  assert.equal(items.length, 4, 'replaced, not stacked')
+  assert.equal(items[0].type, 'story_reply', 'the fresh reply heads the list')
+  const storyId = items[0].id as string
+  assert.notEqual(storyId, staleId, 'a row rewritten in place would keep its old id')
+  assert.ok(items.slice(1).every(item => (item.id as string) < storyId), 'its id is newer than every other row')
+  assert.ok(!items.some(item => item.id === staleId), 'the row it replaced left the list')
+  assert.equal(listed.body!.unread, 4, 'three messages and the reply, counted once')
+  assert.equal(rows('player_notifications').filter(row => row.type === 'story_reply' && !('read_at' in row)).length, 1,
+    'still exactly one unread story row per save')
+  // Paging from the row below it never brings the replaced row back.
+  const older = (await http(`/notifications?before=${items[1].id as string}`)).body!.items as Row[]
+  assert.equal(older.length, 2)
+  assert.ok(older.every(item => (item.id as string) < (items[1].id as string)))
 })
 await check('a story reply is pushed only with messages switched on, and carries no reply text', async () => {
   reset()
@@ -536,6 +577,14 @@ await check('the live frame reaches a player with the app open, and nobody witho
   assert.equal((published[0].frame.item as Row).type, 'story_reply')
   assert.equal(published[0].frame.unread, 1)
   assert.ok(!('event_id' in (published[0].frame.item as Row)), 'the internal event id never leaves the server')
+  // A replace sends the fresh row and the same count, not a second unread.
+  const firstFrameId = (published[0].frame.item as Row).id as string
+  await new Promise(resolve => setTimeout(resolve, 2))
+  await recordStoryReply({ playerId, instanceId: hex(instanceId) })
+  assert.equal(published.length, 2)
+  assert.equal(published[1].frame.unread, 1, 'one unread before the replace, one after')
+  assert.notEqual((published[1].frame.item as Row).id, firstFrameId, 'the frame carries the fresh id')
+  assert.equal(rows('player_notifications').length, 1, 'and the save still holds one row')
   await clearPlayerOnline(playerId)
   assert.equal(await isPlayerOnline(playerId), false)
 })
