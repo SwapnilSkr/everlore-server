@@ -7615,5 +7615,157 @@ await check('group face publish needs every person', async () => {
   } finally { vectorStore.replaceLore = embedLore }
 })
 
+// ── the owner's authoring read and the cast fields it round trips (§6a) ──
+// The schema, the projection, the route and the service are real; the auth user
+// is stubbed as elsewhere in this file, and nothing touches a network.
+const { UpdateTemplateBody } = await import('../src/schemas/template.schema')
+const { groupAuthoringView } = await import('../src/services/group-chat/authoring')
+// The default app is the production route's behaviour: Elysia strips an
+// undeclared key before validation, which is how the draft lost these fields.
+// A second, strict app validates the same schemas without stripping, which is
+// the only way to show the schema itself refusing an undeclared status.
+const schemaApp = new Elysia()
+  .post('/create', ({ body }) => body, { body: CreateTemplateBody })
+  .put('/update', ({ body }) => body, { body: UpdateTemplateBody })
+const strictSchemaApp = new Elysia({ normalize: false })
+  .post('/create', ({ body }) => body, { body: CreateTemplateBody })
+  .put('/update', ({ body }) => body, { body: UpdateTemplateBody })
+const sendTemplate = (path: string, method: 'POST' | 'PUT', body: unknown, strict = false) =>
+  (strict ? strictSchemaApp : schemaApp).handle(new Request(`http://localhost${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }))
+
+await check('authoring: the seed cast schema keeps the drafted lines and kind', async () => {
+  const source = groupSaveBody()
+  const body = { ...source, seed_cast: source.seed_cast.map((member) => ({ ...member, identity_kind: 'human' })) }
+  for (const [method, path] of [['POST', '/create'], ['PUT', '/update']] as const) {
+    const response = await sendTemplate(path, method, body)
+    assert.equal(response.status, 200, `${method} accepts the drafted body`)
+    const accepted = await response.json() as Row
+    const person = (accepted.seed_cast as Row[])[0]!
+    assert.deepEqual(person.first_texts, body.seed_cast[0]!.first_texts)
+    assert.equal((person.first_texts as string[]).length, 3)
+    assert.deepEqual(person.statuses, body.seed_cast[0]!.statuses)
+    assert.equal(Object.keys(person.statuses as Row).length, 4)
+    assert.equal(person.identity_kind, 'human')
+    assert.deepEqual(person.group, body.seed_cast[0]!.group)
+  }
+})
+
+await check('authoring: the seed cast schema refuses a malformed status or first texts', async () => {
+  const source = groupSaveBody()
+  const withPerson = (patch: Row) => ({
+    ...source,
+    seed_cast: [{ ...(source.seed_cast[0] as Row), ...patch }, ...source.seed_cast.slice(1)],
+  })
+  for (const [method, path] of [['POST', '/create'], ['PUT', '/update']] as const) {
+    assert.equal((await sendTemplate(path, method, withPerson({
+      statuses: { ...source.seed_cast[0]!.statuses, dawn: 'A fifth part of the day.' },
+    }), true)).status, 422, `${method} refuses a fifth status`)
+    assert.equal((await sendTemplate(path, method, withPerson({ first_texts: ['Only one.', 'Only two.'] }))).status, 422,
+      `${method} refuses two first texts`)
+  }
+})
+
+await check('authoring: the owner view sends faces as URLs and never an asset key', () => {
+  const source = facedTemplate()
+  const view = groupAuthoringView(source)
+  assert.deepEqual(Object.keys(view), [
+    '_id', 'kind', 'title', 'description', 'is_nsfw_capable', 'is_published', 'visibility',
+    'review_status', 'seed_prompt', 'global_lore', 'topics', 'opening_lines', 'seed_cast',
+  ])
+  assert.equal(view._id, source._id.toHexString())
+  assert(!('image_url' in view)); assert(!('image_thumb_url' in view))
+  const cast = view.seed_cast as Row[]
+  assert.equal(cast[0]!.portrait_url, 'https://fixture.invalid/castface_0.png')
+  assert.equal(cast[0]!.portrait_thumb_url, 'https://fixture.invalid/castface_0.w320.webp')
+  assert.equal(cast[1]!.portrait_url, 'https://fixture.invalid/castface_1.png')
+  assert(!('portrait_thumb_url' in cast[1]!), 'a face without a small copy omits its URL')
+  assert(!('portrait_url' in cast[2]!)); assert(!('portrait_thumb_url' in cast[2]!))
+  const json = JSON.stringify(view)
+  assert(!/"asset_key"\s*:/.test(json), 'an asset key reached the owner')
+  assert(!/"thumb_key"\s*:/.test(json), 'a thumb key reached the owner')
+  assert(!/"portrait"\s*:/.test(json), 'the stored portrait reached the owner')
+  noNullThumb(view)
+})
+
+const authoringApp = new Elysia().onError(({ error, set }) => {
+  const failure = error as { statusCode?: unknown; status?: unknown; message?: string }
+  set.status = Number(failure.statusCode ?? failure.status ?? 500)
+  return { message: failure.message }
+}).use(templateRoutes)
+const readAuthoring = (id: unknown) =>
+  authoringApp.handle(new Request(`http://localhost/templates/${String(id)}/authoring`))
+
+await check('authoring: only the owner reads a group and every other answer is the same 404', async () => {
+  resetSaveTables()
+  const group = faceGroup({ creator_id: new ObjectId(playerId) })
+  const world = faceGroup({ _id: new ObjectId(), kind: 'world', creator_id: new ObjectId(playerId) })
+  const stranger = faceGroup({ _id: new ObjectId(), creator_id: new ObjectId() })
+  rows('worldTemplates').push(group, world, stranger)
+  try {
+    routeUser = null
+    assert.equal((await readAuthoring(group._id)).status, 401, 'a signed-out call is refused')
+    routeUser = { id: playerId, tier: 'creator' }
+    const own = await readAuthoring(group._id)
+    assert.equal(own.status, 200)
+    const body = await own.json() as Row
+    assert.equal(body._id, group._id.toHexString() as string)
+    assert.equal(body.title, 'Test Group')
+    assert.equal((body.seed_cast as Row[]).length, 3)
+    const refusals: unknown[] = []
+    for (const [label, id] of [
+      ['a stranger\'s group', stranger._id],
+      ['a world owned by the same user', world._id],
+      ['an unknown id', new ObjectId()],
+    ] as const) {
+      const response = await readAuthoring(id)
+      assert.equal(response.status, 404, label)
+      refusals.push(await response.json())
+    }
+    assert.deepEqual(refusals[1], refusals[0])
+    assert.deepEqual(refusals[2], refusals[0])
+    assert.equal((refusals[0] as Row).message, 'That group could not be found.')
+    // Another signed-in player gets the same answer for the same group.
+    routeUser = { id: new ObjectId().toHexString(), tier: 'creator' }
+    const other = await readAuthoring(group._id)
+    assert.equal(other.status, 404)
+    assert.deepEqual(await other.json(), refusals[0])
+  } finally { routeUser = null }
+})
+
+await check('authoring: a read-back group round trips through an edit and keeps unchanged faces', async () => {
+  resetSaveTables(); draftGate()
+  const created = await templateService.create(playerId, groupSaveBody())
+  const stored = rows('worldTemplates')[0] as Row
+  const cast = stored.seed_cast as Row[]
+  for (const [index, member] of cast.entries()) {
+    member.portrait = {
+      asset_key: `media/portrait/player-group/round-${index}.webp`, source: 'generated',
+      appearance_version: 1, art_style: 'anime', painted_at: new Date(),
+    }
+  }
+  const view = groupAuthoringView(stored) as Row
+  const body = structuredClone(view)
+  for (const key of ['_id', 'kind', 'is_published', 'visibility', 'review_status', 'image_thumb_url']) delete body[key]
+  body.seed_cast = (body.seed_cast as Row[]).map(({ portrait_url: _url, portrait_thumb_url: _thumb, ...member }) => member)
+
+  // Sent back as it was read: every face is kept.
+  await templateService.update(created._id.toHexString(), playerId, body)
+  const kept = rows('worldTemplates')[0] as Row
+  assert.deepEqual((kept.seed_cast as Row[]).map((member) => member.portrait), cast.map((member) => member.portrait))
+
+  // One look changes: only that person loses their face.
+  const changed = structuredClone(body)
+  ;(changed.seed_cast as Row[])[1]!.appearance = 'A changed look.'
+  await templateService.update(created._id.toHexString(), playerId, changed)
+  const after = (rows('worldTemplates')[0] as Row).seed_cast as Row[]
+  assert.deepEqual(after[0]!.portrait, cast[0]!.portrait, 'an untouched person keeps their face')
+  assert.equal('portrait' in after[1]!, false, 'a changed look drops its face')
+  assert.deepEqual(after[2]!.portrait, cast[2]!.portrait, 'an untouched person keeps their face')
+})
+
 Math.random = originalRandom
 console.log(`group-chat audit: ${passed}/${passed} passed (${process.env.GROUP_REPORT_MONGO === '1' ? 'scratch Mongo on 27029; fake writer; no paid calls' : 'pure; fake writer; no connections or paid calls'})`)

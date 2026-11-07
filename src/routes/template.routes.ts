@@ -58,6 +58,10 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
 
   .get('/mine/quota', (ctx) => templateController.quota(ctx))
 
+  // The owner's own read of a saved group, for editing. Declared before /:id
+  // so the route is never mistaken for a template id.
+  .get('/:id/authoring', (ctx) => templateController.groupAuthoring(ctx))
+
   .get('/:id', (ctx) => templateController.getById(ctx))
 
   .post('/image/generate', (ctx) => templateController.generateImage(ctx), {

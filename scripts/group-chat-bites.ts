@@ -951,7 +951,7 @@ mutations.push(...gateMutations)
 
 const reviewQueueAudit = 'world-review-audit.ts'
 const reviewMutations: Mutation[] = [
-  { name: 'review queue group cast loses the age', check: 'review queue carries a group cast', script: reviewQueueAudit, edits: [['src/services/admin.service.ts', 'age: group?.age,', 'age: member.age,']] },
+  { name: 'review queue group cast loses the age', check: 'review queue carries every group line in its exact shape', script: reviewQueueAudit, edits: [['src/services/admin.service.ts', "put('age', group?.age)", "put('age', member.age)"]] },
   { name: 'review queue normal world gains a cast', check: 'review queue leaves a normal world item unchanged', script: reviewQueueAudit, edits: [['src/services/admin.service.ts', "if (world.kind !== 'group') {", 'if (false) {']] },
 ]
 mutations.push(...reviewMutations)
@@ -1487,6 +1487,39 @@ const faceMutations: Mutation[] = [
     "throw new HttpError(422, 'Every person needs a face.')"]] },
 ]
 mutations.push(...faceMutations)
+
+// cag-5a: the owner's authoring read and the cast fields it round trips.
+const schemaFile = 'src/schemas/template.schema.ts'
+const authoringFile = 'src/services/group-chat/authoring.ts'
+const controllerFile = 'src/controllers/template.controller.ts'
+const authoringOwner = 'authoring: only the owner reads a group and every other answer is the same 404'
+const authoringMutations: Mutation[] = [
+  { name: 'authoring schema drops first texts', check: 'authoring: the seed cast schema keeps the drafted lines and kind', edits: [[schemaFile,
+    '    first_texts: t.Optional(t.Array(t.String({ minLength: 1, maxLength: 300 }), { minItems: 3, maxItems: 3 })),\n',
+    '']] },
+  { name: 'authoring statuses accept a fifth period', check: 'authoring: the seed cast schema refuses a malformed status or first texts', edits: [[schemaFile,
+    '      night: t.Optional(t.String({ minLength: 1, maxLength: 300 })),\n    }, { additionalProperties: false })),',
+    '      night: t.Optional(t.String({ minLength: 1, maxLength: 300 })),\n    })),']] },
+  { name: 'authoring first texts accept two', check: 'authoring: the seed cast schema refuses a malformed status or first texts', edits: [[schemaFile,
+    '{ minItems: 3, maxItems: 3 }',
+    '{ minItems: 2, maxItems: 3 }']] },
+  { name: 'authoring view sends the stored portrait through', check: 'authoring: the owner view sends faces as URLs and never an asset key', edits: [[authoringFile,
+    '    ...person,\n    ...(typeof face?.asset_key',
+    '    ...person,\n    ...(portrait === undefined ? {} : { portrait }),\n    ...(typeof face?.asset_key']] },
+  { name: 'authoring view sends the raw thumb key', check: 'authoring: the owner view sends faces as URLs and never an asset key', edits: [[authoringFile,
+    'portraitUrl(face.thumb_key)',
+    'face.thumb_key']] },
+  { name: 'authoring route drops the owner check', check: authoringOwner, edits: [[controllerFile,
+    "    if (!template || template.kind !== 'group' || idString(template.creator_id) !== user.id) {\n      throw notFound()\n    }",
+    "    if (!template || template.kind !== 'group') {\n      throw notFound()\n    }"]] },
+  { name: 'authoring route accepts an ordinary world', check: authoringOwner, edits: [[controllerFile,
+    "    if (!template || template.kind !== 'group' || idString(template.creator_id) !== user.id) {\n      throw notFound()\n    }",
+    "    if (!template || idString(template.creator_id) !== user.id) {\n      throw notFound()\n    }"]] },
+  { name: 'authoring edit keeps the face of a changed look', check: 'authoring: a read-back group round trips through an edit and keeps unchanged faces', edits: [['src/services/template.service.ts',
+    " || appearance !== (before.appearance || '').trim()",
+    '']] },
+]
+mutations.push(...authoringMutations)
 
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {

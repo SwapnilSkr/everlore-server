@@ -69,6 +69,16 @@ export const CreateTemplateBody = t.Object({
     appearance: t.Optional(t.String({ maxLength: 1000 })),
     aliases: t.Optional(t.Array(t.String({ maxLength: 80 }))),
     immutable_facts: t.Optional(t.Array(t.String({ maxLength: 1000 }))),
+    // Written lines the draft mints and the owner edits; validateGroup judges
+    // their content, this only keeps them through the route.
+    identity_kind: t.Optional(t.String({ maxLength: 40 })),
+    first_texts: t.Optional(t.Array(t.String({ minLength: 1, maxLength: 300 }), { minItems: 3, maxItems: 3 })),
+    statuses: t.Optional(t.Object({
+      morning: t.Optional(t.String({ minLength: 1, maxLength: 300 })),
+      afternoon: t.Optional(t.String({ minLength: 1, maxLength: 300 })),
+      evening: t.Optional(t.String({ minLength: 1, maxLength: 300 })),
+      night: t.Optional(t.String({ minLength: 1, maxLength: 300 })),
+    }, { additionalProperties: false })),
     group: t.Object({ age: t.Number({ minimum: 18 }), talkativeness: t.Number({ minimum: 0, maximum: 1 }), speech: t.String({ minLength: 1, maxLength: 2000 }), wants: t.String({ minLength: 1, maxLength: 2500 }), start_bond: t.String({ minLength: 1 }), intimacy: t.Optional(t.String({ minLength: 1 })), voice: t.Optional(t.Array(t.String({ minLength: 1 }), { minItems: 1, maxItems: 8 })) }, { additionalProperties: false }),
   }), { minItems: 2, maxItems: 6 })),
   protagonist: t.Optional(

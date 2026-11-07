@@ -8,7 +8,7 @@ import { autofillService } from '../services/autofill.service'
 import type { Static } from '@sinclair/typebox'
 import type { CreateTemplateBody, GroupDraftBody, UpdateTemplateBody } from '../schemas/template.schema'
 import { HttpError } from '../utils/http-error'
-import { idString } from '../utils/mongo-id'
+import { BadIdError, idString } from '../utils/mongo-id'
 import { billingService } from '../services/billing.service'
 import { canForge } from '../utils/can-forge'
 import { isWorldListed } from '../utils/world-review'
@@ -72,6 +72,35 @@ export const templateController = {
     }
 
     return template.kind !== 'group' && canReadTemplateAuthoring(template, user) ? template : publicGroupTemplate(template)
+  },
+
+  // A group's owner reads it back with every field the edit form needs. An
+  // unknown id, another player's group and an ordinary world all answer the
+  // same 404, so the route never tells a caller which ids exist.
+  groupAuthoring: async ({
+    params,
+    user,
+  }: {
+    params: { id: string }
+    user: AuthUser | null
+  }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    const notFound = () => new HttpError(404, 'That group could not be found.')
+    let template
+    try {
+      template = await templateService.getById(params.id)
+    } catch (error) {
+      if (error instanceof BadIdError) throw notFound()
+      throw error
+    }
+    if (!template || template.kind !== 'group' || idString(template.creator_id) !== user.id) {
+      throw notFound()
+    }
+    // Loaded lazily for the same reason as the draft and the face route: the
+    // projection loads the media module with it, and audits that stub the env
+    // import this controller.
+    const { groupAuthoringView } = await import('../services/group-chat/authoring')
+    return groupAuthoringView(template)
   },
 
   // Generate a preview image from a (creator-edited) prompt → returns CDN url.
