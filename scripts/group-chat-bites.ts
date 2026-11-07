@@ -937,6 +937,11 @@ const gateMutations: Mutation[] = [
   { name: 'group update gates only the edit', check: 'group update gates the merged template', edits: [[templateFile, 'const gate = await checkGroupText(groupTextLines(merged))', 'const gate = await checkGroupText(groupTextLines(data))']] },
   { name: 'normal saves reach the group gate', check: 'normal world saves never call the group text gate', edits: [[templateFile, "if (kind === 'group') {\n      try { validateGroup(data) }", "if (true) {\n      try { validateGroup(data) }"]] },
   { name: 'group gate calls with no lines', check: 'group text gate returns one allow without a call for no lines', edits: [[groupGateFile, 'if (lines.length === 0) return { ok: true }', 'if (false) return { ok: true }']] },
+  { name: 'group gate sent the media moderation model', check: 'group text gate allows a save', edits: [
+    [groupGateFile, "import { HttpError } from '../../utils/http-error'", "import { HttpError } from '../../utils/http-error'\nimport { moderationModel } from '../media/config'"],
+    [groupGateFile, 'model: groupTextGateModel(),', 'model: moderationModel(),'],
+  ] },
+  { name: 'group gate token budget back to 512', check: 'group text gate allows a save', edits: [[groupGateFile, 'maxTokens: 4096,', 'maxTokens: 512,']] },
 ]
 mutations.push(...gateMutations)
 

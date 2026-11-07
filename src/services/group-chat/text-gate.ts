@@ -1,7 +1,6 @@
 import { callLLM } from '../../ai/client'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
 import { HttpError } from '../../utils/http-error'
-import { moderationModel } from '../media/config'
 
 export interface GroupTextLine {
   path: string
@@ -9,6 +8,10 @@ export interface GroupTextLine {
 }
 
 export type GroupTextVerdict = { ok: true } | { ok: false; paths: string[] }
+
+/** The gate's own model, never the media moderation model: that one refused every
+ * consenting explicit adult line in the live run (phase doc §7a), so it can't judge these. */
+export const groupTextGateModel = () => process.env.GROUP_TEXT_GATE_MODEL || 'deepseek/deepseek-v4.1-flash-1017'
 
 const GATE_SCHEMA = {
   type: 'object',
@@ -85,10 +88,10 @@ export async function checkGroupText(lines: GroupTextLine[]): Promise<GroupTextV
   for (let attempt = 0; answer === undefined; attempt++) {
     try {
       answer = await textGateEffects.call({
-        model: moderationModel(),
+        model: groupTextGateModel(),
         responseSchema: GATE_SCHEMA,
-        timeoutMs: 30000,
-        maxTokens: 512,
+        timeoutMs: 60000,
+        maxTokens: 4096,
         temperature: 0,
         purpose: 'group_text_gate',
         messages: [

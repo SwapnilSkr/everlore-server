@@ -4993,9 +4993,9 @@ await check('art cast size two and six pass while one and seven fail', async () 
 // The group text gate judges every player-written line before anything is
 // stored. The model call is stubbed here; the service and validation are real.
 const { textGateEffects } = await import('../src/services/group-chat/text-gate')
-const { groupTextLines, checkGroupText } = await import('../src/services/group-chat/text-gate')
-const originalModerationModel = process.env.MEDIA_MODERATION_MODEL
-process.env.MEDIA_MODERATION_MODEL = 'fixture-moderation-model'
+const { groupTextLines, checkGroupText, groupTextGateModel } = await import('../src/services/group-chat/text-gate')
+const originalGateModel = process.env.GROUP_TEXT_GATE_MODEL
+process.env.GROUP_TEXT_GATE_MODEL = 'fixture-text-gate-model'
 let gateReplies: Array<string | Error> = [], gateRequests: Array<Parameters<typeof textGateEffects.call>[0]> = [], gateWaits = 0
 function resetGate(replies: Array<string | Error> = []) {
   gateReplies = [...replies]; gateRequests = []; gateWaits = 0
@@ -5060,7 +5060,11 @@ await check('group text gate allows a save and stores the group', async () => {
   assert.equal(rows('worldTemplates').length, 1)
   assert.equal(gateRequests.length, 1)
   assert.equal(gateRequests[0].purpose, 'group_text_gate')
-  assert.equal(gateRequests[0].model, 'fixture-moderation-model')
+  // The gate's own setting drives the model; the media moderation model is never asked to judge these lines.
+  assert.equal(groupTextGateModel(), 'fixture-text-gate-model')
+  assert.equal(gateRequests[0].model, groupTextGateModel())
+  assert.equal(gateRequests[0].maxTokens, 4096)
+  assert.equal(gateRequests[0].timeoutMs, 60000)
   assert.equal(gateRequests[0].temperature, 0)
   assert(gateRequests[0].responseSchema)
   assert.equal((gateRequests[0].messages as Array<{ role: string }>)[0].role, 'system')
@@ -5180,8 +5184,8 @@ await check('group text gate returns one allow without a call for no lines', asy
   assert.deepEqual(await checkGroupText([]), { ok: true })
   assert.equal(gateRequests.length, 0)
 })
-if (originalModerationModel === undefined) delete process.env.MEDIA_MODERATION_MODEL
-else process.env.MEDIA_MODERATION_MODEL = originalModerationModel
+if (originalGateModel === undefined) delete process.env.GROUP_TEXT_GATE_MODEL
+else process.env.GROUP_TEXT_GATE_MODEL = originalGateModel
 
 await check('art no asset key reaches the preview or a chats row', async () => {
   await start(facedTemplate())
