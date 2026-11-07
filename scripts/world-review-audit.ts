@@ -61,6 +61,12 @@ function check(name: string, actual: unknown, expected: unknown) {
   checks++
   console.log(`  PASS ${name}`)
 }
+/** For a check a bite must be able to name in the runs that fail it. */
+function reviewCheck(name: string, fn: () => void) {
+  try { fn() } catch (error) { console.log(`FAIL ${name}`); throw error }
+  checks++
+  console.log(`  PASS ${name}`)
+}
 
 const discovery = { is_published: true, ...await moderationService.discoveryFilter() }
 for (const [name, patch, listed] of [
@@ -221,6 +227,56 @@ try {
   check('approval records reviewer', reviewSet.reviewed_by, 'reviewer')
 } finally {
   ;(mongoColl as unknown as { worldTemplates: () => unknown }).worldTemplates = originalReviewCollection
+}
+
+// The review queue carries a group's every line for the owner; a normal world's
+// item keeps exactly the shape it had. Exercise the aggregate's result here.
+const originalReviewQueue = mongoColl.worldTemplates
+try {
+  const groupId = new ObjectId(), worldId = new ObjectId()
+  const groupItem = () => ({
+    _id: groupId, title: 'A Group', description: 'A group.', image_url: '',
+    seed_prompt: 'Write the next messages.', global_lore: 'They know each other.',
+    kind: 'group', is_sentient: false, is_nsfw_capable: true, narrative_style: 'cozy_comfort',
+    creator: { _id: ownerId, username: 'maker' }, submitted_at: new Date(0), was_approved_before: false,
+    seed_cast: [{
+      name: 'Ada', role: 'Wrangler', appearance: 'Twenty-nine; dark hair.', persona: 'Warm.',
+      group: { age: 29, talkativeness: 0.5, speech: 'Dry.', wants: 'A quiet night.', intimacy: 'Direct.', voice: ['Hm.'] },
+      first_texts: ['One.', 'Two.', 'Three.'],
+      statuses: { morning: 'Up.', afternoon: 'Busy.', evening: 'Home.', night: 'Asleep.' },
+      portrait: { asset_key: 'cast/ada.webp', thumb_key: 'cast/ada.thumb.webp' },
+      immutable_facts: ['never shown'],
+    }],
+    topics: ['One topic'],
+    opening_lines: [{ name: 'Ada', text: 'Hello.' }],
+  })
+  const worldItem = () => ({
+    _id: worldId, title: 'A World', description: 'A world.', image_url: '',
+    seed_prompt: 'A place to travel.', global_lore: '',
+    kind: 'world', is_sentient: false, is_nsfw_capable: false, narrative_style: 'cozy_comfort',
+    creator: { _id: ownerId, username: 'maker' }, submitted_at: new Date(0), was_approved_before: false,
+  })
+  ;(mongoColl as unknown as { worldTemplates: () => unknown }).worldTemplates = () => ({
+    aggregate: () => ({ toArray: async () => [groupItem(), worldItem()] }),
+  })
+  const { items } = await adminService.listWorldReview()
+  reviewCheck('review queue carries a group cast, topics and opening lines', () => {
+    const group = items[0] as Record<string, unknown>
+    assert.deepEqual(group.seed_cast, [{
+      name: 'Ada', age: 29, appearance: 'Twenty-nine; dark hair.', persona: 'Warm.',
+      voice: ['Hm.'], first_texts: ['One.', 'Two.', 'Three.'],
+      statuses: { morning: 'Up.', afternoon: 'Busy.', evening: 'Home.', night: 'Asleep.' },
+      asset_key: 'cast/ada.webp', thumb_key: 'cast/ada.thumb.webp',
+    }])
+    assert.deepEqual(group.topics, ['One topic'])
+    assert.deepEqual(group.opening_lines, [{ name: 'Ada', text: 'Hello.' }])
+    assert.equal(JSON.stringify(group).includes('never shown'), false)
+  })
+  reviewCheck('review queue leaves a normal world item unchanged', () => {
+    assert.equal(JSON.stringify(items[1]), JSON.stringify(worldItem()))
+  })
+} finally {
+  ;(mongoColl as unknown as { worldTemplates: () => unknown }).worldTemplates = originalReviewQueue
 }
 
 // An empty admin credential disables authentication before any Redis lookup.

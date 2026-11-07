@@ -8,7 +8,7 @@ export function validateGroup(data: Partial<WorldTemplateDoc>): void {
   if (Object.keys(data.base_stats_template || {}).length) fail('stats must be empty')
   if (data.protagonist || data.opening_line) fail('use seed_cast and opening_lines')
   const cast = data.seed_cast || []
-  if (cast.length < 4 || cast.length > 10) fail('4–10 cast members required')
+  if (cast.length < 2 || cast.length > 6) fail('2–6 cast members required')
   const names = new Set<string>()
   // Written lines a member may carry: first texts for an empty thread, and one
   // status for each part of the player's day. Optional, but exact when present.

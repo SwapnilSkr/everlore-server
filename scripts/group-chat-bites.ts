@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // walk. Only source and audit files are copied; no environment files or credentials are read.
 const root = await mkdtemp(join(import.meta.dir, '.group-chat-bites-'))
 const server = new URL('..', import.meta.url).pathname
-const auditFiles = ['group-chat-audit.ts', 'group-memory-recall.ts', 'group-memory-trace-audit.ts', 'group-memory-dedup-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'ingest-cast-portraits.ts', 'narrator-harness-audit.ts']
+const auditFiles = ['group-chat-audit.ts', 'group-memory-recall.ts', 'group-memory-trace-audit.ts', 'group-memory-dedup-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'ingest-cast-portraits.ts', 'narrator-harness-audit.ts', 'world-review-audit.ts']
 type Edit = [file: string, from: string, to: string]
 type Mutation = { name: string; check: string; edits: Edit[]; script?: string }
 const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat/lines.ts', reply = 'src/services/group-chat/reply.ts'
@@ -385,6 +385,11 @@ const mutations: Mutation[] = [
   { name: 'rewind floor deletes before refusing', check: 'rewind floor', edits: [['src/services/memory.service.ts', "      throw new HttpError(400, \"The start of this chat can't be rewound.\")", "      await events().deleteMany({ instance_id: iid, sequence: { $gte: sequence } })\n      throw new HttpError(400, \"The start of this chat can't be rewound.\")"]] },
   { name: 'group rewind template without stats', check: 'rewind restores a group save whose template row has no base_stats_template key', edits: [['src/services/memory.service.ts', 'Object.entries(template.base_stats_template || {})) {\n      worldState[key] = def.default', 'Object.entries(template.base_stats_template)) {\n      worldState[key] = def.default']] },
   { name: 'group isolation in discovery', check: 'existing discovery', edits: [['src/services/template.service.ts', "if (!filters.kind) clauses.push({ kind: { $ne: 'group' } })", "if (false) clauses.push({ kind: { $ne: 'group' } })"]] },
+  { name: 'creator list returns groups always', check: 'existing discovery', edits: [['src/services/template.service.ts', "      kind: kind === 'group' ? 'group' : { $ne: 'group' },\n", '']] },
+  { name: 'creator list ignores kind=group', check: 'existing discovery', edits: [['src/services/template.service.ts', "kind: kind === 'group' ? 'group' : { $ne: 'group' },", "kind: { $ne: 'group' },"]] },
+  { name: 'creator list inverts the group filter', check: 'existing discovery', edits: [['src/services/template.service.ts', "kind: kind === 'group' ? 'group' : { $ne: 'group' },", "kind: kind === 'group' ? { $ne: 'group' } : 'group',"]] },
+  { name: 'creator list schema accepts a world', check: 'creator list route takes kind=group only', edits: [['src/schemas/template.schema.ts', "  kind: t.Optional(t.Literal('group')),\n", "  kind: t.Optional(t.Union([t.Literal('world'), t.Literal('group')])),\n"]] },
+  { name: 'creator list controller drops the kind', check: 'creator list route takes kind=group only', edits: [['src/controllers/template.controller.ts', 'query.search,\n      query.kind,\n', 'query.search,\n']] },
   { name: 'group-only handoff', check: 'story prompt fixed', edits: [['worker/processors/generation.processor.ts', "if (dispatchedSession.kind === 'group')", "if (dispatchedSession.kind !== 'group')"]] },
   { name: 'first chronological tag', check: 'addressed pick', edits: [[roll, '.sort((a, b) => a.at - b.at)', '.sort((a, b) => b.at - a.at)']] },
   { name: 'tag before named', check: 'addressed pick', edits: [[roll, 'first(true) ?? first(false)', 'first(false) ?? first(true)']] },
@@ -894,12 +899,41 @@ const artMutations: Mutation[] = [
   { name: 'art future line shown', check: 'art future line', edits: [[groupChats, 'return !line.shown_at || new Date(line.shown_at).getTime() <= now.getTime()', 'return true']] },
   { name: 'art direct message becomes the room last', check: 'art direct message', edits: [[groupChats, "ordered(source.mainEvents.filter(event => event.data.dm_with === undefined))", 'ordered(source.mainEvents)']] },
   { name: 'art stored portrait rejected', check: 'art stored portraits', edits: [['src/services/group-chat/validation.ts', 'const traits = member.group', "if (member.portrait) fail('portrait')\n    const traits = member.group"]] },
-  { name: 'art cast of eleven accepted', check: 'art cast size', edits: [['src/services/group-chat/validation.ts', 'cast.length > 10', 'cast.length > 11']] },
+  { name: 'art cast of seven accepted', check: 'art cast size', edits: [['src/services/group-chat/validation.ts', 'cast.length > 6', 'cast.length > 7']] },
+  { name: 'art cast of one accepted', check: 'art cast size', edits: [['src/services/group-chat/validation.ts', 'cast.length < 2', 'cast.length < 1']] },
+  { name: 'art schema cast of seven accepted', check: 'art cast size', edits: [['src/schemas/template.schema.ts', '{ minItems: 2, maxItems: 6 })),', '{ minItems: 2, maxItems: 7 })),']] },
+  { name: 'art schema cast of one accepted', check: 'art cast size', edits: [['src/schemas/template.schema.ts', '{ minItems: 2, maxItems: 6 })),', '{ minItems: 1, maxItems: 6 })),']] },
   { name: 'art asset key reaches the payload', check: 'art no asset key', edits: [[groupPublic, '      ...(face ? { portrait_url: face.url } : {}),', '      ...(face ? { portrait_url: face.url } : {}), ...(entry.portrait ? { portrait: entry.portrait } : {}),']] },
   { name: 'art adult preview leaks', check: 'art toggle off keeps adult', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return undefined", '']] },
   { name: 'art adult player words leak', check: 'art toggle off keeps adult', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return undefined", "if (!adultAllowed && event.type === 'intimate' && event.data.lines?.length) return undefined"]] },
 ]
 mutations.push(...artMutations)
+
+const groupGateFile = 'src/services/group-chat/text-gate.ts', templateFile = 'src/services/template.service.ts'
+const gateFailsClosed = 'group text gate fails closed'
+const gateMutations: Mutation[] = [
+  { name: 'group gate ignores a malformed verdict', check: gateFailsClosed, edits: [[groupGateFile, "if (report.verdict !== 'allow' && report.verdict !== 'reject') return failClosed(lines)", "if (report.verdict !== 'allow' && report.verdict !== 'reject') return { ok: true }"]] },
+  { name: 'group gate accepts an unknown handle', check: gateFailsClosed, edits: [[groupGateFile, 'handle >= 1 && handle <= lines.length', 'handle >= 1']] },
+  { name: 'group gate accepts an empty reject list', check: gateFailsClosed, edits: [[groupGateFile, "if (report.verdict === 'reject' && handles.length === 0) return failClosed(lines)", 'if (false) return failClosed(lines)']] },
+  { name: 'group gate returns every path for one refusal', check: 'group text gate rejects only the refused line', edits: [[groupGateFile, 'lines.filter((_, index) => rejected.has(index + 1)).map((line) => line.path)', 'lines.map((line) => line.path)']] },
+  { name: 'group gate retries no rate limit', check: 'group text gate retries a rate limit', edits: [[groupGateFile, 'if (attempt === 0 && (status === 429', 'if (false && (status === 429']] },
+  { name: 'group gate stores after a transport failure', check: 'group text gate transport failure twice', edits: [[groupGateFile, "throw new HttpError(503, 'Try again in a moment.')", 'return failClosed(lines)']] },
+  { name: 'group gate create skipped', check: 'group text gate allows a save', edits: [[templateFile, 'const gate = await checkGroupText(groupTextLines(data))', 'const gate = await checkGroupText([])']] },
+  { name: 'group gate request carries the paths', check: 'group text gate request carries every written line', edits: [[groupGateFile, 'lines.map((line, index) => ({ handle: index + 1, text: line.text }))', 'lines.map((line, index) => ({ handle: index + 1, text: line.text, path: line.path }))']] },
+  { name: 'group gate allowed case demoted', check: 'group text gate prompt leads with the allowed case', edits: [[groupGateFile, 'These lines are written for a fictional adult group chat. Explicit sex between consenting adults is allowed', 'These lines are written for a fictional adult group chat. Explicit sex between consenting adults is usually allowed']] },
+  { name: 'group update gates only the edit', check: 'group update gates the merged template', edits: [[templateFile, 'const gate = await checkGroupText(groupTextLines(merged))', 'const gate = await checkGroupText(groupTextLines(data))']] },
+  { name: 'normal saves reach the group gate', check: 'normal world saves never call the group text gate', edits: [[templateFile, "if (kind === 'group') {\n      try { validateGroup(data) }", "if (true) {\n      try { validateGroup(data) }"]] },
+  { name: 'group gate calls with no lines', check: 'group text gate returns one allow without a call for no lines', edits: [[groupGateFile, 'if (lines.length === 0) return { ok: true }', 'if (false) return { ok: true }']] },
+]
+mutations.push(...gateMutations)
+
+const reviewQueueAudit = 'world-review-audit.ts'
+const reviewMutations: Mutation[] = [
+  { name: 'review queue group cast loses the age', check: 'review queue carries a group cast', script: reviewQueueAudit, edits: [['src/services/admin.service.ts', 'age: group?.age,', 'age: member.age,']] },
+  { name: 'review queue normal world gains a cast', check: 'review queue leaves a normal world item unchanged', script: reviewQueueAudit, edits: [['src/services/admin.service.ts', "if (world.kind !== 'group') {", 'if (false) {']] },
+]
+mutations.push(...reviewMutations)
+
 
 const moderation = 'src/services/moderation.service.ts', moderationSchema = 'src/schemas/moderation.schema.ts'
 const reportIndex = 'src/config/mongo-indexes.ts'

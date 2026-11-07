@@ -70,7 +70,7 @@ export const CreateTemplateBody = t.Object({
     aliases: t.Optional(t.Array(t.String({ maxLength: 80 }))),
     immutable_facts: t.Optional(t.Array(t.String({ maxLength: 1000 }))),
     group: t.Object({ age: t.Number({ minimum: 18 }), talkativeness: t.Number({ minimum: 0, maximum: 1 }), speech: t.String({ minLength: 1, maxLength: 2000 }), wants: t.String({ minLength: 1, maxLength: 2500 }), start_bond: t.String({ minLength: 1 }), intimacy: t.Optional(t.String({ minLength: 1 })), voice: t.Optional(t.Array(t.String({ minLength: 1 }), { minItems: 1, maxItems: 8 })) }, { additionalProperties: false }),
-  }), { minItems: 4, maxItems: 10 })),
+  }), { minItems: 2, maxItems: 6 })),
   protagonist: t.Optional(
     t.Object({
       name: t.String({ minLength: 1, maxLength: FIELD_LIMITS.protagonistName }),
@@ -130,4 +130,6 @@ export const MyTemplateQueryParams = t.Object({
   page: t.Optional(t.Numeric({ minimum: 1 })),
   limit: t.Optional(t.Numeric({ minimum: 1, maximum: 50 })),
   search: t.Optional(t.String({ maxLength: 100 })),
+  // "Your groups" asks for them; without it the creator's list leaves groups out.
+  kind: t.Optional(t.Literal('group')),
 })

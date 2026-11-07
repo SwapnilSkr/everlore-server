@@ -1,4 +1,5 @@
 import { validateGroup } from './group-chat/validation'
+import { checkGroupText, groupTextLines } from './group-chat/text-gate'
 import { requireIdentity } from './guest-policy'
 import { ObjectId, type UpdateFilter } from 'mongodb'
 import { mongoColl } from '../config/mongo'
@@ -105,6 +106,11 @@ export const templateService = {
     const kind: WorldTemplateDoc['kind'] = data.kind === 'group' ? 'group' : data.kind === 'character' ? 'character' : 'world'
     if (kind === 'group') {
       try { validateGroup(data) } catch (error) { throw new HttpError(400, (error as Error).message) }
+      // Before the slug, the image and the insert: a refused group writes nothing.
+      const gate = await checkGroupText(groupTextLines(data))
+      if (!gate.ok) {
+        throw new HttpError(422, "Some lines in this group can't be saved. Change them and try again.", { paths: gate.paths })
+      }
     }
     // Characters may be stat-less; Worlds still require at least one stat.
     if (kind === 'world') {
@@ -193,11 +199,18 @@ export const templateService = {
     if (!existing) throw new Error('Template not found')
 
     const effectiveKind = data.kind || existing.kind || 'world'
+    const merged = { ...existing, ...data }
     if ((existing.kind === 'group' || effectiveKind === 'group') && existing.kind !== effectiveKind) {
       throw new HttpError(400, 'Create a new template to change the group format.')
     }
     if (effectiveKind === 'group') {
-      try { validateGroup({ ...existing, ...data }) } catch (error) { throw new HttpError(400, (error as Error).message) }
+      try { validateGroup(merged) } catch (error) { throw new HttpError(400, (error as Error).message) }
+      // An edit is judged with everything already on the group, not just the
+      // field that changed. Still before the image promotion and the write.
+      const gate = await checkGroupText(groupTextLines(merged))
+      if (!gate.ok) {
+        throw new HttpError(422, "Some lines in this group can't be saved. Change them and try again.", { paths: gate.paths })
+      }
     }
     if (effectiveKind === 'world' && data.base_stats_template !== undefined) {
       assertValidStats(data.base_stats_template, 'base_stats_template')
@@ -222,7 +235,6 @@ export const templateService = {
     ].some((key) => Object.prototype.hasOwnProperty.call(data, key) &&
       hasMeaningfulWorldEdit(existing, { [key]: data[key] }))
     if (castSourceChanged && effectiveKind !== 'group') {
-      const merged = { ...existing, ...data }
       const protagonist = merged.protagonist as WorldTemplateDoc['protagonist'] | undefined
       updateFields.seed_cast = await extractTemplateCast({
         title: String(merged.title || ''),
@@ -528,8 +540,18 @@ export const templateService = {
     return Array.isArray(interests) ? interests : []
   },
 
-  async listByCreator(creatorId: string, page: number = 1, limit: number = 20, search?: string) {
-    const filter: Record<string, unknown> = { creator_id: parseObjectId(creatorId), kind: { $ne: 'group' } }
+  async listByCreator(
+    creatorId: string,
+    page: number = 1,
+    limit: number = 20,
+    search?: string,
+    kind?: 'group',
+  ) {
+    const filter: Record<string, unknown> = {
+      creator_id: parseObjectId(creatorId),
+      // The creator's list is worlds and characters; "Your groups" asks for them.
+      kind: kind === 'group' ? 'group' : { $ne: 'group' },
+    }
     const term = search?.trim()
     if (term) {
       filter.$or = [
@@ -549,7 +571,13 @@ export const templateService = {
       ,
       worldTemplates().countDocuments(filter),
     ])
-    return { templates, total, page: safePage }
+    return {
+      // A world from before kinds existed is a world; say so, so "Your groups"
+      // can tell groups from worlds without knowing the model's default.
+      templates: templates.map((template) => ({ ...template, kind: template.kind ?? 'world' as const })),
+      total,
+      page: safePage,
+    }
   },
 }
 

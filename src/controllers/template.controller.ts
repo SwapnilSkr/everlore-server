@@ -235,9 +235,21 @@ export const templateController = {
     return templateService.publish(params.id, user.id, body?.visibility)
   },
 
-  listMine: async ({ user, query }: { user: AuthUser | null; query: { page?: number; limit?: number; search?: string } }) => {
+  listMine: async ({
+    user,
+    query,
+  }: {
+    user: AuthUser | null
+    query: { page?: number; limit?: number; search?: string; kind?: 'group' }
+  }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
-    return templateService.listByCreator(user.id, Number(query.page) || 1, Number(query.limit) || 20, query.search)
+    return templateService.listByCreator(
+      user.id,
+      Number(query.page) || 1,
+      Number(query.limit) || 20,
+      query.search,
+      query.kind,
+    )
   },
 
   delete: async ({

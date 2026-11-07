@@ -311,9 +311,40 @@ export const adminService = {
         kind: 1, is_sentient: 1, is_nsfw_capable: 1, narrative_style: 1,
         protagonist: 1, creator: { $first: '$creator' }, submitted_at: 1,
         was_approved_before: { $eq: ['$ever_approved', true] },
+        seed_cast: 1, topics: 1, opening_lines: 1,
       } },
     ]).toArray()
-    return { items: worlds }
+    // A group's lines are what the owner reviews, so the queue carries the cast
+    // and the written prompts. Other worlds' items keep exactly the shape they
+    // had: a non-group never gains these keys.
+    const items = worlds.map((world) => {
+      if (world.kind !== 'group') {
+        delete world.seed_cast
+        delete world.topics
+        delete world.opening_lines
+        return world
+      }
+      const cast = Array.isArray(world.seed_cast) ? world.seed_cast as Record<string, unknown>[] : []
+      return {
+        ...world,
+        seed_cast: cast.map((member) => {
+          const group = member.group as Record<string, unknown> | undefined
+          const portrait = member.portrait as Record<string, unknown> | undefined
+          return {
+            name: member.name,
+            age: group?.age,
+            appearance: member.appearance,
+            persona: member.persona,
+            voice: group?.voice,
+            first_texts: member.first_texts,
+            statuses: member.statuses,
+            ...(portrait?.asset_key ? { asset_key: portrait.asset_key } : {}),
+            ...(portrait?.thumb_key ? { thumb_key: portrait.thumb_key } : {}),
+          }
+        }),
+      }
+    })
+    return { items }
   },
 
   async reviewWorld(worldId: string, status: 'approved' | 'changes_requested', adminUser: string, note?: string) {

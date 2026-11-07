@@ -182,7 +182,7 @@ await check('group validation rejects unsafe adults, stats, sentience, invalid c
   validateGroup(template)
   for (const patch of [
     { is_sentient: true }, { base_stats_template: { score: { default: 0, min: 0, max: 1, description: 'score' } } },
-    { seed_cast: template.seed_cast!.slice(0, 3) },
+    { seed_cast: template.seed_cast!.slice(0, 1) },
     { seed_cast: template.seed_cast!.map((member, i) => i ? member : { ...member, name: template.seed_cast![1].name.toLowerCase() }) },
     ...[{ age: 17 }, { talkativeness: -0.1 }, { talkativeness: 1.1 }, { speech: ' ' }, { wants: ' ' }].map(patch => ({ seed_cast: template.seed_cast!.map((member, i) => i ? member : { ...member, group: { ...member.group!, ...patch } }) })),
     { topics: [] }, { opening_lines: [{ name: 'Unknown Writer', text: 'bad' }] },
@@ -434,6 +434,8 @@ function matches(row: Row, filter: Row): boolean {
       if (op === '$ne') return !(Array.isArray(value) ? value.some(entry => eq(entry, other)) : eq(value, other))
       if (op === '$exists') return (value !== undefined) === other
       if (op === '$in') return (other as unknown[]).some(other => Array.isArray(value) ? value.some(entry => eq(entry, other)) : eq(value, other))
+      if (op === '$regex') return new RegExp(String(other), String((expected as Row).$options ?? '')).test(String(value ?? ''))
+      if (op === '$options') return true
       if (op === '$lte') return Number(value) <= Number(other)
       if (op === '$lt') return Number(value) < Number(other)
       if (op === '$gte') return Number(value) >= Number(other)
@@ -450,6 +452,7 @@ const clone = <T>(input: T): T => {
 }
 let pushWriteFailure: Error | undefined
 let consentReadHook: (() => void) | undefined
+let templateFindHook: ((filter: Row) => void) | undefined
 let instanceInsertedHook: ((row: Row) => Promise<void>) | undefined
 let eventInsertedHook: ((row: Row) => void) | undefined
 let mediaUsageInsertedHook: ((row: Row) => Promise<void>) | undefined
@@ -468,6 +471,7 @@ function collection(name: string) {
       return { toArray: async () => [{ rows: rows(name).map(latest => ({ latest: clone(latest) })), count: [{ total: rows(name).length }] }] }
     },
     find(filter: Row = {}, options?: { projection?: Record<string, number> }) {
+      if (name === 'worldTemplates') templateFindHook?.(filter)
       let values = rows(name).filter(row => matches(row, filter))
       const cursor = {
         sort(order: Record<string, number>) { values.sort((a, b) => { for (const [key, dir] of Object.entries(order)) { const av = get(a, key), bv = get(b, key); if (av !== bv) return ((av instanceof ObjectId ? av.toHexString() : Number(av)) < (bv instanceof ObjectId ? bv.toHexString() : Number(bv)) ? -1 : 1) * dir } return 0 }); return cursor },
@@ -590,7 +594,8 @@ mock.module('../src/services/opening-place.service', () => ({ extractOpeningPlac
 mock.module('../src/services/character-codex.service', () => ({ characterCodexService: { seedProtagonist: unavailable }, foldDelta: unavailable, newFoldState: (cards: Array<{ canonical_name: string }>) => ({ byName: new Map(cards.map(card => [card.canonical_name.toLowerCase(), card])) }), isEphemeralPersonDescriptor: unavailable, isNonPersonRole: unavailable, rankCodexForInjection: unavailable, identityKey: (text: string) => text.trim().toLowerCase() }))
 mock.module('../src/services/kinship-graph.service', () => ({ kinshipGraphService: { seedPremiseKinship: unavailable } }))
 mock.module('../src/services/template-cast.service', () => ({ materializeTemplateCast: async (input: { instanceId: string; template: WorldTemplateDoc }) => { const cast = input.template.seed_cast!; rows('characters').push(...cast.map((member, index) => ({ _id: new ObjectId((index + 1).toString(16).padStart(24, '0')), instance_id: new ObjectId(input.instanceId), canonical_name: member.name }))); return cast.length } }))
-mock.module('../worker/lib/template-cast-extractor', () => ({ extractTemplateCast: unavailable }))
+let extractCastCalls = 0
+mock.module('../worker/lib/template-cast-extractor', () => ({ extractTemplateCast: async () => { extractCastCalls++; return [] } }))
 const vectors = new Map<string, Row>()
 mock.module('../src/services/vector-store', () => ({ vectorStore: { replaceLore: unavailable, deleteScope: async () => { vectors.clear() }, fetch: async (_scope: Row, ids: string[]) => ({ records: Object.fromEntries(ids.filter(id => vectors.has(id)).map(id => [id, vectors.get(id)])) }), upsert: async (_scope: Row, values: Row[]) => { for (const value of values) vectors.set(String(value.id), value) }, deleteIds: async (_scope: Row, ids: string[]) => { for (const id of ids) vectors.delete(id) } } }))
 mock.module('../src/services/entity-graph.service', () => ({ normalizeEntityName: (text: string) => text.toLowerCase(), entityGraphService: { ensurePlayerEntity: async () => ({ _id: new ObjectId() }), resolveOrCreateEntities: async () => new Map(), upsertNarrativeEdge: async () => {} } }))
@@ -1453,15 +1458,64 @@ await check('real rewind restores group snapshot and preserves historical charac
 })
 await check('existing discovery, recommendations, genre shelves and starters exclude groups; explicit kind returns them', async () => {
   await start()
-  const world = { ...groupTemplate(), _id: new ObjectId(), kind: 'world', starter: true }; rows('worldTemplates').push(world as unknown as Row)
+  const world = { ...groupTemplate(), _id: new ObjectId(), kind: 'world', starter: true, title: 'An ordinary world' }
+  rows('worldTemplates').push(world as unknown as Row)
   rows('worldTemplates')[0].starter = true
   assert.equal((await templateService.listPublished(1, 20, undefined, undefined, { sort: 'new' })).templates.length, 1)
   const groups = await templateService.listPublished(1, 20, undefined, undefined, { kind: 'group', sort: 'new' })
   assert.equal(groups.templates.length, 1); assert.equal(groups.templates[0].kind, 'group')
   assert.equal((await templateService.starter(playerId))?.kind, 'world')
-  assert.equal((await templateService.listByCreator(template.creator_id.toHexString())).templates.length, 1)
+  const creatorId = template.creator_id.toHexString()
+  const sent: Row[] = []
+  templateFindHook = filter => sent.push(clone(filter))
+  let mine, groupsMine
+  try {
+    mine = await templateService.listByCreator(creatorId)
+    groupsMine = await templateService.listByCreator(creatorId, 1, 20, undefined, 'group')
+  } finally { templateFindHook = undefined }
+  // Without kind the creator's list is unchanged: the group is left out, and the
+  // world says what it is. Asking for kind=group returns only the groups.
+  assert.equal(mine.templates.length, 1); assert.equal(mine.templates[0].kind, 'world')
+  assert.equal(mine.total, 1)
+  assert.equal(groupsMine.templates.length, 1); assert.equal(groupsMine.templates[0].kind, 'group')
+  assert.equal(groupsMine.total, 1)
+  // Both paths send their own filter, so the result comes from the query, not from
+  // a post-read filter over everything.
+  assert.equal(sent.length, 2)
+  assert((sent[0].creator_id as ObjectId).equals(template.creator_id))
+  assert.deepEqual(sent[0].kind, { $ne: 'group' })
+  assert.equal(sent[1].kind, 'group')
+  // Search and paging narrow inside whichever kind was asked for.
+  assert.equal((await templateService.listByCreator(creatorId, 1, 20, 'Test Group')).templates.length, 0)
+  assert.equal((await templateService.listByCreator(creatorId, 1, 20, 'Test Group', 'group')).templates.length, 1)
+  assert.equal((await templateService.listByCreator(creatorId, 1, 20, 'ordinary')).templates.length, 1)
+  assert.equal((await templateService.listByCreator(creatorId, 1, 20, 'ordinary', 'group')).templates.length, 0)
+  assert.equal((await templateService.listByCreator(creatorId, 2, 1)).templates.length, 0)
+  assert.equal((await templateService.listByCreator(creatorId, 2, 1, undefined, 'group')).templates.length, 0)
   const genres = await templateService.listGenres(undefined, Date.now() + 120000)
   assert.equal(genres.genres.reduce((sum, genre) => sum + genre.worlds + genre.characters, 0), 1)
+})
+await check('creator list route takes kind=group only and leaves groups out without it', async () => {
+  await start()
+  const world = { ...groupTemplate(), _id: new ObjectId(), kind: 'world', starter: true }
+  rows('worldTemplates').push(world as unknown as Row)
+  const { templateRoutes } = await import('../src/routes/template.routes')
+  const app = new Elysia().use(templateRoutes)
+  const list = (query: string) => app.handle(new Request(`http://localhost/templates/mine/list${query}`))
+  routeUser = { id: template.creator_id.toHexString(), tier: 'creator' }
+  try {
+    const plain = await list('')
+    assert.equal(plain.status, 200)
+    const plainBody = await plain.json() as { templates: Row[] }
+    assert.deepEqual(plainBody.templates.map(item => item.kind), ['world'])
+    const groups = await list('?kind=group')
+    assert.equal(groups.status, 200)
+    const groupBody = await groups.json() as { templates: Row[] }
+    assert.deepEqual(groupBody.templates.map(item => item.kind), ['group'])
+    // The schema is the authority: only the group value exists on this route.
+    assert.equal((await list('?kind=world')).status, 422)
+    assert.equal((await list('?kind=character')).status, 422)
+  } finally { routeUser = null }
 })
 await check('story prompt fixed fixture hashes unchanged; only group kind hands off; no authored group identities in product code', async () => {
   const story = await readFile(new URL('../worker/processors/generation.processor.ts', import.meta.url), 'utf8')
@@ -4908,16 +4962,221 @@ await check('art stored portraits stay valid and a body portrait never reaches s
   noAssetKey(accepted)
 })
 
-await check('art cast size four and ten pass while three and eleven fail', () => {
+await check('art cast size two and six pass while one and seven fail', async () => {
   const base = groupTemplate()
   const cast = (count: number) => ({
     ...base,
     seed_cast: Array.from({ length: count }, (_, index) => ({ ...structuredClone(base.seed_cast![index % 4]), name: `Cast ${index}` })),
     opening_lines: [{ name: 'Cast 0', text: 'The authored opening.' }],
   })
-  for (const count of [4, 10]) validateGroup(cast(count))
-  for (const count of [3, 11]) assert.throws(() => validateGroup(cast(count)))
+  const { CreateTemplateBody } = await import('../src/schemas/template.schema')
+  const app = new Elysia().post('/template', ({ body: accepted }) => accepted, { body: CreateTemplateBody })
+  const accepted = async (count: number) => {
+    const body = cast(count)
+    const response = await app.handle(new Request('http://localhost/template', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title: body.title, description: body.description, kind: 'group', seed_prompt: body.seed_prompt,
+        global_lore: body.global_lore, is_sentient: false, is_nsfw_capable: true, topics: body.topics,
+        opening_lines: body.opening_lines, seed_cast: body.seed_cast, base_stats_template: body.base_stats_template }),
+    }))
+    return response.status === 200
+  }
+  for (const count of [2, 6]) { validateGroup(cast(count)); assert.equal(await accepted(count), true) }
+  for (const count of [1, 7]) { assert.throws(() => validateGroup(cast(count))); assert.equal(await accepted(count), false) }
 })
+
+// The group text gate judges every player-written line before anything is
+// stored. The model call is stubbed here; the service and validation are real.
+const { textGateEffects } = await import('../src/services/group-chat/text-gate')
+const { groupTextLines, checkGroupText } = await import('../src/services/group-chat/text-gate')
+const originalModerationModel = process.env.MEDIA_MODERATION_MODEL
+process.env.MEDIA_MODERATION_MODEL = 'fixture-moderation-model'
+let gateReplies: Array<string | Error> = [], gateRequests: Array<Parameters<typeof textGateEffects.call>[0]> = [], gateWaits = 0
+function resetGate(replies: Array<string | Error> = []) {
+  gateReplies = [...replies]; gateRequests = []; gateWaits = 0
+  textGateEffects.call = async (request) => {
+    gateRequests.push(request)
+    const reply = gateReplies.shift()
+    if (reply instanceof Error) throw reply
+    return reply ?? JSON.stringify({ verdict: 'allow', rejected: [] })
+  }
+  textGateEffects.wait = async () => { gateWaits++ }
+}
+function gateLines(request: Parameters<typeof textGateEffects.call>[0]) {
+  const payload = JSON.parse(request.messages[1].content) as { lines: Array<{ handle: number; text: string }> }
+  return payload.lines
+}
+function handleFor(request: Parameters<typeof textGateEffects.call>[0], text: string) {
+  const line = gateLines(request).find((entry) => entry.text === text)
+  assert(line, `gate request has no line ${text}`)
+  return line!.handle
+}
+function resetSaveTables() {
+  tables.clear()
+  rows('users').push({ _id: new ObjectId(playerId), guest: false })
+}
+/** A save body with every field count known: 67 written lines. */
+function groupSaveBody() {
+  const source = groupTemplate()
+  return {
+    title: source.title,
+    description: source.description,
+    kind: 'group' as const,
+    seed_prompt: source.seed_prompt,
+    global_lore: source.global_lore,
+    is_sentient: false,
+    is_nsfw_capable: true,
+    narrative_style: source.narrative_style,
+    topics: [...source.topics!],
+    opening_lines: structuredClone(source.opening_lines!),
+    seed_cast: source.seed_cast!.map((member) => ({
+      name: member.name,
+      role: member.role,
+      appearance: `Appearance for ${member.name}.`,
+      persona: member.persona,
+      group: { ...structuredClone(member.group)!, voice: [`Voice line for ${member.name}.`] },
+      first_texts: ['First text one.', 'First text two.', 'First text three.'],
+      statuses: { morning: 'Morning line.', afternoon: 'Afternoon line.', evening: 'Evening line.', night: 'Night line.' },
+    })),
+    base_stats_template: {},
+    flag_definitions: {},
+    scene_tags: [],
+    max_context_memories: 25,
+    max_lore_results: 10,
+  }
+}
+const gateStatus = (statusCode: number, message?: string) => (error: unknown) =>
+  error instanceof Error && 'statusCode' in error && error.statusCode === statusCode && (message === undefined || error.message === message)
+
+await check('group text gate allows a save and stores the group', async () => {
+  resetSaveTables(); resetGate()
+  const template = await templateService.create(playerId, groupSaveBody())
+  assert.equal(template.kind, 'group')
+  assert.equal(rows('worldTemplates').length, 1)
+  assert.equal(gateRequests.length, 1)
+  assert.equal(gateRequests[0].purpose, 'group_text_gate')
+  assert.equal(gateRequests[0].model, 'fixture-moderation-model')
+  assert.equal(gateRequests[0].temperature, 0)
+  assert(gateRequests[0].responseSchema)
+  assert.equal((gateRequests[0].messages as Array<{ role: string }>)[0].role, 'system')
+})
+await check('group text gate rejects only the refused line and writes nothing', async () => {
+  resetSaveTables(); resetGate()
+  const body = groupSaveBody()
+  body.description = 'A line the gate refuses.'
+  textGateEffects.call = async (request) => {
+    gateRequests.push(request)
+    return JSON.stringify({ verdict: 'reject', rejected: [handleFor(request, body.description)] })
+  }
+  await assert.rejects(templateService.create(playerId, body), (error: unknown) => {
+    const failure = error as { statusCode?: number; message?: string; details?: { paths?: string[] } }
+    assert.equal(failure.statusCode, 422)
+    assert.equal(failure.message, "Some lines in this group can't be saved. Change them and try again.")
+    assert.deepEqual(failure.details?.paths, ['description'])
+    return true
+  })
+  assert.equal(rows('worldTemplates').length, 0)
+})
+await check('group text gate transport failure twice returns 503 and stores nothing', async () => {
+  resetSaveTables(); resetGate([
+    Object.assign(new Error('Fixture provider failure'), { status: 500 }),
+    Object.assign(new Error('Fixture provider failure'), { status: 500 }),
+  ])
+  await assert.rejects(templateService.create(playerId, groupSaveBody()),
+    gateStatus(503, 'Try again in a moment.'))
+  assert.equal(gateWaits, 1)
+  assert.equal(gateRequests.length, 2)
+  assert.equal(rows('worldTemplates').length, 0)
+})
+await check('group text gate retries a rate limit once and then saves', async () => {
+  resetSaveTables(); resetGate([Object.assign(new Error('Fixture rate limit'), { status: 429 })])
+  const template = await templateService.create(playerId, groupSaveBody())
+  assert.equal(template.kind, 'group')
+  assert.equal(gateWaits, 1)
+  assert.equal(gateRequests.length, 2)
+  assert.equal(rows('worldTemplates').length, 1)
+})
+await check('group text gate fails closed on a malformed verdict, unknown handle or empty reject list', async () => {
+  const body = groupSaveBody()
+  const allPaths = groupTextLines(body).map((line) => line.path)
+  for (const reply of [
+    'not json at all',
+    JSON.stringify({ verdict: 'reject', rejected: [999] }),
+    JSON.stringify({ verdict: 'reject', rejected: [] }),
+    JSON.stringify({ verdict: 'reject' }),
+    JSON.stringify({ verdict: 'maybe', rejected: [] }),
+    JSON.stringify({ verdict: 'allow', rejected: [1] }),
+  ]) {
+    resetSaveTables(); resetGate([reply])
+    await assert.rejects(templateService.create(playerId, body), (error: unknown) => {
+      const failure = error as { statusCode?: number; details?: { paths?: string[] } }
+      assert.equal(failure.statusCode, 422)
+      assert.deepEqual(failure.details?.paths, allPaths)
+      return true
+    })
+    assert.equal(rows('worldTemplates').length, 0)
+  }
+})
+await check('group text gate request carries every written line and no path', async () => {
+  resetSaveTables(); resetGate()
+  const body = groupSaveBody()
+  await templateService.create(playerId, body)
+  const sent = gateLines(gateRequests[0])
+  const expected = groupTextLines(body)
+  assert.equal(expected.length, 67)
+  assert.equal(sent.length, 67)
+  assert.deepEqual(sent.map((line) => line.handle), Array.from({ length: 67 }, (_, index) => index + 1))
+  assert.deepEqual(sent.map((line) => line.text), expected.map((line) => line.text))
+  const requestText = JSON.stringify(gateRequests[0])
+  for (const path of expected.map((line) => line.path)) assert(!requestText.includes(path), `gate request leaks ${path}`)
+})
+await check('group text gate prompt leads with the allowed case', async () => {
+  resetSaveTables(); resetGate()
+  await templateService.create(playerId, groupSaveBody())
+  const system = (gateRequests[0].messages as Array<{ content: string }>)[0].content
+  assert(system.startsWith('These lines are written for a fictional adult group chat. Explicit sex between consenting adults is allowed, including crude and graphic language, and is never a reason to reject.'))
+  for (const required of ['anyone under 18', 'sex without consent', 'a real, identifiable person', '18 or over']) assert(system.includes(required))
+})
+await check('group update gates the merged template and stores nothing on a refusal', async () => {
+  resetSaveTables(); resetGate()
+  const stored = { ...groupTemplate(), _id: new ObjectId(), creator_id: new ObjectId(playerId) }
+  rows('worldTemplates').push(stored as unknown as Row)
+  textGateEffects.call = async (request) => {
+    gateRequests.push(request)
+    const lines = gateLines(request)
+    assert(lines.some((line) => line.text === stored.global_lore))
+    const handle = handleFor(request, 'A later line.')
+    return JSON.stringify({ verdict: 'reject', rejected: [handle] })
+  }
+  await assert.rejects(templateService.update(String(stored._id), playerId, { description: 'A later line.' }), (error: unknown) => {
+    const failure = error as { statusCode?: number; details?: { paths?: string[] } }
+    assert.equal(failure.statusCode, 422)
+    assert.deepEqual(failure.details?.paths, ['description'])
+    return true
+  })
+  assert.deepEqual(rows('worldTemplates')[0], stored)
+})
+await check('normal world saves never call the group text gate', async () => {
+  resetSaveTables(); resetGate()
+  const callsBefore = extractCastCalls
+  const created = await templateService.create(playerId, {
+    title: 'An ordinary world', description: 'A place to travel', kind: 'world',
+    seed_prompt: 'A place to travel and see what happens.', global_lore: '', is_sentient: false, is_nsfw_capable: false,
+    base_stats_template: { mood: { default: 50, min: 0, max: 100, description: 'Mood' } },
+  })
+  assert.equal(created.kind, 'world')
+  assert.equal(extractCastCalls, callsBefore + 1)
+  assert.equal(gateRequests.length, 0)
+  await templateService.update(String(created._id), playerId, { max_lore_results: 20 })
+  assert.equal(gateRequests.length, 0)
+})
+await check('group text gate returns one allow without a call for no lines', async () => {
+  resetGate()
+  assert.deepEqual(await checkGroupText([]), { ok: true })
+  assert.equal(gateRequests.length, 0)
+})
+if (originalModerationModel === undefined) delete process.env.MEDIA_MODERATION_MODEL
+else process.env.MEDIA_MODERATION_MODEL = originalModerationModel
 
 await check('art no asset key reaches the preview or a chats row', async () => {
   await start(facedTemplate())
