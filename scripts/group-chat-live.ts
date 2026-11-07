@@ -26,6 +26,7 @@
  *   bun run <this script> --plan         no calls, prints the planned spend
  *   bun run <this script> --smoke        up to 2 paid turns, ledger kept
  *   bun run <this script>                the run (spend cap $0.20)
+ *   bun run <this script> --sample a,b   each named group's whole cast, its own folder and cap (₹25, $0.29)
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -39,10 +40,12 @@ import type { GroupTurnJob } from '../worker/processors/group-turn.processor'
 // ---------------------------------------------------------------- paths, cap
 
 const ROOT = resolve(import.meta.dir, '..', '..')
-const OUT_DIR = join(ROOT, '.agents/probes/group-chat/live')
+const sampleIndex = process.argv.indexOf('--sample')
+const SAMPLE_SLUGS = sampleIndex > 0 ? (process.argv[sampleIndex + 1] || '').split(',').filter(Boolean) : []
+const OUT_DIR = join(ROOT, sampleIndex > 0 ? '.agents/probes/group-chat/sample-nov7' : '.agents/probes/group-chat/live')
 const LEDGER_FILE = join(OUT_DIR, 'spend.json')
 const SUMMARY_FILE = join(OUT_DIR, 'summary.json')
-const CAP_USD = 0.20
+const CAP_USD = sampleIndex > 0 ? 0.29 : 0.20
 const INR_PER_USD = 85
 /** Charged to the guard for a paid call whose response carried no cost. */
 const UNPRICED_CALL_RESERVE_USD = 0.004
@@ -852,6 +855,38 @@ async function smoke(): Promise<void> {
   process.exit(failed ? 1 : 0)
 }
 
+/** New groups, before release: does every member stay in voice, and does an explicit line get an explicit reply? */
+async function sampleRun(): Promise<void> {
+  if (!SAMPLE_SLUGS.length) throw new Error('--sample needs comma-separated slugs')
+  for (const slug of SAMPLE_SLUGS) {
+    const template = templateFor(slug)
+    const room: RunRecord = { key: `room:${slug}`, title: `${template.title}: the room`, group: template.title, note: 'Nobody tagged.', turns: [] }
+    runs.push(room)
+    await playPlanned(room, await createChat(template, true), [
+      { line: 'Anyone around tonight?', expected: 'normal' },
+      { line: 'What did I miss today?', expected: 'normal' },
+    ])
+    for (const character of template.seed_cast!) {
+      if (stops.length) return
+      const run: RunRecord = { key: `member:${slug}:${character.name}`, title: `${template.title}: ${character.name}`, group: template.title, note: 'A fresh chat.', turns: [] }
+      runs.push(run)
+      await playPlanned(run, await createChat(template, true), [
+        { line: `@${character.name} you around tonight?`, expected: 'normal' },
+        { line: `@${character.name} I wanna fuck you.`, expected: 'adult' },
+        { line: `@${character.name} tell me exactly what you want me to do to you.`, expected: 'adult' },
+      ])
+    }
+  }
+  const template = templateFor(SAMPLE_SLUGS[0])
+  const off: RunRecord = { key: `off:${SAMPLE_SLUGS[0]}`, title: `${template.title}: toggle off`, group: template.title, note: 'Consent false.', turns: [] }
+  runs.push(off)
+  const name = template.seed_cast![0].name
+  await playPlanned(off, await createChat(template, false), [
+    { line: `@${name} I wanna fuck you.`, expected: 'normal' },
+    { line: `@${name} tell me exactly what you want me to do to you.`, expected: 'normal' },
+  ])
+}
+
 async function mainRun(): Promise<void> {
   // 1. Scene A, Flat 4B, one running chat, opening lines included.
   {
@@ -1078,6 +1113,12 @@ if (args.has('--selftest')) {
   process.exit(0)
 } else if (args.has('--smoke')) {
   await smoke()
+} else if (sampleIndex > 0) {
+  await sampleRun()
+  writeFileSync(join(OUT_DIR, 'turns.json'), JSON.stringify(runs.map(run => ({ key: run.key, turns: run.turns.map(turn => ({ index: turn.index, player: turn.player, expected: turn.expected, route: turn.route, ms: turn.elapsed_ms, calls: turn.calls.length, counts: turn.counts, error: turn.error, lines: turn.lines.map(line => ({ name: line.name, text: line.text })) })) })), null, 1))
+  for (const stop of stops) console.log(`STOP ${stop}`)
+  console.log(`sample: ${ledger.turns} turn(s), ${ledger.calls} call(s), $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}), ${errors.length} error(s)`)
+  process.exit(0)
 } else {
   await mainRun()
 }
