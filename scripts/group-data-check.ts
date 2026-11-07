@@ -186,6 +186,9 @@ function checkFile(path: string): Verdict {
         fail(`${label}.group.voice is not an array of strings`)
       } else if (voice.length < minVoice || voice.length > MAX_VOICE_LINES) {
         fail(`${label}.group.voice has ${voice.length} lines, expected ${minVoice} to ${MAX_VOICE_LINES}`)
+      } else if (voice.some(line => new RegExp(`(?<![\\p{L}\\p{N}_])${String(entry.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'iu').test(line as string))) {
+        // The writer copies these lines' habits, and a reply where someone says their own name is dropped.
+        fail(`${label}.group.voice has a line where they say their own name`)
       }
       if (typeof age === 'number' && filled(entry.appearance)) {
         const stated = statedAge(entry.appearance)

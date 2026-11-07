@@ -1024,19 +1024,21 @@ async function authoredGroups(): Promise<WorldTemplateDoc[]> {
   assert(process.env.GROUP_CHAT_DATA_DIR, 'GROUP_CHAT_DATA_DIR is required for authored reachability')
   const dir = process.env.GROUP_CHAT_DATA_DIR
   const files = (await readdir(dir)).filter(file => file.endsWith('.json')).sort()
-  assert.equal(files.length, 3)
+  // The catalog grows by batches, so the floor is the first three worlds, not a fixed count.
+  for (const first of ['alder-lane-watch.json', 'flat-4b.json', 'last-light-guild.json']) assert(files.includes(first), `${first} missing from the catalog`)
   const groups: WorldTemplateDoc[] = []
   for (const file of files) {
     const data = JSON.parse(await readFile(`${dir}/${file}`, 'utf8'))
     validateEntry(data, file)
     groups.push({ ...groupTemplate(), ...data })
   }
-  assert.equal(groups.reduce((sum, group) => sum + group.seed_cast!.length, 0), 16)
+  for (const group of groups) assert(group.seed_cast!.length >= 2, `${group.slug} has no real cast`)
   return groups
 }
 await check('authored player placeholders resolve per call for every addressed prompt', async () => {
   let checked = 0
-  for (const group of await authoredGroups()) for (const member of group.seed_cast!) {
+  const authored = await authoredGroups()
+  for (const group of authored) for (const member of group.seed_cast!) {
     for (const player of [playerName, 'Rae $&']) {
       await start(group, player)
       put(rows('users')[0], 'preferences.nsfw_enabled', true)
@@ -1051,7 +1053,7 @@ await check('authored player placeholders resolve per call for every addressed p
     }
     checked++
   }
-  assert.equal(checked, 16)
+  assert.equal(checked, authored.reduce((sum, group) => sum + group.seed_cast!.length, 0))
   const member = { ...members[0], group: { ...members[0].group, intimacy: 'Interested in {player}; asks {player} directly.' } }
   assert(buildAddressedStatic({ ...template, members, player: 'Rae $&' }, member).includes('Interested in Rae $&; asks Rae $& directly.'))
 })
@@ -1147,11 +1149,12 @@ await check('authored tagged reachability covers every member and interest routi
       const adult = scenario !== 'normal'
       put(rows('users')[0], 'preferences.nsfw_enabled', adult)
       auditEnv.NSFW_SAME_TURN_ROUTER = adult ? 'on' : 'off'
-      const fresh = `${member.name}: Fresh answer for case ${cases}.`
+      // Kept under three digits: a longer number reads as an invented detail and the line is dropped, rightly.
+      const fresh = `${member.name}: Fresh answer for case ${cases % 90}.`
       const chain = ['fake-adult', 'fake-adult-fallback', 'fake-adult-last']
       modelReplies = scenario === 'empty' ? ['', fresh] : scenario === 'rescue' ? [new Error('writer unavailable'), ...chain.slice(1).map(() => ''), '', '', fresh]
         : scenario === 'voice' ? [`${member.name}: ${member.group!.voice![0]}`, fresh] : [fresh]
-      await turn({ userMessage: `@${member.name} answer me` }, () => 0)
+      await turn({ userMessage: `@${member.name} answer me` }, () => 0).catch(error => { throw new Error(`${group.slug}/${member.name}/${scenario}`, { cause: error }) })
       const card = rows('characters').find(card => card.canonical_name === member.name)!
       assert((lastData().lines as Row[]).some(line => line.character_id === String(card._id)), `${group.slug}/${member.name}/${scenario} never spoke`)
       assert.equal(rows('events').at(-1)!.type, adult ? 'intimate' : 'narration')
@@ -1173,12 +1176,13 @@ await check('authored tagged reachability covers every member and interest routi
         assert.deepEqual(writerCalls.slice(0, attempts.length).map(call => call.model), attempts)
         assert(writing.some(call => call.purpose === 'addressed_fallback'))
       }
-      if (scenario === 'voice') assert.equal(checkLogs.at(-1)!.copied_example, 1)
+      if (scenario === 'voice') assert.equal(checkLogs.at(-1)!.copied_example, 1, `${group.slug}/${member.name}: ${JSON.stringify(checkLogs.at(-1))}`)
       cases++
     }
   }
-  assert.equal(cases, 80)
-  console.log(`authored tagged reachability: ${cases}/75 cases produced the tagged member's line`)
+  const authored = await authoredGroups()
+  assert.equal(cases, 5 * authored.reduce((sum, group) => sum + group.seed_cast!.length, 0))
+  console.log(`authored tagged reachability: ${cases}/${cases} cases produced the tagged member's line`)
 })
 await check('authored untagged reachability picks and speaks every member over 2000 seeded processor rolls per group', async () => {
   let seed = 91
@@ -1474,9 +1478,13 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   const dataDir = process.env.GROUP_CHAT_DATA_DIR
   if (dataDir) {
     const authored = (await readdir(dataDir)).filter(file => file.endsWith('.json'))
+    // Titles, slugs and the first three casts stay barred everywhere. Everyone else's first name is barred
+    // in group chat code only: the story engine's prompts use ordinary names (Ash, Bram) as worked examples.
+    const FIRST = new Set(['alder-lane-watch', 'flat-4b', 'last-light-guild'])
     const labels: string[] = []
-    for (const file of authored) { const group = JSON.parse(await readFile(`${dataDir}/${file}`, 'utf8')); labels.push(group.title, group.slug, ...group.seed_cast.map((member: { name: string }) => member.name)); validateEntry(group, file) }
-    async function visit(path: string) { for (const entry of await readdir(path, { withFileTypes: true })) { const next = `${path}/${entry.name}`; if (entry.isDirectory()) await visit(next); else if (entry.name.endsWith('.ts')) { const source = await readFile(next, 'utf8'); for (const label of labels) assert(!new RegExp(`(?<![A-Za-z])${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z])`).test(source), `${next} names ${label}`) } } }
+    const groupLabels: string[] = []
+    for (const file of authored) { const group = JSON.parse(await readFile(`${dataDir}/${file}`, 'utf8')); const cast = group.seed_cast.map((member: { name: string }) => member.name); labels.push(group.title, group.slug, ...(FIRST.has(group.slug) ? cast : [])); groupLabels.push(...cast); validateEntry(group, file) }
+    async function visit(path: string) { for (const entry of await readdir(path, { withFileTypes: true })) { const next = `${path}/${entry.name}`; if (entry.isDirectory()) await visit(next); else if (entry.name.endsWith('.ts')) { const source = await readFile(next, 'utf8'); for (const label of /group-chat|group-|group_/.test(next.split('/').slice(-2).join('/')) ? [...labels, ...groupLabels] : labels) assert(!new RegExp(`(?<![A-Za-z])${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z])`).test(source), `${next} names ${label}`) } } }
     await visit(new URL('../src', import.meta.url).pathname); await visit(new URL('../worker', import.meta.url).pathname)
     console.log(`validated ${authored.length} authored groups; identity scan passed`)
   }
