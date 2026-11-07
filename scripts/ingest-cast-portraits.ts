@@ -33,7 +33,7 @@ import type { UpdateFilter, WithoutId } from 'mongodb'
 import { connectMongo, getDb, mongoColl } from '../src/config/mongo'
 import { identityKey } from '../src/services/character-codex.service'
 import { storageService } from '../src/services/storage.service'
-import { encodeUserImage } from '../src/utils/image-encoding'
+import { encodeImageThumb, encodeUserImage, PORTRAIT_THUMB_WIDTH, thumbKey } from '../src/utils/image-encoding'
 import type { PortraitRef } from '../src/models/media.model'
 import type {
   ProtagonistDoc,
@@ -139,16 +139,26 @@ export function pngKeyFor(slug: string, name: string, bytes: Buffer): string {
 }
 
 /**
+ * The 320 px WebP key stored beside the full portrait. Null when the full key
+ * is not WebP, which is the only shape this script publishes.
+ */
+export function thumbKeyFor(slug: string, name: string, bytes: Buffer): string | null {
+  return thumbKey(assetKeyFor(slug, name, bytes), PORTRAIT_THUMB_WIDTH)
+}
+
+/**
  * Build the authored portrait ref. `appearance_version` equals the entry's
  * own version so `isPortraitCurrent` treats it as current. `art_style` is the
  * template's locked narrative_style key, omitted (never null) when unset —
- * which reads as the painted default, exactly like legacy portraits.
+ * which reads as the painted default, exactly like legacy portraits. The small
+ * variant is recorded only when it was uploaded beside the full one.
  */
 export function buildAuthoredPortrait(
   assetKey: string,
   entry: Pick<CastEntry, 'appearance_version'>,
   narrativeStyle: string | undefined,
   paintedAt: Date,
+  thumbAssetKey?: string | null,
 ): PortraitRef {
   const ref: PortraitRef = {
     asset_key: assetKey,
@@ -157,6 +167,7 @@ export function buildAuthoredPortrait(
     painted_at: paintedAt,
   }
   if (narrativeStyle) ref.art_style = narrativeStyle
+  if (thumbAssetKey) ref.thumb_key = thumbAssetKey
   return ref
 }
 
@@ -177,13 +188,15 @@ export function samePortraitIgnoringTime(a?: PortraitRef, b?: PortraitRef): bool
 
 /**
  * What to write for one face: nothing, the whole portrait ref (new art, a new
- * style, an out-of-date version), or just the key when the same art is only
- * moving from its PNG key to its WebP key.
+ * style, an out-of-date version), just the key when the same art is only
+ * moving from its PNG key to its WebP key, or just the small variant when the
+ * full image is already published without one.
  */
 export type PortraitPlan =
   | { kind: 'none' }
   | { kind: 'paint'; portrait: PortraitRef }
   | { kind: 'move'; assetKey: string }
+  | { kind: 'thumb'; thumbKey: string }
 
 /**
  * True when `current` is the PNG of this exact art and nothing else about the
@@ -201,12 +214,17 @@ export function planPortrait(
   current: PortraitRef | undefined,
   key: string,
   pngKey: string,
+  thumbAssetKey: string | null,
   entry: Pick<CastEntry, 'appearance_version'>,
   narrativeStyle: string | undefined,
   paintedAt: Date,
 ): PortraitPlan {
-  const candidate = buildAuthoredPortrait(key, entry, narrativeStyle, paintedAt)
-  if (current && samePortraitIgnoringTime(current, candidate)) return { kind: 'none' }
+  const candidate = buildAuthoredPortrait(key, entry, narrativeStyle, paintedAt, thumbAssetKey)
+  if (current && samePortraitIgnoringTime(current, candidate)) {
+    // The full image is current; only its small variant is missing or stale.
+    if (thumbAssetKey && current.thumb_key !== thumbAssetKey) return { kind: 'thumb', thumbKey: thumbAssetKey }
+    return { kind: 'none' }
+  }
   if (current && isSameArtPng(current, candidate, pngKey)) return { kind: 'move', assetKey: key }
   return { kind: 'paint', portrait: candidate }
 }
@@ -214,7 +232,8 @@ export function planPortrait(
 /**
  * The positional `$set` for one entry: only its `appearance` and `portrait`
  * keys, nothing else on the template. A move writes the single nested
- * `asset_key` so nothing else on the portrait changes. Empty means no-op.
+ * `asset_key` so nothing else on the portrait changes; a thumb writes only the
+ * small variant's key. Empty means no-op.
  */
 export function buildEntrySet(
   base: string,
@@ -225,6 +244,7 @@ export function buildEntrySet(
   if (appearance !== null) $set[`${base}.appearance`] = appearance
   if (plan.kind === 'paint') $set[`${base}.portrait`] = plan.portrait
   else if (plan.kind === 'move') $set[`${base}.portrait.asset_key`] = plan.assetKey
+  else if (plan.kind === 'thumb') $set[`${base}.portrait.thumb_key`] = plan.thumbKey
   return $set
 }
 
@@ -479,12 +499,14 @@ async function selfTest(): Promise<void> {
   const garbage = await verifyPortraitBytes(Buffer.from('not an image at all'))
   check(!garbage.ok && /decode/.test(garbage.reason || ''), 'undecodable bytes are rejected')
 
-  // 9. A re-run on the PNG of the same art moves; the WebP is then a no-op.
+  // 9. A re-run on the PNG of the same art moves; the WebP is then a no-op,
+  // and a WebP without its small variant gains only that key.
   const world = 'my-world'
   const name = 'Maya Chen'
   const art = Buffer.from('same-bytes')
   const webpKey = assetKeyFor(world, name, art)
   const pngKey = pngKeyFor(world, name, art)
+  const thumbKeyValue = thumbKeyFor(world, name, art)!
   const paintedAt = new Date('2026-10-01T00:00:00Z')
   const rerunAt = new Date('2026-11-05T00:00:00Z')
   const version = { appearance_version: 2 }
@@ -495,7 +517,7 @@ async function selfTest(): Promise<void> {
     art_style: 'noir',
     painted_at: paintedAt,
   }
-  const movePlan = planPortrait(paintedPng, webpKey, pngKey, version, 'noir', rerunAt)
+  const movePlan = planPortrait(paintedPng, webpKey, pngKey, thumbKeyValue, version, 'noir', rerunAt)
   check(
     movePlan.kind === 'move' && movePlan.assetKey === webpKey,
     'a PNG of the same art plans a move to WebP',
@@ -508,30 +530,66 @@ async function selfTest(): Promise<void> {
     moveSet,
   )
   const movedRef: PortraitRef = { ...paintedPng, asset_key: webpKey }
+  const thumbPlan = planPortrait(movedRef, webpKey, pngKey, thumbKeyValue, version, 'noir', rerunAt)
   check(
-    planPortrait(movedRef, webpKey, pngKey, version, 'noir', rerunAt).kind === 'none',
-    'a re-run on the WebP is a no-op',
+    thumbPlan.kind === 'thumb' && thumbPlan.thumbKey === thumbKeyValue,
+    'a WebP without its small variant plans only the thumb',
+    thumbPlan,
+  )
+  const thumbSet = buildEntrySet('seed_cast.0', null, thumbPlan)
+  check(
+    JSON.stringify(thumbSet) === JSON.stringify({ 'seed_cast.0.portrait.thumb_key': thumbKeyValue }),
+    'a thumb re-run changes only thumb_key',
+    thumbSet,
+  )
+  const thumbedRef: PortraitRef = { ...movedRef, thumb_key: thumbKeyValue }
+  check(
+    planPortrait(thumbedRef, webpKey, pngKey, thumbKeyValue, version, 'noir', rerunAt).kind === 'none',
+    'a second re-run on the thumbed WebP is a no-op',
+  )
+  check(
+    planPortrait(movedRef, webpKey, pngKey, null, version, 'noir', rerunAt).kind === 'none',
+    'a missing small variant cannot be recorded when nothing was encoded',
   )
   const newArt = Buffer.from('other-bytes')
   const newKey = assetKeyFor(world, name, newArt)
-  const repaintPlan = planPortrait(paintedPng, newKey, pngKeyFor(world, name, newArt), version, 'noir', rerunAt)
+  const repaintPlan = planPortrait(paintedPng, newKey, pngKeyFor(world, name, newArt), thumbKeyFor(world, name, newArt), version, 'noir', rerunAt)
   check(
     repaintPlan.kind === 'paint' && repaintPlan.portrait.asset_key === newKey,
     'different art still repaints to its own key',
     repaintPlan,
   )
-  const freshPlan = planPortrait(undefined, webpKey, pngKey, version, 'noir', rerunAt)
+  const freshPlan = planPortrait(undefined, webpKey, pngKey, thumbKeyValue, version, 'noir', rerunAt)
   check(
-    freshPlan.kind === 'paint' && freshPlan.portrait.asset_key === webpKey,
-    'a first portrait is a paint',
+    freshPlan.kind === 'paint' && freshPlan.portrait.asset_key === webpKey && freshPlan.portrait.thumb_key === thumbKeyValue,
+    'a first portrait is a paint carrying its small variant',
   )
-  const restyledPlan = planPortrait(movedRef, webpKey, pngKey, version, 'painted', rerunAt)
+  const restyledPlan = planPortrait(movedRef, webpKey, pngKey, thumbKeyValue, version, 'painted', rerunAt)
   check(restyledPlan.kind === 'paint', 'a style change still repaints')
 
-  // 10. The uploaded bytes are the shared bounded WebP encoding.
+  // 10. The uploaded bytes are the shared bounded WebP encoding, and the small
+  // one is a narrower q78 WebP built from the same source.
   const encoded = await encodeUserImage(sharp(good))
   const encodedMeta = await sharp(encoded).metadata()
   check(encodedMeta.format === 'webp', 'the upload encoding is WebP', encodedMeta.format)
+  const thumbBytes = await encodeImageThumb(sharp(good), PORTRAIT_THUMB_WIDTH)
+  const thumbMeta = await sharp(thumbBytes).metadata()
+  check(
+    thumbMeta.format === 'webp' && thumbMeta.width === PORTRAIT_THUMB_WIDTH
+      && Math.abs(thumbMeta.width! / thumbMeta.height! - 768 / 1024) < 0.01,
+    'the small variant is WebP at the portrait width and keeps the aspect',
+    [thumbMeta.format, thumbMeta.width, thumbMeta.height],
+  )
+  check(
+    thumbKeyValue === webpKey.replace(/\.webp$/, '.w320.webp'),
+    'the small variant key replaces .webp with .w320.webp',
+    thumbKeyValue,
+  )
+  const tiny = await sharp({
+    create: { width: 200, height: 300, channels: 3, background: { r: 10, g: 20, b: 30 } },
+  }).png().toBuffer()
+  const narrowThumb = await sharp(await encodeImageThumb(sharp(tiny), PORTRAIT_THUMB_WIDTH)).metadata()
+  check(narrowThumb.width === 200, 'the small variant is never enlarged', narrowThumb.width)
 
   if (process.exitCode) {
     console.error('\nSELF-TEST FAILED')
@@ -588,6 +646,8 @@ async function main(): Promise<void> {
   let missingEntry = 0
   let invalidPng = 0
   let encodeFailed = 0
+  let thumbEncodeFailed = 0
+  let thumbOnly = 0
   let failed = 0
 
   for (const c of wanted) {
@@ -616,6 +676,7 @@ async function main(): Promise<void> {
     let plan: PortraitPlan = { kind: 'none' }
     let portraitNote = ''
     let upload: Buffer | null = null
+    let thumbUpload: Buffer | null = null
     const pngPath = join(manifest.drop_folder, c.file)
     let bytes: Buffer | null = null
     try {
@@ -642,22 +703,41 @@ async function main(): Promise<void> {
           continue
         }
         const key = assetKeyFor(c.slug, c.name, bytes)
+        const smallKey = thumbKeyFor(c.slug, c.name, bytes)
         plan = planPortrait(
           match.entry.portrait,
           key,
           pngKeyFor(c.slug, c.name, bytes),
+          smallKey,
           match.entry,
           template.narrative_style || undefined,
           new Date(),
         )
+        // The small variant is encoded only when this run will record it, so a
+        // no-op costs nothing and a thumb_key can never point at bytes that
+        // were not uploaded. A failure skips the character rather than writing
+        // half a portrait.
+        if (plan.kind === 'paint' || plan.kind === 'thumb') {
+          try {
+            thumbUpload = await encodeImageThumb(sharp(bytes), PORTRAIT_THUMB_WIDTH)
+          } catch (e) {
+            thumbEncodeFailed++
+            console.log(`THUMB ENCODE FAILED  ${tag}  portrait: ${c.file} (${(e as Error).message})`)
+            continue
+          }
+        }
         const size = `${Math.round(bytes.length / 1024)} KB PNG -> ${Math.round(upload.length / 1024)} KB WebP`
+        const smallSize = thumbUpload ? ` (+${Math.round(thumbUpload.length / 1024)} KB small)` : ''
         if (plan.kind === 'none') {
           portraitNote = `portrait: current (${key})`
         } else if (plan.kind === 'move') {
           const was = match.entry.portrait?.asset_key
           portraitNote = `portrait: ${args.apply ? 'MOVED TO WEBP' : 'WOULD MOVE TO WEBP'} ${key} (was ${was}; ${size})`
+        } else if (plan.kind === 'thumb') {
+          thumbOnly++
+          portraitNote = `portrait: ${args.apply ? 'ADDED THUMB' : 'WOULD ADD THUMB'} ${plan.thumbKey} (${Math.round(thumbUpload!.length / 1024)} KB)`
         } else {
-          portraitNote = `portrait: ${match.entry.portrait ? 'REPAINT' : 'NEW'} ${key} (${checkPng.width}x${checkPng.height}; ${size})`
+          portraitNote = `portrait: ${match.entry.portrait ? 'REPAINT' : 'NEW'} ${key} (${checkPng.width}x${checkPng.height}; ${size}${smallSize})`
         }
       }
     }
@@ -679,11 +759,19 @@ async function main(): Promise<void> {
       // Upload first: a failed upload must not leave a pointer at a key
       // whose bytes never landed. A move uploads the new WebP under the new
       // key and leaves the old PNG object in place for existing references.
+      // The small variant follows the full one, so `thumb_key` is written only
+      // for an object that exists.
       const uploadKey = plan.kind === 'paint'
         ? plan.portrait.asset_key
         : plan.kind === 'move' ? plan.assetKey : null
       if (uploadKey && upload) {
         await storageService.upload(upload, 'image/webp', { key: uploadKey })
+      }
+      const thumbUploadKey = plan.kind === 'paint'
+        ? plan.portrait.thumb_key
+        : plan.kind === 'thumb' ? plan.thumbKey : null
+      if (thumbUploadKey && thumbUpload) {
+        await storageService.upload(thumbUpload, 'image/webp', { key: thumbUploadKey })
       }
       // One positional update on the named entry only. The key shape is
       // asserted in --self-test, so this single cast is the only untyped
@@ -701,14 +789,17 @@ async function main(): Promise<void> {
 
   console.log(
     `\n${wanted.length} character(s): ${ok} applied, ${noop} no-op, ${missingPng} missing PNG, `
-      + `${invalidPng} invalid PNG, ${encodeFailed} encode failed, ${missingTemplate} missing template, `
-      + `${missingEntry} missing entry, ${failed} failed.`,
+      + `${invalidPng} invalid PNG, ${encodeFailed} encode failed, ${thumbEncodeFailed} thumb encode failed, `
+      + `${missingTemplate} missing template, ${missingEntry} missing entry, ${failed} failed.`,
   )
+  if (thumbOnly) console.log(`${thumbOnly} character(s) gained only a small image.`)
   if (!args.apply) console.log('Dry run — re-run with --apply --yes-db <name> to write.')
   process.exit(failed > 0 ? 1 : 0)
 }
 
-main().catch((e) => {
-  console.error('\ningest-cast-portraits failed:', e)
-  process.exit(1)
-})
+if (import.meta.main) {
+  main().catch((e) => {
+    console.error('\ningest-cast-portraits failed:', e)
+    process.exit(1)
+  })
+}

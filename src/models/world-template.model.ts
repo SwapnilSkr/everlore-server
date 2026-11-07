@@ -118,6 +118,9 @@ export interface WorldTemplateDoc {
   style_notes?: string
   /** CDN URL of the generated avatar/background image (served via CloudFront). */
   image_url?: string
+  /** CDN URL of the 540 px WebP stored beside {@link image_url}, for covers.
+   *  Omitted, never null, when no small image was published. */
+  image_thumb_url?: string
   /** The visual prompt used to generate {@link image_url} (for re-rolls/editing). */
   image_prompt?: string
   /** Optional first message a sentient persona/character greets the player with. */

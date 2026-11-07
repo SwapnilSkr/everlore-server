@@ -112,14 +112,24 @@ export function publicGroupData<T>(value: T, now = new Date()): T {
  *  because that module loads the image service and no read path needs it. */
 const faceUrl = (assetKey: string) => `${env.CDN_BASE_URL.replace(/\/+$/, '')}/${assetKey}`
 
+/** A cast member's published art: the full face, and the small one when the
+ *  portrait carries a thumb key. */
+export interface GroupFace {
+  url: string
+  thumb?: string
+}
+
 type FaceTemplate = Pick<WorldTemplateDoc, 'seed_cast'> | null | undefined
 
 /** Authored faces by cast name. Read from the template on every request, so art
  *  published later reaches saves that already exist. */
-export function groupFaces(template: FaceTemplate): Map<string, string> {
-  const faces = new Map<string, string>()
+export function groupFaces(template: FaceTemplate): Map<string, GroupFace> {
+  const faces = new Map<string, GroupFace>()
   for (const entry of template?.seed_cast || []) {
-    if (entry.portrait?.asset_key) faces.set(entry.name.trim().toLowerCase(), faceUrl(entry.portrait.asset_key))
+    const key = entry.portrait?.asset_key
+    if (!key) continue
+    const thumbKey = entry.portrait?.thumb_key
+    faces.set(entry.name.trim().toLowerCase(), { url: faceUrl(key), ...(thumbKey ? { thumb: faceUrl(thumbKey) } : {}) })
   }
   return faces
 }
@@ -128,6 +138,7 @@ export interface GroupPreviewMember {
   name: string
   role?: string
   portrait_url?: string
+  portrait_thumb_url?: string
 }
 
 /** Who is in a group before joining: a name, a role and a face, never an
@@ -135,34 +146,43 @@ export interface GroupPreviewMember {
 export function groupPreviewMembers(template: Partial<WorldTemplateDoc>): GroupPreviewMember[] {
   const faces = groupFaces(template as FaceTemplate)
   return (template.seed_cast || []).map(entry => {
-    const portrait = faces.get(entry.name.trim().toLowerCase())
+    const face = faces.get(entry.name.trim().toLowerCase())
     return {
       name: entry.name,
       ...(entry.role ? { role: entry.role } : {}),
-      ...(portrait ? { portrait_url: portrait } : {}),
+      ...(face ? { portrait_url: face.url } : {}),
+      ...(face?.thumb ? { portrait_thumb_url: face.thumb } : {}),
     }
   })
 }
 
-/** The public template. Only a group also carries its members, so every other
- *  kind reads exactly as it did before. */
+/** The public template. Only a group also carries its members and the cover's
+ *  small variant, so every other kind reads exactly as it did before. */
 export function publicGroupTemplate<T extends Partial<WorldTemplateDoc>>(
   template: T,
-): ReturnType<typeof publicTemplate<T>> & { members?: GroupPreviewMember[] } {
+): ReturnType<typeof publicTemplate<T>> & { members?: GroupPreviewMember[]; image_thumb_url?: string } {
   const base = publicTemplate(template)
   if (template.kind !== 'group') return base
-  return { ...base, members: groupPreviewMembers(template) }
+  return {
+    ...base,
+    ...(template.image_thumb_url ? { image_thumb_url: template.image_thumb_url } : {}),
+    members: groupPreviewMembers(template),
+  }
 }
 
 /** A room card: its authored face as a URL, and never the stored portrait —
  *  its asset key is internal. A card with no authored face has no URL. */
 export function withGroupFace<T extends { canonical_name?: string }>(
   card: T,
-  faces: Map<string, string>,
-): Omit<T, 'portrait'> & { portrait_url?: string } {
+  faces: Map<string, GroupFace>,
+): Omit<T, 'portrait'> & { portrait_url?: string; portrait_thumb_url?: string } {
   const { portrait: _portrait, ...rest } = card as T & { portrait?: unknown }
   const face = faces.get(String(card.canonical_name || '').trim().toLowerCase())
-  return { ...rest, ...(face ? { portrait_url: face } : {}) }
+  return {
+    ...rest,
+    ...(face ? { portrait_url: face.url } : {}),
+    ...(face?.thumb ? { portrait_thumb_url: face.thumb } : {}),
+  }
 }
 
 /** A group payload that carries the cast: add each authored face, drop the

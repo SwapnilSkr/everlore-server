@@ -14,6 +14,31 @@ export function encodeUserImage(image: sharp.Sharp): Promise<Buffer> {
     .toBuffer()
 }
 
+/** Widths of the small variants, one per surface family. */
+export const PORTRAIT_THUMB_WIDTH = 320
+export const COVER_THUMB_WIDTH = 540
+
+/**
+ * The small WebP stored beside a published image, for avatars and list cards.
+ * Downscale-only: a source already narrower than `width` keeps its size. q78
+ * because a thumb is shown small, where q82's extra bytes buy nothing.
+ */
+export function encodeImageThumb(image: sharp.Sharp, width: number): Promise<Buffer> {
+  return image
+    .resize({ width, withoutEnlargement: true })
+    .webp({ quality: 78, effort: 6 })
+    .toBuffer()
+}
+
+/**
+ * The small variant's storage key: the full key with its `.webp` suffix
+ * replaced by `.w<width>.webp`. Null when the full key is not WebP, so a caller
+ * never invents a sibling for an object it did not publish.
+ */
+export function thumbKey(fullKey: string, width: number): string | null {
+  return fullKey.endsWith('.webp') ? fullKey.replace(/\.webp$/, `.w${width}.webp`) : null
+}
+
 export interface EncodedImage {
   data: Buffer
   contentType: string

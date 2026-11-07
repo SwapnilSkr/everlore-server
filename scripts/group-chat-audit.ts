@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { readFile, readdir, rm } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import { Elysia } from 'elysia'
@@ -4342,16 +4343,27 @@ await check('notify mark 9 handler auth validation token ownership and no log le
   assert(!/log\.(?:info|warn|error)\([^\n]*device\.token/.test(source))
 })
 
-/** A cast the artist has already painted the first two faces for. */
+/** A cast the artist has already painted: the first face has its small variant,
+ *  the second does not, and the third has no art at all. */
 function facedTemplate() {
   const source = groupTemplate()
   source.seed_cast = source.seed_cast!.map((member, index) => index < 2 ? { ...member,
-    portrait: { asset_key: `castface_${index}.png`, source: 'authored' as const, appearance_version: 1, painted_at: new Date('2026-01-01Z') },
+    portrait: {
+      asset_key: `castface_${index}.png`, source: 'authored' as const, appearance_version: 1, painted_at: new Date('2026-01-01Z'),
+      ...(index === 0 ? { thumb_key: 'castface_0.w320.webp' } : {}),
+    },
   } : member)
   return source
 }
+/** The same cast, with a published cover and its small variant. */
+function coveredTemplate() {
+  return { ...facedTemplate(), image_url: 'https://fixture.invalid/cover.webp', image_thumb_url: 'https://fixture.invalid/cover.w540.webp' }
+}
 const faces = ['https://fixture.invalid/castface_0.png', 'https://fixture.invalid/castface_1.png']
+const faceThumbs = ['https://fixture.invalid/castface_0.w320.webp']
+const coverThumb = 'https://fixture.invalid/cover.w540.webp'
 const noAssetKey = (value: unknown) => assert(!/"asset_key"\s*:/.test(JSON.stringify(value)), 'asset key reached the player')
+const noNullThumb = (value: unknown) => assert(!/"\w*thumb\w*"\s*:\s*null/.test(JSON.stringify(value)), 'a thumb field was written null')
 
 await check('art room cards carry authored faces and never a stored portrait', async () => {
   await start(facedTemplate())
@@ -4362,9 +4374,12 @@ await check('art room cards carry authored faces and never a stored portrait', a
   const cast = (sent[0].data as Row).characters as Row[]
   const card = (name: string) => cast.find(entry => entry.canonical_name === name)!
   assert.equal(card(names[0]).portrait_url, faces[0]); assert.equal(card(names[1]).portrait_url, faces[1])
+  assert.equal(card(names[0]).portrait_thumb_url, faceThumbs[0])
+  assert(!('portrait_thumb_url' in card(names[1])), 'a face without a small variant must omit its URL')
   assert(!('portrait' in card(names[0])), 'a stored portrait was sent with its asset key')
   assert(!('portrait_url' in card(names[2])))
-  noAssetKey(sent)
+  assert(!('portrait_thumb_url' in card(names[2])))
+  noAssetKey(sent); noNullThumb(sent)
   // The template is read live, so art published later reaches this same save.
   rows('worldTemplates')[0].seed_cast[3].portrait = { asset_key: 'castface_3.png', source: 'authored', appearance_version: 1, painted_at: new Date() }
   const again: Row[] = []
@@ -4373,12 +4388,14 @@ await check('art room cards carry authored faces and never a stored portrait', a
 })
 
 await check('art public group template lists members with faces and no authored traits', async () => {
-  await start(facedTemplate())
+  await start(coveredTemplate())
   const { templateController } = await import('../src/controllers/template.controller')
   const preview = await templateController.getById({ params: { id: template._id.toHexString() }, user: null }) as Row
   assert.equal(preview.kind, 'group')
+  assert.equal((preview as Row).image_url, 'https://fixture.invalid/cover.webp')
+  assert.equal((preview as Row).image_thumb_url, coverThumb)
   assert.deepEqual(preview.members, [
-    { name: names[0], role: 'member 0', portrait_url: faces[0] },
+    { name: names[0], role: 'member 0', portrait_url: faces[0], portrait_thumb_url: faceThumbs[0] },
     { name: names[1], role: 'member 1', portrait_url: faces[1] },
     { name: names[2], role: 'member 2' },
     { name: names[3], role: 'member 3' },
@@ -4386,7 +4403,7 @@ await check('art public group template lists members with faces and no authored 
   for (const key of ['persona', 'voice', 'wants', 'intimacy', 'start_bond', 'talkativeness', 'group', 'topics', 'opening_lines', 'seed_cast', 'seed_prompt']) {
     assert(!(key in preview), `preview leaked ${key}`)
   }
-  noAssetKey(preview)
+  noAssetKey(preview); noNullThumb(preview)
 })
 
 await check('art non-group template keeps its exact public shape', async () => {
@@ -4395,6 +4412,144 @@ await check('art non-group template keeps its exact public shape', async () => {
   const { seed_cast: _cast, ...world } = { ...groupTemplate(), kind: 'world' as const }
   assert.deepEqual(publicGroupTemplate(world), publicTemplate(world))
   assert(!('members' in publicGroupTemplate(world)))
+  // A normal world never gains the group-only small cover.
+  assert(!('image_thumb_url' in publicGroupTemplate({ ...world, image_thumb_url: coverThumb })))
+})
+
+await check('art small variants reach the chats row and are omitted when absent', async () => {
+  await start(coveredTemplate())
+  const { buildGroupChatRow } = await import('../src/services/group-chat/chats')
+  const buildRow = () => buildGroupChatRow({
+    instance: rows('worldInstances')[0] as never,
+    template: rows('worldTemplates')[0] as never,
+    cards: rows('characters') as never,
+    mainEvents: [], threadEvents: [],
+    adultAllowed: false,
+  }, new Date())
+  const row = buildRow()
+  assert.equal(row.image_thumb_url, coverThumb)
+  const member = (name: string) => row.members.find(entry => entry.name === name)!
+  assert.equal(member(names[0]).portrait_url, faces[0])
+  assert.equal(member(names[0]).portrait_thumb_url, faceThumbs[0])
+  assert(!('portrait_thumb_url' in member(names[1])), 'a face without a small variant must omit its URL')
+  assert(!('portrait_thumb_url' in member(names[2])))
+  noAssetKey(row); noNullThumb(row)
+  // A template that never published small variants omits the keys entirely.
+  delete (rows('worldTemplates')[0] as Row).image_thumb_url
+  delete (((rows('worldTemplates')[0] as Row).seed_cast as Row[])[0]!.portrait as Row).thumb_key
+  const plain = buildRow()
+  assert(!('image_thumb_url' in plain))
+  assert(!('portrait_thumb_url' in plain.members.find(entry => entry.name === names[0])!))
+  noNullThumb(plain)
+})
+
+await check('art portrait small variant re-run changes only its key', async () => {
+  const { planPortrait, buildEntrySet, assetKeyFor, pngKeyFor, thumbKeyFor } = await import('./ingest-cast-portraits')
+  const bytes = Buffer.from('audit-art-bytes')
+  const key = assetKeyFor('audit-world', 'Maya Chen', bytes)
+  const png = pngKeyFor('audit-world', 'Maya Chen', bytes)
+  const thumb = thumbKeyFor('audit-world', 'Maya Chen', bytes)!
+  const entry = { appearance_version: 1 }
+  const painted = new Date('2026-11-01Z')
+  const current = { asset_key: key, source: 'authored' as const, appearance_version: 1, painted_at: painted }
+  const plan = planPortrait(current, key, png, thumb, entry, undefined, painted)
+  assert.deepEqual(plan, { kind: 'thumb', thumbKey: thumb })
+  assert.deepEqual(buildEntrySet('seed_cast.0', null, plan), { 'seed_cast.0.portrait.thumb_key': thumb })
+  const again = planPortrait({ ...current, thumb_key: thumb }, key, png, thumb, entry, undefined, painted)
+  assert.deepEqual(again, { kind: 'none' })
+  assert.deepEqual(buildEntrySet('seed_cast.0', null, again), {})
+  const paint = planPortrait(undefined, key, png, thumb, entry, 'noir', painted)
+  assert.equal(paint.kind, 'paint')
+  assert.equal(paint.kind === 'paint' ? paint.portrait.thumb_key : undefined, thumb)
+})
+
+await check('art cover small variant re-run changes only image_thumb_url', async () => {
+  const sharp = (await import('sharp')).default
+  const { runCatalog, coverThumbUrl } = await import('./seed-catalog')
+  const { encodeUserImage } = await import('../src/utils/image-encoding')
+  const dir = await mkdtemp(join(import.meta.dir, '.cover-thumb-audit-'))
+  try {
+    const catalog = join(dir, 'catalog'), covers = join(dir, 'covers')
+    await mkdir(catalog, { recursive: true }); await mkdir(covers, { recursive: true })
+    const coverPath = join(covers, 'cover.png')
+    await sharp({ create: { width: 900, height: 600, channels: 3, background: { r: 40, g: 80, b: 120 } } }).png().toFile(coverPath)
+    const normalized = await encodeUserImage(sharp(await readFile(coverPath)))
+    const source = groupTemplate()
+    const body = {
+      title: source.title, description: source.description, kind: 'group' as const, is_sentient: false, is_nsfw_capable: true,
+      seed_prompt: source.seed_prompt, global_lore: source.global_lore, narrative_style: source.narrative_style!,
+      seed_cast: source.seed_cast!, topics: source.topics!, opening_lines: source.opening_lines!,
+      base_stats_template: {}, flag_definitions: {}, scene_tags: [], max_context_memories: 25, max_lore_results: 10,
+    }
+    await writeFile(join(catalog, 'thumb-group.json'), JSON.stringify({ slug: 'thumb-group', cover: 'cover.png', ...body }))
+    const owner = {
+      _id: new ObjectId('200000000000000000000001'), username: 'Everlore', password_hash: '', providers: [],
+      preferences: { player_name: 'Everlore' }, account_status: 'active',
+    }
+    const coverUrl = 'https://fixture.invalid/media/cover-audit.webp'
+    const thumbUrl = coverThumbUrl(coverUrl)!
+    // The literal shape, not just self-consistency: `.w540.webp` beside the full key.
+    assert.equal(thumbUrl, 'https://fixture.invalid/media/cover-audit.w540.webp')
+    assert.equal(coverThumbUrl('https://fixture.invalid/media/cover-audit.png'), null)
+    let stored: Row | null = null
+    let templateWrites = 0
+    let thumbWrites: Array<string | null> = []
+    let thumbBytes: Buffer | null = null
+    const runtime = {
+      findUsers: async () => [owner],
+      insertUser: async () => { throw new Error('the catalog has an owner') },
+      findSlug: async () => stored as never,
+      findTitle: async () => null,
+      readCover: async () => normalized,
+      defaults: () => ({}) as never,
+      upload: async () => ({ url: coverUrl }),
+      uploadThumb: async (fullUrl: string, bytes: Buffer) => { thumbBytes = bytes; return coverThumbUrl(fullUrl)! },
+      setImageThumb: async (_id: string, _owner: string, url: string | null) => {
+        thumbWrites.push(url)
+        if (stored) (stored as Row).image_thumb_url = url ?? undefined
+      },
+      create: async (_owner: string, data: Row) => {
+        stored = { _id: new ObjectId('100000000000000000000001'), creator_id: owner._id, review_status: 'pending', ...data } as Row
+        return stored as never
+      },
+      update: async (_id: string, _owner: string, data: Row) => {
+        templateWrites++
+        stored = { ...(stored as Row), ...data } as Row
+        return stored as never
+      },
+      setStarter: async () => {},
+      publish: async () => { if (stored) (stored as Row).is_published = true; if (stored) (stored as Row).visibility = 'public' },
+      approve: async () => { if (stored) (stored as Row).review_status = 'approved' },
+      get: async () => stored as never,
+    }
+    const options = { catalog, covers, apply: true, allowDefaultCover: false }
+
+    const [first] = await runCatalog(options, runtime as never, () => {})
+    assert.equal(first!.outcome, 'create')
+    assert.equal(first!.image_thumb_url, thumbUrl)
+    assert.equal(templateWrites, 1, 'create then the post-create update')
+    assert.deepEqual(thumbWrites, [thumbUrl])
+
+    // A second run does nothing: no upload, no write.
+    templateWrites = 0; thumbWrites = []; thumbBytes = null
+    const [second] = await runCatalog(options, runtime as never, () => {})
+    assert.equal(second!.outcome, 'unchanged')
+    assert.deepEqual(thumbWrites, [])
+    assert.equal(templateWrites, 0, 'an unchanged world must not be rewritten')
+
+    // A published cover that lost its small variant gains only that field.
+    ;(stored as Row).image_thumb_url = undefined
+    templateWrites = 0; thumbWrites = []; thumbBytes = null
+    const [third] = await runCatalog(options, runtime as never, () => {})
+    assert.equal(third!.outcome, 'update')
+    assert.deepEqual(thumbWrites, [thumbUrl])
+    assert.equal(templateWrites, 0, 'a thumb-only re-run must not rewrite the world')
+    const meta = await sharp(thumbBytes!).metadata()
+    assert.equal(meta.format, 'webp')
+    assert.equal(meta.width, 540)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 await check('art future line hidden from chats and threads behind the earlier visible one', async () => {

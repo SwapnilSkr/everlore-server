@@ -9,15 +9,25 @@ import sharp from 'sharp'
 import { CreateTemplateBody } from '../src/schemas/template.schema'
 import { NARRATIVE_STYLE_PRESETS } from '../src/utils/narrative-styles'
 import { deriveGenre } from '../src/utils/genre'
-import { encodeUserImage } from '../src/utils/image-encoding'
+import { COVER_THUMB_WIDTH, encodeImageThumb, encodeUserImage, thumbKey } from '../src/utils/image-encoding'
 import type { UserDoc, UserInsertDoc } from '../src/models/user.model'
 import type { WorldTemplateDoc } from '../src/models/world-template.model'
 
 type Body = Static<typeof CreateTemplateBody>
 export type Options = { catalog: string; covers: string; apply: boolean; only?: string[]; allowDefaultCover: boolean }
-export type Entry = { slug: string; cover: string; starter?: true; body: Body; image?: Buffer; normalized?: Buffer }
+export type Entry = { slug: string; cover: string; starter?: true; body: Body; image?: Buffer; normalized?: Buffer; thumb?: Buffer }
 type Outcome = 'create' | 'update' | 'unchanged' | 'skip (no cover)'
-export type Result = { slug: string; outcome: Outcome; id?: string; image_url?: string }
+export type Result = { slug: string; outcome: Outcome; id?: string; image_url?: string; image_thumb_url?: string }
+
+/**
+ * The small cover's CDN URL: the full cover's URL with `.webp` replaced by
+ * `.w540.webp`. Null when the full cover is not WebP, so a caller never
+ * invents a sibling for an object the publisher did not make.
+ */
+export function coverThumbUrl(fullUrl: string | undefined | null): string | null {
+  if (!fullUrl || !fullUrl.endsWith('.webp')) return null
+  return fullUrl.replace(/\.webp$/, `.w${COVER_THUMB_WIDTH}.webp`)
+}
 export interface Runtime {
   findUsers(): Promise<UserDoc[]>
   insertUser(doc: UserInsertDoc): Promise<UserDoc>
@@ -28,6 +38,10 @@ export interface Runtime {
   upload(file: File): Promise<{ url: string }>
   create(owner: string, data: Body): Promise<WorldTemplateDoc>
   update(id: string, owner: string, data: Record<string, unknown>): Promise<WorldTemplateDoc>
+  /** Upload the small cover beside the full one, under the derived CDN URL. */
+  uploadThumb(fullUrl: string, bytes: Buffer): Promise<string>
+  /** Set or clear the cover's small variant, touching no other field. */
+  setImageThumb(id: string, owner: string, url: string | null): Promise<void>
   setStarter(id: string, owner: string, starter?: true): Promise<void>
   publish(id: string, owner: string, visibility: 'public'): Promise<unknown>
   approve(id: string): Promise<unknown>
@@ -117,6 +131,10 @@ export async function readCatalog(options: Options): Promise<Entry[]> {
       const image = sharp(entry.image, { limitInputPixels: 40_000_000 }).rotate()
       if (!['jpeg', 'png', 'webp', 'heif'].includes((await image.metadata()).format || '')) throw new Error(`${entry.slug}: unsupported image`)
       entry.normalized = await encodeUserImage(image)
+      // Only a group's list card shows a small cover; other kinds are untouched.
+      if (entry.body.kind === 'group') {
+        entry.thumb = await encodeImageThumb(sharp(entry.image, { limitInputPixels: 40_000_000 }).rotate(), COVER_THUMB_WIDTH)
+      }
     }
   }
   for (const slug of options.only || []) if (!slugs.has(slug)) throw new Error(`Unknown --only slug: ${slug}`)
@@ -151,7 +169,17 @@ export async function runCatalog(options: Options, runtime: Runtime, log: (text:
   if (accounts.length > 1) throw new Error('Ambiguous Everlore account identity')
   let owner = accounts[0]
   if (owner) assertOfficial(owner)
-  const plan: { entry: Entry; body: Body; existing: WorldTemplateDoc | null; outcome: Outcome; imageChanged: boolean }[] = []
+  const plan: {
+    entry: Entry
+    body: Body
+    existing: WorldTemplateDoc | null
+    outcome: Outcome
+    imageChanged: boolean
+    changed: boolean
+    live: boolean
+    thumbWanted: boolean
+    thumbAction: 'none' | 'add' | 'current'
+  }[] = []
   for (const entry of entries) {
     const existing = await runtime.findSlug(entry.slug)
     if (existing && (!owner || !existing.creator_id.equals(owner._id))) throw new Error(`${entry.slug}: slug belongs to another creator`)
@@ -163,9 +191,16 @@ export async function runCatalog(options: Options, runtime: Runtime, log: (text:
     const body = { ...entry.body }
     if (body.protagonist) body.protagonist = withRuntimeMedia(body.protagonist, existing?.protagonist)
     const changed = starterChanged || (existing && Object.entries(body).some(([key, value]) => !isDeepStrictEqual(existing[key as keyof WorldTemplateDoc], value)))
-    const live = existing?.is_published && existing.visibility === 'public' && existing.review_status === 'approved'
-    const outcome: Outcome = !entry.image && !options.allowDefaultCover ? 'skip (no cover)' : !existing ? 'create' : changed || imageChanged || !live ? 'update' : 'unchanged'
-    plan.push({ entry, body, existing, outcome, imageChanged })
+    const live = !!existing?.is_published && existing.visibility === 'public' && existing.review_status === 'approved'
+    // A published cover can be missing its small variant, or point at a stale
+    // one. That alone must add only `image_thumb_url`, never rewrite the world.
+    const thumbWanted = entry.body.kind === 'group' && !!entry.image
+    const desiredThumb = coverThumbUrl(existing?.image_url)
+    const thumbMissing = !!existing && thumbWanted && !imageChanged && !!desiredThumb && existing.image_thumb_url !== desiredThumb
+    const thumbAction = !thumbWanted ? 'none' as const
+      : (!existing || imageChanged || thumbMissing) ? 'add' as const : 'current' as const
+    const outcome: Outcome = !entry.image && !options.allowDefaultCover ? 'skip (no cover)' : !existing ? 'create' : changed || imageChanged || thumbMissing || !live ? 'update' : 'unchanged'
+    plan.push({ entry, body, existing, outcome, imageChanged, changed: !!changed, live, thumbWanted, thumbAction })
   }
   if (options.apply && !owner && plan.some(p => p.outcome === 'create')) {
     const now = new Date()
@@ -182,33 +217,47 @@ export async function runCatalog(options: Options, runtime: Runtime, log: (text:
     if (options.apply && (outcome === 'create' || outcome === 'update')) {
       if (!owner) throw new Error('Official account missing')
       const ownerId = owner._id.toHexString()
-      const data: Record<string, unknown> = { ...item.body }
-      if (item.imageChanged && entry.image) data.image_url = (await runtime.upload(new File([new Uint8Array(entry.image)], entry.cover))).url
-      if (!world) {
-        world = await runtime.create(ownerId, data as Body)
-        // create owns slug derivation; update stores the stable authored key and
-        // applies fields (e.g. model_preferences) that create currently defaults.
-        world = await runtime.update(world._id.toHexString(), ownerId, { ...data, slug: entry.slug, image_url: world.image_url })
-      } else {
-        world = await runtime.update(world._id.toHexString(), ownerId, data)
+      // A thumb-only change must not rewrite the authored world at all.
+      const writeTemplate = !item.existing || item.changed || item.imageChanged || !item.live
+      if (writeTemplate) {
+        const data: Record<string, unknown> = { ...item.body }
+        if (item.imageChanged && entry.image) data.image_url = (await runtime.upload(new File([new Uint8Array(entry.image)], entry.cover))).url
+        if (!world) {
+          world = await runtime.create(ownerId, data as Body)
+          // create owns slug derivation; update stores the stable authored key and
+          // applies fields (e.g. model_preferences) that create currently defaults.
+          world = await runtime.update(world._id.toHexString(), ownerId, { ...data, slug: entry.slug, image_url: world.image_url })
+        } else {
+          world = await runtime.update(world._id.toHexString(), ownerId, data)
+        }
+        const id = world._id.toHexString()
+        // This trusted catalog write is separate from the player update service.
+        await runtime.setStarter(id, ownerId, entry.starter)
+        if (!world.image_url || new URL(world.image_url).pathname.includes('/previews/')) throw new Error(`${entry.slug} (${id}): cover promotion failed`)
+        await runtime.publish(id, ownerId, 'public')
+        world = await runtime.get(id)
+        if (!world || !world.creator_id.equals(owner._id)) throw new Error(`${entry.slug}: ownership changed before approval`)
+        if (world.review_status === 'pending') await runtime.approve(id)
+        world = await runtime.get(id)
+        if (!world || !world.creator_id.equals(owner._id) || world.slug !== entry.slug || !world.is_published || world.visibility !== 'public' || world.review_status !== 'approved' ||
+          world.starter !== entry.starter || (entry.starter === undefined && Object.hasOwn(world, 'starter'))) throw new Error(`${entry.slug}: publication verification failed`)
       }
-      const id = world._id.toHexString()
-      // This trusted catalog write is separate from the player update service.
-      await runtime.setStarter(id, ownerId, entry.starter)
-      if (!world.image_url || new URL(world.image_url).pathname.includes('/previews/')) throw new Error(`${entry.slug} (${id}): cover promotion failed`)
-      await runtime.publish(id, ownerId, 'public')
-      world = await runtime.get(id)
-      if (!world || !world.creator_id.equals(owner._id)) throw new Error(`${entry.slug}: ownership changed before approval`)
-      if (world.review_status === 'pending') await runtime.approve(id)
-      world = await runtime.get(id)
-      if (!world || !world.creator_id.equals(owner._id) || world.slug !== entry.slug || !world.is_published || world.visibility !== 'public' || world.review_status !== 'approved' ||
-        world.starter !== entry.starter || (entry.starter === undefined && Object.hasOwn(world, 'starter'))) throw new Error(`${entry.slug}: publication verification failed`)
+      if (item.thumbWanted && entry.thumb && world?.image_url) {
+        const target = coverThumbUrl(world.image_url)
+        if (target && world.image_thumb_url !== target) {
+          // Upload under the derived key first, then record only that URL.
+          const url = await runtime.uploadThumb(world.image_url, entry.thumb)
+          await runtime.setImageThumb(world._id.toHexString(), ownerId, url)
+          world.image_thumb_url = url
+        }
+      }
     }
-    const result = { slug: entry.slug, outcome, ...(world ? { id: world._id.toHexString(), image_url: world.image_url } : {}) }
+    const result = { slug: entry.slug, outcome, ...(world ? { id: world._id.toHexString(), image_url: world.image_url, ...(world.image_thumb_url ? { image_thumb_url: world.image_thumb_url } : {}) } : {}) }
     results.push(result)
     const starterChange = outcome === 'create' || outcome === 'update'
       ? ` starter=${entry.starter === true ? 'true' : 'unset'}` : ''
-    log(`${options.apply ? '' : '[dry-run] '}${entry.slug}: ${outcome}${starterChange}${result.id ? ` id=${result.id} image=${result.image_url}` : ''}`)
+    const thumbNote = item.thumbAction === 'none' ? '' : ` thumb=${item.thumbAction}`
+    log(`${options.apply ? '' : '[dry-run] '}${entry.slug}: ${outcome}${starterChange}${thumbNote}${result.id ? ` id=${result.id} image=${result.image_url}` : ''}`)
   }
   const counts = Object.fromEntries(['create', 'update', 'unchanged', 'skip (no cover)'].map(outcome => [outcome, results.filter(r => r.outcome === outcome).length]))
   log(`Summary: ${JSON.stringify(counts)}`)
@@ -243,6 +292,8 @@ async function main() {
       },
       defaults: () => { throw new Error('Dry run cannot create users') },
       upload: async () => { throw new Error('Dry run cannot upload') },
+      uploadThumb: async () => { throw new Error('Dry run cannot upload') },
+      setImageThumb: async () => { throw new Error('Dry run cannot update') },
       create: async () => { throw new Error('Dry run cannot create') },
       update: async () => { throw new Error('Dry run cannot update') },
       setStarter: async () => { throw new Error('Dry run cannot set starter') },
@@ -261,6 +312,21 @@ async function main() {
       Object.assign(runtime, {
         insertUser: async (doc: UserInsertDoc) => { await ready(); const { insertedId } = await db.collection<UserInsertDoc>('users').insertOne(doc); return { ...doc, _id: insertedId } },
         defaults: defaultUserPreferences, upload: async (file: File) => { await ready(); return imageService.uploadUserImage(file) },
+        uploadThumb: async (fullUrl: string, bytes: Buffer) => {
+          await ready()
+          const { storageService } = await import('../src/services/storage.service')
+          const key = storageService.keyFromUrl(fullUrl)
+          const small = key ? thumbKey(key, COVER_THUMB_WIDTH) : null
+          if (!key || !small) throw new Error('Cover is outside configured CDN media or not WebP; its small variant cannot be placed')
+          return (await storageService.upload(bytes, 'image/webp', { key: small })).url
+        },
+        setImageThumb: async (id: string, owner: string, url: string | null) => {
+          const result = await db.collection<WorldTemplateDoc>('world_templates').updateOne(
+            { _id: new ObjectId(id), creator_id: new ObjectId(owner) },
+            url ? { $set: { image_thumb_url: url } } : { $unset: { image_thumb_url: '' } },
+          )
+          if (result.matchedCount !== 1) throw new Error('Catalog image thumb ownership changed')
+        },
         create: async (owner: string, data: Body) => { await ready(); return templateService.create(owner, data) },
         update: async (id: string, owner: string, data: Record<string, unknown>) => { await ready(); return templateService.update(id, owner, data) },
         setStarter: async (id: string, owner: string, starter?: true) => {

@@ -24,6 +24,7 @@ export interface GroupChatMemberRow {
   name: string
   role?: string
   portrait_url?: string
+  portrait_thumb_url?: string
 }
 
 export interface GroupChatThreadRow {
@@ -37,6 +38,7 @@ export interface GroupChatRow {
   template_id: string
   title?: string
   image_url?: string
+  image_thumb_url?: string
   members: GroupChatMemberRow[]
   last?: GroupChatMessage
   pending_from: string[]
@@ -92,7 +94,7 @@ export function lastVisibleMessage(
 
 export interface GroupChatSource {
   instance: Pick<WorldInstanceDoc, '_id' | 'template_id' | 'group_state' | 'seed_cast_snapshot'>
-  template?: Pick<WorldTemplateDoc, 'title' | 'image_url' | 'seed_cast'> | null
+  template?: Pick<WorldTemplateDoc, 'title' | 'image_url' | 'image_thumb_url' | 'seed_cast'> | null
   cards: CharacterProfileDoc[]
   /** A recent window is enough: the last shown line is always in it. */
   mainEvents: GroupChatEventView[]
@@ -114,7 +116,8 @@ export function buildGroupChatRow(source: GroupChatSource, now: Date): GroupChat
       id: idString(card._id),
       name: member.name,
       ...(member.role ? { role: member.role } : {}),
-      ...(face ? { portrait_url: face } : {}),
+      ...(face ? { portrait_url: face.url } : {}),
+      ...(face?.thumb ? { portrait_thumb_url: face.thumb } : {}),
     }]
   })
   const names = new Map(members.map(member => [member.id, member.name]))
@@ -141,6 +144,7 @@ export function buildGroupChatRow(source: GroupChatSource, now: Date): GroupChat
     template_id: idString(source.instance.template_id),
     ...(source.template?.title ? { title: source.template.title } : {}),
     ...(source.template?.image_url ? { image_url: source.template.image_url } : {}),
+    ...(source.template?.image_thumb_url ? { image_thumb_url: source.template.image_thumb_url } : {}),
     members,
     ...(last ? { last } : {}),
     pending_from: groupPendingFrom(source.instance.group_state, now),
@@ -188,7 +192,7 @@ export async function listGroupChats(playerId: string, now = new Date()): Promis
   const templateIds = [...new Map(instances.map(instance => [instance.template_id.toHexString(), instance.template_id])).values()]
   const [templates, cards] = await Promise.all([
     worldTemplates().find({ _id: { $in: templateIds } }, {
-      projection: { _id: 1, title: 1, image_url: 1, seed_cast: 1 },
+      projection: { _id: 1, title: 1, image_url: 1, image_thumb_url: 1, seed_cast: 1 },
     }).toArray(),
     characters().find({ instance_id: { $in: instances.map(instance => instance._id) } }, {
       projection: { _id: 1, instance_id: 1, canonical_name: 1 },

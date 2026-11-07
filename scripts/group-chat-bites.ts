@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // walk. Only source and audit files are copied; no environment files or credentials are read.
 const root = await mkdtemp(join(import.meta.dir, '.group-chat-bites-'))
 const server = new URL('..', import.meta.url).pathname
-const auditFiles = ['group-chat-audit.ts', 'group-memory-recall.ts', 'group-memory-trace-audit.ts', 'group-memory-dedup-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'narrator-harness-audit.ts']
+const auditFiles = ['group-chat-audit.ts', 'group-memory-recall.ts', 'group-memory-trace-audit.ts', 'group-memory-dedup-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'ingest-cast-portraits.ts', 'narrator-harness-audit.ts']
 type Edit = [file: string, from: string, to: string]
 type Mutation = { name: string; check: string; edits: Edit[]; script?: string }
 const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat/lines.ts', reply = 'src/services/group-chat/reply.ts'
@@ -846,17 +846,40 @@ const notificationMutations: Mutation[] = [
 mutations.push(...notificationMutations)
 
 const groupPublic = 'src/services/group-chat/public.ts', groupChats = 'src/services/group-chat/chats.ts'
+const ingestPortraits = 'scripts/ingest-cast-portraits.ts', seedCatalogFile = 'scripts/seed-catalog.ts', imageEncoding = 'src/utils/image-encoding.ts'
+const artThumbPlan = 'art portrait small variant re-run changes only its key'
+const artCoverThumb = 'art cover small variant re-run changes only image_thumb_url'
+const artChatsThumbs = 'art small variants reach the chats row and are omitted when absent'
+const artPreview = 'art public group template lists members with faces and no authored traits'
+const artRoomCards = 'art room cards carry authored faces and never a stored portrait'
 const artMutations: Mutation[] = [
   { name: 'art room faces dropped', check: 'art room cards', edits: [[groupPublic, 'Array.isArray(characters)', 'false']] },
   { name: 'art stored portrait sent', check: 'art room cards', edits: [[groupPublic, 'const { portrait: _portrait, ...rest } = card as T & { portrait?: unknown }', 'const rest = card as T & { portrait?: unknown }']] },
-  { name: 'art preview members omitted', check: 'art public group template', edits: [[groupPublic, 'return { ...base, members: groupPreviewMembers(template) }', 'return base']] },
-  { name: 'art preview portrait omitted', check: 'art public group template', edits: [[groupPublic, '...(portrait ? { portrait_url: portrait } : {}),', '...{},']] },
+  { name: 'art room thumb dropped', check: artRoomCards, edits: [[groupPublic,
+    '    ...rest,\n    ...(face ? { portrait_url: face.url } : {}),\n    ...(face?.thumb ? { portrait_thumb_url: face.thumb } : {}),',
+    '    ...rest,\n    ...(face ? { portrait_url: face.url } : {}),']] },
+  { name: 'art preview members omitted', check: 'art public group template', edits: [[groupPublic, 'members: groupPreviewMembers(template),', 'members: [],']] },
+  { name: 'art preview portrait omitted', check: 'art public group template', edits: [[groupPublic, '      ...(face ? { portrait_url: face.url } : {}),', '      ...{},']] },
+  { name: 'art preview member thumb dropped', check: artPreview, edits: [[groupPublic,
+    '      ...(entry.role ? { role: entry.role } : {}),\n      ...(face ? { portrait_url: face.url } : {}),\n      ...(face?.thumb ? { portrait_thumb_url: face.thumb } : {}),',
+    '      ...(entry.role ? { role: entry.role } : {}),\n      ...(face ? { portrait_url: face.url } : {}),']] },
+  { name: 'art preview cover thumb dropped', check: artPreview, edits: [[groupPublic, '...(template.image_thumb_url ? { image_thumb_url: template.image_thumb_url } : {}),', '...{},']] },
+  { name: 'art chats member thumb dropped', check: artChatsThumbs, edits: [[groupChats, '...(face?.thumb ? { portrait_thumb_url: face.thumb } : {}),', '...{},']] },
+  { name: 'art chats cover thumb dropped', check: artChatsThumbs, edits: [[groupChats, '...(source.template?.image_thumb_url ? { image_thumb_url: source.template.image_thumb_url } : {}),', '...{},']] },
+  { name: 'art portrait thumb plan omitted', check: artThumbPlan, edits: [[ingestPortraits, "if (thumbAssetKey && current.thumb_key !== thumbAssetKey) return { kind: 'thumb', thumbKey: thumbAssetKey }", "if (false) return { kind: 'thumb', thumbKey: thumbAssetKey }"]] },
+  { name: 'art portrait thumb writes another key', check: artThumbPlan, edits: [[ingestPortraits, "else if (plan.kind === 'thumb') $set[`${base}.portrait.thumb_key`] = plan.thumbKey", "else if (plan.kind === 'thumb') $set[`${base}.portrait.asset_key`] = plan.thumbKey"]] },
+  { name: 'art portrait paint loses its thumb', check: artThumbPlan, edits: [[ingestPortraits, 'if (thumbAssetKey) ref.thumb_key = thumbAssetKey', 'if (false) ref.thumb_key = thumbAssetKey']] },
+  { name: 'art cover thumb never missing', check: artCoverThumb, edits: [[seedCatalogFile, 'existing.image_thumb_url !== desiredThumb', 'false']] },
+  { name: 'art cover thumb-only rewrites the world', check: artCoverThumb, edits: [[seedCatalogFile, 'const writeTemplate = !item.existing || item.changed || item.imageChanged || !item.live', 'const writeTemplate = true']] },
+  { name: 'art cover thumb upload skipped', check: artCoverThumb, edits: [[seedCatalogFile, 'if (target && world.image_thumb_url !== target) {', 'if (false && target && world.image_thumb_url !== target) {']] },
+  { name: 'art cover thumb key not the sibling', check: artCoverThumb, edits: [[seedCatalogFile, 'return fullUrl.replace(/\\.webp$/, `.w${COVER_THUMB_WIDTH}.webp`)', 'return fullUrl']] },
+  { name: 'art cover thumb width wrong', check: artCoverThumb, edits: [[imageEncoding, 'export const COVER_THUMB_WIDTH = 540', 'export const COVER_THUMB_WIDTH = 320']] },
   { name: 'art non-group gains members', check: 'art non-group template', edits: [[groupPublic, "if (template.kind !== 'group') return base", 'if (false) return base']] },
   { name: 'art future line shown', check: 'art future line', edits: [[groupChats, 'return !line.shown_at || new Date(line.shown_at).getTime() <= now.getTime()', 'return true']] },
   { name: 'art direct message becomes the room last', check: 'art direct message', edits: [[groupChats, "ordered(source.mainEvents.filter(event => event.data.dm_with === undefined))", 'ordered(source.mainEvents)']] },
   { name: 'art stored portrait rejected', check: 'art stored portraits', edits: [['src/services/group-chat/validation.ts', 'const traits = member.group', "if (member.portrait) fail('portrait')\n    const traits = member.group"]] },
   { name: 'art cast of eleven accepted', check: 'art cast size', edits: [['src/services/group-chat/validation.ts', 'cast.length > 10', 'cast.length > 11']] },
-  { name: 'art asset key reaches the payload', check: 'art no asset key', edits: [[groupPublic, '...(portrait ? { portrait_url: portrait } : {}),', '...(portrait ? { portrait_url: portrait } : {}), ...(entry.portrait ? { portrait: entry.portrait } : {}),']] },
+  { name: 'art asset key reaches the payload', check: 'art no asset key', edits: [[groupPublic, '      ...(face ? { portrait_url: face.url } : {}),', '      ...(face ? { portrait_url: face.url } : {}), ...(entry.portrait ? { portrait: entry.portrait } : {}),']] },
   { name: 'art adult preview leaks', check: 'art toggle off keeps adult', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return undefined", '']] },
   { name: 'art adult player words leak', check: 'art toggle off keeps adult', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return undefined", "if (!adultAllowed && event.type === 'intimate' && event.data.lines?.length) return undefined"]] },
 ]

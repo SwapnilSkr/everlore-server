@@ -110,6 +110,10 @@ export interface PortraitRef {
    *  on every legacy portrait, which counts as painted. Never null. */
   art_style?: string
   painted_at: Date
+  /** The 320 px WebP stored beside this portrait, for avatars. Its key is
+   *  `asset_key` with `.webp` replaced by `.w320.webp`. Omitted, never null,
+   *  when no small image was published. */
+  thumb_key?: string
 }
 /** Every §7 rejection is logged for review: kind, stage and reason, no image. */
 export interface MediaRejectionDoc {
