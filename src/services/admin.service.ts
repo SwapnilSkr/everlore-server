@@ -10,6 +10,7 @@ import { deletionService } from './deletion.service'
 import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
 import { vectorStore } from './vector-store'
+import { portraitUrl } from './media/portraits'
 
 export type AdminUserTier = 'free' | 'premium' | 'creator' | 'inherit'
 
@@ -316,7 +317,9 @@ export const adminService = {
     ]).toArray()
     // A group's lines are what the owner reviews, so the queue carries the cast
     // and the written prompts. Other worlds' items keep exactly the shape they
-    // had: a non-group never gains these keys.
+    // had: a non-group never gains these keys. Faces travel as absolute URLs
+    // because the console has no CDN configuration of its own, and nothing
+    // absent is sent as null.
     const items = worlds.map((world) => {
       if (world.kind !== 'group') {
         delete world.seed_cast
@@ -330,17 +333,25 @@ export const adminService = {
         seed_cast: cast.map((member) => {
           const group = member.group as Record<string, unknown> | undefined
           const portrait = member.portrait as Record<string, unknown> | undefined
-          return {
-            name: member.name,
-            age: group?.age,
-            appearance: member.appearance,
-            persona: member.persona,
-            voice: group?.voice,
-            first_texts: member.first_texts,
-            statuses: member.statuses,
-            ...(portrait?.asset_key ? { asset_key: portrait.asset_key } : {}),
-            ...(portrait?.thumb_key ? { thumb_key: portrait.thumb_key } : {}),
+          const row: Record<string, unknown> = {}
+          const put = (key: string, value: unknown) => {
+            if (value !== undefined && value !== null) row[key] = value
           }
+          put('name', member.name)
+          put('age', group?.age)
+          put('role', member.role)
+          put('appearance', member.appearance)
+          put('persona', member.persona)
+          put('speech', group?.speech)
+          put('wants', group?.wants)
+          put('intimacy', group?.intimacy)
+          put('start_bond', group?.start_bond)
+          put('voice', group?.voice)
+          put('first_texts', member.first_texts)
+          put('statuses', member.statuses)
+          if (typeof portrait?.asset_key === 'string') put('portrait_url', portraitUrl(portrait.asset_key))
+          if (typeof portrait?.thumb_key === 'string') put('portrait_thumb_url', portraitUrl(portrait.thumb_key))
+          return row
         }),
       }
     })

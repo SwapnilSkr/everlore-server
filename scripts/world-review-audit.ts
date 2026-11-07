@@ -232,7 +232,9 @@ try {
 // The review queue carries a group's every line for the owner; a normal world's
 // item keeps exactly the shape it had. Exercise the aggregate's result here.
 const originalReviewQueue = mongoColl.worldTemplates
+const originalCdnBase = env.CDN_BASE_URL
 try {
+  env.CDN_BASE_URL = 'https://cdn.example.test/'
   const groupId = new ObjectId(), worldId = new ObjectId()
   const groupItem = () => ({
     _id: groupId, title: 'A Group', description: 'A group.', image_url: '',
@@ -241,11 +243,24 @@ try {
     creator: { _id: ownerId, username: 'maker' }, submitted_at: new Date(0), was_approved_before: false,
     seed_cast: [{
       name: 'Ada', role: 'Wrangler', appearance: 'Twenty-nine; dark hair.', persona: 'Warm.',
-      group: { age: 29, talkativeness: 0.5, speech: 'Dry.', wants: 'A quiet night.', intimacy: 'Direct.', voice: ['Hm.'] },
+      group: {
+        age: 29, talkativeness: 0.5, speech: 'Dry.', wants: 'A quiet night.',
+        intimacy: 'Direct.', start_bond: 'friend', voice: ['Hm.'],
+      },
       first_texts: ['One.', 'Two.', 'Three.'],
       statuses: { morning: 'Up.', afternoon: 'Busy.', evening: 'Home.', night: 'Asleep.' },
       portrait: { asset_key: 'cast/ada.webp', thumb_key: 'cast/ada.thumb.webp' },
       immutable_facts: ['never shown'],
+    }, {
+      name: 'Bo', role: 'Mechanic', appearance: 'Thirty-one; grease on his hands.', persona: 'Quiet.',
+      group: { age: 31, talkativeness: 0.5, speech: 'Sparse.', wants: 'Sleep.', start_bond: 'rival' },
+      portrait: { asset_key: 'cast/bo.webp' },
+    }, {
+      name: 'Cy', role: 'Cook', appearance: 'Forty; flour on her sleeve.', persona: 'Loud.',
+      group: {
+        age: 40, talkativeness: 0.5, speech: 'Bright.', wants: 'Peace.',
+        intimacy: 'Open.', start_bond: 'unrequited_attraction', voice: ['Two.'],
+      },
     }],
     topics: ['One topic'],
     opening_lines: [{ name: 'Ada', text: 'Hello.' }],
@@ -260,14 +275,32 @@ try {
     aggregate: () => ({ toArray: async () => [groupItem(), worldItem()] }),
   })
   const { items } = await adminService.listWorldReview()
-  reviewCheck('review queue carries a group cast, topics and opening lines', () => {
+  reviewCheck('review queue carries every group line in its exact shape', () => {
     const group = items[0] as Record<string, unknown>
+    // Ada has a full face and a thumb, Bo only a full face, Cy no face at all.
+    // Absent keys are omitted, never null, and the order is the contract's.
     assert.deepEqual(group.seed_cast, [{
-      name: 'Ada', age: 29, appearance: 'Twenty-nine; dark hair.', persona: 'Warm.',
-      voice: ['Hm.'], first_texts: ['One.', 'Two.', 'Three.'],
+      name: 'Ada', age: 29, role: 'Wrangler', appearance: 'Twenty-nine; dark hair.',
+      persona: 'Warm.', speech: 'Dry.', wants: 'A quiet night.', intimacy: 'Direct.',
+      start_bond: 'friend', voice: ['Hm.'], first_texts: ['One.', 'Two.', 'Three.'],
       statuses: { morning: 'Up.', afternoon: 'Busy.', evening: 'Home.', night: 'Asleep.' },
-      asset_key: 'cast/ada.webp', thumb_key: 'cast/ada.thumb.webp',
+      portrait_url: 'https://cdn.example.test/cast/ada.webp',
+      portrait_thumb_url: 'https://cdn.example.test/cast/ada.thumb.webp',
+    }, {
+      name: 'Bo', age: 31, role: 'Mechanic', appearance: 'Thirty-one; grease on his hands.',
+      persona: 'Quiet.', speech: 'Sparse.', wants: 'Sleep.', start_bond: 'rival',
+      portrait_url: 'https://cdn.example.test/cast/bo.webp',
+    }, {
+      name: 'Cy', age: 40, role: 'Cook', appearance: 'Forty; flour on her sleeve.',
+      persona: 'Loud.', speech: 'Bright.', wants: 'Peace.', intimacy: 'Open.',
+      start_bond: 'unrequited_attraction', voice: ['Two.'],
     }])
+    assert.deepEqual(Object.keys((group.seed_cast as Record<string, unknown>[])[0]), [
+      'name', 'age', 'role', 'appearance', 'persona', 'speech', 'wants', 'intimacy',
+      'start_bond', 'voice', 'first_texts', 'statuses', 'portrait_url', 'portrait_thumb_url',
+    ])
+    assert.equal(JSON.stringify(group).includes('asset_key'), false)
+    assert.equal(JSON.stringify(group).includes('thumb_key'), false)
     assert.deepEqual(group.topics, ['One topic'])
     assert.deepEqual(group.opening_lines, [{ name: 'Ada', text: 'Hello.' }])
     assert.equal(JSON.stringify(group).includes('never shown'), false)
@@ -277,6 +310,7 @@ try {
   })
 } finally {
   ;(mongoColl as unknown as { worldTemplates: () => unknown }).worldTemplates = originalReviewQueue
+  env.CDN_BASE_URL = originalCdnBase
 }
 
 // An empty admin credential disables authentication before any Redis lookup.
