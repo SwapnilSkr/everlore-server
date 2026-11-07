@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import { cp, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
@@ -6,9 +7,21 @@ import { join } from 'node:path'
 // walk. Only source and audit files are copied; no environment files or credentials are read.
 const root = await mkdtemp(join(import.meta.dir, '.group-chat-bites-'))
 const server = new URL('..', import.meta.url).pathname
-const auditFiles = ['group-chat-audit.ts', 'group-memory-recall.ts', 'group-memory-trace-audit.ts', 'group-memory-dedup-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'ingest-cast-portraits.ts', 'narrator-harness-audit.ts', 'world-review-audit.ts']
+const auditFiles = ['group-chat-audit.ts', 'group-memory-recall.ts', 'group-memory-trace-audit.ts', 'group-memory-dedup-audit.ts', 'group-chat-fixtures.ts', 'group-chat-finish-audit.ts', 'prompt-part-hash-audit.ts', 'codex-media-carryover-audit.ts', 'seed-catalog.ts', 'ingest-cast-portraits.ts', 'narrator-harness-audit.ts', 'world-review-audit.ts', 'media-audit.ts', 'media-audit-fixture.ts']
 type Edit = [file: string, from: string, to: string]
-type Mutation = { name: string; check: string; edits: Edit[]; script?: string }
+type Mutation = { name: string; check: string; edits: Edit[]; script?: string; args?: string[] }
+
+// The media audit reads the director prompt from the docs repo; a worktree may
+// sit anywhere, so find the sibling `everlore-docs` by walking up from the server.
+function docsRoot(): string | undefined {
+  if (process.env.EVERLORE_DOCS_ROOT) return process.env.EVERLORE_DOCS_ROOT
+  let dir = server
+  for (let step = 0; step < 8; step++) {
+    if (existsSync(join(dir, 'everlore-docs'))) return join(dir, 'everlore-docs')
+    dir = join(dir, '..')
+  }
+  return undefined
+}
 const roll = 'src/services/group-chat/roll.ts', lines = 'src/services/group-chat/lines.ts', reply = 'src/services/group-chat/reply.ts'
 const worker = 'worker/processors/group-turn.processor.ts', prompt = 'src/services/group-chat/prompt.ts'
 const worker2 = 'worker/processors/memory.processor.ts', curation = 'src/services/group-chat/curation.ts', memoryFile = 'src/services/group-chat/memory.ts'
@@ -1343,6 +1356,103 @@ mutations.push(...draftMutations)
 
 mutations.push(...ideaMutations)
 
+// Group faces (§6): the route, the face service, the job, the edit rule and the
+// publish rule. The media audit drives the job; its checks are selected by argv.
+const faceFile = 'src/services/group-chat/faces.ts'
+const faceController = 'src/controllers/template.controller.ts'
+const faceTemplateFile = 'src/services/template.service.ts'
+const faceRoute = 'group face route refuses before it paints'
+const faceRequest = 'group face request queues one person under a group row'
+const faceKept = 'group face keeps a painted person, repaints on ask and rests'
+const faceEdits = 'group face edits keep faces and never take one from the body'
+const facePublish = 'group face publish needs every person'
+const facePaints = 'group_face_paints'
+const faceStale = 'group_face_stale_look'
+const faceChanged = 'group_face_changed_cast'
+const faceRefused = 'group_face_refusals'
+const faceBounce = 'group_face_review_bounce'
+const faceMutations: Mutation[] = [
+  { name: 'face route: signed-out call accepted', check: faceRoute, edits: [[faceController,
+    "    if (!user) throw new HttpError(401, 'Sign in to continue.')\n    await requireIdentity(user.id)\n    if (!canForge(user)) {\n      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')\n    }\n    // Loaded lazily, for the same reason as the draft",
+    "    if (!user) throw new HttpError(401, 'Sign in to continue.')\n    if (!canForge(user)) {\n      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')\n    }\n    // Loaded lazily, for the same reason as the draft"]] },
+  { name: 'face route: forge gate absent', check: faceRoute, edits: [[faceController,
+    "    if (!canForge(user)) {\n      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')\n    }\n    // Loaded lazily, for the same reason as the draft",
+    "    // Loaded lazily, for the same reason as the draft"]] },
+  { name: 'face route: stranger group accepted', check: faceRoute, edits: [[faceFile,
+    "findOne({ _id: tid, creator_id: pid, kind: 'group' })",
+    "findOne({ _id: tid, kind: 'group' })"]] },
+  { name: 'face route: a world accepted', check: faceRoute, edits: [[faceFile,
+    "findOne({ _id: tid, creator_id: pid, kind: 'group' })",
+    "findOne({ _id: tid, creator_id: pid })"]] },
+  { name: 'face route: missing person accepted', check: faceRoute, edits: [[faceFile,
+    "  if (!entry) throw new HttpError(404, 'That person could not be found.')",
+    '  if (false) throw new HttpError(404)']] },
+  { name: 'face route: blank look accepted', check: faceRoute, edits: [[faceFile,
+    "  if (!appearance) throw new HttpError(422, 'This moment stays unseen.')",
+    '  if (false) throw new HttpError(422)']] },
+  { name: 'face request: row loses its group', check: faceRequest, edits: [[faceFile,
+    "player_id: pid, template_id: tid, cast_name: entry.name, kind: 'portrait', line_id: '',",
+    "player_id: pid, kind: 'portrait', line_id: '',"]] },
+  { name: 'face request: row loses its style', check: faceRequest, edits: [[faceFile,
+    "status: 'queued', art_style: GROUP_FACE_STYLE.key,",
+    "status: 'queued',"]] },
+  { name: 'face request: kept face repaints', check: faceKept, edits: [[faceFile,
+    '  if (!opts.repaint && entry.portrait?.art_style === GROUP_FACE_STYLE.key && entry.portrait.asset_key) {',
+    '  if (false) {']] },
+  { name: 'face request: repaint meets the old row', check: faceKept, edits: [[faceFile,
+    "    + (opts.repaint ? `:r${new ObjectId().toHexString()}` : '')",
+    "    + ''"]] },
+  { name: 'face request: resting row kept', check: faceKept, edits: [[faceFile,
+    "    await mongoColl.mediaAssets().deleteOne({ _id: asset._id })\n    throw new HttpError(429",
+    '    throw new HttpError(429']] },
+  { name: 'face request: resting body is another kind', check: faceKept, edits: [[faceFile,
+    "{ status: 'resting', kind: 'portrait', resets_at: utcMediaDay().resets_at }",
+    "{ status: 'resting', kind: 'picture', resets_at: utcMediaDay().resets_at }"]] },
+  { name: 'face job: another render style', check: facePaints, script: 'media-audit.ts', args: ['--check', facePaints], edits: [[faceFile,
+    "generatePortraitBytes(appearance, member.name, '', asset.model, GROUP_FACE_STYLE.render)",
+    "generatePortraitBytes(appearance, member.name, '', asset.model, 'semi-realistic cinematic digital painting, warm rim light')"]] },
+  { name: 'face job: painted from a reference', check: facePaints, script: 'media-audit.ts', args: ['--check', facePaints], edits: [[faceFile,
+    "generatePortraitBytes(appearance, member.name, '', asset.model, GROUP_FACE_STYLE.render)",
+    "generatePortraitBytes(appearance, member.name, '', asset.model, GROUP_FACE_STYLE.render, { data: Buffer.alloc(0), contentType: 'image/png' })"]] },
+  { name: 'face job: wrong folder', check: facePaints, script: 'media-audit.ts', args: ['--check', facePaints], edits: [[faceFile,
+    'const key = `media/portrait/player-group/${asset.player_id.toHexString()}',
+    'const key = `media/portrait/${asset.player_id.toHexString()}' ]] },
+  { name: 'face job: no small copy', check: facePaints, script: 'media-audit.ts', args: ['--check', facePaints], edits: [[faceFile,
+    '    if (small) {\n      uploaded.push(small)',
+    '    if (false) {\n      uploaded.push(small)' ]] },
+  { name: 'face job: ready frame loses its group', check: facePaints, script: 'media-audit.ts', args: ['--check', facePaints], edits: [[faceFile,
+    "      url: result.url,\n      template_id: asset.template_id.toHexString(),\n      cast_name: asset.cast_name,\n",
+    '      url: result.url,\n' ]] },
+  { name: 'face job: stale look painted', check: faceStale, script: 'media-audit.ts', args: ['--check', faceStale], edits: [[faceFile,
+    "    if (mediaRevision(appearance, GROUP_FACE_REVISION_INPUT) !== asset.revision) {",
+    '    if (false) {']] },
+  { name: 'face job: write ignores the name', check: faceChanged, script: 'media-audit.ts', args: ['--check', faceChanged], edits: [[faceFile,
+    '      [`seed_cast.${index}.name`]: member.name,\n',
+    '']] },
+  { name: 'face job: approved group stays approved', check: faceBounce, script: 'media-audit.ts', args: ['--check', faceBounce], edits: [[faceFile,
+    "        ...(template.visibility === 'public' && template.review_status === 'approved'\n          ? { review_status: 'pending', submitted_at: now, ever_approved: true }\n          : {}),",
+    '']] },
+  { name: 'face job: gate refusal written', check: faceRefused, script: 'media-audit.ts', args: ['--check', faceRefused], edits: [[faceFile,
+    "      if (error instanceof UnseenError) {\n        await unseeMedia(asset, error.stage, error.reason)\n        return\n      }",
+    '      ']] },
+  { name: 'face edit: body face stored on create', check: faceEdits, edits: [[faceTemplateFile,
+    'data = { ...data, seed_cast: castOfGroupEdit(undefined, data.seed_cast) }',
+    'data = { ...data, seed_cast: data.seed_cast }']] },
+  { name: 'face edit: same cast loses its faces', check: faceEdits, edits: [[faceTemplateFile,
+    'data = { ...data, seed_cast: castOfGroupEdit(existing.seed_cast, data.seed_cast) }',
+    'data = { ...data, seed_cast: data.seed_cast }']] },
+  { name: 'face edit: changed look keeps its face', check: faceEdits, edits: [[faceTemplateFile,
+    "    if (!before?.portrait || appearance !== (before.appearance || '').trim()) return member",
+    '    if (!before?.portrait) return member']] },
+  { name: 'face publish: faces not required', check: facePublish, edits: [[faceTemplateFile,
+    "    if (template.kind === 'group' && visibility === 'public') {",
+    '    if (false) {']] },
+  { name: 'face publish: another refusal', check: facePublish, edits: [[faceTemplateFile,
+    "throw new HttpError(422, 'Every person needs a face before this group can be shared.')",
+    "throw new HttpError(422, 'Every person needs a face.')"]] },
+]
+mutations.push(...faceMutations)
+
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {
   const missing: string[] = []
@@ -1370,8 +1480,8 @@ try {
         assert(text.includes(from), `${mutation.name}: mutation target missing: ${from}`)
         await writeFile(path, text.replaceAll(from, to))
       }
-      const child = Bun.spawn(['bun', '--no-env-file', 'run', `scripts/${mutation.script || 'group-chat-audit.ts'}`], {
-        cwd: root, env: { ...process.env, GROUP_AUDIT_ONLY: mutation.check }, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
+      const child = Bun.spawn(['bun', '--no-env-file', 'run', `scripts/${mutation.script || 'group-chat-audit.ts'}`, ...(mutation.args ?? [])], {
+        cwd: root, env: { ...process.env, GROUP_AUDIT_ONLY: mutation.check, ...(docsRoot() ? { EVERLORE_DOCS_ROOT: docsRoot()! } : {}) }, stdout: 'pipe', stderr: 'pipe', stdin: 'ignore',
       })
       // A mutation can deadlock the audit; a hung child must fail this run, not stall it.
       const childTimer = setTimeout(() => child.kill(9), 120_000)

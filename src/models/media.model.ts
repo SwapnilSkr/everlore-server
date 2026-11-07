@@ -48,6 +48,10 @@ export interface MediaAssetDoc {
   character_id?: ObjectId
   /** The persona a persona portrait is painted for; never combined with character_id. */
   persona_id?: ObjectId
+  /** The player-made group a cast face is painted for; omitted on every other row. */
+  template_id?: ObjectId
+  /** The cast member's name as stored on the group, for a group face; omitted elsewhere. */
+  cast_name?: string
   /** Group selfies remain pictures for limits and Keepsakes. */
   group_selfie?: true
   /** The player tapped for this selfie. Only an agree or an unprompted one

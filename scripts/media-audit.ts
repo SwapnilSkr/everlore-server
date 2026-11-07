@@ -11,13 +11,14 @@ import { detectSpokenLines } from '../src/services/media/detection'
 import { acceptAttribution, attributeEvent, attributionRows, mediaRevision, resolveVoiceSpeaker, attributionEffects, ATTRIBUTION_RULE_VERSION } from '../src/services/media/attribution'
 import { chooseVoice, filterVoiceTags, filterVoiceTraits, isVerbatim, matureVoiceAllowed, publicSpokenLines, utcMediaDay } from '../src/services/media/policy'
 import { requestVoice, mediaEffects, processVoice, failMedia, repairMediaReservations } from '../src/services/media/service'
-import { isReferenceAllowed, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
+import { isReferenceAllowed, portraitUrl, resolvePortraitHolder, personaFaceForStyle, styleOfPortrait } from '../src/services/media/portraits'
 import { makeSceneShot, processPicture, processPortrait, processVideo, ensureVoiceReady, ensurePortraitReady, ensurePersonaFaceReady, ensurePassingFaceReady, passingFaceKey, PASSING_FACE_RULE_VERSION, requestTurnVideo, requestPicture, requestPersonaPortrait, requestPortrait, requestVideo, visualEffects, fillUnknownLook, portraitImagePrompt, pictureImagePrompt } from '../src/services/media/visual'
 import { portraitLookEvidence } from '../src/services/media/look-evidence'
 import { checkImage, judgeShotFrames, moderateDescription, safetyEffects, logRejection, describeMoment, MEDIA_VISUAL_POLICY, buildSafetyPrompts, visualPolicyLine } from '../src/services/media/safety'
 import { processSelfie } from '../src/services/media/selfie'
 import { snapshotSelfieImage } from '../src/services/media/selfie-evidence'
-import { groupLineId } from '../src/services/group-chat/public'
+import { requestGroupFace } from '../src/services/group-chat/faces'
+import { groupFaces, groupLineId, groupPreviewMembers } from '../src/services/group-chat/public'
 import { assembleDialogueFreeCut, buildCutGraph, cutEffects } from '../src/services/media/cut'
 import { compileLinePrompt, compileMotionPrompt, compileStillPrompt, POLICY_SENTENCE, SCENE_TEMPLATES } from '../src/services/media/scene-templates'
 import { directScene, directorEffects, validateDirectorPlan, DIRECTOR_SYSTEM_PROMPT, type DirectorInput, DIRECTOR_DIALOGUE_FREE_PROMPT } from '../src/services/media/director'
@@ -30,7 +31,7 @@ import { publicMediaEvent, publishSpokenLines, withTurnMedia, wireSpokenLines } 
 import { generateMediaImage } from '../src/services/media/image'
 import { log } from '../src/utils/logger'
 import { audioEffects, measureLineSentences, splitLineSentences, LINE_TAIL_S } from '../src/services/media/audio'
-import { ffmpegPath, imageSafetyTolerance } from '../src/services/media/config'
+import { ffmpegPath, imageModel, imageSafetyTolerance } from '../src/services/media/config'
 import { asMediaImageReference, imageExtensionFor, sniffImageContentType, ProviderRefusalError } from '../src/ai/image'
 import { submitVideo } from '../src/ai/video'
 import { env } from '../src/config/env'
@@ -4598,6 +4599,208 @@ check('scene_fallback_provider_only', async () => {
     assert.equal(painted, 1, 'no second still for a fallback')
     if (providerFailed) assert.ok(run.sceneSubmits[1].includes('wan'))
   }
+})
+
+// ── group faces: a player-made group's cast (§6) ──────────────────────────
+type FaceRow = Record<string, unknown>
+
+function groupCast(): FaceRow[] {
+  return [
+    {
+      name: 'Owen', role: 'record keeper',
+      appearance: 'Owen, a tall archivist with grey eyes and a wool coat.',
+      group: { age: 34, talkativeness: 0.4, speech: 'Dry.', wants: 'Quiet.', start_bond: 'friend' },
+    },
+    {
+      name: 'Mara', role: 'courier',
+      appearance: 'Mara, a sharp courier in a red scarf.',
+      group: { age: 29, talkativeness: 0.6, speech: 'Quick.', wants: 'Work.', start_bond: 'rival' },
+    },
+  ]
+}
+
+function groupFixture(patch: FaceRow = {}) {
+  const f = fixture()
+  // A group face belongs to no save: there is nothing to load or write there.
+  f.db.worldInstances.rows = []
+  f.db.characters.rows = []
+  f.db.events.rows = []
+  const template = f.db.worldTemplates.rows[0]!
+  Object.assign(template, { kind: 'group', creator_id: f.player, seed_cast: groupCast(), global_lore: 'They share a flat.' }, patch)
+  process.env.MEDIA_DAILY_PORTRAIT = '20'
+  return f
+}
+
+interface FaceRun {
+  prompts: Array<{ prompt: string; opts: FaceRow }>
+  keys: string[]
+  removed: string[]
+  published: FaceRow[]
+}
+
+/** The real face pipeline with the provider stubbed: no paid call, no network. */
+async function stubFacePipeline(
+  opts: { gate?: () => unknown; judge?: () => unknown } = {},
+): Promise<FaceRun> {
+  const run: FaceRun = { prompts: [], keys: [], removed: [], published: [] }
+  const still = await sharp({ create: { width: 16, height: 16, channels: 3, background: { r: 210, g: 190, b: 170 } } }).png().toBuffer()
+  safetyEffects.call = (async (req: { responseSchema?: unknown }) => req.responseSchema
+    ? JSON.stringify(opts.gate ? opts.gate() : { verdict: 'allow', reason_code: 'ok' })
+    : portraitDescriptionReply(req as Parameters<typeof safetyEffects.call>[0], 'A calm head-and-shoulders portrait description.')) as never
+  safetyEffects.judge = (async () => opts.judge
+    ? opts.judge()
+    : { verdict: 'allow', reason_code: 'ok', people_count: 1, face_close_up: true, text_visible: false }) as never
+  visualEffects.image = (async (prompt: string, imageOpts: FaceRow) => {
+    run.prompts.push({ prompt, opts: imageOpts })
+    return { data: still, contentType: 'image/png', generationId: 'face-gen', costUsd: 0.008 }
+  }) as never
+  visualEffects.upload = (async (_data: Buffer, _type: string, o?: { key?: string }) => {
+    run.keys.push(o?.key || '')
+    return { key: o?.key || '', url: `https://example.test/${o?.key}` }
+  }) as never
+  mediaEffects.remove = (async (key: string) => { run.removed.push(key) }) as never
+  mediaEffects.publish = (async (_player: string, message: FaceRow) => { run.published.push(message) }) as never
+  mediaEffects.enqueue = (async () => undefined) as never
+  return run
+}
+
+function groupFaceKey(f: ReturnType<typeof fixture>, mediaId: unknown): string {
+  return `media/portrait/player-group/${f.player.toHexString()}/${f.template.toHexString()}/${String(mediaId)}.webp`
+}
+
+check('group_face_paints', async () => {
+  const f = groupFixture()
+  const run = await stubFacePipeline()
+  const reply = await requestGroupFace(String(f.player), String(f.template), 0)
+  assert.equal(reply.status, 'queued')
+  if (reply.status !== 'queued') throw new Error('group face cached unexpectedly')
+  await processPortrait(reply.media_id)
+  const template = f.db.worldTemplates.rows[0] as FaceRow
+  // The gated description in the group's own anime style, painted from nothing.
+  assert.deepEqual(run.prompts, [{
+    prompt: portraitImagePrompt('Owen, A calm head-and-shoulders portrait description.', STYLE_HINT.anime!.render),
+    opts: { model: imageModel(), aspectRatio: '9:16' },
+  }])
+  const asset = f.db.mediaAssets.rows[0] as FaceRow
+  assert.equal(asset.status, 'ready')
+  assert.equal(asset.cast_name, 'Owen')
+  assert.equal(asset.art_style, 'anime')
+  assert.equal(asset.cost_usd, 0.008)
+  assert.equal(asset.generation_id, 'face-gen')
+  const key = groupFaceKey(f, asset._id)
+  const small = key.replace(/\.webp$/, '.w320.webp')
+  assert.equal(asset.asset_key, key)
+  assert.deepEqual(run.keys, [key, small], 'the face and its small copy')
+  const portrait = (template.seed_cast as FaceRow[])[0]!.portrait as FaceRow
+  assert.deepEqual(Object.keys(portrait).sort(),
+    ['appearance_version', 'art_style', 'asset_key', 'painted_at', 'source', 'thumb_key'])
+  assert.equal(portrait.asset_key, key)
+  assert.equal(portrait.thumb_key, small)
+  assert.equal(portrait.source, 'generated')
+  assert.equal(portrait.art_style, 'anime')
+  assert.equal(portrait.appearance_version, 1)
+  assert.ok(portrait.painted_at instanceof Date)
+  // Only that person has a face, and the room card reads it from the template.
+  assert.deepEqual([...groupFaces(template as never).keys()], ['owen'])
+  const members = groupPreviewMembers(template as never)
+  assert.equal(members[0]!.portrait_url, portraitUrl(key))
+  assert.equal(members[0]!.portrait_thumb_url, portraitUrl(small))
+  assert.equal('portrait_url' in members[1]!, false)
+  // The bell frame names the group and the person, never a save.
+  const ready = run.published.find((message) => message.type === 'media_ready')!
+  assert.deepEqual(Object.keys(ready).sort(), ['cast_name', 'kind', 'media_id', 'template_id', 'type', 'url'])
+  assert.equal(ready.template_id, f.template.toHexString())
+  assert.equal(ready.cast_name, 'Owen')
+  assert.equal(ready.kind, 'portrait')
+  // Counted against the portrait allowance, with no save on the reservation.
+  const usage = f.db.mediaUsage.rows[0] as FaceRow
+  assert.equal(usage.kind, 'portrait')
+  assert.equal(usage.status, 'settled')
+  assert.equal('instance_id' in usage, false)
+  // The kept face costs nothing and takes no slot.
+  const again = await requestGroupFace(String(f.player), String(f.template), 0)
+  assert.equal(again.status, 'ready')
+  assert.equal(f.db.mediaUsage.inserts, 1)
+})
+
+check('group_face_stale_look', async () => {
+  const f = groupFixture()
+  const run = await stubFacePipeline()
+  const reply = await requestGroupFace(String(f.player), String(f.template), 0)
+  if (reply.status !== 'queued') throw new Error('group face cached unexpectedly')
+  // The look is edited while the face waits.
+  ;(f.db.worldTemplates.rows[0]!.seed_cast as FaceRow[])[0]!.appearance = 'Owen, now a bald monk.'
+  await processPortrait(reply.media_id)
+  assert.equal(run.prompts.length, 0, 'a stale look is never painted')
+  assert.deepEqual(run.keys, [], 'nothing is uploaded')
+  assert.equal(f.db.mediaAssets.rows.length, 0, 'the row is gone')
+  assert.equal(f.db.mediaUsage.rows.length, 0, 'the slot is released')
+  assert.equal('portrait' in (f.db.worldTemplates.rows[0]!.seed_cast as FaceRow[])[0]!, false)
+})
+
+check('group_face_changed_cast', async () => {
+  const f = groupFixture()
+  const run = await stubFacePipeline()
+  const reply = await requestGroupFace(String(f.player), String(f.template), 0)
+  if (reply.status !== 'queued') throw new Error('group face cached unexpectedly')
+  // The person is renamed between the paint and the write.
+  const upload = visualEffects.upload
+  visualEffects.upload = (async (...args: Parameters<typeof upload>) => {
+    ;(f.db.worldTemplates.rows[0]!.seed_cast as FaceRow[])[0]!.name = 'Owen the Younger'
+    return upload(...args)
+  }) as never
+  await processPortrait(reply.media_id)
+  assert.equal(run.keys.length, 2, 'both copies were uploaded')
+  for (const key of run.keys) assert.ok(run.removed.includes(key), `every uploaded copy is removed: ${key}`)
+  assert.equal(f.db.mediaAssets.rows.length, 0)
+  assert.equal(f.db.mediaUsage.rows.length, 0)
+  assert.equal('portrait' in (f.db.worldTemplates.rows[0]!.seed_cast as FaceRow[])[0]!, false)
+})
+
+check('group_face_refusals', async () => {
+  for (const stage of ['pre', 'post'] as const) {
+    const f = groupFixture()
+    const run = await stubFacePipeline(stage === 'pre'
+      ? { gate: () => ({ verdict: 'reject', reason_code: 'explicit_minor' }) }
+      : { judge: () => ({ verdict: 'reject', reason_code: 'explicit_nudity', people_count: 1, face_close_up: true, text_visible: false }) })
+    const reply = await requestGroupFace(String(f.player), String(f.template), 0)
+    if (reply.status !== 'queued') throw new Error(`${stage}: group face cached unexpectedly`)
+    await processPortrait(reply.media_id)
+    const row = f.db.mediaAssets.rows[0] as FaceRow
+    assert.equal(row.status, 'unseen', stage)
+    assert.equal('asset_key' in row, false, `${stage}: nothing is stored`)
+    const usage = f.db.mediaUsage.rows[0] as FaceRow
+    assert.equal(usage.status, 'released', `${stage}: the slot is released`)
+    assert.equal('slot' in usage, false, stage)
+    assert.equal(f.db.mediaRejections.rows.length, 1, stage)
+    assert.equal('portrait' in (f.db.worldTemplates.rows[0]!.seed_cast as FaceRow[])[0]!, false, `${stage}: the group is untouched`)
+    assert.equal(run.published.filter((message) => message.type === 'media_unseen').length, 1, stage)
+    assert.equal(run.keys.length, 0, `${stage}: nothing is uploaded`)
+    if (stage === 'pre') assert.equal(run.prompts.length, 0, 'a pre-gate refusal never paints')
+  }
+})
+
+check('group_face_review_bounce', async () => {
+  const shared = groupFixture({ visibility: 'public', review_status: 'approved', is_published: true, ever_approved: true })
+  await stubFacePipeline()
+  const queued = await requestGroupFace(String(shared.player), String(shared.template), 1)
+  if (queued.status !== 'queued') throw new Error('group face cached unexpectedly')
+  await processPortrait(queued.media_id)
+  const template = shared.db.worldTemplates.rows[0] as FaceRow
+  assert.equal(template.review_status, 'pending', 'a new face sends an approved public group back to review')
+  assert.ok(template.submitted_at instanceof Date)
+  assert.equal(template.ever_approved, true)
+  assert.equal((template.seed_cast as FaceRow[])[1]!.portrait !== undefined, true)
+
+  const mine = groupFixture({ visibility: 'private' })
+  await stubFacePipeline()
+  const first = await requestGroupFace(String(mine.player), String(mine.template), 0)
+  if (first.status !== 'queued') throw new Error('group face cached unexpectedly')
+  await processPortrait(first.media_id)
+  const privateOne = mine.db.worldTemplates.rows[0] as FaceRow
+  assert.equal('review_status' in privateOne, false, 'a private group keeps its fields')
+  assert.equal('submitted_at' in privateOne, false)
+  assert.equal('ever_approved' in privateOne, false)
 })
 
 function mp3() { const frame = Buffer.alloc(417); frame.writeUInt32BE(0xfffb9000); return frame }

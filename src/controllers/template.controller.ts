@@ -228,6 +228,44 @@ export const templateController = {
     }
   },
 
+  // Paints one person of a player-made group. The same answers as the media
+  // portrait route: ready, queued, or resting with its own body.
+  castPortrait: async ({
+    user,
+    params,
+    query,
+    set,
+  }: {
+    user: AuthUser | null
+    params: { id: string; index: string }
+    query?: { repaint?: string }
+    set: { status?: unknown }
+  }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    await requireIdentity(user.id)
+    if (!canForge(user)) {
+      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
+    }
+    // Loaded lazily, for the same reason as the draft: audits that stub `src/ai`
+    // or the env load this controller, and the face service loads the media
+    // pipeline (and the image provider) with it.
+    const { requestGroupFace } = await import('../services/group-chat/faces')
+    try {
+      const result = await requestGroupFace(user.id, params.id, Number(params.index), {
+        repaint: query?.repaint === 'true',
+      })
+      set.status = result.status === 'ready' ? 200 : 202
+      return result
+    } catch (error) {
+      // The media routes' `resting` helper, copied: it is module-local there.
+      if (error instanceof HttpError && (error.statusCode === 422 || error.statusCode === 429) && error.details?.status) {
+        set.status = error.statusCode
+        return error.details
+      }
+      throw error
+    }
+  },
+
   // Daily creation budget for a creator. The client can read this BEFORE the
   // creation flow (which spends real money on preview images) so it never lets
   // a creator craft a whole world only to be walled at the final submit.

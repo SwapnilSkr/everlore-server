@@ -7290,5 +7290,244 @@ await check('group draft person prompt pins the age in digits', () => {
   }
 })
 
+// ── create-a-group faces (§6) ──────────────────────────────────────────────
+// The route, the controller, the face service, validation and the review rule
+// are real; the image pipeline is stubbed (no paid calls, no network).
+const faceApp = new Elysia().onError(({ error, set }) => {
+  const failure = error as { statusCode?: unknown; status?: unknown; message?: string }
+  set.status = Number(failure.statusCode ?? failure.status ?? 500)
+  return { message: failure.message }
+}).use(templateRoutes)
+const postFace = (id: unknown, index: unknown, query = '') =>
+  faceApp.handle(new Request(`http://localhost/templates/${String(id)}/cast/${String(index)}/portrait${query}`, { method: 'POST' }))
+
+function faceCast(names = ['Test Alpha', 'Test Beta', 'Test Gamma']) {
+  return names.map((name, index) => ({
+    name,
+    role: `member ${index}`,
+    persona: `Persona ${index}`,
+    appearance: `Appearance for ${name}.`,
+    group: { start_bond: 'friend', age: 24 + index, talkativeness: 0.5, speech: `Voice ${index}`, wants: `Private motivation ${index}`, intimacy: `Private intimacy ${index}`, voice: [`Authored text ${index}`] },
+  }))
+}
+function faceGroup(patch: Row = {}): Row {
+  return { ...groupTemplate(), _id: new ObjectId(), seed_cast: faceCast(), ...patch }
+}
+
+await check('group face route refuses before it paints', async () => {
+  resetSaveTables()
+  const group = faceGroup({ creator_id: new ObjectId(playerId) })
+  const world = faceGroup({ _id: new ObjectId(), kind: 'world', creator_id: new ObjectId(playerId) })
+  const short = faceGroup({ _id: new ObjectId(), creator_id: new ObjectId(playerId), seed_cast: faceCast().slice(0, 2) })
+  const blank = faceGroup({ _id: new ObjectId(), creator_id: new ObjectId(playerId), seed_cast: faceCast().map((member, index) => index === 1 ? { ...member, appearance: '   ' } : member) })
+  const stranger = faceGroup({ _id: new ObjectId(), creator_id: new ObjectId() })
+  rows('worldTemplates').push(group, world, short, blank, stranger)
+  const before = rows('mediaAssets').length + rows('mediaUsage').length
+  try {
+    routeUser = null
+    assert.equal((await postFace(group._id, 0)).status, 401, 'a signed-out call is refused')
+    routeUser = { id: new ObjectId().toHexString(), tier: 'creator' }
+    assert.equal((await postFace(group._id, 0)).status, 401, 'an identity without a user row is refused')
+    routeUser = { id: playerId, tier: 'free' }
+    const forbidden = await postFace(group._id, 0)
+    assert.equal(forbidden.status, 403)
+    assert.equal((await forbidden.json() as Row).message, 'Forging needs a Premium or Creator membership.')
+    routeUser = { id: playerId, tier: 'creator' }
+    for (const [label, id, index, status, message] of [
+      ["a stranger's group", stranger._id, 0, 404, 'That group could not be found.'],
+      ['a world', world._id, 0, 404, 'That group could not be found.'],
+      ['a missing person', short._id, 2, 404, 'That person could not be found.'],
+      ['a look nobody wrote', blank._id, 1, 422, 'This moment stays unseen.'],
+    ] as const) {
+      const response = await postFace(id, index)
+      assert.equal(response.status, status, label)
+      assert.equal((await response.json() as Row).message, message, label)
+    }
+    // The cast positions are the schema's: a seventh person never reaches the service.
+    assert.equal((await postFace(short._id, 6)).status, 422)
+    // Nothing was queued or counted for any refusal.
+    assert.equal(rows('mediaAssets').length + rows('mediaUsage').length, before)
+  } finally { routeUser = null }
+})
+
+await check('group face request queues one person under a group row', async () => {
+  resetSaveTables()
+  const group = faceGroup({ creator_id: new ObjectId(playerId) })
+  rows('worldTemplates').push(group)
+  const { visualEffects } = await import('../src/services/media/visual')
+  const { mediaRevision } = await import('../src/services/media/attribution')
+  const enqueued: Row[] = []
+  const enqueue = visualEffects.enqueue
+  visualEffects.enqueue = (async (kind: string, asset: Row, id: string) => { enqueued.push({ kind, asset, id }) }) as never
+  try {
+    routeUser = { id: playerId, tier: 'creator' }
+    const response = await postFace(group._id, 1)
+    assert.equal(response.status, 202)
+    const reply = await response.json() as Row
+    assert.equal(reply.status, 'queued')
+    assert.match(String(reply.media_id), /^[a-f0-9]{24}$/)
+    const asset = rows('mediaAssets')[0]!
+    assert.equal(String(asset.template_id), String(group._id), 'the row names its group')
+    assert.equal(asset.cast_name, 'Test Beta', 'the row names its person as stored')
+    assert.equal(asset.kind, 'portrait')
+    assert.equal(asset.art_style, 'anime')
+    assert.equal(asset.source, 'generated')
+    assert.equal(asset.status, 'queued')
+    assert.equal(asset.line_id, '')
+    assert.equal(asset.input, 'Appearance for Test Beta.')
+    assert.equal(asset.revision, mediaRevision('Appearance for Test Beta.', 'group-face'))
+    assert.ok(String(asset.cache_key).startsWith(`groupface:${group._id.toHexString()}:test beta:`))
+    for (const key of ['instance_id', 'character_id', 'persona_id']) {
+      assert.equal(key in asset, false, `${key} must be omitted on a group face`)
+    }
+    assert.equal(rows('mediaUsage').filter((row) => row.status === 'reserved').length, 1)
+    assert.equal(rows('mediaUsage')[0]!.kind, 'portrait')
+    assert.equal(enqueued.length, 1)
+    assert.equal(enqueued[0]!.kind, 'portrait')
+    assert.equal(enqueued[0]!.id, group._id.toHexString(), 'the job carries its group')
+
+    // Portraits switched off read as a missing moment, never as a refusal.
+    process.env.MEDIA_PORTRAIT_ENABLED = 'false'
+    try { assert.equal((await postFace(group._id, 2)).status, 404) } finally { delete process.env.MEDIA_PORTRAIT_ENABLED }
+  } finally {
+    visualEffects.enqueue = enqueue
+    routeUser = null
+  }
+})
+
+await check('group face keeps a painted person, repaints on ask and rests', async () => {
+  resetSaveTables()
+  const group = faceGroup({ creator_id: new ObjectId(playerId) })
+  const templateId = group._id as ObjectId
+  const { mediaRevision } = await import('../src/services/media/attribution')
+  const revision = mediaRevision('Appearance for Test Alpha.', 'group-face')
+  const cast = group.seed_cast as Row[]
+  const kept = { asset_key: 'media/portrait/player-group/o/t/kept.webp', source: 'generated', appearance_version: 1, art_style: 'anime', painted_at: new Date() }
+  cast[0]!.portrait = kept
+  rows('worldTemplates').push(group)
+  rows('mediaAssets').push({
+    _id: new ObjectId(), player_id: new ObjectId(playerId), template_id: templateId, cast_name: 'Test Alpha',
+    kind: 'portrait', line_id: '', source: 'generated', model: 'fixture-model', cache_key: 'groupface:kept',
+    revision, input: 'Appearance for Test Alpha.', cost_usd: 0.009, status: 'ready',
+    asset_key: kept.asset_key, url: 'https://fixture.invalid/kept.webp',
+  })
+  try {
+    routeUser = { id: playerId, tier: 'creator' }
+    const ready = await postFace(group._id, 0)
+    assert.equal(ready.status, 200)
+    const body = await ready.json() as Row
+    assert.equal(body.status, 'ready')
+    assert.equal(body.url, `https://fixture.invalid/${kept.asset_key}`)
+    assert.equal(rows('mediaUsage').length, 0, 'a kept face takes no slot')
+
+    const repainted = await postFace(group._id, 0, '?repaint=true')
+    assert.equal(repainted.status, 202)
+    const rowsAfter = rows('mediaAssets')
+    assert.equal(rowsAfter.length, 2)
+    const fresh = rowsAfter[1]!
+    assert.notEqual(fresh.cache_key, 'groupface:kept')
+    assert.match(String(fresh.cache_key), /:r[a-f0-9]{24}$/)
+    assert.equal(rows('mediaUsage').filter((row) => row.status === 'reserved').length, 1)
+
+    process.env.MEDIA_DAILY_PORTRAIT = '0'
+    try {
+      const resting = await postFace(group._id, 2)
+      assert.equal(resting.status, 429)
+      const restingBody = await resting.json() as Row
+      assert.equal(restingBody.status, 'resting')
+      assert.equal(restingBody.kind, 'portrait')
+      assert.ok(restingBody.resets_at)
+      // The refused row is removed: the next tap may try again.
+      assert.equal(rows('mediaAssets').length, 2)
+      assert.equal(rows('mediaUsage').filter((row) => row.status === 'reserved').length, 1)
+    } finally { delete process.env.MEDIA_DAILY_PORTRAIT }
+  } finally { routeUser = null }
+})
+
+await check('group face edits keep faces and never take one from the body', async () => {
+  resetSaveTables(); draftGate()
+  const body = groupSaveBody()
+  ;(body.seed_cast[0] as Row).portrait = {
+    asset_key: 'media/portrait/player-group/body.webp', source: 'generated',
+    appearance_version: 1, art_style: 'anime', painted_at: new Date(),
+  }
+  const created = await templateService.create(playerId, body)
+  assert.equal('portrait' in (created.seed_cast![0] as Row), false, 'a saved group never carries a body face')
+
+  const stored = rows('worldTemplates')[0] as Row
+  const cast = stored.seed_cast as Row[]
+  for (const [index, member] of cast.entries()) {
+    member.portrait = {
+      asset_key: `media/portrait/player-group/face-${index}.webp`, source: 'generated',
+      appearance_version: 1, art_style: 'anime', painted_at: new Date(),
+    }
+  }
+  stored.review_status = 'approved'
+  stored.visibility = 'public'
+  stored.is_published = true
+  const id = String(stored._id)
+
+  // The cast sent back as it was read: every face is kept, and nothing is an edit.
+  await templateService.update(id, playerId, { seed_cast: structuredClone(cast) })
+  const kept = rows('worldTemplates')[0] as Row
+  assert.deepEqual((kept.seed_cast as Row[]).map((member) => member.portrait), cast.map((member) => member.portrait))
+  assert.equal(kept.review_status, 'approved', 'an unchanged cast must not go back to review')
+
+  // One look changes: only that person loses their face, and the group returns to review.
+  const changed = structuredClone(cast)
+  changed[1]!.appearance = 'A changed look.'
+  changed[1]!.portrait = { asset_key: 'media/portrait/player-group/body-2.webp', source: 'generated', appearance_version: 1, art_style: 'anime', painted_at: new Date() }
+  await templateService.update(id, playerId, { seed_cast: changed })
+  const edited = rows('worldTemplates')[0] as Row
+  const after = edited.seed_cast as Row[]
+  assert.deepEqual(after[0]!.portrait, cast[0]!.portrait, 'an untouched person keeps their face')
+  assert.equal('portrait' in after[1]!, false, 'a changed look drops its face')
+  assert.deepEqual(after[2]!.portrait, cast[2]!.portrait, 'an untouched person keeps their face')
+  assert.equal(edited.review_status, 'pending', 'a changed cast goes back to review')
+  assert.equal(edited.ever_approved, true)
+})
+
+await check('group face publish needs every person', async () => {
+  resetSaveTables(); draftGate()
+  const { vectorStore } = await import('../src/services/vector-store')
+  const embedLore = vectorStore.replaceLore
+  const lore: Row[] = []
+  vectorStore.replaceLore = (async (_scope: Row, values: Row[]) => { lore.push(...values) }) as never
+  try {
+    const created = await templateService.create(playerId, groupSaveBody())
+    const id = created._id.toHexString()
+    const stored = () => rows('worldTemplates').find((row) => String(row._id) === id)!
+
+    // One person still has no face: nothing is embedded and nothing is written.
+    ;(stored().seed_cast as Row[])[0]!.portrait = { asset_key: 'media/portrait/player-group/one.webp', source: 'generated', appearance_version: 1, art_style: 'anime', painted_at: new Date() }
+    await assert.rejects(templateService.publish(id, playerId, 'public'), (error: unknown) => {
+      const failure = error as { statusCode?: number; message?: string }
+      assert.equal(failure.statusCode, 422)
+      assert.equal(failure.message, 'Every person needs a face before this group can be shared.')
+      return true
+    })
+    assert.equal(lore.length, 0, 'a refused publish embeds nothing')
+    assert.equal(stored().is_published, false)
+    assert.equal('visibility' in stored(), false)
+
+    // Every face: it goes to review exactly as a world does.
+    for (const [index, member] of (stored().seed_cast as Row[]).entries()) {
+      member.portrait = { asset_key: `media/portrait/player-group/all-${index}.webp`, source: 'generated', appearance_version: 1, art_style: 'anime', painted_at: new Date() }
+    }
+    const shared = await templateService.publish(id, playerId, 'public')
+    assert.equal(shared.review_status, 'pending')
+    assert.ok(lore.length > 0, 'a shared group embeds its lore')
+    assert.equal(stored().is_published, true)
+    assert.equal(stored().visibility, 'public')
+    assert.equal(stored().review_status, 'pending')
+
+    // A private group needs no faces: only Explore needs them.
+    const privateOne = await templateService.create(playerId, groupSaveBody())
+    const kept = await templateService.publish(privateOne._id.toHexString(), playerId, 'private')
+    assert.equal(kept.visibility, 'private')
+    assert.equal('review_status' in kept, false)
+  } finally { vectorStore.replaceLore = embedLore }
+})
+
 Math.random = originalRandom
 console.log(`group-chat audit: ${passed}/${passed} passed (${process.env.GROUP_REPORT_MONGO === '1' ? 'scratch Mongo on 27029; fake writer; no paid calls' : 'pure; fake writer; no connections or paid calls'})`)

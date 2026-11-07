@@ -73,7 +73,7 @@ export const visualEffects = {
   })(),
 }
 
-const RESTING_COPY: Record<string, string> = {
+export const RESTING_COPY: Record<string, string> = {
   picture: 'The painter rests until tomorrow.',
   video: 'The visions rest until tomorrow.',
   // Portraits rest silently (contract §8): no player-facing sentence, only the
@@ -530,7 +530,7 @@ export async function unseeMedia(
   }).catch(() => {})
 }
 
-async function insertAsset(row: Omit<MediaAssetDoc, '_id' | 'created_at'>): Promise<MediaAssetDoc | null> {
+export async function insertAsset(row: Omit<MediaAssetDoc, '_id' | 'created_at'>): Promise<MediaAssetDoc | null> {
   const asset = { ...row, _id: new ObjectId(), created_at: new Date() } as MediaAssetDoc
   try {
     await mongoColl.mediaAssets().insertOne(asset)
@@ -656,6 +656,13 @@ export async function processPortrait(mediaId: string): Promise<void> {
   const asset = await mongoColl.mediaAssets().findOneAndUpdate(
     { _id: parseObjectId(mediaId), status: 'queued' }, { $set: { status: 'processing', started_at: new Date() } }, { returnDocument: 'after' })
   if (!asset) return
+  // A player-made group's cast face rides the same portrait job: it is fenced
+  // on the group's own look, not on a save.
+  if (asset.template_id && asset.cast_name) {
+    const { processGroupFace } = await import('../group-chat/faces')
+    await processGroupFace(asset)
+    return
+  }
   // Standalone persona faces ride the same portrait job and branch here: they
   // belong to no save and never resolve to a card.
   if (asset.persona_id && !asset.character_id) {

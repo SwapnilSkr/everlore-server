@@ -76,6 +76,26 @@ function slugify(text: string): string {
     .replace(/^-|-$/g, '')
 }
 
+/**
+ * A player never sets a face: only the portrait job writes one. Every incoming
+ * cast member is stripped of any portrait first, and an edit keeps the faces
+ * of the people whose name and look did not change — so a cast sent back as it
+ * was read is not counted as an edit.
+ */
+function castOfGroupEdit(priorCast: WorldTemplateDoc['seed_cast'], incoming: unknown[]): Record<string, unknown>[] {
+  const prior = new Map(
+    (priorCast || []).map((member) => [member.name.trim().toLowerCase(), member]),
+  )
+  return incoming.map((entry) => {
+    const { portrait: _dropped, ...member } = (entry || {}) as Record<string, unknown>
+    const name = typeof member.name === 'string' ? member.name.trim().toLowerCase() : ''
+    const before = prior.get(name)
+    const appearance = typeof member.appearance === 'string' ? member.appearance.trim() : ''
+    if (!before?.portrait || appearance !== (before.appearance || '').trim()) return member
+    return { ...member, portrait: before.portrait }
+  })
+}
+
 function assertValidStats(baseStats: Record<string, unknown> | undefined, field: string) {
   if (!baseStats || Object.keys(baseStats).length === 0) {
     throw new HttpError(400, `At least one stat is required (${field})`)
@@ -104,6 +124,9 @@ export const templateService = {
   async create(creatorId: string, data: any): Promise<WorldTemplateDoc> {
     await requireIdentity(creatorId)
     const kind: WorldTemplateDoc['kind'] = data.kind === 'group' ? 'group' : data.kind === 'character' ? 'character' : 'world'
+    if (kind === 'group' && Array.isArray(data.seed_cast)) {
+      data = { ...data, seed_cast: castOfGroupEdit(undefined, data.seed_cast) }
+    }
     if (kind === 'group') {
       try { validateGroup(data) } catch (error) { throw new HttpError(400, (error as Error).message) }
       // Before the slug, the image and the insert: a refused group writes nothing.
@@ -199,10 +222,15 @@ export const templateService = {
     if (!existing) throw new Error('Template not found')
 
     const effectiveKind = data.kind || existing.kind || 'world'
-    const merged = { ...existing, ...data }
     if ((existing.kind === 'group' || effectiveKind === 'group') && existing.kind !== effectiveKind) {
       throw new HttpError(400, 'Create a new template to change the group format.')
     }
+    // Faces are kept for the people whose name and look did not change, before
+    // the cast is judged: an edit that leaves the group as it was is no edit.
+    if (effectiveKind === 'group' && Array.isArray(data.seed_cast)) {
+      data = { ...data, seed_cast: castOfGroupEdit(existing.seed_cast, data.seed_cast) }
+    }
+    const merged = { ...existing, ...data }
     if (effectiveKind === 'group') {
       try { validateGroup(merged) } catch (error) { throw new HttpError(400, (error as Error).message) }
       // An edit is judged with everything already on the group, not just the
@@ -296,6 +324,13 @@ export const templateService = {
       creator_id: creatorOid,
     })
     if (!template) throw new Error('Template not found')
+
+    // A group goes to Explore only with every person's face on it: the players
+    // read those faces before they open the room.
+    if (template.kind === 'group' && visibility === 'public') {
+      const faced = (template.seed_cast || []).every((member) => !!member.portrait?.asset_key)
+      if (!faced) throw new HttpError(422, 'Every person needs a face before this group can be shared.')
+    }
 
     const loreKey = idString(template._id)
     await embedLore(loreKey, template.global_lore || '')

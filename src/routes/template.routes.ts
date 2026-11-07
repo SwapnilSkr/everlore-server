@@ -82,4 +82,14 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
 
   .post('/:id/publish', (ctx) => templateController.publish(ctx), { body: t.Optional(PublishTemplateBody) })
 
+  // One person's face in a player-made group. The index is the cast position
+  // the app read; a repaint is the player asking for the same look again.
+  .post('/:id/cast/:index/portrait', (ctx) => templateController.castPortrait(ctx), {
+    params: t.Object({
+      id: t.String({ pattern: '^[a-fA-F0-9]{24}$' }),
+      index: t.String({ pattern: '^[0-5]$' }),
+    }),
+    query: t.Optional(t.Object({ repaint: t.Optional(t.String()) })),
+  })
+
   .delete('/:id', (ctx) => templateController.delete(ctx))
