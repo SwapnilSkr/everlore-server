@@ -4,7 +4,10 @@ import assert from 'node:assert/strict'
 import sharp from 'sharp'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
+import { existsSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { ObjectId, MongoServerError } from 'mongodb'
 import { fixture, observeStoryWrites, readAuditSource as readFileSync } from './media-audit-fixture'
 import { detectSpokenLines } from '../src/services/media/detection'
@@ -1261,7 +1264,18 @@ check('vision_retry', async () => {
 })
 check('director_verbatim', () => {
   // The director prompt is the contract text, byte for byte, so it can't drift.
-  const md = readFileSync(process.env.EVERLORE_DOCS_ROOT ? `${process.env.EVERLORE_DOCS_ROOT}/server/MEDIA_DIRECTOR_PROMPT.md` : new URL('../../everlore-docs/server/MEDIA_DIRECTOR_PROMPT.md', import.meta.url), 'utf8')
+  let docsRoot = process.env.EVERLORE_DOCS_ROOT
+  if (!docsRoot) {
+    // Walk up from this script so a worktree checkout still finds the docs.
+    for (let dir = dirname(fileURLToPath(import.meta.url)); ; dir = dirname(dir)) {
+      if (existsSync(join(dir, 'everlore-docs/server/MEDIA_DIRECTOR_PROMPT.md'))) {
+        docsRoot = join(dir, 'everlore-docs')
+        break
+      }
+      if (dirname(dir) === dir) throw new Error('Set EVERLORE_DOCS_ROOT to the everlore-docs directory')
+    }
+  }
+  const md = readFileSync(join(docsRoot, 'server/MEDIA_DIRECTOR_PROMPT.md'), 'utf8')
   const raw = md.split('```\n')[1]
   const block = raw.endsWith('\n') ? raw.slice(0, -1) : raw
   assert.equal(DIRECTOR_SYSTEM_PROMPT, block)

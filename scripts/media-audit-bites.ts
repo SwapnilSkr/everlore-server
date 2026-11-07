@@ -37,7 +37,7 @@ const mutations: Mutation[] = [
   { name: 'late result deletes uploaded object', check: 'late_result', file: 'service.ts', changes: [["if (!saved.modifiedCount) throw new Error('Voice removed')", "// omitted completion fence"]] },
   { name: 'abandoned reservation recovery', check: 'repair', file: 'service.ts', changes: [["for (const asset of abandoned) await failMedia(asset, { stage: 'repair', message: 'abandoned reservation' })", "for (const asset of abandoned) { /* no recovery */ }"]] },
   { name: 'object deletion', check: 'deletion', file: 'deletion.ts', changes: [["if (asset.asset_key) await storageService.deleteStrict(asset.asset_key)", "// omitted object deletion"]] },
-  { name: 'shared save purge integration', check: 'deletion', file: '../deletion.service.ts', changes: [["await purgeMedia({ instance_id: instanceId })", "// omitted shared media purge"]] },
+  { name: 'shared save purge integration', check: 'deletion', file: '../deletion.service.ts', changes: [["await purgeMedia({ instance_id: instanceId }, retainUsageFor)", "// omitted shared media purge"]] },
   { name: 'attribution stays private', check: 'revisions_payload', file: 'policy.ts', changes: [["...(attributionIsCurrent && voice?.status === 'unvoiceable' ? { voice } : {})", "...(voice ? { voice } : {})"]] },
   { name: 'generated/authored references only', check: 'reference_gate', file: 'portraits.ts', changes: [["return source === 'generated' || source === 'authored'", "return true"]] },
   { name: 'portrait reference is the kept face', check: 'cover_never_face', file: 'visual.ts', changes: [["const bytes = await visualEffects.download(portraitUrl(holder.portrait.asset_key))", "const bytes = await visualEffects.download(template?.image_url || portraitUrl(holder.portrait.asset_key))"]] },
@@ -229,7 +229,7 @@ const mutations: Mutation[] = [
   }`]] },
   { name: 'turn media carries no internals', check: 'turn_media_shape', file: 'events.ts', changes: [["    media_id: row._id.toHexString(),", "    media_id: row._id.toHexString(),\n    cache_key: row.cache_key,"]] },
   { name: 'turn media ignores keepsake hiding', check: 'turn_media_hidden', file: 'events.ts', changes: [["    status: { $in: ['queued', 'processing', 'ready'] },", "    status: { $in: ['queued', 'processing', 'ready'] },\n    hidden_from_keepsakes: { $ne: true },"]] },
-  { name: 'turn media rides on pages', check: 'turn_media_pages', path: 'src/services/memory.service.ts', changes: [["    return { events: await withTurnMedia(ordered), total, page: opts.page || 1, hasOlder }", "    return { events: ordered, total, page: opts.page || 1, hasOlder }"]] },
+  { name: 'turn media rides on pages', check: 'turn_media_pages', path: 'src/services/memory.service.ts', changes: [["    const payload = { events: await withTurnMedia(ordered), total, page: opts.page || 1, hasOlder }", "    const payload = { events: ordered, total, page: opts.page || 1, hasOlder }"]] },
   { name: 'turn media rides on replay', check: 'turn_media_replay', path: 'src/services/memory.service.ts', changes: [["      event: updated ? (await withTurnMedia([publicMediaEvent(updated)]))[0] : updated,\n      replay_count: nextVariants.length,\n      selected_index: selectedIdx,", "      event: updated ? publicMediaEvent(updated) : updated,\n      replay_count: nextVariants.length,\n      selected_index: selectedIdx,"]] },
   { name: 'turn media rides on variant select', check: 'turn_media_replay', path: 'src/services/memory.service.ts', changes: [["      event: updated ? (await withTurnMedia([publicMediaEvent(updated)]))[0] : updated,\n      replay_count: nextVariants.length,\n      selected_index: variantIndex,", "      event: updated ? publicMediaEvent(updated) : updated,\n      replay_count: nextVariants.length,\n      selected_index: variantIndex,"]] },
   // ── media-film-fixes ──
@@ -246,10 +246,11 @@ const mutations: Mutation[] = [
   { name: 'wire compares the attribution rule version', check: 'stale_line_payload', file: 'events.ts', changes: [["attribution?.rule_version === ATTRIBUTION_RULE_VERSION", "true"]] },
   { name: 'event decides before deleting attribution', check: 'stale_line_payload', file: 'events.ts', changes: [["  if (mediaEnabled('voice')) {", "  delete event.data.voice_attribution\n  if (mediaEnabled('voice')) {"]] },
   { name: 'publisher carries event attribution', check: 'stale_line_payload', file: 'events.ts', changes: [["wireSpokenLines(event.data.spoken_lines, event.data.voice_attribution as VoiceAttribution | undefined)", "wireSpokenLines(event.data.spoken_lines)"]] },
-  { name: 'payload omits attribution internals', check: 'stale_line_payload', file: 'events.ts', changes: [["  delete event.data.voice_attribution", "  // leaked attribution"]] },
-  { name: 'payload omits media revision', check: 'stale_line_payload', file: 'events.ts', changes: [["  delete event.data.media_revision", "  // leaked revision"]] },
-  { name: 'history omits attribution internals', check: 'stale_line_payload', file: 'events.ts', changes: [["    delete edit.previous_data.voice_attribution", "    // leaked old attribution"]] },
-  { name: 'history omits media revision', check: 'stale_line_payload', file: 'events.ts', changes: [["    delete edit.previous_data.media_revision", "    // leaked old revision"]] },
+  { name: 'payload omits attribution internals', check: 'stale_line_payload', file: 'events.ts', changes: [["  delete data.voice_attribution\n", ""]] },
+  { name: 'payload omits media revision', check: 'stale_line_payload', file: 'events.ts', changes: [["  delete data.media_revision\n", ""]] },
+  // The helper is shared since c78e9f8: these two drop the call itself, for the turn and for each edit snapshot.
+  { name: 'history strips its internals', check: 'stale_line_payload', file: 'events.ts', changes: [["    stripInternalTurnFields(edit.previous_data)", "    // edit snapshot left as stored"]] },
+  { name: 'payload strips its internals', check: 'stale_line_payload', file: 'events.ts', changes: [["  stripInternalTurnFields(event.data)", "  // turn left as stored"]] },
   // ── media-place-not-title ──
   { name: 'inline card portrait has no place', check: 'portrait_places', file: 'visual.ts', changes: [["generatePortraitBytes(appearance, card.canonical_name, '', model, style.render, reference)", "generatePortraitBytes(appearance, card.canonical_name, template?.title || '', model, style.render, reference)"]] },
   { name: 'queued card repaint has no place', check: 'portrait_places', file: 'visual.ts', changes: [["generatePortraitBytes(appearance, card.canonical_name, '', asset.model, style.render, reference)", "generatePortraitBytes(appearance, card.canonical_name, template?.title || '', asset.model, style.render, reference)"]] },
