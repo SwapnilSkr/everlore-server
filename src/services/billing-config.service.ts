@@ -8,7 +8,7 @@ import { log } from '../utils/logger'
 
 const SINGLETON = 'singleton'
 const TIERS = ['free', 'premium', 'creator'] as const
-const COST_KEYS = ['story_turn', 'character_autofill', 'world_autofill', 'image_preview'] as const
+const COST_KEYS = ['story_turn', 'character_autofill', 'group_draft_person', 'world_autofill', 'image_preview'] as const
 
 export type TierProfile = { monthly_ink: number; daily_story_safety_cap: number }
 export type EffectiveBilling = {

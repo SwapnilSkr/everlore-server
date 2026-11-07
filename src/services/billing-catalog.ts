@@ -31,6 +31,7 @@ export const BILLING_CATALOG = {
   costs: {
     story_turn: 1,
     character_autofill: 12,
+    group_draft_person: 12,
     world_autofill: 20,
     image_preview: 45,
   },

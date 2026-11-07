@@ -6,7 +6,7 @@ import { deletionService } from '../services/deletion.service'
 import { imageService } from '../services/image.service'
 import { autofillService } from '../services/autofill.service'
 import type { Static } from '@sinclair/typebox'
-import type { CreateTemplateBody, UpdateTemplateBody } from '../schemas/template.schema'
+import type { CreateTemplateBody, GroupDraftBody, UpdateTemplateBody } from '../schemas/template.schema'
 import { HttpError } from '../utils/http-error'
 import { idString } from '../utils/mongo-id'
 import { billingService } from '../services/billing.service'
@@ -17,6 +17,7 @@ import { publicGroupTemplate } from '../services/group-chat/public'
 import type { Genre } from '../utils/genre'
 
 type CreateBody = Static<typeof CreateTemplateBody>
+type GroupDraftPayload = Static<typeof GroupDraftBody>
 type UpdateBody = Static<typeof UpdateTemplateBody>
 
 export const templateController = {
@@ -171,6 +172,58 @@ export const templateController = {
       return { target: 'world', draft: await autofillService.autofillWorld(opts) }
     } catch (error) {
       await billingService.release(user.id, reservation.reservation_id)
+      throw error
+    }
+  },
+
+  // Drafts a whole group from the create-a-group form. One call for the group,
+  // then one per person. Ink is reserved per person before any model call and
+  // released whole if the draft fails; nothing is written to the database.
+  groupDraft: async ({
+    user,
+    body,
+    headers,
+  }: {
+    user: AuthUser | null
+    body: GroupDraftPayload
+    headers: Record<string, string | undefined>
+  }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    await requireIdentity(user.id)
+    if (!canForge(user)) {
+      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
+    }
+    const names = new Set<string>()
+    for (const person of body.people) {
+      const name = person.name.trim().toLowerCase()
+      if (names.has(name)) throw new HttpError(400, 'Each person needs a different name.')
+      names.add(name)
+    }
+    const rl = await rateLimit(user.id, 'group_draft')
+    if (!rl.allowed) {
+      throw new HttpError(429, 'The draft needs a moment. Try again shortly.')
+    }
+    const key = headers['x-idempotency-key'] || crypto.randomUUID()
+    const reservations: Array<string | null> = []
+    try {
+      for (let index = 0; index < body.people.length; index++) {
+        const reservation = await billingService.reserve(
+          user.id,
+          'group_draft_person',
+          `${key}:${index}`,
+        )
+        reservations.push(reservation.reservation_id)
+      }
+    } catch (error) {
+      for (const reservation of reservations) await billingService.release(user.id, reservation)
+      throw error
+    }
+    try {
+      // Loaded lazily: audits that stub `src/ai` or the env load this controller.
+      const { draftGroup } = await import('../services/group-chat/draft')
+      return { draft: await draftGroup(body) }
+    } catch (error) {
+      for (const reservation of reservations) await billingService.release(user.id, reservation)
       throw error
     }
   },

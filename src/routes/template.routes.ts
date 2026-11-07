@@ -9,6 +9,7 @@ import {
   GenerateImageBody,
   UploadImageBody,
   AutofillBody,
+  GroupDraftBody,
   PublishTemplateBody,
 } from '../schemas/template.schema'
 import { templateController } from '../controllers/template.controller'
@@ -69,6 +70,10 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
 
   .post('/autofill', (ctx) => templateController.autofill(ctx), {
     body: AutofillBody,
+  })
+
+  .post('/group-draft', (ctx) => templateController.groupDraft(ctx), {
+    body: GroupDraftBody,
   })
 
   .post('/', (ctx) => templateController.create(ctx), { body: CreateTemplateBody })

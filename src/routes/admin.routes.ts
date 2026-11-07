@@ -57,6 +57,7 @@ const AdminBillingConfigBody = t.Object({
     t.Object({
       story_turn: t.Optional(t.Numeric({ minimum: 0 })),
       character_autofill: t.Optional(t.Numeric({ minimum: 0 })),
+      group_draft_person: t.Optional(t.Numeric({ minimum: 0 })),
       world_autofill: t.Optional(t.Numeric({ minimum: 0 })),
       image_preview: t.Optional(t.Numeric({ minimum: 0 })),
     }),

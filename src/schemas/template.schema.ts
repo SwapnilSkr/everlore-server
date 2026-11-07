@@ -116,6 +116,29 @@ export const AutofillBody = t.Object({
   narrative_style: t.Optional(t.String({ maxLength: 50 })),
 })
 
+// One person on the create-a-group form. Only what the player types: the server
+// mints the rest of the cast member from the drafted words.
+export const GroupDraftPerson = t.Object({
+  name: t.String({ minLength: 1, maxLength: 40 }),
+  age: t.Integer({ minimum: 18, maximum: 99 }),
+  look: t.String({ minLength: 1, maxLength: 300 }),
+  personality: t.String({ minLength: 1, maxLength: 400 }),
+  knows_player: t.String({ minLength: 1, maxLength: 200 }),
+  closeness: t.Union([
+    t.Literal('acquaintance'),
+    t.Literal('friend'),
+    t.Literal('unrequited_attraction'),
+    t.Literal('rival'),
+  ]),
+}, { additionalProperties: false })
+
+export const GroupDraftBody = t.Object({
+  title: t.String({ minLength: 1, maxLength: 60 }),
+  setting: t.String({ minLength: 1, maxLength: 300 }),
+  adult: t.Boolean(),
+  people: t.Array(GroupDraftPerson, { minItems: 2, maxItems: 6 }),
+}, { additionalProperties: false })
+
 export const TemplateQueryParams = t.Object({
   page: t.Optional(t.Numeric()),
   limit: t.Optional(t.Numeric()),

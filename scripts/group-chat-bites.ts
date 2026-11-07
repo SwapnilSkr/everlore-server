@@ -1185,6 +1185,162 @@ const ideaMutations: Mutation[] = [
     "{ $set: { 'data.reply_ideas': ideas } })", "{ $set: { 'data.reply_ideas': ideas } }, { upsert: true })"],
     [ideaLib, '    if (!saved.matchedCount) return\n', '']] },
 ]
+const draftFile = 'src/services/group-chat/draft.ts'
+const draftSchema = 'src/schemas/template.schema.ts'
+const draftController = 'src/controllers/template.controller.ts'
+const draftCatalog = 'src/services/billing-catalog.ts'
+
+const draftHappy = 'group draft happy path'
+const draftPrompt = 'group draft prompts ask'
+const draftMint = 'group draft mints'
+const draftAdult = 'group draft adult voice'
+const draftShape = 'group draft shape failure'
+const draftSelfName = 'group draft a voice line naming'
+const draftGatePerson = 'group draft gate refuses one person'
+const draftGate503 = 'group draft gate 503'
+const draftGateGroup = 'group draft a refused group path'
+const draftOpenings = 'group draft opening lines naming strangers'
+const draftRoute = 'group draft route auth identity'
+const draftInk = 'group draft ink reserves'
+const draftNoWorlds = 'group draft route never touches world templates'
+const draftProvider = 'group draft provider failure is a 503'
+const draftAppearance = 'group draft appearance opens with the form age'
+const draftPromptAge = 'group draft person prompt pins the age'
+const draftMutations: Mutation[] = [
+  { name: 'draft group call loses its json response mode', check: draftHappy, edits: [[draftFile,
+    `      maxTokens: 2000,
+      responseFormat: { type: 'json_object' },
+      purpose: 'group_draft',`,
+    `      maxTokens: 2000,
+      purpose: 'group_draft',`]] },
+  { name: 'draft body loses its description', check: draftHappy, edits: [[draftFile, '    description: group.description,', "    description: '',"]] },
+  { name: 'draft prompt loses the authoring rule', check: draftPrompt, edits: [[draftFile, 'name a sex act', 'describe a feeling']] },
+  { name: 'draft group prompt loses the topic count', check: draftPrompt, edits: [[draftFile, '"topics": EXACTLY 10 things', '"topics": about 10 things']] },
+  { name: 'draft name comes from the model', check: draftMint, edits: [[draftFile, '        name: person.name,\n        role: words.role,', '        name: person.name.toUpperCase(),\n        role: words.role,']] },
+  { name: 'draft age comes from the model', check: draftMint, edits: [[draftFile, '          age: person.age,\n          talkativeness:', '          age: person.age + 1,\n          talkativeness:']] },
+  { name: 'draft bond comes from the model', check: draftMint, edits: [[draftFile, '          start_bond: person.closeness as RelationshipInitializationKind,', "          start_bond: 'rival' as RelationshipInitializationKind,"]] },
+  { name: 'draft talkativeness not clamped', check: draftMint, edits: [[draftFile, '      ? Math.min(1, Math.max(0, rawTalk))', '      ? rawTalk']] },
+  { name: 'draft talkativeness default changed', check: draftMint, edits: [[draftFile, '      : 0.5\n', '      : 0\n']] },
+  { name: 'draft identity kind not human', check: draftMint, edits: [[draftFile, "        identity_kind: 'human',", "        identity_kind: 'machine' as 'human',"]] },
+  { name: 'draft aliases not empty', check: draftMint, edits: [[draftFile, '        aliases: [],', "        aliases: ['x'],"]] },
+  { name: 'draft voice explicit first', check: draftAdult, edits: [[draftFile, '      const voice = [...words.plain, ...(form.adult ? words.explicit : [])]', '      const voice = [...(form.adult ? words.explicit : []), ...words.plain]']] },
+  { name: 'draft safe group keeps intimacy', check: draftAdult, edits: [
+    [draftFile, '  const intimacy = form.adult ? prose(parsed.intimacy) : undefined', '  const intimacy = prose(parsed.intimacy)'],
+    [draftFile, '          ...(form.adult ? { intimacy: words.intimacy! } : {}),', '          ...(words.intimacy ? { intimacy: words.intimacy } : {}),'],
+  ] },
+  { name: 'draft safe group keeps explicit lines', check: draftAdult, edits: [
+    [draftFile, '  if (form.adult) {\n    const rawExplicit', '  if (true) {\n    const rawExplicit'],
+    [draftFile, '      const voice = [...words.plain, ...(form.adult ? words.explicit : [])]', '      const voice = [...words.plain, ...words.explicit]'],
+  ] },
+  { name: 'draft marks every group adult', check: draftAdult, edits: [[draftFile, '    is_nsfw_capable: form.adult,', '    is_nsfw_capable: true,']] },
+  { name: 'draft shape redraft removed', check: draftShape, edits: [[draftFile, 'const MAX_ATTEMPTS = 2', 'const MAX_ATTEMPTS = 1']] },
+  { name: 'draft voice may name its speaker', check: draftSelfName, edits: [[draftFile, '    if (namesSelf(text, person.name)) shape()', '    if (namesSelf(text, person.name)) void 0']] },
+  { name: 'draft refused person not redrafted', check: draftGatePerson, edits: [[draftFile, '  if (refused.size > 0) {', '  if (false) {']] },
+  { name: 'draft failed gate leaves reservations', check: draftGatePerson, edits: [[draftController,
+    `    try {
+      // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
+      const { draftGroup } = await import('../services/group-chat/draft')
+      return { draft: await draftGroup(body) }
+    } catch (error) {
+      for (const reservation of reservations) await billingService.release(user.id, reservation)
+      throw error
+    }`,
+    `    try {
+      // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
+      const { draftGroup } = await import('../services/group-chat/draft')
+      return { draft: await draftGroup(body) }
+    } catch (error) {
+      throw error
+    }`]] },
+  { name: 'draft gate transport error swallowed', check: draftGate503, edits: [[draftFile,
+    '  return checkGroupText(groupTextLines(draft as unknown as Partial<WorldTemplateDoc>))',
+    '  try { return await checkGroupText(groupTextLines(draft as unknown as Partial<WorldTemplateDoc>)) } catch { return { ok: true } }']] },
+  { name: 'draft refused group not redrafted', check: draftGateGroup, edits: [[draftFile, '  if (groupRefused) group = await draftGroupWords(form, 1)', '  if (false) group = await draftGroupWords(form, 1)']] },
+  { name: 'draft opening line stranger kept', check: draftOpenings, edits: [[draftFile, '    if (name === undefined) continue', '    if (name === undefined) shape()']] },
+  { name: 'draft too few opening lines accepted', check: draftOpenings, edits: [[draftFile, '  if (opening.length < 3 || opening.length > 6) shape()', '  if (opening.length > 6) shape()']] },
+  { name: 'draft duplicate names accepted', check: draftRoute, edits: [[draftController, "      if (names.has(name)) throw new HttpError(400, 'Each person needs a different name.')", "      if (false) throw new HttpError(400, 'Each person needs a different name.')"]] },
+  { name: 'draft rate limit not enforced', check: draftRoute, edits: [[draftController,
+    `    const rl = await rateLimit(user.id, 'group_draft')
+    if (!rl.allowed) {
+      throw new HttpError(429, 'The draft needs a moment. Try again shortly.')
+    }`,
+    `    const rl = await rateLimit(user.id, 'group_draft')`]] },
+  { name: 'draft canForge not enforced', check: draftRoute, edits: [[draftController,
+    `    if (!canForge(user)) {
+      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
+    }
+    const names = new Set<string>()`,
+    `    const names = new Set<string>()`]] },
+  { name: 'draft identity not required', check: draftRoute, edits: [[draftController,
+    `    await requireIdentity(user.id)
+    if (!canForge(user)) {
+      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
+    }
+    const names = new Set<string>()`,
+    `    if (!canForge(user)) {
+      throw new HttpError(403, 'Forging needs a Premium or Creator membership.')
+    }
+    const names = new Set<string>()`]] },
+  { name: 'draft age below 18 accepted by the schema', check: draftRoute, edits: [[draftSchema, '  age: t.Integer({ minimum: 18, maximum: 99 }),', '  age: t.Number(),']] },
+  { name: 'draft title too long accepted by the schema', check: draftRoute, edits: [[draftSchema, '  title: t.String({ minLength: 1, maxLength: 60 }),', '  title: t.String({ minLength: 1, maxLength: 80 }),']] },
+  { name: 'draft people count widened by the schema', check: draftRoute, edits: [[draftSchema, '  people: t.Array(GroupDraftPerson, { minItems: 2, maxItems: 6 }),', '  people: t.Array(GroupDraftPerson, { minItems: 1, maxItems: 7 }),']] },
+  { name: 'draft reservation id per person lost', check: draftInk, edits: [[draftController, '          `${key}:${index}`,', '          `${key}`,']] },
+  { name: 'draft reservation failure leaks earlier holds', check: draftInk, edits: [[draftController,
+    `    } catch (error) {
+      for (const reservation of reservations) await billingService.release(user.id, reservation)
+      throw error
+    }
+    try {
+      // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
+      const { draftGroup } = await import('../services/group-chat/draft')
+      return { draft: await draftGroup(body) }`,
+    `    } catch (error) {
+      throw error
+    }
+    try {
+      // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
+      const { draftGroup } = await import('../services/group-chat/draft')
+      return { draft: await draftGroup(body) }`]] },
+  { name: 'draft reserves the wrong Ink action', check: draftInk, edits: [[draftController, "          'group_draft_person',", "          'character_autofill',"]] },
+  { name: 'draft Ink cost key missing', check: draftInk, edits: [[draftCatalog, '    group_draft_person: 12,\n', '']] },
+  { name: 'draft route reads world templates', check: draftNoWorlds, edits: [[draftController,
+    '      return { draft: await draftGroup(body) }',
+    `      await templateService.getById('000000000000000000000001')
+      return { draft: await draftGroup(body) }`]] },
+  { name: 'draft provider failure blames the player', check: draftProvider, edits: [[draftFile,
+    "    throw new HttpError(503, 'Try again in a moment.')",
+    '    return failed()']] },
+  { name: 'draft provider failure redrafted as shape', check: draftProvider, edits: [[draftFile,
+    "    throw new HttpError(503, 'Try again in a moment.')",
+    '    shape()']] },
+  { name: 'draft provider failure leaves reservations', check: draftProvider, edits: [[draftController,
+    `    try {
+      // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
+      const { draftGroup } = await import('../services/group-chat/draft')
+      return { draft: await draftGroup(body) }
+    } catch (error) {
+      for (const reservation of reservations) await billingService.release(user.id, reservation)
+      throw error
+    }`,
+    `    try {
+      // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
+      const { draftGroup } = await import('../services/group-chat/draft')
+      return { draft: await draftGroup(body) }
+    } catch (error) {
+      throw error
+    }`]] },
+  { name: 'draft appearance accepts a different age', check: draftAppearance, edits: [[draftFile,
+    '  if (!ageDigits || Number(ageDigits[1]) !== person.age) shape()',
+    '  if (!ageDigits) shape()']] },
+  { name: 'draft appearance accepts no digits', check: draftAppearance, edits: [[draftFile,
+    '  if (!ageDigits || Number(ageDigits[1]) !== person.age) shape()',
+    '  if (ageDigits && Number(ageDigits[1]) !== person.age) shape()']] },
+  { name: 'draft prompt allows the age in words', check: draftPromptAge, edits: [[draftFile,
+    'opening with their age from the form in digits, e.g. "27, ..."',
+    'opening with their age from the form, in words or digits']] },
+]
+mutations.push(...draftMutations)
+
 mutations.push(...ideaMutations)
 
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations

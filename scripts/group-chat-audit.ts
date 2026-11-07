@@ -614,10 +614,11 @@ mock.module('../src/services/billing-config.service', () => ({ resolveProfile: u
 mock.module('../src/services/google-play.service', () => ({ googlePlayService: { configured: () => false } }))
 mock.module('../src/services/auth.service', () => ({ authService: { getLiveAccess: async () => ({ tier: 'creator', account_status: 'active' }) }, defaultUserPreferences: () => ({}) }))
 let routeUser: { id: string; tier: string } | null = null
+let rateLimitReply: (userId: string, action: string) => { allowed: boolean; remaining?: number; retryAfter?: number } = () => ({ allowed: true })
 mock.module('../src/middleware/auth', () => ({ verifyWsToken: unavailable,
   authPlugin: new Elysia().derive({ as: 'scoped' }, () => ({ user: routeUser })),
 }))
-mock.module('../src/middleware/rate-limit', () => ({ rateLimit: async () => ({ allowed: true }) }))
+mock.module('../src/middleware/rate-limit', () => ({ rateLimit: async (userId: string, action: string) => rateLimitReply(userId, action) }))
 mock.module('../src/services/last-active.service', () => ({ recordLastActive: () => {} }))
 let generationAddError: Error | undefined
 mock.module('../src/queues', () => ({ getMediaQueue: unavailable, getMemoryCurationQueue: unavailable, removeQueuedJobsForInstance: async () => {}, getGenerationQueue: () => ({ add: async (_name: string, data: Row, options: Row) => { if (generationAddError) throw generationAddError; queued.push(data); return { id: options.jobId } } }), getSceneSummaryQueue: () => ({ add: async (_name: string, data: Row) => { queued.push(data) } }), QUEUE_RETENTION: { sceneSummary: {}, generation: { removeOnComplete: 10, removeOnFail: 10 } } }))
@@ -644,7 +645,11 @@ function curatorResponse(request: Row, result: unknown): unknown {
 let modelReplies: Array<string | Error | { content: string; finishReason: string }> = [], writerCalls: Row[] = [], turnNumber = 0
 let ideaReplies: Array<string | Error> = [], ideaCalls: Row[] = [], ideaGate: Promise<void> | undefined
 let onIdeaCall: (() => void) | undefined, flushedTraces: Row[][] = []
-mock.module('../src/ai', () => ({ AI_MODELS: { memoryCuration: 'fixture-curator', sceneSummary: 'fixture-summary', chapterSummary: 'fixture-chapter', arcSummary: 'fixture-arc', narrationSfw: 'fake-safe', narrationNsfw: 'fake-story-adult', groupNsfw: 'fake-adult', groupNsfwFallbacks: ['fake-adult-fallback', 'fake-adult-last'], narrationSfwFallbacks: ['fake-safe-fallback'], narrationNsfwFallbacks: ['fake-adult-fallback'] }, narrationTemperature: () => 0.62, snapshotLLMUsage: () => [],
+// The draft reads its model from `src/ai/models` directly, so the same fixture
+// map is stubbed under both paths; a barrel-only stub would leave it undefined.
+const auditModels = { authoring: 'fixture-authoring', memoryCuration: 'fixture-curator', sceneSummary: 'fixture-summary', chapterSummary: 'fixture-chapter', arcSummary: 'fixture-arc', narrationSfw: 'fake-safe', narrationNsfw: 'fake-story-adult', groupNsfw: 'fake-adult', groupNsfwFallbacks: ['fake-adult-fallback', 'fake-adult-last'], narrationSfwFallbacks: ['fake-safe-fallback'], narrationNsfwFallbacks: ['fake-adult-fallback'] }
+mock.module('../src/ai/models', () => ({ AI_MODELS: auditModels }))
+mock.module('../src/ai', () => ({ AI_MODELS: auditModels, narrationTemperature: () => 0.62, snapshotLLMUsage: () => [],
   embed: async () => { await embedHook?.(); return [1, 0] },
   callLLM: async (request: Row) => {
     if (request.purpose === 'group_bonds') { bondRequests.push(request); await bondHook?.(); if (bondReply instanceof Error) throw bondReply; return typeof bondReply === 'string' ? bondReply : JSON.stringify(bondReply) }
@@ -6608,6 +6613,681 @@ await check('ideas catalog requires written first texts and statuses on every me
     }
   }
   assert.equal(counted, 16)
+})
+
+// ── create-a-group drafting (§4) ──────────────────────────────────────────
+// The model calls and the text gate are stubbed; the draft service, the body
+// schema, the route, the controller and validation are real.
+const { draftEffects, draftGroup, GROUP_DRAFT_PROMPT, personDraftPrompt } = await import('../src/services/group-chat/draft')
+const { GroupDraftBody, CreateTemplateBody } = await import('../src/schemas/template.schema')
+const { Value } = await import('@sinclair/typebox/value')
+const { templateRoutes } = await import('../src/routes/template.routes')
+
+const draftApp = new Elysia().onError(({ error, set }) => {
+  const failure = error as { statusCode?: unknown; status?: unknown; message?: string }
+  set.status = Number(failure.statusCode ?? failure.status ?? 500)
+  return { message: failure.message }
+}).use(templateRoutes)
+
+// The real create route's schema: a draft must be sendable to it unchanged.
+const draftCreateApp = new Elysia().post('/template', ({ body }) => body, { body: CreateTemplateBody })
+
+async function postGroupDraft(body: unknown, headers: Record<string, string> = {}) {
+  return draftApp.handle(new Request('http://localhost/templates/group-draft', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  }))
+}
+
+const DRAFT_NAMES = ['Ana', 'Ben', 'Cleo', 'Dev', 'Eli', 'Fay']
+const DRAFT_CLOSENESS = ['friend', 'rival', 'acquaintance', 'unrequited_attraction', 'friend', 'acquaintance'] as const
+function draftForm(count = 2, adult = true) {
+  return {
+    title: 'The Flat',
+    setting: 'Six friends share a flat above a bakery in a wet northern city.',
+    adult,
+    people: DRAFT_NAMES.slice(0, count).map((name, index) => ({
+      name,
+      age: 24 + index,
+      look: `A short practical haircut, a bakery apron and flour on the sleeves (${name}).`,
+      personality: `${name} is dry, practical and quietly kind.`,
+      knows_player: `${name} met the player at the bakery counter last winter.`,
+      closeness: DRAFT_CLOSENESS[index],
+    })),
+  }
+}
+type DraftForm = ReturnType<typeof draftForm>
+
+function groupDraftReply(form: DraftForm) {
+  return JSON.stringify({
+    description: 'A group chat for the people who share the flat above the bakery.',
+    global_lore: 'They have shared the flat for two years, and the fuse box has never worked.',
+    seed_prompt: 'You have just moved into the flat above the bakery and been added to the group chat.',
+    topics: Array.from({ length: 10 }, (_, index) => `Topic ${index + 1}: the kettle, the fuse box and the rent.`),
+    opening_lines: [
+      { name: form.people[0]!.name, text: 'The kettle is broken again.' },
+      { name: form.people[1]!.name, text: 'I told you it was the fuse.' },
+      { name: form.people[0]!.name, text: 'Then fix the fuse.' },
+    ],
+  })
+}
+const DRAFT_PLAIN = ['I put the kettle on.', 'The fuse box is in the hall.']
+const DRAFT_EXPLICIT = [
+  'Put your mouth on my neck and then lower.',
+  'Your fingers inside me, now.',
+  'I want your cock in my mouth.',
+]
+function personDraftReply(form: DraftForm, index: number, extra: Row = {}) {
+  const person = form.people[index]!
+  return JSON.stringify({
+    role: `Flatmate ${index + 1}, keeper of the fuse box.`,
+    appearance: `${person.age}; short hair, a bakery apron and flour on the sleeves.`,
+    persona: `${person.name} is dry, practical and quietly kind, and notices everything.`,
+    speech: 'Short sentences, no emoji, a dry turn at the end.',
+    wants: 'A quiet morning, a working kettle and someone to share the rent.',
+    ...(form.adult ? { intimacy: 'Direct and unhurried, in their own voice, with no embarrassment.' } : {}),
+    first_texts: ['Are you up?', 'The kettle is broken.', 'Come down for coffee.'],
+    statuses: { morning: 'Up early.', afternoon: 'On shift.', evening: 'Home and tired.', night: 'Still awake.' },
+    talkativeness: 0.5,
+    voice: { plain: [...DRAFT_PLAIN], ...(form.adult ? { explicit: [...DRAFT_EXPLICIT] } : {}) },
+    ...extra,
+  })
+}
+function groupDraftReplyBad(form: DraftForm) {
+  const reply = JSON.parse(groupDraftReply(form)) as Row
+  reply.topics = (reply.topics as string[]).slice(0, 9)
+  return JSON.stringify(reply)
+}
+function groupDraftReplyMarked(form: DraftForm) {
+  const reply = JSON.parse(groupDraftReply(form)) as Row
+  reply.description = 'REFUSE this group description.'
+  return JSON.stringify(reply)
+}
+function personDraftWithMarker(form: DraftForm, index: number) {
+  const reply = JSON.parse(personDraftReply(form, index)) as Row
+  ;(reply.voice as Row).plain = ['REFUSE this line.', 'I put the kettle on.']
+  return JSON.stringify(reply)
+}
+function groupDraftReplyWithStrangers(form: DraftForm, valid: number, strangers: number) {
+  const reply = JSON.parse(groupDraftReply(form)) as Row
+  const openings = (reply.opening_lines as Row[]).slice(0, valid)
+  for (let index = 0; index < strangers; index++) {
+    openings.push({ name: `Stranger ${index}`, text: `A stranger line ${index}.` })
+  }
+  reply.opening_lines = openings
+  return JSON.stringify(reply)
+}
+
+let draftRequests: Row[] = []
+let draftAnswer: (request: Row) => string | Error = () => new Error('unexpected draft call')
+draftEffects.call = async (request) => {
+  draftRequests.push(request as Row)
+  const answer = draftAnswer(request as Row)
+  if (answer instanceof Error) throw answer
+  return answer
+}
+function stubDraft(responder: (request: Row) => string | Error) {
+  draftRequests = []
+  draftAnswer = responder
+}
+const isGroupCall = (request: Row): boolean => request.purpose === 'group_draft'
+function draftPersonIndex(request: Row): number {
+  const body = JSON.parse(String((request.messages as Row[])[1]!.content)) as Row
+  return DRAFT_NAMES.indexOf(String((body.person as Row).name))
+}
+function draftPersonName(request: Row): string {
+  const body = JSON.parse(String((request.messages as Row[])[1]!.content)) as Row
+  return String((body.person as Row).name)
+}
+
+function draftGate(responder: (request: Parameters<typeof textGateEffects.call>[0]) => string | Error = () => JSON.stringify({ verdict: 'allow', rejected: [] })) {
+  gateRequests = []
+  gateWaits = 0
+  textGateEffects.call = async (request) => {
+    gateRequests.push(request)
+    const answer = responder(request)
+    if (answer instanceof Error) throw answer
+    return answer
+  }
+  textGateEffects.wait = async () => { gateWaits++ }
+}
+function rejectMarker(marker: string) {
+  draftGate((request) => {
+    const handles = gateLines(request).filter((entry) => entry.text.includes(marker)).map((entry) => entry.handle)
+    return handles.length
+      ? JSON.stringify({ verdict: 'reject', rejected: handles })
+      : JSON.stringify({ verdict: 'allow', rejected: [] })
+  })
+}
+
+const originalReserve = billingService.reserve
+const originalRelease = billingService.release
+let reserveCalls: Array<[string, string]> = []
+let releaseCalls: string[] = []
+let reserveFailureAt: number | undefined
+function stubBilling() {
+  reserveCalls = []
+  releaseCalls = []
+  reserveFailureAt = undefined
+  billingService.reserve = async (_player, action, requestId) => {
+    reserveCalls.push([action, requestId])
+    if (reserveFailureAt !== undefined && reserveCalls.length === reserveFailureAt) {
+      throw Object.assign(new Error('Not enough Story Ink'), { statusCode: 402 })
+    }
+    return { reservation_id: `reserve:${action}:${requestId}`, cost: 0, balance: null }
+  }
+  billingService.release = async (_player, reservationId) => {
+    if (reservationId) releaseCalls.push(reservationId)
+  }
+}
+function restoreBilling() {
+  billingService.reserve = originalReserve
+  billingService.release = originalRelease
+}
+const draftError = (status: number, message?: string) => (error: unknown) =>
+  error instanceof Error && 'statusCode' in error && (error as { statusCode: number }).statusCode === status &&
+  (message === undefined || error.message === message)
+const DRAFT_FAILED = "We couldn't write this group. Try changing the descriptions."
+
+await check('group draft happy path for two and six people', async () => {
+  for (const count of [2, 6]) {
+    const form = draftForm(count)
+    draftGate()
+    stubDraft((request) => isGroupCall(request)
+      ? groupDraftReply(form)
+      : personDraftReply(form, draftPersonIndex(request)))
+    const draft = await draftGroup(form)
+    const groups = draftRequests.filter(isGroupCall)
+    const people = draftRequests.filter((request) => !isGroupCall(request))
+    assert.equal(groups.length, 1)
+    assert.equal(people.length, count)
+    for (const request of [groups[0]!, people[0]!]) {
+      assert.equal(request.model, 'fixture-authoring')
+      assert.deepEqual(request.responseFormat, { type: 'json_object' })
+      assert.equal((request.messages as Row[])[0]!.role, 'system')
+    }
+    assert.equal(groups[0]!.purpose, 'group_draft')
+    assert.equal(people[0]!.purpose, 'group_draft_person')
+    assert.deepEqual(people.map(draftPersonName).sort(), form.people.map((person) => person.name).sort())
+    const firstPerson = JSON.parse(String((people[0]!.messages as Row[])[1]!.content)) as Row
+    assert.deepEqual((firstPerson.others as Row[]).map((other) => other.name), form.people.slice(1).map((person) => person.name))
+    assert.equal((firstPerson.group as Row).global_lore, JSON.parse(groupDraftReply(form)).global_lore)
+    assert.equal(Value.Check(GroupDraftBody, form), true)
+    assert.equal(Value.Check(CreateTemplateBody, draft), true, 'the draft must be a create body unchanged')
+    const created = await draftCreateApp.handle(new Request('http://localhost/template', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(draft),
+    }))
+    assert.equal(created.status, 200, 'the draft must be accepted by the create route schema')
+    validateGroup(draft as never)
+    assert.equal(gateRequests.length, 1)
+    assert.deepEqual(gateLines(gateRequests[0]!).map((line) => line.text), groupTextLines(draft as never).map((line) => line.text))
+  }
+})
+
+await check('group draft prompts ask for words only and state the authoring rule', () => {
+  for (const required of ['EXACTLY 10', '3 to 6', 'global_lore', 'opening_lines', 'The only names you return are the speakers of the opening lines']) {
+    assert(GROUP_DRAFT_PROMPT.includes(required), `group prompt is missing ${required}`)
+  }
+  const adult = personDraftPrompt(true)
+  for (const required of [
+    'name a sex act',
+    'their own body',
+    "the player's mouth, hands and fingers",
+    "Never assume anything about the player's body",
+    'never names its own speaker',
+    'EXACTLY 3',
+    '2 to 4',
+  ]) {
+    assert(adult.includes(required), `adult person prompt is missing ${required}`)
+  }
+  const safe = personDraftPrompt(false)
+  assert(!safe.includes('sex act'))
+  assert(!safe.includes('explicit'))
+  assert(!safe.includes('intimacy'))
+  assert(safe.includes('2 to 4'))
+})
+
+await check('group draft mints name age bond and talkativeness from the form', async () => {
+  const form = draftForm(2)
+  draftGate()
+  stubDraft((request) => isGroupCall(request)
+    ? groupDraftReply(form)
+    : personDraftReply(form, draftPersonIndex(request), {
+      name: 'Wrong Name',
+      id: '000000000000000000000001',
+      age: 99,
+      start_bond: 'family_warm',
+      group: { age: 99, start_bond: 'family_warm' },
+      talkativeness: draftPersonIndex(request) === 0 ? 5 : 'lots',
+    }))
+  const draft = await draftGroup(form)
+  const [first, second] = draft.seed_cast
+  assert.equal(first!.name, form.people[0]!.name)
+  assert.equal(first!.group.age, form.people[0]!.age)
+  assert.equal(first!.group.start_bond, form.people[0]!.closeness)
+  assert.equal(first!.group.talkativeness, 1)
+  assert.equal(second!.group.talkativeness, 0.5)
+  assert.deepEqual(first!.aliases, [])
+  assert.equal(first!.identity_kind, 'human')
+  assert(!('id' in first!), 'the model id must be dropped')
+  assert(!JSON.stringify(draft).includes('Wrong Name'))
+  assert.equal(draft.kind, 'group')
+  assert.equal(draft.title, form.title)
+  assert.equal(draft.is_sentient, false)
+  for (const key of ['base_stats_template', 'protagonist', 'opening_line', 'image_url']) {
+    assert(!(key in draft), `${key} must not be drafted`)
+  }
+})
+
+await check('group draft adult voice is plain then explicit and a safe group has neither', async () => {
+  for (const adult of [true, false]) {
+    const form = draftForm(2, adult)
+    draftGate()
+    stubDraft((request) => isGroupCall(request)
+      ? groupDraftReply(form)
+      : personDraftReply(form, draftPersonIndex(request), {
+        // Returned in both modes: the server drops them when the group is safe.
+        intimacy: 'This must be dropped for a safe group.',
+        voice: { plain: [...DRAFT_PLAIN], explicit: [...DRAFT_EXPLICIT] },
+      }))
+    const draft = await draftGroup(form)
+    const member = draft.seed_cast[0]!
+    assert.equal(draft.is_nsfw_capable, adult)
+    if (adult) {
+      assert.deepEqual(member.group.voice, [...DRAFT_PLAIN, ...DRAFT_EXPLICIT])
+      assert.equal(typeof member.group.intimacy, 'string')
+    } else {
+      assert.deepEqual(member.group.voice, DRAFT_PLAIN)
+      assert(!('intimacy' in member.group), 'a safe group never carries intimacy')
+      for (const text of DRAFT_EXPLICIT) assert(!member.group.voice!.includes(text))
+      assert(!JSON.stringify(draft).includes('This must be dropped for a safe group.'))
+    }
+    validateGroup(draft as never)
+  }
+})
+
+await check('group draft shape failure redrafts once then fails with 422 and releases', async () => {
+  const form = draftForm(2)
+  draftGate()
+  let groupAttempts = 0
+  stubDraft((request) => {
+    if (!isGroupCall(request)) return personDraftReply(form, draftPersonIndex(request))
+    return groupAttempts++ === 0 ? groupDraftReplyBad(form) : groupDraftReply(form)
+  })
+  const draft = await draftGroup(form)
+  assert.equal(groupAttempts, 2)
+  assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 2)
+  validateGroup(draft as never)
+
+  try {
+    stubBilling()
+    resetSaveTables()
+    routeUser = { id: playerId, tier: 'creator' }
+    draftGate()
+    stubDraft((request) => isGroupCall(request) ? groupDraftReplyBad(form) : personDraftReply(form, draftPersonIndex(request)))
+    const response = await postGroupDraft(form, { 'x-idempotency-key': 'shape-key' })
+    assert.equal(response.status, 422)
+    assert.equal((await response.json() as Row).message, DRAFT_FAILED)
+    assert.equal(draftRequests.filter(isGroupCall).length, 2)
+    assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 0)
+    assert.deepEqual(releaseCalls, [
+      'reserve:group_draft_person:shape-key:0',
+      'reserve:group_draft_person:shape-key:1',
+    ])
+  } finally {
+    restoreBilling()
+    routeUser = null
+  }
+})
+
+await check('group draft a voice line naming its speaker redrafts that person', async () => {
+  const form = draftForm(3)
+  draftGate()
+  let personOne = 0
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const index = draftPersonIndex(request)
+    if (index !== 1) return personDraftReply(form, index)
+    personOne++
+    if (personOne > 1) return personDraftReply(form, index)
+    return personDraftReply(form, index, { voice: { plain: ['Ben should not say this.', 'I put the kettle on.'], explicit: [...DRAFT_EXPLICIT] } })
+  })
+  const draft = await draftGroup(form)
+  assert.equal(personOne, 2)
+  assert.equal(draftRequests.filter(isGroupCall).length, 1)
+  assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 4)
+  assert(!JSON.stringify(draft).includes('Ben should not say this.'))
+})
+
+await check('group draft gate refuses one person then twice fails and releases', async () => {
+  const form = draftForm(3)
+  rejectMarker('REFUSE')
+  let personOne = 0
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const index = draftPersonIndex(request)
+    if (index !== 1) return personDraftReply(form, index)
+    personOne++
+    return personOne === 1 ? personDraftWithMarker(form, index) : personDraftReply(form, index)
+  })
+  const draft = await draftGroup(form)
+  assert.equal(personOne, 2)
+  assert.equal(draftRequests.filter(isGroupCall).length, 1)
+  assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 4)
+  assert(!JSON.stringify(draft).includes('REFUSE'))
+
+  try {
+    stubBilling()
+    resetSaveTables()
+    routeUser = { id: playerId, tier: 'creator' }
+    rejectMarker('REFUSE')
+    stubDraft((request) => {
+      if (isGroupCall(request)) return groupDraftReply(form)
+      const index = draftPersonIndex(request)
+      return index === 1 ? personDraftWithMarker(form, index) : personDraftReply(form, index)
+    })
+    const response = await postGroupDraft(form, { 'x-idempotency-key': 'gate-key' })
+    assert.equal(response.status, 422)
+    assert.equal((await response.json() as Row).message, DRAFT_FAILED)
+    assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 4)
+    assert.deepEqual(releaseCalls, [
+      'reserve:group_draft_person:gate-key:0',
+      'reserve:group_draft_person:gate-key:1',
+      'reserve:group_draft_person:gate-key:2',
+    ])
+  } finally {
+    restoreBilling()
+    routeUser = null
+  }
+})
+
+await check('group draft gate 503 passes through and releases', async () => {
+  const form = draftForm(3)
+  try {
+    stubBilling()
+    resetSaveTables()
+    routeUser = { id: playerId, tier: 'creator' }
+    draftGate(() => Object.assign(new Error('Fixture provider failure'), { status: 503 }))
+    stubDraft((request) => isGroupCall(request)
+      ? groupDraftReply(form)
+      : personDraftReply(form, draftPersonIndex(request)))
+    const response = await postGroupDraft(form, { 'x-idempotency-key': 'gate-503' })
+    assert.equal(response.status, 503)
+    assert.equal((await response.json() as Row).message, 'Try again in a moment.')
+    assert.equal(gateRequests.length, 2)
+    assert.equal(gateWaits, 1)
+    assert.deepEqual(releaseCalls, [
+      'reserve:group_draft_person:gate-503:0',
+      'reserve:group_draft_person:gate-503:1',
+      'reserve:group_draft_person:gate-503:2',
+    ])
+  } finally {
+    restoreBilling()
+    routeUser = null
+  }
+})
+
+await check('group draft a refused group path redrafts the group once', async () => {
+  const form = draftForm(2)
+  rejectMarker('REFUSE')
+  let groupAttempts = 0
+  stubDraft((request) => {
+    if (isGroupCall(request)) {
+      return groupAttempts++ === 0 ? groupDraftReplyMarked(form) : groupDraftReply(form)
+    }
+    return personDraftReply(form, draftPersonIndex(request))
+  })
+  const draft = await draftGroup(form)
+  assert.equal(groupAttempts, 2)
+  assert.equal(draftRequests.filter(isGroupCall).length, 2)
+  assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 2)
+  assert(!JSON.stringify(draft).includes('REFUSE'))
+})
+
+await check('group draft opening lines naming strangers are dropped and too few fail', async () => {
+  const form = draftForm(2)
+  draftGate()
+  stubDraft((request) => isGroupCall(request)
+    ? groupDraftReplyWithStrangers(form, 3, 2)
+    : personDraftReply(form, draftPersonIndex(request)))
+  const draft = await draftGroup(form)
+  assert.equal(draft.opening_lines.length, 3)
+  for (const line of draft.opening_lines) {
+    assert(form.people.some((person) => person.name === line.name), `opening line names ${line.name}`)
+  }
+  assert(!JSON.stringify(draft).includes('Stranger'))
+
+  let groupAttempts = 0
+  stubDraft((request) => {
+    if (!isGroupCall(request)) return personDraftReply(form, draftPersonIndex(request))
+    groupAttempts++
+    return groupDraftReplyWithStrangers(form, 2, 2)
+  })
+  await assert.rejects(draftGroup(form), draftError(422, DRAFT_FAILED))
+  assert.equal(groupAttempts, 2)
+  assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 0)
+})
+
+await check('group draft route auth identity tier rate limit and duplicate names', async () => {
+  const form = draftForm(2)
+  resetSaveTables()
+  let rateCalls = 0
+  try {
+    rateLimitReply = () => { rateCalls++; return { allowed: true } }
+    stubBilling()
+    draftGate()
+    stubDraft(() => { throw new Error('the model must not be called') })
+    routeUser = null
+    assert.equal((await postGroupDraft(form)).status, 401)
+    routeUser = { id: new ObjectId().toHexString(), tier: 'creator' }
+    assert.equal((await postGroupDraft(form)).status, 401)
+    routeUser = { id: playerId, tier: 'free' }
+    const forbidden = await postGroupDraft(form)
+    assert.equal(forbidden.status, 403)
+    assert.equal((await forbidden.json() as Row).message, 'Forging needs a Premium or Creator membership.')
+    routeUser = { id: playerId, tier: 'creator' }
+
+    stubBilling()
+    draftGate()
+    stubDraft(() => { throw new Error('the model must not be called') })
+    const duplicate = draftForm(2)
+    duplicate.people[1] = { ...duplicate.people[1]!, name: ' ana ' }
+    rateCalls = 0
+    const dup = await postGroupDraft(duplicate)
+    assert.equal(dup.status, 400)
+    assert.equal((await dup.json() as Row).message, 'Each person needs a different name.')
+    assert.equal(rateCalls, 0)
+    assert.equal(reserveCalls.length, 0)
+    assert.equal(draftRequests.length, 0)
+
+    // Unknown keys are stripped before the controller, never carried into a draft.
+    draftGate()
+    stubDraft((request) => isGroupCall(request) ? groupDraftReply(form) : personDraftReply(form, draftPersonIndex(request)))
+    const extra = { ...form, image_url: 'https://fixture.invalid/cover.webp', people: [{ ...form.people[0]!, extra: 'nope' }, form.people[1]!] }
+    const accepted = await postGroupDraft(extra)
+    assert.equal(accepted.status, 200)
+    const acceptedDraft = (await accepted.json() as Row).draft as Row
+    assert(!('image_url' in acceptedDraft))
+    assert(!JSON.stringify(acceptedDraft).includes('nope'))
+
+    for (const [label, body] of [
+      ['age below 18', { ...form, people: [{ ...form.people[0]!, age: 17 }, form.people[1]!] }],
+      ['age above 99', { ...form, people: [{ ...form.people[0]!, age: 100 }, form.people[1]!] }],
+      ['one person', { ...form, people: [form.people[0]!] }],
+      ['seven people', { ...form, people: Array.from({ length: 7 }, (_, index) => ({ ...form.people[0]!, name: `P${index}` })) }],
+      ['title too long', { ...form, title: 'x'.repeat(61) }],
+    ] as const) {
+      // A body the schema refuses never reaches a reservation or a model call.
+      stubBilling()
+      draftGate()
+      stubDraft(() => { throw new Error('the model must not be called') })
+      assert.equal((await postGroupDraft(body)).status, 422, label)
+      assert.equal(reserveCalls.length, 0, label)
+      assert.equal(draftRequests.length, 0, label)
+    }
+
+    rateCalls = 0
+    rateLimitReply = (_userId, action) => { rateCalls++; return { allowed: action !== 'group_draft' } }
+    stubBilling()
+    draftGate()
+    stubDraft(() => { throw new Error('the model must not be called') })
+    const limited = await postGroupDraft(form)
+    assert.equal(limited.status, 429)
+    assert.equal(rateCalls, 1)
+    assert.equal(reserveCalls.length, 0)
+    assert.equal(draftRequests.length, 0)
+  } finally {
+    rateLimitReply = () => ({ allowed: true })
+    restoreBilling()
+    routeUser = null
+  }
+})
+
+await check('group draft ink reserves per person and a failing third releases the first two', async () => {
+  const { BILLING_CATALOG } = await import('../src/services/billing-catalog')
+  assert.equal(BILLING_CATALOG.costs.group_draft_person, 12)
+  const form = draftForm(3)
+  try {
+    stubBilling()
+    resetSaveTables()
+    routeUser = { id: playerId, tier: 'creator' }
+    draftGate()
+    stubDraft((request) => isGroupCall(request)
+      ? groupDraftReply(form)
+      : personDraftReply(form, draftPersonIndex(request)))
+    const response = await postGroupDraft(form, { 'x-idempotency-key': 'ink-key' })
+    assert.equal(response.status, 200)
+    assert.deepEqual(reserveCalls.map(([, requestId]) => requestId), ['ink-key:0', 'ink-key:1', 'ink-key:2'])
+    assert(reserveCalls.every(([action]) => action === 'group_draft_person'))
+    assert.deepEqual(releaseCalls, [])
+
+    stubBilling()
+    reserveFailureAt = 3
+    draftGate()
+    stubDraft(() => { throw new Error('the model must not be called') })
+    const failed = await postGroupDraft(form, { 'x-idempotency-key': 'ink-key' })
+    assert.equal(failed.status, 402)
+    assert.deepEqual(releaseCalls, [
+      'reserve:group_draft_person:ink-key:0',
+      'reserve:group_draft_person:ink-key:1',
+    ])
+    assert.equal(draftRequests.length, 0)
+
+    // Without the header, one random key still names every person's reservation.
+    stubBilling()
+    draftGate()
+    stubDraft((request) => isGroupCall(request)
+      ? groupDraftReply(form)
+      : personDraftReply(form, draftPersonIndex(request)))
+    assert.equal((await postGroupDraft(form)).status, 200)
+    assert.equal(reserveCalls.length, 3)
+    const prefixes = reserveCalls.map(([, requestId]) => requestId.split(':')[0]!)
+    assert.equal(new Set(prefixes).size, 1)
+    assert.match(prefixes[0]!, /^[0-9a-f-]{36}$/)
+    assert.deepEqual(reserveCalls.map(([, requestId]) => requestId.split(':')[1]), ['0', '1', '2'])
+  } finally {
+    restoreBilling()
+    routeUser = null
+  }
+})
+
+await check('group draft route never touches world templates', async () => {
+  const form = draftForm(2)
+  try {
+    stubBilling()
+    resetSaveTables()
+    routeUser = { id: playerId, tier: 'creator' }
+    draftGate()
+    stubDraft((request) => isGroupCall(request)
+      ? groupDraftReply(form)
+      : personDraftReply(form, draftPersonIndex(request)))
+    templateFindHook = () => { throw new Error('the draft route read worldTemplates') }
+    const response = await postGroupDraft(form)
+    assert.equal(response.status, 200)
+    assert.equal(rows('worldTemplates').length, 0)
+  } finally {
+    templateFindHook = undefined
+    restoreBilling()
+    routeUser = null
+  }
+})
+
+await check('group draft provider failure is a 503 with no redraft and releases', async () => {
+  const form = draftForm(2)
+  try {
+    for (const [label, failure] of [
+      ['with a status', () => Object.assign(new Error('Fixture provider failure'), { status: 503 })],
+      ['without a status', () => new Error('Fixture provider failure')],
+    ] as const) {
+      stubBilling()
+      resetSaveTables()
+      routeUser = { id: playerId, tier: 'creator' }
+      draftGate()
+      stubDraft(() => failure())
+      const response = await postGroupDraft(form, { 'x-idempotency-key': 'provider-key' })
+      assert.equal(response.status, 503, label)
+      assert.equal((await response.json() as Row).message, 'Try again in a moment.', label)
+      // The outage is not the player's words: one call, no redraft, no gate.
+      assert.equal(draftRequests.length, 1, `${label}: a provider failure must not be redrafted`)
+      assert.equal(gateRequests.length, 0, label)
+      assert.deepEqual(releaseCalls, [
+        'reserve:group_draft_person:provider-key:0',
+        'reserve:group_draft_person:provider-key:1',
+      ], label)
+    }
+  } finally {
+    restoreBilling()
+    routeUser = null
+  }
+})
+
+await check('group draft appearance opens with the form age in digits', async () => {
+  const wrongAge = (form: DraftForm, index: number) =>
+    personDraftReply(form, index, { appearance: `${form.people[index]!.age + 1}, fair hair and a scarf.` })
+  const noDigits = (form: DraftForm, index: number) =>
+    personDraftReply(form, index, { appearance: 'In her twenties, fair hair and a scarf.' })
+
+  for (const [label, wrong] of [['a different age', wrongAge], ['no digits', noDigits]] as const) {
+    const form = draftForm(3)
+    draftGate()
+    let personOne = 0
+    stubDraft((request) => {
+      if (isGroupCall(request)) return groupDraftReply(form)
+      const index = draftPersonIndex(request)
+      if (index !== 1) return personDraftReply(form, index)
+      personOne++
+      return personOne === 1 ? wrong(form, index) : personDraftReply(form, index)
+    })
+    const draft = await draftGroup(form)
+    assert.equal(personOne, 2, `${label}: the person must be redrafted once`)
+    assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 4, label)
+    assert.equal(/^(\d+)(?!\d)/.exec(draft.seed_cast[1]!.appearance)?.[1], String(form.people[1]!.age), `${label}: the fixed look wins`)
+  }
+
+  for (const [label, wrong] of [['a different age', wrongAge], ['no digits', noDigits]] as const) {
+    const form = draftForm(2)
+    draftGate()
+    let personOne = 0
+    stubDraft((request) => {
+      if (isGroupCall(request)) return groupDraftReply(form)
+      const index = draftPersonIndex(request)
+      return index === 1 ? (personOne++, wrong(form, index)) : personDraftReply(form, index)
+    })
+    await assert.rejects(draftGroup(form), draftError(422, DRAFT_FAILED), label)
+    assert.equal(personOne, 2, `${label}: a second miss fails the draft`)
+  }
+})
+
+await check('group draft person prompt pins the age in digits', () => {
+  for (const adult of [true, false]) {
+    const prompt = personDraftPrompt(adult)
+    assert(prompt.includes('opening with their age from the form in digits'), 'the prompt must ask for digits')
+    assert(prompt.includes('"27, ..."'), 'the prompt must show the digits example')
+    assert(!prompt.includes('in words or digits'), 'the prompt must not allow words')
+  }
 })
 
 Math.random = originalRandom
