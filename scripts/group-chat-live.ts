@@ -561,7 +561,7 @@ function ensurePlayer(nsfw: boolean): void {
   const existing = rows('users').find(row => String(row._id) === PLAYER_ID)
   if (existing) { put(existing, 'preferences.nsfw_enabled', nsfw); return }
   rows('users').push({ _id: new ObjectId(PLAYER_ID), guest: false, account_status: 'active',
-    preferences: { player_name: PLAYER, nsfw_enabled: nsfw } })
+    preferences: { player_name: PLAYER, nsfw_enabled: nsfw, ...(process.env.SAMPLE_PLAYER_GENDER ? { gender: process.env.SAMPLE_PLAYER_GENDER } : {}) } })
 }
 
 const insertedTemplates = new Set<string>()

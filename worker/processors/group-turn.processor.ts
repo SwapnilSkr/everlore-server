@@ -61,6 +61,10 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
   if (template?.kind !== 'group') throw new Error('That chat could not be found.')
   const player = await mongoColl.users().findOne({ _id: pid })
   if (!player || player.guest || player.account_status === 'banned') throw new Error('Sign in to continue.')
+  // A group template is never sentient, so no persona can be chosen for one; a save
+  // that carries a snapshot still has the last word over the user's own setting.
+  const savedGender = instance.persona_snapshot ? instance.persona_snapshot.gender : player.preferences?.gender
+  const knownGender = savedGender === 'male' || savedGender === 'female' || savedGender === 'non_binary' ? savedGender : undefined
   const guard = screenPlayerInput(userMessage)
   if (guard.blocked) throw new Error(guard.message)
   validateGroupAction(job.data.kind, true, job.data.directWith, userMessage)
@@ -244,9 +248,18 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           // banter between them. Answering the player, on the same history, gave 22 of 22 live.
           const sceneOthers = selected.length === 1 && sceneMembers.includes(selected[0].id) ? sceneMembers.filter(id => id !== selected[0].id).map(id => members.find(member => member.id === id)!.name) : []
           const sceneHistory = writerHistory(speakers[0])
-          const sceneOwn = sceneOthers.length ? sceneHistory.filter(line => line.name === selected[0].name) : []
-          const sceneVoice = sceneOthers.length ? sceneExamples(selected[0], sceneOwn.length, [...request.excludedVoice, ...previousLines.filter(line => line.name === selected[0].name).map(line => line.text)], sceneOwn.at(-1)?.text) : []
-          const dynamic = buildGroupDynamic({ askedRule: selected.some(member => member.id === askedMember?.id) ? askedRule(consented) : undefined, sceneRule: sceneOthers.length ? `This is a sex scene between ${config.player}, ${selected[0].name} and ${sceneOthers.join(' and ')}, and it's happening now. ${selected[0].name} answers ${config.player} and doesn't organise the others or talk about anything else.${sceneVoice.length ? ` ${selected[0].name} says it the way these sound, in new words, about what's happening now: ${sceneVoice.map(example => `"${example}"`).join(' ')}` : ''}` : undefined, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
+          // Proven live: a blunt line read as a proposal and answered with a time and place; 17 of 35 explicit before, 34 of 35 with this rule.
+          const soloAdult = stillAdult && !sceneOthers.length && selected.length === 1
+          const sceneOwn = sceneOthers.length || soloAdult ? sceneHistory.filter(line => line.name === selected[0].name) : []
+          const sceneVoice = sceneOthers.length || soloAdult ? sceneExamples(selected[0], sceneOwn.length, [...request.excludedVoice, ...previousLines.filter(line => line.name === selected[0].name).map(line => line.text)], sceneOwn.at(-1)?.text) : []
+          // Measured live: with the player female, the gender line alone was ignored and 18 of 34
+          // replies still gave her a cock. The same fact beside the turn gave 0 of 12. The
+          // non-binary wording is not measured. Never stated to a writer the adult route left.
+          const bodyLine = !stillAdult ? '' : knownGender === 'female'
+            ? ` ${config.player} is a woman and has a woman's body, with no cock, and ${selected[0].name} knows it. Say what's done to her body.`
+            : knownGender === 'non_binary' ? ` ${config.player} is non-binary, and ${selected[0].name} doesn't assume what ${config.player}'s body is.` : ''
+          const soloRule = soloAdult ? `Whatever ${config.player} just said, ${selected[0].name} answers as if ${config.player} had asked exactly what ${selected[0].name} wants done: the acts themselves, in the first message. A time, a place, a joke or a yes on its own doesn't answer it.${sceneVoice.length ? ` ${selected[0].name} says it the way these sound, in new words: ${sceneVoice.map(example => `"${example}"`).join(' ')}` : ''}${bodyLine}` : undefined
+          const dynamic = buildGroupDynamic({ askedRule: selected.some(member => member.id === askedMember?.id) ? askedRule(consented) : undefined, sceneRule: sceneOthers.length ? `This is a sex scene between ${config.player}, ${selected[0].name} and ${sceneOthers.join(' and ')}, and it's happening now. ${selected[0].name} answers ${config.player} and doesn't organise the others or talk about anything else.${sceneVoice.length ? ` ${selected[0].name} says it the way these sound, in new words, about what's happening now: ${sceneVoice.map(example => `"${example}"`).join(' ')}` : ''}${bodyLine}` : soloRule, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),
             groupContext: stillAdult ? undefined : shownGroup,
             history: [...(addressedPrompt ? sceneMembers.length ? sceneOthers.length
@@ -260,8 +273,9 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
               : origin === 'catchup' ? `Write up to four messages they sent while ${config.player} was away. Topic: ${topic}`
                 : `${config.player} is quiet. The group carries on. Topic: ${topic}`,
           })
-          const baseSystem = addressedPrompt ? buildAddressedStatic({ ...template, members, player: config.player }, selected[0], request.excludedVoice)
-            : directWith ? buildGroupStatic({ ...template, members: selected, player: config.player }) : sceneMembers.length && selected.length === 1 ? buildGroupStatic({ ...template, members: selected, player: config.player }) : config.static_prompt
+          const adultOnly = stillAdult && knownGender ? { playerGender: knownGender } : {}
+          const baseSystem = addressedPrompt ? buildAddressedStatic({ ...template, members, player: config.player, ...adultOnly }, selected[0], request.excludedVoice)
+            : directWith ? buildGroupStatic({ ...template, members: selected, player: config.player }) : sceneMembers.length && selected.length === 1 ? buildGroupStatic({ ...template, members: selected, player: config.player, ...adultOnly }) : config.static_prompt
           const system = directWith ? buildDirectStatic(baseSystem, selected[0], config.player) : baseSystem
           if (stillAdult) { sceneAdultAttempts.set(speakers[0], (sceneAdultAttempts.get(speakers[0]) || 0) + 1) }
           if (origin === 'unprompted' && directWith) {

@@ -1933,6 +1933,204 @@ await check('adult prompt asks every member for the act itself with the same low
   assert.equal(yes, no)
   for (const rule of ['plain, crude words', 'without putting it off', 'says the act itself', 'Low trust and affection', 'A flat no is rare']) assert(yes.includes(rule))
 })
+await check('first explicit: a solo adult reply answers the act itself beside the turn', async () => {
+  const source = groupTemplate()
+  source.seed_cast![0].group!.voice = ['Authored text 0', 'A second authored example line here', 'Third authored example line']
+  await adultStart(source)
+  addEvent('narration', 0, 2)
+  modelReplies = [`${names[0]}: Fresh explicit answer`]
+  await turn({ userMessage: `@${names[0]} I wanna fuck you` }, never)
+  assert.deepEqual(checkLogs.at(-1)!.writing.map(call => call.purpose), ['addressed'])
+  const dynamic = content(writerCalls[0], 1)
+  assert(dynamic.includes(`Whatever ${playerName} just said, ${names[0]} answers as if ${playerName} had asked exactly what ${names[0]} wants done: the acts themselves, in the first message. A time, a place, a joke or a yes on its own doesn't answer it.`))
+  assert(dynamic.indexOf('Now:') < dynamic.indexOf('answers as if'))
+  // This member has spoken before, so the two examples are the next ones along, not the two longest.
+  const longest = [...source.seed_cast![0].group!.voice!].sort((a, b) => b.length - a.length)
+  assert(dynamic.includes(` ${names[0]} says it the way these sound, in new words: "${longest[1]}" "${longest[2]}"`))
+  assert(!dynamic.includes(`"${longest[0]}" "${longest[1]}"`))
+})
+await check('first explicit: the rule stays off every other writer', async () => {
+  const message = `@${names[0]} I wanna fuck you`
+  const noRule = (call: Row) => !content(call, 1).includes('answers as if')
+  // A normal turn and a turn whose toggle is off mid-scene.
+  await start()
+  await turn({ userMessage: message }, never)
+  assert.equal(checkLogs.at(-1)!.writing.at(-1)!.writer, 'normal')
+  assert(writerCalls.every(noRule))
+  await adultStart(); addEvent('intimate', 0); addEvent('intimate', 0)
+  put(rows('users')[0], 'preferences.nsfw_enabled', false)
+  await turn({ userMessage: message }, never)
+  assert.equal(checkLogs.at(-1)!.writing.at(-1)!.writer, 'normal')
+  assert(writerCalls.every(noRule))
+  // Consent withdrawn after the adult call has started: the reply is redirected.
+  await adultStart()
+  writerHook = () => { put(rows('users')[0], 'preferences.nsfw_enabled', false) }
+  modelReplies = ['', `${names[0]}: Normal after withdrawal`]
+  await turn({ userMessage: message }, never)
+  assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed'], ['normal', 'addressed_retry']])
+  assert(content(writerCalls[0], 1).includes('answers as if'))
+  assert(noRule(writerCalls[1]))
+  // The adult writer gave nothing: the rescue calls are the normal writer.
+  await adultStart()
+  modelReplies = ['', '', '', `${names[0]}: Fallback reply`]
+  await turn({ userMessage: message }, never)
+  assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed'], ['adult', 'addressed_retry'], ['adult', 'addressed_retry'], ['normal', 'addressed_fallback']])
+  assert(writerCalls.slice(0, 3).every(call => content(call, 1).includes('answers as if')))
+  assert(noRule(writerCalls[3]))
+  // A bystander answering beside the adult reply.
+  await adultStart()
+  let draw = 0
+  modelReplies = [`${names[0]}: Accepted answer`, `${names[1]}: A bystander line`]
+  await turn({ userMessage: message }, () => ++draw === 1 ? 0 : 0.9)
+  assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed'], ['normal', 'bystander']])
+  assert(noRule(writerCalls[1]))
+  // A tag repair after a scene member said nothing.
+  await adultStart()
+  modelReplies = [`${names[0]}: First in the scene`, '*only action*', '', `${names[1]}: Fresh repair`]
+  await turn({ userMessage: `@${names[0]} @${names[1]} I wanna fuck you` }, never)
+  assert.deepEqual(checkLogs.at(-1)!.writing.map(call => call.purpose), ['addressed', 'addressed', 'addressed_retry', 'tag_repair'])
+  assert(noRule(writerCalls[3]))
+})
+await check('first explicit: a scene member keeps the scene rule and never the new one', async () => {
+  await adultStart()
+  modelReplies = [`${names[0]}: First in the scene`, `${names[1]}: Second in the scene`]
+  await turn({ userMessage: `@${names[0]} @${names[1]} I wanna fuck you` }, never)
+  assert.deepEqual(checkLogs.at(-1)!.writing.map(call => call.purpose), ['addressed', 'addressed'])
+  for (const index of [0, 1]) {
+    const dynamic = content(writerCalls[index], 1)
+    assert(dynamic.includes(`This is a sex scene between ${playerName}, `))
+    assert(dynamic.includes(`${names[index]} answers ${playerName} and doesn't organise the others`))
+    assert(!dynamic.includes('answers as if'))
+    assert(!dynamic.includes("A time, a place, a joke or a yes on its own doesn't answer it."))
+  }
+})
+await check('first explicit: known gender gives its exact line only on the adult writer', async () => {
+  const message = `@${names[0]} I wanna fuck you`
+  const adultSystem = async (gender?: string) => {
+    await adultStart()
+    if (gender) put(rows('users')[0], 'preferences.gender', gender)
+    modelReplies = [`${names[0]}: Fresh explicit answer`]
+    await turn({ userMessage: message }, never)
+    return content(writerCalls[0], 0)
+  }
+  for (const [gender, line] of [
+    ['male', `${playerName} is a man. Use their name or "you" in messages.`],
+    ['female', `${playerName} is a woman. Use their name or "you" in messages.`],
+    ['non_binary', `${playerName} is non-binary. Use their name, "you" or "they", and don't assume their body. Never comment on this.`],
+  ] as const) {
+    const system = await adultSystem(gender)
+    assert(system.includes(line), gender)
+    assert(!system.includes(`${playerName}'s gender isn't stated`), gender)
+  }
+  const unset = await adultSystem()
+  assert(unset.includes(`${playerName}'s gender isn't stated: use their name, "you" or "they", never he or she. Never comment on this.`))
+  for (const line of ['is a man.', 'is a woman.', 'is non-binary.']) assert(!unset.includes(line))
+  // Anything outside the three values is unset, not guessed.
+  assert.equal(await adultSystem('goblin'), unset)
+  // The normal writer keeps the prompt stored at seeding.
+  await start(); put(rows('users')[0], 'preferences.gender', 'female')
+  await turn({ userMessage: message }, never)
+  assert.equal(content(writerCalls[0], 0), get(rows('worldInstances')[0], 'group_context.static_prompt'))
+  for (const line of ['is a man.', 'is a woman.', 'is non-binary.']) assert(!content(writerCalls[0], 0).includes(line))
+})
+await check('first explicit: a persona gender wins over the user gender', async () => {
+  const message = `@${names[0]} I wanna fuck you`
+  await adultStart()
+  put(rows('users')[0], 'preferences.gender', 'female')
+  put(rows('worldInstances')[0], 'persona_snapshot', { name: playerName, gender: 'male' })
+  modelReplies = [`${names[0]}: Fresh explicit answer`]
+  await turn({ userMessage: message }, never)
+  assert(content(writerCalls[0], 0).includes(`${playerName} is a man. Use their name or "you" in messages.`))
+  assert(!content(writerCalls[0], 0).includes('is a woman.'))
+  // An unusable snapshot value is unset, never the user's own.
+  await adultStart()
+  put(rows('users')[0], 'preferences.gender', 'female')
+  put(rows('worldInstances')[0], 'persona_snapshot', { name: playerName, gender: 'goblin' })
+  modelReplies = [`${names[0]}: Fresh explicit answer`]
+  await turn({ userMessage: message }, never)
+  assert(content(writerCalls[0], 0).includes(`${playerName}'s gender isn't stated`))
+  assert(!content(writerCalls[0], 0).includes('is a woman.'))
+})
+await check('first explicit: the body line sits beside a solo adult reply', async () => {
+  const message = `@${names[0]} I wanna fuck you`
+  const woman = ` ${playerName} is a woman and has a woman's body, with no cock, and ${names[0]} knows it. Say what's done to her body.`
+  const enby = ` ${playerName} is non-binary, and ${names[0]} doesn't assume what ${playerName}'s body is.`
+  const dynamicFor = async (gender?: string) => {
+    await adultStart()
+    if (gender) put(rows('users')[0], 'preferences.gender', gender)
+    modelReplies = [`${names[0]}: Fresh explicit answer`]
+    await turn({ userMessage: message }, never)
+    assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed']])
+    return content(writerCalls[0], 1)
+  }
+  const female = await dynamicFor('female')
+  assert(female.includes(woman))
+  assert(female.indexOf(woman) > female.indexOf('answers as if'))
+  const nonBinary = await dynamicFor('non_binary')
+  assert(nonBinary.includes(enby))
+  assert(!nonBinary.includes(`has a woman's body`))
+  for (const gender of ['male', undefined]) {
+    const dynamic = await dynamicFor(gender)
+    assert(!dynamic.includes(`has a woman's body`), gender)
+    assert(!dynamic.includes(enby.trim()), gender)
+  }
+})
+await check("first explicit: the body line follows a scene member's request", async () => {
+  const woman = (name: string) => ` ${playerName} is a woman and has a woman's body, with no cock, and ${name} knows it. Say what's done to her body.`
+  const enby = (name: string) => ` ${playerName} is non-binary, and ${name} doesn't assume what ${playerName}'s body is.`
+  const dynamicsFor = async (gender?: string) => {
+    await adultStart()
+    if (gender) put(rows('users')[0], 'preferences.gender', gender)
+    modelReplies = [`${names[0]}: First in the scene`, `${names[1]}: Second in the scene`]
+    await turn({ userMessage: `@${names[0]} @${names[1]} I wanna fuck you` }, never)
+    assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed'], ['adult', 'addressed']])
+    return [content(writerCalls[0], 1), content(writerCalls[1], 1)]
+  }
+  const [firstWoman, secondWoman] = await dynamicsFor('female')
+  assert(firstWoman.includes(woman(names[0])))
+  assert(secondWoman.includes(woman(names[1])))
+  const [firstEnby, secondEnby] = await dynamicsFor('non_binary')
+  assert(firstEnby.includes(enby(names[0])))
+  assert(secondEnby.includes(enby(names[1])))
+  for (const gender of ['male', undefined]) {
+    for (const dynamic of await dynamicsFor(gender)) {
+      assert(!dynamic.includes(`has a woman's body`), gender)
+      assert(!dynamic.includes(`doesn't assume what ${playerName}'s body is`), gender)
+    }
+  }
+})
+await check('first explicit: the body line never reaches a writer the adult route left', async () => {
+  const message = `@${names[0]} I wanna fuck you`
+  const woman = ` ${playerName} is a woman and has a woman's body, with no cock, and ${names[0]} knows it. Say what's done to her body.`
+  const stated = (call: Row) => content(call, 1).includes(woman)
+  // A normal turn from the start.
+  await start(); put(rows('users')[0], 'preferences.gender', 'female')
+  await turn({ userMessage: message }, never)
+  assert.equal(checkLogs.at(-1)!.writing.at(-1)!.writer, 'normal')
+  assert(writerCalls.every(call => !stated(call)))
+  // The toggle is off mid-scene.
+  await adultStart(); addEvent('intimate', 0); addEvent('intimate', 0)
+  put(rows('users')[0], 'preferences.gender', 'female')
+  put(rows('users')[0], 'preferences.nsfw_enabled', false)
+  await turn({ userMessage: message }, never)
+  assert.equal(checkLogs.at(-1)!.writing.at(-1)!.writer, 'normal')
+  assert(writerCalls.every(call => !stated(call)))
+  // Consent withdrawn after the adult call has started: the retry is redirected.
+  await adultStart(); put(rows('users')[0], 'preferences.gender', 'female')
+  writerHook = () => { put(rows('users')[0], 'preferences.nsfw_enabled', false) }
+  modelReplies = ['', `${names[0]}: Normal after withdrawal`]
+  await turn({ userMessage: message }, never)
+  assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed'], ['normal', 'addressed_retry']])
+  assert(stated(writerCalls[0]))
+  assert(!stated(writerCalls[1]))
+  // The adult writer gave nothing: the rescue calls are the normal writer.
+  await adultStart(); put(rows('users')[0], 'preferences.gender', 'female')
+  modelReplies = ['', '', '', `${names[0]}: Fallback reply`]
+  await turn({ userMessage: message }, never)
+  assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed'], ['adult', 'addressed_retry'], ['adult', 'addressed_retry'], ['normal', 'addressed_fallback']])
+  assert(writerCalls.slice(0, 3).every(stated))
+  assert(!stated(writerCalls[3]))
+})
 await check('close bond statement follows the bond and the copy check finds an example inside a message', () => {
   const base = { memories: [], summaries: [], history: [], now: new Date(0), speakers: [members[2].name], situation: 'x' }
   const said = (relationship: { trust: number; affection: number; fear: number; rivalry: number }) => buildGroupDynamic({ ...base, bonds: [{ ...members[2], relationship }] })
@@ -3976,7 +4174,7 @@ await check('nway legacy adult request publish and event retain pre-scene shape 
     data: { ...data, group_state_after: 'fixture', lines: (data.lines as Row[]).map(({ shown_at: _shown, ...line }) => line) },
     shown: shown.map(frame => ({ ...frame, instanceId: 'fixture', eventId: 'fixture', lines: (frame.lines as Row[]).map(({ shownAt: _shown, line_id: _identity, ...line }) => line) })) }
   const hash = createHash('sha256').update(JSON.stringify(trace)).digest('hex')
-  assert.equal(hash, '53dd3535d0a1fdce0b1b88e0784ac2af519fd0d962e0dbf17f1ababdec79bbd0', hash)
+  assert.equal(hash, 'cdf58bcda86cd0b01c9d778d9eae69e642fd7c9419f84da3869b3f3254e57223', hash)
 })
 
 await check('nway rewind deletion remove scene fields and real group memory never gains private_to', async () => {

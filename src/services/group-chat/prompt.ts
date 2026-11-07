@@ -7,13 +7,19 @@ import type { GroupMember, NamedLine } from './types'
 export function buildGroupStatic(input: {
   seed_prompt: string; global_lore: string; narrative_style?: string
   members: GroupMember[]; player: string
+  /** Only where the chat knows it: the gender the writer may assume, never a guess. */
+  playerGender?: 'male' | 'female' | 'non_binary'
 }): string {
   const members = input.members.map(member =>
     `- ${member.name} — ${member.role || ''}, age ${member.group.age}\n  persona: ${member.persona || ''}\n  speech: ${member.group.speech}\n  wants: ${member.group.wants}`).join('\n')
+  const gender = input.playerGender === 'male' ? `${input.player} is a man. Use their name or "you" in messages.`
+    : input.playerGender === 'female' ? `${input.player} is a woman. Use their name or "you" in messages.`
+      : input.playerGender === 'non_binary' ? `${input.player} is non-binary. Use their name, "you" or "they", and don't assume their body. Never comment on this.`
+        : `${input.player}'s gender isn't stated: use their name, "you" or "they", never he or she. Never comment on this.`
   const parts = [
     input.seed_prompt,
     `You write this group chat's next messages, as its members. You are not a narrator: there is no prose, only the messages people send. Write each message on its own line as \`Name: message\`, using exactly these names: ${input.members.map(member => member.name).join(', ')}. Never write a message from ${input.player}, and never describe what they do or feel.`,
-    `${input.player}'s gender isn't stated: use their name, "you" or "they", never he or she. Never comment on this.`,
+    gender,
     `Messages are short, as texts are, and people respond naturally to each other and to ${input.player}.`,
     NARRATIVE_BOUNDARIES.trim(),
   ]

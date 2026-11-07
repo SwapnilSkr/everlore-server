@@ -783,6 +783,22 @@ const mutations: Mutation[] = [
   { name: "nway scene rewind survives", check: "nway rewind deletion", edits: [['src/services/memory.service.ts', "await events().deleteMany({\n      instance_id: iid,\n      sequence: { $gte: sequence },\n    })", "void 0"]] },
   { name: "nway recall turn count", check: "nway recall plan", edits: [['scripts/group-chat-fixtures.ts', "    { player: `${tags} what do you want to do to each other while I watch?` },\n", ""]] },
   { name: "nway recall actions lost", check: "nway recall plan", edits: [['scripts/group-chat-fixtures.ts', "pull ${names[2]} closer.`, kind: 'action' as const }", "pull ${names[2]} closer.` }"]] },
+
+  { name: 'first explicit: solo rule lost', check: 'first explicit: a solo adult reply', edits: [[worker, 'const soloRule = soloAdult ?', 'const soloRule = false ?']] },
+  { name: 'first explicit: own lines not gathered', check: 'first explicit: a solo adult reply', edits: [[worker, 'const sceneOwn = sceneOthers.length || soloAdult ?', 'const sceneOwn = sceneOthers.length ?']] },
+  { name: 'first explicit: examples not gathered', check: 'first explicit: a solo adult reply', edits: [[worker, 'const sceneVoice = sceneOthers.length || soloAdult ?', 'const sceneVoice = sceneOthers.length ?']] },
+  { name: 'first explicit: rule reaches the normal writer', check: 'first explicit: the rule stays off', edits: [[worker, 'const soloAdult = stillAdult && !sceneOthers.length', 'const soloAdult = !sceneOthers.length']] },
+  { name: 'first explicit: scene rule dropped', check: 'first explicit: a scene member keeps', edits: [[worker, 'sceneRule: sceneOthers.length ?', 'sceneRule: false ?']] },
+  { name: 'first explicit: man line lost', check: 'first explicit: known gender', edits: [[prompt, '${input.player} is a man. Use their name or "you" in messages.', '${input.player} is male. Use their name or "you" in messages.']] },
+  { name: 'first explicit: unset line lost', check: 'first explicit: known gender', edits: [[prompt, `\${input.player}'s gender isn't stated: use their name, "you" or "they", never he or she.`, `\${input.player}'s gender isn't stated: use their name or "you", never he or she.`]] },
+  { name: 'first explicit: persona ignored', check: 'first explicit: a persona gender wins', edits: [[worker, 'instance.persona_snapshot ? instance.persona_snapshot.gender : player.preferences?.gender', 'player.preferences?.gender']] },
+
+  { name: 'first explicit: body line lost', check: 'first explicit: the body line sits beside', edits: [[worker, "const bodyLine = !stillAdult ? '' : knownGender === 'female'", "const bodyLine = !stillAdult ? '' : false"]] },
+  { name: 'first explicit: non-binary body line lost', check: 'first explicit: the body line sits beside', edits: [[worker, "knownGender === 'non_binary' ?", "knownGender === 'goblin' ?"]] },
+  { name: 'first explicit: body line given to a man', check: 'first explicit: the body line sits beside', edits: [[worker, "const bodyLine = !stillAdult ? '' : knownGender === 'female'", "const bodyLine = !stillAdult ? '' : knownGender !== 'non_binary'"]] },
+  { name: 'first explicit: scene body line lost', check: "first explicit: the body line follows a scene member's request", edits: [[worker, '${bodyLine}` : soloRule', '` : soloRule']] },
+  { name: 'first explicit: scene body line given to a man', check: "first explicit: the body line follows a scene member's request", edits: [[worker, "const bodyLine = !stillAdult ? '' : knownGender === 'female'", "const bodyLine = !stillAdult ? '' : knownGender !== 'non_binary'"]] },
+  { name: 'first explicit: body line reaches the normal writer', check: 'first explicit: the body line never reaches', edits: [[worker, 'const soloAdult = stillAdult && !sceneOthers.length', 'const soloAdult = !sceneOthers.length'], [worker, "const bodyLine = !stillAdult ? '' : knownGender === 'female'", "const bodyLine = false ? '' : knownGender === 'female'"]] },
 ]
 const notify = 'src/services/group-chat/notifications.ts'
 const notifyPolicy = 'src/services/group-chat/notification-policy.ts'
