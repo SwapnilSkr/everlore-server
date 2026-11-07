@@ -1,6 +1,7 @@
 import { callLLM } from '../../ai/client'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
 import { HttpError } from '../../utils/http-error'
+import { EmptyLLMResponseError } from '../../utils/llm-response'
 
 export interface GroupTextLine {
   path: string
@@ -106,8 +107,9 @@ export async function checkGroupText(lines: GroupTextLine[]): Promise<GroupTextV
       })
     } catch (error) {
       const status = transportStatus(error)
-      // A rate limit or a 5xx is transport, never a verdict: ask once more.
-      if (attempt === 0 && (status === 429 || (status !== null && status >= 500))) {
+      // A rate limit, a 5xx or an empty answer (the model's reasoning ran past
+      // its token budget) is transport, never a verdict: ask once more.
+      if (attempt === 0 && (error instanceof EmptyLLMResponseError || status === 429 || (status !== null && status >= 500))) {
         await textGateEffects.wait(GATE_RETRY_WAIT_MS)
         continue
       }

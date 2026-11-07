@@ -16,6 +16,7 @@ import { filterGroupAtomAudiences } from '../src/services/group-chat/curation'
 import { publicGroupData } from '../src/services/group-chat/public'
 import { GROUP_IDEA_MAX_CHARS, pickStatus, statusPeriod } from '../src/services/group-chat/ideas'
 import { beginLLMTrace, settleLLMTrace } from '../src/ai/usage'
+import { EmptyLLMResponseError } from '../src/utils/llm-response'
 import { members as priorMembers, groupTemplate as priorGroupTemplate, owenReply } from './group-chat-fixtures'
 const members = priorMembers.map(member => { const { interested: _old, ...group } = member.group as typeof member.group & { interested?: boolean }; return { ...member, group: { ...group, start_bond: 'acquaintance' as const } } })
 function groupTemplate(): WorldTemplateDoc { return { ...priorGroupTemplate(), seed_cast: members.map(({ id, ...member }) => structuredClone(member)) } }
@@ -5184,6 +5185,29 @@ await check('group text gate returns one allow without a call for no lines', asy
   assert.deepEqual(await checkGroupText([]), { ok: true })
   assert.equal(gateRequests.length, 0)
 })
+// The model's reasoning can run past its token budget and come back empty. That
+// is transport, not a verdict: the gate asks once more, exactly as for a 429.
+const emptyGateAnswer = () => new EmptyLLMResponseError({ finishReason: 'length' })
+await check('group text gate retries an empty answer once and then allows', async () => {
+  resetGate([emptyGateAnswer()])
+  assert.deepEqual(await checkGroupText([{ path: 'description', text: 'A line.' }]), { ok: true })
+  assert.equal(gateWaits, 1)
+  assert.equal(gateRequests.length, 2)
+})
+await check('group text gate two empty answers return 503 after two calls', async () => {
+  resetGate([emptyGateAnswer(), emptyGateAnswer()])
+  await assert.rejects(checkGroupText([{ path: 'description', text: 'A line.' }]),
+    gateStatus(503, 'Try again in a moment.'))
+  assert.equal(gateWaits, 1)
+  assert.equal(gateRequests.length, 2)
+})
+await check('group text gate an empty answer then a malformed verdict fails closed', async () => {
+  resetGate([emptyGateAnswer(), 'not json at all'])
+  assert.deepEqual(await checkGroupText([{ path: 'description', text: 'A line.' }]),
+    { ok: false, paths: ['description'] })
+  assert.equal(gateWaits, 1)
+  assert.equal(gateRequests.length, 2, 'a malformed verdict is never asked again')
+})
 if (originalGateModel === undefined) delete process.env.GROUP_TEXT_GATE_MODEL
 else process.env.GROUP_TEXT_GATE_MODEL = originalGateModel
 
@@ -7005,6 +7029,64 @@ await check('group draft gate refuses one person then twice fails and releases',
   } finally {
     restoreBilling()
     routeUser = null
+  }
+})
+
+// A failed draft says why in the log, in fixed codes: no name, form field,
+// model reply or line of text may reach it.
+const fixtureTexts = (form: DraftForm) => [
+  ...form.people.map((person) => person.name),
+  ...form.people.map((person) => person.look),
+  ...form.people.map((person) => person.personality),
+  ...form.people.map((person) => person.knows_player),
+  form.title,
+  form.setting,
+]
+await check('group draft shape miss logs its call and reason then fails', async () => {
+  const form = draftForm(3)
+  draftGate()
+  const selfNaming = (index: number) => personDraftReply(form, index, {
+    voice: { plain: [`${form.people[index]!.name} should not say this.`, 'I put the kettle on.'], explicit: [...DRAFT_EXPLICIT] },
+  })
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const index = draftPersonIndex(request)
+    return index === 1 ? selfNaming(index) : personDraftReply(form, index)
+  })
+  const before = memoryLogs.length
+  await assert.rejects(draftGroup(form), draftError(422, DRAFT_FAILED))
+  const logged = memoryLogs.slice(before)
+  assert.deepEqual(logged.map((entry) => entry.name),
+    ['group_draft.shape_miss', 'group_draft.shape_miss', 'group_draft.failed'])
+  assert.deepEqual(
+    logged.slice(0, 2).map(({ call, person, attempt, reason }) => ({ call, person, attempt, reason })),
+    [
+      { call: 'person', person: 1, attempt: 1, reason: 'person_voice_names_self' },
+      { call: 'person', person: 1, attempt: 2, reason: 'person_voice_names_self' },
+    ],
+  )
+  assert.deepEqual(logged[2], { name: 'group_draft.failed', stage: 'person_shape', person: 1 })
+  const serialized = JSON.stringify(logged)
+  for (const text of [...fixtureTexts(form), 'Ben should not say this.']) {
+    assert(!serialized.includes(text), `the log leaks ${text}`)
+  }
+})
+await check('group draft a gate refusal logs its stage and paths', async () => {
+  const form = draftForm(2)
+  rejectMarker('REFUSE')
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const index = draftPersonIndex(request)
+    return index === 1 ? personDraftWithMarker(form, index) : personDraftReply(form, index)
+  })
+  const before = memoryLogs.length
+  await assert.rejects(draftGroup(form), draftError(422, DRAFT_FAILED))
+  const logged = memoryLogs.slice(before)
+  assert.deepEqual(logged.map((entry) => entry.name), ['group_draft.failed'])
+  assert.deepEqual(logged[0], { name: 'group_draft.failed', stage: 'gate', paths: ['seed_cast.1.group.voice.0'] })
+  const serialized = JSON.stringify(logged)
+  for (const text of [...fixtureTexts(form), 'REFUSE this line.']) {
+    assert(!serialized.includes(text), `the log leaks ${text}`)
   }
 })
 

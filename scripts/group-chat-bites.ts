@@ -929,7 +929,7 @@ const gateMutations: Mutation[] = [
   { name: 'group gate accepts an unknown handle', check: gateFailsClosed, edits: [[groupGateFile, 'handle >= 1 && handle <= lines.length', 'handle >= 1']] },
   { name: 'group gate accepts an empty reject list', check: gateFailsClosed, edits: [[groupGateFile, "if (report.verdict === 'reject' && handles.length === 0) return failClosed(lines)", 'if (false) return failClosed(lines)']] },
   { name: 'group gate returns every path for one refusal', check: 'group text gate rejects only the refused line', edits: [[groupGateFile, 'lines.filter((_, index) => rejected.has(index + 1)).map((line) => line.path)', 'lines.map((line) => line.path)']] },
-  { name: 'group gate retries no rate limit', check: 'group text gate retries a rate limit', edits: [[groupGateFile, 'if (attempt === 0 && (status === 429', 'if (false && (status === 429']] },
+  { name: 'group gate retries no rate limit', check: 'group text gate retries a rate limit', edits: [[groupGateFile, 'if (attempt === 0 && (error instanceof EmptyLLMResponseError || status === 429', 'if (false && (error instanceof EmptyLLMResponseError || status === 429']] },
   { name: 'group gate stores after a transport failure', check: 'group text gate transport failure twice', edits: [[groupGateFile, "throw new HttpError(503, 'Try again in a moment.')", 'return failClosed(lines)']] },
   { name: 'group gate create skipped', check: 'group text gate allows a save', edits: [[templateFile, 'const gate = await checkGroupText(groupTextLines(data))', 'const gate = await checkGroupText([])']] },
   { name: 'group gate request carries the paths', check: 'group text gate request carries every written line', edits: [[groupGateFile, 'lines.map((line, index) => ({ handle: index + 1, text: line.text }))', 'lines.map((line, index) => ({ handle: index + 1, text: line.text, path: line.path }))']] },
@@ -942,6 +942,10 @@ const gateMutations: Mutation[] = [
     [groupGateFile, 'model: groupTextGateModel(),', 'model: moderationModel(),'],
   ] },
   { name: 'group gate token budget back to 512', check: 'group text gate allows a save', edits: [[groupGateFile, 'maxTokens: 4096,', 'maxTokens: 512,']] },
+  { name: 'group gate never retries an empty answer', check: 'group text gate retries an empty answer', edits: [[groupGateFile, 'error instanceof EmptyLLMResponseError || ', '']] },
+  { name: 'group gate retries an empty answer with no wait', check: 'group text gate retries an empty answer', edits: [[groupGateFile, '        await textGateEffects.wait(GATE_RETRY_WAIT_MS)\n        continue', '        continue']] },
+  { name: 'group gate retries an empty answer more than once', check: 'group text gate two empty answers', edits: [[groupGateFile, 'if (attempt === 0 && (error instanceof EmptyLLMResponseError', 'if (attempt < 9 && (error instanceof EmptyLLMResponseError']] },
+  { name: 'group gate empty then malformed is allowed', check: 'group text gate an empty answer then a malformed', edits: [[groupGateFile, '  return parseVerdict(answer, lines)', '  return { ok: true }']] },
 ]
 mutations.push(...gateMutations)
 
@@ -1252,7 +1256,7 @@ const draftMutations: Mutation[] = [
   ] },
   { name: 'draft marks every group adult', check: draftAdult, edits: [[draftFile, '    is_nsfw_capable: form.adult,', '    is_nsfw_capable: true,']] },
   { name: 'draft shape redraft removed', check: draftShape, edits: [[draftFile, 'const MAX_ATTEMPTS = 2', 'const MAX_ATTEMPTS = 1']] },
-  { name: 'draft voice may name its speaker', check: draftSelfName, edits: [[draftFile, '    if (namesSelf(text, person.name)) shape()', '    if (namesSelf(text, person.name)) void 0']] },
+  { name: 'draft voice may name its speaker', check: draftSelfName, edits: [[draftFile, "    if (namesSelf(text, person.name)) shape('person_voice_names_self')", '    if (namesSelf(text, person.name)) void 0']] },
   { name: 'draft refused person not redrafted', check: draftGatePerson, edits: [[draftFile, '  if (refused.size > 0) {', '  if (false) {']] },
   { name: 'draft failed gate leaves reservations', check: draftGatePerson, edits: [[draftController,
     `    try {
@@ -1275,7 +1279,7 @@ const draftMutations: Mutation[] = [
     '  try { return await checkGroupText(groupTextLines(draft as unknown as Partial<WorldTemplateDoc>)) } catch { return { ok: true } }']] },
   { name: 'draft refused group not redrafted', check: draftGateGroup, edits: [[draftFile, '  if (groupRefused) group = await draftGroupWords(form, 1)', '  if (false) group = await draftGroupWords(form, 1)']] },
   { name: 'draft opening line stranger kept', check: draftOpenings, edits: [[draftFile, '    if (name === undefined) continue', '    if (name === undefined) shape()']] },
-  { name: 'draft too few opening lines accepted', check: draftOpenings, edits: [[draftFile, '  if (opening.length < 3 || opening.length > 6) shape()', '  if (opening.length > 6) shape()']] },
+  { name: 'draft too few opening lines accepted', check: draftOpenings, edits: [[draftFile, "  if (opening.length < 3 || opening.length > 6) shape('group_opening_count')", "  if (opening.length > 6) shape('group_opening_count')"]] },
   { name: 'draft duplicate names accepted', check: draftRoute, edits: [[draftController, "      if (names.has(name)) throw new HttpError(400, 'Each person needs a different name.')", "      if (false) throw new HttpError(400, 'Each person needs a different name.')"]] },
   { name: 'draft rate limit not enforced', check: draftRoute, edits: [[draftController,
     `    const rl = await rateLimit(user.id, 'group_draft')
@@ -1348,16 +1352,42 @@ const draftMutations: Mutation[] = [
       throw error
     }`]] },
   { name: 'draft appearance accepts a different age', check: draftAppearance, edits: [[draftFile,
-    '  if (!ageDigits || Number(ageDigits[1]) !== person.age) shape()',
-    '  if (!ageDigits) shape()']] },
+    "  if (!ageDigits || Number(ageDigits[1]) !== person.age) shape('person_appearance_age')",
+    "  if (!ageDigits) shape('person_appearance_age')"]] },
   { name: 'draft appearance accepts no digits', check: draftAppearance, edits: [[draftFile,
-    '  if (!ageDigits || Number(ageDigits[1]) !== person.age) shape()',
-    '  if (ageDigits && Number(ageDigits[1]) !== person.age) shape()']] },
+    "  if (!ageDigits || Number(ageDigits[1]) !== person.age) shape('person_appearance_age')",
+    "  if (ageDigits && Number(ageDigits[1]) !== person.age) shape('person_appearance_age')"]] },
   { name: 'draft prompt allows the age in words', check: draftPromptAge, edits: [[draftFile,
     'opening with their age from the form in digits, e.g. "27, ..."',
     'opening with their age from the form, in words or digits']] },
 ]
 mutations.push(...draftMutations)
+
+const draftShapeLog = 'group draft shape miss logs'
+const draftGateLog = 'group draft a gate refusal logs'
+mutations.push(
+  { name: 'draft shape miss not logged', check: draftShapeLog, edits: [[draftFile,
+    "      log.warn('group_draft.shape_miss', { call: 'person', person: personIndex, attempt: attempt + 1, reason: error.reason })\n",
+    '      void 0\n']] },
+  { name: 'draft shape reason lost', check: draftShapeLog, edits: [[draftFile,
+    '  throw new ShapeFailure(reason)',
+    "  throw new ShapeFailure('parse')"]] },
+  { name: 'draft shape miss logs the reply', check: draftShapeLog, edits: [[draftFile,
+    'reason: error.reason })',
+    'reason: error.reason, text: JSON.stringify(parsed) })']] },
+  { name: 'draft person shape failure stage wrong', check: draftShapeLog, edits: [[draftFile,
+    "  return failed('person_shape', { person: personIndex })",
+    "  return failed('group_shape', { person: personIndex })"]] },
+  { name: 'draft failure not logged', check: draftGateLog, edits: [[draftFile,
+    "  log.warn('group_draft.failed', { stage, ...details })\n",
+    '']] },
+  { name: 'draft gate failure stage wrong', check: draftGateLog, edits: [[draftFile,
+    "failed('gate', { paths: verdict.paths })",
+    "failed('validate', { paths: verdict.paths })"]] },
+  { name: 'draft gate failure loses the paths', check: draftGateLog, edits: [[draftFile,
+    "failed('gate', { paths: verdict.paths })",
+    "failed('gate')"]] },
+)
 
 mutations.push(...ideaMutations)
 

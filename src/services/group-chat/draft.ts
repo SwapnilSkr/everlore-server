@@ -2,6 +2,7 @@ import { callLLM } from '../../ai/client'
 import { AI_MODELS } from '../../ai/models'
 import type { WorldTemplateDoc } from '../../models/world-template.model'
 import { HttpError } from '../../utils/http-error'
+import { log } from '../../utils/logger'
 import type { RelationshipInitializationKind } from '../../utils/relationship-baseline'
 import { checkGroupText, groupTextLines } from './text-gate'
 import type { GroupStatusLines, GroupTraits, NamedLine } from './types'
@@ -104,14 +105,23 @@ const CLOSENESS_WORDS: Record<Closeness, string> = {
 
 const PERIODS = ['morning', 'afternoon', 'evening', 'night'] as const
 
-/** A shape failure is redrafted once; a second one fails the draft. */
-class ShapeFailure extends Error {}
-
-function shape(): never {
-  throw new ShapeFailure()
+/** A shape failure is redrafted once; a second one fails the draft. Its reason
+ * is a fixed code, so a failed draft can be read in the log without any of the
+ * player's words or the model's reply. */
+class ShapeFailure extends Error {
+  constructor(readonly reason: string) {
+    super(reason)
+  }
 }
 
-function failed(): never {
+function shape(reason: string): never {
+  throw new ShapeFailure(reason)
+}
+
+type DraftFailureStage = 'group_shape' | 'person_shape' | 'validate' | 'gate'
+
+function failed(stage: DraftFailureStage, details: Record<string, unknown> = {}): never {
+  log.warn('group_draft.failed', { stage, ...details })
   throw new HttpError(422, FAILED_MESSAGE)
 }
 
@@ -219,31 +229,31 @@ export function personDraftPrompt(adult: boolean): string {
 }
 
 function readGroupWords(parsed: unknown, form: GroupDraftInput): GroupWords {
-  if (!isRecord(parsed)) shape()
+  if (!isRecord(parsed)) shape('parse')
   const description = prose(parsed.description, 600)
   const global_lore = prose(parsed.global_lore, 3000)
   const seed_prompt = prose(parsed.seed_prompt, 2500)
-  if (!description || !global_lore || !seed_prompt || Array.from(seed_prompt).length < 10) shape()
+  if (!description || !global_lore || !seed_prompt || Array.from(seed_prompt).length < 10) shape('group_prose')
 
   const rawTopics = parsed.topics
-  if (!Array.isArray(rawTopics) || rawTopics.length !== 10) shape()
+  if (!Array.isArray(rawTopics) || rawTopics.length !== 10) shape('group_topics')
   const topics = rawTopics.map((topic) => line(topic, 1000))
-  if (topics.some((topic) => topic === null)) shape()
+  if (topics.some((topic) => topic === null)) shape('group_topics')
 
   const rawOpening = parsed.opening_lines
-  if (!Array.isArray(rawOpening)) shape()
+  if (!Array.isArray(rawOpening)) shape('group_opening_lines')
   const peopleByName = new Map(form.people.map((person) => [person.name.trim().toLowerCase(), person.name]))
   const opening: NamedLine[] = []
   for (const entry of rawOpening) {
-    if (!isRecord(entry)) shape()
+    if (!isRecord(entry)) shape('group_opening_lines')
     const name = typeof entry.name === 'string' ? peopleByName.get(entry.name.trim().toLowerCase()) : undefined
     // A line for someone outside the group is not this group's conversation.
     if (name === undefined) continue
     const text = line(entry.text, 1000)
-    if (text === null) shape()
+    if (text === null) shape('group_opening_lines')
     opening.push({ name, text })
   }
-  if (opening.length < 3 || opening.length > 6) shape()
+  if (opening.length < 3 || opening.length > 6) shape('group_opening_count')
 
   return {
     description: description!,
@@ -255,36 +265,36 @@ function readGroupWords(parsed: unknown, form: GroupDraftInput): GroupWords {
 }
 
 function readPersonWords(parsed: unknown, form: GroupDraftInput, person: GroupDraftPerson): PersonWords {
-  if (!isRecord(parsed)) shape()
+  if (!isRecord(parsed)) shape('parse')
   const role = prose(parsed.role, 400)
   const appearance = prose(parsed.appearance, 1000)
   const persona = prose(parsed.persona, 2500)
   const speech = prose(parsed.speech, 2000)
   const wants = prose(parsed.wants, 2500)
-  if (!role || !appearance || !persona || !speech || !wants) shape()
+  if (!role || !appearance || !persona || !speech || !wants) shape('person_prose')
 
   // The look opens with the age the form set, in digits: a different number is
   // a shape miss and is redrafted once, never rewritten here.
   const ageDigits = /^(\d+)(?!\d)/.exec(appearance)
-  if (!ageDigits || Number(ageDigits[1]) !== person.age) shape()
+  if (!ageDigits || Number(ageDigits[1]) !== person.age) shape('person_appearance_age')
 
   // Intimacy is only part of an adult group: a non-adult draft drops it even
   // when the model returns it.
   const intimacy = form.adult ? prose(parsed.intimacy) : undefined
-  if (form.adult && !intimacy) shape()
+  if (form.adult && !intimacy) shape('person_intimacy')
 
   const rawFirst = parsed.first_texts
-  if (!Array.isArray(rawFirst) || rawFirst.length !== 3) shape()
+  if (!Array.isArray(rawFirst) || rawFirst.length !== 3) shape('person_first_texts')
   const first_texts = rawFirst.map((text) => line(text, 120))
-  if (first_texts.some((text) => text === null)) shape()
+  if (first_texts.some((text) => text === null)) shape('person_first_texts')
 
   const rawStatuses = parsed.statuses
-  if (!isRecord(rawStatuses)) shape()
-  if (Object.keys(rawStatuses).sort().join(',') !== [...PERIODS].sort().join(',')) shape()
+  if (!isRecord(rawStatuses)) shape('person_statuses')
+  if (Object.keys(rawStatuses).sort().join(',') !== [...PERIODS].sort().join(',')) shape('person_statuses')
   const statuses = {} as GroupStatusLines
   for (const period of PERIODS) {
     const text = line(rawStatuses[period], 120)
-    if (text === null) shape()
+    if (text === null) shape('person_statuses')
     statuses[period] = text!
   }
 
@@ -295,23 +305,23 @@ function readPersonWords(parsed: unknown, form: GroupDraftInput, person: GroupDr
       : 0.5
 
   const rawVoice = parsed.voice
-  if (!isRecord(rawVoice)) shape()
+  if (!isRecord(rawVoice)) shape('person_voice')
   const rawPlain = rawVoice.plain
-  if (!Array.isArray(rawPlain) || rawPlain.length < 2 || rawPlain.length > 4) shape()
+  if (!Array.isArray(rawPlain) || rawPlain.length < 2 || rawPlain.length > 4) shape('person_voice_count')
   const plain = rawPlain.map((text) => line(text))
-  if (plain.some((text) => text === null)) shape()
+  if (plain.some((text) => text === null)) shape('person_voice_text')
 
   let explicit: string[] = []
   if (form.adult) {
     const rawExplicit = rawVoice.explicit
-    if (!Array.isArray(rawExplicit) || rawExplicit.length !== 3) shape()
+    if (!Array.isArray(rawExplicit) || rawExplicit.length !== 3) shape('person_voice_count')
     const lines = rawExplicit.map((text) => line(text))
-    if (lines.some((text) => text === null)) shape()
+    if (lines.some((text) => text === null)) shape('person_voice_text')
     explicit = lines as string[]
   }
 
   for (const text of [...(plain as string[]), ...explicit]) {
-    if (namesSelf(text, person.name)) shape()
+    if (namesSelf(text, person.name)) shape('person_voice_names_self')
   }
 
   return {
@@ -372,9 +382,10 @@ async function draftGroupWords(form: GroupDraftInput, attempts: number): Promise
       return readGroupWords(parsed, form)
     } catch (error) {
       if (!(error instanceof ShapeFailure)) throw error
+      log.warn('group_draft.shape_miss', { call: 'group', attempt: attempt + 1, reason: error.reason })
     }
   }
-  return failed()
+  return failed('group_shape')
 }
 
 async function draftPersonWords(
@@ -383,6 +394,7 @@ async function draftPersonWords(
   group: GroupWords,
   attempts: number,
 ): Promise<PersonWords> {
+  const personIndex = form.people.indexOf(person)
   for (let attempt = 0; attempt < attempts; attempt++) {
     const parsed = await readCall({
       model: AI_MODELS.authoring,
@@ -415,9 +427,10 @@ async function draftPersonWords(
       return readPersonWords(parsed, form, person)
     } catch (error) {
       if (!(error instanceof ShapeFailure)) throw error
+      log.warn('group_draft.shape_miss', { call: 'person', person: personIndex, attempt: attempt + 1, reason: error.reason })
     }
   }
-  return failed()
+  return failed('person_shape', { person: personIndex })
 }
 
 function assemble(form: GroupDraftInput, group: GroupWords, people: PersonWords[]): GroupDraft {
@@ -468,8 +481,10 @@ function refusedPerson(path: string): number | null {
 async function gate(draft: GroupDraft): Promise<{ ok: true } | { ok: false; paths: string[] }> {
   try {
     validateGroup(draft as unknown as WorldTemplateDoc)
-  } catch {
-    failed()
+  } catch (error) {
+    // Every validateGroup message is a fixed sentence written here, naming a
+    // field at most: none carries a player value or a model reply.
+    failed('validate', { message: (error as Error).message })
   }
   return checkGroupText(groupTextLines(draft as unknown as Partial<WorldTemplateDoc>))
 }
@@ -503,6 +518,6 @@ export async function draftGroup(form: GroupDraftInput): Promise<GroupDraft> {
 
   draft = assemble(form, group, people)
   verdict = await gate(draft)
-  if (!verdict.ok) failed()
+  if (!verdict.ok) failed('gate', { paths: verdict.paths })
   return draft
 }
