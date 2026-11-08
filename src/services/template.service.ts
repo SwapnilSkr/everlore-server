@@ -220,6 +220,8 @@ export const templateService = {
       creator_id: creatorOid,
     })
     if (!existing) throw new Error('Template not found')
+    // A retired group is closed, exactly as if it no longer existed.
+    if (existing.retired_at) throw new HttpError(404, 'That group could not be found.')
 
     const effectiveKind = data.kind || existing.kind || 'world'
     if ((existing.kind === 'group' || effectiveKind === 'group') && existing.kind !== effectiveKind) {
@@ -328,6 +330,8 @@ export const templateService = {
       creator_id: creatorOid,
     })
     if (!template) throw new Error('Template not found')
+    // A retired group is closed, exactly as if it no longer existed.
+    if (template.retired_at) throw new HttpError(404, 'That group could not be found.')
 
     // A group goes to Explore only with every person's face on it: the players
     // read those faces before they open the room.
@@ -589,6 +593,8 @@ export const templateService = {
     const filter: Record<string, unknown> = {
       creator_id: parseObjectId(creatorId),
       // The creator's list is worlds and characters; "Your groups" asks for them.
+      // A retired group its owner deleted is gone from both.
+      retired_at: { $exists: false },
       kind: kind === 'group' ? 'group' : { $ne: 'group' },
     }
     const term = search?.trim()

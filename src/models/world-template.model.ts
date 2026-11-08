@@ -106,6 +106,13 @@ export interface WorldTemplateDoc {
   moderated_at?: Date
   /** Admin username from Basic auth that last changed {@link moderation_status}. */
   moderated_by?: string
+  /**
+   * A player-made group its owner deleted while chats were running: the chats
+   * carry on, the group is closed to every new one, and it is fully removed
+   * when its last chat is deleted. Absent on every group that is not retired;
+   * never written as null.
+   */
+  retired_at?: Date
   is_sentient: boolean
   is_nsfw_capable: boolean
   version: number

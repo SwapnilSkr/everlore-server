@@ -610,6 +610,7 @@ mock.module('../src/services/storage.service', () => ({ storageService: {
   upload: async (data: Buffer, _type: string, opts: { key: string }) => { storedObjects.set(opts.key, data); return { key: opts.key, url: `https://fixture.invalid/${opts.key}` } },
   deleteStrict: async (key: string) => { storedObjects.delete(key) },
   delete: async (key: string) => { storedObjects.delete(key) },
+  keyFromUrl: (url: string) => url.startsWith('https://fixture.invalid/') ? url.slice('https://fixture.invalid/'.length) : null,
 } }))
 mock.module('../src/services/billing-config.service', () => ({ resolveProfile: unavailable, effectiveBilling: async () => ({ promo: { unlimited: true, daily_turn_cap: 500 }, costs: { story_turn: 1 } }) }))
 mock.module('../src/services/google-play.service', () => ({ googlePlayService: { configured: () => false } }))
@@ -8013,6 +8014,227 @@ await check('authoring: a read-back group round trips through an edit and keeps 
   assert.deepEqual(after[0]!.portrait, cast[0]!.portrait, 'an untouched person keeps their face')
   assert.equal('portrait' in after[1]!, false, 'a changed look drops its face')
   assert.deepEqual(after[2]!.portrait, cast[2]!.portrait, 'an untouched person keeps their face')
+})
+
+// ── cag-8: deleting a group keeps the chats already running in it ──────────
+// The routes, controller and services are real; storage and the database are
+// the in-memory stubs used throughout this file.
+const isGroupNotFound = (error: unknown) => {
+  const failure = error as { statusCode?: number; message?: string }
+  assert.equal(failure.statusCode, 404)
+  assert.equal(failure.message, 'That group could not be found.')
+  return true
+}
+/** The group `start()` created, made this player's own so delete routes apply. */
+function ownGroupRow() {
+  const group = rows('worldTemplates')[0]
+  group.creator_id = new ObjectId(playerId)
+  return group
+}
+const otherPlayerId = '400000000000000000000001'
+function addOtherPlayer() {
+  rows('users').push({ _id: new ObjectId(otherPlayerId), guest: false, preferences: {} })
+  return otherPlayerId
+}
+const routeCall = (method: string, path: string, body?: unknown) => faceApp.handle(new Request(`http://localhost${path}`, {
+  method,
+  ...(body === undefined ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+}))
+
+await check('group delete retires a group that still has a chat and keeps the chat', async () => {
+  await start()
+  const group = ownGroupRow()
+  const other = addOtherPlayer()
+  const theirChat = await instanceService.create(other, template._id.toHexString(), 'creator')
+  const chats = rows('worldInstances').length
+  const eventsBefore = rows('events').length
+
+  assert.deepEqual(await deletionService.deleteOwnGroup(template._id.toHexString(), playerId), { deleted: true })
+  const stored = rows('worldTemplates')[0]
+  assert(stored.retired_at instanceof Date, 'the group carries a retirement date')
+  assert.equal(stored.is_published, false)
+  assert.equal(stored.visibility, 'private')
+  assert.equal('review_status' in stored, false, 'the review status key is removed')
+  assert.equal('submitted_at' in stored, false, 'the submitted date key is removed')
+  assert.equal(rows('worldInstances').length, chats, 'no chat is deleted')
+  assert(rows('worldInstances').some(row => String(row._id) === instanceId), 'the deleter’s chat survives')
+  assert(rows('worldInstances').some(row => String(row._id) === theirChat.instance._id.toHexString()), 'another player’s chat survives')
+  assert.equal(rows('events').length, eventsBefore, 'no chat history is deleted')
+  // Unlisted: out of Explore and out of the owner's groups.
+  assert.equal((await templateService.listPublished(1, 20, undefined, undefined, { kind: 'group', sort: 'new' })).templates.length, 0)
+  assert.equal((await templateService.listByCreator(playerId, 1, 20, undefined, 'group')).total, 0)
+})
+
+await check('group delete with no chat removes it, its face rows and every small file', async () => {
+  await start()
+  const group = ownGroupRow()
+  const tid = group._id as ObjectId
+  const cast = group.seed_cast as Row[]
+  cast[0]!.portrait = {
+    asset_key: 'media/portrait/player-group/g/face.webp',
+    thumb_key: 'media/portrait/player-group/g/face.w320.webp',
+    source: 'generated', appearance_version: 1, art_style: 'anime', painted_at: new Date(),
+  }
+  group.image_url = 'https://fixture.invalid/media/cover.webp'
+  group.image_thumb_url = 'https://fixture.invalid/media/cover.w540.webp'
+  rows('mediaAssets').push({
+    _id: new ObjectId(), player_id: new ObjectId(playerId), template_id: tid, cast_name: names[0],
+    kind: 'portrait', line_id: '', source: 'generated', model: 'fixture', cache_key: 'cag-8-face',
+    revision: 'r', input: '', cost_usd: 0, status: 'ready', created_at: new Date(),
+    asset_key: 'media/portrait/player-group/g/row.webp',
+  })
+  const files = [
+    'media/portrait/player-group/g/face.webp',
+    'media/portrait/player-group/g/face.w320.webp',
+    'media/portrait/player-group/g/row.webp',
+    'media/portrait/player-group/g/row.w320.webp',
+    'media/cover.webp',
+    'media/cover.w540.webp',
+  ]
+  for (const key of files) storedObjects.set(key, Buffer.from('face'))
+
+  // No chat: the group is fully removed as it is deleted.
+  await deletionService.deleteInstance(instanceId, playerId)
+  assert.equal(rows('worldInstances').length, 0)
+  assert.deepEqual(await deletionService.deleteOwnGroup(tid.toHexString(), playerId), { deleted: true })
+  assert.equal(rows('worldTemplates').length, 0, 'no chat means a full removal')
+  assert.equal(rows('mediaAssets').filter(row => String(row.template_id) === String(tid)).length, 0, 'face rows are gone')
+  for (const key of files) assert.equal(storedObjects.has(key), false, `${key} was left behind`)
+})
+
+await check('retired group: every closed route answers the same 404 and the owner list leaves it out', async () => {
+  resetSaveTables(); resetGate()
+  const created = await templateService.create(playerId, groupSaveBody())
+  await instanceService.create(playerId, created._id.toHexString(), 'creator')
+  await deletionService.deleteOwnGroup(created._id.toHexString(), playerId)
+  assert(rows('worldTemplates')[0].retired_at instanceof Date)
+  assert.equal(rows('worldInstances').length, 1, 'the running chat keeps the group')
+
+  routeUser = { id: playerId, tier: 'creator' }
+  try {
+    const id = created._id.toHexString()
+    const responses = [
+      await routeCall('GET', `/templates/${id}`),
+      await routeCall('GET', `/templates/${id}/authoring`),
+      await routeCall('PUT', `/templates/${id}`, { description: 'An edited line.' }),
+      await routeCall('POST', `/templates/${id}/publish`, { visibility: 'private' }),
+      await routeCall('POST', `/templates/${id}/cast/0/portrait`),
+    ]
+    for (const response of responses) {
+      assert.equal(response.status, 404)
+      assert.deepEqual(await response.json(), { message: 'That group could not be found.' })
+    }
+    const mine = await routeCall('GET', '/templates/mine/list?kind=group')
+    assert.equal(mine.status, 200)
+    assert.deepEqual(await mine.json(), { templates: [], total: 0, page: 1 })
+  } finally { routeUser = null }
+})
+
+await check('retired group: a chat opens, while its owner without one and a stranger cannot start one', async () => {
+  await start()
+  ownGroupRow()
+  await deletionService.deleteOwnGroup(template._id.toHexString(), playerId)
+
+  const again = await instanceService.create(playerId, template._id.toHexString(), 'creator')
+  assert.equal(again.instance._id.toHexString(), instanceId, 'the player opens their own chat')
+
+  rows('worldInstances').splice(0, rows('worldInstances').length)
+  await assert.rejects(instanceService.create(playerId, template._id.toHexString(), 'creator'), isGroupNotFound)
+
+  const stranger = addOtherPlayer()
+  await assert.rejects(instanceService.create(stranger, template._id.toHexString(), 'creator'), isGroupNotFound)
+  assert.equal(rows('worldInstances').length, 0, 'nobody started a new chat')
+})
+
+await check('non-retired group never carries retired_at after create, edit or publish', async () => {
+  resetSaveTables(); resetGate()
+  const { vectorStore } = await import('../src/services/vector-store')
+  const replaceLore = vectorStore.replaceLore
+  vectorStore.replaceLore = (async () => {}) as never
+  try {
+    const created = await templateService.create(playerId, groupSaveBody())
+    const hasKey = () => 'retired_at' in (rows('worldTemplates')[0] as Row)
+    assert.equal(hasKey(), false, 'create wrote the key')
+    resetGate()
+    await templateService.update(created._id.toHexString(), playerId, { description: 'An edited line.' })
+    assert.equal(hasKey(), false, 'edit wrote the key')
+    resetGate()
+    await templateService.publish(created._id.toHexString(), playerId)
+    assert.equal(hasKey(), false, 'publish wrote the key')
+  } finally { vectorStore.replaceLore = replaceLore }
+})
+
+await check('last chat out removes a retired group; one of two does not; a live group stays', async () => {
+  await start()
+  ownGroupRow()
+  const other = addOtherPlayer()
+  const theirChat = await instanceService.create(other, template._id.toHexString(), 'creator')
+  await deletionService.deleteOwnGroup(template._id.toHexString(), playerId)
+  assert.equal(rows('worldTemplates').length, 1, 'two chats keep the group')
+
+  await deletionService.deleteInstance(theirChat.instance._id.toHexString(), other)
+  assert.equal(rows('worldTemplates').length, 1, 'one chat still keeps the group')
+  await deletionService.deleteInstance(instanceId, playerId)
+  assert.equal(rows('worldTemplates').length, 0, 'the last chat out removes the group')
+
+  await start()
+  await deletionService.deleteInstance(instanceId, playerId)
+  assert.equal(rows('worldTemplates').length, 1, 'a group that was never retired stays')
+})
+
+await check('admin removal of a retired group removes each chat once without a nested removal', async () => {
+  await start()
+  const group = ownGroupRow()
+  const other = addOtherPlayer()
+  const theirChat = await instanceService.create(other, template._id.toHexString(), 'creator')
+  await deletionService.deleteOwnGroup(template._id.toHexString(), playerId)
+
+  const originalTemplate = deletionService.deleteTemplateById
+  const originalInstance = deletionService.deleteInstanceById
+  const removed: string[] = []
+  let templateCalls = 0
+  deletionService.deleteInstanceById = async (id, retain, internal) => {
+    removed.push(String(id))
+    return originalInstance.call(deletionService, id, retain, internal)
+  }
+  deletionService.deleteTemplateById = async (id, retain) => {
+    templateCalls++
+    return originalTemplate.call(deletionService, id, retain)
+  }
+  try {
+    await deletionService.deleteTemplateById(group._id)
+  } finally {
+    deletionService.deleteTemplateById = originalTemplate
+    deletionService.deleteInstanceById = originalInstance
+  }
+  assert.equal(templateCalls, 1, 'the purge ran once, not nested')
+  assert.deepEqual(removed.sort(), [instanceId, theirChat.instance._id.toHexString()].sort(), 'each chat was removed once')
+  assert.equal(rows('worldInstances').length, 0)
+  assert.equal(rows('worldTemplates').length, 0)
+})
+
+await check('world deletion through the same route still removes its chats', async () => {
+  await start()
+  const group = ownGroupRow()
+  group.kind = 'world'
+  routeUser = { id: playerId, tier: 'creator' }
+  try {
+    const response = await routeCall('DELETE', `/templates/${group._id.toHexString()}`)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { deleted: true })
+  } finally { routeUser = null }
+  assert.equal(rows('worldInstances').length, 0, 'a world still takes its chats with it')
+  assert.equal(rows('worldTemplates').length, 0)
+})
+
+await check('deleting a retired group twice changes nothing', async () => {
+  await start()
+  ownGroupRow()
+  await deletionService.deleteOwnGroup(template._id.toHexString(), playerId)
+  const before = clone(rows('worldTemplates')[0])
+  assert.deepEqual(await deletionService.deleteOwnGroup(template._id.toHexString(), playerId), { deleted: true })
+  assert.deepEqual(rows('worldTemplates')[0], before, 'the retired group did not change')
+  assert.equal(rows('worldInstances').length, 1, 'its chat is untouched')
 })
 
 Math.random = originalRandom

@@ -52,8 +52,14 @@ export const instanceService = {
     const template = await worldTemplates().findOne({ _id: templateOid })
     if (!template) throw new HttpError(404, 'Template not found')
     // Creators can playtest drafts and worlds in review; existing saves are
-    // read through their own routes and remain usable after delisting.
-    if (idString(template.creator_id) !== playerId && !isWorldListed(template)) {
+    // read through their own routes and remain usable after delisting. A
+    // retired group is not listed either, but a player who already has a chat
+    // in it still opens that chat: the group block below decides.
+    if (
+      idString(template.creator_id) !== playerId &&
+      !isWorldListed(template) &&
+      !(template.kind === 'group' && template.retired_at)
+    ) {
       throw new HttpError(404, 'That world could not be found.')
     }
 
@@ -68,6 +74,8 @@ export const instanceService = {
         }
         return { instance: existing, template }
       }
+      // Nobody starts a new chat in a retired group, the owner included.
+      if (template.retired_at) throw new HttpError(404, 'That group could not be found.')
     }
 
     if (template.kind !== 'group') {

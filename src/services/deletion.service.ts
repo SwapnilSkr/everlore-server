@@ -58,10 +58,43 @@ export const deletionService = {
   },
 
   /**
+   * A group's owner deleting it from the app. Chats already running in it keep
+   * going: the group is retired (closed to new chats, unlisted) and only fully
+   * removed when it has no chat left. Repeating the call changes nothing.
+   */
+  async deleteOwnGroup(templateId: string, creatorId: string): Promise<{ deleted: boolean }> {
+    const tid = parseObjectId(templateId)
+    const cid = parseObjectId(creatorId)
+
+    const template = await worldTemplates().findOne({ _id: tid, creator_id: cid, kind: 'group' })
+    if (!template) {
+      throw new HttpError(404, 'That group could not be found.')
+    }
+    if (template.retired_at) return { deleted: true }
+
+    // The retiring write first: while it runs no new chat can start. The review
+    // fields are removed, not nulled; a retired group simply has none.
+    await worldTemplates().updateOne(
+      { _id: tid, creator_id: cid },
+      {
+        $set: { retired_at: new Date(), is_published: false, visibility: 'private' },
+        $unset: { review_status: '', submitted_at: '' },
+      },
+    )
+
+    const remaining = await worldInstances().countDocuments({ template_id: tid })
+    if (remaining === 0) return this.deleteTemplateById(tid)
+    return { deleted: true }
+  },
+
+  /**
    * Admin/internal template purge. Deletes the template itself plus every
    * playthrough and derivative artifact created from it, regardless of owner.
    */
-  async deleteTemplateById(templateId: string | ObjectId, retainUsageFor?: ObjectId): Promise<{ deleted: boolean }> {
+  async deleteTemplateById(
+    templateId: string | ObjectId,
+    retainUsageFor?: ObjectId,
+  ): Promise<{ deleted: boolean }> {
     const tid = typeof templateId === 'string' ? parseObjectId(templateId) : templateId
     const template = await worldTemplates().findOne({ _id: tid })
     if (!template) throw new HttpError(404, 'That world could not be found.')
@@ -72,7 +105,8 @@ export const deletionService = {
       .find({ template_id: tid }, { projection: { _id: 1 } })
       .toArray()
     for (const instance of instances) {
-      await this.deleteInstanceById(instance._id, retainUsageFor)
+      // This loop already owns the removal: an instance must not re-enter it.
+      await this.deleteInstanceById(instance._id, retainUsageFor, { skipLastChatSweep: true })
     }
 
     await deadLetterJobs().deleteMany({
@@ -94,6 +128,11 @@ export const deletionService = {
     // Never delete the shared default cover — many templates may reference it.
     if (template.image_url && !isDefaultCoverUrl(template.image_url)) {
       const key = storageService.keyFromUrl(template.image_url)
+      if (key) await storageService.delete(key)
+    }
+    // Its small variant is a separate object, cleaned the same careful way.
+    if (template.image_thumb_url && !isDefaultCoverUrl(template.image_thumb_url)) {
+      const key = storageService.keyFromUrl(template.image_thumb_url)
       if (key) await storageService.delete(key)
     }
     await purgeTemplatePortraits(tid)
@@ -298,7 +337,11 @@ export const deletionService = {
   },
 
   /** Admin/internal instance purge without owner checks. */
-  async deleteInstanceById(instanceId: string | ObjectId, retainUsageFor?: ObjectId): Promise<{ deleted: boolean }> {
+  async deleteInstanceById(
+    instanceId: string | ObjectId,
+    retainUsageFor?: ObjectId,
+    internal: { skipLastChatSweep?: boolean } = {},
+  ): Promise<{ deleted: boolean }> {
     const iid = typeof instanceId === 'string' ? parseObjectId(instanceId) : instanceId
     const instance = await worldInstances().findOne({ _id: iid })
     if (!instance) throw new HttpError(404, 'That story could not be found.')
@@ -324,7 +367,29 @@ export const deletionService = {
         { 'data.instance_id': iidStr },
       ],
     })
+    if (!internal.skipLastChatSweep) await this.sweepRetiredTemplate(instance.template_id, retainUsageFor)
     return { deleted: true }
+  },
+
+  /**
+   * Last chat out of a retired group: the group is fully removed. A template
+   * purge gives up its own instances with `skipLastChatSweep`, so this never
+   * re-enters the removal it is already part of. A failure here must not fail
+   * the player's own deletion, so it is logged and swallowed.
+   */
+  async sweepRetiredTemplate(templateId: ObjectId, retainUsageFor?: ObjectId): Promise<void> {
+    try {
+      const template = await worldTemplates().findOne(
+        { _id: templateId },
+        { projection: { _id: 1, retired_at: 1 } },
+      )
+      if (!template?.retired_at) return
+      const remaining = await worldInstances().countDocuments({ template_id: templateId })
+      if (remaining > 0) return
+      await this.deleteTemplateById(templateId, retainUsageFor)
+    } catch (err) {
+      console.warn(`Failed to remove the retired group ${idString(templateId)}:`, (err as Error).message)
+    }
   },
 
   /** The one payload list shared by reset, save deletion and template deletion. */

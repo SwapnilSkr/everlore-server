@@ -1,6 +1,7 @@
 import type { Filter, ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
 import type { MediaAssetDoc } from '../../models/media.model'
+import { PORTRAIT_THUMB_WIDTH, thumbKey } from '../../utils/image-encoding'
 import { storageService } from '../storage.service'
 
 /** Fence running completions first; retain object keys if storage cleanup fails.
@@ -38,10 +39,25 @@ export async function purgeCardPortraits(instanceId: ObjectId): Promise<void> {
 export async function purgeTemplatePortraits(templateId: ObjectId): Promise<void> {
   const template = await mongoColl.worldTemplates().findOne({ _id: templateId })
   if (!template) return
-  const keys: string[] = []
-  for (const entry of template.seed_cast || []) {
-    if (entry.portrait?.asset_key) keys.push(entry.portrait.asset_key)
+  const keys = new Set<string>()
+  const addFace = (face: { asset_key?: string; thumb_key?: string } | undefined) => {
+    if (face?.asset_key) keys.add(face.asset_key)
+    if (face?.thumb_key) keys.add(face.thumb_key)
   }
-  if (template.protagonist?.portrait?.asset_key) keys.push(template.protagonist.portrait.asset_key)
+  for (const entry of template.seed_cast || []) addFace(entry.portrait)
+  addFace(template.protagonist?.portrait)
+  // A player-made group also keeps one row per painted face. The rows go first
+  // so a paint still in progress finds nothing to claim; the files follow, each
+  // object once. The small variant is the row's own sibling key.
+  const assets = await mongoColl.mediaAssets()
+    .find({ template_id: templateId, kind: 'portrait' })
+    .toArray()
+  for (const asset of assets) {
+    if (!asset.asset_key) continue
+    keys.add(asset.asset_key)
+    const small = thumbKey(asset.asset_key, PORTRAIT_THUMB_WIDTH)
+    if (small) keys.add(small)
+  }
+  await mongoColl.mediaAssets().deleteMany({ template_id: templateId, kind: 'portrait' })
   for (const key of keys) await storageService.delete(key)
 }

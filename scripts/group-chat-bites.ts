@@ -1523,16 +1523,64 @@ const authoringMutations: Mutation[] = [
     'portraitUrl(face.thumb_key)',
     'face.thumb_key']] },
   { name: 'authoring route drops the owner check', check: authoringOwner, edits: [[controllerFile,
-    "    if (!template || template.kind !== 'group' || idString(template.creator_id) !== user.id) {\n      throw notFound()\n    }",
+    "    if (!template || template.kind !== 'group' || template.retired_at || idString(template.creator_id) !== user.id) {\n      throw notFound()\n    }",
     "    if (!template || template.kind !== 'group') {\n      throw notFound()\n    }"]] },
   { name: 'authoring route accepts an ordinary world', check: authoringOwner, edits: [[controllerFile,
-    "    if (!template || template.kind !== 'group' || idString(template.creator_id) !== user.id) {\n      throw notFound()\n    }",
-    "    if (!template || idString(template.creator_id) !== user.id) {\n      throw notFound()\n    }"]] },
+    "    if (!template || template.kind !== 'group' || template.retired_at || idString(template.creator_id) !== user.id) {\n      throw notFound()\n    }",
+    "    if (!template || template.retired_at || idString(template.creator_id) !== user.id) {\n      throw notFound()\n    }"]] },
   { name: 'authoring edit keeps the face of a changed look', check: 'authoring: a read-back group round trips through an edit and keeps unchanged faces', edits: [['src/services/template.service.ts',
     " || appearance !== (before.appearance || '').trim()",
     '']] },
 ]
 mutations.push(...authoringMutations)
+
+// cag-8: deleting a group retires it; its running chats carry on until the last one goes.
+const deletionFile = 'src/services/deletion.service.ts', mediaDeletionFile = 'src/services/media/deletion.ts', instanceFile = 'src/services/instance.service.ts'
+const groupRetire = 'group delete retires', groupNoChats = 'group delete with no chat'
+const groupClosed = 'retired group: every closed route', groupStart = 'retired group: a chat opens'
+const groupNeverRetired = 'non-retired group never', groupLastChat = 'last chat out'
+const groupAdminSweep = 'admin removal of a retired', groupWorldRoute = 'world deletion through'
+const groupTwice = 'deleting a retired group twice'
+const deleteGroupMutations: Mutation[] = [
+  { name: 'group delete erases the running chats', check: groupRetire, edits: [[deletionFile,
+    '    const remaining = await worldInstances().countDocuments({ template_id: tid })\n    if (remaining === 0) return this.deleteTemplateById(tid)\n    return { deleted: true }',
+    '    return this.deleteTemplateById(tid)']] },
+  { name: 'group delete leaves the face rows', check: groupNoChats, edits: [[mediaDeletionFile,
+    '  await mongoColl.mediaAssets().deleteMany({ template_id: templateId, kind: \'portrait\' })',
+    '  if (false) await mongoColl.mediaAssets().deleteMany({ template_id: templateId, kind: \'portrait\' })']] },
+  { name: 'group delete leaves the face small files', check: groupNoChats, edits: [
+    [mediaDeletionFile, '    if (face?.thumb_key) keys.add(face.thumb_key)', '    if (false && face?.thumb_key) keys.add(face.thumb_key)'],
+    [mediaDeletionFile, '    if (small) keys.add(small)', '    if (false && small) keys.add(small)']] },
+  { name: 'group delete leaves the cover small file', check: groupNoChats, edits: [[deletionFile,
+    '    // Its small variant is a separate object, cleaned the same careful way.\n    if (template.image_thumb_url && !isDefaultCoverUrl(template.image_thumb_url)) {\n      const key = storageService.keyFromUrl(template.image_thumb_url)\n      if (key) await storageService.delete(key)\n    }\n',
+    '']] },
+  { name: 'retired group still read by id', check: groupClosed, edits: [[controllerFile,
+    "    // A retired group is closed: the same answer as one that never existed.\n    if (template.retired_at) throw new HttpError(404, 'That group could not be found.')\n",
+    '']] },
+  { name: 'retired group still in the owner list', check: groupClosed, edits: [[templateFile,
+    '      retired_at: { $exists: false },\n', '']] },
+  { name: 'retired group refusal comes before the running chat', check: groupStart, edits: [[instanceFile,
+    '      const existing = await worldInstances().findOne({ template_id: templateOid, player_id: playerOid })\n      if (existing) {',
+    "      if (template.retired_at) throw new HttpError(404, 'That group could not be found.')\n      const existing = await worldInstances().findOne({ template_id: templateOid, player_id: playerOid })\n      if (existing) {"]] },
+  { name: 'retired group starts new chats', check: groupStart, edits: [[instanceFile,
+    "      // Nobody starts a new chat in a retired group, the owner included.\n      if (template.retired_at) throw new HttpError(404, 'That group could not be found.')\n",
+    '']] },
+  { name: 'new group carries a retired_at key', check: groupNeverRetired, edits: [[templateFile,
+    '      created_at: new Date(),\n      updated_at: new Date(),\n    }\n\n    await worldTemplates().insertOne(template)',
+    '      created_at: new Date(),\n      updated_at: new Date(),\n      retired_at: undefined,\n    }\n\n    await worldTemplates().insertOne(template)']] },
+  { name: 'any template is swept on the last chat', check: groupLastChat, edits: [[deletionFile,
+    '      if (!template?.retired_at) return', '      if (!template) return']] },
+  { name: 'template purge lets its chats sweep', check: groupAdminSweep, edits: [[deletionFile,
+    '      await this.deleteInstanceById(instance._id, retainUsageFor, { skipLastChatSweep: true })',
+    '      await this.deleteInstanceById(instance._id, retainUsageFor)']] },
+  { name: 'worlds go through the group delete', check: groupWorldRoute, edits: [[controllerFile,
+    "    if (template?.kind === 'group') return deletionService.deleteOwnGroup(params.id, user.id)",
+    '    if (template) return deletionService.deleteOwnGroup(params.id, user.id)']] },
+  { name: 'a second delete removes the retired group', check: groupTwice, edits: [[deletionFile,
+    '    if (template.retired_at) return { deleted: true }\n',
+    '    if (template.retired_at) return this.deleteTemplateById(tid)\n']] },
+]
+mutations.push(...deleteGroupMutations)
 
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {

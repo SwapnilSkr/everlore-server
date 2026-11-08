@@ -64,6 +64,8 @@ export const templateController = {
   }) => {
     const template = await templateService.getById(params.id)
     if (!template) throw new HttpError(404, 'That world could not be found.')
+    // A retired group is closed: the same answer as one that never existed.
+    if (template.retired_at) throw new HttpError(404, 'That group could not be found.')
 
     const isOwner = Boolean(user && idString(template.creator_id) === user.id)
 
@@ -93,7 +95,7 @@ export const templateController = {
       if (error instanceof BadIdError) throw notFound()
       throw error
     }
-    if (!template || template.kind !== 'group' || idString(template.creator_id) !== user.id) {
+    if (!template || template.kind !== 'group' || template.retired_at || idString(template.creator_id) !== user.id) {
       throw notFound()
     }
     // Loaded lazily for the same reason as the draft and the face route: the
@@ -279,6 +281,14 @@ export const templateController = {
     // or the env load this controller, and the face service loads the media
     // pipeline (and the image provider) with it.
     const { requestGroupFace } = await import('../services/group-chat/faces')
+    // A retired group is closed to its own face route too: same 404 body.
+    let stored
+    try {
+      stored = await templateService.getById(params.id)
+    } catch (error) {
+      if (!(error instanceof BadIdError)) throw error
+    }
+    if (stored?.retired_at) throw new HttpError(404, 'That group could not be found.')
     try {
       const result = await requestGroupFace(user.id, params.id, Number(params.index), {
         repaint: query?.repaint === 'true',
@@ -380,6 +390,10 @@ export const templateController = {
     params: { id: string }
   }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
+    // A group its owner deletes is retired, not erased: chats already running
+    // in it keep going. Worlds and characters keep their full removal.
+    const template = await templateService.getById(params.id)
+    if (template?.kind === 'group') return deletionService.deleteOwnGroup(params.id, user.id)
     return deletionService.deleteTemplate(params.id, user.id)
   },
 }
