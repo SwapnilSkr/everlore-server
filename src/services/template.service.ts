@@ -130,7 +130,7 @@ export const templateService = {
     if (kind === 'group') {
       try { validateGroup(data) } catch (error) { throw new HttpError(400, (error as Error).message) }
       // Before the slug, the image and the insert: a refused group writes nothing.
-      const gate = await checkGroupText(groupTextLines(data))
+      const gate = await checkGroupText(groupTextLines(data), { playerId: creatorId })
       if (!gate.ok) {
         throw new HttpError(422, "Some lines in this group can't be saved. Change them and try again.", { paths: gate.paths })
       }
@@ -234,8 +234,12 @@ export const templateService = {
     if (effectiveKind === 'group') {
       try { validateGroup(merged) } catch (error) { throw new HttpError(400, (error as Error).message) }
       // An edit is judged with everything already on the group, not just the
-      // field that changed. Still before the image promotion and the write.
-      const gate = await checkGroupText(groupTextLines(merged))
+      // field that changed. A stored line was saved through this gate, so an
+      // unchanged one is not asked again. Still before the image and the write.
+      const gate = await checkGroupText(groupTextLines(merged), {
+        playerId: creatorId,
+        alreadyPassed: groupTextLines(existing).map((line) => line.text),
+      })
       if (!gate.ok) {
         throw new HttpError(422, "Some lines in this group can't be saved. Change them and try again.", { paths: gate.paths })
       }

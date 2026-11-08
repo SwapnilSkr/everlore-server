@@ -4998,8 +4998,26 @@ const { groupTextLines, checkGroupText, groupTextGateModel } = await import('../
 const originalGateModel = process.env.GROUP_TEXT_GATE_MODEL
 process.env.GROUP_TEXT_GATE_MODEL = 'fixture-text-gate-model'
 let gateReplies: Array<string | Error> = [], gateRequests: Array<Parameters<typeof textGateEffects.call>[0]> = [], gateWaits = 0
+// In-memory standing in for Redis: the keys and nothing but the keys.
+let gateMemory = new Set<string>(), gateRemembered: string[] = []
+function resetGateMemory() {
+  gateMemory = new Set(); gateRemembered = []
+  textGateEffects.recall = async (keys) => keys.map((key) => gateMemory.has(key))
+  textGateEffects.remember = async (keys) => {
+    gateRemembered.push(...keys)
+    for (const key of keys) gateMemory.add(key)
+  }
+}
+/** A responder that would refuse every line; used to prove a save asks nothing. */
+function gateRefusesEverything() {
+  textGateEffects.call = async (request) => {
+    gateRequests.push(request)
+    return JSON.stringify({ verdict: 'reject', rejected: gateLines(request).map((line) => line.handle) })
+  }
+}
 function resetGate(replies: Array<string | Error> = []) {
   gateReplies = [...replies]; gateRequests = []; gateWaits = 0
+  resetGateMemory()
   textGateEffects.call = async (request) => {
     gateRequests.push(request)
     const reply = gateReplies.shift()
@@ -5153,8 +5171,8 @@ await check('group update gates the merged template and stores nothing on a refu
   rows('worldTemplates').push(stored as unknown as Row)
   textGateEffects.call = async (request) => {
     gateRequests.push(request)
-    const lines = gateLines(request)
-    assert(lines.some((line) => line.text === stored.global_lore))
+    // A stored line was already saved through this gate: the edit alone is asked.
+    assert(!gateLines(request).some((line) => line.text === stored.global_lore))
     const handle = handleFor(request, 'A later line.')
     return JSON.stringify({ verdict: 'reject', rejected: [handle] })
   }
@@ -5182,7 +5200,7 @@ await check('normal world saves never call the group text gate', async () => {
 })
 await check('group text gate returns one allow without a call for no lines', async () => {
   resetGate()
-  assert.deepEqual(await checkGroupText([]), { ok: true })
+  assert.deepEqual(await checkGroupText([], { playerId }), { ok: true })
   assert.equal(gateRequests.length, 0)
 })
 // The model's reasoning can run past its token budget and come back empty. That
@@ -5190,20 +5208,20 @@ await check('group text gate returns one allow without a call for no lines', asy
 const emptyGateAnswer = () => new EmptyLLMResponseError({ finishReason: 'length' })
 await check('group text gate retries an empty answer once and then allows', async () => {
   resetGate([emptyGateAnswer()])
-  assert.deepEqual(await checkGroupText([{ path: 'description', text: 'A line.' }]), { ok: true })
+  assert.deepEqual(await checkGroupText([{ path: 'description', text: 'A line.' }], { playerId }), { ok: true })
   assert.equal(gateWaits, 1)
   assert.equal(gateRequests.length, 2)
 })
 await check('group text gate two empty answers return 503 after two calls', async () => {
   resetGate([emptyGateAnswer(), emptyGateAnswer()])
-  await assert.rejects(checkGroupText([{ path: 'description', text: 'A line.' }]),
+  await assert.rejects(checkGroupText([{ path: 'description', text: 'A line.' }], { playerId }),
     gateStatus(503, 'Try again in a moment.'))
   assert.equal(gateWaits, 1)
   assert.equal(gateRequests.length, 2)
 })
 await check('group text gate an empty answer then a malformed verdict fails closed', async () => {
   resetGate([emptyGateAnswer(), 'not json at all'])
-  assert.deepEqual(await checkGroupText([{ path: 'description', text: 'A line.' }]),
+  assert.deepEqual(await checkGroupText([{ path: 'description', text: 'A line.' }], { playerId }),
     { ok: false, paths: ['description'] })
   assert.equal(gateWaits, 1)
   assert.equal(gateRequests.length, 2, 'a malformed verdict is never asked again')
@@ -6772,6 +6790,7 @@ function draftPersonName(request: Row): string {
 function draftGate(responder: (request: Parameters<typeof textGateEffects.call>[0]) => string | Error = () => JSON.stringify({ verdict: 'allow', rejected: [] })) {
   gateRequests = []
   gateWaits = 0
+  resetGateMemory()
   textGateEffects.call = async (request) => {
     gateRequests.push(request)
     const answer = responder(request)
@@ -6788,6 +6807,235 @@ function rejectMarker(marker: string) {
       : JSON.stringify({ verdict: 'allow', rejected: [] })
   })
 }
+
+// ── the gate remembers what it passed (§9a, cag-7) ────────────────────────
+// A line that passed during drafting is the same line on save: the second ask
+// must not happen, and the memory is per player and per model.
+const allowAll = async (request: Parameters<typeof textGateEffects.call>[0]) => {
+  gateRequests.push(request)
+  return JSON.stringify({ verdict: 'allow', rejected: [] })
+}
+function draftForMemoryTest(form: ReturnType<typeof draftForm>) {
+  stubDraft((request) => isGroupCall(request) ? groupDraftReply(form) : personDraftReply(form, draftPersonIndex(request)))
+}
+
+await check('group gate a passed draft saves with no model call even when the model would refuse', async () => {
+  resetSaveTables(); draftGate()
+  const form = draftForm(2)
+  draftForMemoryTest(form)
+  const draft = await draftGroup(form, playerId)
+  const texts = new Set(groupTextLines(draft as never).map((line) => line.text))
+  assert.equal(gateRequests.length, 1)
+  assert.equal(new Set(gateRemembered).size, texts.size, 'every passed line is remembered')
+  gateRequests = []
+  gateRefusesEverything()
+  const saved = await templateService.create(playerId, draft as never)
+  assert.equal(saved.kind, 'group')
+  assert.equal(gateRequests.length, 0, 'a save of a passed draft must not ask the model')
+  assert.equal(rows('worldTemplates').length, 1)
+})
+
+await check('group gate a save sends only the one changed line under its real path', async () => {
+  resetSaveTables(); draftGate()
+  const form = draftForm(2)
+  draftForMemoryTest(form)
+  const draft = await draftGroup(form, playerId)
+  const changed = { ...draft, description: `${draft.description}!` }
+  assert.notEqual(changed.description, draft.description)
+  gateRequests = []
+  textGateEffects.call = async (request) => {
+    gateRequests.push(request)
+    return JSON.stringify({ verdict: 'reject', rejected: [1] })
+  }
+  await assert.rejects(templateService.create(playerId, changed as never), (error: unknown) => {
+    const failure = error as { statusCode?: number; details?: { paths?: string[] } }
+    assert.equal(failure.statusCode, 422)
+    assert.deepEqual(failure.details?.paths, ['description'])
+    return true
+  })
+  assert.equal(gateRequests.length, 1)
+  assert.deepEqual(gateLines(gateRequests[0]).map((line) => line.text), [changed.description], 'only the changed line is sent')
+  assert.deepEqual(gateLines(gateRequests[0]).map((line) => line.handle), [1], 'handles number the lines sent from one')
+  assert.equal(rows('worldTemplates').length, 0)
+})
+
+await check('group gate another player asks the same draft lines fresh', async () => {
+  resetSaveTables(); draftGate()
+  const form = draftForm(2)
+  draftForMemoryTest(form)
+  const draft = await draftGroup(form, playerId)
+  textGateEffects.call = allowAll
+  await templateService.create(playerId, draft as never)
+  const otherPlayerId = new ObjectId().toHexString()
+  rows('users').push({ _id: new ObjectId(otherPlayerId), guest: false })
+  gateRequests = []
+  textGateEffects.call = allowAll
+  await templateService.create(otherPlayerId, draft as never)
+  assert.equal(gateRequests.length, 1)
+  assert.deepEqual(gateLines(gateRequests[0]).map((line) => line.text), groupTextLines(draft as never).map((line) => line.text))
+})
+
+await check('group gate a different model misses the memory', async () => {
+  resetSaveTables(); draftGate()
+  const original = process.env.GROUP_TEXT_GATE_MODEL
+  try {
+    process.env.GROUP_TEXT_GATE_MODEL = 'first-gate-model'
+    const form = draftForm(2)
+    draftForMemoryTest(form)
+    const draft = await draftGroup(form, playerId)
+    assert.equal(gateRequests[0]!.model, 'first-gate-model')
+    textGateEffects.call = allowAll
+    await templateService.create(playerId, draft as never)
+    assert.equal(gateRequests.length, 1, 'the same model is not asked again')
+    process.env.GROUP_TEXT_GATE_MODEL = 'second-gate-model'
+    gateRequests = []
+    textGateEffects.call = allowAll
+    await templateService.create(playerId, draft as never)
+    assert.equal(gateRequests.length, 1, 'a different model asks every line')
+    assert.equal(gateRequests[0]!.model, 'second-gate-model')
+    assert.deepEqual(gateLines(gateRequests[0]).map((line) => line.text), groupTextLines(draft as never).map((line) => line.text))
+  } finally {
+    if (original === undefined) delete process.env.GROUP_TEXT_GATE_MODEL
+    else process.env.GROUP_TEXT_GATE_MODEL = original
+  }
+})
+
+const gateFixtureLine = [{ path: 'description', text: 'A line the gate must judge.' }]
+await check('group gate remembers nothing when the answer is not a verdict or the call fails', async () => {
+  const scenarios: Array<{ label: string; replies: Array<string | Error> }> = [
+    { label: 'an unreadable answer', replies: ['not json at all'] },
+    { label: 'a bad handle', replies: [JSON.stringify({ verdict: 'reject', rejected: [99] })] },
+    { label: 'an empty answer twice', replies: [emptyGateAnswer(), emptyGateAnswer()] },
+    { label: 'a 503 twice', replies: [
+      Object.assign(new Error('Fixture provider failure'), { status: 500 }),
+      Object.assign(new Error('Fixture provider failure'), { status: 500 }),
+    ] },
+  ]
+  for (const scenario of scenarios) {
+    resetGate([...scenario.replies])
+    try { await checkGroupText(gateFixtureLine, { playerId }) } catch { /* a transport failure is its own outcome */ }
+    assert.deepEqual(gateRemembered, [], `${scenario.label} must remember nothing`)
+    // Nothing was remembered, so the next ask reaches the model again.
+    gateRequests = []
+    textGateEffects.call = allowAll
+    assert.deepEqual(await checkGroupText(gateFixtureLine, { playerId }), { ok: true })
+    assert.equal(gateRequests.length, 1, `${scenario.label} must leave the line to be asked`)
+  }
+})
+
+await check('group gate a reject remembers the others and asks only the refused line again', async () => {
+  resetGate([JSON.stringify({ verdict: 'reject', rejected: [2] })])
+  const lines = [
+    { path: 'description', text: 'A line the gate passes.' },
+    { path: 'global_lore', text: 'A line the gate refuses.' },
+  ]
+  assert.deepEqual(await checkGroupText(lines, { playerId }), { ok: false, paths: ['global_lore'] })
+  assert.equal(gateRemembered.length, 1, 'only the line it passed is remembered')
+  gateRequests = []
+  textGateEffects.call = allowAll
+  assert.deepEqual(await checkGroupText(lines, { playerId }), { ok: true })
+  assert.equal(gateRequests.length, 1)
+  assert.deepEqual(gateLines(gateRequests[0]).map((line) => line.text), ['A line the gate refuses.'])
+  assert.deepEqual(gateLines(gateRequests[0]).map((line) => line.handle), [1])
+  assert.equal(gateRemembered.length, 2, 'the allow remembers the line it was just asked')
+})
+
+// The memory key is the exact text, and the same text can sit at two paths
+// (`first_texts` and statuses repeat). A refusal of one handle must never let the
+// other handle's identical words mark the refused text as passed.
+await check('group gate a refused text is not remembered through its twin at another path', async () => {
+  const text = 'The same line in two places.'
+  // The key is minted by the gate itself: capture it from a line the gate allows.
+  resetGate()
+  assert.deepEqual(await checkGroupText([{ path: 'description', text }], { playerId }), { ok: true })
+  assert.equal(gateRemembered.length, 1)
+  const refusedKey = gateRemembered[0]!
+  resetGate()
+  const refuseFirst = async (request: Parameters<typeof textGateEffects.call>[0]) => {
+    gateRequests.push(request)
+    return JSON.stringify({ verdict: 'reject', rejected: [1] })
+  }
+  textGateEffects.call = refuseFirst
+  const lines = [
+    { path: 'description', text },
+    { path: 'global_lore', text },
+  ]
+  assert.deepEqual(await checkGroupText(lines, { playerId }), { ok: false, paths: ['description'] })
+  assert.equal(gateRemembered.length, 0, 'a refused text is never remembered through its twin')
+  assert(!new Set(gateRemembered).has(refusedKey), 'the refused text has no memory key')
+  assert.equal(gateRequests.length, 1)
+  // Asked again, every line carrying that text is sent, and a second refusal stands.
+  assert.deepEqual(await checkGroupText(lines, { playerId }), { ok: false, paths: ['description'] })
+  assert.equal(gateRequests.length, 2)
+  assert.deepEqual(gateLines(gateRequests[1]).map((line) => line.text), [text, text])
+  assert.deepEqual(gateLines(gateRequests[1]).map((line) => line.handle), [1, 2])
+})
+
+await check('group gate a failed or short recall asks every line and keeps the verdict', async () => {
+  resetGate()
+  const lines = [
+    { path: 'description', text: 'A line that stays.' },
+    { path: 'global_lore', text: 'A line that refuses.' },
+  ]
+  assert.deepEqual(await checkGroupText(lines, { playerId }), { ok: true })
+  assert.equal(gateRemembered.length, 2)
+  const realRecall = textGateEffects.recall
+  const refuseSecond = async (request: Parameters<typeof textGateEffects.call>[0]) => {
+    gateRequests.push(request)
+    return JSON.stringify({ verdict: 'reject', rejected: [2] })
+  }
+  try {
+    for (const label of ['a throwing recall', 'a short recall']) {
+      gateRequests = []
+      textGateEffects.recall = label === 'a throwing recall'
+        ? async () => { throw new Error('Fixture recall failure') }
+        : async () => []
+      textGateEffects.call = refuseSecond
+      assert.deepEqual(await checkGroupText(lines, { playerId }), { ok: false, paths: ['global_lore'] }, label)
+      assert.equal(gateRequests.length, 1, label)
+      assert.deepEqual(gateLines(gateRequests[0]).map((line) => line.text), lines.map((line) => line.text), label)
+    }
+  } finally {
+    textGateEffects.recall = realRecall
+  }
+})
+
+await check('group gate a failed remember leaves the verdict unchanged', async () => {
+  resetGate()
+  const realRemember = textGateEffects.remember
+  textGateEffects.remember = async () => { throw new Error('Fixture remember failure') }
+  try {
+    assert.deepEqual(await checkGroupText([{ path: 'description', text: 'A line that passes.' }], { playerId }), { ok: true })
+  } finally {
+    textGateEffects.remember = realRemember
+  }
+})
+
+await check('group update leaves out stored lines and asks the edited and the new one', async () => {
+  resetSaveTables(); resetGate()
+  const stored = { ...groupTemplate(), _id: new ObjectId(), creator_id: new ObjectId(playerId) }
+  rows('worldTemplates').push(stored)
+  const edited = 'An edited description.'
+  const added = 'A new piece of shared history.'
+  textGateEffects.call = allowAll
+  await templateService.update(String(stored._id), playerId, { description: edited, global_lore: added })
+  assert.equal(gateRequests.length, 1)
+  assert.deepEqual(gateLines(gateRequests[0]).map((line) => line.text), [edited, added], 'an unchanged stored line is not sent')
+  assert.deepEqual(gateLines(gateRequests[0]).map((line) => line.handle), [1, 2])
+})
+
+await check('group gate memory keys carry no player words', async () => {
+  resetSaveTables(); draftGate()
+  const form = draftForm(2)
+  draftForMemoryTest(form)
+  const draft = await draftGroup(form, playerId)
+  assert(gateRemembered.length > 0)
+  const texts = groupTextLines(draft as never).map((line) => line.text)
+  for (const key of gateRemembered) {
+    assert.match(key, /^group_gate_ok:[^:]+:[0-9a-f]{64}$/)
+    for (const text of texts) assert(!key.includes(text), `a memory key carries player words: ${key}`)
+  }
+})
 
 const originalReserve = billingService.reserve
 const originalRelease = billingService.release
@@ -6825,7 +7073,7 @@ await check('group draft happy path for two and six people', async () => {
     stubDraft((request) => isGroupCall(request)
       ? groupDraftReply(form)
       : personDraftReply(form, draftPersonIndex(request)))
-    const draft = await draftGroup(form)
+    const draft = await draftGroup(form, playerId)
     const groups = draftRequests.filter(isGroupCall)
     const people = draftRequests.filter((request) => !isGroupCall(request))
     assert.equal(groups.length, 1)
@@ -6891,7 +7139,7 @@ await check('group draft mints name age bond and talkativeness from the form', a
       group: { age: 99, start_bond: 'family_warm' },
       talkativeness: draftPersonIndex(request) === 0 ? 5 : 'lots',
     }))
-  const draft = await draftGroup(form)
+  const draft = await draftGroup(form, playerId)
   const [first, second] = draft.seed_cast
   assert.equal(first!.name, form.people[0]!.name)
   assert.equal(first!.group.age, form.people[0]!.age)
@@ -6921,7 +7169,7 @@ await check('group draft adult voice is plain then explicit and a safe group has
         intimacy: 'This must be dropped for a safe group.',
         voice: { plain: [...DRAFT_PLAIN], explicit: [...DRAFT_EXPLICIT] },
       }))
-    const draft = await draftGroup(form)
+    const draft = await draftGroup(form, playerId)
     const member = draft.seed_cast[0]!
     assert.equal(draft.is_nsfw_capable, adult)
     if (adult) {
@@ -6945,7 +7193,7 @@ await check('group draft shape failure redrafts once then fails with 422 and rel
     if (!isGroupCall(request)) return personDraftReply(form, draftPersonIndex(request))
     return groupAttempts++ === 0 ? groupDraftReplyBad(form) : groupDraftReply(form)
   })
-  const draft = await draftGroup(form)
+  const draft = await draftGroup(form, playerId)
   assert.equal(groupAttempts, 2)
   assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 2)
   validateGroup(draft as never)
@@ -6983,7 +7231,7 @@ await check('group draft a voice line naming its speaker redrafts that person', 
     if (personOne > 1) return personDraftReply(form, index)
     return personDraftReply(form, index, { voice: { plain: ['Ben should not say this.', 'I put the kettle on.'], explicit: [...DRAFT_EXPLICIT] } })
   })
-  const draft = await draftGroup(form)
+  const draft = await draftGroup(form, playerId)
   assert.equal(personOne, 2)
   assert.equal(draftRequests.filter(isGroupCall).length, 1)
   assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 4)
@@ -7001,7 +7249,7 @@ await check('group draft gate refuses one person then twice fails and releases',
     personOne++
     return personOne === 1 ? personDraftWithMarker(form, index) : personDraftReply(form, index)
   })
-  const draft = await draftGroup(form)
+  const draft = await draftGroup(form, playerId)
   assert.equal(personOne, 2)
   assert.equal(draftRequests.filter(isGroupCall).length, 1)
   assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 4)
@@ -7054,7 +7302,7 @@ await check('group draft shape miss logs its call and reason then fails', async 
     return index === 1 ? selfNaming(index) : personDraftReply(form, index)
   })
   const before = memoryLogs.length
-  await assert.rejects(draftGroup(form), draftError(422, DRAFT_FAILED))
+  await assert.rejects(draftGroup(form, playerId), draftError(422, DRAFT_FAILED))
   const logged = memoryLogs.slice(before)
   assert.deepEqual(logged.map((entry) => entry.name),
     ['group_draft.shape_miss', 'group_draft.shape_miss', 'group_draft.failed'])
@@ -7080,7 +7328,7 @@ await check('group draft a gate refusal logs its stage and paths', async () => {
     return index === 1 ? personDraftWithMarker(form, index) : personDraftReply(form, index)
   })
   const before = memoryLogs.length
-  await assert.rejects(draftGroup(form), draftError(422, DRAFT_FAILED))
+  await assert.rejects(draftGroup(form, playerId), draftError(422, DRAFT_FAILED))
   const logged = memoryLogs.slice(before)
   assert.deepEqual(logged.map((entry) => entry.name), ['group_draft.failed'])
   assert.deepEqual(logged[0], { name: 'group_draft.failed', stage: 'gate', paths: ['seed_cast.1.group.voice.0'] })
@@ -7126,7 +7374,7 @@ await check('group draft a refused group path redrafts the group once', async ()
     }
     return personDraftReply(form, draftPersonIndex(request))
   })
-  const draft = await draftGroup(form)
+  const draft = await draftGroup(form, playerId)
   assert.equal(groupAttempts, 2)
   assert.equal(draftRequests.filter(isGroupCall).length, 2)
   assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 2)
@@ -7139,7 +7387,7 @@ await check('group draft opening lines naming strangers are dropped and too few 
   stubDraft((request) => isGroupCall(request)
     ? groupDraftReplyWithStrangers(form, 3, 2)
     : personDraftReply(form, draftPersonIndex(request)))
-  const draft = await draftGroup(form)
+  const draft = await draftGroup(form, playerId)
   assert.equal(draft.opening_lines.length, 3)
   for (const line of draft.opening_lines) {
     assert(form.people.some((person) => person.name === line.name), `opening line names ${line.name}`)
@@ -7152,7 +7400,7 @@ await check('group draft opening lines naming strangers are dropped and too few 
     groupAttempts++
     return groupDraftReplyWithStrangers(form, 2, 2)
   })
-  await assert.rejects(draftGroup(form), draftError(422, DRAFT_FAILED))
+  await assert.rejects(draftGroup(form, playerId), draftError(422, DRAFT_FAILED))
   assert.equal(groupAttempts, 2)
   assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 0)
 })
@@ -7347,7 +7595,7 @@ await check('group draft appearance opens with the form age in digits', async ()
       personOne++
       return personOne === 1 ? wrong(form, index) : personDraftReply(form, index)
     })
-    const draft = await draftGroup(form)
+    const draft = await draftGroup(form, playerId)
     assert.equal(personOne, 2, `${label}: the person must be redrafted once`)
     assert.equal(draftRequests.filter((request) => !isGroupCall(request)).length, 4, label)
     assert.equal(/^(\d+)(?!\d)/.exec(draft.seed_cast[1]!.appearance)?.[1], String(form.people[1]!.age), `${label}: the fixed look wins`)
@@ -7362,7 +7610,7 @@ await check('group draft appearance opens with the form age in digits', async ()
       const index = draftPersonIndex(request)
       return index === 1 ? (personOne++, wrong(form, index)) : personDraftReply(form, index)
     })
-    await assert.rejects(draftGroup(form), draftError(422, DRAFT_FAILED), label)
+    await assert.rejects(draftGroup(form, playerId), draftError(422, DRAFT_FAILED), label)
     assert.equal(personOne, 2, `${label}: a second miss fails the draft`)
   }
 })

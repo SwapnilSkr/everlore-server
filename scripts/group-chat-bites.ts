@@ -925,27 +925,40 @@ mutations.push(...artMutations)
 const groupGateFile = 'src/services/group-chat/text-gate.ts', templateFile = 'src/services/template.service.ts'
 const gateFailsClosed = 'group text gate fails closed'
 const gateMutations: Mutation[] = [
-  { name: 'group gate ignores a malformed verdict', check: gateFailsClosed, edits: [[groupGateFile, "if (report.verdict !== 'allow' && report.verdict !== 'reject') return failClosed(lines)", "if (report.verdict !== 'allow' && report.verdict !== 'reject') return { ok: true }"]] },
+  { name: 'group gate ignores a malformed verdict', check: gateFailsClosed, edits: [[groupGateFile, "if (report.verdict !== 'allow' && report.verdict !== 'reject') return failed()", "if (report.verdict !== 'allow' && report.verdict !== 'reject') return { verdict: { ok: true }, real: true }"]] },
   { name: 'group gate accepts an unknown handle', check: gateFailsClosed, edits: [[groupGateFile, 'handle >= 1 && handle <= lines.length', 'handle >= 1']] },
-  { name: 'group gate accepts an empty reject list', check: gateFailsClosed, edits: [[groupGateFile, "if (report.verdict === 'reject' && handles.length === 0) return failClosed(lines)", 'if (false) return failClosed(lines)']] },
+  { name: 'group gate accepts an empty reject list', check: gateFailsClosed, edits: [[groupGateFile, "if (report.verdict === 'reject' && handles.length === 0) return failed()", 'if (false) return failed()']] },
   { name: 'group gate returns every path for one refusal', check: 'group text gate rejects only the refused line', edits: [[groupGateFile, 'lines.filter((_, index) => rejected.has(index + 1)).map((line) => line.path)', 'lines.map((line) => line.path)']] },
   { name: 'group gate retries no rate limit', check: 'group text gate retries a rate limit', edits: [[groupGateFile, 'if (attempt === 0 && (error instanceof EmptyLLMResponseError || status === 429', 'if (false && (error instanceof EmptyLLMResponseError || status === 429']] },
   { name: 'group gate stores after a transport failure', check: 'group text gate transport failure twice', edits: [[groupGateFile, "throw new HttpError(503, 'Try again in a moment.')", 'return failClosed(lines)']] },
-  { name: 'group gate create skipped', check: 'group text gate allows a save', edits: [[templateFile, 'const gate = await checkGroupText(groupTextLines(data))', 'const gate = await checkGroupText([])']] },
-  { name: 'group gate request carries the paths', check: 'group text gate request carries every written line', edits: [[groupGateFile, 'lines.map((line, index) => ({ handle: index + 1, text: line.text }))', 'lines.map((line, index) => ({ handle: index + 1, text: line.text, path: line.path }))']] },
+  { name: 'group gate create skipped', check: 'group text gate allows a save', edits: [[templateFile, 'const gate = await checkGroupText(groupTextLines(data), { playerId: creatorId })', 'const gate = await checkGroupText([], { playerId: creatorId })']] },
+  { name: 'group gate request carries the paths', check: 'group text gate request carries every written line', edits: [[groupGateFile, 'sent.map((line, index) => ({ handle: index + 1, text: line.text }))', 'sent.map((line, index) => ({ handle: index + 1, text: line.text, path: line.path }))']] },
   { name: 'group gate allowed case demoted', check: 'group text gate prompt leads with the allowed case', edits: [[groupGateFile, 'These lines are written for a fictional adult group chat. Explicit sex between consenting adults is allowed', 'These lines are written for a fictional adult group chat. Explicit sex between consenting adults is usually allowed']] },
-  { name: 'group update gates only the edit', check: 'group update gates the merged template', edits: [[templateFile, 'const gate = await checkGroupText(groupTextLines(merged))', 'const gate = await checkGroupText(groupTextLines(data))']] },
+  { name: 'group update gates the stored template not the edit', check: 'group update gates the merged template', edits: [[templateFile, 'const gate = await checkGroupText(groupTextLines(merged), {', 'const gate = await checkGroupText(groupTextLines(existing), {']] },
   { name: 'normal saves reach the group gate', check: 'normal world saves never call the group text gate', edits: [[templateFile, "if (kind === 'group') {\n      try { validateGroup(data) }", "if (true) {\n      try { validateGroup(data) }"]] },
-  { name: 'group gate calls with no lines', check: 'group text gate returns one allow without a call for no lines', edits: [[groupGateFile, 'if (lines.length === 0) return { ok: true }', 'if (false) return { ok: true }']] },
+  { name: 'group gate calls with no lines', check: 'group text gate returns one allow without a call for no lines', edits: [[groupGateFile, 'if (remaining.length === 0) return { ok: true }', 'if (false) return { ok: true }'], [groupGateFile, 'if (sent.length === 0) return { ok: true }', 'if (false) return { ok: true }']] },
   { name: 'group gate sent the media moderation model', check: 'group text gate allows a save', edits: [
     [groupGateFile, "import { HttpError } from '../../utils/http-error'", "import { HttpError } from '../../utils/http-error'\nimport { moderationModel } from '../media/config'"],
-    [groupGateFile, 'model: groupTextGateModel(),', 'model: moderationModel(),'],
+    [groupGateFile, '        model,\n        responseSchema: GATE_SCHEMA,', '        model: moderationModel(),\n        responseSchema: GATE_SCHEMA,'],
   ] },
   { name: 'group gate token budget back to 512', check: 'group text gate allows a save', edits: [[groupGateFile, 'maxTokens: 4096,', 'maxTokens: 512,']] },
   { name: 'group gate never retries an empty answer', check: 'group text gate retries an empty answer', edits: [[groupGateFile, 'error instanceof EmptyLLMResponseError || ', '']] },
   { name: 'group gate retries an empty answer with no wait', check: 'group text gate retries an empty answer', edits: [[groupGateFile, '        await textGateEffects.wait(GATE_RETRY_WAIT_MS)\n        continue', '        continue']] },
   { name: 'group gate retries an empty answer more than once', check: 'group text gate two empty answers', edits: [[groupGateFile, 'if (attempt === 0 && (error instanceof EmptyLLMResponseError', 'if (attempt < 9 && (error instanceof EmptyLLMResponseError']] },
-  { name: 'group gate empty then malformed is allowed', check: 'group text gate an empty answer then a malformed', edits: [[groupGateFile, '  return parseVerdict(answer, lines)', '  return { ok: true }']] },
+  { name: 'group gate empty then malformed is allowed', check: 'group text gate an empty answer then a malformed', edits: [[groupGateFile, '  return parsed.verdict', '  return { ok: true }']] },
+
+  { name: 'group gate save asks a passed line again', check: 'group gate a passed draft saves', edits: [[groupGateFile, '    const read = await textGateEffects.recall(keys)', '    const read = keys.map(() => false)']] },
+  { name: 'group gate save sends every line', check: 'group gate a save sends only the one changed line', edits: [[groupGateFile, 'const sent = remaining.filter((_, index) => !remembered[index])', 'const sent = remaining']] },
+  { name: 'group gate numbers handles over the full list', check: 'group gate a save sends only the one changed line', edits: [[groupGateFile, 'sent.map((line, index) => ({ handle: index + 1, text: line.text }))', 'sent.map((line) => ({ handle: lines.indexOf(line) + 1, text: line.text }))']] },
+  { name: 'group gate memory key leaves the player out', check: 'group gate another player asks', edits: [[groupGateFile, 'return `group_gate_ok:${playerId}:${hash}`', 'return `group_gate_ok:${hash}`']] },
+  { name: 'group gate memory key leaves the model out', check: 'group gate a different model misses', edits: [[groupGateFile, "`${model}\\0${GROUP_TEXT_GATE_PROMPT}\\0${text}`", "`${GROUP_TEXT_GATE_PROMPT}\\0${text}`"]] },
+  { name: 'group gate remembers before it parses', check: 'group gate remembers nothing', edits: [[groupGateFile, '  const parsed = parseVerdict(answer, sent)', '  await textGateEffects.remember(sent.map((line) => gateMemoryKey(memory.playerId, model, line.text)))\n  const parsed = parseVerdict(answer, sent)']] },
+  { name: 'group gate remembers every sent line on a reject', check: 'group gate a reject remembers', edits: [[groupGateFile, 'const passed = sent.filter((line) => !refusedTexts.has(line.text))', 'const passed = sent']] },
+  { name: 'group gate remembers a refused text through its twin', check: 'group gate a refused text is not remembered through its twin', edits: [[groupGateFile, 'const passed = sent.filter((line) => !refusedTexts.has(line.text))', 'const passed = sent.filter((line) => !refusedPaths.has(line.path))']] },
+  { name: 'group gate treats a recall failure as all remembered', check: 'group gate a failed or short recall', edits: [[groupGateFile, 'let remembered: boolean[] = remaining.map(() => false)', 'let remembered: boolean[] = remaining.map(() => true)']] },
+  { name: 'group gate lets a failed write change the verdict', check: 'group gate a failed remember leaves', edits: [[groupGateFile, '  try {\n    await textGateEffects.remember(keys)\n  } catch {', '  await textGateEffects.remember(keys)\n  if (false) {']] },
+  { name: 'group update asks every stored line again', check: 'group update leaves out stored lines', edits: [[templateFile, 'alreadyPassed: groupTextLines(existing).map((line) => line.text),', 'alreadyPassed: [],']] },
+  { name: 'group gate memory key carries the line', check: 'group gate memory keys carry no player words', edits: [[groupGateFile, 'return `group_gate_ok:${playerId}:${hash}`', 'return `group_gate_ok:${playerId}:${text}`']] },
 ]
 mutations.push(...gateMutations)
 
@@ -1262,7 +1275,7 @@ const draftMutations: Mutation[] = [
     `    try {
       // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
       const { draftGroup } = await import('../services/group-chat/draft')
-      return { draft: await draftGroup(body) }
+      return { draft: await draftGroup(body, user.id) }
     } catch (error) {
       for (const reservation of reservations) await billingService.release(user.id, reservation)
       throw error
@@ -1270,13 +1283,13 @@ const draftMutations: Mutation[] = [
     `    try {
       // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
       const { draftGroup } = await import('../services/group-chat/draft')
-      return { draft: await draftGroup(body) }
+      return { draft: await draftGroup(body, user.id) }
     } catch (error) {
       throw error
     }`]] },
   { name: 'draft gate transport error swallowed', check: draftGate503, edits: [[draftFile,
-    '  return checkGroupText(groupTextLines(draft as unknown as Partial<WorldTemplateDoc>))',
-    '  try { return await checkGroupText(groupTextLines(draft as unknown as Partial<WorldTemplateDoc>)) } catch { return { ok: true } }']] },
+    '  return checkGroupText(groupTextLines(draft as unknown as Partial<WorldTemplateDoc>), { playerId })',
+    '  try { return await checkGroupText(groupTextLines(draft as unknown as Partial<WorldTemplateDoc>), { playerId }) } catch { return { ok: true } }']] },
   { name: 'draft refused group not redrafted', check: draftGateGroup, edits: [[draftFile, '  if (groupRefused) group = await draftGroupWords(form, 1)', '  if (false) group = await draftGroupWords(form, 1)']] },
   { name: 'draft opening line stranger kept', check: draftOpenings, edits: [[draftFile, '    if (name === undefined) continue', '    if (name === undefined) shape()']] },
   { name: 'draft too few opening lines accepted', check: draftOpenings, edits: [[draftFile, "  if (opening.length < 3 || opening.length > 6) shape('group_opening_count')", "  if (opening.length > 6) shape('group_opening_count')"]] },
@@ -1315,20 +1328,20 @@ const draftMutations: Mutation[] = [
     try {
       // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
       const { draftGroup } = await import('../services/group-chat/draft')
-      return { draft: await draftGroup(body) }`,
+      return { draft: await draftGroup(body, user.id) }`,
     `    } catch (error) {
       throw error
     }
     try {
       // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
       const { draftGroup } = await import('../services/group-chat/draft')
-      return { draft: await draftGroup(body) }`]] },
+      return { draft: await draftGroup(body, user.id) }`]] },
   { name: 'draft reserves the wrong Ink action', check: draftInk, edits: [[draftController, "          'group_draft_person',", "          'character_autofill',"]] },
   { name: 'draft Ink cost key missing', check: draftInk, edits: [[draftCatalog, '    group_draft_person: 12,\n', '']] },
   { name: 'draft route reads world templates', check: draftNoWorlds, edits: [[draftController,
-    '      return { draft: await draftGroup(body) }',
+    '      return { draft: await draftGroup(body, user.id) }',
     `      await templateService.getById('000000000000000000000001')
-      return { draft: await draftGroup(body) }`]] },
+      return { draft: await draftGroup(body, user.id) }`]] },
   { name: 'draft provider failure blames the player', check: draftProvider, edits: [[draftFile,
     "    throw new HttpError(503, 'Try again in a moment.')",
     '    return failed()']] },
@@ -1339,7 +1352,7 @@ const draftMutations: Mutation[] = [
     `    try {
       // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
       const { draftGroup } = await import('../services/group-chat/draft')
-      return { draft: await draftGroup(body) }
+      return { draft: await draftGroup(body, user.id) }
     } catch (error) {
       for (const reservation of reservations) await billingService.release(user.id, reservation)
       throw error
@@ -1347,7 +1360,7 @@ const draftMutations: Mutation[] = [
     `    try {
       // Loaded lazily: audits that stub \`src/ai\` or the env load this controller.
       const { draftGroup } = await import('../services/group-chat/draft')
-      return { draft: await draftGroup(body) }
+      return { draft: await draftGroup(body, user.id) }
     } catch (error) {
       throw error
     }`]] },

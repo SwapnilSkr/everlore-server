@@ -478,7 +478,7 @@ function refusedPerson(path: string): number | null {
   return match ? Number(match[1]) : null
 }
 
-async function gate(draft: GroupDraft): Promise<{ ok: true } | { ok: false; paths: string[] }> {
+async function gate(draft: GroupDraft, playerId: string): Promise<{ ok: true } | { ok: false; paths: string[] }> {
   try {
     validateGroup(draft as unknown as WorldTemplateDoc)
   } catch (error) {
@@ -486,17 +486,17 @@ async function gate(draft: GroupDraft): Promise<{ ok: true } | { ok: false; path
     // field at most: none carries a player value or a model reply.
     failed('validate', { message: (error as Error).message })
   }
-  return checkGroupText(groupTextLines(draft as unknown as Partial<WorldTemplateDoc>))
+  return checkGroupText(groupTextLines(draft as unknown as Partial<WorldTemplateDoc>), { playerId })
 }
 
-export async function draftGroup(form: GroupDraftInput): Promise<GroupDraft> {
+export async function draftGroup(form: GroupDraftInput, playerId: string): Promise<GroupDraft> {
   let group = await draftGroupWords(form, MAX_ATTEMPTS)
   const people = await Promise.all(
     form.people.map((person) => draftPersonWords(form, person, group, MAX_ATTEMPTS)),
   )
 
   let draft = assemble(form, group, people)
-  let verdict = await gate(draft)
+  let verdict = await gate(draft, playerId)
   if (verdict.ok) return draft
 
   const refused = new Set(
@@ -517,7 +517,7 @@ export async function draftGroup(form: GroupDraftInput): Promise<GroupDraft> {
   }
 
   draft = assemble(form, group, people)
-  verdict = await gate(draft)
+  verdict = await gate(draft, playerId)
   if (!verdict.ok) failed('gate', { paths: verdict.paths })
   return draft
 }

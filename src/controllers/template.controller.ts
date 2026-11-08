@@ -250,7 +250,7 @@ export const templateController = {
     try {
       // Loaded lazily: audits that stub `src/ai` or the env load this controller.
       const { draftGroup } = await import('../services/group-chat/draft')
-      return { draft: await draftGroup(body) }
+      return { draft: await draftGroup(body, user.id) }
     } catch (error) {
       for (const reservation of reservations) await billingService.release(user.id, reservation)
       throw error
