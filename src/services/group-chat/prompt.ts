@@ -25,7 +25,11 @@ export function buildGroupStatic(input: {
   ]
   const style = buildStyleBlock(input.narrative_style || '')
   if (style) parts.push(style)
-  parts.push(`GLOBAL LORE:\n${input.global_lore}`, `MEMBERS:\n${members}`)
+  parts.push(
+    `GLOBAL LORE:\n${input.global_lore}`,
+    `In the notes below, "you" or "the player" means ${input.player}, by name.`,
+    `MEMBERS:\n${members}`,
+  )
   return parts.join('\n\n')
 }
 

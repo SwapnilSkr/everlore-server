@@ -2192,6 +2192,39 @@ await check('first explicit: the body line never reaches a writer the adult rout
   assert(writerCalls.slice(0, 3).every(stated))
   assert(!stated(writerCalls[3]))
 })
+await check('first explicit: the body line never assumes an unknown body', async () => {
+  const message = `@${names[0]} I wanna fuck you`
+  const unknown = ` ${names[0]} doesn't know what ${playerName}'s body is, so ${names[0]} says what they want with ${playerName}'s mouth and hands and with their own body, and names nothing else of ${playerName}'s.`
+  const woman = ` ${playerName} is a woman and has a woman's body, with no cock, and ${names[0]} knows it. Say what's done to her body.`
+  const adultDynamic = async (gender?: string) => {
+    await adultStart()
+    if (gender) put(rows('users')[0], 'preferences.gender', gender)
+    modelReplies = [`${names[0]}: Fresh explicit answer`]
+    await turn({ userMessage: message }, never)
+    assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed']], String(gender))
+    return content(writerCalls[0], 1)
+  }
+  const unset = await adultDynamic()
+  assert(unset.includes(unknown), 'an unknown body is never assumed')
+  assert(!unset.includes(`has a woman's body`))
+  const female = await adultDynamic('female')
+  assert(female.includes(woman))
+  assert(!female.includes(unknown.trim()))
+  const male = await adultDynamic('male')
+  assert(!male.includes(unknown.trim()))
+  // A turn the adult route left never gets it, whatever the gender.
+  await start(); modelReplies = [`${names[0]}: A normal answer`]
+  await turn({ userMessage: message }, never)
+  assert.equal(checkLogs.at(-1)!.writing.at(-1)!.writer, 'normal')
+  assert(writerCalls.every(call => !content(call, 1).includes(unknown.trim())))
+  // Consent withdrawn after the adult call started: the redirected retry loses it.
+  await adultStart(); writerHook = () => { put(rows('users')[0], 'preferences.nsfw_enabled', false) }
+  modelReplies = ['', `${names[0]}: Normal after withdrawal`]
+  await turn({ userMessage: message }, never)
+  assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed'], ['normal', 'addressed_retry']])
+  assert(content(writerCalls[0], 1).includes(unknown.trim()))
+  assert(!content(writerCalls[1], 1).includes(unknown.trim()))
+})
 await check('close bond statement follows the bond and the copy check finds an example inside a message', () => {
   const base = { memories: [], summaries: [], history: [], now: new Date(0), speakers: [members[2].name], situation: 'x' }
   const said = (relationship: { trust: number; affection: number; fear: number; rivalry: number }) => buildGroupDynamic({ ...base, bonds: [{ ...members[2], relationship }] })
@@ -4235,7 +4268,7 @@ await check('nway legacy adult request publish and event retain pre-scene shape 
     data: { ...data, group_state_after: 'fixture', lines: (data.lines as Row[]).map(({ shown_at: _shown, ...line }) => line) },
     shown: shown.map(frame => ({ ...frame, instanceId: 'fixture', eventId: 'fixture', lines: (frame.lines as Row[]).map(({ shownAt: _shown, line_id: _identity, ...line }) => line) })) }
   const hash = createHash('sha256').update(JSON.stringify(trace)).digest('hex')
-  assert.equal(hash, 'cdf58bcda86cd0b01c9d778d9eae69e642fd7c9419f84da3869b3f3254e57223', hash)
+  assert.equal(hash, '6a8f720ff539211c56ac7ed2c542cc08a00e262810da9701c223d7a2ae6bdbc1', hash)
 })
 
 await check('nway rewind deletion remove scene fields and real group memory never gains private_to', async () => {
@@ -6665,7 +6698,7 @@ await check('ideas catalog requires written first texts and statuses on every me
 // ── create-a-group drafting (§4) ──────────────────────────────────────────
 // The model calls and the text gate are stubbed; the draft service, the body
 // schema, the route, the controller and validation are real.
-const { draftEffects, draftGroup, GROUP_DRAFT_PROMPT, personDraftPrompt } = await import('../src/services/group-chat/draft')
+const { draftEffects, draftGroup, GROUP_DRAFT_PROMPT, personDraftPrompt, speakToReader, sameyPeople } = await import('../src/services/group-chat/draft')
 const { GroupDraftBody, CreateTemplateBody } = await import('../src/schemas/template.schema')
 const { Value } = await import('@sinclair/typebox/value')
 const { templateRoutes } = await import('../src/routes/template.routes')
@@ -6725,6 +6758,19 @@ const DRAFT_EXPLICIT = [
   'Your fingers inside me, now.',
   'I want your cock in my mouth.',
 ]
+// Every person's own three lines: a draft that repeats another's is re-asked,
+// so the default fixture keeps them apart, as a good draft does.
+const DRAFT_EXPLICIT_SETS = [
+  DRAFT_EXPLICIT,
+  ['Kiss down my throat, then keep going.', 'Your hand between my legs, now.', 'I want you inside my mouth.'],
+  ['Bite my shoulder while you take me.', 'Your thigh pressed against mine, now.', 'Ride me until the morning comes.'],
+  ['Trace my spine with your tongue.', 'Your hips against my back, now.', 'Feel me from behind, now.'],
+  ['Take my wrist and hold it there.', 'Your mouth on my stomach, now.', 'Taste me first, then decide.'],
+  ['Pull me onto your lap by the belt.', 'Your thumb against my lip, now.', 'Use your hands on me now.'],
+]
+function draftExplicit(index: number) {
+  return [...DRAFT_EXPLICIT_SETS[Math.max(0, index) % DRAFT_EXPLICIT_SETS.length]!]
+}
 function personDraftReply(form: DraftForm, index: number, extra: Row = {}) {
   const person = form.people[index]!
   return JSON.stringify({
@@ -6737,7 +6783,7 @@ function personDraftReply(form: DraftForm, index: number, extra: Row = {}) {
     first_texts: ['Are you up?', 'The kettle is broken.', 'Come down for coffee.'],
     statuses: { morning: 'Up early.', afternoon: 'On shift.', evening: 'Home and tired.', night: 'Still awake.' },
     talkativeness: 0.5,
-    voice: { plain: [...DRAFT_PLAIN], ...(form.adult ? { explicit: [...DRAFT_EXPLICIT] } : {}) },
+    voice: { plain: [...DRAFT_PLAIN], ...(form.adult ? { explicit: draftExplicit(index) } : {}) },
     ...extra,
   })
 }
@@ -7090,6 +7136,7 @@ await check('group draft happy path for two and six people', async () => {
     const firstPerson = JSON.parse(String((people[0]!.messages as Row[])[1]!.content)) as Row
     assert.deepEqual((firstPerson.others as Row[]).map((other) => other.name), form.people.slice(1).map((person) => person.name))
     assert.equal((firstPerson.group as Row).global_lore, JSON.parse(groupDraftReply(form)).global_lore)
+    assert.equal((firstPerson.person as Row).closeness, 'they are a friend of yours', 'the bond reads to the person, not as "the player"')
     assert.equal(Value.Check(GroupDraftBody, form), true)
     assert.equal(Value.Check(CreateTemplateBody, draft), true, 'the draft must be a create body unchanged')
     const created = await draftCreateApp.handle(new Request('http://localhost/template', {
@@ -7105,18 +7152,24 @@ await check('group draft happy path for two and six people', async () => {
 })
 
 await check('group draft prompts ask for words only and state the authoring rule', () => {
-  for (const required of ['EXACTLY 10', '3 to 6', 'global_lore', 'opening_lines', 'The only names you return are the speakers of the opening lines']) {
+  for (const required of ['EXACTLY 10', '3 to 6', 'global_lore', 'opening_lines', 'The only names you return are the speakers of the opening lines',
+    'what you are doing there', 'conversation you walk in on', 'call them "you"; never write about them in the third person']) {
     assert(GROUP_DRAFT_PROMPT.includes(required), `group prompt is missing ${required}`)
   }
   const adult = personDraftPrompt(true)
   for (const required of [
     'name a sex act',
     'their own body',
-    "the player's mouth, hands and fingers",
-    "Never assume anything about the player's body",
+    'your mouth, hands and fingers',
+    'Never assume anything about your body',
     'never names its own speaker',
     'EXACTLY 3',
     '2 to 4',
+    'treat you',
+    'from you',
+    'send you privately',
+    'each part of your day',
+    'call them "you"; never write about them in the third person',
   ]) {
     assert(adult.includes(required), `adult person prompt is missing ${required}`)
   }
@@ -7125,6 +7178,143 @@ await check('group draft prompts ask for words only and state the authoring rule
   assert(!safe.includes('explicit'))
   assert(!safe.includes('intimacy'))
   assert(safe.includes('2 to 4'))
+  // Nothing a person reads calls them "the player" any more.
+  for (const prompt of [GROUP_DRAFT_PROMPT, adult, safe]) assert(!prompt.includes('the player'), `a draft prompt still says the player: ${prompt}`)
+})
+
+await check('group draft speak-to-reader rewrites the player term', () => {
+  assert.equal(speakToReader('blunt, especially with the player'), 'blunt, especially with you')
+  assert.equal(speakToReader("The player's jacket"), 'Your jacket')
+  assert.equal(speakToReader('the player is late'), 'you are late')
+  assert.equal(speakToReader('The player was here, and the player has gone.'), 'You were here, and you have gone.')
+  assert.equal(speakToReader('{player} is not the player.'), '{player} is not you.')
+  assert.equal(speakToReader('the playerbase is closed'), 'the playerbase is closed')
+  assert.equal(speakToReader('the player and the players'), 'you and the players')
+})
+
+await check('group draft drafted fields speak to the reader as you', async () => {
+  const form = draftForm(2)
+  draftGate()
+  stubDraft((request) => {
+    if (isGroupCall(request)) {
+      const reply = JSON.parse(groupDraftReply(form)) as Row
+      reply.topics = ["The player's kettle and the fuse box.", ...(reply.topics as string[]).slice(1)]
+      reply.opening_lines = [{ name: form.people[0]!.name, text: 'The player is late again.' }, ...(reply.opening_lines as Row[]).slice(1)]
+      reply.seed_prompt = 'You have moved in, and the player has too.'
+      return JSON.stringify(reply)
+    }
+    const index = draftPersonIndex(request)
+    return personDraftReply(form, index, {
+      appearance: `${form.people[index]!.age}; the player's coat hangs by the door.`,
+      persona: "The player is quiet; the player's tea goes cold.",
+      intimacy: 'Keeps {player} close; the player has the keys.',
+      statuses: { morning: 'The player is up.', afternoon: 'The player is on shift.', evening: 'The player has the keys.', night: 'The player was asleep.' },
+      voice: { plain: ['The player is out.', 'The player has the keys.'], explicit: draftExplicit(index) },
+    })
+  })
+  const draft = await draftGroup(form, playerId)
+  assert(!JSON.stringify(draft).toLowerCase().includes('the player'), 'a drafted field still says the player')
+  assert.equal(draft.topics[0], 'Your kettle and the fuse box.')
+  assert.equal(draft.opening_lines[0]!.text, 'You are late again.')
+  assert.equal(draft.seed_prompt, 'You have moved in, and you have too.')
+  const first = draft.seed_cast[0]!
+  assert.equal(first.persona, 'You are quiet; your tea goes cold.')
+  assert(first.appearance.endsWith("your coat hangs by the door."))
+  assert.equal(first.group.intimacy, 'Keeps {player} close; you have the keys.')
+  assert.deepEqual(first.statuses, { morning: 'You are up.', afternoon: 'You are on shift.', evening: 'You have the keys.', night: 'You were asleep.' })
+  assert.deepEqual(first.group.voice!.slice(0, 2), ['You are out.', 'You have the keys.'])
+})
+
+await check('group draft static prompt names the reader for drafted notes', () => {
+  const sentence = `In the notes below, "you" or "the player" means ${playerName}, by name.`
+  const text = buildGroupStatic({ ...template, members, player: playerName })
+  assert(text.includes(sentence))
+  assert.equal(text.indexOf(sentence) + sentence.length, text.indexOf('\n\nMEMBERS:'), 'the sentence must sit directly above MEMBERS')
+  assert(buildGroupStatic({ ...template, members, player: 'Rae $&' }).includes('means Rae $&, by name.'))
+})
+
+const sameySet = (people: string[][]) => [...sameyPeople(people)].sort((a, b) => a - b)
+await check('group draft samey explicit lines are found', () => {
+  assert.deepEqual(sameySet([['Put your mouth on my neck.'], ['put your mouth, on my neck!']]), [1])
+  assert.deepEqual(sameySet([['I want to feel your mouth now.'], ['I want to go down on you.']]), [1])
+  assert.deepEqual(sameySet([['I want to feel this.', 'I want to feel that.']]), [0])
+  assert.deepEqual(sameySet([['One line here.', 'Another line here.'], ['A different line entirely.']]), [])
+  assert.deepEqual(sameySet([['Exact words now.'], ['Exact words now.'], ['EXACT, WORDS... now!']]), [1, 2])
+  assert.deepEqual(sameySet([['Short one.', 'Another short one.'], ['Short two.']]), [])
+})
+
+const sameyOpeningOf = (line: string) => line.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 3).join(' ')
+
+await check('group draft samey lines are re-asked once and the replacement is gated', async () => {
+  const form = draftForm(2)
+  draftGate()
+  const shared = [...DRAFT_EXPLICIT]
+  const fresh = ['A brand new line here.', 'A second new line here.', 'A third new line here.']
+  let reaskCalls = 0
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const body = JSON.parse(String((request.messages as Row[])[1]!.content)) as Row
+    if ('taken_openings' in body) {
+      reaskCalls++
+      assert.equal(request.purpose, 'group_draft_person')
+      assert.equal(request.model, 'fixture-authoring')
+      assert(String((request.messages as Row[])[0]!.content).includes('name a sex act'), 'the re-ask shares the explicit-line rule')
+      assert.deepEqual([...(body.taken_openings as string[])].sort(), shared.map(sameyOpeningOf).sort())
+      return JSON.stringify({ explicit: fresh })
+    }
+    return personDraftReply(form, draftPersonIndex(request), { voice: { plain: [...DRAFT_PLAIN], explicit: shared } })
+  })
+  const draft = await draftGroup(form, playerId)
+  assert.equal(reaskCalls, 1, 'one clash, one re-ask')
+  assert.deepEqual(draft.seed_cast[1]!.group.voice!.slice(-3), fresh)
+  assert.deepEqual(draft.seed_cast[0]!.group.voice!.slice(-3), shared, 'the person who did not clash keeps their lines')
+  const gated = gateLines(gateRequests[0]!).map((line) => line.text)
+  for (const text of fresh) assert(gated.includes(text), `the gate must see the replacement: ${text}`)
+})
+
+await check('group draft samey re-ask failure keeps the drafted lines', async () => {
+  for (const failure of ['shape', 'provider'] as const) {
+    const form = draftForm(2)
+    draftGate()
+    const shared = [...DRAFT_EXPLICIT]
+    let reaskCalls = 0
+    stubDraft((request) => {
+      if (isGroupCall(request)) return groupDraftReply(form)
+      const body = JSON.parse(String((request.messages as Row[])[1]!.content)) as Row
+      if ('taken_openings' in body) {
+        reaskCalls++
+        if (failure === 'provider') throw new Error('Fixture provider failure')
+        return JSON.stringify({ explicit: ['Only two new lines.', 'And no third at all.'] })
+      }
+      return personDraftReply(form, draftPersonIndex(request), { voice: { plain: [...DRAFT_PLAIN], explicit: shared } })
+    })
+    const before = memoryLogs.length
+    const draft = await draftGroup(form, playerId)
+    assert.equal(reaskCalls, 1, failure)
+    assert.deepEqual(draft.seed_cast[1]!.group.voice!.slice(-3), shared, `${failure}: the old lines stand`)
+    const logged = memoryLogs.slice(before).filter((entry) => entry.name === 'group_draft.samey_left')
+    assert.equal(logged.length, 1, failure)
+    assert.deepEqual(logged[0], { name: 'group_draft.samey_left', count: 3 }, failure)
+    const serialized = JSON.stringify(logged)
+    for (const text of [...shared, form.title, form.setting, ...form.people.flatMap((person) => [person.name, person.look, person.personality, person.knows_player])]) {
+      assert(!serialized.includes(text), `${failure}: the log leaks ${text}`)
+    }
+  }
+})
+
+await check('group draft safe group never re-asks explicit lines', async () => {
+  const form = draftForm(2, false)
+  draftGate()
+  let reaskCalls = 0
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const body = JSON.parse(String((request.messages as Row[])[1]!.content)) as Row
+    if ('taken_openings' in body) reaskCalls++
+    return personDraftReply(form, draftPersonIndex(request), { voice: { plain: [...DRAFT_PLAIN], explicit: [...DRAFT_EXPLICIT] } })
+  })
+  const draft = await draftGroup(form, playerId)
+  assert.equal(reaskCalls, 0, 'a safe group has no explicit lines to compare')
+  for (const member of draft.seed_cast) assert.deepEqual(member.group.voice, DRAFT_PLAIN)
 })
 
 await check('group draft mints name age bond and talkativeness from the form', async () => {

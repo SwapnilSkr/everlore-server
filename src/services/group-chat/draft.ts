@@ -97,10 +97,10 @@ interface PersonWords {
 
 /** How each authored bond reads to a writer, without exposing the key. */
 const CLOSENESS_WORDS: Record<Closeness, string> = {
-  acquaintance: 'they have just met the player',
-  friend: 'they are a friend of the player',
-  unrequited_attraction: 'they have a crush on the player',
-  rival: 'they are a rival of the player',
+  acquaintance: 'they have just met you',
+  friend: 'they are a friend of yours',
+  unrequited_attraction: 'they have a crush on you',
+  rival: 'they are a rival of yours',
 }
 
 const PERIODS = ['morning', 'afternoon', 'evening', 'night'] as const
@@ -175,32 +175,97 @@ function namesSelf(text: string, name: string): boolean {
   ).test(text)
 }
 
+/**
+ * Drafted fields are read and edited by the person making the group, so they
+ * address that person as "you". The prompts ask for it; this catches whatever
+ * is left. It rewrites one term this code introduced, never a list that judges
+ * a player's own words.
+ */
+export function speakToReader(text: string): string {
+  return text.replace(
+    /(?<![\p{L}\p{N}_])the[ \t]+player(?:['’]s(?![\p{L}\p{N}_])|(?:[ \t]+(is|was|has))(?![\p{L}\p{N}_]))?(?![\p{L}\p{N}_])/giu,
+    (match: string, verb?: string) => {
+      const word = verb?.toLowerCase()
+      const base = /['’]s$/i.test(match) ? 'your'
+        : word === 'is' ? 'you are'
+          : word === 'was' ? 'you were'
+            : word === 'has' ? 'you have'
+              : 'you'
+      const initial = match.charAt(0)
+      const capitalised = initial === initial.toUpperCase() && initial !== initial.toLowerCase()
+      return capitalised ? base.charAt(0).toUpperCase() + base.slice(1) : base
+    },
+  )
+}
+
+const SAMEY_OPENING_WORDS = 3
+
+/** A line as the clash check reads it: lowercase letters, digits and single spaces. */
+function normaliseSameyLine(text: string): string {
+  return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim()
+}
+
+/** A line's opening: its first three words. */
+function sameyOpening(normalised: string): string {
+  return normalised.split(' ').slice(0, SAMEY_OPENING_WORDS).join(' ')
+}
+
+/** How many of each person's explicit lines repeat an earlier line's text or opening. */
+function sameyCounts(explicitByPerson: string[][]): number[] {
+  const texts = new Set<string>()
+  const openings = new Set<string>()
+  return explicitByPerson.map((lines) => {
+    let clashes = 0
+    for (const text of lines) {
+      const normalised = normaliseSameyLine(text)
+      const opening = sameyOpening(normalised)
+      if (texts.has(normalised) || openings.has(opening)) clashes++
+      texts.add(normalised)
+      openings.add(opening)
+    }
+    return clashes
+  })
+}
+
+/** The people whose explicit lines repeat an earlier line's text or opening. */
+export function sameyPeople(explicitByPerson: string[][]): Set<number> {
+  const people = new Set<number>()
+  sameyCounts(explicitByPerson).forEach((clashes, index) => {
+    if (clashes > 0) people.add(index)
+  })
+  return people
+}
+
 export const GROUP_DRAFT_PROMPT = [
-  'You write the shared part of a fictional group chat for an adult roleplay app. The player is a member of the group.',
+  'You write the shared part of a fictional group chat for an adult roleplay app. The person who reads and edits it is a member of the group.',
   'Return ONLY a JSON object (no markdown, no prose) with EXACTLY these keys:',
   '{',
   '"description": the group as it appears in the app, one short paragraph (max 600 characters),',
   '"global_lore": the shared history, place and situation every member knows, one or more paragraphs (max 3000 characters),',
-  '"seed_prompt": the premise the chat runs on — who these people are, where they are and what the player is doing there, in second person (10–2500 characters),',
+  '"seed_prompt": the premise the chat runs on — who these people are, where they are and what you are doing there, in second person (10–2500 characters),',
   '"topics": EXACTLY 10 things this group would talk about, each a short sentence (max 1000 characters),',
-  '"opening_lines": 3 to 6 lines of a short conversation the player walks in on, each {"name": one of the people, "text": one line (max 1000 characters)}',
+  '"opening_lines": 3 to 6 lines of a short conversation you walk in on, each {"name": one of the people, "text": one line (max 1000 characters)}',
   '}',
   'Use only the people you are given, by the exact names given. Write each opening line in that person\'s own voice; never name the speaker inside the line.',
   'The only names you return are the speakers of the opening lines. Do not return an age, a starting bond, an id, a place, a flag or an asset key; the server sets those.',
+  'Write every field to the person who will read and edit it: call them "you"; never write about them in the third person.',
   'Stay within every character limit. Be specific and lively, not generic.',
 ].join('\n')
+
+/** An explicit line's shared rule, so both the person call and a re-ask say the same. */
+const EXPLICIT_LINE_RULE = 'For each explicit line: in their own voice, name a sex act. Talk about their own body and your mouth, hands and fingers. Never assume anything about your body. Write the line as something they say, not as narration.'
 
 /** The person prompt states the authoring rule only for an adult group. */
 export function personDraftPrompt(adult: boolean): string {
   const lines = [
-    'You write ONE member of a fictional group chat for an adult roleplay app. The player is a member of the group.',
+    'You write ONE member of a fictional group chat for an adult roleplay app. The person who reads and edits it is a member of the group.',
     'Return ONLY a JSON object (no markdown, no prose) with EXACTLY these keys:',
     '{',
     '"role": who they are in the group and in the world, one line (max 400 characters),',
     '"appearance": their look, built from the look you are given, opening with their age from the form in digits, e.g. "27, ..." (max 1000 characters),',
-    '"persona": how they think, talk and treat the player, one paragraph (max 2500 characters),',
+    '"persona": how they think, talk and treat you, one paragraph (max 2500 characters),',
     '"speech": how they write in a group chat — sentence length, punctuation, emoji or none (max 2000 characters),',
-    '"wants": what they want from the group and from the player (max 2500 characters),',
+    '"wants": what they want from the group and from you (max 2500 characters),',
   ]
   if (adult) {
     lines.push(
@@ -211,17 +276,14 @@ export function personDraftPrompt(adult: boolean): string {
     lines.push('"voice": an object with "plain" (2 to 4 everyday lines they would say in the chat),')
   }
   lines.push(
-    '"first_texts": EXACTLY 3 first messages they might send the player privately, each one line (max 120 characters),',
-    '"statuses": exactly {"morning": …, "afternoon": …, "evening": …, "night": …}, one short line for each part of the player\'s day (max 120 characters each),',
+    '"first_texts": EXACTLY 3 first messages they might send you privately, each one line (max 120 characters),',
+    '"statuses": exactly {"morning": …, "afternoon": …, "evening": …, "night": …}, one short line for each part of your day (max 120 characters each),',
     '"talkativeness": a number from 0 to 1 for how often they speak in the group,',
     '}',
   )
-  if (adult) {
-    lines.push(
-      'For each explicit line: in their own voice, name a sex act. Talk about their own body and the player\'s mouth, hands and fingers. Never assume anything about the player\'s body. Write the line as something they say, not as narration.',
-    )
-  }
+  if (adult) lines.push(EXPLICIT_LINE_RULE)
   lines.push(
+    'Write every field to the person who will read and edit it: call them "you"; never write about them in the third person.',
     'A voice line never names its own speaker. Do not return a name, an age, a starting bond or an id; the server sets those.',
     'Stay within every character limit. Keep every written line on a single line.',
   )
@@ -256,11 +318,11 @@ function readGroupWords(parsed: unknown, form: GroupDraftInput): GroupWords {
   if (opening.length < 3 || opening.length > 6) shape('group_opening_count')
 
   return {
-    description: description!,
-    global_lore: global_lore!,
-    seed_prompt: seed_prompt!,
-    topics: topics as string[],
-    opening_lines: opening,
+    description: speakToReader(description!),
+    global_lore: speakToReader(global_lore!),
+    seed_prompt: speakToReader(seed_prompt!),
+    topics: (topics as string[]).map(speakToReader),
+    opening_lines: opening.map(({ name, text }) => ({ name, text: speakToReader(text) })),
   }
 }
 
@@ -295,7 +357,7 @@ function readPersonWords(parsed: unknown, form: GroupDraftInput, person: GroupDr
   for (const period of PERIODS) {
     const text = line(rawStatuses[period], 120)
     if (text === null) shape('person_statuses')
-    statuses[period] = text!
+    statuses[period] = speakToReader(text!)
   }
 
   const rawTalk = parsed.talkativeness
@@ -308,8 +370,9 @@ function readPersonWords(parsed: unknown, form: GroupDraftInput, person: GroupDr
   if (!isRecord(rawVoice)) shape('person_voice')
   const rawPlain = rawVoice.plain
   if (!Array.isArray(rawPlain) || rawPlain.length < 2 || rawPlain.length > 4) shape('person_voice_count')
-  const plain = rawPlain.map((text) => line(text))
-  if (plain.some((text) => text === null)) shape('person_voice_text')
+  const plainRead = rawPlain.map((text) => line(text))
+  if (plainRead.some((text) => text === null)) shape('person_voice_text')
+  const plain = (plainRead as string[]).map(speakToReader)
 
   let explicit: string[] = []
   if (form.adult) {
@@ -317,24 +380,24 @@ function readPersonWords(parsed: unknown, form: GroupDraftInput, person: GroupDr
     if (!Array.isArray(rawExplicit) || rawExplicit.length !== 3) shape('person_voice_count')
     const lines = rawExplicit.map((text) => line(text))
     if (lines.some((text) => text === null)) shape('person_voice_text')
-    explicit = lines as string[]
+    explicit = (lines as string[]).map(speakToReader)
   }
 
-  for (const text of [...(plain as string[]), ...explicit]) {
+  for (const text of [...plain, ...explicit]) {
     if (namesSelf(text, person.name)) shape('person_voice_names_self')
   }
 
   return {
-    role: role!,
-    appearance: appearance!,
-    persona: persona!,
-    speech: speech!,
-    wants: wants!,
-    intimacy: intimacy ?? undefined,
-    first_texts: first_texts as string[],
+    role: speakToReader(role!),
+    appearance: speakToReader(appearance!),
+    persona: speakToReader(persona!),
+    speech: speakToReader(speech!),
+    wants: speakToReader(wants!),
+    intimacy: intimacy ? speakToReader(intimacy) : undefined,
+    first_texts: (first_texts as string[]).map(speakToReader),
     statuses,
     talkativeness,
-    plain: plain as string[],
+    plain,
     explicit,
   }
 }
@@ -433,6 +496,107 @@ async function draftPersonWords(
   return failed('person_shape', { person: personIndex })
 }
 
+/** One more call for a person whose explicit lines repeat an earlier line. */
+const EXPLICIT_REDRAFT_PROMPT = [
+  'You rewrite the explicit lines of ONE member of a fictional group chat for an adult roleplay app.',
+  'Return ONLY a JSON object (no markdown, no prose) with EXACTLY this key:',
+  '{"explicit": EXACTLY 3 explicit lines in that person\'s own voice}',
+  EXPLICIT_LINE_RULE,
+  'Each line is new: it repeats none of the openings in "taken_openings", and the three lines you return do not repeat each other.',
+  'A line never names its own speaker. Write every field to the person who will read and edit it: call them "you"; never write about them in the third person.',
+  'Stay within every character limit. Keep every written line on a single line.',
+].join('\n')
+
+/** A re-ask's lines pass the same line checks as a person call's. */
+function readExplicitLines(parsed: unknown, person: GroupDraftPerson): string[] | null {
+  if (!isRecord(parsed)) return null
+  const raw = parsed.explicit
+  if (!Array.isArray(raw) || raw.length !== 3) return null
+  const lines = raw.map((text) => line(text))
+  if (lines.some((text) => text === null)) return null
+  const spoken = (lines as string[]).map(speakToReader)
+  if (spoken.some((text) => namesSelf(text, person.name))) return null
+  return spoken
+}
+
+/** Asks once for three new explicit lines. A failure keeps the drafted ones. */
+async function draftSameyExplicitLines(
+  form: GroupDraftInput,
+  person: GroupDraftPerson,
+  group: GroupWords,
+  takenOpenings: string[],
+): Promise<string[] | null> {
+  let answer: unknown
+  try {
+    answer = await draftEffects.call({
+      model: AI_MODELS.authoring,
+      temperature: 0.9,
+      maxTokens: 600,
+      responseFormat: { type: 'json_object' },
+      purpose: 'group_draft_person',
+      messages: [
+        { role: 'system', content: EXPLICIT_REDRAFT_PROMPT },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            group: { title: form.title, setting: form.setting, global_lore: group.global_lore },
+            person: {
+              name: person.name,
+              age: person.age,
+              look: person.look,
+              personality: person.personality,
+              knows_player: person.knows_player,
+              closeness: CLOSENESS_WORDS[person.closeness],
+            },
+            others: form.people
+              .filter((other) => other !== person)
+              .map((other) => ({ name: other.name, personality: other.personality })),
+            taken_openings: takenOpenings,
+          }),
+        },
+      ],
+    })
+  } catch {
+    return null
+  }
+  return readExplicitLines(parseJson(answer), person)
+}
+
+async function replaceSameyExplicitLines(
+  form: GroupDraftInput,
+  group: GroupWords,
+  people: PersonWords[],
+): Promise<void> {
+  if (!form.adult) return
+  const explicit = people.map((person) => person.explicit)
+  const before = sameyCounts(explicit)
+  const reasked = before.flatMap((clashes, index) => (clashes > 0 ? [index] : []))
+  if (!reasked.length) return
+
+  // Only the people who keep their lines limit what a re-ask may open with.
+  const asked = new Set(reasked)
+  const taken = new Set<string>()
+  explicit.forEach((lines, index) => {
+    if (asked.has(index)) return
+    for (const text of lines) taken.add(sameyOpening(normaliseSameyLine(text)))
+  })
+
+  const replacements = await Promise.all(reasked.map(async (index) => {
+    const lines = await draftSameyExplicitLines(form, form.people[index]!, group, [...taken])
+    if (!lines) return undefined
+    const candidate = explicit.map((entry, at) => (at === index ? lines : entry))
+    const after = sameyCounts(candidate)[index]!
+    return after < before[index]! ? lines : undefined
+  }))
+
+  replacements.forEach((lines, at) => {
+    if (lines) people[reasked[at]!]!.explicit = lines
+  })
+
+  const left = sameyCounts(people.map((person) => person.explicit)).reduce((sum, count) => sum + count, 0)
+  if (left > 0) log.warn('group_draft.samey_left', { count: left })
+}
+
 function assemble(form: GroupDraftInput, group: GroupWords, people: PersonWords[]): GroupDraft {
   return {
     title: form.title,
@@ -494,6 +658,8 @@ export async function draftGroup(form: GroupDraftInput, playerId: string): Promi
   const people = await Promise.all(
     form.people.map((person) => draftPersonWords(form, person, group, MAX_ATTEMPTS)),
   )
+  // Before the first gate, so a replaced line is gated like any other.
+  await replaceSameyExplicitLines(form, group, people)
 
   let draft = assemble(form, group, people)
   let verdict = await gate(draft, playerId)

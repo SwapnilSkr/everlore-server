@@ -1402,6 +1402,70 @@ mutations.push(
     "failed('gate')"]] },
 )
 
+// cag-9: drafted fields speak to the reader, samey explicit lines are re-asked,
+// and an unknown body is never assumed.
+const readerCue = 'group draft speak-to-reader'
+const readerDraft = 'group draft drafted fields'
+const readerStatic = 'group draft static prompt'
+const sameyFind = 'group draft samey explicit lines are found'
+const sameyReask = 'group draft samey lines are re-asked'
+const sameyKeep = 'group draft samey re-ask failure'
+const sameySafe = 'group draft safe group'
+const unknownBody = 'first explicit: the body line never assumes'
+const readerMutations: Mutation[] = [
+  { name: 'reader term loses the possessive', check: readerCue, edits: [[draftFile,
+    "const base = /['’]s$/i.test(match) ? 'your'", "const base = false ? 'your'"]] },
+  { name: 'reader term leaves is as is', check: readerCue, edits: [[draftFile,
+    ": word === 'is' ? 'you are'", ": word === 'is' ? 'you is'"]] },
+  { name: 'reader term loses sentence case', check: readerCue, edits: [[draftFile,
+    'const capitalised = initial === initial.toUpperCase() && initial !== initial.toLowerCase()',
+    'const capitalised = false']] },
+  { name: 'reader term matches inside a longer word', check: readerCue, edits: [[draftFile,
+    '(?![\\p{L}\\p{N}_])/giu', '/giu']] },
+  { name: 'drafted topics keep the player term', check: readerDraft, edits: [[draftFile,
+    'topics: (topics as string[]).map(speakToReader),', 'topics: topics as string[],']] },
+  { name: 'drafted persona keeps the player term', check: readerDraft, edits: [[draftFile,
+    'persona: speakToReader(persona!),', 'persona: persona!,']] },
+  { name: 'static notes sentence lost', check: readerStatic, edits: [[prompt,
+    '    `In the notes below, "you" or "the player" means ${input.player}, by name.`,\n', '']] },
+  { name: 'static notes sentence loses the name', check: readerStatic, edits: [[prompt,
+    'means ${input.player}, by name.', 'means the player, by name.']] },
+  { name: 'samey openings compare four words', check: sameyFind, edits: [[draftFile,
+    'const SAMEY_OPENING_WORDS = 3', 'const SAMEY_OPENING_WORDS = 4']] },
+  { name: 'samey normalization keeps punctuation', check: sameyFind, edits: [[draftFile,
+    ".replace(/[^\\p{L}\\p{N}]+/gu, ' ')", ".replace(/[^\\p{L}\\p{N}]+/gu, '')"]] },
+  { name: 'samey re-ask never runs', check: sameyReask, edits: [[draftFile,
+    '  await replaceSameyExplicitLines(form, group, people)\n', '  void 0\n']] },
+  { name: 'samey replacement never applied', check: sameyReask, edits: [[draftFile,
+    '    if (lines) people[reasked[at]!]!.explicit = lines', '    if (false) people[reasked[at]!]!.explicit = lines']] },
+  { name: 'samey provider failure fails the draft', check: sameyKeep, edits: [[draftFile,
+    '  } catch {\n    return null\n  }\n  return readExplicitLines', '  } catch (error) {\n    throw error\n  }\n  return readExplicitLines']] },
+  { name: 'samey malformed reply replaces the lines', check: sameyKeep, edits: [[draftFile,
+    'if (!Array.isArray(raw) || raw.length !== 3) return null', 'if (!Array.isArray(raw)) return null']] },
+  { name: 'samey leftovers not logged', check: sameyKeep, edits: [[draftFile,
+    "if (left > 0) log.warn('group_draft.samey_left', { count: left })", 'void left']] },
+  { name: 'safe group keeps explicit lines for the check', check: sameySafe, edits: [
+    [draftFile, '  if (form.adult) {\n    const rawExplicit', '  if (true) {\n    const rawExplicit'],
+    [draftFile, '  if (!form.adult) return\n', '\n'],
+  ] },
+  { name: 'unknown body line lost', check: unknownBody, edits: [[worker,
+    ': knownGender === undefined ?', ': false ?']] },
+  { name: 'unknown body line reaches the normal writer', check: unknownBody, edits: [
+    [worker, 'const soloAdult = stillAdult && !sceneOthers.length', 'const soloAdult = !sceneOthers.length'],
+    [worker, "const bodyLine = !stillAdult ? '' : knownGender === 'female'", "const bodyLine = false ? '' : knownGender === 'female'"],
+  ] },
+  { name: 'draft prompt calls the reader the player', check: 'group draft prompts ask', edits: [[draftFile,
+    '"persona": how they think, talk and treat you, one paragraph', '"persona": how they think, talk and treat the player, one paragraph']] },
+  { name: 'draft explicit rule calls the reader the player', check: 'group draft prompts ask', edits: [[draftFile,
+    'their own body and your mouth, hands and fingers', 'their own body and the player mouth, hands and fingers']] },
+  { name: 'draft prompt loses the second-person rule', check: 'group draft prompts ask', edits: [[draftFile,
+    "\n  'Write every field to the person who will read and edit it: call them \"you\"; never write about them in the third person.',",
+    '']] },
+  { name: 'draft bond reads as the player', check: 'group draft happy path', edits: [[draftFile,
+    "  friend: 'they are a friend of yours',", "  friend: 'they are a friend of the player',"]] },
+]
+mutations.push(...readerMutations)
+
 mutations.push(...ideaMutations)
 
 // Group faces (§6): the route, the face service, the job, the edit rule and the
