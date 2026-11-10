@@ -1566,7 +1566,7 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   const output = await new Response(probe.stdout).text(), errors = await new Response(probe.stderr).text()
   assert.equal(await probe.exited, 0, output + errors); assert(output.includes('pre-change messages byte for byte'))
   const originalStory = story.replace("import { groupTurnProcessor } from './group-turn.processor'\n", '').replace("  if (dispatchedSession.kind === 'group') {\n    if (!(await liveInstanceExists(parseObjectId(instanceId)))) return\n    return groupTurnProcessor(job)\n  }\n\n", '')
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '6b9d06b57d646a5e8f8770e4e3ddafe86b270868bca1e830947133a7241bd69e')
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '50eca4182e397a2c53f3fa34d2dd116e7bb8a42e0a40c6f6e214a43884c47c61')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   assert.equal(createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex'), 'b680d417ece807f9a37431ffe195ae3b8f13d93a2567592f157772ec1ede8043')
   console.log(`story builder source sha256 ${createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex')}`)

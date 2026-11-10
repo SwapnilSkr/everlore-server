@@ -155,6 +155,8 @@ export interface LLMFallbackResult {
  * player has seen a token, switching models would create two incompatible
  * continuations for one action. The OpenAI SDK exposes `status`; retain the
  * message check for provider wrappers that only preserve the error text.
+ * A host failure (`isHostFailureError`) follows the same before-prose rule, so
+ * both fallback functions apply that guard to either reason.
  */
 export function isRateLimitError(error: unknown): boolean {
   if (error instanceof EmptyLLMResponseError) return false
@@ -165,6 +167,33 @@ export function isRateLimitError(error: unknown): boolean {
   return /(?:^|\s)429(?:\s|$)|rate[\s-]?limit/i.test(
     error instanceof Error ? error.message : String(error),
   )
+}
+
+/**
+ * The model could not answer because the only host serving it failed: a 5xx, a
+ * timeout, or a dropped connection. Every adult narration model is served by
+ * exactly one host on OpenRouter (Venice serves dolphin-mistral-24b-venice-
+ * edition; DeepInfra serves l3.1-euryale-70b; Parasail serves llama-4-maverick,
+ * skyfall-36b-v2 and unslopnemo-12b, checked 2026-11-11), so `allow_fallbacks`
+ * inside the model has nowhere to go.
+ * A host failure is therefore a model failure, and only the caller's next model
+ * can answer it. A 4xx other than 429 means the request itself is wrong and
+ * would fail the same way elsewhere; an empty reply is not a failure to reach
+ * the model.
+ */
+export function isHostFailureError(error: unknown): boolean {
+  if (error instanceof EmptyLLMResponseError) return false
+  const failure = error as { name?: unknown; message?: unknown; status?: unknown } | null | undefined
+  // Checked first so group chat keeps the exact test it had before this became
+  // the shared predicate: a transport that names the failure wins over a status.
+  if (failure?.name === 'APIConnectionTimeoutError' || failure?.name === 'APIConnectionError') return true
+  const status = Number(failure?.status)
+  // A 4xx is the request's fault and would fail the same way on every model;
+  // 429 is saturation, which `isRateLimitError` owns.
+  if (Number.isFinite(status) && status >= 400 && status < 500) return false
+  if (status >= 500) return true
+  // Our own first-token deadline, and transport timeouts that arrive as text.
+  return /timed out|did not produce a first token/i.test(String(failure?.message ?? error))
 }
 
 function routingParamsFor(req: LLMRequest, model: string, stream: boolean): Record<string, unknown> {
@@ -498,7 +527,9 @@ export async function callLLMStream(
 }
 
 /**
- * Attempt alternative narration models immediately after a pre-stream 429.
+ * Attempt alternative narration models immediately after a pre-stream failure
+ * that another model can fix: a 429, or a host failure (5xx, timeout, dropped
+ * connection) that for a single-host model means the model itself is down.
  * This deliberately wraps only the streamed narration path: post-processing
  * remains on its existing, purpose-built models, and visible prose is never
  * restarted or replaced.
@@ -543,6 +574,18 @@ export async function callLLMStreamWithFallback(
     } catch (error) {
       lastError = error
       const nextModel = models[index + 1]
+      // A cancel belongs to the player, not the model: a cancelled or
+      // superseded turn must never start another model.
+      if (req.signal?.aborted) throw error
+      // A single-host model has nothing left to fail over to inside OpenRouter,
+      // so a 5xx, a timeout or a dropped connection is the model failing and
+      // reroutes exactly like a 429 — but only before any prose has streamed.
+      if (!streamed && nextModel && isHostFailureError(error)) {
+        const attempt = { from: model, to: nextModel }
+        fallbackAttempts.push(attempt)
+        onFallback?.({ ...attempt, error })
+        continue
+      }
       if (streamed || !isRateLimitError(error) || !nextModel) throw error
       const attempt = { from: model, to: nextModel }
       fallbackAttempts.push(attempt)
@@ -554,8 +597,10 @@ export async function callLLMStreamWithFallback(
 }
 
 /**
- * Non-streaming counterpart for replay and other prose paths. It retries only
- * a pre-response 429, so callers never receive a partial answer that could be
+ * Non-streaming counterpart for replay and other prose paths. Nothing here is
+ * visible to the player yet, so it retries a 429 and a host failure (5xx,
+ * timeout, dropped connection — the model's only host, for adult narrators)
+ * on the next model, so callers never receive a partial answer that could be
  * replaced under them. Normal success still takes exactly one provider call.
  */
 export async function callLLMWithFallback(
@@ -580,7 +625,11 @@ export async function callLLMWithFallback(
     } catch (error) {
       lastError = error
       const nextModel = models[index + 1]
-      if (!isRateLimitError(error) || !nextModel) throw error
+      // A cancel belongs to the player, not the model. A 429 and a host failure
+      // (5xx, timeout, dropped connection) both mean this model cannot answer
+      // here, and a single-host model's only failover is the next model.
+      const reroutable = isRateLimitError(error) || isHostFailureError(error)
+      if (req.signal?.aborted || !reroutable || !nextModel) throw error
       const attempt = { from: model, to: nextModel }
       fallbackAttempts.push(attempt)
       onFallback?.({ ...attempt, error })

@@ -11,6 +11,7 @@ import { Job } from 'bullmq'
 import { mongoColl } from '../../src/config/mongo'
 import { getRedisClient } from '../../src/config/redis'
 import { callLLMStreamWithFallback, AI_MODELS, narrationTemperature, runWithLLMUsage, isLLMUsageActive, snapshotLLMUsage, embedQuery } from '../../src/ai'
+import { isHostFailureError, isRateLimitError } from '../../src/ai/client'
 import { buildContextPacket, ragQueryTextFor } from '../../src/services/context-packet.service'
 import {
   buildPreNarratorStages,
@@ -1117,6 +1118,9 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
           instanceId,
           from,
           to,
+          // A single-host model cannot fail over inside OpenRouter, so a 5xx, a
+          // timeout or a dropped connection reroutes the turn like a 429 does.
+          reason: isHostFailureError(error) && !isRateLimitError(error) ? 'host_failed' : 'rate_limited',
           error: error instanceof Error ? error.message : String(error),
         })
       },

@@ -1,3 +1,4 @@
+import { isHostFailureError } from '../../ai/client'
 import { emptyLineCounts, filterLines, parseLines } from './lines'
 import { rollBystanders } from './roll'
 import type { GroupMember, GroupOrigin, NamedLine } from './types'
@@ -8,12 +9,10 @@ export const GROUP_SCENE_DEADLINE_MS = 30_000
 /** Proven live: one stalled host held a reply for 46 s against 5 to 13 s normally, and
  * group replies aren't streamed, so the player sees nothing while it waits. */
 export const GROUP_WRITER_TIMEOUT_MS = 20_000
-/** A limit also turns off the client's own retries, so a host failing moves to the next model too. */
-export const groupWriterHostFailed = (error: unknown) => {
-  const failure = error as { name?: string; message?: string; status?: number } | undefined
-  return failure?.name === 'APIConnectionTimeoutError' || failure?.name === 'APIConnectionError'
-    || Number(failure?.status) >= 500 || /timed out/i.test(String(failure?.message ?? error))
-}
+/** A limit also turns off the client's own retries, so a host failing moves to the next model too.
+ * The test itself is shared with narration: every adult model has one host, so a 5xx,
+ * a timeout or a dropped connection is the model failing, not the host. */
+export const groupWriterHostFailed = isHostFailureError
 
 export interface GroupWritingRequest {
   writer: 'adult' | 'normal'

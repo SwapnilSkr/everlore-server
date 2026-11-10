@@ -22,7 +22,7 @@ const optionalEnvVars = {
   // the NSFW list to models suitable for mature narration; it must never fall
   // back into a SFW provider simply because capacity is tight.
   NARRATION_SFW_FALLBACK_MODELS: 'mistralai/mistral-small-3.2-24b-instruct,meta-llama/llama-3.1-70b-instruct,mistralai/mistral-nemo',
-  NARRATION_NSFW_FALLBACK_MODELS: 'meta-llama/llama-4-maverick,thedrummer/skyfall-36b-v2,thedrummer/unslopnemo-12b',
+  NARRATION_NSFW_FALLBACK_MODELS: 'sao10k/l3.1-euryale-70b,meta-llama/llama-4-maverick,thedrummer/skyfall-36b-v2,thedrummer/unslopnemo-12b',
   // OpenRouter image-generation model (avatars + chat backgrounds).
   IMAGE_MODEL: 'bytedance-seed/seedream-4.5',
   // One-shot creation autofill (drafts a whole world/character). Cheap, strong JSON + creative.

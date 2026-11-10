@@ -4,13 +4,16 @@ import { mock } from 'bun:test'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { runWithLLMUsage, snapshotLLMUsage } from '../src/ai/usage'
+import { EmptyLLMResponseError } from '../src/utils/llm-response'
 
 mock.module('../src/config/env', () => ({ env: { OPENROUTER_PREFERRED_P90_LATENCY_SECONDS: 3 } }))
 mock.module('../src/config/openai', () => ({
   getOpenRouter: () => { throw new Error('Network client reached in narration audit') },
 }))
 mock.module('../src/utils/logger', () => ({ log: { info() {}, warn() {} } }))
-const { callLLMStreamWithFallback, setNarrationStreamingClientForAudit, NARRATION_HEDGE_MS } = await import('../src/ai/client')
+const {
+  callLLMStreamWithFallback, callLLMWithFallback, setNarrationStreamingClientForAudit, setLLMClientForAudit, NARRATION_HEDGE_MS,
+} = await import('../src/ai/client')
 type Client = NonNullable<Parameters<typeof setNarrationStreamingClientForAudit>[0]>
 type Part = Awaited<ReturnType<Client['create']>> extends AsyncIterable<infer T> ? T : never
 
@@ -126,8 +129,29 @@ async function check(label: string, plans: Plan[], test: (f: ReturnType<typeof f
     console.error(`FAIL ${label}: ${(error as Error).stack}`)
   } finally {
     setNarrationStreamingClientForAudit(null)
+    setLLMClientForAudit(null)
     f.clock.restore()
   }
+}
+
+type NonStreamingOutcome = { content?: string; error?: Error }
+/** The non-streamed transport seam: each attempt consumes one planned outcome. */
+function nonStreamingOutcomes(outcomes: NonStreamingOutcome[]) {
+  const calls: Array<{ params: Record<string, unknown> }> = []
+  setLLMClientForAudit({
+    chat: {
+      completions: {
+        create: async (params: Record<string, unknown>) => {
+          const outcome = outcomes[calls.length]
+          assert.ok(outcome, 'unexpected extra non-streaming provider request')
+          calls.push({ params })
+          if (outcome.error) throw outcome.error
+          return { choices: [{ message: { content: outcome.content ?? '' }, finish_reason: 'stop' }] }
+        },
+      },
+    },
+  } as never)
+  return { calls }
 }
 
 await check('(a,g) fast primary: one request, provider, no hedge', [
@@ -269,16 +293,22 @@ await check('hedge error leaves primary running', [
   assert.equal(snapshotLLMUsage()[1].purpose, 'narration_hedge_lost')
 })
 
-await check('30-second first-token deadline bounds both stuck requests', [
+await check('(k) first-token deadline bounds both stuck requests, then reroutes', [
   { events: [], stuckOpening: true }, { events: [], stuckOpening: true },
+  { events: [text(10, 'Second model'), end(20)] },
 ], async ({ clock, calls }) => {
-  const rejection = assert.rejects(callLLMStreamWithFallback(request, ['audit/next'], () => {}), /first token within 30000ms/)
+  const fallbacks: Array<{ from: string; to: string }> = []
+  const result = callLLMStreamWithFallback(request, ['audit/next'], () => {}, (a) => fallbacks.push(a))
   await clock.to(29999)
   assert.equal(calls.length, 2)
   assert.equal(calls[0].signal.aborted, false)
   await clock.to(30000)
-  assert.ok(calls.every((c) => c.signal.aborted))
-  await rejection
+  assert.ok(calls.slice(0, 2).every((c) => c.signal.aborted))
+  await clock.to(30000 + H + 100)
+  assert.equal((await result).content, 'Second model')
+  assert.equal((await result).model, 'audit/next')
+  assert.equal(fallbacks.length, 1)
+  assert.equal(calls.length, 3)
   assert.equal(clock.timers.size, 0)
 })
 
@@ -295,6 +325,97 @@ await check('caller cancellation aborts both and clears timers', [
   assert.equal(clock.timers.size, 0)
 })
 
+await check('(i) a pre-text 503 falls back once to the next model', [
+  { events: [{ at: 10, error: Object.assign(new Error('upstream unavailable'), { status: 503 }) }] },
+  { events: [text(10, 'Fallback'), text(20, ' text'), end(30)] },
+], async ({ clock, calls }) => {
+  const fallbacks: Array<{ from: string; to: string; error: unknown }> = []
+  const result = callLLMStreamWithFallback(request, ['audit/next'], () => {}, (a) => fallbacks.push(a))
+  await clock.to(H + 100)
+  assert.equal((await result).content, 'Fallback text')
+  assert.equal((await result).model, 'audit/next')
+  assert.deepEqual((await result).fallbackAttempts, [{ from: request.model, to: 'audit/next' }])
+  assert.equal(calls.length, 2)
+  assert.deepEqual(fallbacks.map((f) => ({ from: f.from, to: f.to, status: (f.error as { status?: number }).status })),
+    [{ from: request.model, to: 'audit/next', status: 503 }])
+})
+
+await check('(j) a pre-text dropped connection falls back to the next model', [
+  { events: [{ at: 10, error: Object.assign(new Error('Connection error.'), { name: 'APIConnectionError' }) }] },
+  { events: [text(10, 'Survived'), end(20)] },
+], async ({ clock, calls }) => {
+  const result = callLLMStreamWithFallback(request, ['audit/next'], () => {})
+  await clock.to(H + 100)
+  assert.equal((await result).content, 'Survived')
+  assert.equal((await result).model, 'audit/next')
+  assert.equal(calls.length, 2)
+})
+
+await check('(l) a 503 after a delta has streamed throws without fallback', [
+  { events: [text(10, 'Visible'), { at: 20, error: Object.assign(new Error('upstream unavailable'), { status: 503 }) }] },
+], async ({ clock, calls }) => {
+  const deltas: string[] = []
+  const rejection = assert.rejects(callLLMStreamWithFallback(request, ['audit/next'], (d) => deltas.push(d)), { status: 503 })
+  await clock.to(H + 100)
+  await rejection
+  assert.deepEqual(deltas, ['Visible'])
+  assert.equal(calls.length, 1)
+})
+
+await check('(m) a 4xx throws without fallback', [
+  { events: [{ at: 10, error: Object.assign(new Error('Request timed out.'), { status: 408 }) }] },
+], async ({ clock, calls }) => {
+  // The request itself is wrong: a timeout-shaped message must not override
+  // that, or every model would be tried for one malformed request.
+  const rejection = assert.rejects(callLLMStreamWithFallback(request, ['audit/next'], () => {}), { status: 408 })
+  await clock.to(H + 100)
+  await rejection
+  assert.equal(calls.length, 1)
+})
+
+await check('(n) an aborted caller never starts another model', [
+  { events: [] }, { events: [] },
+], async ({ clock, calls }) => {
+  const controller = new AbortController()
+  const fallbacks: unknown[] = []
+  const rejection = assert.rejects(
+    callLLMStreamWithFallback({ ...request, signal: controller.signal }, ['audit/next'], () => {}, (a) => fallbacks.push(a)),
+    { status: 503 },
+  )
+  await clock.to(H)
+  // A cancel is the player's, whatever shape its reason arrives in; it must
+  // never be mistaken for the model's failure and reroute the turn.
+  controller.abort(Object.assign(new Error('cancelled in flight'), { status: 503 }))
+  await rejection
+  assert.equal(calls.length, 2)
+  assert.equal(fallbacks.length, 0)
+})
+
+await check('(o) non-streamed 503 falls back to the next model', [], async () => {
+  const client = nonStreamingOutcomes([
+    { error: Object.assign(new Error('upstream unavailable'), { status: 503 }) },
+    { content: 'Non-streamed fallback' },
+  ])
+  const fallbacks: unknown[] = []
+  const result = await callLLMWithFallback(request, ['audit/next'], (a) => fallbacks.push(a))
+  assert.equal(result.content, 'Non-streamed fallback')
+  assert.equal(result.model, 'audit/next')
+  assert.deepEqual(result.fallbackAttempts, [{ from: request.model, to: 'audit/next' }])
+  assert.equal(client.calls.length, 2)
+  assert.equal(fallbacks.length, 1)
+})
+
+await check('(p) non-streamed 400 throws without fallback', [], async () => {
+  const client = nonStreamingOutcomes([{ error: Object.assign(new Error('bad request'), { status: 400 }) }])
+  await assert.rejects(callLLMWithFallback(request, ['audit/next']), { status: 400 })
+  assert.equal(client.calls.length, 1)
+})
+await check('(q) an empty reply is not a host failure', [], async () => {
+  const client = nonStreamingOutcomes([{ error: new EmptyLLMResponseError({ providerError: 'upstream timed out' }) }])
+  await assert.rejects(callLLMWithFallback(request, ['audit/next']), /Empty LLM response/)
+  assert.equal(client.calls.length, 1)
+})
+
 console.log(`Narration hedge audit: ${passed} passed, ${failed} failed`)
 process.exitCode = failed ? 1 : 0
 
@@ -306,7 +427,7 @@ if (process.argv.includes('--bites') && !failed) {
   const mutations: Array<{ name: string; replacements: Array<[string, string]>; expected: string; routing?: boolean }> = [
     { name: '(a) hedge fast primary', replacements: [['}, NARRATION_HEDGE_MS)', '}, 0)']], expected: 'FAIL (a,g)' },
     { name: '(b) delay hedge by 1ms', replacements: [['}, NARRATION_HEDGE_MS)', '}, NARRATION_HEDGE_MS + 1)']], expected: 'FAIL (b,g,h)' },
-    { name: '(b) retain sticky key', replacements: [["label === 'hedge' ? { ...req, sessionId: undefined } : req", 'req']], expected: 'FAIL (b,g,h)' },
+    { name: '(b) retain sticky key', replacements: [["{ ...req, ...(label === 'hedge' ? { sessionId: undefined } : {}), traceRole:", "{ ...req, traceRole:"]], expected: 'FAIL (b,g,h)' },
     { name: '(b) omit immediate loser abort', replacements: [["loser?.controller.abort(new Error('Narration hedge lost'))", 'void loser']], expected: 'FAIL (b,g,h)' },
     { name: '(c) leak buffered loser chunks', replacements: [
       ['if (controller.signal.aborted) break', '// broken parser gate'],
@@ -321,7 +442,21 @@ if (process.argv.includes('--bites') && !failed) {
     { name: '(g) report wrong winner', replacements: [["hedgeWinner: hedged ? result.hedgeWinner ?? 'primary' : undefined", "hedgeWinner: hedged ? 'primary' : undefined"]], expected: 'FAIL (b,g,h)' },
     { name: '(h) lose loser-purpose accounting', replacements: [["'narration_hedge_lost'", "'narration'"]], expected: 'FAIL (b,g,h)' },
     { name: 'either 429 can trigger fallback', replacements: [['isRateLimitError(error) ? error : isRateLimitError(other.error) ? other.error : error', 'error']], expected: 'FAIL both fail: primary 429, primary fails first' },
-    { name: 'shared first-token deadline', replacements: [['}, firstTokenTimeoutMs)', '}, firstTokenTimeoutMs * 2)']], expected: 'FAIL 30-second first-token deadline' },
+    { name: 'shared first-token deadline', replacements: [['}, firstTokenTimeoutMs)', '}, firstTokenTimeoutMs * 2)']], expected: 'FAIL (k)' },
+    { name: 'host failure: 5xx is not one', replacements: [['if (status >= 500) return true', 'if (status >= 600) return true']], expected: 'FAIL (i)' },
+    { name: 'host failure: a 4xx reroutes', replacements: [['if (Number.isFinite(status) && status >= 400 && status < 500) return false', 'if (false) return false']], expected: 'FAIL (m)' },
+    { name: 'host failure: dropped connection is not one', replacements: [["if (failure?.name === 'APIConnectionTimeoutError' || failure?.name === 'APIConnectionError') return true", "if (failure?.name === 'APIConnectionTimeoutError') return true"]], expected: 'FAIL (j)' },
+    { name: 'host failure: first-token deadline is not one', replacements: [['/timed out|did not produce a first token/i', '/timed out/i']], expected: 'FAIL (k)' },
+    { name: 'host failure: never reroute', replacements: [['if (!streamed && nextModel && isHostFailureError(error)) {', 'if (false) {']], expected: 'FAIL (i)' },
+    { name: 'host failure: reroute after prose', replacements: [['if (!streamed && nextModel && isHostFailureError(error)) {', 'if (nextModel && isHostFailureError(error)) {']], expected: 'FAIL (l)' },
+    { name: 'host failure: non-streamed never reroutes', replacements: [['isRateLimitError(error) || isHostFailureError(error)', 'isRateLimitError(error)']], expected: 'FAIL (o)' },
+    { name: 'host failure: an abort reroutes', replacements: [[
+      '      // A cancel belongs to the player, not the model: a cancelled or\n      // superseded turn must never start another model.\n      if (req.signal?.aborted) throw error\n', '',
+    ]], expected: 'FAIL (n)' },
+    { name: 'host failure: an empty reply is one', replacements: [[
+      "  if (error instanceof EmptyLLMResponseError) return false\n  const failure = error as { name?: unknown; message?: unknown; status?: unknown } | null | undefined",
+      "  const failure = error as { name?: unknown; message?: unknown; status?: unknown } | null | undefined",
+    ]], expected: 'FAIL (q)' },
     { name: 'streamed prose latency sort', replacements: [["sort: narration ? 'latency' : 'throughput'", "sort: 'throughput'"]], expected: 'FAIL streamed prose keeps its intended sorting', routing: true },
     { name: 'structured throughput sort', replacements: [["sort: narration ? 'latency' : 'throughput'", "sort: 'latency'"]], expected: 'FAIL structured keeps its intended sorting', routing: true },
     { name: 'provider fallback enabled', replacements: [['allow_fallbacks: true', 'allow_fallbacks: false']], expected: 'FAIL streamed prose keeps its intended sorting', routing: true },
