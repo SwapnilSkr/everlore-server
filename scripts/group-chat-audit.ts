@@ -2228,7 +2228,7 @@ await check('first explicit: the body line never reaches a writer the adult rout
 })
 await check('first explicit: the body line never assumes an unknown body', async () => {
   const message = `@${names[0]} I wanna fuck you`
-  const unknown = ` ${names[0]} doesn't know what ${playerName}'s body is, so ${names[0]} says what they want with ${playerName}'s mouth and hands and with their own body, and names nothing else of ${playerName}'s.`
+  const unknown = ` ${names[0]} talks only about ${playerName}'s mouth and hands and about ${names[0]}'s own body.`
   const woman = ` ${playerName} is a woman and has a woman's body, with no cock, and ${names[0]} knows it. Say what's done to her body.`
   const adultDynamic = async (gender?: string) => {
     await adultStart()
@@ -4302,7 +4302,7 @@ await check('nway legacy adult request publish and event retain pre-scene shape 
     data: { ...data, group_state_after: 'fixture', lines: (data.lines as Row[]).map(({ shown_at: _shown, ...line }) => line) },
     shown: shown.map(frame => ({ ...frame, instanceId: 'fixture', eventId: 'fixture', lines: (frame.lines as Row[]).map(({ shownAt: _shown, line_id: _identity, ...line }) => line) })) }
   const hash = createHash('sha256').update(JSON.stringify(trace)).digest('hex')
-  assert.equal(hash, '6a8f720ff539211c56ac7ed2c542cc08a00e262810da9701c223d7a2ae6bdbc1', hash)
+  assert.equal(hash, 'c4630ef1b512fa9cdddcc3cf4faeab7ffa8acb67bda9975590a68f24abcb8bc8', hash)
 })
 
 await check('nway rewind deletion remove scene fields and real group memory never gains private_to', async () => {

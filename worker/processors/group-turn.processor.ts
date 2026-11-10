@@ -254,12 +254,12 @@ export async function groupTurnProcessor(job: Job<GroupTurnJob>, deps: { rng?: (
           const sceneVoice = sceneOthers.length || soloAdult ? sceneExamples(selected[0], sceneOwn.length, [...request.excludedVoice, ...previousLines.filter(line => line.name === selected[0].name).map(line => line.text)], sceneOwn.at(-1)?.text) : []
           // Measured live: with the player female, the gender line alone was ignored and 18 of 34
           // replies still gave her a cock. The same fact beside the turn gave 0 of 12. The
-          // non-binary wording is not measured; the unknown-gender wording is being measured
-          // live, by the orchestrator after review. Never stated to a writer the adult route left.
+          // non-binary wording is not measured; the unknown-gender wording took assumed bodies
+          // from 7 of 12 replies down; saying they don't know got that echoed back to the player. Never stated to a writer the adult route left.
           const bodyLine = !stillAdult ? '' : knownGender === 'female'
             ? ` ${config.player} is a woman and has a woman's body, with no cock, and ${selected[0].name} knows it. Say what's done to her body.`
             : knownGender === 'non_binary' ? ` ${config.player} is non-binary, and ${selected[0].name} doesn't assume what ${config.player}'s body is.`
-              : knownGender === undefined ? ` ${selected[0].name} doesn't know what ${config.player}'s body is, so ${selected[0].name} says what they want with ${config.player}'s mouth and hands and with their own body, and names nothing else of ${config.player}'s.` : ''
+              : knownGender === undefined ? ` ${selected[0].name} talks only about ${config.player}'s mouth and hands and about ${selected[0].name}'s own body.` : ''
           const soloRule = soloAdult ? `Whatever ${config.player} just said, ${selected[0].name} answers as if ${config.player} had asked exactly what ${selected[0].name} wants done: the acts themselves, in the first message. A time, a place, a joke or a yes on its own doesn't answer it.${sceneVoice.length ? ` ${selected[0].name} says it the way these sound, in new words: ${sceneVoice.map(example => `"${example}"`).join(' ')}` : ''}${bodyLine}` : undefined
           const dynamic = buildGroupDynamic({ askedRule: selected.some(member => member.id === askedMember?.id) ? askedRule(consented) : undefined, sceneRule: sceneOthers.length ? `This is a sex scene between ${config.player}, ${selected[0].name} and ${sceneOthers.join(' and ')}, and it's happening now. ${selected[0].name} answers ${config.player} and doesn't organise the others or talk about anything else.${sceneVoice.length ? ` ${selected[0].name} says it the way these sound, in new words, about what's happening now: ${sceneVoice.map(example => `"${example}"`).join(' ')}` : ''}${bodyLine}` : soloRule, actionPresent: origin === 'player' && job.data.kind === 'action', bonds: selected, notToldAbout: hiddenWords, memories: memory.memories, openThreads: memory.openThreads,
             summaries: addressedPrompt ? [] : consented ? summaries : await groupWriterSummaries(iid, summaryCandidates, directWith, false),

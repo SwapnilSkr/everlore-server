@@ -1126,7 +1126,7 @@ if (args.has('--selftest')) {
   await smoke()
 } else if (sampleIndex > 0) {
   await sampleRun()
-  writeFileSync(join(OUT_DIR, 'turns.json'), JSON.stringify(runs.map(run => ({ key: run.key, turns: run.turns.map(turn => ({ index: turn.index, player: turn.player, expected: turn.expected, route: turn.route, ms: turn.elapsed_ms, calls: turn.calls.length, counts: turn.counts, error: turn.error, lines: turn.lines.map(line => ({ name: line.name, text: line.text })) })) })), null, 1))
+  writeFileSync(join(OUT_DIR, 'turns.json'), JSON.stringify(runs.map(run => ({ key: run.key, turns: run.turns.map(turn => ({ index: turn.index, player: turn.player, expected: turn.expected, router: turn.router, route: turn.route, ms: turn.elapsed_ms, calls: turn.calls.length, counts: turn.counts, error: turn.error, lines: turn.lines.map(line => ({ name: line.name, text: line.text })) })) })), null, 1))
   for (const stop of stops) console.log(`STOP ${stop}`)
   console.log(`sample: ${ledger.turns} turn(s), ${ledger.calls} call(s), $${ledger.spent_usd.toFixed(6)} (₹${(ledger.spent_usd * INR_PER_USD).toFixed(2)}), ${errors.length} error(s)`)
   process.exit(0)
