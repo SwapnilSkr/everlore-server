@@ -272,6 +272,49 @@ await check('addressed prompt is authored per person with player gender sentence
   assert(!buildGroupStatic({ ...template, members, player: playerName }).includes(members[2].group.intimacy!))
 })
 
+await check('member gender is stated on their own line right after the age', () => {
+  const words = ['female', 'male', 'non_binary'] as const
+  const cast = members.map((member, index) => index < words.length ? { ...member, group: { ...member.group, gender: words[index] } } : member)
+  const built = buildGroupStatic({ ...template, members: cast, player: playerName })
+  for (const [index, suffix] of [[0, 'a woman'], [1, 'a man'], [2, 'non-binary']] as const) {
+    const member = cast[index]
+    assert(built.includes(`- ${member.name} — ${member.role}, age ${member.group.age}, ${suffix}\n  persona:`), `${member.name}: ${suffix}`)
+  }
+  // Only the three authored members say anything about a body.
+  assert.equal(built.split('\n').filter(line => /, (a woman|a man|non-binary)$/.test(line)).length, words.length)
+})
+
+await check('a member without an authored gender keeps the old line byte for byte', () => {
+  const plain = buildGroupStatic({ ...template, members, player: playerName })
+  for (const member of members) assert(plain.includes(`- ${member.name} — ${member.role}, age ${member.group.age}\n  persona: ${member.persona}\n  speech: ${member.group.speech}\n  wants: ${member.group.wants}`), member.name)
+  // A mixed cast leaves the unauthored members exactly as they were.
+  const mixed = members.map((member, index) => index === 0 ? { ...member, group: { ...member.group, gender: 'female' as const } } : member)
+  const built = buildGroupStatic({ ...template, members: mixed, player: playerName })
+  for (const member of mixed.slice(1)) assert(built.includes(`- ${member.name} — ${member.role}, age ${member.group.age}\n  persona: ${member.persona}\n  speech: ${member.group.speech}\n  wants: ${member.group.wants}`), member.name)
+  assert(!built.includes(', unknown'))
+})
+
+await check('the member body rule appears only when some member has a gender', () => {
+  const rule = "never gives one member another's body"
+  assert(!buildGroupStatic({ ...template, members, player: playerName }).includes(rule))
+  const mixed = members.map((member, index) => index === 2 ? { ...member, group: { ...member.group, gender: 'non_binary' as const } } : member)
+  const built = buildGroupStatic({ ...template, members: mixed, player: playerName })
+  assert(built.includes(rule))
+  // It comes after the MEMBERS block, once.
+  assert.equal(built.split(rule).length - 1, 1)
+  assert(built.indexOf(rule) > built.indexOf(`MEMBERS:\n- ${mixed[0].name}`))
+})
+
+await check('seed cast group schema accepts an authored member gender and rejects an unknown word', async () => {
+  const { CreateTemplateBody } = await import('../src/schemas/template.schema')
+  const { Value } = await import('@sinclair/typebox/value')
+  const groupSchema = CreateTemplateBody.properties.seed_cast.items.properties.group
+  const base = members[0].group
+  assert(Value.Check(groupSchema, base))
+  for (const gender of ['male', 'female', 'non_binary'] as const) assert(Value.Check(groupSchema, { ...base, gender }), gender)
+  for (const gender of ['woman', 'man', 'non-binary', 'Female', '', 1, null]) assert(!Value.Check(groupSchema, { ...base, gender }), String(gender))
+})
+
 await check('starting bond is required and validated for every group member', () => {
   for (const capable of [false, true]) for (const start_bond of [undefined, null, 'unknown', 0, {}, [], 'enemy', 'friend']) {
     const changed = { ...template, is_nsfw_capable: capable, seed_cast: template.seed_cast!.map(member => ({ ...member, group: { ...member.group!, start_bond } })) } as WorldTemplateDoc
@@ -2259,6 +2302,79 @@ await check('first explicit: the body line never assumes an unknown body', async
   assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed'], ['normal', 'addressed_retry']])
   assert(content(writerCalls[0], 1).includes(unknown.trim()))
   assert(!content(writerCalls[1], 1).includes(unknown.trim()))
+})
+await check("first explicit: the speaker's own body sits beside the turn", async () => {
+  const message = `@${names[0]} I wanna fuck you`
+  const speakerWoman = ` ${names[0]} is a woman, with a woman's body.`
+  const speakerMan = ` ${names[0]} is a man, with a man's body.`
+  const dynamicFor = async (gender?: 'male' | 'female' | 'non_binary') => {
+    const source = groupTemplate()
+    if (gender) source.seed_cast![0].group!.gender = gender
+    await adultStart(source)
+    modelReplies = [`${names[0]}: Fresh explicit answer`]
+    await turn({ userMessage: message }, never)
+    assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed']])
+    return content(writerCalls[0], 1)
+  }
+  const female = await dynamicFor('female')
+  assert(female.includes(speakerWoman))
+  assert(female.indexOf(speakerWoman) > female.indexOf('answers as if'))
+  assert(!female.includes(speakerMan))
+  const male = await dynamicFor('male')
+  assert(male.includes(speakerMan))
+  assert(!male.includes(speakerWoman))
+  for (const gender of ['non_binary', undefined] as const) {
+    const dynamic = await dynamicFor(gender)
+    assert(!dynamic.includes(speakerWoman), String(gender))
+    assert(!dynamic.includes(speakerMan), String(gender))
+  }
+})
+await check('first explicit: the speaker body leaves the player sentence in place', async () => {
+  const message = `@${names[0]} I wanna fuck you`
+  const playerWoman = ` ${playerName} is a woman and has a woman's body, with no cock, and ${names[0]} knows it. Say what's done to her body.`
+  const speakerWoman = ` ${names[0]} is a woman, with a woman's body.`
+  const speakerMan = ` ${names[0]} is a man, with a man's body.`
+  const dynamicFor = async (playerGender: string | undefined, speakerGender: 'male' | 'female') => {
+    const source = groupTemplate()
+    source.seed_cast![0].group!.gender = speakerGender
+    await adultStart(source)
+    if (playerGender) put(rows('users')[0], 'preferences.gender', playerGender)
+    modelReplies = [`${names[0]}: Fresh explicit answer`]
+    await turn({ userMessage: message }, never)
+    assert.deepEqual(checkLogs.at(-1)!.writing.map(call => [call.writer, call.purpose]), [['adult', 'addressed']])
+    return content(writerCalls[0], 1)
+  }
+  const both = await dynamicFor('female', 'male')
+  assert(both.includes(playerWoman))
+  assert(both.includes(speakerMan))
+  assert(both.indexOf(playerWoman) < both.indexOf(speakerMan))
+  const onlySpeaker = await dynamicFor('male', 'female')
+  assert(onlySpeaker.includes(speakerWoman))
+  assert(!onlySpeaker.includes(playerWoman))
+  assert(!onlySpeaker.includes('with no cock'))
+  const unsetPlayer = await dynamicFor(undefined, 'female')
+  assert(unsetPlayer.includes(speakerWoman))
+  assert(unsetPlayer.includes(`talks only about ${playerName}'s mouth and hands`))
+})
+await check('first explicit: the speaker body never reaches a non-adult turn', async () => {
+  const speakerWoman = (name: string) => ` ${name} is a woman, with a woman's body.`
+  const speakerMan = (name: string) => ` ${name} is a man, with a man's body.`
+  const source = groupTemplate()
+  source.seed_cast![0].group!.gender = 'female'
+  source.seed_cast![1].group!.gender = 'male'
+  // A turn the adult route never took.
+  await start(source)
+  await turn({ userMessage: `@${names[0]} I wanna fuck you` }, never)
+  assert.equal(checkLogs.at(-1)!.writing.at(-1)!.writer, 'normal')
+  assert(writerCalls.every(call => !content(call, 1).includes(speakerWoman(names[0]))))
+  // Consent withdrawn after the first adult call: the redirected retry keeps the scene rule but not the speaker body.
+  await adultStart(source)
+  writerHook = () => { put(rows('users')[0], 'preferences.nsfw_enabled', false) }
+  modelReplies = [`${names[0]}: First in the scene`, `${names[1]}: Normal after withdrawal`]
+  await turn({ userMessage: `@${names[0]} @${names[1]} I wanna fuck you` }, never)
+  assert.deepEqual(checkLogs.at(-1)!.writing.map(call => call.writer), ['adult', 'normal'])
+  assert(content(writerCalls[0], 1).includes(speakerWoman(names[0])))
+  assert(!content(writerCalls[1], 1).includes(speakerMan(names[1])))
 })
 await check('close bond statement follows the bond and the copy check finds an example inside a message', () => {
   const base = { memories: [], summaries: [], history: [], now: new Date(0), speakers: [members[2].name], situation: 'x' }

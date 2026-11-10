@@ -31,7 +31,8 @@ export function validateGroup(data: Partial<WorldTemplateDoc>): void {
     const traits = member.group
     if (!traits || !Number.isFinite(traits.age) || traits.age < 18) fail('every member must be 18 or older')
     if (!Number.isFinite(traits!.talkativeness) || traits!.talkativeness < 0 || traits!.talkativeness > 1) fail('talkativeness must be 0–1')
-    if (Object.keys(traits!).some(key => !['age', 'talkativeness', 'speech', 'wants', 'intimacy', 'voice', 'start_bond'].includes(key))) fail('unknown member group field')
+    if (Object.keys(traits!).some(key => !['age', 'gender', 'talkativeness', 'speech', 'wants', 'intimacy', 'voice', 'start_bond'].includes(key))) fail('unknown member group field')
+    if (traits!.gender !== undefined && !['male', 'female', 'non_binary'].includes(traits!.gender)) fail('gender must be male, female or non_binary')
     if (typeof traits!.start_bond !== 'string' || !Object.keys(relationshipBaseline(traits!.start_bond as RelationshipInitializationKind)).length) fail('start_bond must name a starting bond')
     const text = (value: unknown): value is string => typeof value === 'string' && !!value.trim()
     if ((data.is_nsfw_capable || traits!.intimacy !== undefined) && !text(traits!.intimacy)) fail('intimacy must contain text')

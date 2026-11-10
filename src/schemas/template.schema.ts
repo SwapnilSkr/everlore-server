@@ -79,7 +79,7 @@ export const CreateTemplateBody = t.Object({
       evening: t.Optional(t.String({ minLength: 1, maxLength: 300 })),
       night: t.Optional(t.String({ minLength: 1, maxLength: 300 })),
     }, { additionalProperties: false })),
-    group: t.Object({ age: t.Number({ minimum: 18 }), talkativeness: t.Number({ minimum: 0, maximum: 1 }), speech: t.String({ minLength: 1, maxLength: 2000 }), wants: t.String({ minLength: 1, maxLength: 2500 }), start_bond: t.String({ minLength: 1 }), intimacy: t.Optional(t.String({ minLength: 1 })), voice: t.Optional(t.Array(t.String({ minLength: 1 }), { minItems: 1, maxItems: 8 })) }, { additionalProperties: false }),
+    group: t.Object({ age: t.Number({ minimum: 18 }), gender: t.Optional(t.Union([t.Literal('male'), t.Literal('female'), t.Literal('non_binary')])), talkativeness: t.Number({ minimum: 0, maximum: 1 }), speech: t.String({ minLength: 1, maxLength: 2000 }), wants: t.String({ minLength: 1, maxLength: 2500 }), start_bond: t.String({ minLength: 1 }), intimacy: t.Optional(t.String({ minLength: 1 })), voice: t.Optional(t.Array(t.String({ minLength: 1 }), { minItems: 1, maxItems: 8 })) }, { additionalProperties: false }),
   }), { minItems: 2, maxItems: 6 })),
   protagonist: t.Optional(
     t.Object({

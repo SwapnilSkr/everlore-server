@@ -2,6 +2,8 @@ export type GroupOrigin = 'player' | 'unprompted' | 'catchup'
 
 export interface GroupTraits {
   age: number
+  /** Authored where the world states it, so the writer never guesses a body from a name. */
+  gender?: 'male' | 'female' | 'non_binary'
   talkativeness: number
   speech: string
   wants: string

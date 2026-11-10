@@ -824,7 +824,7 @@ const mutations: Mutation[] = [
   { name: 'first explicit: body line lost', check: 'first explicit: the body line sits beside', edits: [[worker, "const bodyLine = !stillAdult ? '' : knownGender === 'female'", "const bodyLine = !stillAdult ? '' : false"]] },
   { name: 'first explicit: non-binary body line lost', check: 'first explicit: the body line sits beside', edits: [[worker, "knownGender === 'non_binary' ?", "knownGender === 'goblin' ?"]] },
   { name: 'first explicit: body line given to a man', check: 'first explicit: the body line sits beside', edits: [[worker, "const bodyLine = !stillAdult ? '' : knownGender === 'female'", "const bodyLine = !stillAdult ? '' : knownGender !== 'non_binary'"]] },
-  { name: 'first explicit: scene body line lost', check: "first explicit: the body line follows a scene member's request", edits: [[worker, '${bodyLine}` : soloRule', '` : soloRule']] },
+  { name: 'first explicit: scene body line lost', check: "first explicit: the body line follows a scene member's request", edits: [[worker, '${adultBody}` : soloRule', '` : soloRule']] },
   { name: 'first explicit: scene body line given to a man', check: "first explicit: the body line follows a scene member's request", edits: [[worker, "const bodyLine = !stillAdult ? '' : knownGender === 'female'", "const bodyLine = !stillAdult ? '' : knownGender !== 'non_binary'"]] },
   { name: 'first explicit: body line reaches the normal writer', check: 'first explicit: the body line never reaches', edits: [[worker, 'const soloAdult = stillAdult && !sceneOthers.length', 'const soloAdult = !sceneOthers.length'], [worker, "const bodyLine = !stillAdult ? '' : knownGender === 'female'", "const bodyLine = false ? '' : knownGender === 'female'"]] },
 ]
@@ -1791,6 +1791,37 @@ const groupListMemberMutations: Mutation[] = [
     "        ...(kind === 'group' ? {} : { members: groupPreviewMembers(template) }),"]] },
 ]
 mutations.push(...groupListMemberMutations)
+
+// cag-18: each member's own gender is authored data, so the writer never guesses a body from a name.
+const memberGenderCheck = 'member gender is stated'
+const memberPlainLineCheck = 'a member without an authored gender'
+const memberBodyRuleCheck = 'the member body rule appears'
+const memberGenderSchemaCheck = 'seed cast group schema accepts an authored member gender'
+const memberGenderMutations: Mutation[] = [
+  { name: 'member gender: female word lost', check: memberGenderCheck, edits: [[prompt, "gender === 'female' ? 'a woman'", "gender === 'female' ? 'a girl'"]] },
+  { name: 'member gender: male word lost', check: memberGenderCheck, edits: [[prompt, "gender === 'male' ? 'a man'", "gender === 'male' ? 'a male'"]] },
+  { name: 'member gender: non-binary word lost', check: memberGenderCheck, edits: [[prompt, "gender === 'non_binary' ? 'non-binary'", "gender === 'non_binary' ? 'nonbinary'"]] },
+  { name: 'member gender: every line states one', check: memberPlainLineCheck, edits: [[prompt, "${gender ? `, ${gender}` : ''}", "${`, ${gender}`}"]] },
+  { name: 'member gender: absent guesses unknown', check: memberPlainLineCheck, edits: [[prompt, ": gender === 'non_binary' ? 'non-binary' : ''", ": gender === 'non_binary' ? 'non-binary' : 'unknown'"]] },
+  { name: 'member gender: body rule always stated', check: memberBodyRuleCheck, edits: [[prompt, 'if (input.members.some(member => member.group.gender)) parts.push(MEMBER_BODY_RULE)', 'if (true) parts.push(MEMBER_BODY_RULE)']] },
+  { name: 'member gender: body rule never stated', check: memberBodyRuleCheck, edits: [[prompt, 'if (input.members.some(member => member.group.gender)) parts.push(MEMBER_BODY_RULE)', 'if (false) parts.push(MEMBER_BODY_RULE)']] },
+  { name: 'member gender: schema field removed', check: memberGenderSchemaCheck, edits: [['src/schemas/template.schema.ts', "gender: t.Optional(t.Union([t.Literal('male'), t.Literal('female'), t.Literal('non_binary')])), ", '']] },
+  { name: 'member gender: schema accepts any word', check: memberGenderSchemaCheck, edits: [['src/schemas/template.schema.ts', "gender: t.Optional(t.Union([t.Literal('male'), t.Literal('female'), t.Literal('non_binary')]))", 'gender: t.Optional(t.String())']] },
+]
+mutations.push(...memberGenderMutations)
+
+// cag-19: the speaker's own body sits beside the turn, for the writer that turn actually used.
+const speakerBodyCheck = "first explicit: the speaker's own body sits beside the turn"
+const speakerPlayerCheck = 'first explicit: the speaker body leaves the player sentence in place'
+const speakerNormalCheck = 'first explicit: the speaker body never reaches a non-adult turn'
+const speakerBodyMutations: Mutation[] = [
+  { name: 'speaker body: woman sentence lost', check: speakerBodyCheck, edits: [[worker, "? ` ${selected[0].name} is a woman, with a woman's body.`", "? ''"]] },
+  { name: 'speaker body: man sentence lost', check: speakerBodyCheck, edits: [[worker, "? ` ${selected[0].name} is a man, with a man's body.` : ''", "? '' : ''"]] },
+  { name: 'speaker body: unauthored speaker gets one', check: speakerBodyCheck, edits: [[worker, "selected[0].group.gender === 'female'", "selected[0].group.gender !== 'male'"]] },
+  { name: 'speaker body: comes before the player sentence', check: speakerPlayerCheck, edits: [[worker, 'const adultBody = bodyLine + speakerBody', 'const adultBody = speakerBody + bodyLine']] },
+  { name: 'speaker body: reaches a non-adult turn', check: speakerNormalCheck, edits: [[worker, "const speakerBody = !stillAdult ? '' :", "const speakerBody = false ? '' :"]] },
+]
+mutations.push(...speakerBodyMutations)
 
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {

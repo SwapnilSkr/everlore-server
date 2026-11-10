@@ -2,7 +2,14 @@ import { GROUP_ACTION_RULE } from './actions'
 import { sceneVoiceLines } from './lines'
 import { NARRATIVE_BOUNDARIES } from '../../utils/prompt-builder'
 import { buildStyleBlock } from '../../utils/narrative-styles'
-import type { GroupMember, NamedLine } from './types'
+import type { GroupMember, GroupTraits, NamedLine } from './types'
+
+const genderWord = (gender: GroupTraits['gender']) =>
+  gender === 'male' ? 'a man' : gender === 'female' ? 'a woman' : gender === 'non_binary' ? 'non-binary' : ''
+
+// A paid sample (2026-11-11) had a member describe the wrong body as their own: the
+// member line states the authored gender, this states the body rule once.
+const MEMBER_BODY_RULE = "Each member speaks about their own body as their stated gender's, and never gives one member another's body."
 
 export function buildGroupStatic(input: {
   seed_prompt: string; global_lore: string; narrative_style?: string
@@ -10,8 +17,10 @@ export function buildGroupStatic(input: {
   /** Only where the chat knows it: the gender the writer may assume, never a guess. */
   playerGender?: 'male' | 'female' | 'non_binary'
 }): string {
-  const members = input.members.map(member =>
-    `- ${member.name} — ${member.role || ''}, age ${member.group.age}\n  persona: ${member.persona || ''}\n  speech: ${member.group.speech}\n  wants: ${member.group.wants}`).join('\n')
+  const members = input.members.map(member => {
+    const gender = genderWord(member.group.gender)
+    return `- ${member.name} — ${member.role || ''}, age ${member.group.age}${gender ? `, ${gender}` : ''}\n  persona: ${member.persona || ''}\n  speech: ${member.group.speech}\n  wants: ${member.group.wants}`
+  }).join('\n')
   const gender = input.playerGender === 'male' ? `${input.player} is a man. Use their name or "you" in messages.`
     : input.playerGender === 'female' ? `${input.player} is a woman. Use their name or "you" in messages.`
       : input.playerGender === 'non_binary' ? `${input.player} is non-binary. Use their name, "you" or "they", and don't assume their body. Never comment on this.`
@@ -30,6 +39,7 @@ export function buildGroupStatic(input: {
     `In the notes below, "you" or "the player" means ${input.player}, by name.`,
     `MEMBERS:\n${members}`,
   )
+  if (input.members.some(member => member.group.gender)) parts.push(MEMBER_BODY_RULE)
   return parts.join('\n\n')
 }
 
