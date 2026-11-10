@@ -64,17 +64,23 @@ export function groupLineShown(line: { shown_at?: Date }, now: Date): boolean {
   return !line.shown_at || new Date(line.shown_at).getTime() <= now.getTime()
 }
 
+/** An adult turn is silent while the toggle is off, the player's own words
+ *  included. A preview and a thread's count share this test, so a hidden
+ *  turn cannot leave an empty row or admit that it exists. */
+function groupEventShown(event: GroupChatEventView, adultAllowed: boolean): boolean {
+  if (!adultAllowed && event.type === 'intimate') return false
+  return true
+}
+
 /** The newest message of one event that the player has already been shown,
- *  falling back to the player's own words when no reply is visible yet. An
- *  adult turn is silent while the player has the toggle off, the player's own
- *  words included. */
+ *  falling back to the player's own words when no reply is visible yet. */
 export function lastVisibleMessage(
   event: GroupChatEventView,
   names: Map<string, string>,
   now: Date,
   adultAllowed: boolean,
 ): GroupChatMessage | undefined {
-  if (!adultAllowed && event.type === 'intimate') return undefined
+  if (!groupEventShown(event, adultAllowed)) return undefined
   const lines = (event.data.lines || []).filter(line =>
     line.text && groupLineShown(line, now) && names.has(line.character_id || ''))
   const line = lines.at(-1)
@@ -130,6 +136,7 @@ export function buildGroupChatRow(source: GroupChatSource, now: Date): GroupChat
   for (const event of ordered(source.threadEvents)) {
     const thread = event.data.dm_with
     if (!thread || !names.has(thread)) continue
+    if (!groupEventShown(event, source.adultAllowed)) continue
     const row = threads.get(thread) ?? { member_id: thread, message_count: 0 }
     row.message_count += (event.data.lines || []).filter(line =>
       line.text && groupLineShown(line, now) && names.has(line.character_id || '')).length

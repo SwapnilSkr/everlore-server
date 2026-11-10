@@ -4972,10 +4972,10 @@ await check('art toggle off keeps adult words out of every list preview', async 
   assert.equal(reads, 1, 'the chat list must read the toggle once, not once per chat')
   assert.equal((off.last as Row).text, 'Earlier room line')
   assert.equal((threadRow(off, ids[1]).last as Row).text, 'Earlier private line')
-  assert.equal(threadRow(off, ids[1]).message_count, 4)
-  // The all-adult thread keeps its row, reachable, with nothing to preview.
-  assert.equal(threadRow(off, ids[2]).last, undefined)
-  assert.equal(threadRow(off, ids[2]).message_count, 2)
+  assert.equal(threadRow(off, ids[1]).message_count, 2)
+  // An all-adult thread is not a chats row: a count with nothing to preview
+  // would show an empty chat and admit the hidden messages exist.
+  assert.equal((off.threads as Row[]).find(thread => thread.member_id === ids[2]), undefined)
   reads = 0
   const offThreads = await threadList()
   assert.equal(reads, 1, 'the thread list must read the toggle once')
@@ -4989,10 +4989,49 @@ await check('art toggle off keeps adult words out of every list preview', async 
   const on = await chatList()
   assert.equal((on.last as Row).text, 'Adult room player words'); assert.equal((on.last as Row).from, 'player')
   assert.equal((threadRow(on, ids[1]).last as Row).text, 'Adult private line')
+  assert.equal(threadRow(on, ids[1]).message_count, 4)
   assert.equal((threadRow(on, ids[2]).last as Row).text, 'Only adult line')
+  assert.equal(threadRow(on, ids[2]).message_count, 2)
   const onThreads = await threadList()
   assert.equal(onThreads.find(thread => thread.memberId === ids[1])!.lastLine, 'Adult private line')
   assert.equal(onThreads.find(thread => thread.memberId === ids[2])!.lastLine, 'Only adult line')
+})
+
+await check('art hidden adult thread is no chats row and a mixed thread counts only visible messages', async () => {
+  const { buildGroupChatRow } = await import('../src/services/group-chat/chats')
+  const now = new Date()
+  const line = (id: string, text: string) => ({ character_id: id, text, shown_at: now })
+  const build = (adultAllowed: boolean) => buildGroupChatRow({
+    instance: { _id: new ObjectId(), template_id: template._id, seed_cast_snapshot: template.seed_cast },
+    template,
+    cards: members.map(member => ({ _id: new ObjectId(member.id), canonical_name: member.name })) as never,
+    mainEvents: [],
+    threadEvents: [
+      { sequence: 1, created_at: now, type: 'narration', data: {
+        dm_with: ids[1], player_input: 'Visible hello', lines: [line(ids[1], 'Visible reply')],
+      } },
+      { sequence: 2, created_at: now, type: 'intimate', data: {
+        dm_with: ids[1], player_input: 'Hidden hello', lines: [line(ids[1], 'Hidden reply')],
+      } },
+      { sequence: 3, created_at: now, type: 'intimate', data: {
+        dm_with: ids[2], player_input: 'Only hidden', lines: [line(ids[2], 'Only hidden reply')],
+      } },
+    ],
+    adultAllowed,
+  }, now)
+  const off = build(false)
+  assert.equal(off.threads.find(thread => thread.member_id === ids[2]), undefined)
+  const mixedOff = off.threads.find(thread => thread.member_id === ids[1])!
+  assert.equal(mixedOff.message_count, 2)
+  assert.equal(mixedOff.last?.text, 'Visible reply')
+  assert(!JSON.stringify(off).includes('Hidden') && !JSON.stringify(off).includes('Only hidden'))
+  const on = build(true)
+  const mixedOn = on.threads.find(thread => thread.member_id === ids[1])!
+  const onlyOn = on.threads.find(thread => thread.member_id === ids[2])!
+  assert.equal(mixedOn.message_count, 4)
+  assert.equal(mixedOn.last?.text, 'Hidden reply')
+  assert.equal(onlyOn.message_count, 2)
+  assert.equal(onlyOn.last?.text, 'Only hidden reply')
 })
 
 await check('art direct message never becomes the room last', async () => {

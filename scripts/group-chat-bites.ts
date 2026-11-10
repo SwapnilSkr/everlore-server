@@ -917,8 +917,9 @@ const artMutations: Mutation[] = [
   { name: 'art schema cast of seven accepted', check: 'art cast size', edits: [['src/schemas/template.schema.ts', '{ minItems: 2, maxItems: 6 })),', '{ minItems: 2, maxItems: 7 })),']] },
   { name: 'art schema cast of one accepted', check: 'art cast size', edits: [['src/schemas/template.schema.ts', '{ minItems: 2, maxItems: 6 })),', '{ minItems: 1, maxItems: 6 })),']] },
   { name: 'art asset key reaches the payload', check: 'art no asset key', edits: [[groupPublic, '      ...(face ? { portrait_url: face.url } : {}),', '      ...(face ? { portrait_url: face.url } : {}), ...(entry.portrait ? { portrait: entry.portrait } : {}),']] },
-  { name: 'art adult preview leaks', check: 'art toggle off keeps adult', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return undefined", '']] },
-  { name: 'art adult player words leak', check: 'art toggle off keeps adult', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return undefined", "if (!adultAllowed && event.type === 'intimate' && event.data.lines?.length) return undefined"]] },
+  { name: 'art adult preview leaks', check: 'art toggle off keeps adult', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return false", '']] },
+  { name: 'art adult player words leak', check: 'art toggle off keeps adult', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return false", "if (!adultAllowed && event.type === 'intimate' && event.data.lines?.length) return false"]] },
+  { name: 'art hidden adult thread counted', check: 'art hidden adult thread', edits: [[groupChats, "if (!adultAllowed && event.type === 'intimate') return false", '']] },
 ]
 mutations.push(...artMutations)
 
