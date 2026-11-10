@@ -7486,7 +7486,7 @@ await check('group draft a line still flagged after re-judging is removed', asyn
   assert.deepEqual(trimmedLogs(before), [{ name: 'group_draft.explicit_trimmed', body: 1, samey: 0 }])
 })
 
-await check('group draft all three lines flagged keeps one', async () => {
+await check('group draft all three lines flagged leaves no explicit line', async () => {
   const form = draftForm(2)
   draftGate()
   stubTrim(form, {
@@ -7496,8 +7496,59 @@ await check('group draft all three lines flagged keeps one', async () => {
   stubJudge((request) => JSON.stringify({ lines: judgeLinesSent(request).filter((line) => line.id.startsWith('0.')).map((line) => line.id) }))
   const before = memoryLogs.length
   const draft = await draftGroup(form, playerId)
-  assert.deepEqual(explicitOf(draft, 0), ['Still assumes one.'], 'a person is never left with no explicit line')
-  assert.deepEqual(trimmedLogs(before), [{ name: 'group_draft.explicit_trimmed', body: 2, samey: 0 }])
+  assert.deepEqual(explicitOf(draft, 0), [], 'every flagged line goes, even the last')
+  assert.deepEqual(trimmedLogs(before), [{ name: 'group_draft.explicit_trimmed', body: 3, samey: 0 }])
+})
+
+// cag-15: a line that assumes the reader's body is worse than none. Every line
+// still flagged after the second judge goes, even a person's last one, so a
+// person may end with only their plain lines.
+await check('group draft every flagged explicit line leaves plain lines only', async () => {
+  const form = draftForm(2)
+  draftGate()
+  const flagged = draftExplicit(0)
+  const replacement = ['Still assumes one.', 'Still assumes two.', 'Still assumes three.']
+  stubTrim(form, {
+    people: (index) => ({ voice: { plain: [...DRAFT_PLAIN], explicit: draftExplicit(index) } }),
+    reask: () => JSON.stringify({ explicit: replacement }),
+  })
+  stubJudge((request) => JSON.stringify({ lines: judgeLinesSent(request).filter((line) => line.id.startsWith('0.')).map((line) => line.id) }))
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.deepEqual(draft.seed_cast[0]!.group.voice, DRAFT_PLAIN, 'only the plain lines remain')
+  for (const text of [...flagged, ...replacement]) assert(!JSON.stringify(draft).includes(text), `flagged text survived: ${text}`)
+  validateGroup(draft as never)
+  assert.deepEqual(trimmedLogs(before), [{ name: 'group_draft.explicit_trimmed', body: 3, samey: 0 }], 'body counts every removed line')
+})
+
+await check('group draft an unflagged person keeps every explicit line', async () => {
+  const form = draftForm(2)
+  draftGate()
+  const reasks = stubTrim(form, {
+    people: (index) => ({ voice: { plain: [...DRAFT_PLAIN], explicit: draftExplicit(index) } }),
+    reask: () => JSON.stringify({ explicit: ['Still assumes one.', 'Still assumes two.', 'Still assumes three.'] }),
+  })
+  stubJudge((request) => JSON.stringify({ lines: judgeLinesSent(request).filter((line) => line.id.startsWith('0.')).map((line) => line.id) }))
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.deepEqual(explicitOf(draft, 1), draftExplicit(1), 'the unflagged person keeps every line')
+  assert.deepEqual(draft.seed_cast[1]!.group.voice, [...DRAFT_PLAIN, ...draftExplicit(1)])
+  assert(reasks.every((call) => call.person === 0), 'only the flagged person is re-asked')
+  assert.deepEqual(trimmedLogs(before), [{ name: 'group_draft.explicit_trimmed', body: 3, samey: 0 }])
+})
+
+await check('group draft step six copes with a person who has zero lines', async () => {
+  const form = draftForm(2)
+  draftGate()
+  stubTrim(form, {
+    people: (index) => ({ voice: { plain: [...DRAFT_PLAIN], explicit: draftExplicit(index) } }),
+    reask: () => JSON.stringify({ explicit: ['Still assumes one.', 'Still assumes two.', 'Still assumes three.'] }),
+  })
+  stubJudge((request) => JSON.stringify({ lines: judgeLinesSent(request).filter((line) => line.id.startsWith('0.')).map((line) => line.id) }))
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.deepEqual(explicitOf(draft, 0), [], 'nothing is added back for a person with no lines')
+  assert.deepEqual(trimmedLogs(before), [{ name: 'group_draft.explicit_trimmed', body: 3, samey: 0 }], 'step six adds nothing and counts nothing')
 })
 
 await check('group draft ignores a judge id the code never sent', async () => {

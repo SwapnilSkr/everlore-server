@@ -1417,7 +1417,10 @@ const sameyClash = 'group draft a person still clashing after two calls loses th
 const sameyKeep = 'group draft an explicit re-ask that fails keeps the drafted lines'
 const bodyReask = "group draft a line assuming the reader's body is re-asked and its replacement used"
 const bodyRemove = 'group draft a line still flagged after re-judging is removed'
-const bodyKeepOne = 'group draft all three lines flagged keeps one'
+const bodyRemoveAll = 'group draft all three lines flagged leaves no explicit line'
+const bodyPlainOnly = 'group draft every flagged explicit line leaves plain lines only'
+const bodyOthersKept = 'group draft an unflagged person keeps every explicit line'
+const bodyZeroLines = 'group draft step six copes with a person who has zero lines'
 const judgeIds = 'group draft judgeReaderBody returns only the ids it was sent'
 const judgeFail = 'group draft a judge failure or an unreadable answer flags nothing and never fails'
 const judgeRetryCall = 'group draft a failed judge call is asked again and its second answer is used'
@@ -1501,9 +1504,17 @@ const readerMutations: Mutation[] = [
     "    purpose: 'group_draft_person',\n    messages: [\n      { role: 'system', content: GROUP_READER_BODY_PROMPT }"]] },
   { name: 'still-flagged line kept', check: bodyRemove, edits: [[draftFile,
     '    const kept = lines.filter((_, line) => !flagged.has(`${index}.${line}`))', '    const kept = [...lines]']] },
-  { name: 'keep-at-least-one rule removed', check: bodyKeepOne, edits: [[draftFile,
-    '    const next = kept.length ? kept : lines.slice(0, 1)\n    body += lines.length - next.length',
-    '    const next = kept\n    body += lines.length - next.length']] },
+  { name: 'flagged last explicit line kept again', check: bodyRemoveAll, edits: [[draftFile,
+    "    const kept = lines.filter((_, line) => !flagged.has(`${index}.${line}`))\n    body += lines.length - kept.length\n    explicit[index] = kept",
+    "    const kept = lines.filter((_, line) => !flagged.has(`${index}.${line}`))\n    const next = kept.length ? kept : lines.slice(0, 1)\n    body += lines.length - next.length\n    explicit[index] = next"]] },
+  { name: 'removed-line count ignores one line', check: bodyPlainOnly, edits: [[draftFile,
+    '    body += lines.length - kept.length\n    explicit[index] = kept',
+    '    body += Math.max(0, lines.length - kept.length - 1)\n    explicit[index] = kept']] },
+  { name: 'one person flagged removes an unflagged person lines', check: bodyOthersKept, edits: [[draftFile,
+    "    const kept = lines.filter((_, line) => !flagged.has(`${index}.${line}`))",
+    "    const kept = index === 1 ? [] : lines.filter((_, line) => !flagged.has(`${index}.${line}`))"]] },
+  { name: 'step six assumes a first line', check: bodyZeroLines, edits: [[draftFile,
+    '    if (!kept.length && lines.length) {', '    if (!kept.length) {']] },
   { name: 'judge ids taken on trust', check: judgeIds, edits: [[draftFile,
     "  return new Set(reported.filter((id): id is string => typeof id === 'string' && sent.has(id)))",
     "  return new Set(reported.filter((id): id is string => typeof id === 'string'))"]] },

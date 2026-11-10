@@ -25,8 +25,9 @@ import { validateGroup } from './validation'
  *
  * An adult draft's explicit lines get one pass before the gate: no line repeats
  * an opening another line holds, and no line assumes the reader's body. Each
- * step replaces a line where it can and removes one where it cannot, but a
- * person always keeps at least one explicit line.
+ * step replaces a line where it can and removes one where it cannot. A person
+ * may end with no explicit lines: a line that assumes the reader's body is
+ * worse than none, and their plain lines remain.
  */
 
 export const draftEffects = { call: callLLM }
@@ -673,8 +674,10 @@ const OPENING_CALLS = 2
 
 /**
  * The explicit lines, before the gate: no line repeats an opening already in
- * the group, none assumes the reader's body, and every person keeps at least
- * one. A replacement accepted here is gated like any other line afterwards.
+ * the group, and none assumes the reader's body. A person may end with no
+ * explicit lines, because a line that assumes the reader's body is worse than
+ * none and their plain lines remain. A replacement accepted here is gated like
+ * any other line afterwards.
  */
 async function trimExplicitLines(
   form: GroupDraftInput,
@@ -723,13 +726,13 @@ async function trimExplicitLines(
     flagged = await judgeReaderBody(explicitJudgeLines(explicit))
   }
 
-  // 5. What is still flagged goes, but never a person's only line.
+  // 5. What is still flagged goes, even a person's last explicit line: a line
+  // that assumes the reader's body is worse than none, and the plain lines remain.
   let body = 0
   explicit.forEach((lines, index) => {
     const kept = lines.filter((_, line) => !flagged.has(`${index}.${line}`))
-    const next = kept.length ? kept : lines.slice(0, 1)
-    body += lines.length - next.length
-    explicit[index] = next
+    body += lines.length - kept.length
+    explicit[index] = kept
   })
 
   // 6. What still repeats an earlier text or opening goes, by the same rule.
