@@ -15,7 +15,8 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
 
 /** The authoring rule for the 50 group worlds: everyone is an adult lead. */
-const MIN_AGE = 21
+// Casts of 20-22 for the university worlds (owner, Nov 10 2026); the server floor stays 18.
+const MIN_AGE = 20
 const MAX_AGE = 45
 
 /**

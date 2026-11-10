@@ -4,7 +4,7 @@ import type { WorldTemplateDoc } from '../../models/world-template.model'
 import { HttpError } from '../../utils/http-error'
 import { log } from '../../utils/logger'
 import type { RelationshipInitializationKind } from '../../utils/relationship-baseline'
-import { checkGroupText, groupTextLines } from './text-gate'
+import { checkGroupText, groupTextGateModel, groupTextLines } from './text-gate'
 import type { GroupStatusLines, GroupTraits, NamedLine } from './types'
 import { validateGroup } from './validation'
 
@@ -22,6 +22,11 @@ import { validateGroup } from './validation'
  * parallel. A shape failure redrafts that call once. A gate refusal redrafts
  * the refused person — or the group, for a group-level path — once. Anything
  * still failing fails the whole draft with one plain sentence.
+ *
+ * An adult draft's explicit lines get one pass before the gate: no line repeats
+ * an opening another line holds, and no line assumes the reader's body. Each
+ * step replaces a line where it can and removes one where it cannot, but a
+ * person always keeps at least one explicit line.
  */
 
 export const draftEffects = { call: callLLM }
@@ -518,15 +523,19 @@ async function draftPersonWords(
 }
 
 /** One more call for a person whose explicit lines repeat an earlier line. */
-const EXPLICIT_REDRAFT_PROMPT = [
-  'You rewrite the explicit lines of ONE member of a fictional group chat for an adult roleplay app.',
-  'Return ONLY a JSON object (no markdown, no prose) with EXACTLY this key:',
-  '{"explicit": EXACTLY 3 explicit lines in that person\'s own voice}',
-  EXPLICIT_LINE_RULE,
-  'Each line is new: it repeats none of the openings in "taken_openings", and the three lines you return do not repeat each other.',
-  'A line never names its own speaker. In each line "I" is this member and "you" is the reader.',
-  'Stay within every character limit. Keep every written line on a single line.',
-].join('\n')
+function explicitRedraftPrompt(doNotRepeat: boolean): string {
+  return [
+    'You rewrite the explicit lines of ONE member of a fictional group chat for an adult roleplay app.',
+    'Return ONLY a JSON object (no markdown, no prose) with EXACTLY this key:',
+    '{"explicit": EXACTLY 3 explicit lines in that person\'s own voice}',
+    EXPLICIT_LINE_RULE,
+    doNotRepeat
+      ? 'Each line is new: it repeats none of the openings in "taken_openings", it must not say again anything in "do_not_repeat", and the three lines you return do not repeat each other.'
+      : 'Each line is new: it repeats none of the openings in "taken_openings", and the three lines you return do not repeat each other.',
+    'A line never names its own speaker. In each line "I" is this member and "you" is the reader.',
+    'Stay within every character limit. Keep every written line on a single line.',
+  ].join('\n')
+}
 
 /** A re-ask's lines pass the same line checks as a person call's. */
 function readExplicitLines(parsed: unknown, person: GroupDraftPerson): string[] | null {
@@ -546,6 +555,7 @@ async function draftSameyExplicitLines(
   person: GroupDraftPerson,
   group: GroupWords,
   takenOpenings: string[],
+  doNotRepeat: string[] = [],
 ): Promise<string[] | null> {
   let answer: unknown
   try {
@@ -556,7 +566,7 @@ async function draftSameyExplicitLines(
       responseFormat: { type: 'json_object' },
       purpose: 'group_draft_person',
       messages: [
-        { role: 'system', content: EXPLICIT_REDRAFT_PROMPT },
+        { role: 'system', content: explicitRedraftPrompt(doNotRepeat.length > 0) },
         {
           role: 'user',
           content: JSON.stringify({
@@ -573,6 +583,7 @@ async function draftSameyExplicitLines(
               .filter((other) => other !== person)
               .map((other) => ({ name: other.name, personality: other.personality })),
             taken_openings: takenOpenings,
+            ...(doNotRepeat.length ? { do_not_repeat: doNotRepeat } : {}),
           }),
         },
       ],
@@ -583,39 +594,161 @@ async function draftSameyExplicitLines(
   return readExplicitLines(parseJson(answer), person)
 }
 
-async function replaceSameyExplicitLines(
+/** Every opening held by everyone else in the group right now. */
+function openingsHeldByOthers(explicit: string[][], person: number): string[] {
+  const openings = new Set<string>()
+  explicit.forEach((lines, index) => {
+    if (index === person) return
+    for (const text of lines) openings.add(sameyOpening(normaliseSameyLine(text)))
+  })
+  return [...openings].sort()
+}
+
+/** The lines as the body judge reads them: `<person index>.<line index>`, minted here. */
+function explicitJudgeLines(explicit: string[][]): { id: string; text: string }[] {
+  return explicit.flatMap((lines, person) => lines.map((text, line) => ({ id: `${person}.${line}`, text })))
+}
+
+/**
+ * The reader's sex and body are unknown, so a line may never assume one. Listed
+ * as the fine cases first: told only what to reject, a judge reads an ordinary
+ * line as suspicious.
+ */
+export const GROUP_READER_BODY_PROMPT = [
+  'You judge the explicit lines of a fictional adult group chat for what they assume about the person who reads them.',
+  "The reader's sex and body are unknown: nothing in the form says what they have.",
+  'Return ONLY a JSON object (no markdown, no prose) with EXACTLY this key:',
+  '{"lines": [the id of every line that states or implies the reader has a particular sexual body part or genitals, or is aroused in a way only one kind of body could be]}',
+  "The reader's mouth, tongue, lips, hands, fingers, hair, neck, skin, back, stomach, hips, thighs and ass are fine, and so is anything said to them about those.",
+  "The speaker's own body is always fine.",
+  'Judge every line on its own. Return every id that offends, exactly as sent, and no id you were not sent.',
+].join('\n')
+
+/**
+ * Which lines cannot be read by just anyone: one call for all of them. An
+ * unreadable answer or a failed call is not a verdict — it flags nothing and
+ * never fails the draft.
+ */
+export async function judgeReaderBody(lines: { id: string; text: string }[]): Promise<Set<string>> {
+  if (!lines.length) return new Set()
+  const sent = new Set(lines.map((line) => line.id))
+  let answer: unknown
+  try {
+    answer = await draftEffects.call({
+      model: groupTextGateModel(),
+      temperature: 0,
+      maxTokens: 2048,
+      responseFormat: { type: 'json_object' },
+      purpose: 'group_draft_person',
+      messages: [
+        { role: 'system', content: GROUP_READER_BODY_PROMPT },
+        { role: 'user', content: JSON.stringify({ lines }) },
+      ],
+    })
+  } catch {
+    log.warn('group_draft.body_judge_failed', {})
+    return new Set()
+  }
+  const parsed = parseJson(answer)
+  const reported = isRecord(parsed) ? parsed.lines : undefined
+  if (!Array.isArray(reported)) {
+    log.warn('group_draft.body_judge_failed', {})
+    return new Set()
+  }
+  return new Set(reported.filter((id): id is string => typeof id === 'string' && sent.has(id)))
+}
+
+/** How many calls one person gets to stop repeating an opening. */
+const OPENING_CALLS = 2
+
+/**
+ * The explicit lines, before the gate: no line repeats an opening already in
+ * the group, none assumes the reader's body, and every person keeps at least
+ * one. A replacement accepted here is gated like any other line afterwards.
+ */
+async function trimExplicitLines(
   form: GroupDraftInput,
   group: GroupWords,
   people: PersonWords[],
 ): Promise<void> {
   if (!form.adult) return
   const explicit = people.map((person) => person.explicit)
-  const before = sameyCounts(explicit)
-  const reasked = before.flatMap((clashes, index) => (clashes > 0 ? [index] : []))
-  if (!reasked.length) return
 
-  // Only the people who keep their lines limit what a re-ask may open with.
-  const asked = new Set(reasked)
-  const taken = new Set<string>()
+  // 1. Openings, one person at a time: each re-ask sees what the last one kept.
+  for (let index = 0; index < explicit.length; index++) {
+    for (let call = 0; call < OPENING_CALLS; call++) {
+      const before = sameyCounts(explicit)[index]!
+      if (before === 0) break
+      const lines = await draftSameyExplicitLines(form, form.people[index]!, group, openingsHeldByOthers(explicit, index))
+      if (!lines) continue
+      const candidate = explicit.map((entry, at) => (at === index ? lines : entry))
+      if (sameyCounts(candidate)[index]! >= before) continue
+      explicit[index] = lines
+    }
+  }
+
+  // 2. Judge what every line assumes about the reader.
+  let flagged = await judgeReaderBody(explicitJudgeLines(explicit))
+
+  if (flagged.size) {
+    // 3. Re-ask the flagged people once each, in form order.
+    for (let index = 0; index < explicit.length; index++) {
+      const own = explicit[index]!
+      const doNotRepeat = [...flagged]
+        .filter((id) => id.startsWith(`${index}.`))
+        .map((id) => own[Number(id.slice(id.indexOf('.') + 1))])
+        .filter((text): text is string => text !== undefined)
+      if (!doNotRepeat.length) continue
+      const lines = await draftSameyExplicitLines(
+        form,
+        form.people[index]!,
+        group,
+        openingsHeldByOthers(explicit, index),
+        doNotRepeat,
+      )
+      if (lines) explicit[index] = lines
+    }
+
+    // 4. Judge the lines now held.
+    flagged = await judgeReaderBody(explicitJudgeLines(explicit))
+  }
+
+  // 5. What is still flagged goes, but never a person's only line.
+  let body = 0
   explicit.forEach((lines, index) => {
-    if (asked.has(index)) return
-    for (const text of lines) taken.add(sameyOpening(normaliseSameyLine(text)))
+    const kept = lines.filter((_, line) => !flagged.has(`${index}.${line}`))
+    const next = kept.length ? kept : lines.slice(0, 1)
+    body += lines.length - next.length
+    explicit[index] = next
   })
 
-  const replacements = await Promise.all(reasked.map(async (index) => {
-    const lines = await draftSameyExplicitLines(form, form.people[index]!, group, [...taken])
-    if (!lines) return undefined
-    const candidate = explicit.map((entry, at) => (at === index ? lines : entry))
-    const after = sameyCounts(candidate)[index]!
-    return after < before[index]! ? lines : undefined
-  }))
-
-  replacements.forEach((lines, at) => {
-    if (lines) people[reasked[at]!]!.explicit = lines
+  // 6. What still repeats an earlier text or opening goes, by the same rule.
+  let samey = 0
+  const texts = new Set<string>()
+  const openings = new Set<string>()
+  explicit.forEach((lines, index) => {
+    const kept: string[] = []
+    for (const text of lines) {
+      const normalised = normaliseSameyLine(text)
+      const opening = sameyOpening(normalised)
+      if (texts.has(normalised) || openings.has(opening)) continue
+      texts.add(normalised)
+      openings.add(opening)
+      kept.push(text)
+    }
+    // Their first line stands even when it repeats one: a person is never silent.
+    if (!kept.length && lines.length) {
+      const normalised = normaliseSameyLine(lines[0]!)
+      texts.add(normalised)
+      openings.add(sameyOpening(normalised))
+    }
+    const next = kept.length ? kept : lines.slice(0, 1)
+    samey += lines.length - next.length
+    explicit[index] = next
   })
 
-  const left = sameyCounts(people.map((person) => person.explicit)).reduce((sum, count) => sum + count, 0)
-  if (left > 0) log.warn('group_draft.samey_left', { count: left })
+  people.forEach((person, index) => { person.explicit = explicit[index]! })
+  if (body > 0 || samey > 0) log.info('group_draft.explicit_trimmed', { body, samey })
 }
 
 function assemble(form: GroupDraftInput, group: GroupWords, people: PersonWords[]): GroupDraft {
@@ -680,7 +813,7 @@ export async function draftGroup(form: GroupDraftInput, playerId: string): Promi
     form.people.map((person) => draftPersonWords(form, person, group, MAX_ATTEMPTS)),
   )
   // Before the first gate, so a replaced line is gated like any other.
-  await replaceSameyExplicitLines(form, group, people)
+  await trimExplicitLines(form, group, people)
 
   let draft = assemble(form, group, people)
   let verdict = await gate(draft, playerId)

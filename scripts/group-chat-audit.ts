@@ -6771,7 +6771,7 @@ await check('ideas catalog requires written first texts and statuses on every me
 // ── create-a-group drafting (§4) ──────────────────────────────────────────
 // The model calls and the text gate are stubbed; the draft service, the body
 // schema, the route, the controller and validation are real.
-const { draftEffects, draftGroup, GROUP_DRAFT_PROMPT, personDraftPrompt, speakToReader, sameyPeople } = await import('../src/services/group-chat/draft')
+const { draftEffects, draftGroup, GROUP_DRAFT_PROMPT, GROUP_READER_BODY_PROMPT, judgeReaderBody, personDraftPrompt, speakToReader, sameyPeople } = await import('../src/services/group-chat/draft')
 const { GroupDraftBody, CreateTemplateBody } = await import('../src/schemas/template.schema')
 const { Value } = await import('@sinclair/typebox/value')
 const { templateRoutes } = await import('../src/routes/template.routes')
@@ -6886,8 +6886,16 @@ function groupDraftReplyWithStrangers(form: DraftForm, valid: number, strangers:
 }
 
 let draftRequests: Row[] = []
+let judgeRequests: Row[] = []
 let draftAnswer: (request: Row) => string | Error = () => new Error('unexpected draft call')
+let judgeAnswer: (request: Row) => string | Error = () => JSON.stringify({ lines: [] })
 draftEffects.call = async (request) => {
+  if (isJudgeCall(request as Row)) {
+    judgeRequests.push(request as Row)
+    const verdict = judgeAnswer(request as Row)
+    if (verdict instanceof Error) throw verdict
+    return verdict
+  }
   draftRequests.push(request as Row)
   const answer = draftAnswer(request as Row)
   if (answer instanceof Error) throw answer
@@ -6895,9 +6903,20 @@ draftEffects.call = async (request) => {
 }
 function stubDraft(responder: (request: Row) => string | Error) {
   draftRequests = []
+  judgeRequests = []
+  judgeAnswer = () => JSON.stringify({ lines: [] })
   draftAnswer = responder
 }
+function stubJudge(responder: (request: Row) => string | Error) {
+  judgeAnswer = responder
+}
 const isGroupCall = (request: Row): boolean => request.purpose === 'group_draft'
+const isJudgeCall = (request: Row): boolean => (request.messages as Row[])[0]!.content === GROUP_READER_BODY_PROMPT
+const isReaskCall = (request: Row): boolean => !isGroupCall(request) && !isJudgeCall(request) &&
+  'taken_openings' in (JSON.parse(String((request.messages as Row[])[1]!.content)) as Row)
+function judgeLinesSent(request: Row): Array<{ id: string; text: string }> {
+  return (JSON.parse(String((request.messages as Row[])[1]!.content)) as Row).lines as Array<{ id: string; text: string }>
+}
 function draftPersonIndex(request: Row): number {
   const body = JSON.parse(String((request.messages as Row[])[1]!.content)) as Row
   return DRAFT_NAMES.indexOf(String((body.person as Row).name))
@@ -7318,77 +7337,268 @@ await check('group draft samey explicit lines are found', () => {
 })
 
 const sameyOpeningOf = (line: string) => line.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim().split(' ').slice(0, 3).join(' ')
+const trimmedLogs = (before: number) => memoryLogs.slice(before).filter((entry) => entry.name === 'group_draft.explicit_trimmed')
+const explicitOf = (draft: { seed_cast: Array<{ group: { voice?: string[] } }> }, person: number) =>
+  draft.seed_cast[person]!.group.voice!.slice(DRAFT_PLAIN.length)
 
-await check('group draft samey lines are re-asked once and the replacement is gated', async () => {
+/**
+ * Stubs the draft: each person's first reply comes from `people`, and a re-ask
+ * (a body carrying `taken_openings`) comes from `reask`. Every re-ask is
+ * recorded so a check can show it saw the openings accepted before it.
+ */
+function stubTrim(
+  form: DraftForm,
+  options: {
+    people: (index: number) => Row
+    reask?: (index: number, body: Row) => string
+  },
+) {
+  const reasks: Array<{ request: Row; person: number; body: Row; text: string }> = []
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const index = draftPersonIndex(request)
+    const body = JSON.parse(String((request.messages as Row[])[1]!.content)) as Row
+    if ('taken_openings' in body) {
+      const answer = options.reask ? options.reask(index, body) : personDraftReply(form, index)
+      reasks.push({ request, person: index, body, text: answer })
+      return answer
+    }
+    return personDraftReply(form, index, options.people(index))
+  })
+  return reasks
+}
+
+await check('group draft explicit re-asks run one person at a time and the replacement is gated', async () => {
   const form = draftForm(2)
   draftGate()
   const shared = [...DRAFT_EXPLICIT]
   const fresh = ['A brand new line here.', 'A second new line here.', 'A third new line here.']
-  let reaskCalls = 0
-  stubDraft((request) => {
-    if (isGroupCall(request)) return groupDraftReply(form)
-    const body = JSON.parse(String((request.messages as Row[])[1]!.content)) as Row
-    if ('taken_openings' in body) {
-      reaskCalls++
-      assert.equal(request.purpose, 'group_draft_person')
-      assert.equal(request.model, 'fixture-authoring')
-      assert(String((request.messages as Row[])[0]!.content).includes('name a sex act'), 'the re-ask shares the explicit-line rule')
-      assert.deepEqual([...(body.taken_openings as string[])].sort(), shared.map(sameyOpeningOf).sort())
-      return JSON.stringify({ explicit: fresh })
-    }
-    return personDraftReply(form, draftPersonIndex(request), { voice: { plain: [...DRAFT_PLAIN], explicit: shared } })
+  const reasks = stubTrim(form, {
+    people: () => ({ voice: { plain: [...DRAFT_PLAIN], explicit: [...shared] } }),
+    reask: () => JSON.stringify({ explicit: fresh }),
   })
   const draft = await draftGroup(form, playerId)
-  assert.equal(reaskCalls, 1, 'one clash, one re-ask')
-  assert.deepEqual(draft.seed_cast[1]!.group.voice!.slice(-3), fresh)
-  assert.deepEqual(draft.seed_cast[0]!.group.voice!.slice(-3), shared, 'the person who did not clash keeps their lines')
+  assert.equal(reasks.length, 1, 'one clash, one re-ask: the later person, never the first')
+  assert.equal(reasks[0]!.person, 1)
+  assert.equal(reasks[0]!.request.purpose, 'group_draft_person')
+  assert.equal(reasks[0]!.request.model, 'fixture-authoring')
+  assert(String((reasks[0]!.request.messages as Row[])[0]!.content).includes('name a sex act'), 'the re-ask shares the explicit-line rule')
+  assert.deepEqual([...(reasks[0]!.body.taken_openings as string[])].sort(), shared.map(sameyOpeningOf).sort())
+  assert.deepEqual(explicitOf(draft, 1), fresh)
+  assert.deepEqual(explicitOf(draft, 0), shared, 'the person who did not clash keeps their lines')
   const gated = gateLines(gateRequests[0]!).map((line) => line.text)
   for (const text of fresh) assert(gated.includes(text), `the gate must see the replacement: ${text}`)
 })
 
-await check('group draft samey re-ask failure keeps the drafted lines', async () => {
-  for (const failure of ['shape', 'provider'] as const) {
+await check('group draft explicit re-asks run in sequence and the next sees the openings the last kept', async () => {
+  const form = draftForm(3)
+  draftGate()
+  const shared = [...DRAFT_EXPLICIT]
+  const second = ['New one from the second person.', 'Another one from the second.', 'A third from the second.']
+  const third = ['Third person opens fresh.', 'Third person says something new.', 'Third person ends differently.']
+  const reasks = stubTrim(form, {
+    people: () => ({ voice: { plain: [...DRAFT_PLAIN], explicit: [...shared] } }),
+    reask: (index) => JSON.stringify({ explicit: index === 1 ? second : third }),
+  })
+  const draft = await draftGroup(form, playerId)
+  assert.deepEqual(reasks.map((call) => call.person), [1, 2], 'people are asked in form order, one after another')
+  assert.deepEqual([...(reasks[0]!.body.taken_openings as string[])].sort(), shared.map(sameyOpeningOf).sort())
+  for (const opening of second.map(sameyOpeningOf)) {
+    assert((reasks[1]!.body.taken_openings as string[]).includes(opening), 'the second re-ask must see what the first kept')
+  }
+  assert.equal(sameyPeople([explicitOf(draft, 0), explicitOf(draft, 1), explicitOf(draft, 2)]).size, 0)
+})
+
+await check('group draft a person still clashing after two calls loses the clashing line', async () => {
+  const form = draftForm(2)
+  draftGate()
+  const shared = [...DRAFT_EXPLICIT]
+  const reasks = stubTrim(form, {
+    people: () => ({ voice: { plain: [...DRAFT_PLAIN], explicit: [...shared] } }),
+    reask: () => JSON.stringify({ explicit: [...shared] }),
+  })
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.deepEqual(reasks.map((call) => call.person), [1, 1], 'up to two calls per person')
+  assert.deepEqual(explicitOf(draft, 1), [shared[0]], 'the clash goes; their first line stands')
+  assert.deepEqual(explicitOf(draft, 0), shared, 'the person who did not clash keeps every line')
+  assert.equal(sameyPeople([explicitOf(draft, 0), explicitOf(draft, 1)]).size, 1, 'only a person down to one line still clashes')
+  assert.deepEqual(trimmedLogs(before), [{ name: 'group_draft.explicit_trimmed', body: 0, samey: 2 }])
+})
+
+await check('group draft a line assuming the reader\'s body is re-asked and its replacement used', async () => {
+  const form = draftForm(2)
+  draftGate()
+  const flaggedText = 'Push it into me slowly, right now.'
+  const own = draftExplicit(0)
+  const fresh = ['Fresh line one for the reader.', 'Fresh line two for the reader.', 'Fresh line three for the reader.']
+  const reasks = stubTrim(form, {
+    people: (index) => ({
+      voice: {
+        plain: [...DRAFT_PLAIN],
+        explicit: index ? draftExplicit(index) : [own[0]!, flaggedText, own[2]!],
+      },
+    }),
+    reask: () => JSON.stringify({ explicit: fresh }),
+  })
+  let judgeCalls = 0
+  let systemSeen = ''
+  stubJudge((request) => {
+    judgeCalls++
+    assert.equal(request.model, groupTextGateModel(), 'the judge uses the gate model')
+    assert.equal(request.temperature, 0)
+    assert.equal(request.maxTokens, 2048)
+    assert.deepEqual(request.responseFormat, { type: 'json_object' })
+    assert.equal(request.purpose, 'group_draft_person')
+    const sent = judgeLinesSent(request)
+    assert.deepEqual(sent.slice(0, 3).map((line) => line.id), ['0.0', '0.1', '0.2'], 'ids are minted here as person.line')
+    systemSeen = String((request.messages as Row[])[0]!.content)
+    return JSON.stringify({ lines: judgeCalls === 1 ? ['0.1'] : [] })
+  })
+  const draft = await draftGroup(form, playerId)
+  assert.equal(judgeCalls, 2, 'judged once, and again after the re-ask')
+  assert.equal(systemSeen, GROUP_READER_BODY_PROMPT)
+  for (const required of [
+    "The reader's sex and body are unknown",
+    "The reader's mouth, tongue, lips, hands, fingers, hair, neck, skin, back, stomach, hips, thighs and ass are fine",
+    "The speaker's own body is always fine",
+    'a particular sexual body part or genitals',
+  ]) assert(systemSeen.includes(required), `the judge prompt is missing ${required}`)
+  assert.equal(reasks.length, 1)
+  assert.deepEqual(reasks[0]!.body.do_not_repeat, [flaggedText], 'the re-ask is told what not to repeat')
+  assert.deepEqual(explicitOf(draft, 0), fresh, 'the replacement is used')
+  assert(!JSON.stringify(draft).includes(flaggedText), 'the flagged line is gone')
+})
+
+await check('group draft a line still flagged after re-judging is removed', async () => {
+  const form = draftForm(2)
+  draftGate()
+  const flaggedText = 'Push it into me slowly, right now.'
+  const rebuilt = ['First replaces well.', flaggedText, 'Third replaces well.']
+  stubTrim(form, {
+    people: (index) => ({ voice: { plain: [...DRAFT_PLAIN], explicit: draftExplicit(index) } }),
+    reask: () => JSON.stringify({ explicit: rebuilt }),
+  })
+  stubJudge(() => JSON.stringify({ lines: ['0.1'] }))
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.deepEqual(explicitOf(draft, 0), [rebuilt[0], rebuilt[2]], 'only the still-flagged line goes')
+  assert.deepEqual(trimmedLogs(before), [{ name: 'group_draft.explicit_trimmed', body: 1, samey: 0 }])
+})
+
+await check('group draft all three lines flagged keeps one', async () => {
+  const form = draftForm(2)
+  draftGate()
+  stubTrim(form, {
+    people: (index) => ({ voice: { plain: [...DRAFT_PLAIN], explicit: draftExplicit(index) } }),
+    reask: () => JSON.stringify({ explicit: ['Still assumes one.', 'Still assumes two.', 'Still assumes three.'] }),
+  })
+  stubJudge((request) => JSON.stringify({ lines: judgeLinesSent(request).filter((line) => line.id.startsWith('0.')).map((line) => line.id) }))
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.deepEqual(explicitOf(draft, 0), ['Still assumes one.'], 'a person is never left with no explicit line')
+  assert.deepEqual(trimmedLogs(before), [{ name: 'group_draft.explicit_trimmed', body: 2, samey: 0 }])
+})
+
+await check('group draft ignores a judge id the code never sent', async () => {
+  const form = draftForm(2)
+  draftGate()
+  const reasks = stubTrim(form, {
+    people: (index) => ({ voice: { plain: [...DRAFT_PLAIN], explicit: draftExplicit(index) } }),
+    reask: () => JSON.stringify({ explicit: ['Fresh one.', 'Fresh two.', 'Fresh three.'] }),
+  })
+  let judgeCalls = 0
+  stubJudge(() => JSON.stringify({ lines: judgeCalls++ === 0 ? ['7.3', 'not-an-id', '0.1', '0.1'] : [] }))
+  const draft = await draftGroup(form, playerId)
+  assert.equal(reasks.length, 1, 'the one sent id flags a line; the others name nothing')
+  assert.deepEqual(reasks[0]!.body.do_not_repeat, [draftExplicit(0)[1]])
+  assert.deepEqual(explicitOf(draft, 0), ['Fresh one.', 'Fresh two.', 'Fresh three.'])
+  assert.deepEqual(explicitOf(draft, 1), draftExplicit(1), 'no other person is touched')
+})
+
+await check('group draft a judge failure or an unreadable answer flags nothing and never fails', async () => {
+  for (const failure of ['provider', 'unreadable'] as const) {
     const form = draftForm(2)
     draftGate()
-    const shared = [...DRAFT_EXPLICIT]
-    let reaskCalls = 0
-    stubDraft((request) => {
-      if (isGroupCall(request)) return groupDraftReply(form)
-      const body = JSON.parse(String((request.messages as Row[])[1]!.content)) as Row
-      if ('taken_openings' in body) {
-        reaskCalls++
-        if (failure === 'provider') throw new Error('Fixture provider failure')
-        return JSON.stringify({ explicit: ['Only two new lines.', 'And no third at all.'] })
-      }
-      return personDraftReply(form, draftPersonIndex(request), { voice: { plain: [...DRAFT_PLAIN], explicit: shared } })
+    stubTrim(form, { people: (index) => ({ voice: { plain: [...DRAFT_PLAIN], explicit: draftExplicit(index) } }) })
+    stubJudge(() => {
+      if (failure === 'provider') throw new Error('Fixture judge unavailable')
+      return JSON.stringify({ lines: 'not a list' })
     })
     const before = memoryLogs.length
     const draft = await draftGroup(form, playerId)
-    assert.equal(reaskCalls, 1, failure)
-    assert.deepEqual(draft.seed_cast[1]!.group.voice!.slice(-3), shared, `${failure}: the old lines stand`)
-    const logged = memoryLogs.slice(before).filter((entry) => entry.name === 'group_draft.samey_left')
-    assert.equal(logged.length, 1, failure)
-    assert.deepEqual(logged[0], { name: 'group_draft.samey_left', count: 3 }, failure)
-    const serialized = JSON.stringify(logged)
-    for (const text of [...shared, form.title, form.setting, ...form.people.flatMap((person) => [person.name, person.look, person.personality, person.knows_player])]) {
-      assert(!serialized.includes(text), `${failure}: the log leaks ${text}`)
+    assert.deepEqual(explicitOf(draft, 0), draftExplicit(0), `${failure}: nothing is removed`)
+    assert.deepEqual(explicitOf(draft, 1), draftExplicit(1), `${failure}: nothing is removed`)
+    assert.equal(judgeRequests.length, 1, failure)
+    assert.equal(draftRequests.filter(isReaskCall).length, 0, `${failure}: nobody is re-asked`)
+    assert.deepEqual(memoryLogs.slice(before).filter((entry) => entry.name === 'group_draft.body_judge_failed').length, 1, failure)
+    assert.deepEqual(trimmedLogs(before), [], failure)
+    for (const text of [...draftExplicit(0), ...draftExplicit(1)]) {
+      assert(!JSON.stringify(memoryLogs.slice(before)).includes(text), `${failure}: the log carries no text`)
     }
   }
 })
 
-await check('group draft safe group never re-asks explicit lines', async () => {
+await check('group draft an explicit re-ask that fails keeps the drafted lines', async () => {
+  for (const failure of ['provider', 'shape'] as const) {
+    const form = draftForm(2)
+    draftGate()
+    const shared = [...DRAFT_EXPLICIT]
+    stubTrim(form, {
+      people: () => ({ voice: { plain: [...DRAFT_PLAIN], explicit: [...shared] } }),
+      reask: () => {
+        if (failure === 'provider') throw new Error('Fixture provider failure')
+        return JSON.stringify({ explicit: ['Only two new lines.', 'And no third at all.'] })
+      },
+    })
+    stubJudge(() => JSON.stringify({ lines: [] }))
+    const draft = await draftGroup(form, playerId)
+    assert.deepEqual(explicitOf(draft, 1), [shared[0]], `${failure}: the clash is removed, not thrown`)
+    assert.deepEqual(explicitOf(draft, 0), shared, `${failure}: the other person keeps every line`)
+  }
+})
+
+await check('group draft judgeReaderBody returns only the ids it was sent', async () => {
+  const lines = [
+    { id: '0.0', text: 'A reader-safe line.' },
+    { id: '0.1', text: 'A line that assumes a body.' },
+    { id: '1.0', text: 'Another reader-safe line.' },
+  ]
+  stubJudge(() => JSON.stringify({ lines: ['0.1', '9.9', 'nope'] }))
+  assert.deepEqual([...(await judgeReaderBody(lines))], ['0.1'], 'an id nobody sent is ignored')
+  stubJudge(() => JSON.stringify({ lines: ['1.0'] }))
+  assert.deepEqual([...(await judgeReaderBody(lines))], ['1.0'])
+  stubJudge(() => JSON.stringify({ lines: [] }))
+  assert.equal((await judgeReaderBody(lines)).size, 0)
+  const before = judgeRequests.length
+  assert.equal((await judgeReaderBody([])).size, 0)
+  assert.equal(judgeRequests.length, before, 'no lines is no call')
+})
+
+await check('group draft a non-adult draft makes no judge or re-ask call', async () => {
   const form = draftForm(2, false)
   draftGate()
-  let reaskCalls = 0
-  stubDraft((request) => {
-    if (isGroupCall(request)) return groupDraftReply(form)
-    const body = JSON.parse(String((request.messages as Row[])[1]!.content)) as Row
-    if ('taken_openings' in body) reaskCalls++
-    return personDraftReply(form, draftPersonIndex(request), { voice: { plain: [...DRAFT_PLAIN], explicit: [...DRAFT_EXPLICIT] } })
+  const reasks = stubTrim(form, {
+    // Returned in both modes: the server drops explicit lines when the group is safe.
+    people: () => ({ voice: { plain: [...DRAFT_PLAIN], explicit: [...DRAFT_EXPLICIT] } }),
   })
   const draft = await draftGroup(form, playerId)
-  assert.equal(reaskCalls, 0, 'a safe group has no explicit lines to compare')
+  assert.equal(judgeRequests.length, 0)
+  assert.equal(reasks.length, 0)
+  assert.equal(draftRequests.filter(isReaskCall).length, 0)
   for (const member of draft.seed_cast) assert.deepEqual(member.group.voice, DRAFT_PLAIN)
+})
+
+await check('group draft a clean draft makes exactly one judge call and no re-ask', async () => {
+  const form = draftForm(3)
+  draftGate()
+  const reasks = stubTrim(form, { people: () => ({}) })
+  const draft = await draftGroup(form, playerId)
+  assert.equal(judgeRequests.length, 1, 'one judge call for the whole group')
+  assert.deepEqual(judgeLinesSent(judgeRequests[0]!).map((line) => line.id), ['0.0', '0.1', '0.2', '1.0', '1.1', '1.2', '2.0', '2.1', '2.2'])
+  assert.equal(reasks.length, 0)
+  assert.deepEqual(explicitOf(draft, 2), draftExplicit(2))
+  assert.equal(gateRequests.length, 1)
 })
 
 await check('group draft mints name age bond and talkativeness from the form', async () => {

@@ -1409,9 +1409,19 @@ const readerCue = 'group draft speak-to-reader'
 const readerDraft = 'group draft drafted fields'
 const readerStatic = 'group draft static prompt'
 const sameyFind = 'group draft samey explicit lines are found'
-const sameyReask = 'group draft samey lines are re-asked'
-const sameyKeep = 'group draft samey re-ask failure'
-const sameySafe = 'group draft safe group'
+// cag-13: the explicit lines are trimmed before the gate — openings one person at
+// a time, the reader's body judged, and every person left with at least one line.
+const sameyReask = "group draft explicit re-asks run one person at a time and the replacement is gated"
+const sameySequence = 'group draft explicit re-asks run in sequence'
+const sameyClash = 'group draft a person still clashing after two calls loses the clashing line'
+const sameyKeep = 'group draft an explicit re-ask that fails keeps the drafted lines'
+const bodyReask = "group draft a line assuming the reader's body is re-asked and its replacement used"
+const bodyRemove = 'group draft a line still flagged after re-judging is removed'
+const bodyKeepOne = 'group draft all three lines flagged keeps one'
+const judgeIds = 'group draft judgeReaderBody returns only the ids it was sent'
+const judgeFail = 'group draft a judge failure or an unreadable answer flags nothing and never fails'
+const safeNoCall = 'group draft a non-adult draft makes no judge or re-ask call'
+const cleanOneJudge = 'group draft a clean draft makes exactly one judge call and no re-ask'
 const unknownBody = 'first explicit: the body line never assumes'
 const readerMutations: Mutation[] = [
   { name: 'reader term loses the possessive', check: readerCue, edits: [[draftFile,
@@ -1435,19 +1445,87 @@ const readerMutations: Mutation[] = [
     'const SAMEY_OPENING_WORDS = 3', 'const SAMEY_OPENING_WORDS = 4']] },
   { name: 'samey normalization keeps punctuation', check: sameyFind, edits: [[draftFile,
     ".replace(/[^\\p{L}\\p{N}]+/gu, ' ')", ".replace(/[^\\p{L}\\p{N}]+/gu, '')"]] },
-  { name: 'samey re-ask never runs', check: sameyReask, edits: [[draftFile,
-    '  await replaceSameyExplicitLines(form, group, people)\n', '  void 0\n']] },
-  { name: 'samey replacement never applied', check: sameyReask, edits: [[draftFile,
-    '    if (lines) people[reasked[at]!]!.explicit = lines', '    if (false) people[reasked[at]!]!.explicit = lines']] },
-  { name: 'samey provider failure fails the draft', check: sameyKeep, edits: [[draftFile,
+  { name: 'explicit trim pass never runs', check: sameyReask, edits: [[draftFile,
+    '  await trimExplicitLines(form, group, people)\n', '  void 0\n']] },
+  { name: 'explicit re-ask skipped', check: sameyReask, edits: [[draftFile,
+    '      const lines = await draftSameyExplicitLines(form, form.people[index]!, group, openingsHeldByOthers(explicit, index))\n',
+    '      const lines: string[] | null = null\n']] },
+  { name: 'explicit replacement never applied', check: sameyReask, edits: [[draftFile,
+    '      explicit[index] = lines\n    }\n  }\n\n  // 2. Judge',
+    '      void lines\n    }\n  }\n\n  // 2. Judge']] },
+  { name: 'explicit re-ask failure fails the draft', check: sameyKeep, edits: [[draftFile,
     '  } catch {\n    return null\n  }\n  return readExplicitLines', '  } catch (error) {\n    throw error\n  }\n  return readExplicitLines']] },
-  { name: 'samey malformed reply replaces the lines', check: sameyKeep, edits: [[draftFile,
-    'if (!Array.isArray(raw) || raw.length !== 3) return null', 'if (!Array.isArray(raw)) return null']] },
-  { name: 'samey leftovers not logged', check: sameyKeep, edits: [[draftFile,
-    "if (left > 0) log.warn('group_draft.samey_left', { count: left })", 'void left']] },
-  { name: 'safe group keeps explicit lines for the check', check: sameySafe, edits: [
+  { name: 'explicit re-ask runs in parallel', check: sameySequence, edits: [
+    [draftFile,
+      '  for (let index = 0; index < explicit.length; index++) {\n    for (let call = 0; call < OPENING_CALLS; call++) {\n      const before = sameyCounts(explicit)[index]!',
+      '  await Promise.all(explicit.map(async (_entry, index) => {\n    for (let call = 0; call < OPENING_CALLS; call++) {\n      const before = sameyCounts(explicit)[index]!'],
+    [draftFile,
+      '      explicit[index] = lines\n    }\n  }\n\n  // 2. Judge',
+      '      explicit[index] = lines\n    }\n  }))\n\n  // 2. Judge'],
+  ] },
+  { name: 'explicit re-ask sees only the openings it was told', check: sameySequence, edits: [[draftFile,
+    "  return [...openings].sort()", "  return [...openings].sort().slice(0, 3)"]] },
+  { name: 'explicit clash removal step removed', check: sameyClash, edits: [[draftFile,
+    '      if (texts.has(normalised) || openings.has(opening)) continue', '      if (false) continue']] },
+  { name: 'explicit clash removal keeps every line', check: sameyClash, edits: [[draftFile,
+    '    const next = kept.length ? kept : lines.slice(0, 1)\n    samey += lines.length - next.length',
+    '    const next = [...lines]\n    samey += lines.length - next.length']] },
+  { name: 'explicit re-ask called once per person', check: sameyClash, edits: [[draftFile,
+    'const OPENING_CALLS = 2', 'const OPENING_CALLS = 1']] },
+  { name: 'judge never called', check: bodyReask, edits: [[draftFile,
+    '  let flagged = await judgeReaderBody(explicitJudgeLines(explicit))', '  let flagged = new Set<string>()']] },
+  { name: 'flagged line re-ask skipped', check: bodyReask, edits: [[draftFile,
+    '      if (lines) explicit[index] = lines\n    }\n\n    // 4. Judge',
+    '      void lines\n    }\n\n    // 4. Judge']] },
+  { name: 'judge prompt loses the unknown body', check: bodyReask, edits: [[draftFile,
+    '"The reader\'s sex and body are unknown: nothing in the form says what they have."',
+    '"The reader has a body, as everyone does."']] },
+  { name: 'judge prompt loses the allowed parts', check: bodyReask, edits: [[draftFile,
+    '"The reader\'s mouth, tongue, lips, hands, fingers, hair, neck, skin, back, stomach, hips, thighs and ass are fine, and so is anything said to them about those."',
+    '"Judge the reader carefully."']] },
+  { name: 'judge prompt loses the speaker rule', check: bodyReask, edits: [[draftFile,
+    '"The speaker\'s own body is always fine."', '"Judge every body in the line."']] },
+  { name: 'judge call carries the wrong purpose', check: bodyReask, edits: [[draftFile,
+    "      purpose: 'group_draft_person',\n      messages: [\n        { role: 'system', content: GROUP_READER_BODY_PROMPT }",
+    "      purpose: 'group_text_gate',\n      messages: [\n        { role: 'system', content: GROUP_READER_BODY_PROMPT }"]] },
+  { name: 'judge call warms its temperature', check: bodyReask, edits: [[draftFile,
+    "      temperature: 0,\n      maxTokens: 2048,", "      temperature: 0.9,\n      maxTokens: 2048,"]] },
+  { name: 'judge call token budget short', check: bodyReask, edits: [[draftFile,
+    '      temperature: 0,\n      maxTokens: 2048,', '      temperature: 0,\n      maxTokens: 512,']] },
+  { name: 'judge call is no longer json', check: bodyReask, edits: [[draftFile,
+    "      responseFormat: { type: 'json_object' },\n      purpose: 'group_draft_person',\n      messages: [\n        { role: 'system', content: GROUP_READER_BODY_PROMPT }",
+    "      purpose: 'group_draft_person',\n      messages: [\n        { role: 'system', content: GROUP_READER_BODY_PROMPT }"]] },
+  { name: 'still-flagged line kept', check: bodyRemove, edits: [[draftFile,
+    '    const kept = lines.filter((_, line) => !flagged.has(`${index}.${line}`))', '    const kept = [...lines]']] },
+  { name: 'keep-at-least-one rule removed', check: bodyKeepOne, edits: [[draftFile,
+    '    const next = kept.length ? kept : lines.slice(0, 1)\n    body += lines.length - next.length',
+    '    const next = kept\n    body += lines.length - next.length']] },
+  { name: 'judge ids taken on trust', check: judgeIds, edits: [[draftFile,
+    "  return new Set(reported.filter((id): id is string => typeof id === 'string' && sent.has(id)))",
+    "  return new Set(reported.filter((id): id is string => typeof id === 'string'))"]] },
+  { name: 'judge failure counts as every line flagged', check: judgeFail, edits: [[draftFile,
+    "  } catch {\n    log.warn('group_draft.body_judge_failed', {})\n    return new Set()\n  }",
+    "  } catch {\n    log.warn('group_draft.body_judge_failed', {})\n    return new Set(lines.map((line) => line.id))\n  }"]] },
+  { name: 'unreadable judge answer counts as every line flagged', check: judgeFail, edits: [[draftFile,
+    '  if (!Array.isArray(reported)) {\n    log.warn(\'group_draft.body_judge_failed\', {})\n    return new Set()\n  }',
+    "  if (!Array.isArray(reported)) {\n    log.warn('group_draft.body_judge_failed', {})\n    return new Set(lines.map((line) => line.id))\n  }"]] },
+  { name: 'judge failure fails the draft', check: judgeFail, edits: [[draftFile,
+    "  } catch {\n    log.warn('group_draft.body_judge_failed', {})\n    return new Set()\n  }",
+    "  } catch (error) {\n    log.warn('group_draft.body_judge_failed', {})\n    throw error\n  }"]] },
+  { name: 'non-adult draft still judged', check: safeNoCall, edits: [
     [draftFile, '  if (form.adult) {\n    const rawExplicit', '  if (true) {\n    const rawExplicit'],
-    [draftFile, '  if (!form.adult) return\n', '\n'],
+    [draftFile, '  if (!form.adult) return\n  const explicit', '  const explicit'],
+  ] },
+  { name: 'clean draft judged twice', check: cleanOneJudge, edits: [[draftFile,
+    '  if (flagged.size) {\n    // 3. Re-ask', '  if (true) {\n    // 3. Re-ask']] },
+  { name: 'trim log removed', check: sameyClash, edits: [[draftFile,
+    "  if (body > 0 || samey > 0) log.info('group_draft.explicit_trimmed', { body, samey })", '  void body']] },
+  { name: 'trim log carries the words', check: sameyClash, edits: [[draftFile,
+    "  if (body > 0 || samey > 0) log.info('group_draft.explicit_trimmed', { body, samey })",
+    "  if (body > 0 || samey > 0) log.info('group_draft.explicit_trimmed', { body, samey, texts: explicit.flat() })"]] },
+  { name: 'explicit trim runs for a safe group', check: safeNoCall, edits: [
+    [draftFile, '  if (form.adult) {\n    const rawExplicit', '  if (true) {\n    const rawExplicit'],
+    [draftFile, '  if (!form.adult) return\n  const explicit', '  const explicit'],
   ] },
   { name: 'unknown body line lost', check: unknownBody, edits: [[worker,
     ': knownGender === undefined ?', ': false ?']] },
