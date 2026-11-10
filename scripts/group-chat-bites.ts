@@ -1646,6 +1646,18 @@ const deleteGroupMutations: Mutation[] = [
 ]
 mutations.push(...deleteGroupMutations)
 
+// cag-10: "Your groups" paints its fallback from the owner list's preview members.
+const groupListMembers = 'creator list kind=group carries members with faces'
+const groupListMemberMutations: Mutation[] = [
+  { name: 'owner group list omits members', check: groupListMembers, edits: [[templateFile,
+    "        ...(kind === 'group' ? { members: groupPreviewMembers(template) } : {}),\n",
+    '']] },
+  { name: 'owner world list gains members', check: groupListMembers, edits: [[templateFile,
+    "        ...(kind === 'group' ? { members: groupPreviewMembers(template) } : {}),",
+    "        ...(kind === 'group' ? {} : { members: groupPreviewMembers(template) }),"]] },
+]
+mutations.push(...groupListMemberMutations)
+
 const selectedMutations = process.env.GROUP_BITE_ONLY ? mutations.filter(mutation => mutation.name.startsWith(process.env.GROUP_BITE_ONLY!)) : mutations
 try {
   const missing: string[] = []

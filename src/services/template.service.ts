@@ -1,5 +1,6 @@
 import { validateGroup } from './group-chat/validation'
 import { checkGroupText, groupTextLines } from './group-chat/text-gate'
+import { groupPreviewMembers } from './group-chat/public'
 import { requireIdentity } from './guest-policy'
 import { ObjectId, type UpdateFilter } from 'mongodb'
 import { mongoColl } from '../config/mongo'
@@ -619,7 +620,13 @@ export const templateService = {
     return {
       // A world from before kinds existed is a world; say so, so "Your groups"
       // can tell groups from worlds without knowing the model's default.
-      templates: templates.map((template) => ({ ...template, kind: template.kind ?? 'world' as const })),
+      // "Your groups" paints its fallback picture from these members, the same
+      // preview shape the group's own read sends; no other list carries them.
+      templates: templates.map((template) => ({
+        ...template,
+        kind: template.kind ?? 'world' as const,
+        ...(kind === 'group' ? { members: groupPreviewMembers(template) } : {}),
+      })),
       total,
       page: safePage,
     }

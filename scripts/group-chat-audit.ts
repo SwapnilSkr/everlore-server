@@ -1524,6 +1524,40 @@ await check('creator list route takes kind=group only and leaves groups out with
     assert.equal((await list('?kind=character')).status, 422)
   } finally { routeUser = null }
 })
+await check('creator list kind=group carries members with faces and never a storage key', async () => {
+  await start(facedTemplate())
+  const world = { ...groupTemplate(), _id: new ObjectId(), kind: 'world', starter: true }
+  rows('worldTemplates').push(world as unknown as Row)
+  const { templateRoutes } = await import('../src/routes/template.routes')
+  const app = new Elysia().use(templateRoutes)
+  const list = (query: string) => app.handle(new Request(`http://localhost/templates/mine/list${query}`))
+  routeUser = { id: template.creator_id.toHexString(), tier: 'creator' }
+  try {
+    const groups = await list('?kind=group')
+    assert.equal(groups.status, 200)
+    const groupBody = await groups.json() as { templates: Row[] }
+    assert.deepEqual(groupBody.templates.map(item => item.kind), ['group'])
+    const group = groupBody.templates[0]!
+    // "Your groups" paints its fallback picture from these, so a group's row
+    // carries the same name/role/face preview its own read sends.
+    assert.deepEqual(group.members, [
+      { name: names[0], role: 'member 0', portrait_url: 'https://fixture.invalid/castface_0.png', portrait_thumb_url: 'https://fixture.invalid/castface_0.w320.webp' },
+      { name: names[1], role: 'member 1', portrait_url: 'https://fixture.invalid/castface_1.png' },
+      { name: names[2], role: 'member 2' },
+      { name: names[3], role: 'member 3' },
+    ])
+    assert(!/"asset_key"\s*:/.test(JSON.stringify(group.members)), 'a storage key reached the player')
+    // The row itself is still the owner's document, unchanged but for the kind
+    // default and the added members.
+    assert.equal(group.title, 'Test Group'); assert(Array.isArray(group.seed_cast))
+    // A world's row, in a list with no kind, is exactly what it was: no members.
+    const plain = await list('')
+    assert.equal(plain.status, 200)
+    const plainBody = await plain.json() as { templates: Row[] }
+    assert.deepEqual(plainBody.templates.map(item => item.kind), ['world'])
+    assert(!('members' in plainBody.templates[0]!))
+  } finally { routeUser = null }
+})
 await check('story prompt fixed fixture hashes unchanged; only group kind hands off; no authored group identities in product code', async () => {
   const story = await readFile(new URL('../worker/processors/generation.processor.ts', import.meta.url), 'utf8')
   assert(story.includes("if (dispatchedSession.kind === 'group')")); assert.equal((story.match(/return groupTurnProcessor\(job\)/g) || []).length, 1)
