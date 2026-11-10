@@ -283,7 +283,8 @@ export function personDraftPrompt(adult: boolean): string {
   )
   if (adult) lines.push(EXPLICIT_LINE_RULE)
   lines.push(
-    'Write every field to the person who will read and edit it: call them "you"; never write about them in the third person.',
+    'The member you are writing is always in the third person, by name or "they", in "role", "appearance", "persona", "speech", "wants" and "intimacy"; those fields never say "I" or "me". The person who reads and edits the draft is always "you" in those fields, and is never the member.',
+    '"persona" and "wants" each begin with the member\'s exact name. "first_texts", "statuses" and every voice line are in the member\'s own voice: "I" is the member and "you" is the reader.',
     'A voice line never names its own speaker. Do not return a name, an age, a starting bond or an id; the server sets those.',
     'Stay within every character limit. Keep every written line on a single line.',
   )
@@ -326,7 +327,12 @@ function readGroupWords(parsed: unknown, form: GroupDraftInput): GroupWords {
   }
 }
 
-function readPersonWords(parsed: unknown, form: GroupDraftInput, person: GroupDraftPerson): PersonWords {
+function readPersonWords(
+  parsed: unknown,
+  form: GroupDraftInput,
+  person: GroupDraftPerson,
+  thirdPerson = true,
+): PersonWords {
   if (!isRecord(parsed)) shape('parse')
   const role = prose(parsed.role, 400)
   const appearance = prose(parsed.appearance, 1000)
@@ -387,12 +393,21 @@ function readPersonWords(parsed: unknown, form: GroupDraftInput, person: GroupDr
     if (namesSelf(text, person.name)) shape('person_voice_names_self')
   }
 
+  // A person's notes are about them, never written to them: the reader is "you",
+  // so a note addressed to the person would be read as a note about the player.
+  // The prompt asks for the name first; this is what holds it.
+  const spokenPersona = speakToReader(persona!)
+  const spokenWants = speakToReader(wants!)
+  if (thirdPerson && (!spokenPersona.startsWith(person.name) || !spokenWants.startsWith(person.name))) {
+    shape('person_third_person')
+  }
+
   return {
     role: speakToReader(role!),
     appearance: speakToReader(appearance!),
-    persona: speakToReader(persona!),
+    persona: spokenPersona,
     speech: speakToReader(speech!),
-    wants: speakToReader(wants!),
+    wants: spokenWants,
     intimacy: intimacy ? speakToReader(intimacy) : undefined,
     first_texts: (first_texts as string[]).map(speakToReader),
     statuses,
@@ -490,6 +505,12 @@ async function draftPersonWords(
       return readPersonWords(parsed, form, person)
     } catch (error) {
       if (!(error instanceof ShapeFailure)) throw error
+      // A person's notes in the wrong voice are still usable on the last
+      // attempt: the draft is whole otherwise. Nothing else is let through.
+      if (error.reason === 'person_third_person' && attempt === attempts - 1) {
+        log.warn('group_draft.third_person_left', { person: personIndex })
+        return readPersonWords(parsed, form, person, false)
+      }
       log.warn('group_draft.shape_miss', { call: 'person', person: personIndex, attempt: attempt + 1, reason: error.reason })
     }
   }
@@ -503,7 +524,7 @@ const EXPLICIT_REDRAFT_PROMPT = [
   '{"explicit": EXACTLY 3 explicit lines in that person\'s own voice}',
   EXPLICIT_LINE_RULE,
   'Each line is new: it repeats none of the openings in "taken_openings", and the three lines you return do not repeat each other.',
-  'A line never names its own speaker. Write every field to the person who will read and edit it: call them "you"; never write about them in the third person.',
+  'A line never names its own speaker. In each line "I" is this member and "you" is the reader.',
   'Stay within every character limit. Keep every written line on a single line.',
 ].join('\n')
 

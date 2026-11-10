@@ -1426,7 +1426,7 @@ const readerMutations: Mutation[] = [
   { name: 'drafted topics keep the player term', check: readerDraft, edits: [[draftFile,
     'topics: (topics as string[]).map(speakToReader),', 'topics: topics as string[],']] },
   { name: 'drafted persona keeps the player term', check: readerDraft, edits: [[draftFile,
-    'persona: speakToReader(persona!),', 'persona: persona!,']] },
+    '    persona: spokenPersona,', '    persona: persona!,']] },
   { name: 'static notes sentence lost', check: readerStatic, edits: [[prompt,
     '    `In the notes below, "you" or "the player" means ${input.player}, by name.`,\n', '']] },
   { name: 'static notes sentence loses the name', check: readerStatic, edits: [[prompt,
@@ -1459,12 +1459,29 @@ const readerMutations: Mutation[] = [
     '"persona": how they think, talk and treat you, one paragraph', '"persona": how they think, talk and treat the player, one paragraph']] },
   { name: 'draft explicit rule calls the reader the player', check: 'group draft prompts ask', edits: [[draftFile,
     'their own body and your mouth, hands and fingers', 'their own body and the player mouth, hands and fingers']] },
-  { name: 'draft prompt loses the second-person rule', check: 'group draft prompts ask', edits: [[draftFile,
-    "\n  'Write every field to the person who will read and edit it: call them \"you\"; never write about them in the third person.',",
-    '']] },
+  { name: 'draft prompt loses the third-person rule', check: 'group draft person prompt says the member is third person', edits: [[draftFile,
+    "'The member you are writing is always in the third person, by name or \"they\"",
+    "'The member you are writing is sometimes in the third person, by name or \"they\""]] },
   { name: 'draft bond reads as the player', check: 'group draft happy path', edits: [[draftFile,
     "  friend: 'they are a friend of yours',", "  friend: 'they are a friend of the player',"]] },
 ]
+
+// cag-12: a person's notes are about them, by name; a last attempt keeps the
+// words and logs it, and nothing else is let through.
+const thirdPersonPersona = 'group draft a persona written to the member is redrafted'
+const thirdPersonWants = 'group draft wants written to the member are redrafted'
+const thirdPersonLeft = 'group draft third person left is kept and logged'
+const thirdPersonMutations: Mutation[] = [
+  { name: 'third-person check dropped on persona', check: thirdPersonPersona, edits: [[draftFile,
+    '  if (thirdPerson && (!spokenPersona.startsWith(person.name) || !spokenWants.startsWith(person.name))) {',
+    '  if (thirdPerson && !spokenWants.startsWith(person.name)) {']] },
+  { name: 'third-person check dropped on wants', check: thirdPersonWants, edits: [[draftFile,
+    '  if (thirdPerson && (!spokenPersona.startsWith(person.name) || !spokenWants.startsWith(person.name))) {',
+    '  if (thirdPerson && !spokenPersona.startsWith(person.name)) {']] },
+  { name: 'third person left fails the draft', check: thirdPersonLeft, edits: [[draftFile,
+    '        return readPersonWords(parsed, form, person, false)\n', '']] },
+]
+mutations.push(...thirdPersonMutations)
 mutations.push(...readerMutations)
 
 mutations.push(...ideaMutations)

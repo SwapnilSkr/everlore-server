@@ -6851,7 +6851,7 @@ function personDraftReply(form: DraftForm, index: number, extra: Row = {}) {
     appearance: `${person.age}; short hair, a bakery apron and flour on the sleeves.`,
     persona: `${person.name} is dry, practical and quietly kind, and notices everything.`,
     speech: 'Short sentences, no emoji, a dry turn at the end.',
-    wants: 'A quiet morning, a working kettle and someone to share the rent.',
+    wants: `${person.name} wants a quiet morning, a working kettle and someone to share the rent.`,
     ...(form.adult ? { intimacy: 'Direct and unhurried, in their own voice, with no embarrassment.' } : {}),
     first_texts: ['Are you up?', 'The kettle is broken.', 'Come down for coffee.'],
     statuses: { morning: 'Up early.', afternoon: 'On shift.', evening: 'Home and tired.', night: 'Still awake.' },
@@ -7242,14 +7242,13 @@ await check('group draft prompts ask for words only and state the authoring rule
     'from you',
     'send you privately',
     'each part of your day',
-    'call them "you"; never write about them in the third person',
   ]) {
     assert(adult.includes(required), `adult person prompt is missing ${required}`)
   }
   const safe = personDraftPrompt(false)
   assert(!safe.includes('sex act'))
   assert(!safe.includes('explicit'))
-  assert(!safe.includes('intimacy'))
+  assert(!safe.includes('"intimacy":'), 'a safe person prompt never asks for the intimacy field')
   assert(safe.includes('2 to 4'))
   // Nothing a person reads calls them "the player" any more.
   for (const prompt of [GROUP_DRAFT_PROMPT, adult, safe]) assert(!prompt.includes('the player'), `a draft prompt still says the player: ${prompt}`)
@@ -7279,7 +7278,8 @@ await check('group draft drafted fields speak to the reader as you', async () =>
     const index = draftPersonIndex(request)
     return personDraftReply(form, index, {
       appearance: `${form.people[index]!.age}; the player's coat hangs by the door.`,
-      persona: "The player is quiet; the player's tea goes cold.",
+      persona: `${form.people[index]!.name} is quiet; the player's tea goes cold.`,
+      wants: `${form.people[index]!.name} wants the player's kettle fixed.`,
       intimacy: 'Keeps {player} close; the player has the keys.',
       statuses: { morning: 'The player is up.', afternoon: 'The player is on shift.', evening: 'The player has the keys.', night: 'The player was asleep.' },
       voice: { plain: ['The player is out.', 'The player has the keys.'], explicit: draftExplicit(index) },
@@ -7291,7 +7291,8 @@ await check('group draft drafted fields speak to the reader as you', async () =>
   assert.equal(draft.opening_lines[0]!.text, 'You are late again.')
   assert.equal(draft.seed_prompt, 'You have moved in, and you have too.')
   const first = draft.seed_cast[0]!
-  assert.equal(first.persona, 'You are quiet; your tea goes cold.')
+  assert.equal(first.persona, 'Ana is quiet; your tea goes cold.')
+  assert.equal(first.group.wants, 'Ana wants your kettle fixed.')
   assert(first.appearance.endsWith("your coat hangs by the door."))
   assert.equal(first.group.intimacy, 'Keeps {player} close; you have the keys.')
   assert.deepEqual(first.statuses, { morning: 'You are up.', afternoon: 'You are on shift.', evening: 'You have the keys.', night: 'You were asleep.' })
@@ -7886,6 +7887,135 @@ await check('group draft person prompt pins the age in digits', () => {
     assert(prompt.includes('"27, ..."'), 'the prompt must show the digits example')
     assert(!prompt.includes('in words or digits'), 'the prompt must not allow words')
   }
+})
+
+// cag-12: a person's notes are about them, by name; the reader is "you". The
+// prompt asks for it and the reader holds it, because an instruction alone
+// does not.
+const thirdPersonRule = 'The member you are writing is always in the third person, by name or "they", in "role", "appearance", "persona", "speech", "wants" and "intimacy"; those fields never say "I" or "me". The person who reads and edits the draft is always "you" in those fields, and is never the member.'
+const thirdPersonStarts = '"persona" and "wants" each begin with the member\'s exact name.'
+const thirdPersonVoice = '"first_texts", "statuses" and every voice line are in the member\'s own voice: "I" is the member and "you" is the reader.'
+const addressedToMember = 'Write every field to the person who will read and edit it: call them "you"; never write about them in the third person.'
+await check('group draft person prompt says the member is third person', () => {
+  for (const adult of [true, false]) {
+    const prompt = personDraftPrompt(adult)
+    for (const text of [thirdPersonRule, thirdPersonStarts, thirdPersonVoice]) {
+      assert(prompt.includes(text), `the person prompt is missing ${text}`)
+    }
+    assert(!prompt.includes(addressedToMember), 'the person prompt still tells the model the member is the reader')
+  }
+  // The group's own fields have no member as their subject: their rule stands.
+  assert(GROUP_DRAFT_PROMPT.includes(addressedToMember))
+})
+
+await check('group draft a persona written to the member is redrafted', async () => {
+  const form = draftForm(2)
+  draftGate()
+  let personOne = 0
+  const addressed = "You're fiercely competitive, and you see me as a rival."
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const index = draftPersonIndex(request)
+    if (index !== 1) return personDraftReply(form, index)
+    personOne++
+    return personOne === 1 ? personDraftReply(form, index, { persona: addressed }) : personDraftReply(form, index)
+  })
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.equal(personOne, 2, 'the persona miss must be redrafted once')
+  assert.equal(draft.seed_cast[1]!.persona, `${form.people[1]!.name} is dry, practical and quietly kind, and notices everything.`, 'the second reply is used')
+  const logged = memoryLogs.slice(before).filter((entry) => entry.person === 1)
+  assert.deepEqual(logged.map(({ name, attempt, reason }) => ({ name, attempt, reason })),
+    [{ name: 'group_draft.shape_miss', attempt: 1, reason: 'person_third_person' }])
+  assert(!JSON.stringify(logged).includes(addressed), 'the shape log carries no text')
+})
+
+await check('group draft wants written to the member are redrafted', async () => {
+  const form = draftForm(2)
+  draftGate()
+  let personOne = 0
+  const addressed = 'You want a quiet morning, and you want me to notice.'
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const index = draftPersonIndex(request)
+    if (index !== 1) return personDraftReply(form, index)
+    personOne++
+    return personOne === 1 ? personDraftReply(form, index, { wants: addressed }) : personDraftReply(form, index)
+  })
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.equal(personOne, 2, 'the wants miss must be redrafted once')
+  assert.equal(draft.seed_cast[1]!.group.wants, `${form.people[1]!.name} wants a quiet morning, a working kettle and someone to share the rent.`, 'the second reply is used')
+  const logged = memoryLogs.slice(before).filter((entry) => entry.person === 1)
+  assert.deepEqual(logged.map(({ name, attempt, reason }) => ({ name, attempt, reason })),
+    [{ name: 'group_draft.shape_miss', attempt: 1, reason: 'person_third_person' }])
+  assert(!JSON.stringify(logged).includes(addressed), 'the shape log carries no text')
+})
+
+await check('group draft third person left is kept and logged on the last attempt', async () => {
+  const form = draftForm(2)
+  draftGate()
+  let personOne = 0
+  const addressed = "You're fiercely competitive, and you see me as a rival."
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const index = draftPersonIndex(request)
+    if (index !== 1) return personDraftReply(form, index)
+    personOne++
+    return personDraftReply(form, index, { persona: addressed })
+  })
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.equal(personOne, 2, 'the retry still asks again')
+  assert.equal(draft.seed_cast[1]!.persona, addressed, 'the last attempt is kept')
+  const logged = memoryLogs.slice(before)
+  assert.deepEqual(logged.filter((entry) => entry.name === 'group_draft.third_person_left'),
+    [{ name: 'group_draft.third_person_left', person: 1 }])
+  assert.equal(logged.filter((entry) => entry.name === 'group_draft.shape_miss' && entry.reason === 'person_third_person').length, 1,
+    'only the attempt that still had a retry is a shape miss')
+  const serialized = JSON.stringify(logged.filter((entry) => entry.name === 'group_draft.third_person_left'))
+  for (const text of [...fixtureTexts(form), addressed]) assert(!serialized.includes(text), `the log leaks ${text}`)
+  validateGroup(draft as never)
+})
+
+await check('group draft a gate redraft keeps third person left', async () => {
+  const form = draftForm(2)
+  rejectMarker('REFUSE')
+  let personOne = 0
+  const addressed = "You're fiercely competitive, and you see me as a rival."
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const index = draftPersonIndex(request)
+    if (index !== 1) return personDraftReply(form, index)
+    personOne++
+    return personOne === 1 ? personDraftWithMarker(form, index) : personDraftReply(form, index, { persona: addressed })
+  })
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.equal(personOne, 2)
+  assert.equal(draft.seed_cast[1]!.persona, addressed, 'a one-attempt redraft accepts the words')
+  assert.deepEqual(memoryLogs.slice(before).filter((entry) => entry.name === 'group_draft.third_person_left'),
+    [{ name: 'group_draft.third_person_left', person: 1 }])
+})
+
+await check('group draft another shape miss on the last attempt still fails', async () => {
+  const form = draftForm(2)
+  draftGate()
+  let personOne = 0
+  stubDraft((request) => {
+    if (isGroupCall(request)) return groupDraftReply(form)
+    const index = draftPersonIndex(request)
+    if (index !== 1) return personDraftReply(form, index)
+    personOne++
+    return personDraftReply(form, index, {
+      voice: { plain: [`${form.people[index]!.name} should not say this.`, 'I put the kettle on.'], explicit: draftExplicit(index) },
+    })
+  })
+  const before = memoryLogs.length
+  await assert.rejects(draftGroup(form, playerId), draftError(422, DRAFT_FAILED))
+  assert.equal(personOne, 2, 'the last attempt is still asked')
+  assert(!memoryLogs.slice(before).some((entry) => entry.name === 'group_draft.third_person_left'),
+    'another miss is never accepted')
 })
 
 // ── create-a-group faces (§6) ──────────────────────────────────────────────
