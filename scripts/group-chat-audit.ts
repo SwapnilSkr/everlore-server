@@ -7529,14 +7529,82 @@ await check('group draft a judge failure or an unreadable answer flags nothing a
     const draft = await draftGroup(form, playerId)
     assert.deepEqual(explicitOf(draft, 0), draftExplicit(0), `${failure}: nothing is removed`)
     assert.deepEqual(explicitOf(draft, 1), draftExplicit(1), `${failure}: nothing is removed`)
-    assert.equal(judgeRequests.length, 1, failure)
+    assert.equal(judgeRequests.length, 2, `${failure}: the same request is tried once more`)
     assert.equal(draftRequests.filter(isReaskCall).length, 0, `${failure}: nobody is re-asked`)
-    assert.deepEqual(memoryLogs.slice(before).filter((entry) => entry.name === 'group_draft.body_judge_failed').length, 1, failure)
+    const reason = failure === 'provider' ? 'call' : 'unreadable'
+    const logs = memoryLogs.slice(before).filter((entry) => entry.name === 'group_draft.body_judge_failed')
+    assert.deepEqual(logs.map((entry) => ({ attempt: entry.attempt, reason: entry.reason })), [
+      { attempt: 1, reason },
+      { attempt: 2, reason },
+    ], `${failure}: every failure is logged with its attempt and reason`)
+    for (const entry of logs) assert.deepEqual(Object.keys(entry).sort(), ['attempt', 'name', 'reason'], `${failure}: the log carries nothing else`)
     assert.deepEqual(trimmedLogs(before), [], failure)
     for (const text of [...draftExplicit(0), ...draftExplicit(1)]) {
       assert(!JSON.stringify(memoryLogs.slice(before)).includes(text), `${failure}: the log carries no text`)
     }
   }
+})
+
+await check('group draft a failed judge call is asked again and its second answer is used', async () => {
+  const form = draftForm(2)
+  draftGate()
+  const flaggedText = 'Push it into me slowly, right now.'
+  const own = draftExplicit(0)
+  const fresh = ['Fresh line one for the reader.', 'Fresh line two for the reader.', 'Fresh line three for the reader.']
+  const reasks = stubTrim(form, {
+    people: (index) => ({
+      voice: {
+        plain: [...DRAFT_PLAIN],
+        explicit: index ? draftExplicit(index) : [own[0]!, flaggedText, own[2]!],
+      },
+    }),
+    reask: () => JSON.stringify({ explicit: fresh }),
+  })
+  let calls = 0
+  stubJudge(() => {
+    calls++
+    if (calls === 1) throw new Error('Fixture judge unavailable')
+    return JSON.stringify({ lines: calls === 2 ? ['0.1'] : [] })
+  })
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.equal(judgeRequests.length, 3, 'the failure is retried, then the re-ask is judged')
+  assert.equal(reasks.length, 1, 'the second answer flags a line')
+  assert.deepEqual(reasks[0]!.body.do_not_repeat, [flaggedText])
+  assert.deepEqual(explicitOf(draft, 0), fresh, 'the replacement is used')
+  const logs = memoryLogs.slice(before).filter((entry) => entry.name === 'group_draft.body_judge_failed')
+  assert.deepEqual(logs.map((entry) => ({ attempt: entry.attempt, reason: entry.reason })), [{ attempt: 1, reason: 'call' }], 'only the failed call is logged')
+})
+
+await check('group draft an unreadable judge answer is asked again and the second answer is used', async () => {
+  const form = draftForm(2)
+  draftGate()
+  const flaggedText = 'Push it into me slowly, right now.'
+  const own = draftExplicit(0)
+  const fresh = ['Fresh line one for the reader.', 'Fresh line two for the reader.', 'Fresh line three for the reader.']
+  const reasks = stubTrim(form, {
+    people: (index) => ({
+      voice: {
+        plain: [...DRAFT_PLAIN],
+        explicit: index ? draftExplicit(index) : [own[0]!, flaggedText, own[2]!],
+      },
+    }),
+    reask: () => JSON.stringify({ explicit: fresh }),
+  })
+  let calls = 0
+  stubJudge(() => {
+    calls++
+    if (calls === 1) return 'not json at all'
+    return JSON.stringify({ lines: calls === 2 ? ['0.1'] : [] })
+  })
+  const before = memoryLogs.length
+  const draft = await draftGroup(form, playerId)
+  assert.equal(judgeRequests.length, 3, 'the unreadable answer is asked again, then the re-ask is judged')
+  assert.equal(reasks.length, 1, 'the second answer flags a line')
+  assert.deepEqual(reasks[0]!.body.do_not_repeat, [flaggedText])
+  assert.deepEqual(explicitOf(draft, 0), fresh, 'the replacement is used')
+  const logs = memoryLogs.slice(before).filter((entry) => entry.name === 'group_draft.body_judge_failed')
+  assert.deepEqual(logs.map((entry) => ({ attempt: entry.attempt, reason: entry.reason })), [{ attempt: 1, reason: 'unreadable' }], 'only the unreadable answer is logged')
 })
 
 await check('group draft an explicit re-ask that fails keeps the drafted lines', async () => {
@@ -7573,6 +7641,26 @@ await check('group draft judgeReaderBody returns only the ids it was sent', asyn
   const before = judgeRequests.length
   assert.equal((await judgeReaderBody([])).size, 0)
   assert.equal(judgeRequests.length, before, 'no lines is no call')
+})
+
+await check('group draft the judge request asks for no hidden reasoning', async () => {
+  stubJudge(() => JSON.stringify({ lines: [] }))
+  await judgeReaderBody([{ id: '0.0', text: 'A reader-safe line.' }])
+  const request = judgeRequests.at(-1)!
+  assert.equal(request.noReasoning, true, 'hidden reasoning can use the whole token budget')
+  assert.equal(request.maxTokens, 2048)
+})
+
+await check('group draft a good judge answer is asked once', async () => {
+  const lines = [
+    { id: '0.0', text: 'A reader-safe line.' },
+    { id: '0.1', text: 'A line that assumes a body.' },
+  ]
+  stubJudge(() => JSON.stringify({ lines: ['0.1'] }))
+  const before = judgeRequests.length
+  const flagged = await judgeReaderBody(lines)
+  assert.equal(judgeRequests.length, before + 1, 'a good first answer is not asked again')
+  assert.deepEqual([...flagged], ['0.1'])
 })
 
 await check('group draft a non-adult draft makes no judge or re-ask call', async () => {

@@ -624,38 +624,48 @@ export const GROUP_READER_BODY_PROMPT = [
   'Judge every line on its own. Return every id that offends, exactly as sent, and no id you were not sent.',
 ].join('\n')
 
+/** How many times one judge request is sent before it is given up on. */
+const BODY_JUDGE_ATTEMPTS = 2
+
 /**
- * Which lines cannot be read by just anyone: one call for all of them. An
- * unreadable answer or a failed call is not a verdict — it flags nothing and
- * never fails the draft.
+ * Which lines cannot be read by just anyone: one call for all of them. Hidden
+ * reasoning counts against maxTokens and can leave an empty reply, so the call
+ * asks for none. An unreadable answer or a failed call is tried once more with
+ * the same request; after that it is not a verdict — it flags nothing and never
+ * fails the draft.
  */
 export async function judgeReaderBody(lines: { id: string; text: string }[]): Promise<Set<string>> {
   if (!lines.length) return new Set()
   const sent = new Set(lines.map((line) => line.id))
-  let answer: unknown
-  try {
-    answer = await draftEffects.call({
-      model: groupTextGateModel(),
-      temperature: 0,
-      maxTokens: 2048,
-      responseFormat: { type: 'json_object' },
-      purpose: 'group_draft_person',
-      messages: [
-        { role: 'system', content: GROUP_READER_BODY_PROMPT },
-        { role: 'user', content: JSON.stringify({ lines }) },
-      ],
-    })
-  } catch {
-    log.warn('group_draft.body_judge_failed', {})
-    return new Set()
+  const request = {
+    model: groupTextGateModel(),
+    temperature: 0,
+    maxTokens: 2048,
+    noReasoning: true,
+    responseFormat: { type: 'json_object' },
+    purpose: 'group_draft_person',
+    messages: [
+      { role: 'system', content: GROUP_READER_BODY_PROMPT },
+      { role: 'user', content: JSON.stringify({ lines }) },
+    ],
   }
-  const parsed = parseJson(answer)
-  const reported = isRecord(parsed) ? parsed.lines : undefined
-  if (!Array.isArray(reported)) {
-    log.warn('group_draft.body_judge_failed', {})
-    return new Set()
+  for (let attempt = 1; attempt <= BODY_JUDGE_ATTEMPTS; attempt++) {
+    let answer: unknown
+    try {
+      answer = await draftEffects.call(request)
+    } catch {
+      log.warn('group_draft.body_judge_failed', { attempt, reason: 'call' })
+      continue
+    }
+    const parsed = parseJson(answer)
+    const reported = isRecord(parsed) ? parsed.lines : undefined
+    if (!Array.isArray(reported)) {
+      log.warn('group_draft.body_judge_failed', { attempt, reason: 'unreadable' })
+      continue
+    }
+    return new Set(reported.filter((id): id is string => typeof id === 'string' && sent.has(id)))
   }
-  return new Set(reported.filter((id): id is string => typeof id === 'string' && sent.has(id)))
+  return new Set()
 }
 
 /** How many calls one person gets to stop repeating an opening. */

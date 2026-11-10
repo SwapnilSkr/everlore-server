@@ -1420,6 +1420,10 @@ const bodyRemove = 'group draft a line still flagged after re-judging is removed
 const bodyKeepOne = 'group draft all three lines flagged keeps one'
 const judgeIds = 'group draft judgeReaderBody returns only the ids it was sent'
 const judgeFail = 'group draft a judge failure or an unreadable answer flags nothing and never fails'
+const judgeRetryCall = 'group draft a failed judge call is asked again and its second answer is used'
+const judgeRetryUnreadable = 'group draft an unreadable judge answer is asked again and the second answer is used'
+const judgeNoReasoning = 'group draft the judge request asks for no hidden reasoning'
+const judgeOneCall = 'group draft a good judge answer is asked once'
 const safeNoCall = 'group draft a non-adult draft makes no judge or re-ask call'
 const cleanOneJudge = 'group draft a clean draft makes exactly one judge call and no re-ask'
 const unknownBody = 'first explicit: the body line never assumes'
@@ -1486,15 +1490,15 @@ const readerMutations: Mutation[] = [
   { name: 'judge prompt loses the speaker rule', check: bodyReask, edits: [[draftFile,
     '"The speaker\'s own body is always fine."', '"Judge every body in the line."']] },
   { name: 'judge call carries the wrong purpose', check: bodyReask, edits: [[draftFile,
-    "      purpose: 'group_draft_person',\n      messages: [\n        { role: 'system', content: GROUP_READER_BODY_PROMPT }",
-    "      purpose: 'group_text_gate',\n      messages: [\n        { role: 'system', content: GROUP_READER_BODY_PROMPT }"]] },
+    "    purpose: 'group_draft_person',\n    messages: [\n      { role: 'system', content: GROUP_READER_BODY_PROMPT }",
+    "    purpose: 'group_text_gate',\n    messages: [\n      { role: 'system', content: GROUP_READER_BODY_PROMPT }"]] },
   { name: 'judge call warms its temperature', check: bodyReask, edits: [[draftFile,
-    "      temperature: 0,\n      maxTokens: 2048,", "      temperature: 0.9,\n      maxTokens: 2048,"]] },
+    "    temperature: 0,\n    maxTokens: 2048,", "    temperature: 0.9,\n    maxTokens: 2048,"]] },
   { name: 'judge call token budget short', check: bodyReask, edits: [[draftFile,
-    '      temperature: 0,\n      maxTokens: 2048,', '      temperature: 0,\n      maxTokens: 512,']] },
+    '    temperature: 0,\n    maxTokens: 2048,', '    temperature: 0,\n    maxTokens: 512,']] },
   { name: 'judge call is no longer json', check: bodyReask, edits: [[draftFile,
-    "      responseFormat: { type: 'json_object' },\n      purpose: 'group_draft_person',\n      messages: [\n        { role: 'system', content: GROUP_READER_BODY_PROMPT }",
-    "      purpose: 'group_draft_person',\n      messages: [\n        { role: 'system', content: GROUP_READER_BODY_PROMPT }"]] },
+    "    responseFormat: { type: 'json_object' },\n    purpose: 'group_draft_person',\n    messages: [\n      { role: 'system', content: GROUP_READER_BODY_PROMPT }",
+    "    purpose: 'group_draft_person',\n    messages: [\n      { role: 'system', content: GROUP_READER_BODY_PROMPT }"]] },
   { name: 'still-flagged line kept', check: bodyRemove, edits: [[draftFile,
     '    const kept = lines.filter((_, line) => !flagged.has(`${index}.${line}`))', '    const kept = [...lines]']] },
   { name: 'keep-at-least-one rule removed', check: bodyKeepOne, edits: [[draftFile,
@@ -1504,14 +1508,27 @@ const readerMutations: Mutation[] = [
     "  return new Set(reported.filter((id): id is string => typeof id === 'string' && sent.has(id)))",
     "  return new Set(reported.filter((id): id is string => typeof id === 'string'))"]] },
   { name: 'judge failure counts as every line flagged', check: judgeFail, edits: [[draftFile,
-    "  } catch {\n    log.warn('group_draft.body_judge_failed', {})\n    return new Set()\n  }",
-    "  } catch {\n    log.warn('group_draft.body_judge_failed', {})\n    return new Set(lines.map((line) => line.id))\n  }"]] },
+    "      log.warn('group_draft.body_judge_failed', { attempt, reason: 'call' })\n      continue",
+    "      log.warn('group_draft.body_judge_failed', { attempt, reason: 'call' })\n      return new Set(lines.map((line) => line.id))"]] },
   { name: 'unreadable judge answer counts as every line flagged', check: judgeFail, edits: [[draftFile,
-    '  if (!Array.isArray(reported)) {\n    log.warn(\'group_draft.body_judge_failed\', {})\n    return new Set()\n  }',
-    "  if (!Array.isArray(reported)) {\n    log.warn('group_draft.body_judge_failed', {})\n    return new Set(lines.map((line) => line.id))\n  }"]] },
+    "      log.warn('group_draft.body_judge_failed', { attempt, reason: 'unreadable' })\n      continue",
+    "      log.warn('group_draft.body_judge_failed', { attempt, reason: 'unreadable' })\n      return new Set(lines.map((line) => line.id))"]] },
   { name: 'judge failure fails the draft', check: judgeFail, edits: [[draftFile,
-    "  } catch {\n    log.warn('group_draft.body_judge_failed', {})\n    return new Set()\n  }",
-    "  } catch (error) {\n    log.warn('group_draft.body_judge_failed', {})\n    throw error\n  }"]] },
+    "    } catch {\n      log.warn('group_draft.body_judge_failed', { attempt, reason: 'call' })\n      continue\n    }",
+    "    } catch (error) {\n      log.warn('group_draft.body_judge_failed', { attempt, reason: 'call' })\n      throw error\n    }"]] },
+  { name: 'judge failure log carries the lines', check: judgeFail, edits: [[draftFile,
+    "log.warn('group_draft.body_judge_failed', { attempt, reason: 'call' })",
+    "log.warn('group_draft.body_judge_failed', { attempt, reason: 'call', text: lines.map((line) => line.text).join(' ') })"]] },
+  { name: 'judge call not retried after a failure', check: judgeRetryCall, edits: [[draftFile,
+    'const BODY_JUDGE_ATTEMPTS = 2', 'const BODY_JUDGE_ATTEMPTS = 1']] },
+  { name: 'judge call not retried after an unreadable answer', check: judgeRetryUnreadable, edits: [[draftFile,
+    "    if (!Array.isArray(reported)) {\n      log.warn('group_draft.body_judge_failed', { attempt, reason: 'unreadable' })\n      continue\n    }",
+    "    if (!Array.isArray(reported)) {\n      log.warn('group_draft.body_judge_failed', { attempt, reason: 'unreadable' })\n      return new Set()\n    }"]] },
+  { name: 'judge request keeps hidden reasoning', check: judgeNoReasoning, edits: [[draftFile,
+    '    noReasoning: true,\n', '']] },
+  { name: 'judge answer asked again after it was good', check: judgeOneCall, edits: [[draftFile,
+    "    return new Set(reported.filter((id): id is string => typeof id === 'string' && sent.has(id)))\n  }",
+    "    if (attempt < BODY_JUDGE_ATTEMPTS) continue\n    return new Set(reported.filter((id): id is string => typeof id === 'string' && sent.has(id)))\n  }"]] },
   { name: 'non-adult draft still judged', check: safeNoCall, edits: [
     [draftFile, '  if (form.adult) {\n    const rawExplicit', '  if (true) {\n    const rawExplicit'],
     [draftFile, '  if (!form.adult) return\n  const explicit', '  const explicit'],
