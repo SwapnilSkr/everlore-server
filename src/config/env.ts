@@ -93,6 +93,9 @@ const optionalEnvVars = {
   NSFW_SAME_TURN_ROUTER: 'on',
   NSFW_SAME_TURN_ROUTER_MODEL: 'deepseek/deepseek-v4.1-flash-1017',
   NSFW_SAME_TURN_ROUTER_HOST: 'Relace',
+  /** Comma-separated hosts the same-turn router may use after the primary. Both
+   * are measured at the router model; an empty string pins the primary alone. */
+  NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS: 'InferenceNet,Reka',
   ADMIN_USERNAME: '',
   ADMIN_PASSWORD: '',
   // Throughput knobs — defaults are the safe production values. Crank these via
@@ -187,6 +190,7 @@ export interface Env {
   NSFW_SAME_TURN_ROUTER: 'on' | 'off'
   NSFW_SAME_TURN_ROUTER_MODEL: string
   NSFW_SAME_TURN_ROUTER_HOST: string
+  NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS: string[]
   ADMIN_USERNAME: string
   ADMIN_PASSWORD: string
   GENERATION_CONCURRENCY: number
@@ -335,6 +339,11 @@ function loadEnv(): Env {
     NSFW_SAME_TURN_ROUTER: sameTurnRouter,
     NSFW_SAME_TURN_ROUTER_MODEL: process.env.NSFW_SAME_TURN_ROUTER_MODEL || optionalEnvVars.NSFW_SAME_TURN_ROUTER_MODEL,
     NSFW_SAME_TURN_ROUTER_HOST: process.env.NSFW_SAME_TURN_ROUTER_HOST || optionalEnvVars.NSFW_SAME_TURN_ROUTER_HOST,
+    // An empty value is honoured: it pins the router to its primary host.
+    NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS: (process.env.NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS ?? optionalEnvVars.NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS)
+      .split(',')
+      .map((host) => host.trim())
+      .filter(Boolean),
     ADMIN_USERNAME: process.env.ADMIN_USERNAME || optionalEnvVars.ADMIN_USERNAME,
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || optionalEnvVars.ADMIN_PASSWORD,
     GENERATION_CONCURRENCY: Number(process.env.GENERATION_CONCURRENCY || optionalEnvVars.GENERATION_CONCURRENCY),

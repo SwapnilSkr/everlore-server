@@ -17,7 +17,7 @@ export interface IntentRouterTrace extends IntentSlot {
   fallback?: 'late' | 'error' | 'malformed' | 'off' | 'gated'
 }
 interface Eligibility { capable: boolean; enabled: boolean; mode?: string }
-interface RouterConfig { switch: 'on' | 'off'; model: string; host: string }
+interface RouterConfig { switch: 'on' | 'off'; model: string; host: string; fallbackHosts: string[] }
 // The shared builder carries OpenRouter extensions beyond the SDK's types.
 type Request = ReturnType<typeof buildChatRequest>['params']
 export type IntentTransport = (params: Request, signal: AbortSignal) => Promise<unknown>
@@ -36,14 +36,17 @@ export function parseIntentResponse(raw: unknown): boolean {
   return (JSON.parse(content) as { sexual_intent: boolean }).sexual_intent
 }
 
-/** Reuse the chat dialect/provider helpers, overriding only the measured pin. */
+/** Reuse the chat dialect/provider helpers, overriding only the measured pin.
+ * The measured primary stays first; only the other measured hosts may replace it. */
 export function intentRouterRequest(text: string, config: RouterConfig): Request {
   const { params } = buildChatRequest({
     model: config.model, purpose: 'content_intent_same_turn',
     messages: contentIntentMessages(text.trim()), temperature: 0, maxTokens: 16,
     responseFormat: { type: 'json_object' },
   })
-  params.provider = { ...params.provider, order: [config.host], only: [config.host], allow_fallbacks: false, require_parameters: true }
+  const hosts = [...new Set([config.host, ...(config.fallbackHosts ?? [])])]
+  params.provider = { ...params.provider, order: hosts, only: hosts, allow_fallbacks: false, require_parameters: true }
+  if (hosts.length > 1) params.provider.allow_fallbacks = true
   params.reasoning = { enabled: false }
   return params
 }
@@ -83,7 +86,8 @@ export function startIntentRouter(input: Eligibility & { text: string }, deps: {
   config?: RouterConfig
 } = {}) {
   const config = deps.config ?? { switch: env.NSFW_SAME_TURN_ROUTER,
-    model: env.NSFW_SAME_TURN_ROUTER_MODEL, host: env.NSFW_SAME_TURN_ROUTER_HOST }
+    model: env.NSFW_SAME_TURN_ROUTER_MODEL, host: env.NSFW_SAME_TURN_ROUTER_HOST,
+    fallbackHosts: env.NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS }
   const now = deps.now ?? Date.now
   const started = config.switch === 'on' && eligible(input)
   const slot: IntentSlot = { settled: false, ms: 0, host: config.host }

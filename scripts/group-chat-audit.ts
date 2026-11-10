@@ -553,7 +553,7 @@ const redis = {
 }
 const unavailable = (): never => { throw new Error('Unexpected external dependency in group audit') }
 globalThis.fetch = Object.assign(async () => unavailable(), { preconnect: unavailable })
-const auditEnv = { GROUP_NOTIFICATIONS_ENABLED: false, FCM_SERVICE_ACCOUNT_JSON: '', NSFW_SAME_TURN_ROUTER: 'off', NSFW_SAME_TURN_ROUTER_MODEL: 'fake-router', NSFW_SAME_TURN_ROUTER_HOST: 'fixture' }
+const auditEnv = { GROUP_NOTIFICATIONS_ENABLED: false, FCM_SERVICE_ACCOUNT_JSON: '', NSFW_SAME_TURN_ROUTER: 'off', NSFW_SAME_TURN_ROUTER_MODEL: 'fake-router', NSFW_SAME_TURN_ROUTER_HOST: 'fixture', NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS: [] as string[] }
 let routerRequests = 0, routerDelay = 0, routerSexual = true, routerError = false
 mock.module('../src/config/env', () => ({ env: { ...auditEnv, get GROUP_NOTIFICATIONS_ENABLED() { return auditEnv.GROUP_NOTIFICATIONS_ENABLED }, get NSFW_SAME_TURN_ROUTER() { return auditEnv.NSFW_SAME_TURN_ROUTER }, CDN_BASE_URL: 'https://fixture.invalid', JWT_SECRET: 'audit-only', MEDIA_VOICE_ENABLED: false } }))
 let reportMongoDb: Db | undefined
@@ -684,6 +684,7 @@ const { memoryProcessor, buildMemoryCurationRequest } = await import('../worker/
 const { summaryProcessor } = await import('../worker/processors/summary.processor')
 const { loadGroupBatch, groupWriterMemory, groupWriterSummaries, groupMessages, deriveGroupAudience, groupMemoryMayMerge, raisedMemories, GROUP_MEMORY_TEXT_BUDGET, GROUP_ADULT_DIRECT_LINES, groupLineRaisesFact, groupHiddenWords } = await import('../src/services/group-chat/memory')
 const { groupTurnProcessor } = await import('../worker/processors/group-turn.processor')
+const { intentRouterRequest } = await import('../worker/lib/intent-router')
 const { instanceService } = await import('../src/services/instance.service')
 const { generationService } = await import('../src/services/generation.service')
 const { deletionService } = await import('../src/services/deletion.service')
@@ -3099,6 +3100,28 @@ await check('group writer stall moves on to the next model within the limit', as
   assert.equal(GROUP_WRITER_TIMEOUT_MS, 20_000)
   assert.notEqual(writerCalls[0].model, writerCalls[1].model)
   assert.equal(rows('events').at(-1)!.data.lines?.at(-1)?.text, 'After the stall.')
+})
+await check('group writer connection failure moves on to the next model', () => {
+  assert.equal(groupWriterHostFailed(Object.assign(new Error('Connection error.'), { name: 'APIConnectionError' })), true)
+  assert.equal(groupWriterHostFailed(Object.assign(new Error('Bad request'), { status: 400 })), false)
+})
+const routerConfig = (fallbackHosts: string[]) => ({ switch: 'on' as const, model: 'deepseek/deepseek-v4.1-flash-1017', host: 'Relace', fallbackHosts })
+await check('same-turn router falls back only to its measured hosts', () => {
+  const params = intentRouterRequest('take me', routerConfig(['InferenceNet', 'Reka']))
+  assert.deepEqual(params.provider.order, ['Relace', 'InferenceNet', 'Reka'])
+  assert.deepEqual(params.provider.only, ['Relace', 'InferenceNet', 'Reka'])
+  assert.equal(params.provider.allow_fallbacks, true)
+  assert.equal(params.provider.require_parameters, true)
+  const repeated = intentRouterRequest('take me', routerConfig(['Reka', 'Relace', 'Reka', 'InferenceNet']))
+  assert.deepEqual(repeated.provider.order, ['Relace', 'Reka', 'InferenceNet'], 'the primary stays first and no host repeats')
+  assert.deepEqual(repeated.provider.only, ['Relace', 'Reka', 'InferenceNet'])
+})
+await check('same-turn router keeps the pinned request with no fallback hosts', () => {
+  const params = intentRouterRequest('take me', routerConfig([]))
+  assert.deepEqual(params.provider.order, ['Relace'])
+  assert.deepEqual(params.provider.only, ['Relace'])
+  assert.equal(params.provider.allow_fallbacks, false)
+  assert.equal(params.provider.require_parameters, true)
 })
 await check('adult fact question goes to the normal writer; an unrelated question stays adult', async () => {
   await start(); auditEnv.NSFW_SAME_TURN_ROUTER = 'on'; put(rows('users')[0], 'preferences.nsfw_enabled', true); judgeVerdict = true; routerSexual = true

@@ -11,7 +11,8 @@ export const GROUP_WRITER_TIMEOUT_MS = 20_000
 /** A limit also turns off the client's own retries, so a host failing moves to the next model too. */
 export const groupWriterHostFailed = (error: unknown) => {
   const failure = error as { name?: string; message?: string; status?: number } | undefined
-  return failure?.name === 'APIConnectionTimeoutError' || Number(failure?.status) >= 500 || /timed out/i.test(String(failure?.message ?? error))
+  return failure?.name === 'APIConnectionTimeoutError' || failure?.name === 'APIConnectionError'
+    || Number(failure?.status) >= 500 || /timed out/i.test(String(failure?.message ?? error))
 }
 
 export interface GroupWritingRequest {
