@@ -652,7 +652,9 @@ async function main(): Promise<void> {
 
   for (const c of wanted) {
     const tag = `${c.slug} / ${c.slot} / ${c.name}`
-    const template = await mongoColl.worldTemplates().findOne({ slug: c.slug, is_published: true })
+    // A group can't be published until every member has a face, so its
+    // portraits are ingested while it is still unpublished.
+    const template = await mongoColl.worldTemplates().findOne({ slug: c.slug, $or: [{ is_published: true }, { kind: 'group' }] })
     if (!template) {
       missingTemplate++
       console.log(`MISS template  ${tag}  (no published template for slug)`)
