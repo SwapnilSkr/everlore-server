@@ -3,6 +3,7 @@
  * needs Mongo. Used by `bun run audit:all` and CI.
  */
 const PURE_AUDITS = [
+  'audit:reviewers',
   'audit:group-chat',
   'audit:notifications',
   'audit:media',

@@ -7,6 +7,7 @@ import { memoryProjectionStatus } from '../models/projection.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import { deletionService } from './deletion.service'
+import { reviewerAccounts, type ReviewersMode } from './reviewer-accounts'
 import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
 import { vectorStore } from './vector-store'
@@ -95,6 +96,10 @@ async function listCollection(
 
 export const adminService = {
   async overview() {
+    // The headline counts, so review accounts are left out of them: their
+    // accounts, their saves and their events.
+    const { userIds } = await reviewerAccounts.scope()
+    const playerMatch = userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
     const [
       totalUsers,
       totalWorlds,
@@ -104,12 +109,12 @@ export const adminService = {
       totalMemories,
       totalCharacters,
     ] = await Promise.all([
-      users().countDocuments({}),
+      users().countDocuments({ reviewer: { $ne: true } }),
       worldTemplates().countDocuments({}),
       worldTemplates().countDocuments({ is_published: true }),
-      worldInstances().countDocuments({}),
-      events().countDocuments({}),
-      memories().countDocuments({}),
+      worldInstances().countDocuments(playerMatch),
+      events().countDocuments(playerMatch),
+      memories().countDocuments(playerMatch),
       characters().countDocuments({}),
     ])
 
@@ -124,11 +129,15 @@ export const adminService = {
     }
   },
 
-  async listUsers(opts: { page?: number; limit?: number; search?: string; sort?: string; since?: string }) {
+  async listUsers(opts: { page?: number; limit?: number; search?: string; sort?: string; since?: string; reviewers?: ReviewersMode }) {
     if (opts.sort !== undefined && opts.sort !== 'created' && opts.sort !== 'last_active') {
       throw new HttpError(400, 'Sort must be created or last_active.')
     }
     const filter: Record<string, unknown> = {}
+    // Review accounts are someone's to see on request, not players by default.
+    const reviewers = opts.reviewers ?? 'exclude'
+    if (reviewers === 'exclude') filter.reviewer = { $ne: true }
+    else if (reviewers === 'only') filter.reviewer = true
     const since = usersSince(opts.since)
     if (since) filter.created_at = { $gte: since }
     if (opts.search) {

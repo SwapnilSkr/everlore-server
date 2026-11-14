@@ -3,6 +3,7 @@ import { mongoColl } from '../../config/mongo'
 import { log } from '../../utils/logger'
 import { idString } from '../../utils/mongo-id'
 import { STORY_TURN_TYPES } from '../admin-activity'
+import { reviewerAccounts } from '../reviewer-accounts'
 import { NON_ACTION_EVENTS } from './schema'
 import type { AppDailyAction, AppDailyDoc, AppDailyScreen } from './types'
 
@@ -197,6 +198,23 @@ async function computeDay(day: string): Promise<AppDailyDoc> {
   const start = new Date(`${day}T00:00:00Z`)
   const end = new Date(start.getTime() + DAY_MS)
   const inDay = { $gte: start, $lt: end }
+  // Every count stored here is a player number, so review accounts and their
+  // installs are left out of all of it. Errors are the exception: a reviewer's
+  // crash is still a crash and the errors pages must see it.
+  const { userIds, installIds } = await reviewerAccounts.scope()
+  const playerMatch = userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
+  const userMatch = userIds.length > 0 ? { _id: { $nin: userIds } } : {}
+  const installMatch = installIds.length > 0 ? { _id: { $nin: installIds } } : {}
+  const sessionMatch = {
+    ...(installIds.length > 0 ? { install_id: { $nin: installIds } } : {}),
+    ...(userIds.length > 0 ? { user_id: { $nin: userIds } } : {}),
+  }
+  const eventMatch = userIds.length > 0 || installIds.length > 0
+    ? {
+      ...(userIds.length > 0 ? { user_id: { $nin: userIds } } : {}),
+      ...(installIds.length > 0 ? { install_id: { $nin: installIds } } : {}),
+    }
+    : {}
 
   const [
     events,
@@ -211,7 +229,7 @@ async function computeDay(day: string): Promise<AppDailyDoc> {
     storyTurns,
   ] = await Promise.all([
     mongoColl.appEvents()
-      .find({ at: inDay }, {
+      .find({ at: inDay, ...eventMatch }, {
         projection: {
           name: 1, screen: 1, duration_ms: 1, props: 1, user_id: 1, install_id: 1,
           session_id: 1, app_version: 1, at: 1,
@@ -219,7 +237,9 @@ async function computeDay(day: string): Promise<AppDailyDoc> {
       })
       .sort({ session_id: 1, at: 1 })
       .toArray(),
-    mongoColl.appSessions().find({ last_at: inDay }, { projection: { screen_path: 1 } }).toArray(),
+    mongoColl.appSessions()
+      .find({ last_at: inDay, ...sessionMatch }, { projection: { screen_path: 1 } })
+      .toArray(),
     mongoColl.appErrorCounters()
       .find({ day }, { projection: { class: 1, route: 1, status: 1, count: 1 } })
       .toArray(),
@@ -227,12 +247,12 @@ async function computeDay(day: string): Promise<AppDailyDoc> {
       .find({ at: inDay }, { projection: { class: 1, user_id: 1, install_id: 1 } })
       .toArray(),
     mongoColl.appErrorGroups().countDocuments({ first_seen: inDay }),
-    mongoColl.appInstalls().countDocuments({ first_seen: inDay }),
-    mongoColl.appSessions().countDocuments({ started_at: inDay }),
-    mongoColl.users().countDocuments({ created_at: inDay }),
-    mongoColl.worldInstances().find({ created_at: inDay }, { projection: { player_id: 1 } }).toArray(),
+    mongoColl.appInstalls().countDocuments({ first_seen: inDay, ...installMatch }),
+    mongoColl.appSessions().countDocuments({ started_at: inDay, ...sessionMatch }),
+    mongoColl.users().countDocuments({ created_at: inDay, ...userMatch }),
+    mongoColl.worldInstances().find({ created_at: inDay, ...playerMatch }, { projection: { player_id: 1 } }).toArray(),
     mongoColl.events()
-      .find({ created_at: inDay, type: { $in: STORY_TURN_TYPES } }, { projection: { player_id: 1 } })
+      .find({ created_at: inDay, type: { $in: STORY_TURN_TYPES }, ...playerMatch }, { projection: { player_id: 1 } })
       .toArray(),
   ])
 
@@ -253,8 +273,15 @@ async function computeDay(day: string): Promise<AppDailyDoc> {
 
   const errorPlayers = new Set<string>()
   const byClass: Record<string, number> = {}
+  // Counts stay whole — a reviewer's crash is a crash — but the player figure
+  // is a player number and leaves the flagged accounts out.
+  const reviewerKeys = new Set([
+    ...userIds.map((id) => `u:${id.toHexString()}`),
+    ...installIds.map((id) => `i:${id}`),
+  ])
   for (const row of errorRows) {
-    errorPlayers.add(playerKey(row))
+    const key = playerKey(row)
+    if (!reviewerKeys.has(key)) errorPlayers.add(key)
     byClass[row.class] = (byClass[row.class] ?? 0) + 1
   }
 
@@ -286,7 +313,7 @@ async function computeDay(day: string): Promise<AppDailyDoc> {
   // why the job re-rolls the two days behind as well as today.
   let returnedD1 = 0
   if (end.getTime() < Date.now()) {
-    const signupRows = await mongoColl.users().find({ created_at: inDay }, { projection: { _id: 1 } }).toArray()
+    const signupRows = await mongoColl.users().find({ created_at: inDay, ...userMatch }, { projection: { _id: 1 } }).toArray()
     const ids = signupRows.map((row) => row._id)
     if (ids.length > 0) {
       const nextDay = { $gte: end, $lt: new Date(end.getTime() + DAY_MS) }

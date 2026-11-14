@@ -1,6 +1,7 @@
 import { mongoColl } from '../config/mongo'
 import { STORY_TURN_TYPES } from './admin-activity'
 import { traceStore } from './llm-trace.service'
+import { reviewerAccounts } from './reviewer-accounts'
 
 const DAY_MS = 86_400_000
 
@@ -63,12 +64,19 @@ export const adminOverviewSummaryService = {
     // now", not a whole yesterday, so a running day never looks like a drop.
     const yesterdaySameTime = new Date(now.getTime() - DAY_MS)
 
+    // Headline numbers: review accounts are not players and are left out. The
+    // event filters take their ids, and only when there are any.
+    const { userIds } = await reviewerAccounts.scope()
     const turnFilter = { type: { $in: STORY_TURN_TYPES } }
+    const playerMatch = userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
     const [livePlayers, turnsToday, turnsYesterday, spend] = await Promise.all([
       // One document per player, so counting documents counts distinct players.
-      mongoColl.users().countDocuments({ last_active_at: { $gte: new Date(now.getTime() - LIVE_WINDOW_MS) } }),
-      mongoColl.events().countDocuments({ ...turnFilter, created_at: { $gte: todayStart, $lte: now } }),
-      mongoColl.events().countDocuments({ ...turnFilter, created_at: { $gte: yesterdayStart, $lte: yesterdaySameTime } }),
+      mongoColl.users().countDocuments({
+        last_active_at: { $gte: new Date(now.getTime() - LIVE_WINDOW_MS) },
+        reviewer: { $ne: true as const },
+      }),
+      mongoColl.events().countDocuments({ ...turnFilter, ...playerMatch, created_at: { $gte: todayStart, $lte: now } }),
+      mongoColl.events().countDocuments({ ...turnFilter, ...playerMatch, created_at: { $gte: yesterdayStart, $lte: yesterdaySameTime } }),
       readSpend(todayStart, now),
     ])
 

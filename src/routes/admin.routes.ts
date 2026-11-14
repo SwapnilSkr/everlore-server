@@ -76,7 +76,12 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
   .get('/overview', () => adminController.overview())
 
   .get('/users', (ctx) => adminController.listUsers(ctx), {
-    query: t.Composite([SearchPageQuery, t.Object({ sort: t.Optional(t.String()), since: t.Optional(t.String()) })]),
+    query: t.Composite([SearchPageQuery, t.Object({
+      sort: t.Optional(t.String()),
+      since: t.Optional(t.String()),
+      // Validated in the service: a bad value is a 400 sentence, not a schema report.
+      reviewers: t.Optional(t.String()),
+    })]),
   })
   .get('/users/:userId', (ctx) => adminController.getUser(ctx))
   .patch('/users/:userId', (ctx) => adminController.patchUser(ctx), { body: AdminPatchBody })

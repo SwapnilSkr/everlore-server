@@ -103,6 +103,16 @@ export interface UserDoc {
   /** Individual worlds hidden by this player, without blocking the creator. */
   blocked_template_ids?: ObjectId[]
   group_notification_usage?: { day: string; sent: number; calls: number }
+  /**
+   * Google Play's review and pre-launch test accounts. They keep every feature
+   * but are not players, so the console's player numbers leave them out unless
+   * an operator asks for them. Absent means a normal player — never `false`.
+   *
+   * The flag is sticky: nothing in the codebase removes it.
+   */
+  reviewer?: true
+  reviewer_reason?: 'review_phone' | 'number_name'
+  reviewer_at?: Date
   last_active_at?: Date
   created_at: Date
   updated_at: Date

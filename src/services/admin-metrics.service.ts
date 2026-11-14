@@ -3,6 +3,7 @@ import { HttpError } from '../utils/http-error'
 import { STORY_TURN_TYPES } from './admin-activity'
 import { onboardingFacets, type OnboardingFacets } from './admin-onboarding'
 import { readPlayInstalls } from './play-installs.service'
+import { reviewerAccounts } from './reviewer-accounts'
 
 const DAY_MS = 86400_000
 export function metricsDays(value?: string): number {
@@ -32,24 +33,29 @@ export const adminMetricsService = {
     const now = new Date()
     const series = utcDaySeries(days, now)
     const since = new Date(series[0].date)
-    const storyMatch = { type: { $in: STORY_TURN_TYPES } }
+    // Review accounts are not players: out of every headline figure. Only added
+    // when there are any, so a normal deployment's queries are unchanged.
+    const { userIds } = await reviewerAccounts.scope()
+    const reviewerMatch = { reviewer: { $ne: true as const } }
+    const playerMatch = userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
+    const storyMatch = { type: { $in: STORY_TURN_TYPES }, ...playerMatch }
     const [users, saves, storyTotals, userWindow, newSaves, storyDaily, active, installs] = await Promise.all([
-      mongoColl.users().countDocuments({}, { hint: '_id_' }),
-      mongoColl.worldInstances().countDocuments({}, { hint: '_id_' }),
+      mongoColl.users().countDocuments(reviewerMatch, { hint: '_id_' }),
+      mongoColl.worldInstances().countDocuments(playerMatch, { hint: '_id_' }),
       mongoColl.events().aggregate<{ _id: null; players: number; turns: number }>([
         { $match: storyMatch },
         { $group: { _id: '$player_id', turns: { $sum: 1 } } },
         { $group: { _id: null, players: { $sum: 1 }, turns: { $sum: '$turns' } } },
       ], { hint: 'idx_events_type_created_player' }).toArray(),
       mongoColl.users().aggregate<OnboardingFacets & { signups: DayCount[] }>([
-        { $match: { created_at: { $gte: since, $lte: now } } },
+        { $match: { created_at: { $gte: since, $lte: now }, ...reviewerMatch } },
         { $facet: {
           signups: [{ $group: { _id: dayExpression, count: { $sum: 1 } } }],
           ...onboardingFacets(),
         } },
       ], { hint: 'idx_users_created' }).toArray(),
       mongoColl.worldInstances().aggregate<DayCount>([
-        { $match: { created_at: { $gte: since, $lte: now } } },
+        { $match: { created_at: { $gte: since, $lte: now }, ...playerMatch } },
         { $group: { _id: dayExpression, count: { $sum: 1 } } },
       ], { hint: 'idx_world_instances_created' }).toArray(),
       mongoColl.events().aggregate<{ _id: string; players: number; turns: number }>([

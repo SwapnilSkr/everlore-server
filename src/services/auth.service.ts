@@ -1,4 +1,5 @@
 import * as argon2 from 'argon2'
+import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
 import type { UserAccountStatus, UserDoc, UserInsertDoc, UserTier } from '../models/user.model'
 import { HttpError } from '../utils/http-error'
@@ -6,6 +7,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { phoneVerifyError, sendPhoneOtp, verifyPhoneOtp } from '../providers/auth.provider'
 import { verifyFirebaseIdToken } from '../providers/firebase-auth.provider'
 import { canForge } from '../utils/can-forge'
+import { reviewerReason } from './reviewer-accounts'
 import { guestService, usernameFromSeed } from './guest.service'
 
 /** Ceiling on stored guide arcs; the app declares roughly a dozen. */
@@ -155,7 +157,7 @@ export const authService = {
     if (!userDoc) {
       try {
         const claimed = await guestService.claim(guestId, identity, provider, seed)
-        if (claimed) return { userDoc: claimed, newAccount: true }
+        if (claimed) return { userDoc: await this.flagReviewPhone(claimed, identity.phone), newAccount: true }
         // A fenced transfer must finish at its original destination.
         const guest = await guestService.eligible(guestId)
         if (guest?.guest_merge_target) throw new HttpError(409, 'Your story is being saved. Please try again.', { code: 'guest_transfer_pending' })
@@ -181,7 +183,22 @@ export const authService = {
     }
     const guest = await guestService.eligible(guestId)
     userDoc = await guestService.merge(guestId, userDoc)
+    // The reviewer's own phone number is a review account, new or existing. It
+    // keeps every feature; the console just stops counting it as a player.
+    userDoc = await this.flagReviewPhone(userDoc, identity.phone)
     return { userDoc, newAccount: newAccount || !!guest }
+  },
+
+  /** Sticky: the flag is only ever added, and the first `reviewer_at` is kept. */
+  async flagReviewPhone(user: UserDoc, phone?: string): Promise<UserDoc> {
+    if (!phone || reviewerReason({ phone }, env.REVIEW_DEMO_PHONE) !== 'review_phone') return user
+    if (user.reviewer === true) return user
+    const reviewer_at = new Date()
+    await users().updateOne(
+      { _id: user._id, reviewer: { $ne: true } },
+      { $set: { reviewer: true, reviewer_reason: 'review_phone', reviewer_at } },
+    )
+    return { ...user, reviewer: true, reviewer_reason: 'review_phone', reviewer_at }
   },
 
   async getUserById(userId: string): Promise<UserDoc> {
@@ -238,6 +255,17 @@ export const authService = {
       updateFields[`preferences.${key}`] = value
     }
     updateFields.updated_at = new Date()
+
+    // A reviewer types the number from the review instructions into the name
+    // field. The same write stamps the account, so no window exists where the
+    // name is stored and the account is still counted as a player. Never
+    // overwritten once set: the first reason and date are kept.
+    if (typeof body.player_name === 'string' && reviewerReason({ player_name: body.player_name }) === 'number_name'
+      && user.reviewer !== true) {
+      updateFields.reviewer = true
+      updateFields.reviewer_reason = 'number_name'
+      updateFields.reviewer_at = new Date()
+    }
 
     await users().updateOne({ _id: parseObjectId(userId) }, { $set: updateFields })
   },

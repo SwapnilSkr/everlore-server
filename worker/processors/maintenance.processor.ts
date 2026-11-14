@@ -12,6 +12,7 @@ import { log } from '../../src/utils/logger'
 import { dispatchPostProcessOutbox } from '../../src/services/post-process-outbox.service'
 import { webTrafficRollupService } from '../../src/services/web-traffic-rollup.service'
 import { appDailyRollupService } from '../../src/services/telemetry/rollup.service'
+import { reviewerAccounts } from '../../src/services/reviewer-accounts'
 import { triageService } from '../../src/services/telemetry/triage.service'
 import { characterProjectionProcessor } from './character-projection.processor'
 import { CHARACTER_PROJECTION_CLAIM_LEASE_MS } from '../lib/character-projection-lease'
@@ -100,10 +101,22 @@ export async function maintenanceProcessor(job: Job) {
     // error samples); the daily row is what keeps the funnel, screen times and
     // error counts after that.
     case 'rollup_app_daily': {
+      // Flag any review account a write path missed before folding the day, so
+      // the row written below leaves it out. A failed sweep must not cost the
+      // day's rollup: it is logged and the rollup runs anyway.
+      let flagged = 0
+      try {
+        flagged = await reviewerAccounts.sweep()
+        if (flagged > 0) log.info('maintenance.reviewer_accounts_flagged', { flagged })
+      } catch (error) {
+        log.error('maintenance.reviewer_accounts_sweep_failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
       const rolled = await appDailyRollupService.rollupRecent(3)
       const backfilled = await appDailyRollupService.backfillMissing()
       log.info('maintenance.app_daily_rolled', { days: rolled.length, backfilled })
-      return { rolled, backfilled }
+      return { rolled, backfilled, flagged }
     }
 
     // §4.7: one cheap model call per new error group, capped. The job id is the

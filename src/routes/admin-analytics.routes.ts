@@ -28,6 +28,8 @@ const SessionQuery = t.Object({
   version: t.Optional(t.String()),
   limit: t.Optional(t.String()),
   before: t.Optional(t.String()),
+  /** exclude | include | only, validated in the service so a bad value is a 400 sentence. */
+  reviewers: t.Optional(t.String()),
 })
 
 const ErrorsQuery = t.Object({
@@ -52,8 +54,9 @@ const ErrorPatchBody = t.Object({
 })
 
 export const adminAnalyticsRoutes = new Elysia({ prefix: '/analytics' })
-  .get('/funnel', (ctx: { query: { days?: string } }) => analyticsService.funnel(ctx.query.days), {
-    query: t.Object({ days: t.Optional(t.String()) }),
+  .get('/funnel', (ctx: { query: { days?: string; reviewers?: string } }) =>
+    analyticsService.funnel(ctx.query.days, ctx.query.reviewers), {
+    query: t.Object({ days: t.Optional(t.String()), reviewers: t.Optional(t.String()) }),
   })
 
   .get('/sessions', (ctx: { query: {
@@ -64,6 +67,7 @@ export const adminAnalyticsRoutes = new Elysia({ prefix: '/analytics' })
     version?: string
     limit?: string
     before?: string
+    reviewers?: string
   } }) => analyticsService.sessions(ctx.query), { query: SessionQuery })
 
   .get('/sessions/:sessionId', (ctx: { params: { sessionId: string } }) =>

@@ -152,6 +152,10 @@ export const EVERLORE_INDEXES: EverloreIndexDef[] = [
     options: { name: 'idx_users_last_active' } },
   { collection: COLLECTIONS.users, key: { created_at: -1 },
     options: { name: 'idx_users_created' } },
+  // Review accounts are read as a set by every headline number. Sparse: only
+  // the flagged rows are indexed, and an unflagged row has no key at all.
+  { collection: COLLECTIONS.users, key: { reviewer: 1 },
+    options: { name: 'idx_users_reviewer', partialFilterExpression: { reviewer: true } } },
   { collection: COLLECTIONS.world_instances, key: { created_at: -1 },
     options: { name: 'idx_world_instances_created' } },
 

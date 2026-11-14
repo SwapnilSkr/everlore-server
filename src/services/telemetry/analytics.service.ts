@@ -5,6 +5,7 @@ import { HttpError } from '../../utils/http-error'
 import { log } from '../../utils/logger'
 import { STORY_TURN_TYPES } from '../admin-activity'
 import { readPlayInstalls } from '../play-installs.service'
+import { reviewerAccounts, reviewersParam, type ReviewerScope } from '../reviewer-accounts'
 import { categoryForClass } from './classify'
 import { compareVersions, versionEntries } from './groups.service'
 import {
@@ -292,20 +293,34 @@ type FunnelCohort = {
   unsignedInstalls: string[]
 }
 
-async function funnelCohort(days: number, now: Date): Promise<FunnelCohort> {
+async function funnelCohort(days: number, now: Date, scope: ReviewerScope | null = null): Promise<FunnelCohort> {
   const range = dayRange(days, now)
   const from = new Date(`${range[0]}T00:00:00Z`)
   const window = { $gte: from, $lte: now }
-
-  const [userRows, mergeRows, firstOpens, unsignedInstalls] = await Promise.all([
-    mongoColl.users().find({ $or: [
+  // A review account's start, and any merge into or out of one, is not a player
+  // starting; their installs are not first opens either.
+  const userIds = scope?.userIds ?? []
+  const installIds = scope?.installIds ?? []
+  const notReviewer = userIds.length > 0 ? { $nin: userIds } : null
+  const notReviewerInstall = installIds.length > 0 ? { _id: { $nin: installIds } } : {}
+  const startRow = {
+    $or: [
       { guest_started_at: window },
       { guest_started_at: { $exists: false }, created_at: window },
-    ] }, { projection: { _id: 1, created_at: 1, guest: 1, guest_started_at: 1, signed_up_at: 1 } }).toArray(),
-    mongoColl.guestMerges().find({ guest_started_at: window }).toArray(),
-    mongoColl.appInstalls().countDocuments({ first_seen: window }),
+    ],
+    ...(notReviewer ? { _id: notReviewer } : {}),
+  }
+  const mergeRow = {
+    guest_started_at: window,
+    ...(notReviewer ? { guest_id: notReviewer, target_id: notReviewer } : {}),
+  }
+
+  const [userRows, mergeRows, firstOpens, unsignedInstalls] = await Promise.all([
+    mongoColl.users().find(startRow, { projection: { _id: 1, created_at: 1, guest: 1, guest_started_at: 1, signed_up_at: 1 } }).toArray(),
+    mongoColl.guestMerges().find(mergeRow).toArray(),
+    mongoColl.appInstalls().countDocuments({ first_seen: window, ...notReviewerInstall }),
     mongoColl.appInstalls()
-      .find({ first_seen: window, user_ids: { $exists: false } }, { projection: { _id: 1 } })
+      .find({ first_seen: window, user_ids: { $exists: false }, ...notReviewerInstall }, { projection: { _id: 1 } })
       .toArray(),
   ])
 
@@ -432,11 +447,15 @@ export const analyticsService = {
    * counted from `users`, `world_instances` and story events, so a lost event or
    * an opt-out can never make the funnel lie about turns (§2.2).
    */
-  async funnel(daysValue?: string) {
+  async funnel(daysValue?: string, reviewersValue?: string) {
     const days = daysParam(daysValue)
+    const mode = reviewersParam(reviewersValue)
     const now = new Date()
     const range = dayRange(days, now)
-    const [installs, cohort] = await Promise.all([readPlayInstalls(), funnelCohort(days, now)])
+    // Headline funnel: review accounts and their installs are left out by
+    // default. `include` reads the cohort whole; `only` is not a funnel question.
+    const scope = mode === 'include' ? null : await reviewerAccounts.scope()
+    const [installs, cohort] = await Promise.all([readPlayInstalls(), funnelCohort(days, now, scope)])
 
     const sessionSample = (userIds: Iterable<string>) => {
       const ids = [...userIds].map((id) => cohort.playerIds.get(id)!)
@@ -514,11 +533,17 @@ export const analyticsService = {
     version?: string
     limit?: string
     before?: string
+    reviewers?: string
   }) {
     const limit = limitParam(query.limit)
     const dropStep = dropStepParam(query.dropped_at)
     // `days` only sizes the drop-off cohort, but a bad value is refused either way.
     const days = daysParam(query.days)
+    const mode = reviewersParam(query.reviewers)
+    // Read the scope even for `include`: it is what marks a row, and it is only
+    // applied as a filter when the console asked for reviewers to be left out.
+    const scope = await reviewerAccounts.scope()
+    const filterScope = mode === 'include' ? null : scope
 
     const conditions: Array<Record<string, unknown>> = []
     if (query.user_id) conditions.push({ user_id: objectIdParam(query.user_id, 'user_id') })
@@ -526,10 +551,27 @@ export const analyticsService = {
     if (query.version) conditions.push({ app_version: query.version })
     if (query.before) conditions.push({ started_at: { $lt: dateParam(query.before, 'before') } })
 
+    if (filterScope) {
+      const { userIds, installIds } = filterScope
+      if (mode === 'only') {
+        // A reviewer session is either their account's or their install's.
+        const anyScope = [
+          ...(userIds.length > 0 ? [{ user_id: { $in: userIds } }] : []),
+          ...(installIds.length > 0 ? [{ install_id: { $in: installIds } }] : []),
+        ]
+        // Nothing flagged means nothing to show, and an empty `$or` is invalid.
+        if (anyScope.length === 0) return { items: [], next_before: null }
+        conditions.push({ $or: anyScope })
+      } else {
+        if (userIds.length > 0) conditions.push({ user_id: { $nin: userIds } })
+        if (installIds.length > 0) conditions.push({ install_id: { $nin: installIds } })
+      }
+    }
+
     if (dropStep) {
-      const scope = dropFilter(await funnelCohort(days, new Date()), dropStep)
-      if (!scope) return { items: [], next_before: null }
-      conditions.push(scope)
+      const drop = dropFilter(await funnelCohort(days, new Date(), filterScope), dropStep)
+      if (!drop) return { items: [], next_before: null }
+      conditions.push(drop)
     }
 
     const rows = await mongoColl.appSessions()
@@ -541,11 +583,23 @@ export const analyticsService = {
     const usernames = await usernamesById(
       rows.map((row) => row.user_id).filter((id): id is ObjectId => Boolean(id)),
     )
-    const items = rows.map((row) => this.sessionItem(row, usernames))
+    const reviewerIds = new Set((scope?.userIds ?? []).map((id) => id.toHexString()))
+    const reviewerInstalls = new Set(scope?.installIds ?? [])
+    const items = rows.map((row) => this.sessionItem(row, usernames, this.isReviewerSession(row, reviewerIds, reviewerInstalls)))
     return {
       items,
       next_before: items.length > 0 ? items[items.length - 1].started_at : null,
     }
+  },
+
+  /** The reviewer mark a session item carries when its account or install is in scope. */
+  isReviewerSession(
+    row: { install_id?: string; user_id?: ObjectId },
+    userIds: Set<string>,
+    installIds: Set<string>,
+  ): boolean {
+    if (row.user_id && userIds.has(row.user_id.toHexString())) return true
+    return !!row.install_id && installIds.has(row.install_id)
   },
 
   sessionItem(
@@ -562,6 +616,7 @@ export const analyticsService = {
       counts?: { actions?: number; errors?: number }
     },
     usernames: Map<string, string>,
+    reviewer = false,
   ) {
     return {
       id: row._id,
@@ -578,6 +633,9 @@ export const analyticsService = {
       path: (row.screen_path ?? []).map((step) => ({ screen: step.screen, duration_ms: step.duration_ms })),
       actions: row.counts?.actions ?? 0,
       errors: row.counts?.errors ?? 0,
+      // Present only on a session whose account or install is flagged, so the
+      // console can say why it is shown when an operator asks for reviewers.
+      ...(reviewer ? { reviewer: true as const } : {}),
     }
   },
 

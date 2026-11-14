@@ -79,7 +79,7 @@ export interface ReviewAccessConfig {
 }
 
 /** Digits only, with a single leading `+`, so `+1 202-555-0142` == `+12025550142`. */
-function normalizePhone(phone: string): string {
+export function normalizePhone(phone: string): string {
   const digits = phone.replace(/\D/g, '')
   return digits ? `+${digits}` : ''
 }

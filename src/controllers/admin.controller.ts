@@ -11,6 +11,7 @@ import {
   saveBillingConfig,
 } from '../services/billing-config.service'
 import { moderationService } from '../services/moderation.service'
+import { reviewersParam } from '../services/reviewer-accounts'
 import type { ReportAction, ReportReason, ReportStatus, ReportTargetType } from '../models/content-report.model'
 
 function boolQuery(value: unknown): boolean | undefined {
@@ -103,8 +104,21 @@ export const adminController = {
     adminUser: string
   }) => adminService.reviewWorld(params.worldId, 'changes_requested', adminUser, body.note),
 
-  listUsers: async ({ query }: { query: { page?: number; limit?: number; search?: string; sort?: string; since?: string } }) =>
-    adminService.listUsers({ ...pageQuery(query), search: query.search, sort: query.sort, since: query.since }),
+  listUsers: async ({ query }: { query: {
+    page?: number
+    limit?: number
+    search?: string
+    sort?: string
+    since?: string
+    reviewers?: string
+  } }) =>
+    adminService.listUsers({
+      ...pageQuery(query),
+      search: query.search,
+      sort: query.sort,
+      since: query.since,
+      reviewers: reviewersParam(query.reviewers),
+    }),
 
   getUser: async ({ params }: { params: { userId: string } }) => adminService.getUser(params.userId),
 
