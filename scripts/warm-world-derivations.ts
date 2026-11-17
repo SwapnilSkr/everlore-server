@@ -20,7 +20,7 @@
  * $0.60 / 1M output tokens) against conservative per-call token estimates.
  */
 import { MongoClient } from 'mongodb'
-import { cachedDerivation, derivationKey } from '../src/services/world-derivations.service'
+import { derivationKey } from '../src/services/world-derivations.service'
 import { calendarPremiseOf, deriveCalendarFromPremise } from '../src/services/time.service'
 import { deriveOpeningPlace } from '../src/services/opening-place.service'
 import { isWorldListed } from '../src/utils/world-review'
@@ -112,6 +112,21 @@ async function main() {
       return
     }
 
+    // Stored through this script's own connection: the server's `mongoColl`
+    // is never connected here, so `cachedDerivation` would pay for each call
+    // and then fail to keep it. Same document shape and rule (only an answer
+    // the model actually gave is kept) as world-derivations.service.
+    async function store(kind: 'calendar' | 'opening_place', input: string, value: unknown, cacheable: boolean): Promise<boolean> {
+      if (!cacheable) return false
+      const key = derivationKey(kind, input)
+      await derivations.updateOne(
+        { _id: key as never },
+        { $setOnInsert: { _id: key, kind, value, created_at: new Date() } },
+        { upsert: true },
+      )
+      return true
+    }
+
     // Each world makes at most two calls; the cap is a hard ceiling on calls.
     let spent = 0
     let warmed = 0
@@ -127,25 +142,22 @@ async function main() {
           // is free and costs no budget, which a re-run relies on.
           if (!(await derivations.findOne({ _id: derivationKey('calendar', input) }, { projection: { _id: 1 } }))) {
             spent++
-            await cachedDerivation('calendar', input, async () => {
-              const { spec, cacheable } = await deriveCalendarFromPremise(input)
-              return { value: spec, cacheable }
-            })
-            warmed++
+            const { spec, cacheable } = await deriveCalendarFromPremise(input)
+            if (await store('calendar', input, spec, cacheable)) warmed++
           }
         }
         if (plan.openingInput && spent < options.maxCalls) {
           const input = plan.openingInput
           if (!(await derivations.findOne({ _id: derivationKey('opening_place', input) }, { projection: { _id: 1 } }))) {
             spent++
-            await cachedDerivation('opening_place', input, () => deriveOpeningPlace(input))
-            warmed++
+            const { value, cacheable } = await deriveOpeningPlace(input)
+            if (await store('opening_place', input, value, cacheable)) warmed++
           }
         }
       }
     }
     await Promise.all(Array.from({ length: CONCURRENCY }, worker))
-    console.log(`Warmed ${warmed} derivation${warmed === 1 ? '' : 's'} in ${spent} model call${spent === 1 ? '' : 's'}.`)
+    console.log(`Warmed ${warmed} derivation${warmed === 1 ? '' : 's'} in ${spent} model call${spent === 1 ? '' : 's'} (the rest were failed or unusable answers, retried next run).`)
   } finally {
     await client.close()
   }
