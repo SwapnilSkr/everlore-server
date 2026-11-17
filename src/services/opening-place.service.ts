@@ -30,6 +30,7 @@ import { callLLM, AI_MODELS } from '../ai'
 import { isSafeWitnessLocationCandidate } from '../../worker/lib/movement-signal'
 import { normalizeEntityName } from './entity-graph.service'
 import { log } from '../utils/logger'
+import { cachedDerivation } from './world-derivations.service'
 
 const SCHEMA = {
   type: 'object',
@@ -39,6 +40,16 @@ const SCHEMA = {
   },
   required: ['place'],
 }
+
+/**
+ * Bumped only when the prompt below changes. The cache key carries it, so a
+ * changed prompt stops reading the old answers instead of needing a migration.
+ * Kept honest by the paired entry in world-derivations.service.ts.
+ */
+export const OPENING_PLACE_PROMPT_VERSION = 1
+
+const OPENING_PLACE_PROMPT =
+  'You are given the opening line of a story. Return the name of the PLACE the viewpoint character is in, copied exactly as it appears in the line. Return null if the line names no place, if it only mentions a place someone is going to or talking about, or if the only candidate is a piece of furniture or a part of a room rather than the room itself.'
 
 /**
  * Take the payload out of a response that echoed the SCHEMA back instead —
@@ -131,6 +142,11 @@ export function verifyOpeningPlace(
  *
  * Any failure returns null and the world opens exactly as it does today. This
  * can improve the first anchor; it can never make it worse.
+ *
+ * The answer depends only on the opening line, never on the player, so every
+ * save of a world shares one answer through the derivation cache. An accepted
+ * place AND a verified refusal are both decisions and are kept; a thrown error
+ * is not, so the next save retries.
  */
 export async function extractOpeningPlace(params: {
   openingLine: string
@@ -138,6 +154,15 @@ export async function extractOpeningPlace(params: {
 }): Promise<OpeningPlace | null> {
   const opening = String(params.openingLine || '').trim()
   if (!opening) return null
+  return cachedDerivation('opening_place', opening, () => deriveOpeningPlace(opening, params.instanceId))
+}
+
+/** The uncached half: one model call, its verdict and log line, never throws.
+ *  Exported for the warm script, which fills the cache before players arrive. */
+export async function deriveOpeningPlace(
+  opening: string,
+  instanceId?: string,
+): Promise<{ value: OpeningPlace | null; cacheable: boolean }> {
   try {
     const raw = await callLLM({
       model: AI_MODELS.metadata,
@@ -146,25 +171,23 @@ export async function extractOpeningPlace(params: {
       maxTokens: 60,
       responseSchema: SCHEMA,
       messages: [
-        {
-          role: 'system',
-          content:
-            'You are given the opening line of a story. Return the name of the PLACE the viewpoint character is in, copied exactly as it appears in the line. Return null if the line names no place, if it only mentions a place someone is going to or talking about, or if the only candidate is a piece of furniture or a part of a room rather than the room itself.',
-        },
+        { role: 'system', content: OPENING_PLACE_PROMPT },
         { role: 'user', content: opening },
       ],
     })
     const parsed = unwrapSchemaEcho(JSON.parse(raw))
     const verdict = verifyOpeningPlace(String(parsed.place ?? ''), opening)
     log.info(verdict.place ? 'opening_place.accepted' : 'opening_place.refused', {
-      instanceId: params.instanceId,
+      instanceId,
       name: String(parsed.place ?? '') || null,
       reason: verdict.reason,
     })
-    return verdict.place
+    // The model answered and the answer parsed: an accepted place and a
+    // deliberate refusal are both final for this text.
+    return { value: verdict.place, cacheable: true }
   } catch (err) {
     // A world must open whether or not this works.
-    log.info('opening_place.failed', { instanceId: params.instanceId, error: (err as Error).message })
-    return null
+    log.info('opening_place.failed', { instanceId, error: (err as Error).message })
+    return { value: null, cacheable: false }
   }
 }

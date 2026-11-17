@@ -102,6 +102,15 @@ export const instanceService = {
     }
 
     const _id = new ObjectId()
+    // The opening place reads only the authored opening line, so it can be
+    // derived while the calendar derivation (inside initialAnchor) is still
+    // running: on a cold cache the two model calls overlap instead of queueing.
+    // It never throws, so starting it here cannot leave an unhandled rejection;
+    // the result is awaited below where the opening event needs it.
+    const openingLine = template.kind !== 'group' && template.opening_line?.trim() ? template.opening_line.trim() : null
+    const openingPlacePromise = openingLine
+      ? extractOpeningPlace({ openingLine, instanceId: idString(_id) })
+      : null
     const initialTimeAnchor = await timeService.initialAnchor({
       instanceId: idString(_id),
       templateId: template.kind === 'group' ? undefined : templateId,
@@ -211,7 +220,8 @@ export const instanceService = {
       // The authored opening says where the player is standing. Read it, so the
       // FIRST generated turn arbitrates against a real cursor instead of taking
       // the loose first-anchor branch and adopting whatever the witness names.
-      // See opening-place.service for the live case this fixes.
+      // See opening-place.service for the live case this fixes. The read was
+      // started above, alongside the calendar.
       const [openingTimeAnchor, openingPlace] = await Promise.all([
         timeService.anchorForNextEvent({
           instanceId: idString(_id),
@@ -220,7 +230,7 @@ export const instanceService = {
           sequence: 1,
           eventTimeLabel: 'Opening scene',
         }),
-        extractOpeningPlace({ openingLine: greeting, instanceId: idString(_id) }),
+        openingPlacePromise ?? extractOpeningPlace({ openingLine: greeting, instanceId: idString(_id) }),
       ])
       await events().insertOne({
         _id: new ObjectId(),

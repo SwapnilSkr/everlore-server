@@ -34,6 +34,7 @@ import type {
 } from '../models/billing.model'
 import type { PostProcessOutboxDoc } from '../models/post-process-outbox.model'
 import type { ContentReportDoc } from '../models/content-report.model'
+import { WORLD_DERIVATIONS_COLLECTION } from '../models/world-derivation.model'
 
 let client: MongoClient | null = null
 let database: Db | null = null
@@ -69,6 +70,9 @@ export const mongoColl = {
   entityEdges: () => coll<WithoutId<EntityEdgeDoc>>(COLLECTIONS.entity_edges),
   storyCalendars: () => coll<WithoutId<StoryCalendarDoc>>(COLLECTIONS.story_calendars),
   timelineBranches: () => coll<WithoutId<TimelineBranchDoc>>(COLLECTIONS.timeline_branches),
+  /** Content-keyed cache of world-text-only model answers; read by `_id` only. */
+  worldDerivations: () =>
+    coll<import('../models/world-derivation.model').WorldDerivationDoc>(WORLD_DERIVATIONS_COLLECTION),
   personas: () => coll<WithoutId<PersonaDoc>>(COLLECTIONS.personas),
   deadLetterJobs: () => coll<WithoutId<DeadLetterJobDoc>>(COLLECTIONS.dead_letter_jobs),
   generationLogs: () => coll<WithoutId<GenerationLogDoc>>(COLLECTIONS.generation_logs),

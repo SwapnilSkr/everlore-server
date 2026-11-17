@@ -9,6 +9,7 @@ import type {
 } from '../models/time.model'
 import type { WorldEventDoc } from '../models/world-event.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { cachedDerivation } from './world-derivations.service'
 
 const DEFAULT_TIMELINE_ID = 'main'
 const DEFAULT_CALENDAR_NAME = 'Story Calendar'
@@ -52,6 +53,12 @@ interface CalendarSpec {
 // month names for a "modern" cyberpunk/noir world (observed: Neon Divide got
 // "Neonrise/Surveillance/Flicker"), so we never let it author the months for a
 // real-world setting — modern always gets the deterministic Gregorian calendar.
+/**
+ * Bumped only when the prompt below changes. The derivation cache key carries
+ * it, so a changed prompt stops reading answers derived from the old wording.
+ */
+export const CALENDAR_DERIVE_PROMPT_VERSION = 1
+
 const CALENDAR_DERIVE_PROMPT = `You classify the SETTING of an interactive-story world and, only for non-Earth worlds, design its calendar.
 
 First decide "setting":
@@ -98,25 +105,40 @@ function buildCalendarSpec(parsed: unknown): CalendarSpec | null {
 }
 
 /**
- * Derive a world-appropriate calendar from the template's premise via the cheap
- * model: a modern/realistic world gets the real Gregorian calendar; a fantasy/
- * alien/shadow realm gets a themed calendar generated to fit its tone. Returns
- * null on any failure or junk output so the caller falls back to Gregorian — the
- * seed must never break instance creation.
+ * The exact text sent to the model for a calendar: the world's own words, in a
+ * fixed order. It is also the cache key's input, so editing any of these fields
+ * derives a new answer on its own.
  */
-async function deriveCalendarSpec(template: {
+export function calendarPremiseOf(template: {
   title?: string
   description?: string
   seed_prompt?: string
   global_lore?: string
-}): Promise<CalendarSpec | null> {
+}): string {
+  return [template.title, template.description, template.seed_prompt, template.global_lore]
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, 1500)
+    .trim()
+}
+
+/**
+ * Derive a world-appropriate calendar from a premise via the cheap model: a
+ * modern/realistic world gets the real Gregorian calendar; a fantasy/alien/
+ * shadow realm gets a themed calendar generated to fit its tone.
+ *
+ * `cacheable` says whether the model actually decided: an explicit modern
+ * answer or a parsed fantasy calendar is worth keeping, while a failed call and
+ * an answer that reads as neither (no `setting`, or too few usable months) is
+ * `spec: null` and must be retried rather than pinned. The returned spec is
+ * unchanged from before for every input — a missing/unknown setting still falls
+ * back to Gregorian — only the distinction is new.
+ */
+export async function deriveCalendarFromPremise(
+  premise: string,
+): Promise<{ spec: CalendarSpec | null; cacheable: boolean }> {
+  if (!premise) return { spec: null, cacheable: false }
   try {
-    const premise = [template.title, template.description, template.seed_prompt, template.global_lore]
-      .filter(Boolean)
-      .join('\n')
-      .slice(0, 1500)
-      .trim()
-    if (!premise) return null
     const raw = await callLLM({
       purpose: 'calendar_derivation',
       model: AI_MODELS.metadata,
@@ -128,10 +150,19 @@ async function deriveCalendarSpec(template: {
         { role: 'user', content: `World premise:\n${premise}` },
       ],
     })
-    return buildCalendarSpec(JSON.parse(raw))
+    const parsed = JSON.parse(raw) as Record<string, unknown>
+    const spec = buildCalendarSpec(parsed)
+    // A deliberate modern answer is a decision; so is a fantasy answer that
+    // produced a usable themed calendar (buildCalendarSpec returns null for one
+    // with too few months). Anything else — junk, or a missing `setting` that
+    // merely fell back to Gregorian — is not a decision and is not cached.
+    const setting = String(parsed?.setting ?? '').toLowerCase()
+    const deliberateModern = setting === 'modern'
+    const deliberateFantasy = setting === 'fantasy' && spec !== null
+    return { spec, cacheable: deliberateModern || deliberateFantasy }
   } catch (err) {
     console.warn('Calendar derivation failed, using Gregorian:', (err as Error).message)
-    return null
+    return { spec: null, cacheable: false }
   }
 }
 
@@ -240,16 +271,26 @@ export const timeService = {
     // Derive a world-appropriate calendar from the template (modern/realistic →
     // Gregorian; fantasy/alien/shadow → a themed calendar generated to fit the
     // world's tone). One-time per instance — every later call hits the early
-    // return above, so this LLM cost never touches the turn hot path. Falls back
-    // to the real Gregorian calendar on any failure, NEVER the old generic
-    // fantasy default that mismatched modern worlds.
+    // return above, so this LLM cost never touches the turn hot path. The answer
+    // depends only on the world's text, so it is shared across every save of that
+    // world through the derivation cache. Falls back to the real Gregorian
+    // calendar on any failure, NEVER the old generic fantasy default that
+    // mismatched modern worlds.
     let spec: CalendarSpec | null = null
     if (templateId) {
       const template = (await mongoColl.worldTemplates().findOne(
         { _id: parseObjectId(templateId) },
         { projection: { title: 1, description: 1, seed_prompt: 1, global_lore: 1 } },
       )) as { title?: string; description?: string; seed_prompt?: string; global_lore?: string } | null
-      if (template) spec = await deriveCalendarSpec(template)
+      if (template) {
+        const premise = calendarPremiseOf(template)
+        if (premise) {
+          spec = await cachedDerivation('calendar', premise, async () => {
+            const { spec: derived, cacheable } = await deriveCalendarFromPremise(premise)
+            return { value: derived, cacheable }
+          })
+        }
+      }
     }
 
     const now = new Date()
@@ -303,7 +344,9 @@ export const timeService = {
         { _id: instance.template_id },
         { projection: { title: 1, description: 1, seed_prompt: 1, global_lore: 1 } },
       )) as { title?: string; description?: string; seed_prompt?: string; global_lore?: string } | null
-      if (template) spec = await deriveCalendarSpec(template)
+      // A deliberate fresh derivation: this path exists to REPAIR an existing
+      // save's calendar, so it must not read the cache it might be repairing.
+      if (template) spec = (await deriveCalendarFromPremise(calendarPremiseOf(template))).spec
     }
     // No template / failed derivation → the real Gregorian calendar (never leave
     // a modern world on the old fantasy default).
