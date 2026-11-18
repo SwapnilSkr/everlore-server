@@ -20,6 +20,8 @@ export interface PushPayload {
     | { type: 'film_ready'; instanceId: string; mediaId: string }
     /** A new release the owner announced; a tap runs the update check. */
     | { type: 'app_update'; build: string }
+    /** A published "what's new" note; a tap opens that note. */
+    | { type: 'whats_new'; build: string }
 }
 
 export function directNotification(title: string, name: string, instanceId: string, characterId: string): DirectNotification {
@@ -50,6 +52,22 @@ export function appUpdateNotification(firstNote: string | undefined, build: numb
       body: firstNote?.trim() || 'New stories and fixes are waiting',
     },
     data: { type: 'app_update', build: String(build) },
+  }
+}
+
+/**
+ * A published "what's new" note (`everlore-docs/phases/update-nudge.md`, part 2
+ * section B).
+ *
+ * The words are the owner's title and intro, exactly as the in-app row carries
+ * them, so the notification and the row the player later finds in the bell say
+ * the same thing. `build` is a string because FCM's `data` values must be; a
+ * tap opens `/whats-new/<build>`.
+ */
+export function whatsNewNotification(note: { title: string; intro?: string }, build: number): PushPayload {
+  return {
+    notification: { title: note.title, body: note.intro?.trim() || 'See what changed in Everlore' },
+    data: { type: 'whats_new', build: String(build) },
   }
 }
 

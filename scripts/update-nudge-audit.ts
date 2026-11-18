@@ -152,7 +152,7 @@ async function runAudit(): Promise<void> {
     const { adminReleaseRoutes } = await import('../src/routes/admin-release.routes')
     const { appReleaseRoutes } = await import('../src/routes/app-release.routes')
     const { resetReviewerScopeCache } = await import('../src/services/reviewer-accounts')
-    const { invalidateAppRelease, sendHeldAppUpdate } = await import('../src/services/app-release.service')
+    const { invalidateAppRelease, sendDueRounds, sendHeldAppUpdate } = await import('../src/services/app-release.service')
 
     const errorHandler = ({ error, set }: { error: unknown; set: { status?: number | string } }) => {
       if (error instanceof HttpError) {
@@ -338,10 +338,14 @@ async function runAudit(): Promise<void> {
       const saved = await adminSend('PUT', '/admin/app-release', good)
       assert.equal(saved.status, 200, JSON.stringify(saved.body))
       const stored = await c('app_release').findOne({ _id: 'android' }) as Doc
+      // Part 2 A adds `live_at` to the document; the rest is unchanged.
       assert.deepEqual(Object.keys(stored).sort(),
-        ['_id', 'announced', 'latest_build', 'latest_version', 'min_build', 'notes', 'updated_at'].sort(),
+        ['_id', 'announced', 'latest_build', 'latest_version', 'live_at', 'min_build', 'notes', 'updated_at'].sort(),
         'the stored document has exactly the contract fields')
       assert.deepEqual(stored.notes, ['The map remembers where you were.'], 'notes are trimmed')
+      assert.ok(stored.live_at instanceof Date, 'a saved build records when it went live')
+      assert(Math.abs((stored.live_at as Date).getTime() - Date.now()) < 5_000, 'the save is the live moment')
+      assert.ok(!('auto_reminders' in stored), 'an unset switch is absent, never written null or false')
     })
 
     // ── 4. The confirm_block gate ────────────────────────────────────────────
@@ -581,7 +585,195 @@ async function runAudit(): Promise<void> {
       }
     })
 
-    // ── 11. The guard ────────────────────────────────────────────────────────
+    // ── 11. Part 2 A — the reminder rounds ───────────────────────────────────
+    const LIVE = new Date('2026-11-18T09:00:00.000Z')
+    const at = (offsetMs: number) => new Date(LIVE.getTime() + offsetMs)
+    const HOUR = 3_600_000
+
+    /** Run the hourly job with the clock at `when`, as the worker would. */
+    async function tick(when: Date) {
+      setSystemTime(when)
+      try {
+        return await sendDueRounds()
+      } finally {
+        setSystemTime()
+      }
+    }
+
+    await check('rounds fall due at +1h, +3d and +7d, and each is sent once', async () => {
+      await reset()
+      setSystemTime(LIVE)
+      await saveRelease()
+      const player = await behindPlayer(17)
+      setSystemTime()
+
+      // An hour is the owner's grace period to fix a typo: nothing before it.
+      assert.deepEqual((await tick(at(59 * 60_000))).sent, [], 'nothing an hour early')
+      assert.equal(pushes.length, 0)
+
+      const first = await tick(at(HOUR))
+      assert.deepEqual(first.sent.map((entry) => entry.round), [1], 'round 1 at +1 h')
+      assert.equal(pushes.length, 1)
+      assert.deepEqual(pushes[0].payload.data, { type: 'app_update', build: '18' })
+
+      // The same hour again, and the same round a moment later: nothing doubles.
+      assert.deepEqual((await tick(at(HOUR))).sent, [], 'the same round is never sent twice')
+      assert.deepEqual((await tick(at(HOUR + 60_000))).sent, [], 'nor a minute later')
+      assert.equal(pushes.length, 1)
+
+      assert.deepEqual((await tick(at(3 * DAY - 60_000))).sent, [], 'round 2 waits three days')
+      assert.deepEqual((await tick(at(3 * DAY))).sent.map((entry) => entry.round), [2], 'round 2 at +3 d')
+      assert.equal(pushes.length, 2)
+
+      assert.deepEqual((await tick(at(7 * DAY))).sent.map((entry) => entry.round), [3], 'round 3 at +7 d')
+      assert.equal(pushes.length, 3)
+      assert.deepEqual((await tick(at(30 * DAY))).sent, [], 'nothing after the last round')
+
+      const stored = await c('app_release').findOne({ _id: 'android' }) as Doc
+      assert.deepEqual(stored.announced.map((entry: Doc) => [entry.build, entry.round, entry.by]),
+        [[18, 1, 'automatic'], [18, 2, 'automatic'], [18, 3, 'automatic']], 'one row per round, and the job signed them')
+      for (const entry of stored.announced) {
+        assert.equal(entry.devices, 1, 'each round records the phone it reached')
+        assert(entry.at instanceof Date)
+      }
+      assert.equal(String(pushes.find((push) => push.device.player_id.equals(player)) !== undefined), 'true')
+    })
+
+    await check('an hourly catch-up after downtime sends every missed round once', async () => {
+      await reset()
+      setSystemTime(LIVE)
+      await saveRelease()
+      await behindPlayer(17)
+      setSystemTime()
+
+      // The worker was down for eight days. One run catches all three up.
+      const catchUp = await tick(at(8 * DAY))
+      assert.deepEqual(catchUp.sent.map((entry) => entry.round), [1, 2, 3], 'all three, in order')
+      assert.equal(pushes.length, 3)
+
+      // And a second run straight after sends nothing: a catch-up is never twice.
+      assert.deepEqual((await tick(at(8 * DAY + 60_000))).sent, [], 'the next hour is quiet')
+      assert.deepEqual((await tick(at(9 * DAY))).sent, [])
+      assert.equal(pushes.length, 3, 'still three phones, not six')
+    })
+
+    await check('a build replaced by a newer one gets no more rounds', async () => {
+      await reset()
+      setSystemTime(LIVE)
+      await saveRelease()
+      await behindPlayer(17)
+      setSystemTime()
+
+      // 18's round 1 goes out, then 19 replaces it before round 2 is due.
+      assert.deepEqual((await tick(at(HOUR))).sent.map((entry) => entry.round), [1], "18's round 1")
+      setSystemTime(at(2 * HOUR))
+      try {
+        await saveRelease({ latest_build: 19, latest_version: '1.0.16' })
+      } finally {
+        setSystemTime()
+      }
+
+      // Eight days later, 18's rounds 2 and 3 are long overdue and must never
+      // send; 19's own three rounds catch up, each once. The `(build, round)`
+      // guard is what keeps 18's round 1 from blocking 19's.
+      const later = await tick(at(8 * DAY))
+      assert.equal(later.build, 19, 'the job works on the build that is live now')
+      assert.deepEqual(later.sent.map((entry) => entry.round), [1, 2, 3], "19's own rounds catch up")
+
+      const stored = await c('app_release').findOne({ _id: 'android' }) as Doc
+      assert.deepEqual(stored.announced.map((entry: Doc) => [entry.build, entry.round]).sort(),
+        [[18, 1], [19, 1], [19, 2], [19, 3]], '18 has only the one round it got, 19 has all three')
+      assert.equal(pushes.length, 4, 'one for 18, three for 19')
+
+      // A build replaced before its first hour never gets a round at all.
+      await reset()
+      setSystemTime(LIVE)
+      await saveRelease()
+      await behindPlayer(17)
+      setSystemTime(at(30 * 60_000))
+      try {
+        await saveRelease({ latest_build: 20, latest_version: '1.0.17' })
+      } finally {
+        setSystemTime()
+      }
+      const fresh = await tick(at(8 * DAY))
+      assert.deepEqual(fresh.sent.map((entry) => entry.round), [1, 2, 3])
+      const second = await c('app_release').findOne({ _id: 'android' }) as Doc
+      assert.equal(second.announced.filter((entry: Doc) => entry.build === 18).length, 0,
+        'a build replaced inside its grace period is never nudged')
+    })
+
+    await check('the reminders switch off stops every round, and the console can read it', async () => {
+      await reset()
+      setSystemTime(LIVE)
+      await saveRelease({ auto_reminders: false })
+      await behindPlayer(17)
+      setSystemTime()
+
+      const view = await adminGet('/admin/app-release')
+      assert.equal(view.body.auto_reminders, false, 'the switch is in the payload')
+      assert.equal(view.body.live_at, LIVE.toISOString(), 'the moment the build went live')
+      keys(view.body.rounds[0], ['round', 'due_at'], 'a round that has not been sent')
+      assert.deepEqual(view.body.rounds.map((round: Doc) => [round.round, round.due_at]), [
+        [1, at(HOUR).toISOString()],
+        [2, at(3 * DAY).toISOString()],
+        [3, at(7 * DAY).toISOString()],
+      ], 'the three due moments, from live_at')
+
+      assert.deepEqual((await tick(at(8 * DAY))).sent, [], 'the switch is off')
+      assert.equal(pushes.length, 0)
+
+      // Turning it back on lets the overdue rounds go.
+      await saveRelease({ auto_reminders: true })
+      const on = await tick(at(8 * DAY))
+      assert.deepEqual(on.sent.map((entry) => entry.round), [1, 2, 3], 'back on, the missed rounds catch up')
+
+      const after = await adminGet('/admin/app-release')
+      assert.equal(after.body.auto_reminders, true)
+      assert.deepEqual(after.body.rounds.map((round: Doc) => [round.round, typeof round.sent_at]),
+        [[1, 'string'], [2, 'string'], [3, 'string']], 'the timeline shows what went out')
+    })
+
+    await check('rounds 2 and 3 skip a player who opened the app in the last day', async () => {
+      await reset()
+      setSystemTime(LIVE)
+      await saveRelease()
+
+      // Both are behind, and both have a phone. `settled` opened the app the day
+      // before round 2 — Play told them, and they chose to stay put.
+      const settled = await seedUser()
+      await seedDevice(settled, 'settled-device')
+      const away = await behindPlayer(17)
+      setSystemTime()
+
+      await seedSession(settled, 17, at(2 * DAY), { install_id: 'settled-install' })
+      resetReviewerScopeCache()
+
+      assert.deepEqual((await tick(at(HOUR))).sent.map((entry) => entry.round), [1])
+      assert.equal(pushes.length, 2, 'round 1 reaches both: the skip is only for later rounds')
+
+      const second = await tick(at(3 * DAY))
+      assert.deepEqual(second.sent.map((entry) => [entry.round, entry.players, entry.devices]), [[2, 1, 1]],
+        'round 2 reaches only the player who has not been back')
+      assert.deepEqual(pushes.slice(2).map((push) => String(push.device.player_id)), [String(away)],
+        'the player who opened the app yesterday is left alone')
+
+      const third = await tick(at(7 * DAY))
+      // Five days on, that session is no longer "the last day": the skip is a
+      // freshness test, not a permanent exemption, so both phones are rung.
+      assert.deepEqual(third.sent.map((entry) => [entry.round, entry.devices]), [[3, 2]],
+        'a session five days old is no longer recent')
+
+      // A player who opened the app hours before round 3 is left alone again.
+      await seedSession(settled, 17, at(7 * DAY - 2 * HOUR), { install_id: 'settled-install-2' })
+      resetReviewerScopeCache()
+      await c('app_release').updateOne({ _id: 'android' }, { $pull: { announced: { round: 3 } } })
+      const retried = await tick(at(7 * DAY))
+      assert.deepEqual(retried.sent.map((entry) => [entry.round, entry.devices]), [[3, 1]],
+        'round 3 skips a player who was in the app this morning')
+    })
+
+    // ── 12. The guard ────────────────────────────────────────────────────────
     await check('every admin release route refuses an unauthenticated caller', async () => {
       await reset()
       await saveRelease()
@@ -655,14 +847,28 @@ const MUTATIONS: ReadonlyArray<readonly [string, string, string, string]> = [
   ['review and team accounts, and anyone gone 90 days, are skipped', SERVICE,
     'const TARGET_DAYS = 90', 'const TARGET_DAYS = 365'],
   ['a build is announced once', SERVICE,
-    "{ _id: ANDROID, 'announced.build': { $ne: build } },", "{ _id: ANDROID, 'announced.build': { $ne: build + 1 } },"],
+    "{ _id: ANDROID, latest_build: build, announced: { $not: { $elemMatch: { build, round } } } },",
+    "{ _id: ANDROID, latest_build: build },"],
   ['a real send needs a fresh, single-use confirmation', SERVICE,
-    '  if (!entry || entry.expires <= now.getTime() || entry.build !== build) {', '  if (false) {'],
+    '  if (!entry || entry.expires <= now.getTime() || entry.build !== build || entry.kind !== kind) {', '  if (false) {'],
   ['the night hold sends at ten their time, and only then', SERVICE,
     'return local >= NIGHT_FROM_HOUR * 60 || local < NIGHT_UNTIL_HOUR * 60',
     'return local >= NIGHT_FROM_HOUR * 60 && local < NIGHT_UNTIL_HOUR * 60'],
   ['the push words are fixed and carry no technical copy', FCM,
     "      title: 'A new Everlore is here',", "      title: 'A new Everlore build is here',"],
+  ['rounds fall due at +1h, +3d and +7d, and each is sent once', SERVICE,
+    '  2: 3 * DAY_MS,', '  2: 2 * DAY_MS,'],
+  ['an hourly catch-up after downtime sends every missed round once', SERVICE,
+    '  for (const round of APP_UPDATE_ROUNDS) {\n    if (now.getTime() < roundDueAt(liveAt, round).getTime()) continue',
+    '  for (const round of APP_UPDATE_ROUNDS.slice(0, 1)) {\n    if (now.getTime() < roundDueAt(liveAt, round).getTime()) continue'],
+  ['a build replaced by a newer one gets no more rounds', SERVICE,
+    "    if (!await reserveRound(release.latest_build, round, 'automatic', now)) continue",
+    "    if (!await reserveRound(release.latest_build - 1, round, 'automatic', now)) continue"],
+  ['the reminders switch off stops every round, and the console can read it', SERVICE,
+    "  if (doc?.auto_reminders === false) return { build: release.latest_build, sent: [] }",
+    '  // the switch is ignored'],
+  ['rounds 2 and 3 skip a player who opened the app in the last day', SERVICE,
+    '  if (round >= 2) {', '  if (false) {'],
 ] as const
 
 async function runChild(): Promise<{ output: string; code: number }> {

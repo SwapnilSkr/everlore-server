@@ -1,7 +1,7 @@
 import type { ObjectId } from 'mongodb'
 
 /** The only kinds a bell row may carry (group-chat.md, "In-app notifications"). */
-export type NotificationType = 'group_direct' | 'group_selfie' | 'film_ready' | 'story_reply'
+export type NotificationType = 'group_direct' | 'group_selfie' | 'film_ready' | 'story_reply' | 'whats_new'
 
 /** Which place in a group save a row opens. Absent outside group saves. */
 export type NotificationThread = 'room' | 'direct'
@@ -17,7 +17,12 @@ export interface PlayerNotificationDoc {
   _id: ObjectId
   player_id: ObjectId
   type: NotificationType
-  instance_id: ObjectId
+  /**
+   * The save a tap opens. Required on every story row and refused without it —
+   * one of those opens a world. A `whats_new` row opens a release note instead,
+   * so it is the one kind with no save to name.
+   */
+  instance_id?: ObjectId
   /** The group member the row is about; absent on film and story rows. */
   character_id?: string
   /** The event this row is about. Internal: never sent to the player. A rewind
@@ -28,6 +33,8 @@ export interface PlayerNotificationDoc {
   /** Where a tap goes inside a group save (`group_direct`, `group_selfie`, and a
    *  group `story_reply`). Omitted on everything else. */
   thread?: NotificationThread
+  /** The build whose note a `whats_new` row shows. Omitted on everything else. */
+  release_build?: number
   title: string
   body: string
   image_url?: string

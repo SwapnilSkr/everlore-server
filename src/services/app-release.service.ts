@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
-import type { AppReleaseDoc } from '../models/app-release.model'
+import type { AppReleaseDoc, AppUpdateRound } from '../models/app-release.model'
 import type { PushDeviceDoc } from '../models/push-device.model'
 import { getMaintenanceQueue, QUEUE_RETENTION } from '../queues'
 import { HttpError } from '../utils/http-error'
@@ -11,14 +11,15 @@ import { reviewerAccounts } from './reviewer-accounts'
 import { appUpdateNotification, fcmSender } from './push/fcm'
 
 /**
- * The Android release singleton and its announce push
- * (`everlore-docs/phases/update-nudge.md`).
+ * The Android release singleton, its announce push and the automatic reminder
+ * rounds (`everlore-docs/phases/update-nudge.md`, "Server contract" and part 2
+ * section A).
  *
  * The rule that shapes everything lives with the app, not here: **Play decides
  * whether an update is actually available to a device.** The server only adds
- * the words, the floor below which the app stops, and one owner-triggered push
- * per build. So nothing in this module may guess that a build has reached a
- * phone — the push is an instruction to open the app, where Play answers.
+ * the words, the floor below which the app stops, and one push per round of a
+ * build. So nothing in this module may guess that a build has reached a phone —
+ * the push is an instruction to open the app, where Play answers.
  *
  * Builds are compared, never version strings. Every read is bounded: 30 days for
  * "who is still on which build", 90 days for "who is still here at all" — both
@@ -45,6 +46,18 @@ const BUILD_MAX = 2_100_000_000
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/
 const CONFIRM_TTL_MS = 10 * 60_000
 
+/** Rounds 2 and 3 skip a player who opened the app in the last 24 hours. */
+const RECENT_ACTIVITY_MS = DAY_MS
+
+/** When each round of a live build falls due, counted from `live_at`. */
+const ROUND_DELAY_MS: Record<AppUpdateRound, number> = {
+  1: 3_600_000,
+  2: 3 * DAY_MS,
+  3: 7 * DAY_MS,
+}
+
+export const APP_UPDATE_ROUNDS: readonly AppUpdateRound[] = [1, 2, 3]
+
 type EffectiveRelease = {
   latest_build: number
   latest_version: string
@@ -61,6 +74,19 @@ function effective(doc: AppReleaseDoc | null): EffectiveRelease {
     min_build: doc?.min_build ?? 0,
     notes: doc?.notes ?? [],
   }
+}
+
+/**
+ * The moment the live build became live. A document saved before rounds existed
+ * has no `live_at`, and its last edit is the closest honest stand-in — never
+ * "now", which would move the rounds forward on every read.
+ */
+function liveAtOf(doc: AppReleaseDoc | null): Date | undefined {
+  return doc?.live_at ?? doc?.updated_at
+}
+
+export function roundDueAt(liveAt: Date, round: AppUpdateRound): Date {
+  return new Date(liveAt.getTime() + ROUND_DELAY_MS[round])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -161,6 +187,26 @@ async function signedLatestBuilds(
 }
 
 /**
+ * Every signed-in player with a session in the window, whatever build they are
+ * on. A "what's new" note is for all of them, not only the ones behind.
+ *
+ * The reader scope is the console's "test and team accounts" set, so review,
+ * internal and test accounts are out of it exactly as on every insights read.
+ */
+export async function activeSignedPlayers(now: Date, days: number): Promise<ObjectId[]> {
+  const scope = await reviewerAccounts.scope()
+  const userMatch: Record<string, unknown> = { $exists: true }
+  if (scope.userIds.length > 0) userMatch.$nin = scope.userIds
+
+  const rows = await mongoColl.appSessions().aggregate<{ _id: ObjectId }>([
+    { $match: { started_at: { $gte: new Date(now.getTime() - days * DAY_MS) }, user_id: userMatch } },
+    { $group: { _id: '$user_id' } },
+  ], { allowDiskUse: true }).toArray()
+
+  return rows.map((row) => row._id)
+}
+
+/**
  * Guest installs' builds in the window, keyed by install.
  *
  * An install that signed in during the window is left out: the same phone would
@@ -243,10 +289,26 @@ async function blockedPlayers(minBuild: number, now: Date): Promise<number> {
   return signed.size + guests.size
 }
 
-/** Who an announcement reaches: devices of players below the live build. */
-async function announceTargets(build: number, now: Date): Promise<AnnounceTargets> {
+/**
+ * Who a round reaches: devices of players below the live build.
+ *
+ * Rounds 2 and 3 also leave out a player who opened the app in the last 24
+ * hours. Play has told them already and they chose; the in-app sheet still
+ * covers them.
+ */
+async function roundTargets(build: number, round: AppUpdateRound, now: Date): Promise<AnnounceTargets> {
   const behind = await signedLatestBuilds(build, now, TARGET_DAYS)
   if (behind.size === 0) return { devices: [], players: 0 }
+
+  if (round >= 2) {
+    const recent = await mongoColl.appSessions().distinct('user_id', {
+      started_at: { $gte: new Date(now.getTime() - RECENT_ACTIVITY_MS) },
+      user_id: { $in: [...behind.keys()].map(parseObjectId) },
+    })
+    for (const player of recent) behind.delete(String(player))
+    if (behind.size === 0) return { devices: [], players: 0 }
+  }
+
   const devices = await mongoColl.pushDevices()
     .find({ player_id: { $in: [...behind.keys()].map(parseObjectId) } })
     .toArray()
@@ -276,11 +338,11 @@ function wholeBuild(value: unknown, field: string): number {
   return value
 }
 
-type ReleaseInput = EffectiveRelease & { confirm_block?: boolean }
+export type ReleaseInput = EffectiveRelease & { confirm_block?: boolean; auto_reminders?: boolean }
 
 function releaseBody(body: unknown): ReleaseInput {
   const input = asObject(body)
-  refuseUnknown(input, ['latest_build', 'latest_version', 'min_build', 'notes', 'confirm_block'])
+  refuseUnknown(input, ['latest_build', 'latest_version', 'min_build', 'notes', 'confirm_block', 'auto_reminders'])
 
   const latest_build = wholeBuild(input.latest_build, 'Latest build')
   const min_build = wholeBuild(input.min_build, 'Minimum build')
@@ -300,6 +362,9 @@ function releaseBody(body: unknown): ReleaseInput {
   if (input.confirm_block !== undefined && typeof input.confirm_block !== 'boolean') {
     throw new HttpError(400, 'confirm_block must be true or false.')
   }
+  if (input.auto_reminders !== undefined && typeof input.auto_reminders !== 'boolean') {
+    throw new HttpError(400, 'auto_reminders must be true or false.')
+  }
   if (min_build > latest_build) {
     throw new HttpError(400, 'The minimum build cannot be higher than the latest build.')
   }
@@ -309,6 +374,7 @@ function releaseBody(body: unknown): ReleaseInput {
     min_build,
     notes,
     ...(input.confirm_block !== undefined ? { confirm_block: input.confirm_block } : {}),
+    ...(input.auto_reminders !== undefined ? { auto_reminders: input.auto_reminders } : {}),
   }
 }
 
@@ -328,22 +394,29 @@ function announceBody(body: unknown): AnnounceInput {
 // The confirmation token: server-side, single use, ten minutes
 // ─────────────────────────────────────────────────────────────────────────────
 
-const pendingConfirms = new Map<string, { build: number; expires: number }>()
+/**
+ * What a token is good for. A token from an update check can never publish a
+ * note, and the other way round: both are "send this to every phone", and a
+ * crossed pair would send the wrong thing.
+ */
+export type ConfirmKind = 'app_update' | 'whats_new'
 
-function issueConfirm(build: number, now: Date): string {
+const pendingConfirms = new Map<string, { kind: ConfirmKind; build: number; expires: number }>()
+
+export function issueConfirm(kind: ConfirmKind, build: number, now: Date): string {
   for (const [token, entry] of pendingConfirms) {
     if (entry.expires <= now.getTime()) pendingConfirms.delete(token)
   }
   const token = randomBytes(24).toString('base64url')
-  pendingConfirms.set(token, { build, expires: now.getTime() + CONFIRM_TTL_MS })
+  pendingConfirms.set(token, { kind, build, expires: now.getTime() + CONFIRM_TTL_MS })
   return token
 }
 
 /** Spent whether or not it was still valid: a replayed token is never accepted. */
-function consumeConfirm(token: string, build: number, now: Date): void {
+export function consumeConfirm(token: string, kind: ConfirmKind, build: number, now: Date): void {
   const entry = pendingConfirms.get(token)
   pendingConfirms.delete(token)
-  if (!entry || entry.expires <= now.getTime() || entry.build !== build) {
+  if (!entry || entry.expires <= now.getTime() || entry.build !== build || entry.kind !== kind) {
     throw new HttpError(400, 'That confirmation has expired. Run the check again.')
   }
 }
@@ -367,16 +440,33 @@ export async function adminRelease(now = new Date()) {
     })(),
   ])
 
+  const liveAt = liveAtOf(doc)
+  const rounds = value.latest_build > 0 && liveAt
+    ? APP_UPDATE_ROUNDS.map((round) => {
+      const sent = (doc?.announced ?? [])
+        .find((entry) => entry.build === value.latest_build && entry.round === round)
+      return {
+        round,
+        due_at: roundDueAt(liveAt, round),
+        ...(sent ? { sent_at: sent.at, devices: sent.devices } : {}),
+      }
+    })
+    : []
+
   return {
     _id: ANDROID,
     ...value,
     ...(doc?.updated_at ? { updated_at: doc.updated_at } : {}),
+    ...(liveAt ? { live_at: liveAt } : {}),
+    auto_reminders: doc?.auto_reminders !== false,
     announced: (doc?.announced ?? []).map((entry) => ({
       build: entry.build,
+      round: entry.round,
       at: entry.at,
       by: entry.by,
       devices: entry.devices,
     })),
+    rounds,
     in_use,
     behind,
   }
@@ -388,13 +478,17 @@ export async function adminRelease(now = new Date()) {
  * The floor is the dangerous field: one typo locks every player out. So raising
  * it over a build that active players still use is refused with their count
  * unless the console has shown that number and confirmed.
+ *
+ * Saving a different `latest_build` is the owner saying "this is live on Play",
+ * so that is the one write that moves `live_at` — and with it the three reminder
+ * rounds. Editing the words of the same build leaves the schedule where it is.
  */
 export async function saveRelease(body: unknown, now = new Date()) {
   const input = releaseBody(body)
   const doc = await storedRelease()
-  const previous = effective(doc).min_build
+  const previous = effective(doc)
 
-  if (input.min_build > previous) {
+  if (input.min_build > previous.min_build) {
     const blocked = await blockedPlayers(input.min_build, now)
     if (blocked > 0 && input.confirm_block !== true) {
       throw new HttpError(
@@ -405,6 +499,7 @@ export async function saveRelease(body: unknown, now = new Date()) {
     }
   }
 
+  const buildChanged = input.latest_build !== previous.latest_build
   await mongoColl.appRelease().updateOne(
     { _id: ANDROID },
     {
@@ -414,6 +509,10 @@ export async function saveRelease(body: unknown, now = new Date()) {
         min_build: input.min_build,
         notes: input.notes,
         updated_at: now,
+        // `live_at` moves only when the build does, and only to a build that can
+        // be nudged: a zero build is "nothing is live", not a release.
+        ...(buildChanged && input.latest_build > 0 ? { live_at: now } : {}),
+        ...(input.auto_reminders !== undefined ? { auto_reminders: input.auto_reminders } : {}),
       },
       $setOnInsert: { announced: [] },
     },
@@ -424,12 +523,16 @@ export async function saveRelease(body: unknown, now = new Date()) {
 }
 
 /**
- * `POST /admin/app-release/announce`.
+ * `POST /admin/app-release/announce`: round 1, sent by hand.
  *
  * A dry run counts who would get it and hands back a token; the real send needs
  * that token. The target set is recomputed at send time, because a player may
  * have updated between the two clicks. Devices whose local clock reads 22:00–09:00
  * are not rung: they are queued for 10:00 their time.
+ *
+ * This is the same round the hourly job would send at `live_at` + 1 h, so the
+ * owner's press and the schedule share one `(build, 1)` guard and a build is
+ * still announced once.
  */
 export async function announce(body: unknown, adminUser: string, now = new Date()) {
   const input = announceBody(body)
@@ -438,45 +541,84 @@ export async function announce(body: unknown, adminUser: string, now = new Date(
   const build = release.latest_build
 
   if (input.dry_run) {
-    const targets = await announceTargets(build, now)
+    const targets = await roundTargets(build, 1, now)
     return {
       build,
       devices: targets.devices.length,
       players: targets.players,
-      confirm: issueConfirm(build, now),
+      confirm: issueConfirm('app_update', build, now),
     }
   }
 
   if (!input.confirm) throw new HttpError(400, 'A confirmation from the check is required.')
-  consumeConfirm(input.confirm, build, now)
+  consumeConfirm(input.confirm, 'app_update', build, now)
   if (!fcmSender.configured()) throw new HttpError(503, 'Push is not switched on, so nothing was sent.')
 
-  const targets = await announceTargets(build, now)
-  const immediate = targets.devices.filter((device) => !isNight(device.tz_offset_minutes, now))
-  const held = targets.devices.filter((device) => isNight(device.tz_offset_minutes, now))
+  if (!await reserveRound(build, 1, adminUser, now)) {
+    throw new HttpError(409, 'This build has already been announced.')
+  }
+  const sent = await deliverRound(build, release, now, 1)
+  return { build, devices: sent.devices, held: sent.held, players: sent.players }
+}
 
-  // Reserve the announcement before anything leaves: the guard makes a build
-  // announceable once even if two sends race. `devices` is every phone this
-  // announcement is for, including the ones held for the morning.
+/**
+ * Reserve one round of one build before anything leaves.
+ *
+ * The `(build, round)` pair is the guard, and the build is part of the filter:
+ * a build replaced between the read and this write gets no round from a stale
+ * pass. Reserved with no devices so an hourly job cannot send the same round
+ * twice while the first is still going out.
+ */
+async function reserveRound(build: number, round: AppUpdateRound, by: string, now: Date): Promise<boolean> {
   const reserved = await mongoColl.appRelease().updateOne(
-    { _id: ANDROID, 'announced.build': { $ne: build } },
-    { $push: { announced: { build, at: now, by: adminUser, devices: immediate.length + held.length } } },
+    { _id: ANDROID, latest_build: build, announced: { $not: { $elemMatch: { build, round } } } },
+    { $push: { announced: { build, round, at: now, by, devices: 0 } } },
   )
-  if (reserved.matchedCount === 0) throw new HttpError(409, 'This build has already been announced.')
+  return reserved.matchedCount > 0
+}
 
-  const heldDevices = await queueHeld(build, held, now)
+/** Whether a round of a build has already gone out. */
+function roundSent(doc: AppReleaseDoc | null, build: number, round: AppUpdateRound): boolean {
+  return (doc?.announced ?? []).some((entry) => entry.build === build && entry.round === round)
+}
+
+/** The device count of a round, filled in once its phones are decided. */
+async function recordRoundDevices(build: number, round: AppUpdateRound, devices: number): Promise<void> {
+  await mongoColl.appRelease().updateOne(
+    { _id: ANDROID, announced: { $elemMatch: { build, round } } },
+    { $set: { 'announced.$.devices': devices } },
+  )
+}
+
+/**
+ * Send one reserved round. Returns what actually went out, not what was planned:
+ * a provider failure means that phone was not reached, and saying otherwise
+ * would make the console's number a lie.
+ */
+async function deliverRound(
+  build: number,
+  release: EffectiveRelease,
+  now: Date,
+  round: AppUpdateRound,
+): Promise<{ devices: number; held: number; players: number }> {
+  const targets = await roundTargets(build, round, now)
+  const immediate = targets.devices.filter((device) => !isNight(device.tz_offset_minutes, now))
+  const night = targets.devices.filter((device) => isNight(device.tz_offset_minutes, now))
+
   const payload = appUpdateNotification(release.notes[0], build)
   const results = await Promise.allSettled(immediate.map((device) => fcmSender.send(device, payload)))
-  const sent = results.filter((result) => result.status === 'fulfilled' && result.value).length
-  return { build, devices: sent, held: heldDevices, players: targets.players }
+  const devices = results.filter((result) => result.status === 'fulfilled' && result.value).length
+  const held = await queueHeld(build, round, night, now)
+  await recordRoundDevices(build, round, devices + held)
+  return { devices, held, players: targets.players }
 }
 
 /**
  * Queue one delayed job per device clock, so each held phone is woken at 10:00
  * *its* time rather than a single instant. A queue failure is logged and does
- * not undo the announcement: the immediate phones have already been decided.
+ * not undo the round: the immediate phones have already been decided.
  */
-async function queueHeld(build: number, devices: PushDeviceDoc[], now: Date): Promise<number> {
+async function queueHeld(build: number, round: AppUpdateRound, devices: PushDeviceDoc[], now: Date): Promise<number> {
   if (devices.length === 0) return 0
   const byOffset = new Map<number, Set<string>>()
   for (const device of devices) {
@@ -496,7 +638,7 @@ async function queueHeld(build: number, devices: PushDeviceDoc[], now: Date): Pr
         tzOffsetMinutes: offset,
       }, {
         delay: Math.max(0, at.getTime() - now.getTime()),
-        jobId: `app-update-held-${build}-${offset}-${at.getTime()}`,
+        jobId: `app-update-held-${build}-${round}-${offset}-${at.getTime()}`,
         removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
         removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
       })
@@ -508,6 +650,43 @@ async function queueHeld(build: number, devices: PushDeviceDoc[], now: Date): Pr
     })
     return 0
   }
+}
+
+/**
+ * The `app-update-rounds` job: send every round that is due and unsent for the
+ * build that is live now.
+ *
+ * A round is measured from `live_at`, so a missing hour catches up on the next
+ * run — once, because the `(build, round)` guard is reserved before any phone is
+ * rung. A build replaced by a newer one is no longer the current build, so its
+ * remaining rounds never send.
+ */
+export async function sendDueRounds(now = new Date()): Promise<{
+  build: number
+  sent: Array<{ round: AppUpdateRound; devices: number; held: number; players: number }>
+}> {
+  const doc = await storedRelease()
+  const release = effective(doc)
+  if (release.latest_build <= 0) return { build: 0, sent: [] }
+  if (doc?.auto_reminders === false) return { build: release.latest_build, sent: [] }
+  // A round that cannot be pushed must not be marked sent: the switch being off
+  // is a temporary state, and the next hour should try again.
+  if (!fcmSender.configured()) return { build: release.latest_build, sent: [] }
+
+  const liveAt = liveAtOf(doc)
+  if (!liveAt) return { build: release.latest_build, sent: [] }
+
+  const sent: Array<{ round: AppUpdateRound; devices: number; held: number; players: number }> = []
+  for (const round of APP_UPDATE_ROUNDS) {
+    if (now.getTime() < roundDueAt(liveAt, round).getTime()) continue
+    if (!await reserveRound(release.latest_build, round, 'automatic', now)) continue
+    const result = await deliverRound(release.latest_build, release, now, round)
+    sent.push({ round, ...result })
+  }
+  if (sent.length > 0) {
+    log.info('app_release.rounds_sent', { build: release.latest_build, rounds: sent.map((entry) => entry.round) })
+  }
+  return { build: release.latest_build, sent }
 }
 
 /**

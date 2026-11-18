@@ -139,6 +139,24 @@ export async function maintenanceProcessor(job: Job) {
       return sendHeldAppUpdate({ build, playerIds, tzOffsetMinutes })
     }
 
+    // The three reminder rounds of the live build, sent hourly so a missed hour
+    // catches up once (update-nudge.md, part 2 A). The `(build, round)` guard is
+    // reserved before anything leaves, so a catch-up can never double.
+    case 'app-update-rounds': {
+      const { sendDueRounds } = await import('../../src/services/app-release.service')
+      return sendDueRounds()
+    }
+
+    // A "what's new" push held for a phone's morning. The in-app rows went out
+    // at publish time; this is only the notification.
+    case 'whats-new-held': {
+      const { sendHeldWhatsNew } = await import('../../src/services/release-notes.service')
+      const { build, playerIds, tzOffsetMinutes } = job.data as {
+        build: number; playerIds: string[]; tzOffsetMinutes: number
+      }
+      return sendHeldWhatsNew({ build, playerIds, tzOffsetMinutes })
+    }
+
     case 'character_projection':
       return characterProjectionProcessor(job)
     case 'repair_character_projections': {

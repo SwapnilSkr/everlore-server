@@ -37,10 +37,13 @@ export const ONLINE_TTL_SECONDS = 15 * 60
 export interface NotificationItem {
   id: string
   type: NotificationType
-  instance_id: string
+  /** Absent only on a `whats_new` row, which opens a release note, not a save. */
+  instance_id?: string
   character_id?: string
   thread?: NotificationThread
   media_id?: string
+  /** The build whose note a `whats_new` row shows. */
+  release_build?: number
   title: string
   body: string
   image_url?: string
@@ -52,11 +55,15 @@ export interface NotificationItem {
  * The contract's words. A film and a story row lead with the save's own title;
  * a group reply names the speaker and a normal-world reply cannot. A group
  * without a speaker has no honest sentence, so it is refused.
+ *
+ * A "what's new" row is not built here: its words are the owner's own, and they
+ * arrive with the note rather than being minted from a name.
  */
 export function notificationWords(
   type: NotificationType,
   options: { name?: string; title?: string } = {},
 ): { title: string; body: string } | undefined {
+  if (type === 'whats_new') return undefined
   if (type === 'film_ready') return options.title ? { title: options.title, body: 'Your film is ready' } : undefined
   if (type === 'story_reply') {
     if (!options.title) return undefined
@@ -70,10 +77,11 @@ export function publicNotification(row: PlayerNotificationDoc): NotificationItem
   return {
     id: row._id.toHexString(),
     type: row.type,
-    instance_id: row.instance_id.toHexString(),
+    ...(row.instance_id ? { instance_id: row.instance_id.toHexString() } : {}),
     ...(row.character_id ? { character_id: row.character_id } : {}),
     ...(row.thread ? { thread: row.thread } : {}),
     ...(row.media_id ? { media_id: row.media_id } : {}),
+    ...(row.release_build !== undefined ? { release_build: row.release_build } : {}),
     title: row.title,
     body: row.body,
     ...(row.image_url ? { image_url: row.image_url } : {}),
@@ -133,9 +141,15 @@ async function memberPortrait(playerId: string, instanceId: string, characterId:
 }
 
 /**
- * The one writer. It trims, counts and publishes the frame, and it never
- * throws: a caller's message, picture or film must survive a bell failure.
- * Returns the row it wrote, so a push can carry exactly the bell's words.
+ * The one writer for a single story row. It trims, counts and publishes the
+ * frame, and it never throws: a caller's message, picture or film must survive a
+ * bell failure. Returns the row it wrote, so a push can carry exactly the bell's
+ * words.
+ *
+ * `instanceId` is required: every kind this writes opens a save, and a row that
+ * named none could not be tapped. A `whats_new` row has no save to open and is
+ * written by {@link recordWhatsNewRows} instead, because a publish is thousands
+ * of rows rather than one.
  */
 export async function recordNotification(input: {
   playerId: string
@@ -151,13 +165,20 @@ export async function recordNotification(input: {
   thread?: NotificationThread
 }): Promise<PlayerNotificationDoc | undefined> {
   try {
+    // Every kind this writes opens a save, and a row with no save is a row a tap
+    // cannot open: refused here rather than written as a dead end.
+    const instanceId = input.instanceId ? parseObjectId(input.instanceId) : undefined
+    if (!instanceId) {
+      log.warn('notification.record_failed', { type: input.type, error: 'instance_id is required' })
+      return undefined
+    }
     const words = notificationWords(input.type, { name: input.name, title: input.title })
     if (!words) return undefined
     const row: PlayerNotificationDoc = {
       _id: new ObjectId(),
       player_id: parseObjectId(input.playerId),
       type: input.type,
-      instance_id: parseObjectId(input.instanceId),
+      instance_id: instanceId,
       ...(input.characterId ? { character_id: input.characterId } : {}),
       ...(input.eventId ? { event_id: parseObjectId(input.eventId) } : {}),
       ...(input.mediaId ? { media_id: input.mediaId } : {}),
@@ -179,6 +200,62 @@ export async function recordNotification(input: {
     log.warn('notification.record_failed', { type: input.type, error: error instanceof Error ? error.message : String(error) })
     return undefined
   }
+}
+
+/** How many rows one insert or trim pass carries. */
+export const WHATS_NEW_BATCH = 500
+
+/**
+ * One "what's new" row per player, for a note the owner just published.
+ *
+ * Deliberately not {@link recordNotification}: a publish is thousands of rows,
+ * and one insert, one unread count and one Redis frame per player would make it
+ * thousands of round trips of work nobody is waiting for. The rows are written
+ * in batches and each player is trimmed to the same 100-row cap by the same
+ * rule — the bell is the same bell, it just fills faster.
+ *
+ * A failed batch is logged and the rest continue: a player missing one row is
+ * better than a publish that stops halfway with the note already marked live.
+ */
+export async function recordWhatsNewRows(
+  playerIds: ObjectId[],
+  note: { build: number; title: string; body: string; imageUrl?: string },
+): Promise<number> {
+  const players = [...new Map(playerIds.map((id) => [id.toHexString(), id])).values()]
+  let written = 0
+  const now = new Date()
+  for (let index = 0; index < players.length; index += WHATS_NEW_BATCH) {
+    const rows: PlayerNotificationDoc[] = players.slice(index, index + WHATS_NEW_BATCH).map((playerId) => ({
+      _id: new ObjectId(),
+      player_id: playerId,
+      type: 'whats_new',
+      release_build: note.build,
+      title: note.title,
+      body: note.body,
+      ...(note.imageUrl ? { image_url: note.imageUrl } : {}),
+      created_at: now,
+    }))
+    try {
+      await mongoColl.playerNotifications().insertMany(rows, { ordered: false })
+      written += rows.length
+    } catch (error) {
+      log.warn('notification.whats_new_insert_failed', {
+        build: note.build, count: rows.length, error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+  for (let index = 0; index < players.length; index += WHATS_NEW_BATCH) {
+    const batch = players.slice(index, index + WHATS_NEW_BATCH)
+    const results = await Promise.allSettled(batch.map((playerId) => trimToCap(playerId)))
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        log.warn('notification.whats_new_trim_failed', {
+          error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        })
+      }
+    }
+  }
+  return written
 }
 
 /** A character's unprompted message is scheduled: always a direct thread. */

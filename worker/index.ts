@@ -213,6 +213,15 @@ async function main() {
     removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
     removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
   })
+  // Update nudge, part 2 A: the reminder rounds of the live build are measured
+  // from `live_at` and each is due once, so an hourly check is all that is
+  // needed — a missed hour catches up on the next run, never twice.
+  await maintenanceQueue.add('app-update-rounds', { task: 'app-update-rounds' }, {
+    repeat: { pattern: '0 * * * *' },
+    priority: 35,
+    removeOnComplete: QUEUE_RETENTION.maintenance.removeOnComplete,
+    removeOnFail: QUEUE_RETENTION.maintenance.removeOnFail,
+  })
 
   if (!env.GROUP_NOTIFICATIONS_ENABLED) {
     for (const job of await maintenanceQueue.getRepeatableJobs()) {

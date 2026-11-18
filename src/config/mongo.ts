@@ -35,6 +35,7 @@ import type {
 import type { PostProcessOutboxDoc } from '../models/post-process-outbox.model'
 import type { ContentReportDoc } from '../models/content-report.model'
 import { APP_RELEASE_COLLECTION, type AppReleaseDoc } from '../models/app-release.model'
+import { RELEASE_NOTES_COLLECTION, type ReleaseNoteDoc } from '../models/release-note.model'
 import { WORLD_DERIVATIONS_COLLECTION } from '../models/world-derivation.model'
 
 let client: MongoClient | null = null
@@ -102,6 +103,9 @@ export const mongoColl = {
   /** The Android release singleton (`_id: 'android'`). Named beside its accessor
    *  rather than in `COLLECTIONS`, which this change does not own. */
   appRelease: () => coll<AppReleaseDoc>(APP_RELEASE_COLLECTION),
+  /** "What's new" per build (`_id` = the build number). Named beside its accessor
+   *  for the same reason as `appRelease`. */
+  releaseNotes: () => coll<ReleaseNoteDoc>(RELEASE_NOTES_COLLECTION),
   billingEntitlements: () => coll<WithoutId<BillingEntitlementDoc>>(COLLECTIONS.billing_entitlements),
   storePurchases: () => coll<WithoutId<StorePurchaseDoc>>(COLLECTIONS.store_purchases),
   postProcessOutbox: () => coll<WithoutId<PostProcessOutboxDoc>>(COLLECTIONS.post_process_outbox),
