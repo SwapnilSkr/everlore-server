@@ -32,15 +32,27 @@ function redactQuery(query: Record<string, unknown>): Record<string, unknown> {
   return out
 }
 
+/** When each request arrived, on the trace clock; weak so a dropped request leaves nothing behind. */
+const arrivals = new WeakMap<Request, number>()
+
 /**
  * Logs one line per HTTP request after the response is finished (status, timing, route).
  * Uses Elysia trace `onAfterResponse` so WebSocket upgrades and normal routes are covered.
  */
 export const httpLoggerPlugin = new Elysia({ name: 'http-logger' }).trace(
   { as: 'global' },
-  ({ onAfterResponse, context, id }) => {
+  ({ onRequest, onAfterResponse, context, id }) => {
+    // Elysia calls this callback once per lifecycle stage, each with its own
+    // closure, so a start time kept in a local never reaches the after-response
+    // stage; and `elapsed` there is only that stage's own time (a 2.7 s request
+    // logged as 0.01 ms). The arrival is stamped on the request itself.
+    onRequest(({ begin }) => {
+      arrivals.set(context.request, begin)
+    })
     onAfterResponse(({ onStop }) => {
-      onStop(({ elapsed, error }) => {
+      onStop(({ end, error }) => {
+        const arrivedAt = arrivals.get(context.request)
+        arrivals.delete(context.request)
         if (process.env.REQUEST_LOG === '0') return
 
         const { request, path, route } = context
@@ -59,7 +71,7 @@ export const httpLoggerPlugin = new Elysia({ name: 'http-logger' }).trace(
           route: route ?? path,
           query,
           status: statusForLog(context.set, error != null),
-          durationMs: Math.round(elapsed * 100) / 100,
+          durationMs: arrivedAt === undefined ? undefined : Math.round((end - arrivedAt) * 100) / 100,
           error: error ? (error instanceof Error ? error.message : String(error)) : undefined,
           ...meta,
         })

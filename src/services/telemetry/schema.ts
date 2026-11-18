@@ -131,7 +131,14 @@ export const EVENT_SCHEMA: Record<string, { props: Record<string, PropDef> }> = 
   purchase_completed: { props: { product: { rule: { kind: 'product' } } } },
   media_requested: { props: { kind: { rule: oneOf('picture', 'voice', 'film', 'portrait') } } },
   world_published: { props: { visibility: { rule: oneOf('private', 'public') } } },
-  review_prompt_shown: { props: {} },
+  // What the player had just enjoyed when asked, and which of the two tries it
+  // was; both optional so older apps' bare event still counts.
+  review_prompt_shown: {
+    props: {
+      trigger: { rule: oneOf('lore', 'picture', 'voice', 'turns') },
+      attempt: { rule: int(1, 2) },
+    },
+  },
   analytics_opted_out: { props: {} },
   story_action: {
     props: {
