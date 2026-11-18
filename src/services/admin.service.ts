@@ -8,6 +8,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import { deletionService } from './deletion.service'
 import { reviewerAccounts, type ReviewersMode } from './reviewer-accounts'
+import { internalAccounts } from './internal-accounts'
 import { playerInsights, playerInsightsService } from './admin-insights-players'
 import { worldInsights, type WorldListOptions } from './admin-insights-worlds'
 import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default-cover'
@@ -27,7 +28,9 @@ const sceneSummaries = () => mongoColl.sceneSummaries()
 const generationLogs = () => mongoColl.generationLogs()
 
 // Account access is changed only through the explicit tier/status operations
-// below; generic JSON patching must not bypass those invariants.
+// below; generic JSON patching must not bypass those invariants. The team flag
+// has its own route for the same reason: `internal_override` decides whether
+// the sweep may tag the account again.
 const BLOCKED_UPDATE_KEYS = new Set([
   '_id',
   'created_at',
@@ -38,6 +41,10 @@ const BLOCKED_UPDATE_KEYS = new Set([
   'admin_tier_override',
   'banned_at',
   'ban_reason',
+  'internal',
+  'internal_reason',
+  'internal_at',
+  'internal_override',
 ])
 
 function paging(opts: { page?: number; limit?: number }) {
@@ -111,7 +118,7 @@ export const adminService = {
       totalMemories,
       totalCharacters,
     ] = await Promise.all([
-      users().countDocuments({ reviewer: { $ne: true } }),
+      users().countDocuments({ reviewer: { $ne: true }, internal: { $ne: true } }),
       worldTemplates().countDocuments({}),
       worldTemplates().countDocuments({ is_published: true }),
       worldInstances().countDocuments(playerMatch),
@@ -136,10 +143,15 @@ export const adminService = {
       throw new HttpError(400, 'Sort must be created or last_active.')
     }
     const filter: Record<string, unknown> = {}
-    // Review accounts are someone's to see on request, not players by default.
+    // Review and team accounts are someone's to see on request, not players by
+    // default. One switch covers both, as it does in every other player number.
     const reviewers = opts.reviewers ?? 'exclude'
-    if (reviewers === 'exclude') filter.reviewer = { $ne: true }
-    else if (reviewers === 'only') filter.reviewer = true
+    if (reviewers === 'exclude') {
+      filter.reviewer = { $ne: true }
+      filter.internal = { $ne: true }
+    } else if (reviewers === 'only') {
+      filter.$and = [{ $or: [{ reviewer: true }, { internal: true }] }]
+    }
     const since = usersSince(opts.since)
     if (since) filter.created_at = { $gte: since }
     if (opts.search) {
@@ -183,6 +195,10 @@ export const adminService = {
         return serialize({
           ...row,
           onboarding: userOnboarding(row),
+          // The team flag travels on the row so the console can tag it without
+          // a second read; a player carries `false` and no reason.
+          internal: row.internal === true,
+          internal_reason: typeof row.internal_reason === 'string' ? row.internal_reason : null,
           ...(extra ? { profile: extra.profile, cost_usd_30d: extra.cost_usd_30d, ink: extra.ink } : {}),
         })
       }),
@@ -312,6 +328,15 @@ export const adminService = {
 
   async deleteUser(userId: string) {
     return deletionService.deleteAccount(userId)
+  },
+
+  /**
+   * The team flag by hand ("Contract, part 2b"). On records `manual` unless a
+   * rule already named a better reason; off clears both keys and records the
+   * override the sweep honours.
+   */
+  async setUserInternal(userId: string, internal: boolean) {
+    return { user: serialize(await internalAccounts.setInternal(userId, internal)) }
   },
 
   async listWorlds(opts: WorldListOptions) {

@@ -351,7 +351,7 @@ try {
   })
   await check('user routes combine since search sort and attach onboarding to list and detail', async () => {
     const emptyCursor = { sort: () => emptyCursor, toArray: async () => [] }
-    const noRows = { aggregate: () => ({ toArray: async () => [] }) }
+    const noRows = { aggregate: () => ({ toArray: async () => [] }), find: () => emptyCursor }
     const row = { _id: userId, preferences: { player_name: 'Mira' }, providers: ['phone'] }
     const filters: unknown[] = []
     const pipelines: Document[][] = []

@@ -13,6 +13,7 @@ import { dispatchPostProcessOutbox } from '../../src/services/post-process-outbo
 import { webTrafficRollupService } from '../../src/services/web-traffic-rollup.service'
 import { appDailyRollupService } from '../../src/services/telemetry/rollup.service'
 import { reviewerAccounts } from '../../src/services/reviewer-accounts'
+import { internalAccounts } from '../../src/services/internal-accounts'
 import { triageService } from '../../src/services/telemetry/triage.service'
 import { characterProjectionProcessor } from './character-projection.processor'
 import { CHARACTER_PROJECTION_CLAIM_LEASE_MS } from '../lib/character-projection-lease'
@@ -113,10 +114,30 @@ export async function maintenanceProcessor(job: Job) {
           error: error instanceof Error ? error.message : String(error),
         })
       }
+      // The team's own accounts, by the same rules-plus-a-switch, and the
+      // country hints for players seen before capture. Neither is worth losing
+      // the rollup over, so both are logged and swallowed like the sweep above.
+      let internal = 0
+      try {
+        internal = await internalAccounts.sweep()
+        if (internal > 0) log.info('maintenance.internal_accounts_flagged', { internal })
+      } catch (error) {
+        log.error('maintenance.internal_accounts_sweep_failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+      try {
+        const hints = await internalAccounts.hintCountries()
+        if (hints.changed > 0) log.info('maintenance.country_hints_written', hints)
+      } catch (error) {
+        log.error('maintenance.country_hints_failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
       const rolled = await appDailyRollupService.rollupRecent(3)
       const backfilled = await appDailyRollupService.backfillMissing()
       log.info('maintenance.app_daily_rolled', { days: rolled.length, backfilled })
-      return { rolled, backfilled, flagged }
+      return { rolled, backfilled, flagged, internal }
     }
 
     // §4.7: one cheap model call per new error group, capped. The job id is the

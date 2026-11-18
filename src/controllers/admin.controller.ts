@@ -17,6 +17,7 @@ import { audienceInsights } from '../services/admin-audience'
 import { groupInsights } from '../services/admin-overview-groups.service'
 import { retentionInsights } from '../services/admin-overview-retention.service'
 import { pathInsights } from '../services/telemetry/paths.service'
+import { playerHabitInsights } from '../services/admin-insights-top'
 import type { WorldKind, WorldSort, WorldSource } from '../services/admin-insights-worlds'
 import type { ReportAction, ReportReason, ReportStatus, ReportTargetType } from '../models/content-report.model'
 
@@ -127,6 +128,20 @@ export const adminController = {
     }),
 
   getUser: async ({ params }: { params: { userId: string } }) => adminService.getUser(params.userId),
+
+  /**
+   * The team flag, by hand ("Contract, part 2b"). Admin-guarded like every
+   * `/admin` route; on records `manual` unless a rule already set a reason.
+   */
+  setUserInternal: async ({ params, body }: { params: { userId: string }; body: { internal: boolean } }) =>
+    adminService.setUserInternal(params.userId, body.internal),
+
+  /** Part 2b/2c: the most active players, and the habit aggregates. */
+  getTopPlayers: async ({ query }: { query: { days?: string; reviewers?: string } }) =>
+    playerHabitInsights.top(query.days, reviewersParam(query.reviewers)),
+
+  getPlayerFrequency: async ({ query }: { query: { days?: string; reviewers?: string } }) =>
+    playerHabitInsights.frequency(query.days, reviewersParam(query.reviewers)),
 
   patchUser: async ({ params, body }: { params: { userId: string }; body: Record<string, unknown> }) =>
     adminService.updateUser(params.userId, body),

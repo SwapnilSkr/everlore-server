@@ -4,6 +4,7 @@ import { idString } from '../utils/mongo-id'
 import { reviewerAccounts, type ReviewersMode } from './reviewer-accounts'
 import { signInOf, type SignIn } from './admin-insights-players'
 import {
+  countryOfUser,
   dayExpressionOn,
   events,
   insightDays,
@@ -11,6 +12,7 @@ import {
   sessionScope,
   storyTurnMatch,
   windowStart,
+  type CountrySource,
   type PersonGender,
 } from './admin-insights'
 
@@ -42,6 +44,7 @@ type AudienceUser = {
   guest?: boolean
   providers?: string[]
   country?: string
+  country_hint?: { code?: string; source?: 'locale' | 'phone' }
   preferences?: { gender?: string; interests?: string[]; nsfw_enabled?: boolean }
 }
 
@@ -197,7 +200,7 @@ export const audienceInsights = {
       ? []
       : await users().find({ _id: { $in: playerIds } }, {
         projection: {
-          username: 1, guest: 1, providers: 1, country: 1,
+          username: 1, guest: 1, providers: 1, country: 1, country_hint: 1,
           'preferences.gender': 1, 'preferences.interests': 1, 'preferences.nsfw_enabled': 1,
         },
       }).toArray() as unknown as AudienceUser[]
@@ -209,6 +212,8 @@ export const audienceInsights = {
     const adult = { on: 0, off: 0 }
     const signIn: Record<SignIn, number> = { google: 0, phone: 0, guest: 0, other: 0 }
     const countries = new Map<string, number>()
+    const countrySources: Record<'connection' | 'phone' | 'phone_setting' | 'unknown', number> =
+      { connection: 0, phone: 0, phone_setting: 0, unknown: 0 }
     let countryUnknown = 0
     const form = { phone: 0, tablet: 0, unknown: 0 }
     const models = new Map<string, number>()
@@ -228,9 +233,12 @@ export const audienceInsights = {
       else adult.off++
       signIn[signInOf(user as never)]++
 
-      const code = typeof user.country === 'string' && user.country ? user.country.toUpperCase() : ''
-      if (code) countries.set(code, (countries.get(code) ?? 0) + 1)
+      // `country` from the connection, else the stored hint (part 2b); the
+      // source split says how much of each list came from which signal.
+      const place = countryOfUser(user)
+      if (place.country) countries.set(place.country, (countries.get(place.country) ?? 0) + 1)
       else countryUnknown++
+      countrySources[(place.source ?? 'unknown') as 'connection' | 'phone' | 'phone_setting' | 'unknown']++
 
       const latest = sessions.get(key)
       const latestForm = latest?.device?.form
@@ -312,6 +320,7 @@ export const audienceInsights = {
       // ISO country codes, most players first.
       countries: ranked(countries, 'code'),
       country_unknown: countryUnknown,
+      country_sources: countrySources,
       devices: {
         form,
         models: ranked(models, 'model', 15),

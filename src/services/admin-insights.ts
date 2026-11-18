@@ -77,6 +77,9 @@ export type PersonRef = {
   username: string
   official: boolean
   reviewer: boolean
+  /** A review account and a team account are both left out by default. */
+  internal: boolean
+  internal_reason: string | null
   gender: PersonGender | null
 }
 
@@ -85,15 +88,40 @@ export type UserRow = {
   username?: string
   guest?: boolean
   reviewer?: true
+  internal?: true
+  internal_reason?: string
   providers?: string[]
   /** ISO 3166-1 alpha-2 of the last connection, absent until one is known. */
   country?: string
+  /** Country guessed from a locale or a phone, for players seen before capture. */
+  country_hint?: { code: string; source: 'locale' | 'phone' }
   preferences?: {
     player_name?: string
     gender?: string
     interests?: string[]
     nsfw_enabled?: boolean
   }
+}
+
+/** Where the country the console prints came from. */
+export type CountrySource = 'connection' | 'phone' | 'phone_setting' | null
+
+/**
+ * The country to show for an account, and where it came from.
+ *
+ * A captured connection country always wins and is never replaced by a hint.
+ * With none, the stored hint fills the gap: a phone region is "phone", a locale
+ * region is "phone_setting" (the app's own setting, not the network).
+ */
+export function countryOfUser(user: {
+  country?: string
+  country_hint?: { code?: string; source?: 'locale' | 'phone' }
+}): { country: string | null; source: CountrySource } {
+  const captured = typeof user.country === 'string' ? user.country.trim().toUpperCase() : ''
+  if (captured) return { country: captured, source: 'connection' }
+  const hinted = typeof user.country_hint?.code === 'string' ? user.country_hint.code.trim().toUpperCase() : ''
+  if (!hinted) return { country: null, source: null }
+  return { country: hinted, source: user.country_hint?.source === 'phone' ? 'phone' : 'phone_setting' }
 }
 
 /** The stored gender vocabulary is `non_binary`; the contract reads `nonbinary`. */
@@ -116,6 +144,8 @@ export function personRef(row: UserRow): PersonRef {
     username,
     official: isOfficialUsername(username),
     reviewer: row.reviewer === true,
+    internal: row.internal === true,
+    internal_reason: typeof row.internal_reason === 'string' ? row.internal_reason : null,
     gender: personGender(row.preferences?.gender),
   }
 }
@@ -135,7 +165,7 @@ export async function personRefsByIds(ids: ObjectId[]): Promise<Map<string, Pers
   const rows = await mongoColl.users()
     .find(
       { _id: { $in: unique } },
-      { projection: { username: 1, 'preferences.player_name': 1, 'preferences.gender': 1, reviewer: 1 } },
+      { projection: { username: 1, 'preferences.player_name': 1, 'preferences.gender': 1, reviewer: 1, internal: 1, internal_reason: 1 } },
     )
     .toArray()
   return new Map(rows.map((row) => [idString(row._id), personRef(row as UserRow)]))
@@ -255,6 +285,9 @@ export function money(value: number): number {
 /**
  * The countries a set of players is in, most players first, plus how many have
  * no country on record. A gone account counts as unknown, not as missing.
+ *
+ * `country` wins; the stored hint (`country_hint.code`, part 2b) fills the gap
+ * for players seen before connection capture existed.
  */
 export async function countriesOfPlayers(
   ids: ObjectId[],
@@ -263,13 +296,13 @@ export async function countriesOfPlayers(
   const unique = [...new Map(ids.map((id) => [idString(id), id])).values()]
   if (unique.length === 0) return { countries: [], unknown: 0 }
   const rows = await mongoColl.users()
-    .find({ _id: { $in: unique } }, { projection: { country: 1 } })
+    .find({ _id: { $in: unique } }, { projection: { country: 1, country_hint: 1 } })
     .toArray()
   const counts = new Map<string, number>()
   let unknown = unique.length - rows.length
   for (const row of rows) {
-    const code = typeof row.country === 'string' && row.country.trim() ? row.country.trim().toUpperCase() : ''
-    if (code) counts.set(code, (counts.get(code) ?? 0) + 1)
+    const { country } = countryOfUser(row as { country?: string; country_hint?: { code?: string; source?: 'locale' | 'phone' } })
+    if (country) counts.set(country, (counts.get(country) ?? 0) + 1)
     else unknown++
   }
   const countries = [...counts.entries()]

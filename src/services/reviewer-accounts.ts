@@ -6,18 +6,26 @@ import { HttpError } from '../utils/http-error'
 import { log } from '../utils/logger'
 
 /**
- * Accounts that exist only for Google Play's review and pre-launch testing.
+ * Accounts that exist only for Google Play's review and pre-launch testing, and
+ * — since part 2b — the team's own accounts.
  *
- * They keep every feature — a reviewer must be able to use the app — but they
- * are not players, and the console's player numbers must not include them. Two
- * structural rules catch them, and nothing here is a word list:
+ * Both keep every feature (a reviewer must be able to use the app, and the team
+ * tests with its own logins), but neither is a player, and the console's player
+ * numbers must not include them. Two structural rules catch reviewers, and
+ * nothing here is a word list:
  *
  *  - `review_phone`: the account's phone is the review credential's number.
  *  - `number_name`: the display name is shaped like a phone number. Reviewers
  *    type the number from the review instructions into the name field.
  *
- * The flag is sticky: nothing in this module ever removes it. A flag is written
- * as `reviewer: true`; an unflagged account has no key at all, never `false`.
+ * Internal accounts are flagged by their own module (`internal-accounts.ts`) and
+ * join the scope through `internal: true`, so every `reviewers=exclude|include|
+ * only` filter covers both with one read. The parameter keeps its name; the
+ * console calls it "Test and team accounts".
+ *
+ * A reviewer flag is sticky: nothing in this module ever removes it. A flag is
+ * written as `reviewer: true`; an unflagged account has no key at all, never
+ * `false`.
  */
 
 export type ReviewerReason = 'review_phone' | 'number_name'
@@ -123,7 +131,9 @@ async function loadScope(): Promise<{ scope: ReviewerScope; cached: boolean }> {
   let rows: Array<{ _id: ObjectId; install_id?: string }>
   try {
     rows = await mongoColl.users()
-      .find({ reviewer: true }, { projection: { _id: 1, install_id: 1 } })
+      // Review accounts and the team's own accounts, in one read: the filters
+      // that use this scope mean "not a real player", not "flagged as a reviewer".
+      .find({ $or: [{ reviewer: true }, { internal: true }] }, { projection: { _id: 1, install_id: 1 } })
       .toArray()
   } catch (error) {
     // Nothing can be excluded if the set cannot be read, but taking a console
@@ -157,9 +167,9 @@ export const reviewerAccounts = {
   },
 
   /**
-   * The ids to leave out of player numbers: flagged accounts, every install
-   * they signed in on, and their own install. Small enough to hold in memory,
-   * and cached for a minute so one console page is one read.
+   * The ids to leave out of player numbers: review and team accounts, every
+   * install they signed in on, and their own install. Small enough to hold in
+   * memory, and cached for a minute so one console page is one read.
    */
   async scope(): Promise<ReviewerScope> {
     if (cached && Date.now() - cached.at < SCOPE_TTL_MS) return cached.value

@@ -5,8 +5,10 @@ import type { ReviewersMode } from './reviewer-accounts'
 import { effectiveBilling, type EffectiveBilling } from './billing-config.service'
 import {
   calls,
+  countryOfUser,
   coverUrl,
   dayExpression,
+  dayExpressionOn,
   daySeries,
   DAYS_30,
   events,
@@ -18,6 +20,7 @@ import {
   saveTurns,
   storyTurnMatch,
   windowStart,
+  type CountrySource,
   type PersonRef,
   type UserRow,
 } from './admin-insights'
@@ -54,8 +57,10 @@ export type PlayerProfile = {
   sign_in: SignIn
   device: DeviceProfile | null
   app_version: string | null
-  /** `users.country`, or null when no country has ever been known. */
+  /** `users.country`, else the stored hint (part 2b); null when neither is known. */
   country: string | null
+  /** Where that country came from: connection, phone, or the phone's locale setting. */
+  country_source: CountrySource
 }
 
 export type InkView =
@@ -77,6 +82,7 @@ export function signInOf(user: { guest?: boolean; providers?: string[] }): SignI
 
 function profileOf(user: UserRow, latest: LatestSession | undefined): PlayerProfile {
   const device = latest?.device
+  const place = countryOfUser(user)
   return {
     gender: personGender(user.preferences?.gender),
     interests: Array.isArray(user.preferences?.interests) ? user.preferences!.interests! : [],
@@ -86,7 +92,8 @@ function profileOf(user: UserRow, latest: LatestSession | undefined): PlayerProf
       ? { model: device.model ?? null, os_version: device.os_version ?? null, form: device.form }
       : null,
     app_version: latest?.app_version ?? null,
-    country: typeof user.country === 'string' && user.country ? user.country.toUpperCase() : null,
+    country: place.country,
+    country_source: place.source,
   }
 }
 
@@ -286,6 +293,77 @@ async function activity(playerId: ObjectId, now: Date) {
   return days.map((date) => ({ date, turns: turns.get(date) ?? 0, cost_usd: money(costs.get(date) ?? 0) }))
 }
 
+type PlayerSession = { started_at?: Date; last_at?: Date }
+
+/** The player page's 13 full weeks: a calendar, a clock ring and visit lengths. */
+const CALENDAR_DAYS = 91
+
+function round1(value: number): number {
+  return Math.round(value * 10) / 10
+}
+
+/**
+ * The last 91 UTC days of one player's app sessions, and the visit facts the
+ * page derives from them (`everlore-docs/phases/admin-insights.md`, part 2c).
+ *
+ * One bounded read: this player's sessions started in the window. A visit
+ * lasts from `started_at` to `last_at`; a session that never updated `last_at`
+ * is one instant, not a negative visit.
+ */
+async function habitWindow(playerId: ObjectId, now: Date) {
+  const days = daySeries(CALENDAR_DAYS, now)
+  const from = windowStart(CALENDAR_DAYS, now)
+  const [sessionRows, turnRows] = await Promise.all([
+    appSessions()
+      .find(
+        { user_id: playerId, started_at: { $gte: from, $lte: now } },
+        { projection: { started_at: 1, last_at: 1 } },
+      )
+      .toArray(),
+    events().aggregate<{ _id: string; turns: number }>([
+      { $match: { player_id: playerId, created_at: { $gte: from }, ...storyTurnMatch() } },
+      { $group: { _id: dayExpression, turns: { $sum: 1 } } },
+    ]).toArray(),
+  ])
+  const sessions = sessionRows as unknown as PlayerSession[]
+
+  const sessionDays = new Map<string, number>()
+  const hours = Array.from({ length: 24 }, () => 0)
+  const minutes: number[] = []
+  for (const session of sessions) {
+    const started = session.started_at instanceof Date ? session.started_at : null
+    if (!started) continue
+    const date = started.toISOString().slice(0, 10)
+    sessionDays.set(date, (sessionDays.get(date) ?? 0) + 1)
+    hours[started.getUTCHours()]++
+    const last = session.last_at instanceof Date ? session.last_at : started
+    minutes.push(Math.max(0, (last.getTime() - started.getTime()) / 60_000))
+  }
+  const turns = new Map(turnRows.map((row) => [row._id, Number(row.turns ?? 0)]))
+
+  const calendar = days.map((date) => ({
+    date,
+    turns: turns.get(date) ?? 0,
+    sessions: sessionDays.get(date) ?? 0,
+  }))
+
+  minutes.sort((left, right) => left - right)
+  const middle = Math.floor(minutes.length / 2)
+  const median = minutes.length === 0
+    ? null
+    : round1(minutes.length % 2 === 1 ? minutes[middle] : (minutes[middle - 1] + minutes[middle]) / 2)
+
+  return {
+    calendar,
+    hours,
+    sessions_91d: {
+      count: minutes.length,
+      median_minutes: median,
+      longest_minutes: minutes.length > 0 ? round1(minutes[minutes.length - 1]) : null,
+    },
+  }
+}
+
 type OwnedSave = {
   _id: ObjectId
   template_id: ObjectId
@@ -364,13 +442,20 @@ export const playerInsightsService = {
     const base = await playerInsights([user], now)
     const entry = base.get(idString(user._id))!
     const playerId = user._id
-    const [series, worlds] = await Promise.all([activity(playerId, now), playerWorlds(playerId)])
+    const [series, worlds, habits] = await Promise.all([
+      activity(playerId, now),
+      playerWorlds(playerId),
+      habitWindow(playerId, now),
+    ])
     return {
       profile: entry.profile,
       cost_usd_30d: entry.cost_usd_30d,
       ink: entry.ink,
       activity: series,
       worlds,
+      calendar: habits.calendar,
+      hours: habits.hours,
+      sessions_91d: habits.sessions_91d,
     }
   },
 }

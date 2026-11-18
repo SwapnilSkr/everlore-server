@@ -460,7 +460,8 @@ async function worldInsightsDetail(tid: ObjectId, mode: ReviewersMode, now: Date
     .map((row) => {
       // A deleted account still keeps its row and its link; nothing to name it with.
       const person: PersonRef = people.get(idString(row.player)) ?? {
-        id: idString(row.player), name: '', username: '', official: false, reviewer: false, gender: null,
+        id: idString(row.player), name: '', username: '', official: false, reviewer: false,
+        internal: false, internal_reason: null, gender: null,
       }
       return { ...person, turns: row.turns, last_played_at: row.last ? row.last.toISOString() : null }
     })

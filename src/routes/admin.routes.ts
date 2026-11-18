@@ -111,6 +111,14 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
     })]),
   })
   .get('/users/:userId', (ctx) => adminController.getUser(ctx))
+  /**
+   * The team flag ("Contract, part 2b"). Its own route, not a field of the
+   * generic PATCH: turning it on and off also records the override the sweep
+   * honours.
+   */
+  .patch('/users/:userId/internal', (ctx) => adminController.setUserInternal(ctx), {
+    body: t.Object({ internal: t.Boolean() }),
+  })
   .patch('/users/:userId', (ctx) => adminController.patchUser(ctx), { body: AdminPatchBody })
   .patch('/users/:userId/tier', (ctx) => adminController.patchUserTier(ctx), {
     body: AdminSetTierBody,
@@ -124,6 +132,18 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
   .get('/users/:userId/billing', (ctx) => adminController.getUserBilling(ctx))
   .patch('/users/:userId/limits', (ctx) => adminController.patchUserLimits(ctx), {
     body: AdminUserLimitsBody,
+  })
+
+  /**
+   * Most active and coming back ("Contract, part 2b"), and how often people
+   * play ("part 2c"). `days` and `reviewers` are validated in the service so a
+   * bad value is a plain 400 sentence.
+   */
+  .get('/players/top', (ctx) => adminController.getTopPlayers(ctx), {
+    query: t.Object({ days: t.Optional(t.String()), reviewers: t.Optional(t.String()) }),
+  })
+  .get('/players/frequency', (ctx) => adminController.getPlayerFrequency(ctx), {
+    query: t.Object({ days: t.Optional(t.String()), reviewers: t.Optional(t.String()) }),
   })
 
   // Server-wide allowances. Deliberately not under /users: these are the

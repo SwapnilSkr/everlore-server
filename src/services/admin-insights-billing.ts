@@ -301,7 +301,8 @@ export const billingInsights = {
       top_players: topPlayers.map((row) => {
         // A deleted account keeps its id for the link; there is nothing to name it.
         const person: PersonRef = people.get(idString(row.id)) ?? {
-          id: idString(row.id), name: '', username: '', official: false, reviewer: false, gender: null,
+          id: idString(row.id), name: '', username: '', official: false, reviewer: false,
+          internal: false, internal_reason: null, gender: null,
         }
         return {
           ...person,

@@ -40,6 +40,7 @@ const DUMMY_PASSWORD = 'admin-route-guard-audit'
 const ROUTE_BODIES: Record<string, Record<string, unknown>> = {
   'PATCH /admin/users/:userId/tier': { tier: 'free' },
   'PATCH /admin/users/:userId/status': { status: 'active' },
+  'PATCH /admin/users/:userId/internal': { internal: false },
   'POST /admin/users/:userId/ink-grants': { amount: 1, idempotency_key: 'admin-route-guard-audit' },
   'PATCH /admin/reports/:reportId': { action: 'none' },
   'PATCH /admin/worlds/:worldId/moderation': { moderation_status: 'active' },

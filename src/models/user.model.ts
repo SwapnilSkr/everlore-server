@@ -113,6 +113,30 @@ export interface UserDoc {
   reviewer?: true
   reviewer_reason?: 'review_phone' | 'number_name'
   reviewer_at?: Date
+  /**
+   * The team's own accounts: the owner's logins, the official account and test
+   * phones (`everlore-docs/phases/admin-insights.md`, "Contract, part 2b").
+   * They are left out of player numbers exactly as review accounts are, and
+   * carry the reason a rule (or an operator) gave. Absent means a player —
+   * every key here is omitted when it does not apply, never written as null.
+   *
+   * `internal_override: 'off'` is the operator's veto: the sweep never tags
+   * that account again. Turning it on by hand records `manual` unless a rule
+   * already set a reason, which a later sweep keeps.
+   */
+  internal?: true
+  internal_reason?: 'owner' | 'official' | 'test_phone' | 'manual'
+  internal_at?: Date
+  internal_override?: 'on' | 'off'
+  /**
+   * A country guessed from a signal other than the connection, for players seen
+   * before country capture existed. Never overwrites `country`: the console
+   * reads `country ?? country_hint.code`. `phone` is the region of the stored
+   * number, `locale` the region of the latest session's device locale.
+   */
+  country_hint?: { code: string; source: 'locale' | 'phone' }
+  /** UTC day the hint pass last looked at this account; keeps it once a day. */
+  country_hint_day?: string
   last_active_at?: Date
   /**
    * ISO 3166-1 alpha-2 country the player was last seen from, derived offline
