@@ -127,6 +127,18 @@ export async function maintenanceProcessor(job: Job) {
       return { fingerprint, state }
     }
 
+    // A release announced at night is held per device clock and woken at 10:00
+    // its time (update-nudge.md). The build is re-checked here: someone may have
+    // updated overnight, and a nudge to update something they already have is
+    // worse than no nudge.
+    case 'app-update-held': {
+      const { sendHeldAppUpdate } = await import('../../src/services/app-release.service')
+      const { build, playerIds, tzOffsetMinutes } = job.data as {
+        build: number; playerIds: string[]; tzOffsetMinutes: number
+      }
+      return sendHeldAppUpdate({ build, playerIds, tzOffsetMinutes })
+    }
+
     case 'character_projection':
       return characterProjectionProcessor(job)
     case 'repair_character_projections': {

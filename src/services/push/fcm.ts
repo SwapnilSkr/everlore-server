@@ -18,6 +18,8 @@ export interface PushPayload {
     | { type: 'group_direct'; instanceId: string; characterId: string }
     | { type: 'story_reply'; instanceId: string; thread?: 'room' | 'direct' }
     | { type: 'film_ready'; instanceId: string; mediaId: string }
+    /** A new release the owner announced; a tap runs the update check. */
+    | { type: 'app_update'; build: string }
 }
 
 export function directNotification(title: string, name: string, instanceId: string, characterId: string): DirectNotification {
@@ -31,6 +33,24 @@ export function storyReplyNotification(title: string, body: string, instanceId: 
 /** A finished film: the row's own words, and the film a tap opens. */
 export function filmReadyNotification(title: string, body: string, instanceId: string, mediaId: string): PushPayload {
   return { notification: { title, body }, data: { type: 'film_ready', instanceId, mediaId } }
+}
+
+/**
+ * The release nudge (`everlore-docs/phases/update-nudge.md`, "Notification").
+ *
+ * The words are fixed here rather than passed in, so no build number, version
+ * or vendor can ever reach the phone: a tap only opens the app, where Play's
+ * own update check decides what to show. `build` is a string because FCM's
+ * `data` values must be.
+ */
+export function appUpdateNotification(firstNote: string | undefined, build: number): PushPayload {
+  return {
+    notification: {
+      title: 'A new Everlore is here',
+      body: firstNote?.trim() || 'New stories and fixes are waiting',
+    },
+    data: { type: 'app_update', build: String(build) },
+  }
 }
 
 /** No provider response or thrown transport error is logged: either may echo a token. */

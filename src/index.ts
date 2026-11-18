@@ -20,6 +20,7 @@ import { wsRoutes } from './routes/ws.routes'
 import { billingRoutes } from './routes/billing.routes'
 import { webEventRoutes } from './routes/web-event.routes'
 import { telemetryRoutes } from './routes/telemetry.routes'
+import { appReleaseRoutes } from './routes/app-release.routes'
 import { setupRedisPubSub } from './services/play-ws.service'
 import { loadCountryLookup } from './services/geo-country.service'
 import { HttpError } from './utils/http-error'
@@ -153,6 +154,7 @@ async function main() {
     .use(billingRoutes)
     .use(webEventRoutes)
     .use(telemetryRoutes)
+    .use(appReleaseRoutes)
     .use(wsRoutes)
     .listen(env.PORT)
 

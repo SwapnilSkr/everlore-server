@@ -34,6 +34,7 @@ import type {
 } from '../models/billing.model'
 import type { PostProcessOutboxDoc } from '../models/post-process-outbox.model'
 import type { ContentReportDoc } from '../models/content-report.model'
+import { APP_RELEASE_COLLECTION, type AppReleaseDoc } from '../models/app-release.model'
 import { WORLD_DERIVATIONS_COLLECTION } from '../models/world-derivation.model'
 
 let client: MongoClient | null = null
@@ -98,6 +99,9 @@ export const mongoColl = {
   /** Written by the hourly rollup; its row shape belongs to that job (`_id` = the UTC day). */
   appDaily: () => coll<import('../services/telemetry/types').AppDailyDoc>(COLLECTIONS.app_daily),
   billingConfig: () => coll<BillingConfigDoc>(COLLECTIONS.billing_config),
+  /** The Android release singleton (`_id: 'android'`). Named beside its accessor
+   *  rather than in `COLLECTIONS`, which this change does not own. */
+  appRelease: () => coll<AppReleaseDoc>(APP_RELEASE_COLLECTION),
   billingEntitlements: () => coll<WithoutId<BillingEntitlementDoc>>(COLLECTIONS.billing_entitlements),
   storePurchases: () => coll<WithoutId<StorePurchaseDoc>>(COLLECTIONS.store_purchases),
   postProcessOutbox: () => coll<WithoutId<PostProcessOutboxDoc>>(COLLECTIONS.post_process_outbox),
