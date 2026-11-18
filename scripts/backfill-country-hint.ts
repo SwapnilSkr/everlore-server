@@ -39,6 +39,10 @@ export function summarize(report: CountryHintReport, apply: boolean): string {
 if (import.meta.main) {
   try {
     const options = parseBackfillArgs(process.argv.slice(2))
+    // Loaded here, not at the top: the audit imports this file with a fake
+    // database module that has no connect.
+    const { connectMongo } = await import('../src/config/mongo')
+    await connectMongo()
     const report = await internalAccounts.backfillCountryHints(options)
     console.log(summarize(report, options.apply))
     for (const row of report.rows.slice(0, 50)) console.log(`  ${row.id}  ${row.code ?? '(none)'}  ${row.source ?? '-'}`)
