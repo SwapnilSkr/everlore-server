@@ -61,7 +61,8 @@ mock.module('../worker/lib/template-cast-extractor', () => ({ extractTemplateCas
 mock.module('../src/services/moderation.service', () => ({ moderationService: {} }))
 mock.module('../src/services/deletion.service', () => ({ deletionService: {} }))
 mock.module('../src/services/pinecone-cleanup.service', () => ({ deletePineconeVector: unavailable }))
-mock.module('../src/providers/auth.provider', () => ({ sendPhoneOtp: unavailable, verifyPhoneOtp: unavailable, phoneVerifyError: unavailable }))
+// normalizePhone is pure and imported at load by reviewer-accounts, so it stays real.
+mock.module('../src/providers/auth.provider', () => ({ sendPhoneOtp: unavailable, verifyPhoneOtp: unavailable, phoneVerifyError: unavailable, normalizePhone: (phone: string) => { const digits = phone.replace(/\D/g, ''); return digits ? `+${digits}` : '' } }))
 mock.module('../src/providers/firebase-auth.provider', () => ({ verifyFirebaseIdToken: unavailable }))
 mock.module('../src/utils/can-forge', () => ({ canForge: unavailable }))
 mock.module('../src/services/storage.service', () => ({ storageService: {
