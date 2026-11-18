@@ -185,6 +185,13 @@ const MUTATIONS: Mutation[] = [
     expect: 'returning: the new and returning split',
   },
   {
+    name: 'returning means the account is older than the window',
+    file: 'src/services/admin-insights-top.ts',
+    before: 'const returningCohort = entries.filter((entry) => entry.active_days >= 2)',
+    after: 'const returningCohort = entries.filter((entry) => new Date(entry.created_at).getTime() < from.getTime())',
+    expect: 'returning: the new and returning split',
+  },
+  {
     name: 'longest streak',
     file: 'src/services/admin-insights-top.ts',
     before: "    if (active.has(day)) {\n      run++\n      if (run > best) best = run",
@@ -834,21 +841,24 @@ async function runAudit() {
     })
 
     await check('returning: the new and returning split', () => {
+      // Alice came on four days; Bob, Carol and Frank on one day each. Carol
+      // and Frank were made before the window began and are still new, which is
+      // the old rule's mistake.
       assert.deepEqual(
         [top7.returning.active, top7.returning.new, top7.returning.returning],
-        [4, 1, 3],
+        [4, 3, 1],
       )
-      assert.deepEqual(top7.returning.players.map((row) => row.username), ['alice', 'carol', 'frank'])
+      assert.deepEqual(top7.returning.players.map((row) => row.username), ['alice'])
     })
 
     await check('returning: longest streak of consecutive days', () => {
-      assert.equal(top7.returning.players[0].active_days, 4)
-      assert.equal(top7.returning.players[0].streak_days, 4, '2026-11-12..15 are consecutive')
-      assert.equal(top7.returning.players[1].streak_days, 1)
-      assert.equal(top7.returning.players[0].daily.length, 7)
+      const first = top7.returning.players[0]
+      assert.equal(first.active_days, 4)
+      assert.equal(first.streak_days, 4, '2026-11-12..15 are consecutive')
+      assert.equal(first.daily.length, 7)
       // The returning row is the contract's narrower one: no worlds or cost.
       assert.deepEqual(
-        Object.keys(top7.returning.players[0]).sort(),
+        Object.keys(first).sort(),
         ['active_days', 'created_at', 'daily', 'gender', 'id', 'internal', 'internal_reason',
           'last_active_at', 'name', 'official', 'reviewer', 'streak_days', 'turns', 'username'],
       )
@@ -873,6 +883,45 @@ async function runAudit() {
       const badReviewers = await request('/admin/players/top?reviewers=nope')
       assert.equal(badReviewers.status, 400)
       assert.equal(badReviewers.body.error, 'Reviewers must be exclude, include or only.')
+    })
+
+    // ── Coming back is a second day, not an older account ───────────────────
+    //
+    // The two accounts that flip under the old rule: `late` signed up inside the
+    // window and played three days, so it came back; `early` signed up weeks
+    // before it and played one day, so it is new.
+    console.log('coming back')
+    await reset()
+    {
+      const late = user({ username: 'late', created_at: at('2026-11-16T10:00:00.000Z') })
+      const soon = user({ username: 'soon', created_at: at('2026-11-15T10:00:00.000Z') })
+      const early = user({ username: 'early', created_at: at('2026-10-20T10:00:00.000Z') })
+      await c('users').insertMany([late, soon, early])
+      await c('app_sessions').insertMany([
+        session('r-late-1', late._id, '2026-11-12T09:00:00.000Z'),
+        session('r-late-2', late._id, '2026-11-14T09:00:00.000Z'),
+        session('r-late-3', late._id, '2026-11-18T09:00:00.000Z'),
+        session('r-soon-1', soon._id, '2026-11-13T09:00:00.000Z'),
+        session('r-soon-2', soon._id, '2026-11-17T09:00:00.000Z'),
+        session('r-early', early._id, '2026-11-18T09:00:00.000Z'),
+      ])
+    }
+    const byDays = await playerHabitInsights.top('7', ACCOUNTS_HIDDEN, now)
+
+    await check("returning: the days someone came decide, not the account's age", () => {
+      assert.deepEqual(
+        [byDays.returning.active, byDays.returning.new, byDays.returning.returning],
+        [3, 1, 2],
+      )
+      // Three days, then two: the list is by active days, and the account made
+      // inside the window is the one at the top.
+      assert.deepEqual(
+        byDays.returning.players.map((row) => [row.username, row.active_days]),
+        [['late', 3], ['soon', 2]],
+      )
+      const old = byDays.top.find((row) => row.username === 'early')!
+      assert.equal(old.active_days, 1)
+      assert.equal(old.created_at, '2026-10-20T10:00:00.000Z', 'made weeks before the window began')
     })
 
     await check('the players routes are guarded and answer an admin', async () => {

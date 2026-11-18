@@ -244,7 +244,7 @@ function isoOrNull(value: unknown): string | null {
 
 /**
  * `created_at` is always present on a real account; a fixture or a legacy row
- * without one dates from the epoch, which reads as "not new" rather than
+ * without one dates from the epoch, which reads as an old account rather than
  * crashing the console.
  */
 function createdIso(value: unknown): string {
@@ -315,7 +315,6 @@ export const playerHabitInsights = {
         last_active_at: isoOrNull(user?.last_active_at),
         streak_days: longestStreak(new Set(byDay?.keys() ?? []), series),
         daily: daily(series, byDay),
-        created: user?.created_at instanceof Date ? user.created_at : null,
       }
     })
 
@@ -325,9 +324,12 @@ export const playerHabitInsights = {
         || right.active_days - left.active_days
         || left.id.localeCompare(right.id))
       .slice(0, 20)
-      .map(({ streak_days: _streak, created: _created, ...row }) => row)
+      .map(({ streak_days: _streak, ...row }) => row)
 
-    const returningCohort = entries.filter((entry) => !entry.created || entry.created.getTime() < from.getTime())
+    // "Came back" is a second, separate day in the window, not an older
+    // account: someone who signed up last week and played three days came
+    // back, and someone who signed up in September and played one day did not.
+    const returningCohort = entries.filter((entry) => entry.active_days >= 2)
     const returning = {
       active: entries.length,
       new: entries.length - returningCohort.length,
