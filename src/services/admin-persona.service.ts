@@ -4,6 +4,8 @@ import type { PersonaDoc, PersonaGender, PersonaSnapshotDoc } from '../models/pe
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { personaService } from './persona.service'
+import { ACCOUNTS_HIDDEN, type AccountFilter } from './reviewer-accounts'
+import { playerScope } from './admin-insights'
 
 const personas = () => mongoColl.personas()
 const worldInstances = () => mongoColl.worldInstances()
@@ -32,6 +34,8 @@ export type AdminPersonaListOptions = {
   in_use?: 'true' | 'false'
   min_saves?: number
   sort?: AdminPersonaSort
+  /** Which accounts' personas to list; the default leaves non-players out. */
+  accounts?: AccountFilter
 }
 
 export type AdminPersonaOwner = {
@@ -310,6 +314,14 @@ export const adminPersonaService = {
 
     const filter: PersonaFilter = {}
     if (ownerId) filter.player_id = ownerId
+    // A persona belongs to its player, so the operator's account choice applies
+    // here as on every other player list. Asking for one player's personas is
+    // the exception: that page is about them, whichever kind of account it is.
+    if (!ownerId) {
+      const scoped = await playerScope(opts.accounts ?? ACCOUNTS_HIDDEN)
+      const playerId = scoped.player_id as PersonaFilter['player_id']
+      if (playerId) filter.player_id = playerId
+    }
 
     const search = opts.search?.trim()
     if (search) {

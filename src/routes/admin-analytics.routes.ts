@@ -1,7 +1,7 @@
 import { Elysia, t } from 'elysia'
 import { analyticsService } from '../services/telemetry/analytics.service'
 import { pathInsights } from '../services/telemetry/paths.service'
-import { reviewersParam } from '../services/reviewer-accounts'
+import { accountFilter } from '../services/reviewer-accounts'
 import { readPlayVitals } from '../services/play-vitals.service'
 
 /**
@@ -16,9 +16,20 @@ import { readPlayVitals } from '../services/play-vitals.service'
  * unauthenticated caller.
  */
 
+/**
+ * The account choice every player read takes. Validated in the services, so a
+ * bad value is a plain 400 sentence rather than a schema report.
+ */
+const AccountQuery = {
+  show: t.Optional(t.String()),
+  only: t.Optional(t.String()),
+  reviewers: t.Optional(t.String()),
+}
+
 const DaysQuery = t.Object({
   days: t.Optional(t.String()),
   version: t.Optional(t.String()),
+  ...AccountQuery,
 })
 
 const SessionQuery = t.Object({
@@ -30,8 +41,7 @@ const SessionQuery = t.Object({
   version: t.Optional(t.String()),
   limit: t.Optional(t.String()),
   before: t.Optional(t.String()),
-  /** exclude | include | only, validated in the service so a bad value is a 400 sentence. */
-  reviewers: t.Optional(t.String()),
+  ...AccountQuery,
 })
 
 const ErrorsQuery = t.Object({
@@ -56,9 +66,9 @@ const ErrorPatchBody = t.Object({
 })
 
 export const adminAnalyticsRoutes = new Elysia({ prefix: '/analytics' })
-  .get('/funnel', (ctx: { query: { days?: string; reviewers?: string } }) =>
-    analyticsService.funnel(ctx.query.days, ctx.query.reviewers), {
-    query: t.Object({ days: t.Optional(t.String()), reviewers: t.Optional(t.String()) }),
+  .get('/funnel', (ctx: { query: { days?: string; show?: string; only?: string; reviewers?: string } }) =>
+    analyticsService.funnel(ctx.query.days, accountFilter(ctx.query.show, ctx.query.only, ctx.query.reviewers)), {
+    query: t.Object({ days: t.Optional(t.String()), ...AccountQuery }),
   })
 
   .get('/sessions', (ctx: { query: {
@@ -69,30 +79,41 @@ export const adminAnalyticsRoutes = new Elysia({ prefix: '/analytics' })
     version?: string
     limit?: string
     before?: string
+    show?: string
+    only?: string
     reviewers?: string
   } }) => analyticsService.sessions(ctx.query), { query: SessionQuery })
 
   .get('/sessions/:sessionId', (ctx: { params: { sessionId: string } }) =>
     analyticsService.session(ctx.params.sessionId))
 
-  .get('/screens', (ctx: { query: { days?: string; version?: string } }) =>
-    analyticsService.screens(ctx.query.days, ctx.query.version || undefined), { query: DaysQuery })
+  .get('/screens', (ctx: { query: { days?: string; version?: string; show?: string; only?: string; reviewers?: string } }) =>
+    analyticsService.screens(
+      ctx.query.days,
+      ctx.query.version || undefined,
+      accountFilter(ctx.query.show, ctx.query.only, ctx.query.reviewers),
+    ), { query: DaysQuery })
 
   /**
-   * Common session starts and exits ("Contract, part 2"). `reviewers` and `days`
-   * are validated in the service for a plain 400 sentence.
+   * Common session starts and exits ("Contract, part 2"). `days` is validated in
+   * the service for a plain 400 sentence.
    */
-  .get('/paths', (ctx: { query: { days?: string; version?: string; reviewers?: string } }) =>
-    pathInsights.paths(ctx.query.days, ctx.query.version || undefined, reviewersParam(ctx.query.reviewers)), {
+  .get('/paths', (ctx: { query: { days?: string; version?: string; show?: string; only?: string; reviewers?: string } }) =>
+    pathInsights.paths(
+      ctx.query.days,
+      ctx.query.version || undefined,
+      accountFilter(ctx.query.show, ctx.query.only, ctx.query.reviewers),
+    ), {
     query: t.Object({
       days: t.Optional(t.String()),
       version: t.Optional(t.String()),
-      reviewers: t.Optional(t.String()),
+      ...AccountQuery,
     }),
   })
 
-  .get('/actions', (ctx: { query: { days?: string } }) => analyticsService.actions(ctx.query.days), {
-    query: t.Object({ days: t.Optional(t.String()) }),
+  .get('/actions', (ctx: { query: { days?: string; show?: string; only?: string; reviewers?: string } }) =>
+    analyticsService.actions(ctx.query.days, accountFilter(ctx.query.show, ctx.query.only, ctx.query.reviewers)), {
+    query: t.Object({ days: t.Optional(t.String()), ...AccountQuery }),
   })
 
   .get('/errors', (ctx: { query: { view?: string; days?: string } }) =>
@@ -109,8 +130,12 @@ export const adminAnalyticsRoutes = new Elysia({ prefix: '/analytics' })
   .post('/errors/:fp/triage', (ctx: { params: { fp: string } }) =>
     analyticsService.retriage(ctx.params.fp))
 
-  .get('/counters', (ctx: { query: { days?: string } }) => analyticsService.counters(ctx.query.days), {
-    query: t.Object({ days: t.Optional(t.String()) }),
+  .get('/counters', (ctx: { query: { days?: string; show?: string; only?: string; reviewers?: string } }) =>
+    analyticsService.counters(
+      ctx.query.days,
+      accountFilter(ctx.query.show, ctx.query.only, ctx.query.reviewers),
+    ), {
+    query: t.Object({ days: t.Optional(t.String()), ...AccountQuery }),
   })
 
   .get('/vitals', () => readPlayVitals())

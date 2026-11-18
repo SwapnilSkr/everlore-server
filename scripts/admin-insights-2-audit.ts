@@ -79,7 +79,7 @@ try {
   const { pathInsights, collapseRepeats, startSteps, exitSteps } = await import('../src/services/telemetry/paths.service')
   const { retentionInsights } = await import('../src/services/admin-overview-retention.service')
   const { groupInsights } = await import('../src/services/admin-overview-groups.service')
-  const { resetReviewerScopeCache } = await import('../src/services/reviewer-accounts')
+  const { ACCOUNTS_HIDDEN, ACCOUNTS_SHOWN, resetReviewerScopeCache } = await import('../src/services/reviewer-accounts')
   const { HttpError } = await import('../src/utils/http-error')
 
   const DAY = 86_400_000
@@ -177,7 +177,7 @@ try {
   resetReviewerScopeCache()
 
   console.log('audience')
-  const audience = await audienceInsights.audience('30', 'exclude', now)
+  const audience = await audienceInsights.audience('30', ACCOUNTS_HIDDEN, now)
   await check('population is the accounts with a session in the window, reviewers out', () =>
     assert.equal(audience.active_players, 4))
   await check('gender split over active players, with an unset row', () =>
@@ -226,7 +226,7 @@ try {
   await check('a reviewer-heavy window with reviewers=include changes the population', async () => {
     // The four players plus the reviewer account with a session; the flagged
     // install with no account is a session too, but has no account to count.
-    const included = await audienceInsights.audience('30', 'include', now)
+    const included = await audienceInsights.audience('30', ACCOUNTS_SHOWN, now)
     assert.equal(included.active_players, 5)
     assert.deepEqual(included.gender, { male: 2, female: 1, nonbinary: 1, unset: 1 })
   })
@@ -250,7 +250,7 @@ try {
     assert.deepEqual(exitSteps(['a', 'b', 'c', 'd', 'e']), ['c', 'd', 'e']))
   await check('a one-screen session is a path of one', () =>
     assert.deepEqual([startSteps(['play']), exitSteps(['play'])], [['play'], ['play']]))
-  const paths = await pathInsights.paths('30', undefined, 'exclude', now)
+  const paths = await pathInsights.paths('30', undefined, ACCOUNTS_HIDDEN, now)
   // s1, s2, s2b, s3, s4 are inside 30 days and are not reviewers; s5 is 40 days
   // old, s6 is the reviewer's account and s7 their install.
   await check('paths read sessions by last_at in the window, reviewers out', () =>
@@ -273,7 +273,7 @@ try {
         device: { form: 'phone' },
         screen_path: [{ screen: 'play' }, { screen: 'realms' }, { screen: 'realms' }, { screen: 'keepsakes' }, { screen: 'profile' }] },
     ])
-    const filtered = await pathInsights.paths('30', '9.9.9', 'include', now)
+    const filtered = await pathInsights.paths('30', '9.9.9', ACCOUNTS_SHOWN, now)
     assert.equal(filtered.sessions, 2)
     // The 100-step session contributes no start; the short one contributes both.
     assert.equal(filtered.starts.length, 1)
@@ -288,9 +288,9 @@ try {
   await check('a version filter narrows the sessions', async () => {
     // 1.0.14 only: s1, s3, s4 and s2b for the players, s6 (reviewer) and s7
     // (reviewer install, included); s2 is 1.0.12 and must not appear.
-    const v1 = await pathInsights.paths('30', '1.0.14', 'include', now)
+    const v1 = await pathInsights.paths('30', '1.0.14', ACCOUNTS_SHOWN, now)
     assert.equal(v1.sessions, 6)
-    const v12 = await pathInsights.paths('30', '1.0.12', 'include', now)
+    const v12 = await pathInsights.paths('30', '1.0.12', ACCOUNTS_SHOWN, now)
     assert.equal(v12.sessions, 1)
   })
   for (const bad of ['3', '91', 'x']) {
@@ -383,7 +383,7 @@ try {
     opened(people.today, '2026-11-18T08:30:00.000Z', 'today-same-day'),
   ])
   resetReviewerScopeCache()
-  const returns = await audienceInsights.audience('30', 'exclude', clock)
+  const returns = await audienceInsights.audience('30', ACCOUNTS_HIDDEN, clock)
   const female = returns.engagement.find(row => row.gender === 'female')!
   await check('return_d1: eligible from the day after signup, returned on signup + 1', () =>
     // d7In, farBound, pastBound, d1In and yesterday are before today; only d1In
@@ -395,7 +395,7 @@ try {
     assert.deepEqual(female.return_d7, { eligible: 4, returned: 2 }))
   await check('a signup today is not eligible for day-1 or day-7', async () => {
     const earlier = new Date('2026-11-18T00:00:01.000Z')
-    const sameDay = await audienceInsights.audience('30', 'exclude', earlier)
+    const sameDay = await audienceInsights.audience('30', ACCOUNTS_HIDDEN, earlier)
     const row = sameDay.engagement.find(entry => entry.gender === 'female')!
     assert.equal(row.players, 6)
     // `today` signed up on this very day, so eligible counts exclude it.
@@ -404,7 +404,7 @@ try {
   })
 
   console.log('group activity')
-  const groups = await groupInsights.groups('30', 'exclude', now)
+  const groups = await groupInsights.groups('30', ACCOUNTS_HIDDEN, now)
   await check('groups: totals over group saves in the window', () => {
     // Dorm Six has 1 turn today; the no-genre group has 2, four days ago.
     assert.deepEqual(groups.days, 30)

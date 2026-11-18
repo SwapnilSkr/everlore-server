@@ -23,6 +23,18 @@ const SearchPageQuery = t.Composite([
   }),
 ])
 
+/**
+ * The account choice every player read takes: `show` is a comma list of
+ * review/team/test, `only` is `1` to keep just those, and `reviewers` is the
+ * old three-value switch, kept working. Values are validated in the service so a
+ * bad one is a plain 400 sentence rather than a schema report.
+ */
+const AccountQuery = t.Object({
+  show: t.Optional(t.String()),
+  only: t.Optional(t.String()),
+  reviewers: t.Optional(t.String()),
+})
+
 const AdminPatchBody = t.Record(t.String(), t.Any())
 const RequestWorldChangesBody = t.Object({ note: t.String({ minLength: 1, maxLength: 500 }) })
 const AdminGrantInkBody = t.Object({
@@ -74,20 +86,20 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
   .use(adminReleaseRoutes)
 
   .get('/metrics', (ctx) => adminController.metrics(ctx), {
-    query: t.Object({ days: t.Optional(t.String()) }),
+    query: t.Composite([t.Object({ days: t.Optional(t.String()) }), AccountQuery]),
   })
 
-  .get('/overview', () => adminController.overview())
+  .get('/overview', (ctx) => adminController.overview(ctx), { query: AccountQuery })
 
   /**
    * Part 2's extra overview panels: the return grid and group chat activity.
    * `weeks`/`days` are validated in the service for a plain 400 sentence.
    */
   .get('/overview/retention', (ctx) => adminController.getRetention(ctx), {
-    query: t.Object({ weeks: t.Optional(t.String()) }),
+    query: t.Composite([t.Object({ weeks: t.Optional(t.String()) }), AccountQuery]),
   })
   .get('/overview/groups', (ctx) => adminController.getGroupActivity(ctx), {
-    query: t.Object({ days: t.Optional(t.String()) }),
+    query: t.Composite([t.Object({ days: t.Optional(t.String()) }), AccountQuery]),
   })
 
   /**
@@ -96,19 +108,14 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
    * to the accounts with a session in the window.
    */
   .get('/audience', (ctx) => adminController.getAudience(ctx), {
-    query: t.Object({
-      days: t.Optional(t.String()),
-      reviewers: t.Optional(t.String()),
-    }),
+    query: t.Composite([t.Object({ days: t.Optional(t.String()) }), AccountQuery]),
   })
 
   .get('/users', (ctx) => adminController.listUsers(ctx), {
     query: t.Composite([SearchPageQuery, t.Object({
       sort: t.Optional(t.String()),
       since: t.Optional(t.String()),
-      // Validated in the service: a bad value is a 400 sentence, not a schema report.
-      reviewers: t.Optional(t.String()),
-    })]),
+    }), AccountQuery]),
   })
   .get('/users/:userId', (ctx) => adminController.getUser(ctx))
   /**
@@ -140,10 +147,10 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
    * bad value is a plain 400 sentence.
    */
   .get('/players/top', (ctx) => adminController.getTopPlayers(ctx), {
-    query: t.Object({ days: t.Optional(t.String()), reviewers: t.Optional(t.String()) }),
+    query: t.Composite([t.Object({ days: t.Optional(t.String()) }), AccountQuery]),
   })
   .get('/players/frequency', (ctx) => adminController.getPlayerFrequency(ctx), {
-    query: t.Object({ days: t.Optional(t.String()), reviewers: t.Optional(t.String()) }),
+    query: t.Composite([t.Object({ days: t.Optional(t.String()) }), AccountQuery]),
   })
 
   // Server-wide allowances. Deliberately not under /users: these are the
@@ -159,10 +166,7 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
   // Cost and Ink across the server. Values are validated in the service so a
   // bad `days` is a plain 400 sentence; `reviewers` reads as on Players.
   .get('/billing/summary', (ctx) => adminController.getBillingSummary(ctx), {
-    query: t.Object({
-      days: t.Optional(t.String()),
-      reviewers: t.Optional(t.String()),
-    }),
+    query: t.Composite([t.Object({ days: t.Optional(t.String()) }), AccountQuery]),
   })
   .delete('/users/:userId', (ctx) => adminController.deleteUser(ctx))
 
@@ -201,8 +205,8 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
         sort: t.Optional(t.Union([
           t.Literal('created'), t.Literal('players'), t.Literal('turns'), t.Literal('last_played'),
         ])),
-        reviewers: t.Optional(t.String()),
       }),
+      AccountQuery,
     ]),
   })
   .get('/worlds/:worldId', (ctx) => adminController.getWorld(ctx))
@@ -216,9 +220,8 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
         player_id: t.Optional(t.String()),
         template_id: t.Optional(t.String()),
         archived: t.Optional(t.Union([t.Boolean(), t.String()])),
-        // Validated in the service: a bad value is a 400 sentence, as on Players.
-        reviewers: t.Optional(t.String()),
       }),
+      AccountQuery,
     ]),
   })
   .get('/instances/continuity-audits', (ctx) => adminController.listContinuityAuditStatus(ctx), {

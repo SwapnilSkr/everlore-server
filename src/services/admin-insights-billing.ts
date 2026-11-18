@@ -3,7 +3,7 @@ import { mongoColl } from '../config/mongo'
 import { HttpError } from '../utils/http-error'
 import { idString } from '../utils/mongo-id'
 import { effectiveBilling, type EffectiveBilling } from './billing-config.service'
-import type { ReviewersMode } from './reviewer-accounts'
+import { ACCOUNTS_HIDDEN, type AccountFilter } from './reviewer-accounts'
 import {
   calls,
   coverUrl,
@@ -238,10 +238,10 @@ async function worldRollup(from: Date, scope: Record<string, unknown>) {
 }
 
 export const billingInsights = {
-  async summary(daysValue?: string, mode: ReviewersMode = 'exclude', now = new Date()) {
+  async summary(daysValue?: string, accounts: AccountFilter = ACCOUNTS_HIDDEN, now = new Date()) {
     const days = summaryDays(daysValue)
     const from = windowStart(days, now)
-    const scope = await playerScope(mode)
+    const scope = await playerScope(accounts)
     const config = await effectiveBilling()
     const unlimited = config.promo.unlimited
 

@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { idString } from '../utils/mongo-id'
-import { reviewerAccounts, type ReviewersMode } from './reviewer-accounts'
+import { ACCOUNTS_HIDDEN, accountScope, type AccountFilter } from './reviewer-accounts'
 import { signInOf, type SignIn } from './admin-insights-players'
 import {
   countryOfUser,
@@ -22,7 +22,7 @@ import {
  *
  * The population is the accounts with an app session that started in the window:
  * someone who never opened the app is not an audience. Guests are included, and
- * reviewers follow `reviewers` as everywhere else.
+ * review, team and test accounts follow the operator's choice as everywhere else.
  *
  * Every read is bounded: `app_sessions` by `started_at` (its
  * `idx_app_sessions_started` index), and the per-player engagement reads by the
@@ -190,10 +190,10 @@ function ranked(counts: Map<string, number>, field: 'key' | 'code' | 'model' | '
 }
 
 export const audienceInsights = {
-  async audience(daysValue?: string, mode: ReviewersMode = 'exclude', now = new Date()) {
+  async audience(daysValue?: string, accounts: AccountFilter = ACCOUNTS_HIDDEN, now = new Date()) {
     const days = insightDays(daysValue)
     const from = windowStart(days, now)
-    const scope = await sessionScope(mode)
+    const scope = await sessionScope(accounts)
 
     const playerIds = await population(from, scope)
     const userRows = playerIds.length === 0
@@ -263,14 +263,14 @@ export const audienceInsights = {
 
     // The return cohort is "accounts created in the window", which is a wider set
     // than the audience: an account can be created after its only session. It is
-    // read separately so the cohort is not narrowed by the population — but
-    // reviewers still follow `reviewers`, as everywhere.
-    const { userIds: reviewerIds } = await reviewerAccounts.scope()
+    // read separately so the cohort is not narrowed by the population — but the
+    // account choice still applies, as everywhere.
+    const { userIds: accountIds, only } = await accountScope(accounts)
     const signupFilter: Record<string, unknown> = { created_at: { $gte: from, $lte: now } }
-    // `only` keeps just the reviewers' accounts; `exclude` drops them. An empty
-    // reviewer set either way leaves the filter as it was.
-    if (mode === 'only') signupFilter._id = { $in: reviewerIds }
-    else if (mode === 'exclude' && reviewerIds.length > 0) signupFilter._id = { $nin: reviewerIds }
+    // `only` keeps just the chosen kinds; otherwise they are dropped. An empty
+    // set either way leaves the filter as it was.
+    if (only) signupFilter._id = { $in: accountIds }
+    else if (accountIds.length > 0) signupFilter._id = { $nin: accountIds }
     const signups = await users().find(
       signupFilter,
       { projection: { _id: 1, created_at: 1, 'preferences.gender': 1 } },

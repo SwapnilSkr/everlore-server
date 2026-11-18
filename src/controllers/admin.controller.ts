@@ -11,7 +11,7 @@ import {
   saveBillingConfig,
 } from '../services/billing-config.service'
 import { moderationService } from '../services/moderation.service'
-import { reviewersParam } from '../services/reviewer-accounts'
+import { accountFilter, type AccountFilter } from '../services/reviewer-accounts'
 import { billingInsights } from '../services/admin-insights-billing'
 import { audienceInsights } from '../services/admin-audience'
 import { groupInsights } from '../services/admin-overview-groups.service'
@@ -28,6 +28,13 @@ function boolQuery(value: unknown): boolean | undefined {
   return undefined
 }
 
+/** The account choice every player read takes, parsed once by `reviewer-accounts`. */
+type AccountQuery = { show?: string; only?: string; reviewers?: string }
+
+function accountsOf(query: AccountQuery): AccountFilter {
+  return accountFilter(query.show, query.only, query.reviewers)
+}
+
 function pageQuery(query: { page?: number; limit?: number }) {
   return {
     page: query.page ?? 1,
@@ -36,9 +43,10 @@ function pageQuery(query: { page?: number; limit?: number }) {
 }
 
 export const adminController = {
-  metrics: async ({ query }: { query: { days?: string } }) => adminMetricsService.metrics(query.days),
-  overview: async () => ({
-    ...(await adminService.overview()),
+  metrics: async ({ query }: { query: { days?: string } & AccountQuery }) =>
+    adminMetricsService.metrics(query.days, accountsOf(query)),
+  overview: async ({ query }: { query: AccountQuery }) => ({
+    ...(await adminService.overview(accountsOf(query))),
     ...(await moderationService.queueStats()),
   }),
 
@@ -117,14 +125,13 @@ export const adminController = {
     search?: string
     sort?: string
     since?: string
-    reviewers?: string
-  } }) =>
+  } & AccountQuery }) =>
     adminService.listUsers({
       ...pageQuery(query),
       search: query.search,
       sort: query.sort,
       since: query.since,
-      reviewers: reviewersParam(query.reviewers),
+      accounts: accountsOf(query),
     }),
 
   getUser: async ({ params }: { params: { userId: string } }) => adminService.getUser(params.userId),
@@ -137,11 +144,11 @@ export const adminController = {
     adminService.setUserInternal(params.userId, body.internal),
 
   /** Part 2b/2c: the most active players, and the habit aggregates. */
-  getTopPlayers: async ({ query }: { query: { days?: string; reviewers?: string } }) =>
-    playerHabitInsights.top(query.days, reviewersParam(query.reviewers)),
+  getTopPlayers: async ({ query }: { query: { days?: string } & AccountQuery }) =>
+    playerHabitInsights.top(query.days, accountsOf(query)),
 
-  getPlayerFrequency: async ({ query }: { query: { days?: string; reviewers?: string } }) =>
-    playerHabitInsights.frequency(query.days, reviewersParam(query.reviewers)),
+  getPlayerFrequency: async ({ query }: { query: { days?: string } & AccountQuery }) =>
+    playerHabitInsights.frequency(query.days, accountsOf(query)),
 
   patchUser: async ({ params, body }: { params: { userId: string }; body: Record<string, unknown> }) =>
     adminService.updateUser(params.userId, body),
@@ -241,27 +248,27 @@ export const adminController = {
   /**
    * Cost and Ink across the server, over 7/30/90 days.
    *
-   * `days` and `reviewers` are validated in the service so a bad value is a
-   * plain 400 sentence rather than the framework's validation report.
+   * `days` is validated in the service so a bad value is a plain 400 sentence
+   * rather than the framework's validation report.
    */
-  getBillingSummary: async ({ query }: { query: { days?: string; reviewers?: string } }) =>
-    billingInsights.summary(query.days, reviewersParam(query.reviewers)),
+  getBillingSummary: async ({ query }: { query: { days?: string } & AccountQuery }) =>
+    billingInsights.summary(query.days, accountsOf(query)),
 
   /**
    * Part 2's read-only aggregates. Each validates its own parameters in the
    * service, so a bad value is a plain 400 sentence rather than a schema report.
    */
-  getAudience: async ({ query }: { query: { days?: string; reviewers?: string } }) =>
-    audienceInsights.audience(query.days, reviewersParam(query.reviewers)),
+  getAudience: async ({ query }: { query: { days?: string } & AccountQuery }) =>
+    audienceInsights.audience(query.days, accountsOf(query)),
 
-  getSessionPaths: async ({ query }: { query: { days?: string; version?: string; reviewers?: string } }) =>
-    pathInsights.paths(query.days, query.version || undefined, reviewersParam(query.reviewers)),
+  getSessionPaths: async ({ query }: { query: { days?: string; version?: string } & AccountQuery }) =>
+    pathInsights.paths(query.days, query.version || undefined, accountsOf(query)),
 
-  getRetention: async ({ query }: { query: { weeks?: string } }) =>
-    retentionInsights.retention(query.weeks),
+  getRetention: async ({ query }: { query: { weeks?: string } & AccountQuery }) =>
+    retentionInsights.retention(query.weeks, new Date(), accountsOf(query)),
 
-  getGroupActivity: async ({ query }: { query: { days?: string } }) =>
-    groupInsights.groups(query.days),
+  getGroupActivity: async ({ query }: { query: { days?: string } & AccountQuery }) =>
+    groupInsights.groups(query.days, accountsOf(query)),
 
   deleteUser: async ({ params }: { params: { userId: string } }) => adminService.deleteUser(params.userId),
 
@@ -278,8 +285,7 @@ export const adminController = {
       kind?: WorldKind
       source?: WorldSource
       sort?: WorldSort
-      reviewers?: string
-    }
+    } & AccountQuery
   }) =>
     adminService.listWorlds({
       ...pageQuery(query),
@@ -290,7 +296,7 @@ export const adminController = {
       kind: query.kind,
       source: query.source,
       sort: query.sort,
-      reviewers: reviewersParam(query.reviewers),
+      accounts: accountsOf(query),
     }),
 
   getWorld: async ({ params }: { params: { worldId: string } }) => adminService.getWorld(params.worldId),
@@ -309,15 +315,14 @@ export const adminController = {
       player_id?: string
       template_id?: string
       archived?: boolean | string
-      reviewers?: string
-    }
+    } & AccountQuery
   }) =>
     adminService.listInstances({
       ...pageQuery(query),
       player_id: query.player_id,
       template_id: query.template_id,
       archived: boolQuery(query.archived),
-      reviewers: reviewersParam(query.reviewers),
+      accounts: accountsOf(query),
     }),
 
   listContinuityAuditStatus: async ({

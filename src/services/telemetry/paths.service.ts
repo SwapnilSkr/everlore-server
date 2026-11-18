@@ -1,5 +1,5 @@
 import { mongoColl } from '../../config/mongo'
-import type { ReviewersMode } from '../reviewer-accounts'
+import { ACCOUNTS_HIDDEN, type AccountFilter } from '../reviewer-accounts'
 import { insightDays, sessionScope, windowStart } from '../admin-insights'
 
 /**
@@ -18,7 +18,7 @@ import { insightDays, sessionScope, windowStart } from '../admin-insights'
  * step. A session with a single screen is a path of one.
  *
  * The read is one windowed pass over `app_sessions` by `last_at`, narrowed by the
- * optional `app_version` and by the reviewer scope the funnel uses (account and
+ * optional `app_version` and by the account scope the funnel uses (account and
  * install), and nothing else is read.
  */
 
@@ -63,12 +63,12 @@ export const pathInsights = {
   async paths(
     daysValue?: string,
     appVersion?: string,
-    mode: ReviewersMode = 'exclude',
+    accounts: AccountFilter = ACCOUNTS_HIDDEN,
     now = new Date(),
   ) {
     const days = insightDays(daysValue)
     const from = windowStart(days, now)
-    const scope = await sessionScope(mode)
+    const scope = await sessionScope(accounts)
 
     const match: Record<string, unknown> = { last_at: { $gte: from, $lte: now } }
     if (appVersion) match.app_version = appVersion

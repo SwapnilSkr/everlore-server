@@ -4,8 +4,18 @@ import { mongoColl } from '../../config/mongo'
 import { HttpError } from '../../utils/http-error'
 import { log } from '../../utils/logger'
 import { STORY_TURN_TYPES } from '../admin-activity'
+import { sessionScope } from '../admin-insights'
 import { readPlayInstalls } from '../play-installs.service'
-import { reviewerAccounts, reviewersParam, type ReviewerScope } from '../reviewer-accounts'
+import {
+  ACCOUNTS_HIDDEN,
+  accountFilter,
+  accountKindsByIds,
+  accountKindsForInstalls,
+  accountScope,
+  isDefaultAccountFilter,
+  type AccountFilter,
+  type AccountKind,
+} from '../reviewer-accounts'
 import { categoryForClass } from './classify'
 import { compareVersions, versionEntries } from './groups.service'
 import {
@@ -293,34 +303,35 @@ type FunnelCohort = {
   unsignedInstalls: string[]
 }
 
-async function funnelCohort(days: number, now: Date, scope: ReviewerScope | null = null): Promise<FunnelCohort> {
+async function funnelCohort(days: number, now: Date, filter: AccountFilter = ACCOUNTS_HIDDEN): Promise<FunnelCohort> {
   const range = dayRange(days, now)
   const from = new Date(`${range[0]}T00:00:00Z`)
   const window = { $gte: from, $lte: now }
-  // A review account's start, and any merge into or out of one, is not a player
-  // starting; their installs are not first opens either.
-  const userIds = scope?.userIds ?? []
-  const installIds = scope?.installIds ?? []
-  const notReviewer = userIds.length > 0 ? { $nin: userIds } : null
-  const notReviewerInstall = installIds.length > 0 ? { _id: { $nin: installIds } } : {}
+  // A non-player account's start, and any merge into or out of one, is not a
+  // player starting; their installs are not first opens either. `only` turns
+  // the same ids around: then they are the whole cohort.
+  const { userIds, installIds, only } = await accountScope(filter)
+  const userClause = only ? { $in: userIds } : userIds.length > 0 ? { $nin: userIds } : null
+  const installClause = only ? { $in: installIds } : installIds.length > 0 ? { $nin: installIds } : null
   const startRow = {
     $or: [
       { guest_started_at: window },
       { guest_started_at: { $exists: false }, created_at: window },
     ],
-    ...(notReviewer ? { _id: notReviewer } : {}),
+    ...(userClause ? { _id: userClause } : {}),
   }
   const mergeRow = {
     guest_started_at: window,
-    ...(notReviewer ? { guest_id: notReviewer, target_id: notReviewer } : {}),
+    ...(userClause ? { guest_id: userClause, target_id: userClause } : {}),
   }
+  const installFilter = installClause ? { _id: installClause } : {}
 
   const [userRows, mergeRows, firstOpens, unsignedInstalls] = await Promise.all([
     mongoColl.users().find(startRow, { projection: { _id: 1, created_at: 1, guest: 1, guest_started_at: 1, signed_up_at: 1 } }).toArray(),
     mongoColl.guestMerges().find(mergeRow).toArray(),
-    mongoColl.appInstalls().countDocuments({ first_seen: window, ...notReviewerInstall }),
+    mongoColl.appInstalls().countDocuments({ first_seen: window, ...installFilter }),
     mongoColl.appInstalls()
-      .find({ first_seen: window, user_ids: { $exists: false }, ...notReviewerInstall }, { projection: { _id: 1 } })
+      .find({ first_seen: window, user_ids: { $exists: false }, ...installFilter }, { projection: { _id: 1 } })
       .toArray(),
   ])
 
@@ -440,6 +451,40 @@ function dropFilter(cohort: FunnelCohort, step: DropStep): Record<string, unknow
   return { user_id: { $in: ids.map((id) => cohort.playerIds.get(id)!) } }
 }
 
+/**
+ * The window's actions, folded day by day from the raw events, for a read that
+ * has to honour an account choice the stored daily rows cannot express.
+ *
+ * Bounded by the window (7–90 days) and by the account scope; the merge above
+ * is the same one the stored rows go through, so the shape cannot drift.
+ */
+async function liveActionRows(days: number, accounts: AccountFilter): Promise<Array<{ day: string; actions: AppDailyDoc['actions'] }>> {
+  const now = new Date()
+  const range = dayRange(days, now)
+  const from = new Date(`${range[0]}T00:00:00Z`)
+  const scope = await sessionScope(accounts)
+  const match: Record<string, unknown> = { at: { $gte: from, $lte: now } }
+  const events = await mongoColl.appEvents()
+    .find(scope.length > 0 ? { $and: [match, ...scope] } : match, {
+      projection: {
+        name: 1, screen: 1, duration_ms: 1, props: 1, user_id: 1, install_id: 1,
+        session_id: 1, app_version: 1, at: 1,
+      },
+    })
+    .toArray()
+  const byDay = new Map<string, typeof events>()
+  for (const event of events) {
+    const day = utcDayOf(event.at)
+    const list = byDay.get(day) ?? []
+    list.push(event)
+    byDay.set(day, list)
+  }
+  return range.map((day) => ({
+    day,
+    actions: summarizeEvents(byDay.get(day) ?? []).actions,
+  }))
+}
+
 export const analyticsService = {
   /**
    * §4.6 funnel: a cohort by start day, computed from what the server knows for
@@ -447,15 +492,13 @@ export const analyticsService = {
    * counted from `users`, `world_instances` and story events, so a lost event or
    * an opt-out can never make the funnel lie about turns (§2.2).
    */
-  async funnel(daysValue?: string, reviewersValue?: string) {
+  async funnel(daysValue?: string, accounts: AccountFilter = ACCOUNTS_HIDDEN) {
     const days = daysParam(daysValue)
-    const mode = reviewersParam(reviewersValue)
     const now = new Date()
     const range = dayRange(days, now)
-    // Headline funnel: review accounts and their installs are left out by
-    // default. `include` reads the cohort whole; `only` is not a funnel question.
-    const scope = mode === 'include' ? null : await reviewerAccounts.scope()
-    const [installs, cohort] = await Promise.all([readPlayInstalls(), funnelCohort(days, now, scope)])
+    // Headline funnel: non-player accounts and their installs are left out by
+    // default, and `only` narrows the cohort to the kinds the operator chose.
+    const [installs, cohort] = await Promise.all([readPlayInstalls(), funnelCohort(days, now, accounts)])
 
     const sessionSample = (userIds: Iterable<string>) => {
       const ids = [...userIds].map((id) => cohort.playerIds.get(id)!)
@@ -533,17 +576,18 @@ export const analyticsService = {
     version?: string
     limit?: string
     before?: string
+    show?: string
+    only?: string
     reviewers?: string
   }) {
     const limit = limitParam(query.limit)
     const dropStep = dropStepParam(query.dropped_at)
     // `days` only sizes the drop-off cohort, but a bad value is refused either way.
     const days = daysParam(query.days)
-    const mode = reviewersParam(query.reviewers)
-    // Read the scope even for `include`: it is what marks a row, and it is only
-    // applied as a filter when the console asked for reviewers to be left out.
-    const scope = await reviewerAccounts.scope()
-    const filterScope = mode === 'include' ? null : scope
+    const accounts = accountFilter(query.show, query.only, query.reviewers)
+    // Read the scope once: it is both the filter and, for an accountless row,
+    // what says which kind of account the install belonged to.
+    const scope = await accountScope(accounts)
 
     const conditions: Array<Record<string, unknown>> = []
     if (query.user_id) conditions.push({ user_id: objectIdParam(query.user_id, 'user_id') })
@@ -551,25 +595,22 @@ export const analyticsService = {
     if (query.version) conditions.push({ app_version: query.version })
     if (query.before) conditions.push({ started_at: { $lt: dateParam(query.before, 'before') } })
 
-    if (filterScope) {
-      const { userIds, installIds } = filterScope
-      if (mode === 'only') {
-        // A reviewer session is either their account's or their install's.
-        const anyScope = [
-          ...(userIds.length > 0 ? [{ user_id: { $in: userIds } }] : []),
-          ...(installIds.length > 0 ? [{ install_id: { $in: installIds } }] : []),
-        ]
-        // Nothing flagged means nothing to show, and an empty `$or` is invalid.
-        if (anyScope.length === 0) return { items: [], next_before: null }
-        conditions.push({ $or: anyScope })
-      } else {
-        if (userIds.length > 0) conditions.push({ user_id: { $nin: userIds } })
-        if (installIds.length > 0) conditions.push({ install_id: { $nin: installIds } })
-      }
+    if (scope.only) {
+      // A non-player session is either their account's or their install's.
+      const anyScope = [
+        ...(scope.userIds.length > 0 ? [{ user_id: { $in: scope.userIds } }] : []),
+        ...(scope.installIds.length > 0 ? [{ install_id: { $in: scope.installIds } }] : []),
+      ]
+      // Nothing in the choice means nothing to show, and an empty `$or` is invalid.
+      if (anyScope.length === 0) return { items: [], next_before: null }
+      conditions.push({ $or: anyScope })
+    } else {
+      if (scope.userIds.length > 0) conditions.push({ user_id: { $nin: scope.userIds } })
+      if (scope.installIds.length > 0) conditions.push({ install_id: { $nin: scope.installIds } })
     }
 
     if (dropStep) {
-      const drop = dropFilter(await funnelCohort(days, new Date(), filterScope), dropStep)
+      const drop = dropFilter(await funnelCohort(days, new Date(), accounts), dropStep)
       if (!drop) return { items: [], next_before: null }
       conditions.push(drop)
     }
@@ -583,23 +624,31 @@ export const analyticsService = {
     const usernames = await usernamesById(
       rows.map((row) => row.user_id).filter((id): id is ObjectId => Boolean(id)),
     )
-    const reviewerIds = new Set((scope?.userIds ?? []).map((id) => id.toHexString()))
-    const reviewerInstalls = new Set(scope?.installIds ?? [])
-    const items = rows.map((row) => this.sessionItem(row, usernames, this.isReviewerSession(row, reviewerIds, reviewerInstalls)))
+    // Which kind each row is: by its account, or — for a session with no
+    // account — by its install. Both reads are bounded by this page's rows.
+    const [kinds, installKinds] = await Promise.all([
+      accountKindsByIds(rows.map((row) => row.user_id).filter((id): id is ObjectId => Boolean(id))),
+      accountKindsForInstalls(rows.filter((row) => !row.user_id).map((row) => row.install_id)),
+    ])
+    const items = rows.map((row) => this.sessionItem(
+      row,
+      usernames,
+      this.sessionAccount(row, kinds, installKinds),
+    ))
     return {
       items,
       next_before: items.length > 0 ? items[items.length - 1].started_at : null,
     }
   },
 
-  /** The reviewer mark a session item carries when its account or install is in scope. */
-  isReviewerSession(
+  /** The kind of account a session belongs to, if it is one of the non-player kinds. */
+  sessionAccount(
     row: { install_id?: string; user_id?: ObjectId },
-    userIds: Set<string>,
-    installIds: Set<string>,
-  ): boolean {
-    if (row.user_id && userIds.has(row.user_id.toHexString())) return true
-    return !!row.install_id && installIds.has(row.install_id)
+    userKinds: Map<string, AccountKind>,
+    installKinds: Map<string, AccountKind>,
+  ): AccountKind | null {
+    if (row.user_id) return userKinds.get(row.user_id.toHexString()) ?? null
+    return (row.install_id ? installKinds.get(row.install_id) : null) ?? null
   },
 
   sessionItem(
@@ -616,7 +665,7 @@ export const analyticsService = {
       counts?: { actions?: number; errors?: number }
     },
     usernames: Map<string, string>,
-    reviewer = false,
+    account: AccountKind | null = null,
   ) {
     return {
       id: row._id,
@@ -634,8 +683,8 @@ export const analyticsService = {
       actions: row.counts?.actions ?? 0,
       errors: row.counts?.errors ?? 0,
       // Present only on a session whose account or install is flagged, so the
-      // console can say why it is shown when an operator asks for reviewers.
-      ...(reviewer ? { reviewer: true as const } : {}),
+      // console can say which kind of account it is when an operator shows one.
+      ...(account ? { account, ...(account === 'review' ? { reviewer: true as const } : {}) } : {}),
     }
   },
 
@@ -692,22 +741,29 @@ export const analyticsService = {
   /**
    * §4.6 screens over a window.
    *
-   * The default path merges the stored days. A `version` filter narrows to one
-   * app version, which the daily row does not keep per screen, so that path reads
-   * the raw views for the window — sharply bounded by the version itself.
+   * The default path merges the stored days, which cannot say which account a
+   * view came from. A `version` filter, or an account choice other than the
+   * default, therefore reads the raw views for the window: `app_events` and the
+   * ended sessions carry the account and install ids, and the window bounds the
+   * read.
    */
-  async screens(daysValue?: string, version?: string) {
+  async screens(daysValue?: string, version?: string, accounts: AccountFilter = ACCOUNTS_HIDDEN) {
     const days = daysParam(daysValue)
     const now = new Date()
     const rows = await dailyRows(days, now)
     const versions = mergedVersions(rows)
 
-    if (version) {
+    if (version || !isDefaultAccountFilter(accounts)) {
       const range = dayRange(days, now)
       const from = new Date(`${range[0]}T00:00:00Z`)
+      const scope = await sessionScope(accounts)
+      const viewMatch: Record<string, unknown> = { at: { $gte: from, $lte: now }, name: 'screen_view' }
+      if (version) viewMatch.app_version = version
+      const endedMatch: Record<string, unknown> = { last_at: { $gte: from, $lte: now } }
+      if (version) endedMatch.app_version = version
       const [events, ended] = await Promise.all([
         mongoColl.appEvents()
-          .find({ at: { $gte: from, $lte: now }, app_version: version, name: 'screen_view' }, {
+          .find(scope.length > 0 ? { $and: [viewMatch, ...scope] } : viewMatch, {
             projection: {
               name: 1, screen: 1, duration_ms: 1, user_id: 1, install_id: 1, session_id: 1,
               app_version: 1, at: 1,
@@ -716,7 +772,7 @@ export const analyticsService = {
           .sort({ session_id: 1, at: 1 })
           .toArray(),
         mongoColl.appSessions()
-          .find({ app_version: version, last_at: { $gte: from, $lte: now } }, { projection: { screen_path: 1 } })
+          .find(scope.length > 0 ? { $and: [endedMatch, ...scope] } : endedMatch, { projection: { screen_path: 1 } })
           .toArray(),
       ])
       const totals = summarizeEvents(events, ended).screens
@@ -732,7 +788,7 @@ export const analyticsService = {
             next: stats.next,
           }, ended.length))
           .sort((left, right) => right.views - left.views),
-        versions: versions.includes(version) ? versions : [version],
+        versions: version && !versions.includes(version) ? [version] : versions,
       }
     }
 
@@ -743,14 +799,16 @@ export const analyticsService = {
       items: [...totals.entries()]
         .map(([screen, total]) => screenItem(screen, total, sessions))
         .sort((left, right) => right.views - left.views),
-      versions: mergedVersions(rows),
+      versions,
     }
   },
 
   /** §4.6 actions over a window, with the per-day series the console draws. */
-  async actions(daysValue?: string) {
+  async actions(daysValue?: string, accounts: AccountFilter = ACCOUNTS_HIDDEN) {
     const days = daysParam(daysValue)
-    const rows = await dailyRows(days)
+    const rows = isDefaultAccountFilter(accounts)
+      ? await dailyRows(days)
+      : await liveActionRows(days, accounts)
 
     const names = new Set<string>()
     for (const row of rows) for (const name of Object.keys(row.actions)) names.add(name)
@@ -794,9 +852,17 @@ export const analyticsService = {
     }
   },
 
-  /** §4.6 counters: the three classes that never become a group, per day. */
-  async counters(daysValue?: string) {
+  /**
+   * §4.6 counters: the three classes that never become a group, per day.
+   *
+   * The account choice is validated here because every player read takes it,
+   * but it cannot narrow these figures: ingest folds a counter class into
+   * `app_error_counters` by day, class and route only — no account, no install
+   * — and never writes it as an error sample. There is nothing to attribute.
+   */
+  async counters(daysValue?: string, accounts: AccountFilter = ACCOUNTS_HIDDEN) {
     const days = daysParam(daysValue)
+    void accounts
     const rows = await dailyRows(days)
 
     const top: Record<string, number> = {}

@@ -1,7 +1,7 @@
 import { mongoColl } from '../config/mongo'
 import { STORY_TURN_TYPES } from './admin-activity'
 import { traceStore } from './llm-trace.service'
-import { reviewerAccounts } from './reviewer-accounts'
+import { ACCOUNTS_HIDDEN, accountScope, type AccountFilter } from './reviewer-accounts'
 
 const DAY_MS = 86_400_000
 
@@ -57,23 +57,33 @@ function spendFields(spend: SpendWindow): Pick<OverviewSummary, 'spend_today_usd
 }
 
 export const adminOverviewSummaryService = {
-  async summary(now: Date = new Date(), readSpend: SpendReader = liveSpend): Promise<OverviewSummary> {
+  async summary(
+    now: Date = new Date(),
+    readSpend: SpendReader = liveSpend,
+    accounts: AccountFilter = ACCOUNTS_HIDDEN,
+  ): Promise<OverviewSummary> {
     const todayStart = utcDayStart(now)
     const yesterdayStart = new Date(todayStart.getTime() - DAY_MS)
     // The same time of day yesterday: "today so far" compared with "yesterday by
     // now", not a whole yesterday, so a running day never looks like a drop.
     const yesterdaySameTime = new Date(now.getTime() - DAY_MS)
 
-    // Headline numbers: review accounts are not players and are left out. The
-    // event filters take their ids, and only when there are any.
-    const { userIds } = await reviewerAccounts.scope()
+    // Headline numbers: non-player accounts are not players and are left out —
+    // or, with `only`, they are the whole of the figure. The event filters take
+    // their ids, and only when there are any to take.
+    const { userIds, only } = await accountScope(accounts)
     const turnFilter = { type: { $in: STORY_TURN_TYPES } }
-    const playerMatch = userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
+    const playerMatch = only
+      ? { player_id: { $in: userIds } }
+      : userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
+    const userMatch = only
+      ? { _id: { $in: userIds } }
+      : userIds.length > 0 ? { _id: { $nin: userIds } } : {}
     const [livePlayers, turnsToday, turnsYesterday, spend] = await Promise.all([
       // One document per player, so counting documents counts distinct players.
       mongoColl.users().countDocuments({
         last_active_at: { $gte: new Date(now.getTime() - LIVE_WINDOW_MS) },
-        reviewer: { $ne: true as const },
+        ...userMatch,
       }),
       mongoColl.events().countDocuments({ ...turnFilter, ...playerMatch, created_at: { $gte: todayStart, $lte: now } }),
       mongoColl.events().countDocuments({ ...turnFilter, ...playerMatch, created_at: { $gte: yesterdayStart, $lte: yesterdaySameTime } }),

@@ -7,7 +7,7 @@ import { memoryProjectionStatus } from '../models/projection.model'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import { deletionService } from './deletion.service'
-import { reviewerAccounts, type ReviewersMode } from './reviewer-accounts'
+import { ACCOUNTS_HIDDEN, accountScope, accountScopeMatch, type AccountFilter } from './reviewer-accounts'
 import { playerScope } from './admin-insights'
 import { internalAccounts } from './internal-accounts'
 import { playerInsights, playerInsightsService } from './admin-insights-players'
@@ -105,11 +105,16 @@ async function listCollection(
 }
 
 export const adminService = {
-  async overview() {
-    // The headline counts, so review accounts are left out of them: their
-    // accounts, their saves and their events.
-    const { userIds } = await reviewerAccounts.scope()
-    const playerMatch = userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
+  async overview(accounts: AccountFilter = ACCOUNTS_HIDDEN) {
+    // The headline counts, so non-player accounts are left out of them — or,
+    // with `only`, they are the whole of it: accounts, saves and events alike.
+    const { userIds, only } = await accountScope(accounts)
+    const playerMatch = only
+      ? { player_id: { $in: userIds } }
+      : userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
+    const userMatch = only
+      ? { _id: { $in: userIds } }
+      : userIds.length > 0 ? { _id: { $nin: userIds } } : {}
     const [
       totalUsers,
       totalWorlds,
@@ -119,7 +124,7 @@ export const adminService = {
       totalMemories,
       totalCharacters,
     ] = await Promise.all([
-      users().countDocuments({ reviewer: { $ne: true }, internal: { $ne: true } }),
+      users().countDocuments(userMatch),
       worldTemplates().countDocuments({}),
       worldTemplates().countDocuments({ is_published: true }),
       worldInstances().countDocuments(playerMatch),
@@ -139,20 +144,23 @@ export const adminService = {
     }
   },
 
-  async listUsers(opts: { page?: number; limit?: number; search?: string; sort?: string; since?: string; reviewers?: ReviewersMode }) {
+  async listUsers(opts: {
+    page?: number
+    limit?: number
+    search?: string
+    sort?: string
+    since?: string
+    accounts?: AccountFilter
+  }) {
     if (opts.sort !== undefined && opts.sort !== 'created' && opts.sort !== 'last_active') {
       throw new HttpError(400, 'Sort must be created or last_active.')
     }
     const filter: Record<string, unknown> = {}
-    // Review and team accounts are someone's to see on request, not players by
-    // default. One switch covers both, as it does in every other player number.
-    const reviewers = opts.reviewers ?? 'exclude'
-    if (reviewers === 'exclude') {
-      filter.reviewer = { $ne: true }
-      filter.internal = { $ne: true }
-    } else if (reviewers === 'only') {
-      filter.$and = [{ $or: [{ reviewer: true }, { internal: true }] }]
-    }
+    // Review, team and test accounts are someone's to see on request, not
+    // players by default. The clause is the same kind match the scope is built
+    // from, so the list and every count agree about what a kind is.
+    const accountClause = accountScopeMatch(opts.accounts ?? ACCOUNTS_HIDDEN)
+    if (Object.keys(accountClause).length > 0) filter.$and = [accountClause]
     const since = usersSince(opts.since)
     if (since) filter.created_at = { $gte: since }
     if (opts.search) {
@@ -470,15 +478,15 @@ export const adminService = {
     player_id?: string
     template_id?: string
     archived?: boolean
-    reviewers?: ReviewersMode
+    accounts?: AccountFilter
   }) {
     const filter: Record<string, unknown> = {
       ...idFilter('player_id', opts.player_id),
       ...idFilter('template_id', opts.template_id),
-      // Review and team accounts are left out of every other player list, and
-      // a save is a player list too. Asking for one player's saves is the
-      // exception: that page is about them, team account or not.
-      ...(opts.player_id ? {} : await playerScope(opts.reviewers ?? 'exclude')),
+      // Non-player accounts are left out of every other player list, and a save
+      // is a player list too. Asking for one player's saves is the exception:
+      // that page is about them, whichever kind of account it is.
+      ...(opts.player_id ? {} : await playerScope(opts.accounts ?? ACCOUNTS_HIDDEN)),
     }
     if (opts.archived !== undefined) filter['meta.is_archived'] = opts.archived
     return listCollection(worldInstances(), filter, { updated_at: -1 }, opts)

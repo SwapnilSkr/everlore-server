@@ -3,7 +3,7 @@ import { mongoColl } from '../config/mongo'
 import { HttpError } from '../utils/http-error'
 import { idString } from '../utils/mongo-id'
 import { DAY_MS, dayExpressionOn, mondayOf, mondaySeries } from './admin-insights'
-import { reviewerAccounts } from './reviewer-accounts'
+import { ACCOUNTS_HIDDEN, accountScope, type AccountFilter } from './reviewer-accounts'
 
 /**
  * `GET /admin/overview/retention` (`everlore-docs/phases/admin-insights.md`,
@@ -46,19 +46,22 @@ function hasDayInRange(days: Set<string>, start: number, end: number): boolean {
 }
 
 export const retentionInsights = {
-  async retention(weeksValue?: string, now = new Date()) {
+  async retention(weeksValue?: string, now = new Date(), accounts: AccountFilter = ACCOUNTS_HIDDEN) {
     const weeks = retentionWeeks(weeksValue)
     const mondays = mondaySeries(weeks, now)
     const from = new Date(`${mondays[0]}T00:00:00.000Z`)
     // Midnight UTC of today: a week beginning after it has not been reached.
     const todayStart = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
 
-    // Review accounts are not players, so they are out of both the signups and
-    // the activity they would otherwise contribute.
-    const { userIds } = await reviewerAccounts.scope()
+    // Non-player accounts are out of both the signups and the activity they
+    // would otherwise contribute, unless the operator asked to see them.
+    const { userIds, only } = await accountScope(accounts)
+    const accountMatch = only
+      ? { _id: { $in: userIds } }
+      : userIds.length > 0 ? { _id: { $nin: userIds } } : {}
     const cohortUsers = await mongoColl.users()
       .find(
-        { created_at: { $gte: from, $lte: now }, ...(userIds.length > 0 ? { _id: { $nin: userIds } } : {}) },
+        { created_at: { $gte: from, $lte: now }, ...accountMatch },
         { projection: { _id: 1, created_at: 1 } },
       )
       .toArray() as unknown as CohortUser[]

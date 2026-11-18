@@ -1,7 +1,7 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { idString } from '../utils/mongo-id'
-import type { ReviewersMode } from './reviewer-accounts'
+import { ACCOUNTS_HIDDEN, type AccountFilter } from './reviewer-accounts'
 import {
   calls,
   coverUrl,
@@ -42,10 +42,10 @@ export type GroupTotals = {
 type GroupSave = { _id: ObjectId; template_id: ObjectId; player_id: ObjectId }
 
 export const groupInsights = {
-  async groups(daysValue?: string, mode: ReviewersMode = 'exclude', now = new Date()) {
+  async groups(daysValue?: string, accounts: AccountFilter = ACCOUNTS_HIDDEN, now = new Date()) {
     const days = insightDays(daysValue)
     const from = windowStart(days, now)
-    const scope = await playerScope(mode)
+    const scope = await playerScope(accounts)
 
     const groupSaves = await worldInstances()
       .find(

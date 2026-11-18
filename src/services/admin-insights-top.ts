@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { idString } from '../utils/mongo-id'
 import { traceStore } from './llm-trace.service'
-import type { ReviewersMode } from './reviewer-accounts'
+import { ACCOUNTS_HIDDEN, type AccountFilter } from './reviewer-accounts'
 import {
   countryOfUser,
   DAY_MS,
@@ -91,8 +91,8 @@ function bump(activity: Activity, player: string, day: string, field: keyof DayA
  * story turn written. The two scopes are the ones every filter uses, so a
  * reviewer's account and a reviewer's install both drop out.
  */
-async function population(from: Date, now: Date, mode: ReviewersMode): Promise<ObjectId[]> {
-  const [sessionFilter, turnFilter] = await Promise.all([sessionScope(mode), playerScope(mode)])
+async function population(from: Date, now: Date, accounts: AccountFilter): Promise<ObjectId[]> {
+  const [sessionFilter, turnFilter] = await Promise.all([sessionScope(accounts), playerScope(accounts)])
   const sessionMatch: Record<string, unknown> = {
     started_at: { $gte: from, $lte: now },
     user_id: { $exists: true },
@@ -278,12 +278,12 @@ export const playerHabitInsights = {
    * of everyone active into new and returning, with the returning players who
    * came on the most days.
    */
-  async top(daysValue?: string, mode: ReviewersMode = 'exclude', now = new Date()) {
+  async top(daysValue?: string, accounts: AccountFilter = ACCOUNTS_HIDDEN, now = new Date()) {
     const days = insightDays(daysValue)
     const from = windowStart(days, now)
     const series = daySeries(days, now)
-    const sessionFilter = await sessionScope(mode)
-    const ids = await population(from, now, mode)
+    const sessionFilter = await sessionScope(accounts)
+    const ids = await population(from, now, accounts)
     const [activity, worlds, costs, people] = await Promise.all([
       dayActivity(ids, from, now, sessionFilter),
       worldsByPlayer(ids, from, now),
@@ -355,14 +355,14 @@ export const playerHabitInsights = {
    * lasts, when they play, stickiness, and each day's new / returning /
    * resurrected split.
    */
-  async frequency(daysValue?: string, mode: ReviewersMode = 'exclude', now = new Date()) {
+  async frequency(daysValue?: string, accounts: AccountFilter = ACCOUNTS_HIDDEN, now = new Date()) {
     const days = insightDays(daysValue)
     const from = windowStart(days, now)
     const series = daySeries(days, now)
     const extendedFrom = new Date(from.getTime() - TRAILING_MAU_DAYS * DAY_MS)
-    const sessionFilter = await sessionScope(mode)
+    const sessionFilter = await sessionScope(accounts)
 
-    const extendedIds = await population(extendedFrom, now, mode)
+    const extendedIds = await population(extendedFrom, now, accounts)
     const [activity, people] = await Promise.all([
       dayActivity(extendedIds, extendedFrom, now, sessionFilter),
       userRows(extendedIds),

@@ -86,7 +86,7 @@ try {
   const { worldInsights } = await import('../src/services/admin-insights-worlds')
   const { playerInsights, playerInsightsService, signInOf } = await import('../src/services/admin-insights-players')
   const { billingInsights } = await import('../src/services/admin-insights-billing')
-  const { resetReviewerScopeCache } = await import('../src/services/reviewer-accounts')
+  const { ACCOUNTS_HIDDEN, ACCOUNTS_SHOWN, resetReviewerScopeCache } = await import('../src/services/reviewer-accounts')
   const { daySeries, utcDay } = await import('../src/services/admin-insights')
   const { HttpError } = await import('../src/utils/http-error')
   const { adminRoutes } = await import('../src/routes/admin.routes')
@@ -213,7 +213,7 @@ try {
   await check('a world with no saves has zero stats, 7 zero days', () => {
     assert.deepEqual(w3.stats, { players: 0, saves: 0, turns: 0, last_played_at: null, turns_7d: [0, 0, 0, 0, 0, 0, 0], cost_usd_30d: 0 })
   })
-  const withReviewers = await worldInsights.list({ limit: 50, reviewers: 'include' })
+  const withReviewers = await worldInsights.list({ limit: 50, accounts: ACCOUNTS_SHOWN })
   const w1r = withReviewers.items.find(item => item.id === W1.toHexString())!
   await check('reviewers=include counts the reviewer', () => {
     assert.deepEqual([w1r.stats.players, w1r.stats.turns], [4, 134])
@@ -305,7 +305,7 @@ try {
   })
 
   console.log('billing summary')
-  const summary = await billingInsights.summary(undefined, 'exclude', now)
+  const summary = await billingInsights.summary(undefined, ACCOUNTS_HIDDEN, now)
   await check('promo state and window', () => {
     assert.deepEqual([summary.promo.unlimited, summary.promo.daily_turn_cap, summary.days], [true, 200, 30])
     assert.equal(summary.promo.updated_at, ago(2).toISOString())
@@ -335,8 +335,8 @@ try {
     assert.equal(summary.top_worlds[0].creator?.username, 'carl_writes')
     assert.equal(summary.top_worlds[0].cover_url, 'img2')
   })
-  const summary7 = await billingInsights.summary('7', 'exclude', now)
-  const summaryRev = await billingInsights.summary('30', 'include', now)
+  const summary7 = await billingInsights.summary('7', ACCOUNTS_HIDDEN, now)
+  const summaryRev = await billingInsights.summary('30', ACCOUNTS_SHOWN, now)
   await check('7-day window and reviewers=include', () => {
     assert.deepEqual([summary7.days, summary7.daily.length, summary7.cost.turns], [7, 7, 7])
     assert.ok(close(summaryRev.cost.total_usd, 5.96))
@@ -348,7 +348,7 @@ try {
   await c('billing_config').updateOne({ _id: 'singleton' as never }, { $set: { 'promo.unlimited': false } })
   await Bun.sleep(5_100)
   const metered = await playerInsights(rows as never, now)
-  const off = await billingInsights.summary(undefined, 'exclude', now)
+  const off = await billingInsights.summary(undefined, ACCOUNTS_HIDDEN, now)
   await check('metered Ink: ledger balance and spend net of the refund', () => {
     assert.deepEqual(metered.get(bob.toHexString())!.ink, { mode: 'metered', balance: 49, spent_30d: 1 })
     assert.deepEqual([off.promo.unlimited, off.ink.spent_total], [false, 1])

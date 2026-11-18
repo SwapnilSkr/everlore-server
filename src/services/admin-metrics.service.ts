@@ -3,7 +3,7 @@ import { HttpError } from '../utils/http-error'
 import { STORY_TURN_TYPES } from './admin-activity'
 import { onboardingFacets, type OnboardingFacets } from './admin-onboarding'
 import { readPlayInstalls } from './play-installs.service'
-import { reviewerAccounts } from './reviewer-accounts'
+import { ACCOUNTS_HIDDEN, accountScope, type AccountFilter } from './reviewer-accounts'
 
 const DAY_MS = 86400_000
 export function metricsDays(value?: string): number {
@@ -28,19 +28,24 @@ type DayCount = { _id: string; count: number }
 const dayExpression = { $dateToString: { format: '%Y-%m-%d', date: '$created_at', timezone: 'UTC' } }
 
 export const adminMetricsService = {
-  async metrics(value?: string) {
+  async metrics(value?: string, accounts: AccountFilter = ACCOUNTS_HIDDEN) {
     const days = metricsDays(value)
     const now = new Date()
     const series = utcDaySeries(days, now)
     const since = new Date(series[0].date)
-    // Review accounts are not players: out of every headline figure. Only added
-    // when there are any, so a normal deployment's queries are unchanged.
-    const { userIds } = await reviewerAccounts.scope()
-    const reviewerMatch = { reviewer: { $ne: true as const } }
-    const playerMatch = userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
+    // Non-player accounts are not players: out of every headline figure, or —
+    // with `only` — the whole of it. Each match is added only when it has ids,
+    // so a normal deployment's queries are unchanged.
+    const { userIds, only } = await accountScope(accounts)
+    const userMatch = only
+      ? { _id: { $in: userIds } }
+      : userIds.length > 0 ? { _id: { $nin: userIds } } : {}
+    const playerMatch = only
+      ? { player_id: { $in: userIds } }
+      : userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
     const storyMatch = { type: { $in: STORY_TURN_TYPES }, ...playerMatch }
     const [users, saves, storyTotals, userWindow, newSaves, storyDaily, active, installs] = await Promise.all([
-      mongoColl.users().countDocuments(reviewerMatch, { hint: '_id_' }),
+      mongoColl.users().countDocuments(userMatch, { hint: '_id_' }),
       mongoColl.worldInstances().countDocuments(playerMatch, { hint: '_id_' }),
       mongoColl.events().aggregate<{ _id: null; players: number; turns: number }>([
         { $match: storyMatch },
@@ -48,7 +53,7 @@ export const adminMetricsService = {
         { $group: { _id: null, players: { $sum: 1 }, turns: { $sum: '$turns' } } },
       ], { hint: 'idx_events_type_created_player' }).toArray(),
       mongoColl.users().aggregate<OnboardingFacets & { signups: DayCount[] }>([
-        { $match: { created_at: { $gte: since, $lte: now }, ...reviewerMatch } },
+        { $match: { created_at: { $gte: since, $lte: now }, ...userMatch } },
         { $facet: {
           signups: [{ $group: { _id: dayExpression, count: { $sum: 1 } } }],
           ...onboardingFacets(),

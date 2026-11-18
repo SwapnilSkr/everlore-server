@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
-import type { ReviewersMode } from './reviewer-accounts'
+import { ACCOUNTS_HIDDEN, type AccountFilter } from './reviewer-accounts'
 import {
   calls,
   countriesOfPlayers,
@@ -137,9 +137,9 @@ async function templateTotals(templateIds: ObjectId[], scope: Record<string, unk
  * `cost_usd` over the same saves within 30 days. Both reads are one aggregate
  * each, windowed by `created_at`, matched on the page's instance ids.
  */
-export async function worldStats(templateIds: ObjectId[], mode: ReviewersMode, now = new Date()): Promise<Map<string, WorldStatsView>> {
+export async function worldStats(templateIds: ObjectId[], accounts: AccountFilter, now = new Date()): Promise<Map<string, WorldStatsView>> {
   if (templateIds.length === 0) return new Map()
-  const scope = await playerScope(mode)
+  const scope = await playerScope(accounts)
   const days7 = daySeries(7, now)
   const days7Set = new Set(days7)
   const start30 = windowStart(DAYS_30, now)
@@ -202,14 +202,14 @@ export async function worldStats(templateIds: ObjectId[], mode: ReviewersMode, n
 async function orderByStat(
   filter: Record<string, unknown>,
   sort: 'players' | 'turns' | 'last_played',
-  mode: ReviewersMode,
+  accounts: AccountFilter,
 ): Promise<ObjectId[]> {
   const candidates = await worldTemplates()
     .find(filter, { projection: { _id: 1, created_at: 1 } })
     .toArray()
   if (candidates.length === 0) return []
   const ids = candidates.map((row) => row._id)
-  const totals = await templateTotals(ids, await playerScope(mode))
+  const totals = await templateTotals(ids, await playerScope(accounts))
   const created = new Map(candidates.map((row) => [idString(row._id), row.created_at?.getTime() ?? 0]))
 
   const metric = (id: ObjectId): number => {
@@ -265,7 +265,7 @@ export type WorldListOptions = {
   kind?: WorldKind
   source?: WorldSource
   sort?: WorldSort
-  reviewers?: ReviewersMode
+  accounts?: AccountFilter
 }
 
 function paging(opts: { page?: number; limit?: number }) {
@@ -298,11 +298,11 @@ type WorldRow = {
 }
 
 /** Attach `creator`, `cover_url` and `stats` to a page of world rows. */
-async function decorate(rows: WorldRow[], mode: ReviewersMode, now: Date) {
+async function decorate(rows: WorldRow[], accounts: AccountFilter, now: Date) {
   const creatorIds = rows.map((row) => row.creator_id).filter((id): id is ObjectId => id instanceof ObjectId)
   const [creators, stats] = await Promise.all([
     personRefsByIds(creatorIds),
-    worldStats(rows.map((row) => row._id), mode, now),
+    worldStats(rows.map((row) => row._id), accounts, now),
   ])
   return rows.map((row) => {
     const creator = row.creator_id instanceof ObjectId ? creators.get(idString(row.creator_id)) ?? null : null
@@ -373,8 +373,8 @@ const DEPTH_BUCKETS = [
 export type WorldGender = { male: number; female: number; nonbinary: number; unset: number }
 
 /** The extra detail one world shows: its own 30 days, who plays it, how deep. */
-async function worldInsightsDetail(tid: ObjectId, mode: ReviewersMode, now: Date) {
-  const scope = await playerScope(mode)
+async function worldInsightsDetail(tid: ObjectId, accounts: AccountFilter, now: Date) {
+  const scope = await playerScope(accounts)
   const days = daySeries(DAYS_30, now)
   const start30 = windowStart(DAYS_30, now)
 
@@ -482,7 +482,7 @@ export const worldInsights = {
     if (!WORLD_SORTS.includes(sort)) throw new HttpError(400, 'Sort must be created, players, turns or last_played.')
     if (opts.kind && !WORLD_KINDS.includes(opts.kind)) throw new HttpError(400, 'Kind must be world, character or group.')
     if (opts.source && !WORLD_SOURCES.includes(opts.source)) throw new HttpError(400, 'Source must be official or community.')
-    const mode = opts.reviewers ?? 'exclude'
+    const accounts = opts.accounts ?? ACCOUNTS_HIDDEN
     const now = new Date()
     const { limit, page, skip } = paging(opts)
 
@@ -517,7 +517,7 @@ export const worldInsights = {
         .limit(limit)
         .toArray() as WorldRow[]
     } else {
-      const pageIds = (await orderByStat(filter, sort, mode)).slice(skip, skip + limit)
+      const pageIds = (await orderByStat(filter, sort, accounts)).slice(skip, skip + limit)
       if (pageIds.length === 0) rows = []
       else {
         const found = await worldTemplates().find({ _id: { $in: pageIds } }).toArray() as WorldRow[]
@@ -526,17 +526,17 @@ export const worldInsights = {
       }
     }
 
-    return { total, page, limit, items: await decorate(rows, mode, now) }
+    return { total, page, limit, items: await decorate(rows, accounts, now) }
   },
 
-  async get(templateId: string, mode: ReviewersMode = 'exclude') {
+  async get(templateId: string, accounts: AccountFilter = ACCOUNTS_HIDDEN) {
     const tid = parseObjectId(templateId)
     const template = await worldTemplates().findOne({ _id: tid }) as WorldRow | null
     if (!template) throw new HttpError(404, 'World not found')
 
     const now = new Date()
-    const [row] = await decorate([template], mode, now)
-    const insights = await worldInsightsDetail(tid, mode, now)
+    const [row] = await decorate([template], accounts, now)
+    const insights = await worldInsightsDetail(tid, accounts, now)
     const counts = await readCounts(tid)
 
     return {

@@ -96,7 +96,7 @@ const MUTATIONS: Mutation[] = [
   {
     name: 'saves list drops the player scope',
     file: 'src/services/admin.service.ts',
-    before: "      ...(opts.player_id ? {} : await playerScope(opts.reviewers ?? 'exclude')),",
+    before: "      ...(opts.player_id ? {} : await playerScope(opts.accounts ?? ACCOUNTS_HIDDEN)),",
     after: '      ...{},',
     expect: 'the saves list hides a team account unless asked, and shows it by player',
   },
@@ -261,6 +261,37 @@ const MUTATIONS: Mutation[] = [
     after: '    : round1(minutes[middle] ?? 0)',
     expect: 'the player page visit lengths: count, median, longest',
   },
+  {
+    name: 'the test kind is in the scope',
+    file: 'src/services/reviewer-accounts.ts',
+    before: '  const kinds = scopeKinds(filter)\n  const match = accountKindMatch(kinds)',
+    after: "  const kinds = scopeKinds(filter).filter((kind) => kind !== 'test')\n  const match = accountKindMatch(kinds)",
+    expect: 'the default leaves every non-player kind out',
+  },
+  {
+    // The `only` direction is used by the legacy `reviewers=only` contract too,
+    // and that check runs first — either way a list that is not the chosen
+    // kinds alone is caught.
+    name: 'only is the mirror of exclude',
+    file: 'src/services/admin-insights.ts',
+    before: '  if (only) return { player_id: { $in: userIds } }',
+    after: '  if (only && false) return { player_id: { $in: userIds } }',
+    expect: 'the saves list hides a team account unless asked, and shows it by player',
+  },
+  {
+    name: 'a team match claims a review account',
+    file: 'src/services/reviewer-accounts.ts',
+    before: "  return { internal: true, reviewer: { $ne: true }, internal_reason: { $ne: 'test_phone' } }",
+    after: "  return { internal: true, internal_reason: { $ne: 'test_phone' } }",
+    expect: 'show=review keeps the review account and nothing else',
+  },
+  {
+    name: 'the old reviewers parameter still means every kind',
+    file: 'src/services/reviewer-accounts.ts',
+    before: '      show: new Set(mode === \'exclude\' ? [] : ACCOUNT_KINDS),',
+    after: '      show: new Set([]),',
+    expect: '/admin/users hides team accounts by default and reviewers=only shows them',
+  },
 ]
 
 async function runBites() {
@@ -395,12 +426,13 @@ async function runAudit() {
     }))
     const { Elysia } = await import('elysia')
     mock.module('../src/routes/admin-story-engine.routes', () => ({ adminStoryEngineRoutes: new Elysia() }))
-    mock.module('../src/routes/admin-analytics.routes', () => ({ adminAnalyticsRoutes: new Elysia() }))
     mock.module('../src/routes/admin-release.routes', () => ({ adminReleaseRoutes: new Elysia() }))
 
     const { adminRoutes } = await import('../src/routes/admin.routes')
+    const { adminOverviewRoutes } = await import('../src/routes/admin-overview.routes')
+    const { adminPersonaRoutes } = await import('../src/routes/admin-persona.routes')
     const { adminService } = await import('../src/services/admin.service')
-    const { reviewerAccounts, resetReviewerScopeCache } = await import('../src/services/reviewer-accounts')
+    const { reviewerAccounts, ACCOUNTS_HIDDEN, ACCOUNTS_ONLY, ACCOUNTS_SHOWN, resetReviewerScopeCache } = await import('../src/services/reviewer-accounts')
     const { internalAccounts, countryHintOf, internalReasonOf } = await import('../src/services/internal-accounts')
     const { audienceInsights } = await import('../src/services/admin-audience')
     const { pathInsights } = await import('../src/services/telemetry/paths.service')
@@ -426,7 +458,7 @@ async function runAudit() {
         set.status = 422
         return { error: 'Some of the details sent weren\'t valid. Please check them and try again.' }
       }
-    }).use(adminRoutes)
+    }).use(adminRoutes).use(adminOverviewRoutes).use(adminPersonaRoutes)
 
     async function request(path: string, init: { method?: string; body?: unknown; auth?: boolean } = {}) {
       const response = await app.handle(new Request(`http://localhost${path}`, {
@@ -640,11 +672,11 @@ async function runAudit() {
         { _id: officialSave, player_id: official._id, template_id: world._id, meta: { total_events: 5, last_active_at: at('2026-11-17T00:00:00.000Z') } },
         { _id: jonSave, player_id: jon._id, template_id: world._id, meta: { total_events: 2, last_active_at: at('2026-11-17T00:00:00.000Z') } },
       ])
-      const list = await worldInsights.list({ reviewers: 'exclude', page: 1, limit: 10 })
+      const list = await worldInsights.list({ accounts: ACCOUNTS_HIDDEN, page: 1, limit: 10 })
       assert.equal(list.items.length, 1)
       assert.equal(list.items[0].stats.players, 1, 'only the real player')
       assert.equal(list.items[0].stats.saves, 1)
-      const included = await worldInsights.list({ reviewers: 'include', page: 1, limit: 10 })
+      const included = await worldInsights.list({ accounts: ACCOUNTS_SHOWN, page: 1, limit: 10 })
       assert.equal(included.items[0].stats.players, 2)
     })
 
@@ -655,9 +687,9 @@ async function runAudit() {
         // No account at all, on a team member's install: excluded by install.
         session('s-ghost', undefined, '2026-11-17T09:00:00.000Z', { install_id: 'official-install' }),
       ])
-      const excluded = await pathInsights.paths('30', undefined, 'exclude', now)
+      const excluded = await pathInsights.paths('30', undefined, ACCOUNTS_HIDDEN, now)
       assert.equal(excluded.sessions, 1)
-      const included = await pathInsights.paths('30', undefined, 'include', now)
+      const included = await pathInsights.paths('30', undefined, ACCOUNTS_SHOWN, now)
       assert.equal(included.sessions, 3)
     })
 
@@ -701,9 +733,9 @@ async function runAudit() {
       const hidden = await adminService.listInstances({ page: 1, limit: 10 })
       assert.equal(hidden.total, 1)
       assert.deepEqual(idsOf(hidden), [String(realSave)], "the default list is the players' saves")
-      const included = await adminService.listInstances({ page: 1, limit: 10, reviewers: 'include' })
+      const included = await adminService.listInstances({ page: 1, limit: 10, accounts: ACCOUNTS_SHOWN })
       assert.deepEqual(idsOf(included), [String(realSave), String(teamSave)].sort())
-      const only = await adminService.listInstances({ page: 1, limit: 10, reviewers: 'only' })
+      const only = await adminService.listInstances({ page: 1, limit: 10, accounts: ACCOUNTS_ONLY })
       assert.deepEqual(idsOf(only), [String(teamSave)])
       // Asking for one player's saves always answers: that page is about them,
       // team account or not.
@@ -776,7 +808,7 @@ async function runAudit() {
     ])
     resetReviewerScopeCache()
 
-    const top7 = await playerHabitInsights.top('7', 'exclude', now)
+    const top7 = await playerHabitInsights.top('7', ACCOUNTS_HIDDEN, now)
     await check('top players: turns, active days, worlds and cost', () => {
       assert.equal(top7.days, 7)
       assert.deepEqual(top7.top.map((row) => [row.username, row.turns]), [['alice', 4], ['bob', 3], ['carol', 1], ['frank', 0]])
@@ -824,7 +856,7 @@ async function runAudit() {
 
     await check('reviewer and team accounts are left out unless asked for', async () => {
       assert.deepEqual(top7.top.map((row) => row.username), ['alice', 'bob', 'carol', 'frank'])
-      const included = await playerHabitInsights.top('7', 'include', now)
+      const included = await playerHabitInsights.top('7', ACCOUNTS_SHOWN, now)
       assert.equal(included.top.length, 6)
       assert.ok(included.top.some((row) => row.username === 'reviewer1'))
       assert.ok(included.returning.players.every((row) => row.username !== 'team1' || row.internal === true))
@@ -932,7 +964,7 @@ async function runAudit() {
     })
 
     await check('audience splits the sources it read the country from', async () => {
-      const audience = await audienceInsights.audience('30', 'exclude', now)
+      const audience = await audienceInsights.audience('30', ACCOUNTS_HIDDEN, now)
       audienceSample = audience
       assert.deepEqual(audience.country_sources, { connection: 1, phone: 3, phone_setting: 1, unknown: 1 })
       assert.equal(audience.country_unknown, 1)
@@ -953,7 +985,7 @@ async function runAudit() {
       const places = await countriesOfPlayers([phoneUser._id, noSignal._id])
       assert.deepEqual(places, { countries: [{ code: 'IN', players: 1 }], unknown: 1 })
 
-      const top = await playerHabitInsights.top('7', 'exclude', now)
+      const top = await playerHabitInsights.top('7', ACCOUNTS_HIDDEN, now)
       const row = top.top.find((entry) => entry.username === 'phone_user')!
       assert.deepEqual([row.country, row.country_source], ['IN', 'phone'])
     })
@@ -1001,7 +1033,7 @@ async function runAudit() {
       ]
       await c('app_sessions').insertMany(sessions)
     }
-    const frequency30 = await playerHabitInsights.frequency('30', 'exclude', now)
+    const frequency30 = await playerHabitInsights.frequency('30', ACCOUNTS_HIDDEN, now)
 
     await check('active days: the 1, 3, 4 and 15 edges land in their buckets', () => {
       assert.deepEqual(
@@ -1033,7 +1065,7 @@ async function runAudit() {
         visit('m9', q2._id, '2026-11-16T00:30:00.000Z', 5),
       ])
     }
-    const frequencyEdge = await playerHabitInsights.frequency('30', 'exclude', now)
+    const frequencyEdge = await playerHabitInsights.frequency('30', ACCOUNTS_HIDDEN, now)
 
     await check('session minutes: bucket edges from last_at minus started_at', () => {
       // 0.5 · (1, 2) · (5, 5, 10) · 20 · 45 · 90.
@@ -1067,7 +1099,7 @@ async function runAudit() {
         session('l-older', olderUser._id, '2026-11-05T09:00:00.000Z'),
       ])
     }
-    const week = await playerHabitInsights.frequency('7', 'exclude', now)
+    const week = await playerHabitInsights.frequency('7', ACCOUNTS_HIDDEN, now)
 
     await check('stickiness: trailing seven and thirty day windows', () => {
       assert.equal(week.stickiness.length, 7)
@@ -1082,7 +1114,7 @@ async function runAudit() {
 
     await check('partial_from is the first day with a full trailing window', async () => {
       assert.equal(week.partial_from, null, 'seven days never reaches past the 90-day retention')
-      const long = await playerHabitInsights.frequency('90', 'exclude', now)
+      const long = await playerHabitInsights.frequency('90', ACCOUNTS_HIDDEN, now)
       assert.equal(long.partial_from, '2026-09-18')
       assert.equal(long.stickiness.length, 90)
     })
@@ -1103,7 +1135,7 @@ async function runAudit() {
         session('l-never', neverBefore._id, '2026-11-18T09:00:00.000Z'),
       ])
     }
-    const life = await playerHabitInsights.frequency('7', 'exclude', now)
+    const life = await playerHabitInsights.frequency('7', ACCOUNTS_HIDDEN, now)
 
     await check('lifecycle: away 6 days is returning, away 8 is resurrected', () => {
       const last = life.lifecycle[6]
@@ -1157,6 +1189,215 @@ async function runAudit() {
         sessions_91d: detail.sessions_91d,
       }
     }
+
+    // ── The account choice: review, team and test ───────────────────────────
+    //
+    // Four accounts that differ only in what they are: a player, a Play
+    // reviewer (flagged both ways, so review must win), a team account and a
+    // test phone. Each has a save, two turns today and a session today, so
+    // every read below can be read as "how many accounts does this show".
+    console.log('the account choice')
+    await reset()
+    await c('personas').deleteMany({})
+    const choiceNow = new Date()
+    const recently = (days: number) => new Date(choiceNow.getTime() - days * DAY)
+    const choiceWorld = { _id: id(), title: 'Choice World', kind: 'world', created_at: recently(30) }
+    await c('world_templates').insertOne(choiceWorld)
+    const accounts = [
+      { username: 'choice_player', kind: null, row: user({ username: 'choice_player', created_at: recently(2), last_active_at: choiceNow }) },
+      { username: 'choice_review', kind: 'review', row: user({
+        username: 'choice_review', created_at: recently(3), last_active_at: choiceNow,
+        reviewer: true, reviewer_reason: 'number_name', internal: true, internal_reason: 'manual',
+      }) },
+      { username: 'choice_team', kind: 'team', row: user({
+        username: 'choice_team', created_at: recently(4), last_active_at: choiceNow,
+        internal: true, internal_reason: 'owner',
+      }) },
+      { username: 'choice_test', kind: 'test', row: user({
+        username: 'choice_test', created_at: recently(5), last_active_at: choiceNow,
+        internal: true, internal_reason: 'test_phone',
+      }) },
+    ]
+    await c('users').insertMany(accounts.map((account) => account.row))
+    for (const account of accounts) {
+      const save = id()
+      await c('world_instances').insertOne({
+        _id: save, player_id: account.row._id, template_id: choiceWorld._id,
+        meta: { total_events: 2, last_active_at: choiceNow },
+      })
+      await c('events').insertMany([
+        turn(save, account.row._id, choiceNow.toISOString()),
+        turn(save, account.row._id, choiceNow.toISOString()),
+      ])
+      await c('app_sessions').insertOne(session(`choice-${account.username}`, account.row._id, choiceNow.toISOString()))
+      await c('personas').insertOne({
+        _id: id(), player_id: account.row._id, name: `Persona ${account.username}`,
+        gender: 'female', description: '', other_info: '', portraits: {},
+        created_at: recently(6), updated_at: recently(1),
+      })
+    }
+    resetReviewerScopeCache()
+
+    const usernamesOf = (body: { items: Array<{ username?: string }> }) =>
+      body.items.map((row) => row.username ?? '').sort()
+    const topNames = (body: { top: Array<{ username?: string }> }) =>
+      body.top.map((row) => row.username ?? '').sort()
+
+    await check('the default leaves every non-player kind out', async () => {
+      const users = await request('/admin/users?limit=50')
+      assert.equal(users.status, 200)
+      assert.deepEqual(usernamesOf(users.body), ['choice_player'])
+      const top = await request('/admin/players/top?days=7')
+      assert.deepEqual(topNames(top.body), ['choice_player'])
+    })
+
+    await check('show=team adds only the team account', async () => {
+      const users = await request('/admin/users?limit=50&show=team')
+      assert.deepEqual(usernamesOf(users.body), ['choice_player', 'choice_team'])
+      const top = await request('/admin/players/top?days=7&show=team')
+      assert.deepEqual(topNames(top.body), ['choice_player', 'choice_team'])
+    })
+
+    await check('show=review keeps the review account and nothing else', async () => {
+      // The review account carries both flags; review wins, so it is here and
+      // the team account is not.
+      const users = await request('/admin/users?limit=50&show=review')
+      assert.deepEqual(usernamesOf(users.body), ['choice_player', 'choice_review'])
+    })
+
+    await check('only keeps just the chosen kinds', async () => {
+      const users = await request('/admin/users?limit=50&show=review,test&only=1')
+      assert.deepEqual(usernamesOf(users.body), ['choice_review', 'choice_test'])
+      const top = await request('/admin/players/top?days=7&show=review,test&only=1')
+      assert.deepEqual(topNames(top.body), ['choice_review', 'choice_test'])
+    })
+
+    await check('overview counts follow the same choice', async () => {
+      const readings = [
+        ['', { users: 1, world_instances: 1, events: 2 }],
+        ['&show=team', { users: 2, world_instances: 2, events: 4 }],
+        ['&show=review,test&only=1', { users: 2, world_instances: 2, events: 4 }],
+      ] as const
+      for (const [query, expected] of readings) {
+        const body = (await request(`/admin/overview?x=1${query}`)).body
+        assert.deepEqual(
+          [body.users, body.world_instances, body.events],
+          [expected.users, expected.world_instances, expected.events],
+          query || 'default',
+        )
+      }
+    })
+
+    await check('the overview summary follows the same choice', async () => {
+      const readings = [['', [1, 2]], ['&show=team', [2, 4]], ['&show=review,test&only=1', [2, 4]]] as const
+      for (const [query, expected] of readings) {
+        const body = (await request(`/admin/overview/summary?x=1${query}`)).body
+        assert.deepEqual([body.live_players, body.turns_today], [...expected], query || 'default')
+      }
+    })
+
+    await check('metrics follow the same choice', async () => {
+      // The real server creates these at boot; `/admin/metrics` hints them.
+      await Promise.all([
+        c('events').createIndex({ type: 1, created_at: -1, player_id: 1 }, { name: 'idx_events_type_created_player' }),
+        c('users').createIndex({ created_at: -1 }, { name: 'idx_users_created' }),
+        c('world_instances').createIndex({ created_at: -1 }, { name: 'idx_world_instances_created' }),
+      ])
+      const readings = [
+        ['', { users: 1, saves: 1, story_turns: 2 }],
+        ['&show=team', { users: 2, saves: 2, story_turns: 4 }],
+        ['&show=review,test&only=1', { users: 2, saves: 2, story_turns: 4 }],
+      ] as const
+      for (const [query, expected] of readings) {
+        const body = (await request(`/admin/metrics?days=30${query}`)).body
+        assert.deepEqual(
+          [body.totals.users, body.totals.saves, body.totals.story_turns],
+          [expected.users, expected.saves, expected.story_turns],
+          query || 'default',
+        )
+      }
+    })
+
+    await check('retention signups follow the same choice', async () => {
+      const signups = async (query: string) =>
+        ((await request(`/admin/overview/retention?weeks=4${query}`)).body.cohorts as Array<{ signups: number }>)
+          .reduce((sum, cohort) => sum + cohort.signups, 0)
+      assert.equal(await signups(''), 1)
+      assert.equal(await signups('&show=team'), 2)
+      assert.equal(await signups('&show=review,test&only=1'), 2)
+    })
+
+    await check('personas follow the same choice', async () => {
+      const owners = async (query: string) =>
+        ((await request(`/admin/personas?limit=50${query}`)).body.items as Array<{ owner: { username: string } }>)
+          .map((row) => row.owner.username).sort()
+      assert.deepEqual(await owners(''), ['choice_player'])
+      assert.deepEqual(await owners('&show=team'), ['choice_player', 'choice_team'])
+      assert.deepEqual(await owners('&show=review,test&only=1'), ['choice_review', 'choice_test'])
+    })
+
+    await check('instances follow the same choice', async () => {
+      const totals = async (query: string) => (await request(`/admin/instances?limit=50${query}`)).body.total
+      assert.equal(await totals(''), 1)
+      assert.equal(await totals('&show=team'), 2)
+      assert.equal(await totals('&show=review,test&only=1'), 2)
+    })
+
+    await check('the old reviewers parameter equals show=review,team,test', async () => {
+      const names = async (query: string) => usernamesOf((await request(`/admin/users?limit=50${query}`)).body)
+      assert.deepEqual(
+        await names('&reviewers=include'),
+        await names('&show=review,team,test'),
+        'include',
+      )
+      assert.deepEqual(
+        await names('&reviewers=only'),
+        await names('&show=review,team,test&only=1'),
+        'only',
+      )
+      // `show`/`only` win when both are sent, so the console can move over.
+      assert.deepEqual(await names('&reviewers=include&show=team'), ['choice_player', 'choice_team'])
+    })
+
+    await check('a bad kind, a bad only or only with nothing shown is a 400', async () => {
+      const badKind = await request('/admin/users?show=review,ghost')
+      assert.equal(badKind.status, 400)
+      assert.equal(badKind.body.error, 'Show must name review, team or test accounts.')
+      const badOnly = await request('/admin/users?show=team&only=2')
+      assert.equal(badOnly.status, 400)
+      assert.equal(badOnly.body.error, 'Only must be 1.')
+      const nothingShown = await request('/admin/users?only=1')
+      assert.equal(nothingShown.status, 400)
+      assert.equal(nothingShown.body.error, 'Choose at least one kind of account to show when only those are wanted.')
+      // The same parser gates every read, not just this one.
+      const elsewhere = await request('/admin/players/top?show=ghost')
+      assert.equal(elsewhere.status, 400)
+      assert.equal(elsewhere.body.error, 'Show must name review, team or test accounts.')
+    })
+
+    await check('a session row carries the kind of account it belongs to', async () => {
+      const body = (await request('/admin/analytics/sessions?show=review,team,test&only=1&limit=50')).body
+      const kinds = new Map(
+        (body.items as Array<{ user: { username: string } | null; account?: string; reviewer?: true }>)
+          .filter((row) => row.user)
+          .map((row) => [row.user!.username, row.account]),
+      )
+      assert.equal(kinds.get('choice_review'), 'review')
+      assert.equal(kinds.get('choice_team'), 'team')
+      assert.equal(kinds.get('choice_test'), 'test')
+      const review = (body.items as Array<{ user: { username: string } | null; reviewer?: true }>)
+        .find((row) => row.user?.username === 'choice_review')!
+      assert.equal(review.reviewer, true, 'a review session still says reviewer')
+    })
+
+    await check('a read outside the player numbers still answers with a choice attached', async () => {
+      // The console appends the choice to every `/admin` GET, so a route that
+      // does not use it must still accept it rather than refuse the query.
+      const errors = await request('/admin/analytics/errors?show=team')
+      assert.equal(errors.status, 200)
+      const health = await request('/admin/system/health?show=team&only=1')
+      assert.equal(health.status, 200)
+    })
 
     console.log('samples (one JSON line per endpoint, for the report)')
     console.log('internal-patch', JSON.stringify(internalSample))

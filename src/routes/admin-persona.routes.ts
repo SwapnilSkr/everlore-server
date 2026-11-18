@@ -1,6 +1,7 @@
 import { Elysia, t } from 'elysia'
 import { requireAdmin } from '../middleware/admin-auth'
 import { adminPersonaService } from '../services/admin-persona.service'
+import { accountFilter } from '../services/reviewer-accounts'
 
 const AdminPersonaQuery = t.Object({
   page: t.Optional(t.Numeric({ minimum: 1 })),
@@ -14,6 +15,11 @@ const AdminPersonaQuery = t.Object({
   in_use: t.Optional(t.Union([t.Literal('true'), t.Literal('false')])),
   min_saves: t.Optional(t.Integer({ minimum: 1 })),
   sort: t.Optional(t.Union([t.Literal('created'), t.Literal('updated'), t.Literal('saves')])),
+  // The account choice, as on every player list. Validated in the service so a
+  // bad value is a plain 400 sentence.
+  show: t.Optional(t.String()),
+  only: t.Optional(t.String()),
+  reviewers: t.Optional(t.String()),
 })
 
 /**
@@ -25,5 +31,8 @@ const AdminPersonaQuery = t.Object({
  */
 export const adminPersonaRoutes = new Elysia({ prefix: '/admin/personas' })
   .use(requireAdmin)
-  .get('/', (ctx) => adminPersonaService.list(ctx.query), { query: AdminPersonaQuery })
+  .get('/', (ctx) => adminPersonaService.list({
+    ...ctx.query,
+    accounts: accountFilter(ctx.query.show, ctx.query.only, ctx.query.reviewers),
+  }), { query: AdminPersonaQuery })
   .get('/:personaId', (ctx) => adminPersonaService.get(ctx.params.personaId))

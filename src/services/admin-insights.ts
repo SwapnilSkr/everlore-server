@@ -2,7 +2,7 @@ import type { Collection, ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { idString } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
-import { reviewerAccounts, type ReviewersMode } from './reviewer-accounts'
+import { ACCOUNTS_HIDDEN, accountScope, type AccountFilter } from './reviewer-accounts'
 import type { EffectiveBilling } from './billing-config.service'
 import { STORY_TURN_TYPES } from './admin-activity'
 import { traceStore } from './llm-trace.service'
@@ -174,14 +174,14 @@ export async function personRefsByIds(ids: ObjectId[]): Promise<Map<string, Pers
 /**
  * The saves an aggregate may count.
  *
- * `exclude` (the default) drops reviewer accounts' saves, `only` keeps just
- * theirs, and `include` counts everyone. Returned as the `player_id` match so it
- * composes with a template filter instead of replacing it.
+ * The default leaves every review, team and test account's saves out; `show`
+ * narrows that, and `only` keeps just the chosen kinds. Returned as the
+ * `player_id` match so it composes with a template filter instead of replacing
+ * it, and `{}` when nothing needs leaving out.
  */
-export async function playerScope(mode: ReviewersMode = 'exclude'): Promise<Record<string, unknown>> {
-  if (mode === 'include') return {}
-  const { userIds } = await reviewerAccounts.scope()
-  if (mode === 'only') return { player_id: { $in: userIds } }
+export async function playerScope(accounts: AccountFilter = ACCOUNTS_HIDDEN): Promise<Record<string, unknown>> {
+  const { userIds, only } = await accountScope(accounts)
+  if (only) return { player_id: { $in: userIds } }
   return userIds.length > 0 ? { player_id: { $nin: userIds } } : {}
 }
 
@@ -225,19 +225,18 @@ export function mondaySeries(weeks: number, now: Date = new Date()): string[] {
 }
 
 /**
- * The `app_sessions` filter that leaves review accounts out, by account and by
- * install — the same two keys the funnel uses, since a reviewer's session may
- * carry either.
+ * The `app_sessions` filter a read must apply, by account and by install — the
+ * same two keys the funnel uses, since a non-player session may carry either.
+ * The default leaves every kind out; `only` keeps just the chosen ones.
  */
-export async function sessionScope(mode: ReviewersMode = 'exclude'): Promise<Record<string, unknown>[]> {
-  if (mode === 'include') return []
-  const { userIds, installIds } = await reviewerAccounts.scope()
-  if (mode === 'only') {
+export async function sessionScope(accounts: AccountFilter = ACCOUNTS_HIDDEN): Promise<Record<string, unknown>[]> {
+  const { userIds, installIds, only } = await accountScope(accounts)
+  if (only) {
     const any = [
       ...(userIds.length > 0 ? [{ user_id: { $in: userIds } }] : []),
       ...(installIds.length > 0 ? [{ install_id: { $in: installIds } }] : []),
     ]
-    // An empty `$or` is invalid; "only reviewers" with none flagged matches nothing.
+    // An empty `$or` is invalid; "only these" with none flagged matches nothing.
     return any.length > 0 ? [{ $or: any }] : [{ _id: { $in: [] } }]
   }
   return [

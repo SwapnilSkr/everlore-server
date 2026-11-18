@@ -39,6 +39,7 @@ import { adminOverviewSummaryService } from '../src/services/admin-overview-summ
 import { analyticsService } from '../src/services/telemetry/analytics.service'
 import { appDailyRollupService } from '../src/services/telemetry/rollup.service'
 import {
+  ACCOUNTS_SHOWN,
   numberNameFilter,
   resetReviewerScopeCache,
   reviewerAccounts,
@@ -131,6 +132,7 @@ function matches(doc: Doc, filter: Doc): boolean {
   return Object.entries(filter).every(([key, cond]) => {
     if (key === '$or') return (cond as Doc[]).some((inner) => matches(doc, inner))
     if (key === '$and') return (cond as Doc[]).every((inner) => matches(doc, inner))
+    if (key === '$nor') return !(cond as Doc[]).some((inner) => matches(doc, inner))
     const value = getPath(doc, key)
     if (isOperator(cond)) {
       if ('$exists' in cond) return (value !== undefined) === cond.$exists
@@ -699,7 +701,7 @@ try {
     assert.equal(step('first_open'), 2, 'the two untouched installs')
     assert.equal(step('started'), 1, 'only the real guest started')
 
-    const included = await analyticsService.funnel('30', 'include')
+    const included = await analyticsService.funnel('30', ACCOUNTS_SHOWN)
     assert.equal(included.steps.find((entry) => entry.key === 'started')!.count, 2)
   })
 
