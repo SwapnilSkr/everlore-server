@@ -21,6 +21,7 @@ import { billingRoutes } from './routes/billing.routes'
 import { webEventRoutes } from './routes/web-event.routes'
 import { telemetryRoutes } from './routes/telemetry.routes'
 import { setupRedisPubSub } from './services/play-ws.service'
+import { loadCountryLookup } from './services/geo-country.service'
 import { HttpError } from './utils/http-error'
 import { httpLoggerPlugin } from './plugins/http-logger.plugin'
 import { validationResponse } from './utils/validation-response'
@@ -40,6 +41,9 @@ async function main() {
   await connectMongo()
   await connectRedis()
   setupRedisPubSub()
+  // Read once here so requests never pay for the file; a missing file only
+  // disables country capture and leaves the API running.
+  loadCountryLookup()
 
   const app = new Elysia()
     .use(cors({ origin: env.CLIENT_ORIGINS }))

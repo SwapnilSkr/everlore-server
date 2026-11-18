@@ -122,6 +122,8 @@ export type AppSessionDoc = {
   app_version: string
   build: number
   device: DeviceInfo
+  /** ISO country of the connection the batch arrived from; omitted when unknown. */
+  country?: string
   /** Last 100 steps only; a session longer than that keeps its tail. */
   screen_path?: ScreenStep[]
   counts: { events: number; errors: number; actions: number }

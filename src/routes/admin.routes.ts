@@ -109,6 +109,14 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
   .put('/billing/config', (ctx) => adminController.putBillingConfig(ctx), {
     body: AdminBillingConfigBody,
   })
+  // Cost and Ink across the server. Values are validated in the service so a
+  // bad `days` is a plain 400 sentence; `reviewers` reads as on Players.
+  .get('/billing/summary', (ctx) => adminController.getBillingSummary(ctx), {
+    query: t.Object({
+      days: t.Optional(t.String()),
+      reviewers: t.Optional(t.String()),
+    }),
+  })
   .delete('/users/:userId', (ctx) => adminController.deleteUser(ctx))
 
   // Moderation queue. Reports are listed in triage order by default
@@ -137,6 +145,16 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
       t.Object({
         creator_id: t.Optional(t.String()),
         published: t.Optional(t.Union([t.Boolean(), t.String()])),
+        // New filters, validated by the schema so an unknown value is refused
+        // rather than silently ignored. `creator` is free text (a name or a
+        // username), the rest are closed sets; `reviewers` reads as on Players.
+        creator: t.Optional(t.String({ maxLength: 120 })),
+        kind: t.Optional(t.Union([t.Literal('world'), t.Literal('character'), t.Literal('group')])),
+        source: t.Optional(t.Union([t.Literal('official'), t.Literal('community')])),
+        sort: t.Optional(t.Union([
+          t.Literal('created'), t.Literal('players'), t.Literal('turns'), t.Literal('last_played'),
+        ])),
+        reviewers: t.Optional(t.String()),
       }),
     ]),
   })

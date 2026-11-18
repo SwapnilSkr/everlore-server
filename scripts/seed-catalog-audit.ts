@@ -60,6 +60,8 @@ mock.module('../src/utils/protagonist', () => ({ deriveProtagonist: unavailable 
 mock.module('../worker/lib/template-cast-extractor', () => ({ extractTemplateCast: async () => { casts++; return [{ name: 'Fixture Cast', persona: 'An adult traveller.' }] } }))
 mock.module('../src/services/moderation.service', () => ({ moderationService: {} }))
 mock.module('../src/services/deletion.service', () => ({ deletionService: {} }))
+// admin.service reaches billing config through its insight fields; seeding never reads it.
+mock.module('../src/services/billing-config.service', () => ({ effectiveBilling: unavailable }))
 mock.module('../src/services/pinecone-cleanup.service', () => ({ deletePineconeVector: unavailable }))
 // normalizePhone is pure and imported at load by reviewer-accounts, so it stays real.
 mock.module('../src/providers/auth.provider', () => ({ sendPhoneOtp: unavailable, verifyPhoneOtp: unavailable, phoneVerifyError: unavailable, normalizePhone: (phone: string) => { const digits = phone.replace(/\D/g, ''); return digits ? `+${digits}` : '' } }))

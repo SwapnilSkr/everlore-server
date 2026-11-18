@@ -381,6 +381,8 @@ const COLLECTIONS = [
   'users', 'app_installs', 'app_sessions', 'app_events', 'app_errors', 'app_error_groups',
   'app_error_counters', 'app_daily', 'guest_merges', 'events', 'world_instances', 'world_templates',
   'memories', 'characters',
+  // Read by the Players page's insight fields (admin-insights-players.ts).
+  'generation_logs', 'ink_ledger', 'media_usage', 'billing_config',
 ]
 
 const fakes = Object.fromEntries(COLLECTIONS.map((name) => [name, fakeColl(name)]))
@@ -399,6 +401,10 @@ Object.assign(mongoColl, {
   worldTemplates: () => fakes.world_templates,
   memories: () => fakes.memories,
   characters: () => fakes.characters,
+  generationLogs: () => fakes.generation_logs,
+  inkLedger: () => fakes.ink_ledger,
+  mediaUsage: () => fakes.media_usage,
+  billingConfig: () => fakes.billing_config,
 })
 
 // ─────────────────────────────────────────────────────────────────────────────

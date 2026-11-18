@@ -12,6 +12,8 @@ import {
 } from '../services/billing-config.service'
 import { moderationService } from '../services/moderation.service'
 import { reviewersParam } from '../services/reviewer-accounts'
+import { billingInsights } from '../services/admin-insights-billing'
+import type { WorldKind, WorldSort, WorldSource } from '../services/admin-insights-worlds'
 import type { ReportAction, ReportReason, ReportStatus, ReportTargetType } from '../models/content-report.model'
 
 function boolQuery(value: unknown): boolean | undefined {
@@ -217,18 +219,43 @@ export const adminController = {
   getUserBilling: async ({ params }: { params: { userId: string } }) =>
     billingService.adminAccountSnapshot(params.userId),
 
+  /**
+   * Cost and Ink across the server, over 7/30/90 days.
+   *
+   * `days` and `reviewers` are validated in the service so a bad value is a
+   * plain 400 sentence rather than the framework's validation report.
+   */
+  getBillingSummary: async ({ query }: { query: { days?: string; reviewers?: string } }) =>
+    billingInsights.summary(query.days, reviewersParam(query.reviewers)),
+
   deleteUser: async ({ params }: { params: { userId: string } }) => adminService.deleteUser(params.userId),
 
   listWorlds: async ({
     query,
   }: {
-    query: { page?: number; limit?: number; search?: string; creator_id?: string; published?: boolean | string }
+    query: {
+      page?: number
+      limit?: number
+      search?: string
+      creator_id?: string
+      published?: boolean | string
+      creator?: string
+      kind?: WorldKind
+      source?: WorldSource
+      sort?: WorldSort
+      reviewers?: string
+    }
   }) =>
     adminService.listWorlds({
       ...pageQuery(query),
       search: query.search,
       creator_id: query.creator_id,
       published: boolQuery(query.published),
+      creator: query.creator,
+      kind: query.kind,
+      source: query.source,
+      sort: query.sort,
+      reviewers: reviewersParam(query.reviewers),
     }),
 
   getWorld: async ({ params }: { params: { worldId: string } }) => adminService.getWorld(params.worldId),

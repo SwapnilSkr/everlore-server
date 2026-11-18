@@ -21,7 +21,8 @@ import { parseEnvelope } from '../services/telemetry/schema'
  *   - **429 with `Retry-After`**, because unlike a beacon the app must keep its
  *     queue and come back.
  *
- * The address is used for the per-IP limit and is never stored.
+ * The address is used for the per-IP limit and to derive a country code
+ * offline; the address itself is never stored.
  */
 const MAX_BODY_BYTES = 64 * 1024
 
@@ -87,6 +88,6 @@ export const telemetryRoutes = new Elysia({ prefix: '/app' })
       return { error: 'Too many requests' }
     }
 
-    const accepted = await telemetryService.ingest(batch, user?.id ?? null)
+    const accepted = await telemetryService.ingest(batch, user?.id ?? null, address)
     return { accepted }
   })

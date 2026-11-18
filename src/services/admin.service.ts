@@ -8,6 +8,8 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import { deletionService } from './deletion.service'
 import { reviewerAccounts, type ReviewersMode } from './reviewer-accounts'
+import { playerInsights, playerInsightsService } from './admin-insights-players'
+import { worldInsights, type WorldListOptions } from './admin-insights-worlds'
 import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
 import { vectorStore } from './vector-store'
@@ -169,7 +171,22 @@ export const adminService = {
         ]),
       ]).toArray(),
     ])
-    return { total, page, limit, items: rows.map((row: Document) => serialize({ ...row, onboarding: userOnboarding(row) })) }
+    // The added insight fields are computed for this page's rows only, in one
+    // pass keyed by player id: no list-wide scan of logs, sessions or media.
+    const insights = await playerInsights(rows as never[])
+    return {
+      total,
+      page,
+      limit,
+      items: rows.map((row: Document) => {
+        const extra = insights.get(idString(row._id))
+        return serialize({
+          ...row,
+          onboarding: userOnboarding(row),
+          ...(extra ? { profile: extra.profile, cost_usd_30d: extra.cost_usd_30d, ink: extra.ink } : {}),
+        })
+      }),
+    }
   },
 
   async getUser(userId: string) {
@@ -194,6 +211,9 @@ export const adminService = {
         events: eventsCount,
         memories: memoriesCount,
       },
+      // The profile card, its 30-day chart and the worlds this player played,
+      // all read for this one account.
+      ...(await playerInsightsService.detail(user as never)),
     }
   },
 
@@ -294,17 +314,10 @@ export const adminService = {
     return deletionService.deleteAccount(userId)
   },
 
-  async listWorlds(opts: { page?: number; limit?: number; search?: string; creator_id?: string; published?: boolean }) {
-    const filter: Record<string, unknown> = { ...idFilter('creator_id', opts.creator_id) }
-    if (opts.published !== undefined) filter.is_published = opts.published
-    if (opts.search) {
-      filter.$or = [
-        { title: { $regex: opts.search, $options: 'i' } },
-        { slug: { $regex: opts.search, $options: 'i' } },
-        { description: { $regex: opts.search, $options: 'i' } },
-      ]
-    }
-    return listCollection(worldTemplates(), filter, { created_at: -1 }, opts)
+  async listWorlds(opts: WorldListOptions) {
+    // The filters, sort and per-page stats live together in the insights module;
+    // existing params keep their meaning, and the new ones are validated there.
+    return worldInsights.list(opts)
   },
 
   async listWorldReview() {
@@ -391,40 +404,9 @@ export const adminService = {
   },
 
   async getWorld(templateId: string) {
-    const tid = parseObjectId(templateId)
-    const template = await worldTemplates().findOne({ _id: tid })
-    if (!template) throw new HttpError(404, 'World not found')
-    const [instances, eventsCount, memoriesCount, charactersCount, generationStats] = await Promise.all([
-      worldInstances().countDocuments({ template_id: tid }),
-      events()
-        .aggregate([{ $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } }, { $match: { 'i.template_id': tid } }, { $count: 'count' }])
-        .toArray(),
-      memories()
-        .aggregate([{ $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } }, { $match: { 'i.template_id': tid } }, { $count: 'count' }])
-        .toArray(),
-      characters()
-        .aggregate([{ $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } }, { $match: { 'i.template_id': tid } }, { $count: 'count' }])
-        .toArray(),
-      generationLogs()
-        .aggregate([
-          { $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } },
-          { $match: { 'i.template_id': tid } },
-          { $group: { _id: null, count: { $sum: 1 }, tokens_in: { $sum: { $ifNull: ['$tokens_in', 0] } }, tokens_out: { $sum: { $ifNull: ['$tokens_out', 0] } } } },
-        ])
-        .toArray(),
-    ])
-    return {
-      world: serialize(template),
-      counts: {
-        instances,
-        events: Number(eventsCount[0]?.count || 0),
-        memories: Number(memoriesCount[0]?.count || 0),
-        characters: Number(charactersCount[0]?.count || 0),
-        generation_logs: Number(generationStats[0]?.count || 0),
-        tokens_in: Number(generationStats[0]?.tokens_in || 0),
-        tokens_out: Number(generationStats[0]?.tokens_out || 0),
-      },
-    }
+    // Same `world` and `counts` as before, plus the creator, cover, stats and
+    // the single-world insights block.
+    return worldInsights.get(templateId)
   },
 
   async updateWorld(templateId: string, data: Record<string, unknown>) {

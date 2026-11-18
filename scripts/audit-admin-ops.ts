@@ -339,6 +339,8 @@ try {
     }
   })
   await check('user routes combine since search sort and attach onboarding to list and detail', async () => {
+    const emptyCursor = { sort: () => emptyCursor, toArray: async () => [] }
+    const noRows = { aggregate: () => ({ toArray: async () => [] }) }
     const row = { _id: userId, preferences: { player_name: 'Mira' }, providers: ['phone'] }
     const filters: unknown[] = []
     const pipelines: Document[][] = []
@@ -347,10 +349,16 @@ try {
         countDocuments: async (filter: unknown) => { filters.push(filter); return 1 },
         aggregate: (pipeline: Document[]) => { pipelines.push(pipeline); return { toArray: async () => [row] } },
       }),
-      worldInstances: () => ({ countDocuments: async () => 0 }),
-      worldTemplates: () => ({ countDocuments: async () => 0 }),
+      worldInstances: () => ({ countDocuments: async () => 0, find: () => emptyCursor }),
+      worldTemplates: () => ({ countDocuments: async () => 0, find: () => emptyCursor }),
       events: () => ({ countDocuments: async () => 0 }),
       memories: () => ({ countDocuments: async () => 0 }),
+      // The insight fields' reads (admin-insights-players.ts): a player with no
+      // sessions, turns, Ink rows or media yet.
+      appSessions: () => noRows,
+      generationLogs: () => noRows,
+      inkLedger: () => noRows,
+      mediaUsage: () => noRows,
     })
     env.ADMIN_USERNAME = 'offline-admin'
     env.ADMIN_PASSWORD = 'offline-fixture'

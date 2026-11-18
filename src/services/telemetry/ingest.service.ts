@@ -1,11 +1,13 @@
 import { ObjectId } from 'mongodb'
 import { mongoColl } from '../../config/mongo'
+import { countryOf } from '../geo-country.service'
 import { log } from '../../utils/logger'
 import { classifyError, isGroupClass } from './classify'
 import { fingerprintError, topFrameOf } from './fingerprint'
 import { upsertErrorGroup } from './groups.service'
 import { normalizeError, normalizeEvent, NON_ACTION_EVENTS, type ItemContext } from './schema'
 import { triageService } from './triage.service'
+import { recordUserCountry } from './user-country.service'
 import type {
   AppErrorClass,
   AppErrorDoc,
@@ -218,6 +220,7 @@ async function upsertSession(
   batch: TelemetryBatch,
   now: Date,
   userId: ObjectId | undefined,
+  country: string | undefined,
   acceptedEvents: NormalizedEvent[],
   acceptedErrors: NormalizedError[],
 ): Promise<void> {
@@ -236,6 +239,13 @@ async function upsertSession(
 
   const actions = acceptedEvents.filter((event) => !NON_ACTION_EVENTS.has(event.name)).length
 
+  // `country` is derived from the connection, never from the payload. It rides
+  // on the same write as the rest of the session so a batch costs no extra
+  // round trip, and it is simply absent when the lookup could not name one.
+  const set: Partial<Pick<AppSessionDoc, 'user_id' | 'country'>> = {}
+  if (userId) set.user_id = userId
+  if (country) set.country = country
+
   await sessions().updateOne(
     { _id: batch.session_id },
     {
@@ -253,7 +263,7 @@ async function upsertSession(
         'counts.errors': acceptedErrors.length,
         'counts.actions': actions,
       },
-      ...(userId ? { $set: { user_id: userId } } : {}),
+      ...(Object.keys(set).length > 0 ? { $set: set } : {}),
       ...(steps.length > 0
         ? { $push: { screen_path: { $each: steps, $slice: -MAX_SCREEN_STEPS } } }
         : {}),
@@ -362,10 +372,13 @@ export const telemetryService = {
    *
    * `userId` is the optional authenticated user (§4.1 allows no token at all);
    * when present it is stamped on this batch and linked to the install.
+   * `address` is the connection address the route already used for its limit.
+   * It is read for its country and then dropped: nothing below stores or logs it.
    */
-  async ingest(batch: TelemetryBatch, userId: string | null): Promise<number> {
+  async ingest(batch: TelemetryBatch, userId: string | null, address?: string): Promise<number> {
     const now = new Date()
     const userObjectId = toUserId(userId)
+    const country = countryOf(address)
     const ctx: ItemContext = {
       installId: batch.install_id,
       sessionId: batch.session_id,
@@ -382,10 +395,14 @@ export const telemetryService = {
 
     // The two rollup rows are derived from what was kept, never from what was
     // sent, so a duplicate batch cannot inflate a session or a funnel count.
-    await upsertSession(batch, now, userObjectId, acceptedEvents, acceptedErrors)
+    await upsertSession(batch, now, userObjectId, country, acceptedEvents, acceptedErrors)
 
     const newLink = await upsertInstall(batch, now, userObjectId)
     if (userObjectId && newLink) await backfillSessionUser(batch, userObjectId)
+
+    // Anonymous players have no document to update; a batch with no known
+    // country never touches the user at all.
+    if (userObjectId && country) await recordUserCountry(userObjectId, country, utcDay(now))
 
     return acceptedEvents.length + acceptedErrors.length
   },

@@ -114,6 +114,16 @@ export interface UserDoc {
   reviewer_reason?: 'review_phone' | 'number_name'
   reviewer_at?: Date
   last_active_at?: Date
+  /**
+   * ISO 3166-1 alpha-2 country the player was last seen from, derived offline
+   * from the connection address. Refreshed at most once a UTC day; `country_day`
+   * is the day of that write and exists to make the once-a-day check cheap.
+   * Absent when no country has ever been known.
+   */
+  country?: string
+  country_day?: string
+  /** The first country ever known for this account. Set once, never rewritten. */
+  signup_country?: string
   created_at: Date
   updated_at: Date
 }
