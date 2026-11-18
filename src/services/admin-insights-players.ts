@@ -1,37 +1,41 @@
-import type { ObjectId } from 'mongodb'
+import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { idString } from '../utils/mongo-id'
 import type { ReviewersMode } from './reviewer-accounts'
 import { effectiveBilling, type EffectiveBilling } from './billing-config.service'
 import {
+  calls,
   coverUrl,
   dayExpression,
   daySeries,
   DAYS_30,
+  events,
+  groupSaveSet,
   inkEquivalent,
   money,
   personGender,
   personRefsByIds,
   saveTurns,
+  storyTurnMatch,
   windowStart,
   type PersonRef,
   type UserRow,
 } from './admin-insights'
 
 /**
- * Player aggregates (`everlore-docs/phases/admin-insights.md`, part 1).
+ * Player aggregates (`everlore-docs/phases/admin-insights.md`, parts 1 and 2).
  *
  * Read-only, and computed for the rows on the page only: a page's `profile`,
- * `cost_usd_30d` and `ink` are three bounded reads keyed by the page's player
- * ids. The player page's own 30-day `activity` and `worlds` are likewise keyed
- * by that one player.
+ * `cost_usd_30d` and `ink` are bounded reads keyed by the page's player ids.
+ * The player page's own 30-day `activity` and `worlds` are likewise keyed by
+ * that one player. Turns come from `events` (solo and group chat alike) and cost
+ * from `llm_calls`, which is the only place background calls appear.
  */
 
 const users = () => mongoColl.users()
 const appSessions = () => mongoColl.appSessions()
 const worldInstances = () => mongoColl.worldInstances()
 const worldTemplates = () => mongoColl.worldTemplates()
-const generationLogs = () => mongoColl.generationLogs()
 const inkLedger = () => mongoColl.inkLedger()
 const mediaUsage = () => mongoColl.mediaUsage()
 
@@ -50,6 +54,8 @@ export type PlayerProfile = {
   sign_in: SignIn
   device: DeviceProfile | null
   app_version: string | null
+  /** `users.country`, or null when no country has ever been known. */
+  country: string | null
 }
 
 export type InkView =
@@ -80,6 +86,7 @@ function profileOf(user: UserRow, latest: LatestSession | undefined): PlayerProf
       ? { model: device.model ?? null, os_version: device.os_version ?? null, form: device.form }
       : null,
     app_version: latest?.app_version ?? null,
+    country: typeof user.country === 'string' && user.country ? user.country.toUpperCase() : null,
   }
 }
 
@@ -115,18 +122,45 @@ async function latestSessions(playerIds: ObjectId[]): Promise<Map<string, Latest
   return new Map(rows.map((row) => [idString(row.user_id), row]))
 }
 
-/** Turn count and summed model cost per player over a window, from generation_logs. */
-async function playerCosts(playerIds: ObjectId[], from: Date): Promise<Map<string, { turns: number; cost: number }>> {
-  if (playerIds.length === 0) return new Map()
-  const rows = await generationLogs().aggregate<{ _id: ObjectId; turns: number; cost: number }>([
-    { $match: { player_id: { $in: playerIds }, created_at: { $gte: from } } },
-    { $group: {
-      _id: '$player_id',
-      turns: { $sum: 1 },
-      cost: { $sum: { $ifNull: ['$turn_cost_usd', 0] } },
-    } },
+/**
+ * Story turns per player over a window, from `events`.
+ *
+ * The same rows the Overview counts, so a group chat player's turns show here
+ * exactly as a solo player's do. `solo` is what an Ink equivalent may price: a
+ * group turn reserves 0 Ink (`billing.service.ts` `reserveGroupTurn`).
+ */
+async function playerTurns(
+  playerIds: ObjectId[],
+  from: Date,
+): Promise<{ turns: Map<string, number>; solo: Map<string, number> }> {
+  if (playerIds.length === 0) return { turns: new Map(), solo: new Map() }
+  const rows = await events().aggregate<{ _id: { player: ObjectId; instance: ObjectId }; turns: number }>([
+    { $match: { player_id: { $in: playerIds }, created_at: { $gte: from }, ...storyTurnMatch() } },
+    { $group: { _id: { player: '$player_id', instance: '$instance_id' }, turns: { $sum: 1 } } },
   ]).toArray()
-  return new Map(rows.map((row) => [idString(row._id), { turns: row.turns, cost: Number(row.cost ?? 0) }]))
+  const groupIds = await groupSaveSet(rows.map((row) => row._id.instance).filter((id): id is ObjectId => id instanceof ObjectId))
+  const turns = new Map<string, number>()
+  const solo = new Map<string, number>()
+  for (const row of rows) {
+    if (!row._id.player) continue
+    const key = idString(row._id.player)
+    const count = Number(row.turns ?? 0)
+    turns.set(key, (turns.get(key) ?? 0) + count)
+    if (!(row._id.instance && groupIds.has(idString(row._id.instance)))) {
+      solo.set(key, (solo.get(key) ?? 0) + count)
+    }
+  }
+  return { turns, solo }
+}
+
+/** Model cost per player over a window, from every priced call in `llm_calls`. */
+async function playerCosts(playerIds: ObjectId[], from: Date): Promise<Map<string, number>> {
+  if (playerIds.length === 0) return new Map()
+  const rows = await calls().aggregate<{ _id: ObjectId; cost: number }>([
+    { $match: { player_id: { $in: playerIds }, created_at: { $gte: from } } },
+    { $group: { _id: '$player_id', cost: { $sum: { $ifNull: ['$cost_usd', 0] } } } },
+  ]).toArray()
+  return new Map(rows.map((row) => [idString(row._id), Number(row.cost ?? 0)]))
 }
 
 /** Ink balance from the ledger (never frozen mid-write), and spend over the window. */
@@ -202,8 +236,9 @@ export async function playerInsights(
   const start30 = windowStart(DAYS_30, now)
   const config = await effectiveBilling()
 
-  const [sessions, costs, ink, media] = await Promise.all([
+  const [sessions, turnCounts, costs, ink, media] = await Promise.all([
     latestSessions(playerIds),
+    playerTurns(playerIds, start30),
     playerCosts(playerIds, start30),
     inkFor(playerIds, start30),
     config.promo.unlimited ? mediaCounts(playerIds, start30) : Promise.resolve(new Map<string, number>()),
@@ -212,15 +247,15 @@ export async function playerInsights(
   const out = new Map<string, { profile: PlayerProfile; cost_usd_30d: number; ink: InkView }>()
   for (const row of rows) {
     const key = idString(row._id)
-    const cost = costs.get(key)
     const balance = ink.get(key)
     out.set(key, {
       profile: profileOf(row, sessions.get(key)),
-      cost_usd_30d: money(cost?.cost ?? 0),
+      cost_usd_30d: money(costs.get(key) ?? 0),
       ink: inkView(config.promo, {
         balance: balance?.balance ?? 0,
         spent_30d: balance?.spent_30d ?? 0,
-        turns: cost?.turns ?? 0,
+        // Ink is priced on solo turns: a group turn reserved 0.
+        turns: turnCounts.solo.get(key) ?? 0,
         media: media.get(key) ?? 0,
       }, config),
     })
@@ -230,20 +265,25 @@ export async function playerInsights(
 
 /**
  * The activity series a player page shows: 30 days of turns and cost, every day
- * present. Read from `generation_logs` with a window and the one `player_id`.
+ * present. Turns are `events`, cost is `llm_calls`; both are windowed and matched
+ * on the one `player_id`.
  */
 async function activity(playerId: ObjectId, now: Date) {
   const days = daySeries(DAYS_30, now)
   const start30 = windowStart(DAYS_30, now)
-  const rows = await generationLogs().aggregate<{ _id: string; turns: number; cost_usd: number }>([
-    { $match: { player_id: playerId, created_at: { $gte: start30 } } },
-    { $group: { _id: dayExpression, turns: { $sum: 1 }, cost_usd: { $sum: { $ifNull: ['$turn_cost_usd', 0] } } } },
-  ]).toArray()
-  const byDay = new Map(rows.map((row) => [row._id, row]))
-  return days.map((date) => {
-    const row = byDay.get(date)
-    return { date, turns: row?.turns ?? 0, cost_usd: money(row?.cost_usd ?? 0) }
-  })
+  const [turnRows, costRows] = await Promise.all([
+    events().aggregate<{ _id: string; turns: number }>([
+      { $match: { player_id: playerId, created_at: { $gte: start30 }, ...storyTurnMatch() } },
+      { $group: { _id: dayExpression, turns: { $sum: 1 } } },
+    ]).toArray(),
+    calls().aggregate<{ _id: string; cost_usd: number }>([
+      { $match: { player_id: playerId, created_at: { $gte: start30 } } },
+      { $group: { _id: dayExpression, cost_usd: { $sum: { $ifNull: ['$cost_usd', 0] } } } },
+    ]).toArray(),
+  ])
+  const turns = new Map(turnRows.map((row) => [row._id, row.turns]))
+  const costs = new Map(costRows.map((row) => [row._id, row.cost_usd]))
+  return days.map((date) => ({ date, turns: turns.get(date) ?? 0, cost_usd: money(costs.get(date) ?? 0) }))
 }
 
 type OwnedSave = {

@@ -1,5 +1,7 @@
 import { Elysia, t } from 'elysia'
 import { analyticsService } from '../services/telemetry/analytics.service'
+import { pathInsights } from '../services/telemetry/paths.service'
+import { reviewersParam } from '../services/reviewer-accounts'
 import { readPlayVitals } from '../services/play-vitals.service'
 
 /**
@@ -75,6 +77,19 @@ export const adminAnalyticsRoutes = new Elysia({ prefix: '/analytics' })
 
   .get('/screens', (ctx: { query: { days?: string; version?: string } }) =>
     analyticsService.screens(ctx.query.days, ctx.query.version || undefined), { query: DaysQuery })
+
+  /**
+   * Common session starts and exits ("Contract, part 2"). `reviewers` and `days`
+   * are validated in the service for a plain 400 sentence.
+   */
+  .get('/paths', (ctx: { query: { days?: string; version?: string; reviewers?: string } }) =>
+    pathInsights.paths(ctx.query.days, ctx.query.version || undefined, reviewersParam(ctx.query.reviewers)), {
+    query: t.Object({
+      days: t.Optional(t.String()),
+      version: t.Optional(t.String()),
+      reviewers: t.Optional(t.String()),
+    }),
+  })
 
   .get('/actions', (ctx: { query: { days?: string } }) => analyticsService.actions(ctx.query.days), {
     query: t.Object({ days: t.Optional(t.String()) }),

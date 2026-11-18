@@ -29,6 +29,9 @@ function ensureIndexes(store: TraceStore): Promise<unknown> {
     ensureStoryEngineLogIndexes(),
     store.calls.createIndex({ instance_id: 1, sequence: 1 }),
     store.calls.createIndex({ created_at: -1 }),
+    // The console's per-player cost reads are windowed by `created_at` and
+    // matched on `player_id`: one index serves both halves.
+    store.calls.createIndex({ player_id: 1, created_at: -1 }),
     store.calls.createIndex({ purpose: 1, created_at: -1 }),
     store.calls.createIndex({ model: 1, created_at: -1 }),
     store.bodies.createIndex({ created_at: 1 }, { expireAfterSeconds: BODY_TTL_SECONDS }),

@@ -1,8 +1,13 @@
 /**
- * Admin insights (`everlore-docs/phases/admin-insights.md`, part 1): the real
- * worlds, players and billing insight services, and the real admin guard,
- * against a disposable mongod this script starts and owns. No env file, no
- * network, no configured database.
+ * Admin insights (`everlore-docs/phases/admin-insights.md`, parts 1 and 2): the
+ * real worlds, players, billing, audience, paths, retention and group services,
+ * and the real admin guard, against a disposable mongod this script starts and
+ * owns. No env file, no network, no configured database.
+ *
+ * Part 2 corrected every source: story turns are `events` (solo and group chat)
+ * and model cost is `llm_calls` (every priced call, background ones included).
+ * `generation_logs` is not seeded at all — a figure that still read it would be
+ * zero here, and the checks below would fail.
  */
 import assert from 'node:assert/strict'
 import { mkdtemp, open } from 'node:fs/promises'
@@ -27,7 +32,11 @@ const client = new MongoClient(`mongodb://127.0.0.1:${port}/admin_insights_audit
 
 let passed = 0
 async function check(name: string, fn: () => unknown) {
-  await fn()
+  try {
+    await fn()
+  } catch (error) {
+    throw new Error(`${name}: ${(error as Error).message}`)
+  }
   passed++
   console.log(`  ok  ${name}`)
 }
@@ -47,12 +56,17 @@ try {
       throw new Error(`admin insights audit read env.${String(key)}`)
     },
   }) }))
-  mock.module('../src/config/mongo', () => ({ mongoColl: {
-    users: () => c('users'), worldTemplates: () => c('world_templates'), worldInstances: () => c('world_instances'),
-    generationLogs: () => c('generation_logs'), events: () => c('events'), memories: () => c('memories'),
-    characters: () => c('characters'), appSessions: () => c('app_sessions'), appInstalls: () => c('app_installs'),
-    inkLedger: () => c('ink_ledger'), mediaUsage: () => c('media_usage'), billingConfig: () => c('billing_config'),
-  } }))
+  // `coll` is the path the trace store and the other services take; every
+  // collection name resolves to this throwaway database.
+  mock.module('../src/config/mongo', () => ({
+    coll: (name: string) => c(name),
+    mongoColl: {
+      users: () => c('users'), worldTemplates: () => c('world_templates'), worldInstances: () => c('world_instances'),
+      generationLogs: () => c('generation_logs'), events: () => c('events'), memories: () => c('memories'),
+      characters: () => c('characters'), appSessions: () => c('app_sessions'), appInstalls: () => c('app_installs'),
+      inkLedger: () => c('ink_ledger'), mediaUsage: () => c('media_usage'), billingConfig: () => c('billing_config'),
+    },
+  }))
   mock.module('../src/providers/auth.provider', () => ({ normalizePhone: (p: string) => p }))
   mock.module('../src/middleware/rate-limit', () => ({ rateLimit: async () => ({ allowed: true, remaining: 1, retryAfter: 0 }) }))
   mock.module('../src/services/admin-session.service', () => ({
@@ -87,18 +101,18 @@ try {
   await c('users').insertMany([
     { _id: official, username: 'Everlore', preferences: {} },
     { _id: carl, username: 'carl_writes', preferences: { player_name: 'Carl' } },
-    { _id: alice, username: 'alice01', providers: ['google'], preferences: {
+    { _id: alice, username: 'alice01', providers: ['google'], country: 'IN', preferences: {
       player_name: 'Alice', gender: 'female', interests: ['fantasy', 'romance', 'horror', 'scifi'], nsfw_enabled: true } },
-    { _id: bob, username: 'bob', providers: ['phone'], preferences: { gender: 'male' } },
+    { _id: bob, username: 'bob', providers: ['phone'], country: 'US', preferences: { gender: 'male' } },
     { _id: sam, username: 'guest_sam', guest: true, providers: ['google'], preferences: { gender: 'non_binary' } },
-    { _id: rev, username: 'reviewer', reviewer: true, preferences: { gender: 'male' } },
+    { _id: rev, username: 'reviewer', reviewer: true, country: 'GB', preferences: { gender: 'male' } },
   ])
 
   // Worlds: official, community character, an official group, a world whose creator is gone.
   const W1 = id(), W2 = id(), G1 = id(), W3 = id()
   await c('world_templates').insertMany([
-    { _id: W1, title: 'Iron Coast', kind: 'world', creator_id: official, image_thumb_url: 'thumb1', image_url: 'img1', created_at: ago(50) },
-    { _id: W2, title: 'Mira', kind: 'character', creator_id: carl, image_url: 'img2', created_at: ago(40) },
+    { _id: W1, title: 'Iron Coast', kind: 'world', creator_id: official, image_thumb_url: 'thumb1', image_url: 'img1', genre: 'fantasy', created_at: ago(50) },
+    { _id: W2, title: 'Mira', kind: 'character', creator_id: carl, image_url: 'img2', genre: 'romance', created_at: ago(40) },
     { _id: G1, title: 'Dorm Six', kind: 'group', creator_id: official, created_at: ago(30) },
     { _id: W3, title: 'Lost Map', creator_id: goneCreator, created_at: ago(20) },
   ])
@@ -115,14 +129,35 @@ try {
     { _id: c1, player_id: bob, template_id: W2, meta: { total_events: 60, last_active_at: ago(0) } },
   ])
 
-  const log = (instance: ObjectId, player: ObjectId, days: number, cost: number) =>
-    ({ _id: id(), instance_id: instance, player_id: player, created_at: ago(days), turn_cost_usd: cost })
-  await c('generation_logs').insertMany([
-    log(a1, alice, 0, 0.01), log(a1, alice, 0, 0.01), log(a1, alice, 3, 0.02), log(a1, alice, 40, 5),
-    log(b1, bob, 6, 0.03), log(b1, bob, 8, 0.04),
-    ...Array.from({ length: 5 }, () => log(r1, rev, 0, 1)),
-    log(g1, alice, 1, 0.05), log(g1, alice, 1, 0.05),
-    log(c1, bob, 0, 0.5),
+  // Story turns are `events` now. A turn is one row of a story type.
+  const turn = (instance: ObjectId, player: ObjectId, days: number, type = 'narration') =>
+    ({ _id: id(), instance_id: instance, player_id: player, type, sequence: 1, created_at: ago(days) })
+  await c('events').insertMany([
+    turn(a1, alice, 0), turn(a1, alice, 0), turn(a1, alice, 3), turn(a1, alice, 40),
+    turn(b1, bob, 6), turn(b1, bob, 8),
+    ...Array.from({ length: 5 }, () => turn(r1, rev, 0)),
+    // The group's turns: they count in every part 1 number now.
+    turn(g1, alice, 1), turn(g1, alice, 1),
+    turn(c1, bob, 0),
+    // Not a story turn, so it counts nowhere.
+    turn(c1, bob, 0, 'group_state'),
+  ])
+
+  // Model cost is `llm_calls`. Cost per save, and one portrait call tied to no
+  // save so it lands in totals and top players but never in a world.
+  const call = (days: number, cost: number, input: { instance_id?: ObjectId; player_id: ObjectId; prompt_tokens?: number; completion_tokens?: number }) =>
+    ({ _id: id(), created_at: ago(days), cost_usd: cost, prompt_tokens: input.prompt_tokens ?? 100,
+      completion_tokens: input.completion_tokens ?? 10,
+      ...(input.instance_id ? { instance_id: input.instance_id } : {}), player_id: input.player_id })
+  await c('llm_calls').insertMany([
+    call(0, 0.01, { instance_id: a1, player_id: alice }), call(0, 0.01, { instance_id: a1, player_id: alice }),
+    call(3, 0.02, { instance_id: a1, player_id: alice }), call(40, 5, { instance_id: a1, player_id: alice }),
+    call(6, 0.03, { instance_id: b1, player_id: bob }), call(8, 0.04, { instance_id: b1, player_id: bob }),
+    ...Array.from({ length: 5 }, () => call(0, 1, { instance_id: r1, player_id: rev })),
+    call(1, 0.05, { instance_id: g1, player_id: alice }), call(1, 0.05, { instance_id: g1, player_id: alice }),
+    call(0, 0.5, { instance_id: c1, player_id: bob }),
+    // A background call with no save: portraits. It is real spend and no world's.
+    call(0, 0.25, { player_id: alice }),
   ])
   await c('media_usage').insertMany([
     { _id: id(), player_id: alice, kind: 'image', day: utcDay(now), status: 'settled', created_at: ago(0) },
@@ -164,13 +199,13 @@ try {
     assert.deepEqual([w1.stats.players, w1.stats.saves, w1.stats.turns], [3, 4, 34])
     assert.equal(w1.stats.last_played_at, ago(1).toISOString())
   })
-  await check('turns_7d is 7 days oldest first, from logs', () => {
+  await check('turns_7d is 7 days oldest first, from events', () => {
     assert.equal(w1.stats.turns_7d.length, 7)
     assert.deepEqual(w1.stats.turns_7d, [1, 0, 0, 1, 0, 0, 2])
     assert.equal(days7[6], utcDay(now))
   })
-  await check('cost is the last 30 days only', () => assert.ok(close(w1.stats.cost_usd_30d, 0.11), String(w1.stats.cost_usd_30d)))
-  await check('group world counts saves on group_template_id', () => {
+  await check('cost is the last 30 days of model calls only', () => assert.ok(close(w1.stats.cost_usd_30d, 0.11), String(w1.stats.cost_usd_30d)))
+  await check('group world counts saves on group_template_id, turns included', () => {
     assert.deepEqual([gw.stats.players, gw.stats.saves, gw.stats.turns], [1, 1, 7])
     assert.deepEqual(gw.stats.turns_7d, [0, 0, 0, 0, 0, 2, 0])
     assert.ok(close(gw.stats.cost_usd_30d, 0.1))
@@ -223,6 +258,11 @@ try {
     assert.equal(detail.cover_url, 'thumb1')
     assert.equal(detail.stats.turns, 34)
   })
+  await check('world detail adds countries (part 3 fields)', () => {
+    // Alice is IN, bob US, sam has none; the reviewer is out of the player set.
+    assert.deepEqual(detail.insights.countries, [{ code: 'IN', players: 1 }, { code: 'US', players: 1 }])
+    assert.equal(detail.insights.country_unknown, 1)
+  })
   const groupDetail = await worldInsights.get(G1.toHexString())
   await check('group detail reads the group save', () => {
     assert.equal(groupDetail.insights.top_players[0]?.name, 'Alice')
@@ -233,10 +273,10 @@ try {
   const rows = await c('users').find({ _id: { $in: [alice, bob, sam] } }).toArray()
   const players = await playerInsights(rows as never, now)
   const pa = players.get(alice.toHexString())!, pb = players.get(bob.toHexString())!, ps = players.get(sam.toHexString())!
-  await check('profile: gender, interests, adult, sign-in', () => {
-    assert.deepEqual([pa.profile.gender, pa.profile.interests.length, pa.profile.adult, pa.profile.sign_in], ['female', 4, true, 'google'])
-    assert.deepEqual([pb.profile.gender, pb.profile.adult, pb.profile.sign_in], ['male', false, 'phone'])
-    assert.deepEqual([ps.profile.gender, ps.profile.sign_in], ['nonbinary', 'guest'])
+  await check('profile: gender, interests, adult, sign-in, country', () => {
+    assert.deepEqual([pa.profile.gender, pa.profile.interests.length, pa.profile.adult, pa.profile.sign_in, pa.profile.country], ['female', 4, true, 'google', 'IN'])
+    assert.deepEqual([pb.profile.gender, pb.profile.adult, pb.profile.sign_in, pb.profile.country], ['male', false, 'phone', 'US'])
+    assert.deepEqual([ps.profile.gender, ps.profile.sign_in, ps.profile.country], ['nonbinary', 'guest', null])
     assert.equal(signInOf({ providers: [] }), 'other')
   })
   await check('device and app version come from the latest session', () => {
@@ -244,13 +284,15 @@ try {
     assert.equal(pa.profile.app_version, '1.0.14')
     assert.deepEqual([pb.profile.device, pb.profile.app_version], [null, null])
   })
-  await check('30-day cost per player', () => {
-    assert.ok(close(pa.cost_usd_30d, 0.14), String(pa.cost_usd_30d))
+  await check('30-day cost per player counts background calls too', () => {
+    // Alice: 0.01+0.01+0.02 on Iron Coast, 0.05+0.05 on the group, 0.25 portrait.
+    assert.ok(close(pa.cost_usd_30d, 0.39), String(pa.cost_usd_30d))
     assert.ok(close(pb.cost_usd_30d, 0.57), String(pb.cost_usd_30d))
   })
-  await check('promo on: Ink reads unlimited with what it would have cost', () => {
-    // Alice: 5 turns × 1 + 1 made image × 45; the released image is not counted.
-    assert.deepEqual(pa.ink, { mode: 'unlimited_promo', balance: 0, ink_equiv_30d: 50 })
+  await check('promo on: Ink reads unlimited, priced on solo turns only', () => {
+    // Alice: 3 solo turns × 1 + 1 made image × 45; the group's 2 turns reserve
+    // 0 Ink, and the released image is not counted.
+    assert.deepEqual(pa.ink, { mode: 'unlimited_promo', balance: 0, ink_equiv_30d: 48 })
     assert.deepEqual(pb.ink, { mode: 'unlimited_promo', balance: 49, ink_equiv_30d: 3 })
   })
   const page = await playerInsightsService.detail(rows.find(r => r._id.equals(alice)) as never, now)
@@ -268,20 +310,24 @@ try {
     assert.deepEqual([summary.promo.unlimited, summary.promo.daily_turn_cap, summary.days], [true, 200, 30])
     assert.equal(summary.promo.updated_at, ago(2).toISOString())
   })
-  await check('cost totals leave the reviewer and old logs out', () => {
+  await check('cost totals leave the reviewer out and include group and background calls', () => {
+    // 3 Iron Coast (the 40-day turn is outside) + 2 Mira + 2 group + 1 Mira today.
     assert.equal(summary.cost.turns, 8)
-    assert.ok(close(summary.cost.total_usd, 0.71), String(summary.cost.total_usd))
+    // 0.01+0.01+0.02 + 0.03+0.04 + 0.05+0.05 + 0.5 + 0.25 portrait = 0.96
+    assert.ok(close(summary.cost.total_usd, 0.96), String(summary.cost.total_usd))
     assert.equal(summary.cost.active_players, 2)
-    assert.ok(close(summary.cost.per_active_player_usd, 0.355))
+    assert.ok(close(summary.cost.per_active_player_usd, 0.48))
   })
-  await check('daily rows: every day, today priced in Ink', () => {
+  await check('daily rows: every day, today priced in Ink on solo turns', () => {
     assert.equal(summary.daily.length, 30)
     const today = summary.daily[29]
+    // Today: 2 Iron Coast + 1 Mira = 3 turns; Ink on 3 solo turns + 1 image = 48.
     assert.deepEqual([today.date, today.turns, today.active_players, today.ink_equiv], [utcDay(now), 3, 2, 48])
-    assert.ok(close(today.cost_usd, 0.52))
+    assert.ok(close(today.cost_usd, 0.77), String(today.cost_usd))
   })
-  await check('Ink: what it would have cost, nothing spent during the promo', () =>
-    assert.deepEqual(summary.ink, { equiv_total: 53, spent_total: 0 }))
+  await check('Ink: what it would have cost on solo turns, nothing spent during the promo', () =>
+    // 6 solo turns × 1 (the group's 2 reserve nothing) + 1 made image × 45.
+    assert.deepEqual(summary.ink, { equiv_total: 51, spent_total: 0 }))
   await check('top players and worlds by cost, with people attached', () => {
     assert.deepEqual(summary.top_players.map(p => p.username), ['bob', 'alice01'])
     assert.equal(summary.top_players[0].ink_equiv, 3)
@@ -293,7 +339,7 @@ try {
   const summaryRev = await billingInsights.summary('30', 'include', now)
   await check('7-day window and reviewers=include', () => {
     assert.deepEqual([summary7.days, summary7.daily.length, summary7.cost.turns], [7, 7, 7])
-    assert.ok(close(summaryRev.cost.total_usd, 5.71))
+    assert.ok(close(summaryRev.cost.total_usd, 5.96))
     assert.equal(summaryRev.cost.active_players, 3)
   })
   await assert.rejects(billingInsights.summary('14'), (e: unknown) => e instanceof HttpError && e.statusCode === 400)

@@ -1,21 +1,69 @@
-import type { ObjectId } from 'mongodb'
+import type { Collection, ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { idString } from '../utils/mongo-id'
+import { HttpError } from '../utils/http-error'
 import { reviewerAccounts, type ReviewersMode } from './reviewer-accounts'
 import type { EffectiveBilling } from './billing-config.service'
+import { STORY_TURN_TYPES } from './admin-activity'
+import { traceStore } from './llm-trace.service'
+import type { LLMCallDoc } from '../models/llm-call.model'
 
 /**
  * Shared building blocks for the console's read-only insight aggregates
- * (`everlore-docs/phases/admin-insights.md`, part 1).
+ * (`everlore-docs/phases/admin-insights.md`, parts 1 and 2).
  *
  * Nothing here writes. Every figure is derived from what the server already
  * stored, review accounts are left out unless an operator asks for them, and
- * every `generation_logs` read is bounded by a `created_at` window and matched
- * on the ids the caller is asking about.
+ * every `events`/`llm_calls`/`app_sessions` read is bounded by its date field
+ * and matched on the ids the caller is asking about.
+ *
+ * Story turns come from `events` (solo and group chat both write them) and model
+ * cost from `llm_calls` (every priced call, background ones included).
+ * `generation_logs` is no longer read here: it only ever saw solo turns.
  */
 
 export const DAY_MS = 86_400_000
 export const DAYS_30 = 30
+
+/** The `days` values the console offers; anything else is a 400 sentence. */
+export const INSIGHT_DAYS = [7, 30, 90] as const
+export type InsightDays = (typeof INSIGHT_DAYS)[number]
+
+export function insightDays(value?: string): InsightDays {
+  if (value === undefined || value === '') return 30
+  const days = Number(value)
+  if (!INSIGHT_DAYS.includes(days as InsightDays)) {
+    throw new HttpError(400, 'Days must be 7, 30 or 90.')
+  }
+  return days as InsightDays
+}
+
+/** Story turns are the event kinds the Overview counts; solo and group alike. */
+export function storyTurnMatch(): Record<string, unknown> {
+  return { type: { $in: STORY_TURN_TYPES } }
+}
+
+/**
+ * Which of `instanceIds` are group chats.
+ *
+ * A group turn reserves 0 Ink (`billing.service.ts` `reserveGroupTurn`), so an
+ * Ink equivalent prices solo turns only. Callers pass the saves active in their
+ * window, so this read is bounded by the window, not by the collection.
+ */
+export async function groupSaveSet(instanceIds: ObjectId[]): Promise<Set<string>> {
+  const unique = [...new Map(instanceIds.map((id) => [idString(id), id])).values()]
+  if (unique.length === 0) return new Set()
+  const rows = await mongoColl.worldInstances()
+    .find(
+      { _id: { $in: unique }, group_template_id: { $exists: true } },
+      { projection: { _id: 1 } },
+    )
+    .toArray()
+  return new Set(rows.map((row) => idString(row._id)))
+}
+
+export const events = () => mongoColl.events()
+export const calls = (): Collection<LLMCallDoc> => traceStore().calls
 
 /** The official account is the user named `Everlore` (as the catalog seed finds it). */
 const OFFICIAL_USERNAME = 'everlore'
@@ -38,6 +86,8 @@ export type UserRow = {
   guest?: boolean
   reviewer?: true
   providers?: string[]
+  /** ISO 3166-1 alpha-2 of the last connection, absent until one is known. */
+  country?: string
   preferences?: {
     player_name?: string
     gender?: string
@@ -124,6 +174,48 @@ export function utcDay(at: Date): string {
 
 export const dayExpression = { $dateToString: { format: '%Y-%m-%d', date: '$created_at', timezone: 'UTC' } }
 
+/** The same day expression over another date field (`started_at`, `last_at`). */
+export function dayExpressionOn(field: string) {
+  return { $dateToString: { format: '%Y-%m-%d', date: `$${field}`, timezone: 'UTC' } }
+}
+
+/** The Monday that begins `date`'s UTC week, `YYYY-MM-DD`. */
+export function mondayOf(date: Date): string {
+  const day = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  // getUTCDay: 0 is Sunday, so a Sunday belongs to the week that began six days before.
+  const offset = (new Date(day).getUTCDay() + 6) % 7
+  return new Date(day - offset * DAY_MS).toISOString().slice(0, 10)
+}
+
+/** The `weeks` Mondays ending with the one `now` falls in, oldest first. */
+export function mondaySeries(weeks: number, now: Date = new Date()): string[] {
+  const current = new Date(`${mondayOf(now)}T00:00:00.000Z`).getTime()
+  return Array.from({ length: weeks }, (_, index) =>
+    new Date(current - (weeks - index - 1) * 7 * DAY_MS).toISOString().slice(0, 10))
+}
+
+/**
+ * The `app_sessions` filter that leaves review accounts out, by account and by
+ * install — the same two keys the funnel uses, since a reviewer's session may
+ * carry either.
+ */
+export async function sessionScope(mode: ReviewersMode = 'exclude'): Promise<Record<string, unknown>[]> {
+  if (mode === 'include') return []
+  const { userIds, installIds } = await reviewerAccounts.scope()
+  if (mode === 'only') {
+    const any = [
+      ...(userIds.length > 0 ? [{ user_id: { $in: userIds } }] : []),
+      ...(installIds.length > 0 ? [{ install_id: { $in: installIds } }] : []),
+    ]
+    // An empty `$or` is invalid; "only reviewers" with none flagged matches nothing.
+    return any.length > 0 ? [{ $or: any }] : [{ _id: { $in: [] } }]
+  }
+  return [
+    ...(userIds.length > 0 ? [{ user_id: { $nin: userIds } }] : []),
+    ...(installIds.length > 0 ? [{ install_id: { $nin: installIds } }] : []),
+  ]
+}
+
 /** A save's lifetime turns. `meta.total_events` is the only cumulative counter. */
 export function saveTurns(meta: { total_events?: number } | null | undefined): number {
   const value = meta?.total_events
@@ -158,6 +250,32 @@ export function inkEquivalent(
 /** Round money to a stable number of decimals so a sum is not 0.30000000000004. */
 export function money(value: number): number {
   return Number((value || 0).toFixed(6))
+}
+
+/**
+ * The countries a set of players is in, most players first, plus how many have
+ * no country on record. A gone account counts as unknown, not as missing.
+ */
+export async function countriesOfPlayers(
+  ids: ObjectId[],
+  limit?: number,
+): Promise<{ countries: Array<{ code: string; players: number }>; unknown: number }> {
+  const unique = [...new Map(ids.map((id) => [idString(id), id])).values()]
+  if (unique.length === 0) return { countries: [], unknown: 0 }
+  const rows = await mongoColl.users()
+    .find({ _id: { $in: unique } }, { projection: { country: 1 } })
+    .toArray()
+  const counts = new Map<string, number>()
+  let unknown = unique.length - rows.length
+  for (const row of rows) {
+    const code = typeof row.country === 'string' && row.country.trim() ? row.country.trim().toUpperCase() : ''
+    if (code) counts.set(code, (counts.get(code) ?? 0) + 1)
+    else unknown++
+  }
+  const countries = [...counts.entries()]
+    .map(([code, players]) => ({ code, players }))
+    .sort((left, right) => right.players - left.players || left.code.localeCompare(right.code))
+  return { countries: limit === undefined ? countries : countries.slice(0, limit), unknown }
 }
 
 /** Sort a `Map` built from a grouped aggregate by hex id. */

@@ -25,6 +25,7 @@
  *   bun --no-env-file run scripts/reviewer-accounts-audit.ts
  */
 import assert from 'node:assert/strict'
+import { mock } from 'bun:test'
 import { ObjectId } from 'mongodb'
 import { Elysia } from 'elysia'
 import { env } from '../src/config/env'
@@ -383,9 +384,17 @@ const COLLECTIONS = [
   'memories', 'characters',
   // Read by the Players page's insight fields (admin-insights-players.ts).
   'generation_logs', 'ink_ledger', 'media_usage', 'billing_config',
+  // Player cost (admin-insights part 2) reads the model-call log by name.
+  'llm_calls',
 ]
 
 const fakes = Object.fromEntries(COLLECTIONS.map((name) => [name, fakeColl(name)]))
+// The trace store reads `coll('llm_calls')` directly, not through `mongoColl`.
+mock.module('../src/config/mongo', () => ({
+  coll: (name: string) => (fakes as Record<string, unknown>)[name] ?? fakeColl(name),
+  mongoColl,
+  accountTransaction: async <T>(work: () => Promise<T>) => work(),
+}))
 Object.assign(mongoColl, {
   users: () => fakes.users,
   appInstalls: () => fakes.app_installs,

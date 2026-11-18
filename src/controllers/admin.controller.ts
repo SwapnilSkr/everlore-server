@@ -13,6 +13,10 @@ import {
 import { moderationService } from '../services/moderation.service'
 import { reviewersParam } from '../services/reviewer-accounts'
 import { billingInsights } from '../services/admin-insights-billing'
+import { audienceInsights } from '../services/admin-audience'
+import { groupInsights } from '../services/admin-overview-groups.service'
+import { retentionInsights } from '../services/admin-overview-retention.service'
+import { pathInsights } from '../services/telemetry/paths.service'
 import type { WorldKind, WorldSort, WorldSource } from '../services/admin-insights-worlds'
 import type { ReportAction, ReportReason, ReportStatus, ReportTargetType } from '../models/content-report.model'
 
@@ -227,6 +231,22 @@ export const adminController = {
    */
   getBillingSummary: async ({ query }: { query: { days?: string; reviewers?: string } }) =>
     billingInsights.summary(query.days, reviewersParam(query.reviewers)),
+
+  /**
+   * Part 2's read-only aggregates. Each validates its own parameters in the
+   * service, so a bad value is a plain 400 sentence rather than a schema report.
+   */
+  getAudience: async ({ query }: { query: { days?: string; reviewers?: string } }) =>
+    audienceInsights.audience(query.days, reviewersParam(query.reviewers)),
+
+  getSessionPaths: async ({ query }: { query: { days?: string; version?: string; reviewers?: string } }) =>
+    pathInsights.paths(query.days, query.version || undefined, reviewersParam(query.reviewers)),
+
+  getRetention: async ({ query }: { query: { weeks?: string } }) =>
+    retentionInsights.retention(query.weeks),
+
+  getGroupActivity: async ({ query }: { query: { days?: string } }) =>
+    groupInsights.groups(query.days),
 
   deleteUser: async ({ params }: { params: { userId: string } }) => adminService.deleteUser(params.userId),
 

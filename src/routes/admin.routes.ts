@@ -1,6 +1,7 @@
 import { Elysia, t } from 'elysia'
 import { adminStoryEngineRoutes } from './admin-story-engine.routes'
 import { adminAnalyticsRoutes } from './admin-analytics.routes'
+import { adminReleaseRoutes } from './admin-release.routes'
 import { AdminSetTierBody, AdminSetUserStatusBody } from '../schemas/user.schema'
 import { adminController } from '../controllers/admin.controller'
 import { requireAdmin } from '../middleware/admin-auth'
@@ -68,12 +69,38 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
   .use(requireAdmin)
   .use(adminStoryEngineRoutes)
   .use(adminAnalyticsRoutes)
+  // Releases and What's new (update-nudge.md); unprefixed and unguarded on
+  // purpose, like the analytics routes, because this guard covers them.
+  .use(adminReleaseRoutes)
 
   .get('/metrics', (ctx) => adminController.metrics(ctx), {
     query: t.Object({ days: t.Optional(t.String()) }),
   })
 
   .get('/overview', () => adminController.overview())
+
+  /**
+   * Part 2's extra overview panels: the return grid and group chat activity.
+   * `weeks`/`days` are validated in the service for a plain 400 sentence.
+   */
+  .get('/overview/retention', (ctx) => adminController.getRetention(ctx), {
+    query: t.Object({ weeks: t.Optional(t.String()) }),
+  })
+  .get('/overview/groups', (ctx) => adminController.getGroupActivity(ctx), {
+    query: t.Object({ days: t.Optional(t.String()) }),
+  })
+
+  /**
+   * Who the audience is ("Contract, part 2"): gender, interests, adult opt-in,
+   * sign-in, countries, devices and engagement by gender. Read-only, and bounded
+   * to the accounts with a session in the window.
+   */
+  .get('/audience', (ctx) => adminController.getAudience(ctx), {
+    query: t.Object({
+      days: t.Optional(t.String()),
+      reviewers: t.Optional(t.String()),
+    }),
+  })
 
   .get('/users', (ctx) => adminController.listUsers(ctx), {
     query: t.Composite([SearchPageQuery, t.Object({

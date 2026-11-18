@@ -4,34 +4,37 @@ import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import type { ReviewersMode } from './reviewer-accounts'
 import {
+  calls,
+  countriesOfPlayers,
   coverUrl,
   dayExpression,
   daySeries,
   DAYS_30,
+  events,
   money,
   officialUserId,
   personRefsByIds,
   playerScope,
   saveTurns,
+  storyTurnMatch,
   windowStart,
   type PersonRef,
 } from './admin-insights'
 
 /**
- * World and creator aggregates (`everlore-docs/phases/admin-insights.md`, part 1).
+ * World and creator aggregates (`everlore-docs/phases/admin-insights.md`, parts
+ * 1 and 2).
  *
  * Read-only. A list computes figures for the page's worlds only; the
  * `players|turns|last_played` sorts need one `$group` over `world_instances` to
- * establish the order first (the contract allows exactly that). Every
- * `generation_logs` read is windowed by `created_at` and matched on the page's
- * save ids.
+ * establish the order first (the contract allows exactly that). Story turns are
+ * `events` (solo and group chat alike) and model cost is `llm_calls`, both read
+ * with a `created_at` window and matched on the page's save ids.
  */
 
 const worldTemplates = () => mongoColl.worldTemplates()
 const worldInstances = () => mongoColl.worldInstances()
-const generationLogs = () => mongoColl.generationLogs()
 const users = () => mongoColl.users()
-const events = () => mongoColl.events()
 const memories = () => mongoColl.memories()
 const characters = () => mongoColl.characters()
 
@@ -129,10 +132,10 @@ async function templateTotals(templateIds: ObjectId[], scope: Record<string, unk
 /**
  * The contract's `stats` for the given templates.
  *
- * `turns_7d` is story turns from `generation_logs`, oldest day first with every
- * day present; `cost_usd_30d` sums `turn_cost_usd` over the same saves within 30
- * days. Both reads are one aggregate, windowed by `created_at`, matched on the
- * page's instance ids.
+ * `turns_7d` is story turns from `events` — solo and group chat both write them —
+ * oldest day first with every day present; `cost_usd_30d` sums `llm_calls`
+ * `cost_usd` over the same saves within 30 days. Both reads are one aggregate
+ * each, windowed by `created_at`, matched on the page's instance ids.
  */
 export async function worldStats(templateIds: ObjectId[], mode: ReviewersMode, now = new Date()): Promise<Map<string, WorldStatsView>> {
   if (templateIds.length === 0) return new Map()
@@ -149,30 +152,33 @@ export async function worldStats(templateIds: ObjectId[], mode: ReviewersMode, n
   }
   const instanceIds = [...instanceToTemplate.keys()].map((id) => parseObjectId(id))
 
-  const series = instanceIds.length === 0 ? [] : await generationLogs().aggregate<{
-    _id: { instance: ObjectId; day: string }
-    turns: number
-    cost_usd: number
-  }>([
-    { $match: { instance_id: { $in: instanceIds }, created_at: { $gte: start30 } } },
-    { $group: {
-      _id: { instance: '$instance_id', day: dayExpression },
-      turns: { $sum: 1 },
-      cost_usd: { $sum: { $ifNull: ['$turn_cost_usd', 0] } },
-    } },
-  ]).toArray()
+  // Turns are a subset of the 30-day window the cost needs, so one start serves
+  // both; only the 7-day days are kept.
+  const [turnRows, costRows] = instanceIds.length === 0 ? [[], []] : await Promise.all([
+    events().aggregate<{ _id: { instance: ObjectId; day: string }; turns: number }>([
+      { $match: { instance_id: { $in: instanceIds }, created_at: { $gte: start30 }, ...storyTurnMatch() } },
+      { $group: { _id: { instance: '$instance_id', day: dayExpression }, turns: { $sum: 1 } } },
+    ]).toArray(),
+    calls().aggregate<{ _id: ObjectId; cost_usd: number }>([
+      { $match: { instance_id: { $in: instanceIds }, created_at: { $gte: start30 } } },
+      { $group: { _id: '$instance_id', cost_usd: { $sum: { $ifNull: ['$cost_usd', 0] } } } },
+    ]).toArray(),
+  ])
 
   const turns7 = new Map<string, Map<string, number>>()
-  const cost30 = new Map<string, number>()
-  for (const entry of series) {
+  for (const entry of turnRows) {
     const template = instanceToTemplate.get(idString(entry._id.instance))
+    if (!template || !days7Set.has(entry._id.day)) continue
+    const byDay = turns7.get(template) ?? new Map<string, number>()
+    byDay.set(entry._id.day, (byDay.get(entry._id.day) ?? 0) + Number(entry.turns ?? 0))
+    turns7.set(template, byDay)
+  }
+
+  const cost30 = new Map<string, number>()
+  for (const entry of costRows) {
+    const template = instanceToTemplate.get(idString(entry._id))
     if (!template) continue
     cost30.set(template, (cost30.get(template) ?? 0) + Number(entry.cost_usd ?? 0))
-    if (days7Set.has(entry._id.day)) {
-      const byDay = turns7.get(template) ?? new Map<string, number>()
-      byDay.set(entry._id.day, (byDay.get(entry._id.day) ?? 0) + Number(entry.turns ?? 0))
-      turns7.set(template, byDay)
-    }
   }
 
   const stats = new Map<string, WorldStatsView>()
@@ -313,35 +319,45 @@ async function decorate(rows: WorldRow[], mode: ReviewersMode, now: Date) {
   })
 }
 
-/** The counts `getWorld` already returned, kept unchanged for the console. */
+/**
+ * The counts `getWorld` already returned, kept unchanged for the console.
+ *
+ * Every read is matched on this world's save ids, so it is bounded by one
+ * world's rows rather than a `$lookup` over each collection. The three model
+ * figures used to come from `generation_logs`, which never saw group turns or
+ * background calls; they are now the same saves' `llm_calls` rows.
+ */
 async function readCounts(tid: ObjectId) {
-  const [instances, eventCount, memoryCount, characterCount, generationStats] = await Promise.all([
-    worldInstances().countDocuments({ template_id: tid }),
-    events()
-      .aggregate([{ $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } }, { $match: { 'i.template_id': tid } }, { $count: 'count' }])
-      .toArray(),
-    memories()
-      .aggregate([{ $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } }, { $match: { 'i.template_id': tid } }, { $count: 'count' }])
-      .toArray(),
-    characters()
-      .aggregate([{ $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } }, { $match: { 'i.template_id': tid } }, { $count: 'count' }])
-      .toArray(),
-    generationLogs()
-      .aggregate([
-        { $lookup: { from: 'world_instances', localField: 'instance_id', foreignField: '_id', as: 'i' } },
-        { $match: { 'i.template_id': tid } },
-        { $group: { _id: null, count: { $sum: 1 }, tokens_in: { $sum: { $ifNull: ['$tokens_in', 0] } }, tokens_out: { $sum: { $ifNull: ['$tokens_out', 0] } } } },
+  const saves = await worldInstances().find({ template_id: tid }, { projection: { _id: 1 } }).toArray()
+  const instanceIds = saves.map((row) => row._id)
+  if (instanceIds.length === 0) {
+    return { instances: 0, events: 0, memories: 0, characters: 0, generation_logs: 0, tokens_in: 0, tokens_out: 0 }
+  }
+  const bySave = { instance_id: { $in: instanceIds } }
+  const [eventCount, memoryCount, characterCount, callStats] = await Promise.all([
+    events().countDocuments(bySave),
+    memories().countDocuments(bySave),
+    characters().countDocuments(bySave),
+    calls()
+      .aggregate<{ _id: null; count: number; tokens_in: number; tokens_out: number }>([
+        { $match: bySave },
+        { $group: {
+          _id: null,
+          count: { $sum: 1 },
+          tokens_in: { $sum: { $ifNull: ['$prompt_tokens', 0] } },
+          tokens_out: { $sum: { $ifNull: ['$completion_tokens', 0] } },
+        } },
       ])
       .toArray(),
   ])
   return {
-    instances,
-    events: Number(eventCount[0]?.count || 0),
-    memories: Number(memoryCount[0]?.count || 0),
-    characters: Number(characterCount[0]?.count || 0),
-    generation_logs: Number(generationStats[0]?.count || 0),
-    tokens_in: Number(generationStats[0]?.tokens_in || 0),
-    tokens_out: Number(generationStats[0]?.tokens_out || 0),
+    instances: saves.length,
+    events: eventCount,
+    memories: memoryCount,
+    characters: characterCount,
+    generation_logs: Number(callStats[0]?.count || 0),
+    tokens_in: Number(callStats[0]?.tokens_in || 0),
+    tokens_out: Number(callStats[0]?.tokens_out || 0),
   }
 }
 
@@ -386,34 +402,46 @@ async function worldInsightsDetail(tid: ObjectId, mode: ReviewersMode, now: Date
     playerTurns.set(key, current)
   }
 
-  const dailyRows = instanceIds.length === 0 ? [] : await generationLogs().aggregate<{
-    _id: { day: string; player: ObjectId }
-    turns: number
-    cost_usd: number
-  }>([
-    { $match: { instance_id: { $in: instanceIds }, created_at: { $gte: start30 } } },
-    { $group: {
-      _id: { day: dayExpression, player: '$player_id' },
-      turns: { $sum: 1 },
-      cost_usd: { $sum: { $ifNull: ['$turn_cost_usd', 0] } },
-    } },
-  ]).toArray()
+  // Turns are `events` (solo and group alike, so a group world's line is no
+  // longer flat) and cost is every `llm_calls` row on the save, background calls
+  // included. Both are windowed by `created_at` and matched on the world's saves.
+  const [turnRows, costRows] = instanceIds.length === 0 ? [[], []] : await Promise.all([
+    events().aggregate<{ _id: { day: string; player: ObjectId }; turns: number }>([
+      { $match: { instance_id: { $in: instanceIds }, created_at: { $gte: start30 }, ...storyTurnMatch() } },
+      { $group: {
+        _id: { day: dayExpression, player: '$player_id' },
+        turns: { $sum: 1 },
+      } },
+    ]).toArray(),
+    calls().aggregate<{ _id: string; cost_usd: number }>([
+      { $match: { instance_id: { $in: instanceIds }, created_at: { $gte: start30 } } },
+      { $group: { _id: dayExpression, cost_usd: { $sum: { $ifNull: ['$cost_usd', 0] } } } },
+    ]).toArray(),
+  ])
 
   const byDay = new Map<string, { turns: number; cost: number; players: Set<string> }>()
-  for (const row of dailyRows) {
-    const entry = byDay.get(row._id.day) ?? { turns: 0, cost: 0, players: new Set<string>() }
-    entry.turns += Number(row.turns ?? 0)
-    entry.cost += Number(row.cost_usd ?? 0)
-    if (row._id.player) entry.players.add(idString(row._id.player))
-    byDay.set(row._id.day, entry)
+  const entryFor = (day: string) => {
+    const entry = byDay.get(day) ?? { turns: 0, cost: 0, players: new Set<string>() }
+    byDay.set(day, entry)
+    return entry
   }
+  for (const row of turnRows) {
+    const entry = entryFor(row._id.day)
+    entry.turns += Number(row.turns ?? 0)
+    if (row._id.player) entry.players.add(idString(row._id.player))
+  }
+  for (const row of costRows) entryFor(row._id).cost += Number(row.cost_usd ?? 0)
+
   const daily = days.map((date) => {
     const entry = byDay.get(date)
     return { date, turns: entry?.turns ?? 0, players: entry?.players.size ?? 0, cost_usd: money(entry?.cost ?? 0) }
   })
 
   const playerIds = [...playerTurns.values()].map((row) => row.player)
-  const people = await personRefsByIds(playerIds)
+  const [people, places] = await Promise.all([
+    personRefsByIds(playerIds),
+    countriesOfPlayers(playerIds, 10),
+  ])
 
   // Distinct players per gender, over the world's own players. A gone account
   // has no gender, so it counts as unset.
@@ -442,6 +470,8 @@ async function worldInsightsDetail(tid: ObjectId, mode: ReviewersMode, now: Date
     gender,
     depth: DEPTH_BUCKETS.map(({ bucket }) => ({ bucket, saves: depthCounts.get(bucket) ?? 0 })),
     top_players,
+    countries: places.countries,
+    country_unknown: places.unknown,
   }
 }
 

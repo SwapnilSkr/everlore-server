@@ -1,5 +1,6 @@
 /** Offline contract checks. All collections are replaced before any service runs. */
 import assert from 'node:assert/strict'
+import { mock } from 'bun:test'
 import { ensureEverloreIndexes } from '../src/config/mongo-indexes'
 import { ObjectId, type Db, type Document } from 'mongodb'
 import { Elysia } from 'elysia'
@@ -25,6 +26,16 @@ async function check(label: string, run: () => unknown | Promise<unknown>) {
   catch (error) { failures++; console.error(`FAIL ${label}: ${error instanceof Error ? error.message : String(error)}`) }
 }
 const originalEnv = { ...env }
+// Player cost is read from the model-call log through `coll('llm_calls')`
+// (admin-insights part 2), not through `mongoColl`; this audit has no Mongo,
+// so those two names read as empty and any other direct read still fails loudly.
+const emptyCalls = { aggregate: () => ({ toArray: async () => [] }), countDocuments: async () => 0 }
+mock.module('../src/config/mongo', () => ({
+  coll: (name: string) => (name === 'llm_calls' || name === 'llm_call_bodies')
+    ? emptyCalls : (() => { throw new Error(`collection ${name} is not stubbed`) })(),
+  mongoColl,
+  accountTransaction: async <T>(work: () => Promise<T>) => work(),
+}))
 const originalCollections = { ...mongoColl }
 let doc: BillingConfigDoc | null = null
 const ledger: Array<{ player_id: ObjectId; delta: number; reason: string; reference?: string; idempotency_key: string; created_at: Date }> = []
@@ -351,7 +362,7 @@ try {
       }),
       worldInstances: () => ({ countDocuments: async () => 0, find: () => emptyCursor }),
       worldTemplates: () => ({ countDocuments: async () => 0, find: () => emptyCursor }),
-      events: () => ({ countDocuments: async () => 0 }),
+      events: () => ({ countDocuments: async () => 0, aggregate: () => ({ toArray: async () => [] }) }),
       memories: () => ({ countDocuments: async () => 0 }),
       // The insight fields' reads (admin-insights-players.ts): a player with no
       // sessions, turns, Ink rows or media yet.

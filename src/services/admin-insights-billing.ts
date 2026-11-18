@@ -5,27 +5,34 @@ import { idString } from '../utils/mongo-id'
 import { effectiveBilling, type EffectiveBilling } from './billing-config.service'
 import type { ReviewersMode } from './reviewer-accounts'
 import {
+  calls,
   coverUrl,
   dayExpression,
   daySeries,
+  events,
+  groupSaveSet,
   inkEquivalent,
   money,
   personRefsByIds,
   playerScope,
+  storyTurnMatch,
   windowStart,
   type PersonRef,
 } from './admin-insights'
 
 /**
- * `GET /admin/billing/summary` (`everlore-docs/phases/admin-insights.md`, part 1).
+ * `GET /admin/billing/summary` (`everlore-docs/phases/admin-insights.md`, parts
+ * 1 and 2).
  *
  * Read-only: what the window cost in model spend, what it would have cost in Ink
- * at catalog prices, and who and what it went to. The promo state decides
- * whether a metered spend figure is even meaningful — `spent_total` is 0 while
- * the promo is on, because nothing was debited.
+ * at catalog prices, and who and what it went to. Turns are `events` (solo and
+ * group chat alike) and cost is every `llm_calls` row, background calls
+ * included — `generation_logs` saw only solo turns and understated both.
+ *
+ * The promo state decides whether a metered spend figure is even meaningful —
+ * `spent_total` is 0 while the promo is on, because nothing was debited.
  */
 
-const generationLogs = () => mongoColl.generationLogs()
 const inkLedger = () => mongoColl.inkLedger()
 const mediaUsage = () => mongoColl.mediaUsage()
 const worldInstances = () => mongoColl.worldInstances()
@@ -44,14 +51,28 @@ export function summaryDays(value?: string): SummaryDays {
   return days as SummaryDays
 }
 
-type CostRollup = { turns: number; cost_usd: number; media: number }
+type CostRollup = { turns: number; solo_turns: number; cost_usd: number; media: number }
 
-/** Turn count, summed model cost and media items in a window, reviewer-excluded. */
+/**
+ * Story turns, summed model cost and media items in a window, reviewer-excluded.
+ *
+ * `turns` and `cost_usd` come from different collections by design: a turn is an
+ * `event`, and a cost is a `llm_call`, which also covers the background calls
+ * that belong to no turn. `solo_turns` is what an Ink equivalent may price,
+ * because a group turn reserves 0 Ink.
+ */
 async function windowTotals(from: Date, scope: Record<string, unknown>): Promise<CostRollup> {
-  const [turns, media] = await Promise.all([
-    generationLogs().aggregate<{ _id: null; turns: number; cost: number }>([
+  const turnMatch = { created_at: { $gte: from }, ...storyTurnMatch(), ...scope }
+  const [turnRows, cost, media] = await Promise.all([
+    // Grouped per save so the group ones can be identified in one bounded read
+    // rather than excluded with a `$nin` of every group save ever made.
+    events().aggregate<{ _id: ObjectId; turns: number }>([
+      { $match: turnMatch },
+      { $group: { _id: '$instance_id', turns: { $sum: 1 } } },
+    ]).toArray(),
+    calls().aggregate<{ _id: null; cost: number }>([
       { $match: { created_at: { $gte: from }, ...scope } },
-      { $group: { _id: null, turns: { $sum: 1 }, cost: { $sum: { $ifNull: ['$turn_cost_usd', 0] } } } },
+      { $group: { _id: null, cost: { $sum: { $ifNull: ['$cost_usd', 0] } } } },
     ]).toArray(),
     // A released item was never made, so it would have cost nothing.
     mediaUsage().aggregate<{ _id: null; media: number }>([
@@ -59,11 +80,12 @@ async function windowTotals(from: Date, scope: Record<string, unknown>): Promise
       { $group: { _id: null, media: { $sum: 1 } } },
     ]).toArray(),
   ])
-  return {
-    turns: Number(turns[0]?.turns ?? 0),
-    cost_usd: Number(turns[0]?.cost ?? 0),
-    media: Number(media[0]?.media ?? 0),
-  }
+  const groupIds = await groupSaveSet(turnRows.map((row) => row._id).filter((id): id is ObjectId => id instanceof ObjectId))
+  const turns = turnRows.reduce((sum, row) => sum + Number(row.turns ?? 0), 0)
+  const solo_turns = turnRows
+    .filter((row) => !(row._id && groupIds.has(idString(row._id))))
+    .reduce((sum, row) => sum + Number(row.turns ?? 0), 0)
+  return { turns, solo_turns, cost_usd: Number(cost[0]?.cost ?? 0), media: Number(media[0]?.media ?? 0) }
 }
 
 /** Cost, turns and distinct players per UTC day, every day of the window present. */
@@ -74,25 +96,14 @@ async function dailyRollup(
   costs: EffectiveBilling['costs'],
   now: Date,
 ) {
-  const [rows, mediaRows] = await Promise.all([
-    generationLogs().aggregate<{
-      _id: string
-      turns: number
-      cost_usd: number
-      players: ObjectId[]
-    }>([
+  const [turnRows, costRows, mediaRows] = await Promise.all([
+    events().aggregate<{ _id: { day: string; instance: ObjectId; player: ObjectId }; turns: number }>([
+      { $match: { created_at: { $gte: from }, ...storyTurnMatch(), ...scope } },
+      { $group: { _id: { day: dayExpression, instance: '$instance_id', player: '$player_id' }, turns: { $sum: 1 } } },
+    ]).toArray(),
+    calls().aggregate<{ _id: string; cost_usd: number }>([
       { $match: { created_at: { $gte: from }, ...scope } },
-      { $group: {
-        _id: { day: dayExpression, player: '$player_id' },
-        turns: { $sum: 1 },
-        cost_usd: { $sum: { $ifNull: ['$turn_cost_usd', 0] } },
-      } },
-      { $group: {
-        _id: '$_id.day',
-        turns: { $sum: '$turns' },
-        cost_usd: { $sum: '$cost_usd' },
-        players: { $addToSet: '$_id.player' },
-      } },
+      { $group: { _id: dayExpression, cost_usd: { $sum: { $ifNull: ['$cost_usd', 0] } } } },
     ]).toArray(),
     // Media items are the other half of the Ink conversion, so the day's figure
     // prices them too rather than only the turns.
@@ -101,17 +112,27 @@ async function dailyRollup(
       { $group: { _id: dayExpression, media: { $sum: 1 } } },
     ]).toArray(),
   ])
-  const byDay = new Map(rows.map((row) => [row._id, row]))
+  const groupIds = await groupSaveSet(turnRows.map((row) => row._id.instance).filter((id): id is ObjectId => id instanceof ObjectId))
+  const byDay = new Map<string, { turns: number; solo_turns: number; players: Set<string> }>()
+  for (const row of turnRows) {
+    const entry = byDay.get(row._id.day) ?? { turns: 0, solo_turns: 0, players: new Set<string>() }
+    const turns = Number(row.turns ?? 0)
+    entry.turns += turns
+    if (!(row._id.instance && groupIds.has(idString(row._id.instance)))) entry.solo_turns += turns
+    if (row._id.player) entry.players.add(idString(row._id.player))
+    byDay.set(row._id.day, entry)
+  }
+  const costByDay = new Map(costRows.map((row) => [row._id, row.cost_usd]))
   const mediaByDay = new Map(mediaRows.map((row) => [row._id, row.media]))
   return daySeries(days, now).map((date) => {
     const row = byDay.get(date)
-    const turns = Number(row?.turns ?? 0)
     return {
       date,
-      cost_usd: money(row?.cost_usd ?? 0),
-      turns,
-      active_players: (row?.players ?? []).filter(Boolean).length,
-      ink_equiv: inkEquivalent({ turns, media: mediaByDay.get(date) ?? 0 }, costs),
+      cost_usd: money(costByDay.get(date) ?? 0),
+      turns: row?.turns ?? 0,
+      active_players: row?.players.size ?? 0,
+      // Solo turns only: a group turn would never have been charged Ink.
+      ink_equiv: inkEquivalent({ turns: row?.solo_turns ?? 0, media: mediaByDay.get(date) ?? 0 }, costs),
     }
   })
 }
@@ -128,44 +149,89 @@ async function spentTotal(from: Date, scope: Record<string, unknown>): Promise<n
   return Math.max(0, Number(row?.spent ?? 0))
 }
 
-type PlayerCost = { _id: ObjectId; cost: number; turns: number }
+type PlayerCost = { id: ObjectId; cost: number; turns: number; solo_turns: number }
 
-/** Per-player cost and turns in the window, for the top players. */
-async function playerRollup(from: Date, scope: Record<string, unknown>) {
-  return generationLogs().aggregate<PlayerCost>([
-    { $match: { created_at: { $gte: from }, ...scope } },
-    { $group: { _id: '$player_id', cost: { $sum: { $ifNull: ['$turn_cost_usd', 0] } }, turns: { $sum: 1 } } },
-  ]).toArray()
+/**
+ * Per-player cost and turns in the window, for the top players.
+ *
+ * The two figures come from different collections: cost is every `llm_calls` row
+ * on the player, turns are the player's story `events`. A player who only made
+ * portraits has a cost and no turn, and still belongs here — the contract counts
+ * calls tied to no save in top players. `solo_turns` is what an Ink equivalent
+ * may price, because a group turn reserves 0 Ink.
+ */
+async function playerRollup(from: Date, scope: Record<string, unknown>): Promise<PlayerCost[]> {
+  const [costRows, turnRows] = await Promise.all([
+    calls().aggregate<{ _id: ObjectId; cost: number }>([
+      { $match: { created_at: { $gte: from }, ...scope } },
+      { $group: { _id: '$player_id', cost: { $sum: { $ifNull: ['$cost_usd', 0] } } } },
+    ]).toArray(),
+    events().aggregate<{ _id: { player: ObjectId; instance: ObjectId }; turns: number }>([
+      { $match: { created_at: { $gte: from }, ...storyTurnMatch(), ...scope } },
+      { $group: { _id: { player: '$player_id', instance: '$instance_id' }, turns: { $sum: 1 } } },
+    ]).toArray(),
+  ])
+  const groupIds = await groupSaveSet(turnRows.map((row) => row._id.instance).filter((id): id is ObjectId => id instanceof ObjectId))
+  const byPlayer = new Map<string, PlayerCost>()
+  const entryFor = (id: ObjectId) => {
+    const key = idString(id)
+    const entry = byPlayer.get(key) ?? { id, cost: 0, turns: 0, solo_turns: 0 }
+    byPlayer.set(key, entry)
+    return entry
+  }
+  for (const row of costRows) if (row._id) entryFor(row._id).cost = Number(row.cost ?? 0)
+  for (const row of turnRows) {
+    if (!row._id.player) continue
+    const entry = entryFor(row._id.player)
+    const turns = Number(row.turns ?? 0)
+    entry.turns += turns
+    if (!(row._id.instance && groupIds.has(idString(row._id.instance)))) entry.solo_turns += turns
+  }
+  return [...byPlayer.values()]
 }
 
 /**
  * Per-world cost and turns in the window.
  *
- * `generation_logs` names a save, not a world, so the logs are grouped per save
- * first, then those saves' templates are read once and the rows summed per
- * world — bounded by the saves that had a turn, never by the whole collection.
+ * Neither collection names a world, so each is grouped per save first, then those
+ * saves' templates are read once and the rows summed per world — bounded by the
+ * saves that had a turn or a call, never by the whole collection.
  */
 async function worldRollup(from: Date, scope: Record<string, unknown>) {
-  const perInstance = await generationLogs().aggregate<{ _id: ObjectId; cost: number; turns: number }>([
-    { $match: { created_at: { $gte: from }, ...scope } },
-    { $group: { _id: '$instance_id', cost: { $sum: { $ifNull: ['$turn_cost_usd', 0] } }, turns: { $sum: 1 } } },
-  ]).toArray()
-  if (perInstance.length === 0) return []
+  const [costRows, turnRows] = await Promise.all([
+    calls().aggregate<{ _id: ObjectId; cost: number }>([
+      { $match: { created_at: { $gte: from }, instance_id: { $exists: true }, ...scope } },
+      { $group: { _id: '$instance_id', cost: { $sum: { $ifNull: ['$cost_usd', 0] } } } },
+    ]).toArray(),
+    events().aggregate<{ _id: ObjectId; turns: number }>([
+      { $match: { created_at: { $gte: from }, ...storyTurnMatch(), ...scope } },
+      { $group: { _id: '$instance_id', turns: { $sum: 1 } } },
+    ]).toArray(),
+  ])
+  const perInstance = new Map<string, { id: ObjectId; cost: number; turns: number }>()
+  const entryFor = (id: ObjectId) => {
+    const key = idString(id)
+    const entry = perInstance.get(key) ?? { id, cost: 0, turns: 0 }
+    perInstance.set(key, entry)
+    return entry
+  }
+  for (const row of costRows) if (row._id) entryFor(row._id).cost = Number(row.cost ?? 0)
+  for (const row of turnRows) if (row._id) entryFor(row._id).turns = Number(row.turns ?? 0)
+  if (perInstance.size === 0) return []
 
-  const instanceIds = perInstance.map((row) => row._id).filter((id): id is ObjectId => id instanceof ObjectId)
   const saves = await worldInstances()
-    .find({ _id: { $in: instanceIds } }, { projection: { template_id: 1, group_template_id: 1 } })
+    .find({ _id: { $in: [...perInstance.values()].map((row) => row.id) } }, { projection: { template_id: 1, group_template_id: 1 } })
     .toArray()
   const instanceTemplate = new Map(saves.map((save) => [idString(save._id), save.group_template_id ?? save.template_id]))
 
   const perWorld = new Map<string, { id: ObjectId; cost: number; turns: number }>()
-  for (const row of perInstance) {
-    const templateId = instanceTemplate.get(idString(row._id))
+  for (const row of perInstance.values()) {
+    const templateId = instanceTemplate.get(idString(row.id))
     if (!templateId) continue
     const key = idString(templateId)
     const entry = perWorld.get(key) ?? { id: templateId, cost: 0, turns: 0 }
-    entry.cost += Number(row.cost ?? 0)
-    entry.turns += Number(row.turns ?? 0)
+    entry.cost += row.cost
+    entry.turns += row.turns
     perWorld.set(key, entry)
   }
   return [...perWorld.values()]
@@ -187,13 +253,14 @@ export const billingInsights = {
       unlimited ? Promise.resolve(0) : spentTotal(from, scope),
     ])
 
-    // An "active player" took a turn in the window, so the count is the size of
-    // the per-player rollup rather than a second aggregation.
-    const activePlayers = playerRows.length
+    // An "active player" took a turn in the window, so the count is the players
+    // with turns rather than a second aggregation. A player who only made
+    // portraits is in `top_players` but is not an active player.
+    const activePlayers = playerRows.filter((row) => row.turns > 0).length
     const topPlayers = [...playerRows]
       .sort((left, right) => right.cost - left.cost || right.turns - left.turns)
       .slice(0, 10)
-    const people = await personRefsByIds(topPlayers.map((row) => row._id))
+    const people = await personRefsByIds(topPlayers.map((row) => row.id))
 
     const topWorlds = [...worldRows]
       .sort((left, right) => right.cost - left.cost || right.turns - left.turns)
@@ -226,20 +293,21 @@ export const billingInsights = {
       },
       daily,
       ink: {
-        // The window's turn cost plus its media, both at catalog prices.
-        equiv_total: inkEquivalent({ turns: totals.turns, media: totals.media }, config.costs),
+        // Solo turns plus media, both at catalog prices: a group turn never
+        // reserved Ink, so pricing it would invent a charge nobody would pay.
+        equiv_total: inkEquivalent({ turns: totals.solo_turns, media: totals.media }, config.costs),
         spent_total: spent,
       },
       top_players: topPlayers.map((row) => {
         // A deleted account keeps its id for the link; there is nothing to name it.
-        const person: PersonRef = people.get(idString(row._id)) ?? {
-          id: idString(row._id), name: '', username: '', official: false, reviewer: false, gender: null,
+        const person: PersonRef = people.get(idString(row.id)) ?? {
+          id: idString(row.id), name: '', username: '', official: false, reviewer: false, gender: null,
         }
         return {
           ...person,
           cost_usd: money(row.cost),
           turns: row.turns,
-          ink_equiv: inkEquivalent({ turns: row.turns, media: 0 }, config.costs),
+          ink_equiv: inkEquivalent({ turns: row.solo_turns, media: 0 }, config.costs),
         }
       }),
       top_worlds: topWorlds
