@@ -8,6 +8,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import { deletionService } from './deletion.service'
 import { reviewerAccounts, type ReviewersMode } from './reviewer-accounts'
+import { playerScope } from './admin-insights'
 import { internalAccounts } from './internal-accounts'
 import { playerInsights, playerInsightsService } from './admin-insights-players'
 import { worldInsights, type WorldListOptions } from './admin-insights-worlds'
@@ -463,10 +464,21 @@ export const adminService = {
     return deletionService.deleteTemplateById(templateId)
   },
 
-  async listInstances(opts: { page?: number; limit?: number; player_id?: string; template_id?: string; archived?: boolean }) {
+  async listInstances(opts: {
+    page?: number
+    limit?: number
+    player_id?: string
+    template_id?: string
+    archived?: boolean
+    reviewers?: ReviewersMode
+  }) {
     const filter: Record<string, unknown> = {
       ...idFilter('player_id', opts.player_id),
       ...idFilter('template_id', opts.template_id),
+      // Review and team accounts are left out of every other player list, and
+      // a save is a player list too. Asking for one player's saves is the
+      // exception: that page is about them, team account or not.
+      ...(opts.player_id ? {} : await playerScope(opts.reviewers ?? 'exclude')),
     }
     if (opts.archived !== undefined) filter['meta.is_archived'] = opts.archived
     return listCollection(worldInstances(), filter, { updated_at: -1 }, opts)

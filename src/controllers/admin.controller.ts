@@ -303,13 +303,21 @@ export const adminController = {
   listInstances: async ({
     query,
   }: {
-    query: { page?: number; limit?: number; player_id?: string; template_id?: string; archived?: boolean | string }
+    query: {
+      page?: number
+      limit?: number
+      player_id?: string
+      template_id?: string
+      archived?: boolean | string
+      reviewers?: string
+    }
   }) =>
     adminService.listInstances({
       ...pageQuery(query),
       player_id: query.player_id,
       template_id: query.template_id,
       archived: boolQuery(query.archived),
+      reviewers: reviewersParam(query.reviewers),
     }),
 
   listContinuityAuditStatus: async ({

@@ -216,6 +216,8 @@ export const adminRoutes = new Elysia({ prefix: '/admin' })
         player_id: t.Optional(t.String()),
         template_id: t.Optional(t.String()),
         archived: t.Optional(t.Union([t.Boolean(), t.String()])),
+        // Validated in the service: a bad value is a 400 sentence, as on Players.
+        reviewers: t.Optional(t.String()),
       }),
     ]),
   })

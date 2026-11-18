@@ -94,6 +94,13 @@ const MUTATIONS: Mutation[] = [
     expect: 'a part 1 figure leaves a team account out',
   },
   {
+    name: 'saves list drops the player scope',
+    file: 'src/services/admin.service.ts',
+    before: "      ...(opts.player_id ? {} : await playerScope(opts.reviewers ?? 'exclude')),",
+    after: '      ...{},',
+    expect: 'the saves list hides a team account unless asked, and shows it by player',
+  },
+  {
     name: 'country falls back to the hint',
     file: 'src/services/admin-insights.ts',
     before: "  if (!hinted) return { country: null, source: null }",
@@ -671,6 +678,44 @@ async function runAudit() {
       assert.equal(row.internal, true)
       assert.equal(row.internal_reason, 'official')
       userRowSample = row
+    })
+
+    // ── The Saves list: team accounts are not saves to browse ───────────────
+    console.log('saves list')
+    await reset()
+    const savesWorld = { _id: id(), title: 'Iron Coast', kind: 'world', created_at: at('2026-10-01T00:00:00.000Z') }
+    await c('world_templates').insertOne(savesWorld)
+    const teamPlayer = user({ username: 'team_saves', internal: true, internal_reason: 'manual' })
+    const realPlayer = user({ username: 'player_saves' })
+    await c('users').insertMany([teamPlayer, realPlayer])
+    const teamSave = id()
+    const realSave = id()
+    await c('world_instances').insertMany([
+      { _id: teamSave, player_id: teamPlayer._id, template_id: savesWorld._id, meta: { total_events: 3 } },
+      { _id: realSave, player_id: realPlayer._id, template_id: savesWorld._id, meta: { total_events: 2 } },
+    ])
+    resetReviewerScopeCache()
+
+    await check('the saves list hides a team account unless asked, and shows it by player', async () => {
+      const idsOf = (list: { items: Array<{ id: string }> }) => list.items.map((row) => row.id).sort()
+      const hidden = await adminService.listInstances({ page: 1, limit: 10 })
+      assert.equal(hidden.total, 1)
+      assert.deepEqual(idsOf(hidden), [String(realSave)], "the default list is the players' saves")
+      const included = await adminService.listInstances({ page: 1, limit: 10, reviewers: 'include' })
+      assert.deepEqual(idsOf(included), [String(realSave), String(teamSave)].sort())
+      const only = await adminService.listInstances({ page: 1, limit: 10, reviewers: 'only' })
+      assert.deepEqual(idsOf(only), [String(teamSave)])
+      // Asking for one player's saves always answers: that page is about them,
+      // team account or not.
+      const byPlayer = await adminService.listInstances({ page: 1, limit: 10, player_id: String(teamPlayer._id) })
+      assert.deepEqual(idsOf(byPlayer), [String(teamSave)])
+      // The route parses `reviewers` with the same rule as Players.
+      const route = await request('/admin/instances?reviewers=only')
+      assert.equal(route.status, 200)
+      assert.deepEqual(route.body.items.map((row: { id: string }) => row.id), [String(teamSave)])
+      const bad = await request('/admin/instances?reviewers=nope')
+      assert.equal(bad.status, 400)
+      assert.equal(bad.body.error, 'Reviewers must be exclude, include or only.')
     })
 
     // ── Top players and returning players ───────────────────────────────────
