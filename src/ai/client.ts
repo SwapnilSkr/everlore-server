@@ -196,8 +196,15 @@ export function isHostFailureError(error: unknown): boolean {
   return /timed out|did not produce a first token/i.test(String(failure?.message ?? error))
 }
 
+/** Prose narration and structured extraction need different routing, and a cut
+ * structured reply is retried on another host while prose never is. One test
+ * for both so they cannot drift apart. */
+function isProseRequest(req: LLMRequest): boolean {
+  return !req.responseSchema && (!req.responseFormat || req.responseFormat.type === 'text')
+}
+
 function routingParamsFor(req: LLMRequest, model: string, stream: boolean): Record<string, unknown> {
-  const prose = !req.responseSchema && (!req.responseFormat || req.responseFormat.type === 'text')
+  const prose = isProseRequest(req)
   return {
     ...providerPrefsFor(
       model,
@@ -266,6 +273,74 @@ function clientFor(transport: ReturnType<typeof buildChatRequest>['client']) {
 let nonStreamingClientForAudit: OpenAI | null = null
 export function setLLMClientForAudit(client: OpenAI | null): void { nonStreamingClientForAudit = client }
 
+/** A retry's body: the same request with one more host excluded. A fresh
+ * object with a fresh ignore array, so neither the caller's request nor the
+ * first attempt's body is edited. */
+export function contentFilterRetryParams(
+  params: Record<string, unknown>,
+  host: string,
+): Record<string, unknown> {
+  const provider = (params.provider ?? {}) as Record<string, unknown>
+  const existing = Array.isArray(provider.ignore) ? provider.ignore : []
+  return { ...params, provider: { ...provider, ignore: [...new Set([...existing, host])] } }
+}
+
+interface ChatAttemptResult {
+  /** Null when the provider returned no content, as `llmResponseContent` sees it. */
+  content: string | null
+  emptyError: unknown
+  finishReason: string | null | undefined
+  provider?: string
+}
+
+/** One non-streaming provider call with its own usage, trace and provider
+ * metadata. A cut or empty reply is returned, not thrown, so the caller can
+ * decide whether another host should answer it. */
+async function chatAttempt(
+  req: LLMRequest,
+  params: ReturnType<typeof buildChatRequest>['params'],
+  client: ReturnType<typeof clientFor>,
+  timeout: number,
+  traceRole: LLMRequest['traceRole'],
+): Promise<ChatAttemptResult> {
+  const trace = beginLLMTrace({ model: params.model, purpose: req.purpose, streamed: false,
+    messages: req.messages, params, sections: req.promptSections, parts: req.promptParts, role: traceRole })
+  try {
+    const response = await withTraceAttempts(trace, () => client.chat.completions.create(params, {
+      timeout,
+      ...(req.timeoutMs ? { maxRetries: 0 } : {}),
+      ...(req.signal ? { signal: req.signal } : {}),
+    }))
+    traceProvider(trace, response)
+    const rawUsage = (response as { usage?: unknown }).usage
+    recordLLMUsage({ purpose: req.purpose, model: req.model, streamed: false, ...usageFromProvider(rawUsage) })
+    const reported = (response as { provider?: unknown }).provider
+    const attempt: ChatAttemptResult = {
+      content: null,
+      emptyError: undefined,
+      finishReason: response.choices?.[0]?.finish_reason,
+      ...(typeof reported === 'string' && reported ? { provider: reported } : {}),
+    }
+    try {
+      attempt.content = llmResponseContent(response)
+    } catch (error) {
+      // The reply's finish reason and host still count; only its text is absent.
+      attempt.emptyError = error
+    }
+    if (attempt.content !== null) {
+      if (trace) trace.response = attempt.content
+      settleLLMTrace(trace)
+    } else {
+      // Same settlement an empty reply got before the retry existed.
+      settleLLMTrace(trace, attempt.emptyError, req.signal?.aborted)
+    }
+    return attempt
+  } catch (error) {
+    settleLLMTrace(trace, error, req.signal?.aborted)
+    throw error
+  }
+}
+
 export async function callLLM(req: LLMRequest): Promise<string> {
   if (req.firstTokenHedge && req.firstTokenHedge.delayMs > 0) {
     const controller = new AbortController()
@@ -284,31 +359,49 @@ export async function callLLM(req: LLMRequest): Promise<string> {
       clearTimeout(timer)
     }
   }
+  const startedAt = Date.now()
   const built = buildChatRequest(req)
   const { params } = built
   logNormalization(req.model, params.model)
   const client = clientFor(built.client)
+  const timeout = req.timeoutMs ?? 90000
 
-  const trace = beginLLMTrace({ model: params.model, purpose: req.purpose, streamed: false,
-    messages: req.messages, params, sections: req.promptSections, parts: req.promptParts, role: req.traceRole })
-  try {
-    const response = await withTraceAttempts(trace, () => client.chat.completions.create(params, {
-      timeout: req.timeoutMs ?? 90000,
-      ...(req.timeoutMs ? { maxRetries: 0 } : {}),
-      ...(req.signal ? { signal: req.signal } : {}),
-    }))
-    traceProvider(trace, response)
-    const rawUsage = (response as { usage?: unknown }).usage
-    recordLLMUsage({ purpose: req.purpose, model: req.model, streamed: false, ...usageFromProvider(rawUsage) })
-    req.onFinishReason?.(response.choices?.[0]?.finish_reason)
-    const content = llmResponseContent(response)
-    if (trace) trace.response = content
-    settleLLMTrace(trace)
-    return content
-  } catch (error) {
-    settleLLMTrace(trace, error, req.signal?.aborted)
-    throw error
+  const first = await chatAttempt(req, params, client, timeout, req.traceRole)
+
+  // A host that runs a content filter returns HTTP 200 with a partial reply and
+  // finish_reason "content_filter". For a structured pass that silently loses
+  // the turn's facts, so one identical request is sent again with that host
+  // excluded. Not a ban: the memory model may have only one other host. Prose is
+  // left alone; its callers own their model fallbacks.
+  const filtered = first.finishReason === 'content_filter' && !isProseRequest(req)
+  let used = first
+  let recovered = false
+  if (filtered) {
+    const host = first.provider
+    const remaining = timeout - (Date.now() - startedAt)
+    let abortError: unknown
+    if (host && !req.signal?.aborted && remaining > 0) {
+      try {
+        const retry = await chatAttempt(req, contentFilterRetryParams(params, host), client, remaining, 'fallback')
+        // A transport may resolve after the abort; the player's cancel still wins.
+        if (req.signal?.aborted) throw req.signal.reason
+        if (retry.content !== null && retry.finishReason !== 'content_filter') {
+          used = retry
+          recovered = true
+        }
+      } catch (error) {
+        // A cancel belongs to the player. Anything else leaves the first reply
+        // as the answer, which is what this call returned before the retry.
+        if (req.signal?.aborted) abortError = error
+      }
+    }
+    log.warn('chat.content_filtered', { purpose: req.purpose, model: req.model, host, recovered })
+    if (abortError !== undefined) throw abortError
   }
+
+  req.onFinishReason?.(used.finishReason)
+  if (used.content === null) throw used.emptyError
+  return used.content
 }
 
 export const NARRATION_HEDGE_MS = 3500
