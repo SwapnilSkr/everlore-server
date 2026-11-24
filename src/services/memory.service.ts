@@ -17,6 +17,7 @@ import { lengthMaxTokens } from '../utils/narrative-styles'
 import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import type { ObjectId } from 'mongodb'
 import { idString, parseObjectId } from '../utils/mongo-id'
+import { log } from '../utils/logger'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
 import { characterCodexService } from './character-codex.service'
@@ -637,6 +638,9 @@ async function extractReplayCodexDeltas(params: {
     protagonistName: (existing as any[]).find((c) => c.is_protagonist)?.canonical_name,
     playerPersonaName: instance.persona_snapshot?.name,
     presentCast: presentCharacters,
+    onLost: ({ reason }) => {
+      log.warn('codex.turn_lost', { instanceId: idString(event.instance_id), sequence: event.sequence, reason })
+    },
   }).catch((err) => {
     console.warn('Replay projection: codex extraction failed:', (err as Error).message)
     return []

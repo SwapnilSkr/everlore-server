@@ -185,6 +185,14 @@ async function projectCharacterWork(params: { instanceId: string; playerId: stri
       seedPrompt: session.seed_prompt, isSentient: session.is_sentient,
       protagonistName: characterCodex.find((c) => c.is_protagonist)?.canonical_name || session.protagonist?.name,
       playerPersonaName: session.persona_snapshot?.name,
+      onLost: ({ reason }) => {
+        log.warn('codex.turn_lost', { instanceId, sequence: nextSequence, reason })
+        void recordAnomaly({
+          instanceId, playerId, eventId: event._id, sequence: nextSequence,
+          type: 'projection_failed', severity: 'warn',
+          details: `codex_extraction_lost: ${reason}`,
+        })
+      },
     }))
     // Sentient worlds: the player is the persona TALKING TO the world's main
     // character — they are not part of the cast. Drop any delta that would

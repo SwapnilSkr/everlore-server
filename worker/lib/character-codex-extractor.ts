@@ -1012,9 +1012,14 @@ export type CharacterCodexExtractionParams = {
   sequence?: number
   /** Test-only raw-response observer; never changes production extraction. */
   onRaw?: (raw: string) => void
+  /** Fired once when a single-turn extraction is unusable even after its retry.
+   *  `reason` is a fixed token — never model text or an error message. */
+  onLost?: (info: { reason: CodexLostReason }) => void
   /** Read-only comparison runner reserves its budget before EVERY provider call. */
   call?: typeof callLLM
 }
+
+export type CodexLostReason = 'length' | 'content_filter' | 'malformed' | 'error'
 
 export async function extractCharacterCodexDeltas(params: CharacterCodexExtractionParams): Promise<CharacterCodexDelta[]> {
   return extractCodex(params) as Promise<CharacterCodexDelta[]>
@@ -1160,31 +1165,88 @@ Respond ONLY JSON:
   ]
 }`
 
-  let raw: string
-  try {
-    raw = await (params.call ?? callLLM)({
-      purpose: 'codex_extraction',
-      model: AI_MODELS.codexExtraction,
-      messages: [
-        { role: 'system', content: system + (turns ? '\nBATCH: The roster is BEFORE the first turn. Process each TURN separately in ascending sequence, reconciling earlier changes before later ones. Preserve each turn’s cast, player input and narration. Return {"turns":[{"sequence":integer,"characters":[...same character shape...],"relation_assertions":[]}]} with exactly one entry for EVERY supplied sequence, including empty turns. Every character proposal ALSO needs sequence equal to its enclosing turn. Use only that turn’s source as evidence for its meters. Never combine changes from different turns. A later turn may retire a state added by an earlier turn.' : '') },
-        {
-          role: 'user',
-          content: turns ? JSON.stringify({ turns }) : `Player input:\n${playerInput || '(none)'}\n\nNarration:\n${aiResponse}`,
-        },
-      ],
-      temperature: 0.2,
-      maxTokens: 900 * (turns?.length || 1),
-      responseFormat: { type: 'json_object' },
-    })
-  } catch (err) {
-    if (turns) throw err
-    return []
-  }
-  params.onRaw?.(raw)
+  const messages = [
+    { role: 'system', content: system + (turns ? '\nBATCH: The roster is BEFORE the first turn. Process each TURN separately in ascending sequence, reconciling earlier changes before later ones. Preserve each turn’s cast, player input and narration. Return {"turns":[{"sequence":integer,"characters":[...same character shape...],"relation_assertions":[]}]} with exactly one entry for EVERY supplied sequence, including empty turns. Every character proposal ALSO needs sequence equal to its enclosing turn. Use only that turn’s source as evidence for its meters. Never combine changes from different turns. A later turn may retire a state added by an earlier turn.' : '') },
+    {
+      role: 'user',
+      content: turns ? JSON.stringify({ turns }) : `Player input:\n${playerInput || '(none)'}\n\nNarration:\n${aiResponse}`,
+    },
+  ]
 
-  const parsed = parseJsonObject(raw)
-  if (turns) return validateCodexBatch(params, turns, parsed)
-  return validateCodexTurn(params, parsed)
+  // Each attempt reports its own finish reason. An injected `call` that ignores
+  // onFinishReason still works: the strict parse below decides usability alone.
+  const callAttempt = async (maxTokens: number) => {
+    let finishReason: string | null | undefined
+    try {
+      const text = await (params.call ?? callLLM)({
+        purpose: 'codex_extraction',
+        model: AI_MODELS.codexExtraction,
+        messages,
+        temperature: 0.2,
+        maxTokens,
+        reasoningEffort: 'low',
+        responseFormat: { type: 'json_object' },
+        onFinishReason: (reason) => { finishReason = reason },
+      })
+      return { text, finishReason, error: undefined as unknown }
+    } catch (error) {
+      return { text: undefined as string | undefined, finishReason, error }
+    }
+  }
+
+  const first = await callAttempt(1800 * (turns?.length || 1))
+  if (turns) {
+    if (first.error !== undefined) throw first.error
+    params.onRaw?.(first.text ?? '')
+    return validateCodexBatch(params, turns, parseJsonObject(first.text ?? ''))
+  }
+
+  let unusable: CodexLostReason | undefined
+  if (first.error !== undefined) {
+    // No signal reaches this call, so a throw is always a failed request.
+    unusable = 'error'
+  } else if (first.finishReason === 'length' || first.finishReason === 'content_filter') {
+    unusable = first.finishReason
+  } else if (!isUsableCodexReply(first.text)) {
+    unusable = 'malformed'
+  }
+
+  if (unusable === undefined) {
+    params.onRaw?.(first.text ?? '')
+    return validateCodexTurn(params, parseJsonObject(first.text ?? ''))
+  }
+
+  const retry = await callAttempt(3600)
+  if (retry.error === undefined && retry.finishReason !== 'length' && retry.finishReason !== 'content_filter'
+    && isUsableCodexReply(retry.text)) {
+    params.onRaw?.(retry.text ?? '')
+    return validateCodexTurn(params, parseJsonObject(retry.text ?? ''))
+  }
+
+  const reason: CodexLostReason = retry.error !== undefined ? 'error'
+    : retry.finishReason === 'length' ? 'length'
+      : retry.finishReason === 'content_filter' ? 'content_filter'
+        : 'malformed'
+  // Keep today's read of the better reply; never drop a prefix the
+  // salvage parser can still use.
+  const raw = retry.error === undefined && retry.text !== undefined ? retry.text : first.text
+  params.onLost?.({ reason })
+  if (raw === undefined) return []
+  params.onRaw?.(raw)
+  return validateCodexTurn(params, parseJsonObject(raw))
+}
+
+/** Strict reply test: the JSON must be an object carrying a `characters` array.
+ *  No brace salvage here — a cut reply is retried, not read around. */
+function isUsableCodexReply(raw: string | undefined): boolean {
+  if (typeof raw !== 'string' || !raw.trim()) return false
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    return !!parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      && Array.isArray((parsed as Record<string, unknown>).characters)
+  } catch {
+    return false
+  }
 }
 
 async function validateCodexTurn(params: CharacterCodexExtractionParams, parsed: Record<string, unknown>,
