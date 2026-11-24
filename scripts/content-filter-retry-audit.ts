@@ -172,6 +172,21 @@ const goodJson = '{"ok": true}'
 }
 
 // 3: empty content with content_filter is still retried.
+for (const host of ['Azure', 'OpenAI']) {
+  const result = await run([
+    { content: cutJson, finish: 'content_filter', provider: host },
+    { content: goodJson, finish: 'stop', provider: 'OtherHost' },
+  ], { model: 'gpt-4o-mini' })
+  check(`a cut at ${host} retries a gpt-4o-mini pass with order kept and ${host} ignored`, () => {
+    assert.equal(result.error, undefined)
+    assert.equal(result.value, goodJson)
+    assert.equal(result.calls.length, 2)
+    const expected = { order: ['OpenAI', 'Azure'], allow_fallbacks: true, require_parameters: true }
+    assert.deepEqual(result.calls[0].params.provider, expected)
+    assert.deepEqual(result.calls[1].params.provider, { ...expected, ignore: [host] })
+    assert.deepEqual(result.reasons, ['stop'])
+  })
+}
 {
   const result = await run([
     { content: null, finish: 'content_filter', provider: 'FixtureHost' },
@@ -455,6 +470,7 @@ if (process.argv.includes('--bites')) {
     { name: 'log twice', before: logCall, after: `${logCall}; ${logCall}`, expected: 'FAIL the cut is logged once with no prompt or reply text' },
     { name: 'ignore duplicates', before: 'ignore: [...new Set([...existing, host])]', after: 'ignore: [host]', expected: 'FAIL existing ignore merges without duplicates and stays unmutated' },
     { name: 'ignore mutation', before: 'return { ...params, provider: { ...provider, ignore: [...new Set([...existing, host])] } }', after: 'provider.ignore = [host]; return params', expected: 'FAIL existing ignore merges without duplicates and stays unmutated' },
+    { name: 'retry drops host order', before: 'provider: { ...provider, ignore: [...new Set([...existing, host])] }', after: 'provider: { ignore: [...new Set([...existing, host])] }', expected: 'FAIL a cut at Azure retries a gpt-4o-mini pass' },
     { name: 'signal dropped', before: '...(req.signal ? { signal: req.signal } : {}),', after: '...(req.signal && false ? { signal: req.signal } : {}),', expected: 'FAIL the retry shares the first call signal and retry policy' },
     { name: 'retry policy dropped', before: '...(req.timeoutMs ? { maxRetries: 0 } : {})', after: '...(false ? { maxRetries: 0 } : {})', expected: 'FAIL the retry shares the first call signal and retry policy' },
   ]

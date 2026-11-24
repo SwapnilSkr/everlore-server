@@ -68,20 +68,51 @@ const NARRATION_HOST_RULES: Record<string, { order?: readonly string[]; ignore?:
   'meta-llama/llama-4-maverick': { order: ['Parasail', 'DigitalOcean'], ignore: ['Google'] },
 }
 
+/** Structured passes keep their facts only on hosts measured not to cut them.
+ * Order beats sorting because throughput can land a reply on a host whose
+ * content filter returns a truncated answer with HTTP 200. Measured 2026-11-24:
+ * gpt-4o-mini has two hosts — Azure cut 6 of 9 adult memory replies, OpenAI 0
+ * of 9, at the same speed over 105 same-hour production pairs. gpt-6-luna codex
+ * replies in production: Amazon Bedrock p50 5.6 s with no cuts in 493, OpenAI
+ * p50 21.9 s with no cuts (14 calls), Azure p50 7.6 s but 27 cut of 181, so a
+ * slow whole reply outranks a fast cut one. */
+const STRUCTURED_HOST_ORDER: Record<string, readonly string[]> = {
+  'openai/gpt-4o-mini': ['OpenAI', 'Azure'],
+  'openai/gpt-6-luna': ['Amazon Bedrock', 'OpenAI', 'Azure'],
+}
+
+/** A hedge must not race its primary on the same host, so its copy of the
+ * order starts one host later. */
+function rotatedHostOrder(hosts: readonly string[], by: number): string[] {
+  if (!by) return [...hosts]
+  const at = by % hosts.length
+  return [...hosts.slice(at), ...hosts.slice(0, at)]
+}
+
 /** Narration is short, so favor the first word; JSON passes favor throughput.
- * Keep the p90 preference soft so missing telemetry never excludes a host. */
-function providerPrefsFor(model: string, requireParameters: boolean, narration: boolean, prose: boolean): Record<string, unknown> {
+ * Keep the p90 preference soft so missing telemetry never excludes a host.
+ * A measured structured pass instead names its hosts, and its p90 hint is
+ * omitted so a soft demotion cannot override the order. */
+function providerPrefsFor(
+  model: string,
+  requireParameters: boolean,
+  narration: boolean,
+  prose: boolean,
+  structuredHostShift = 0,
+): Record<string, unknown> {
   const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
   const rules = prose ? NARRATION_HOST_RULES[model] : undefined
+  const measured = prose ? undefined : STRUCTURED_HOST_ORDER[model]
+  const order = measured ? rotatedHostOrder(measured, structuredHostShift) : rules?.order
   return {
     provider: {
       // An explicit order must take precedence over automatic sorting.
-      ...(rules?.order ? { order: [...rules.order] } : { sort: narration ? 'latency' : 'throughput' }),
+      ...(order ? { order: [...order] } : { sort: narration ? 'latency' : 'throughput' }),
       // Replays and regenerations write prose too, so they skip the host as well.
       ...(prose ? { ignore: [...new Set([...NARRATION_IGNORED_PROVIDERS, ...(rules?.ignore ?? [])])] } : {}),
       allow_fallbacks: true,
       ...(requireParameters ? { require_parameters: true } : {}),
-      ...(Number.isFinite(p90) && p90 > 0
+      ...(measured === undefined && Number.isFinite(p90) && p90 > 0
         ? { preferred_max_latency: { p90 } }
         : {}),
     },
@@ -125,6 +156,9 @@ interface LLMRequest {
   /** Optional metadata observer; string-returning callers keep their contract. */
   onFinishReason?: (reason: string | null | undefined) => void
   traceRole?: 'primary' | 'hedge' | 'fallback'
+  /** Starts a measured structured host order one host later. Set only by the
+   * hedge contender, so it never reaches a provider body, trace or cache key. */
+  structuredHostShift?: number
   /** Opt-in internal JSON streaming; zero keeps the non-streamed transport. */
   firstTokenHedge?: LLMFirstTokenHedge
 }
@@ -211,6 +245,7 @@ function routingParamsFor(req: LLMRequest, model: string, stream: boolean): Reco
       Boolean(req.responseSchema || req.responseFormat?.type === 'json_schema'),
       stream && prose,
       prose,
+      req.structuredHostShift ?? 0,
     ),
     // Hybrid narrators must emit words immediately, including hedge/fallback attempts.
     ...((stream && prose) || req.noReasoning) && !isNextGenOpenAIModel(model) ? { reasoning: { enabled: false } } : {},
@@ -559,7 +594,7 @@ function narrationAttempt(
       const state = { controller: new AbortController(), failed: false, error: undefined as unknown, usage: undefined as unknown, trace: undefined as LLMTraceRecord | undefined }
       contenders[label] = state
       const run = requestLLMStream(
-        { ...req, ...(label === 'hedge' ? { sessionId: undefined } : {}), traceRole: label === 'hedge' ? 'hedge' : req.traceRole ?? 'primary' },
+        { ...req, ...(label === 'hedge' ? { sessionId: undefined } : {}), traceRole: label === 'hedge' ? 'hedge' : req.traceRole ?? 'primary', ...(label === 'hedge' ? { structuredHostShift: 1 } : {}) },
         (delta) => {
           if (settled) return
           // No await between observing the first text and claiming the race.

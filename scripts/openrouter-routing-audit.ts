@@ -65,7 +65,9 @@ for (const [label, request] of [
   ['replay prose', buildChatRequest({ model: 'gpt-4o-mini', messages: [] })],
 ] as const) {
   const provider = request.params.provider
-  check(provider?.sort === (label === 'streamed prose' ? 'latency' : 'throughput')
+  // Both gpt-4o-mini structured shapes are measured: they name their hosts.
+  const measured = label === 'streamed schema' || label === 'streamed JSON'
+  check((measured ? !('sort' in (provider ?? {})) : provider?.sort === (label === 'streamed prose' ? 'latency' : 'throughput'))
     && provider?.allow_fallbacks === true, `${label} keeps its intended sorting and fallback routing`)
   const prose = label === 'streamed prose' || label === 'replay prose'
   check(prose
@@ -73,10 +75,10 @@ for (const [label, request] of [
     : provider?.ignore === undefined,
   `${label} ${prose ? 'skips' : 'does not filter'} the thinking-only narration host`)
   const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
-  check(Number.isFinite(p90) && p90 > 0
+  check(!measured && Number.isFinite(p90) && p90 > 0
     ? provider?.preferred_max_latency?.p90 === p90
     : provider?.preferred_max_latency === undefined,
-  `${label} retains the configured soft p90 latency preference`)
+  `${label} ${measured ? 'omits' : 'retains'} the configured soft p90 latency preference`)
 }
 
 const orderedModel = 'deepseek/deepseek-v4.1-flash-1017'
@@ -118,7 +120,7 @@ check(JSON.stringify(text.params.provider) === JSON.stringify(ordered.params.pro
   && JSON.stringify(text.params.reasoning) === JSON.stringify(ordered.params.reasoning),
   'explicit text format uses the same streamed prose routing')
 
-for (const model of [orderedModel, 'deepseek/deepseek-v3.2', 'deepseek/deepseek-v4-flash-0731', 'xiaomi/mimo-v2.6-flash', 'gpt-4o-mini']) {
+for (const model of [orderedModel, 'deepseek/deepseek-v3.2', 'deepseek/deepseek-v4-flash-0731', 'xiaomi/mimo-v2.6-flash']) {
   for (const stream of [false, true]) {
     for (const [format, options] of [
       ['schema', { responseSchema: schema }],
@@ -134,6 +136,43 @@ for (const model of [orderedModel, 'deepseek/deepseek-v3.2', 'deepseek/deepseek-
     }
   }
 }
+// Measured structured models name their hosts, streamed or not, with every
+// structured shape and both the normalized and bare id. Throughput sorting and
+// the p90 hint are gone so neither can move the reply to another host.
+const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
+const p90Preference = Number.isFinite(p90) && p90 > 0 ? { preferred_max_latency: { p90 } } : {}
+for (const [normalized, order] of [
+  ['openai/gpt-4o-mini', ['OpenAI', 'Azure']],
+  ['openai/gpt-6-luna', ['Amazon Bedrock', 'OpenAI', 'Azure']],
+] as const) {
+  for (const model of [normalized, normalized.replace(/^openai\//, '')]) {
+    for (const stream of [false, true]) {
+      for (const [format, options, requireParameters] of [
+        ['JSON object', { responseFormat: { type: 'json_object' } }, false],
+        ['JSON schema', { responseFormat: { type: 'json_schema', json_schema: { name: 'audit', schema } } }, true],
+        ['schema', { responseSchema: schema }, true],
+      ] as const) {
+        const { params } = buildChatRequest({ model, messages: [], ...options }, stream)
+        const expected = { order: [...order], allow_fallbacks: true, ...(requireParameters ? { require_parameters: true } : {}) }
+        check(JSON.stringify(params.provider) === JSON.stringify(expected),
+          `(e) ${model} ${stream ? 'stream' : 'chat'} ${format} sends the exact structured host order`)
+        check(!('sort' in params.provider) && !('preferred_max_latency' in params.provider) && !('ignore' in params.provider),
+          `(e) ${model} ${stream ? 'stream' : 'chat'} ${format} keeps no sort, p90 or ignore`)
+      }
+    }
+  }
+}
+const proseMini = buildChatRequest({ model: 'gpt-4o-mini', messages: [], purpose: 'scene_summary' })
+check(JSON.stringify(proseMini.params.provider) === JSON.stringify({
+  sort: 'throughput', ignore: ['GMICloud'], allow_fallbacks: true, ...p90Preference,
+}), '(e) a gpt-4o-mini prose call keeps throughput sorting and the p90 preference')
+check(!('order' in proseMini.params.provider) && !('reasoning' in proseMini.params),
+  '(e) a gpt-4o-mini prose call keeps no host order and no reasoning override')
+const unlistedStructured = buildChatRequest({ model: 'gpt-5.6-luna', messages: [], responseSchema: schema }, true)
+check(JSON.stringify(unlistedStructured.params.provider) === JSON.stringify({
+  sort: 'throughput', allow_fallbacks: true, require_parameters: true, ...p90Preference,
+}), '(e) an unlisted structured model keeps throughput sorting and the p90 preference')
+
 for (const model of ['gpt-5.6-luna', 'openai/gpt-5.6-luna']) {
   for (const stream of [false, true]) {
     for (const structuredCall of [false, true]) {
@@ -170,7 +209,7 @@ if (process.argv.includes('--bites')) {
   const mutations: Array<{ name: string; before: string; after: string; expected: string }> = [
     { name: 'host order', before: "['InferenceNet', 'Relace', 'Reka']", after: "['Relace', 'InferenceNet', 'Reka']", expected: 'FAIL (a) v4.1 narration uses exact host order' },
     { name: 'ordered fallbacks', before: 'allow_fallbacks: true', after: 'allow_fallbacks: false', expected: 'FAIL (a) v4.1 narration uses exact host order' },
-    { name: 'ordered sort omitted', before: '{ order: [...rules.order] }', after: "{ order: [...rules.order], sort: 'latency' }", expected: 'FAIL (a) v4.1 narration uses exact host order' },
+    { name: 'ordered sort omitted', before: '{ order: [...order] }', after: "{ order: [...order], sort: 'latency' }", expected: 'FAIL (a) v4.1 narration uses exact host order' },
     { name: 'global prose ban', before: "['GMICloud'] as const", after: '[] as const', expected: 'FAIL (a) v4.1 narration uses exact host order' },
     { name: 'thinking disabled', before: '{ reasoning: { enabled: false } }', after: '{ reasoning: { enabled: true } }', expected: 'FAIL (a) v4.1 streamed narration disables thinking' },
     { name: 'AtlasCloud ban', before: "['AtlasCloud', 'SiliconFlow']", after: "['SiliconFlow']", expected: 'FAIL (b)' },
@@ -179,16 +218,21 @@ if (process.argv.includes('--bites')) {
     { name: 'v4-flash ban', before: "'deepseek/deepseek-v4-flash-0731': { ignore: ['DeepInfra'] }", after: "'deepseek/deepseek-v4-flash-0731': {}", expected: 'FAIL deepseek/deepseek-v4-flash-0731 stream' },
     { name: 'MiMo ban', before: "'xiaomi/mimo-v2.6-flash': { ignore: ['DeepInfra'] }", after: "'xiaomi/mimo-v2.6-flash': {}", expected: 'FAIL xiaomi/mimo-v2.6-flash stream' },
     { name: 'replay host rules', before: 'const rules = prose ?', after: 'const rules = narration ?', expected: 'FAIL v4.1 replay' },
-    { name: 'replay thinking unchanged', before: 'stream && prose && !isNextGenOpenAIModel(model)', after: 'prose && !isNextGenOpenAIModel(model)', expected: 'FAIL v4.1 replay' },
+    { name: 'replay thinking unchanged', before: '((stream && prose) || req.noReasoning) && !isNextGenOpenAIModel(model)', after: '(prose || req.noReasoning) && !isNextGenOpenAIModel(model)', expected: 'FAIL v4.1 replay' },
     { name: 'model ban scope', before: 'NARRATION_HOST_RULES[model] : undefined', after: "NARRATION_HOST_RULES['deepseek/deepseek-v3.2'] : undefined", expected: 'FAIL unlisted prose models' },
     { name: 'explicit text prose', before: "(!req.responseFormat || req.responseFormat.type === 'text')", after: '!req.responseFormat', expected: 'FAIL explicit text format' },
     { name: 'structured order isolation', before: 'const rules = prose ?', after: 'const rules = true ?', expected: 'FAIL (c) deepseek/deepseek-v4.1-flash-1017' },
     { name: 'structured ignore isolation', before: '...(prose ? { ignore:', after: '...(true ? { ignore:', expected: 'FAIL (c)' },
-    { name: 'structured thinking isolation', before: 'stream && prose && !isNextGenOpenAIModel(model)', after: 'stream && !isNextGenOpenAIModel(model)', expected: 'FAIL (c)' },
+    { name: 'structured thinking isolation', before: '((stream && prose) || req.noReasoning) && !isNextGenOpenAIModel(model)', after: '(stream || req.noReasoning) && !isNextGenOpenAIModel(model)', expected: 'FAIL (c)' },
     { name: 'structured throughput sort', before: "sort: narration ? 'latency' : 'throughput'", after: "sort: 'latency'", expected: 'FAIL (c)' },
     { name: 'structured parameter requirement', before: 'require_parameters: true', after: 'require_parameters: false', expected: 'FAIL (c)' },
+    { name: 'measured order swapped', before: "'openai/gpt-4o-mini': ['OpenAI', 'Azure']", after: "'openai/gpt-4o-mini': ['Azure', 'OpenAI']", expected: 'FAIL (e) openai/gpt-4o-mini chat JSON object sends the exact structured host order' },
+    { name: 'measured wrong model key', before: "'openai/gpt-6-luna':", after: "'openai/gpt-6-luna-typo':", expected: 'FAIL (e) openai/gpt-6-luna chat JSON object sends the exact structured host order' },
+    { name: 'measured sort left in', before: '...(order ? { order: [...order] } :', after: "...(order ? { order: [...order], sort: 'throughput' } :", expected: 'FAIL (e) openai/gpt-4o-mini chat JSON object keeps no sort, p90 or ignore' },
+    { name: 'measured p90 left in', before: 'measured === undefined && Number.isFinite(p90) && p90 > 0', after: 'Number.isFinite(p90) && p90 > 0', expected: 'FAIL (e) openai/gpt-4o-mini chat JSON object keeps no sort, p90 or ignore' },
+    { name: 'measured rule applied to prose', before: 'const measured = prose ? undefined : STRUCTURED_HOST_ORDER[model]', after: 'const measured = STRUCTURED_HOST_ORDER[model]', expected: 'FAIL (e) a gpt-4o-mini prose call keeps throughput sorting' },
     { name: 'OpenAI effort-only reasoning', before: 'params.reasoning = { effort: req.reasoningEffort }', after: 'params.reasoning = { effort: req.reasoningEffort, enabled: false }', expected: 'FAIL (d)' },
-    { name: 'OpenAI no-effort isolation', before: 'stream && prose && !isNextGenOpenAIModel(model)', after: 'stream && prose', expected: 'FAIL (d) gpt-5.6-luna stream prose adds no reasoning without effort' },
+    { name: 'OpenAI no-effort isolation', before: '((stream && prose) || req.noReasoning) && !isNextGenOpenAIModel(model)', after: '(stream && prose)', expected: 'FAIL (d) gpt-5.6-luna stream prose adds no reasoning without effort' },
   ]
   for (const mutation of mutations) {
     try {
