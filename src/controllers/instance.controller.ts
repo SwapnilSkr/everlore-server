@@ -75,9 +75,13 @@ export const instanceController = {
     return instance
   },
 
-  create: async ({ user, body }: { user: AuthUser | null; body: { template_id: string; persona_id?: string } }) => {
+  create: async ({ user, body }: { user: AuthUser | null; body: { template_id: string; persona_id?: string; device_locale?: string } }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
-    const result = await instanceService.create(user.id, body.template_id, user.tier, body.persona_id)
+    // The locale is appended only when the app sent one, so an older client's
+    // call is exactly as before.
+    const createArgs: Parameters<typeof instanceService.create> = [user.id, body.template_id, user.tier, body.persona_id]
+    if (body.device_locale !== undefined) createArgs.push(body.device_locale)
+    const result = await instanceService.create(...createArgs)
     if (result.template.kind === 'group') return publicGroupData({ ...result, template: publicTemplate(result.template) })
     return canReadTemplateAuthoring(result.template, user)
       ? result
@@ -132,6 +136,7 @@ export const instanceController = {
       narration_tone?: string
       focus_character_id?: string | null
       persona_id?: string | null
+      reply_language?: string
     }
   }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')

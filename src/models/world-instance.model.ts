@@ -60,6 +60,13 @@ export interface WorldInstanceDoc {
   current_scene: CurrentSceneDoc
   /** Narration person, toggleable in chat. Worlds start in third person. */
   narration_pov?: 'first' | 'third'
+  /** The save's reply language. English is never stored: absent means English.
+   *  A code that is off or unknown behaves as English everywhere. */
+  reply_language?: string
+  /** Who set it: the device locale at creation, writing detection, or the player. */
+  reply_language_source?: 'device' | 'writing' | 'player'
+  /** Typed player turns already checked by the writing detector. */
+  reply_language_checks?: number
   /** Chat MODE (see chat-modes.ts) — how the chat flows (pacing/intent).
    *  Player-chosen per conversation. Default 'free_play'. (Narrative voice is
    *  creator-locked on the template and is NOT stored here.) */

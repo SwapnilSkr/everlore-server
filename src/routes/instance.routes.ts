@@ -62,5 +62,8 @@ export const instanceRoutes = new Elysia({ prefix: '/instances' })
       narration_tone: t.Optional(t.String({ maxLength: 40 })),
       focus_character_id: t.Optional(t.Nullable(t.String())),
       persona_id: t.Optional(t.Nullable(t.String())),
+      // `en` or an enabled code. Validated in the service so a bad value is a
+      // 400 "Invalid reply_language", not a schema 422.
+      reply_language: t.Optional(t.String()),
     }),
   })

@@ -20,6 +20,10 @@ interface ProseHygieneInput {
   previousOpeningNames?: string[];
   /** Character names that should not open this response even if the prior turn varied. */
   avoidOpeningNames?: string[];
+  /** Effective non-English reply language. When set, only language-neutral
+   *  formatting/length codes survive; English-worded checks (player label,
+   *  shared history, name repetition) are not meaningful in another language. */
+  replyLanguage?: string;
 }
 
 const REPAIRABLE_CODES = new Set([
@@ -43,6 +47,32 @@ const REPAIRABLE_CODES = new Set([
   "incomplete_ending",
   "player_label_leak",
   "many_codex_names_mentioned",
+]);
+
+/**
+ * Codes that still mean something when the prose is in another language:
+ * structural formatting, length/paragraph shape, and the opening-name checks
+ * (which compare an exact name at the start of the reply). English-worded
+ * checks and name-repetition heuristics are dropped on a non-English turn.
+ */
+const LANGUAGE_NEUTRAL_CODES = new Set([
+  "empty_narrative",
+  "metadata_leak",
+  "bullet_list",
+  "double_asterisk_markers",
+  "unbalanced_italics",
+  "unbalanced_dialogue_quotes",
+  "incomplete_ending",
+  "length_too_short",
+  "length_too_long",
+  "short_reply_overexpanded",
+  "long_reply_underdeveloped",
+  "too_many_paragraphs",
+  "too_few_paragraphs",
+  "unquoted_text_outside_markers",
+  "plain_narration_outside_markers",
+  "repeated_opening_character_name",
+  "overused_opening_character_name",
 ]);
 
 function escapeRegExp(value: string): string {
@@ -602,7 +632,9 @@ export function validateProseHygiene(
     }
   }
 
-  return issues;
+  return input.replyLanguage
+    ? issues.filter((issue) => LANGUAGE_NEUTRAL_CODES.has(issue.code))
+    : issues;
 }
 
 /**

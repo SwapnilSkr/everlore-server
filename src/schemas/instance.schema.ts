@@ -3,6 +3,9 @@ import { t } from 'elysia'
 export const CreateInstanceBody = t.Object({
   template_id: t.String(),
   persona_id: t.Optional(t.String()),
+  /** Device locale (`pt-BR`). Malformed or overlong values are ignored in the
+   *  service, never rejected. */
+  device_locale: t.Optional(t.String()),
 })
 
 export const InstanceQueryParams = t.Object({

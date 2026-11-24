@@ -8,6 +8,7 @@ import {
   narrationToneLabel,
 } from './narration-tones'
 import { parsePlayerInput } from './player-input-parser'
+import { replyLanguageRule, type ReplyLanguageEntry } from './reply-language'
 import { CHOICE_TAIL_INSTRUCTION } from '../../worker/lib/choice-tail'
 import type { PersonaSnapshotDoc } from '../models/persona.model'
 import type { PlayerInteractionSignalDoc } from '../models/world-event.model'
@@ -109,6 +110,10 @@ interface PromptInput {
   sceneStateText?: string
   /** CANON BRIEF (companions) — who is travelling WITH the player, present by default. */
   companionFacts?: string[]
+  /** The save's non-English reply language. When present, one rule is pushed as
+   *  the last system message before the user turn; absent leaves the prompt
+   *  byte-identical. */
+  replyLanguage?: ReplyLanguageEntry
 }
 
 interface PromptMessage {
@@ -1280,6 +1285,14 @@ ${continuityTurns.join('\n\n')}${immediateBeat}`,
     ),
   })
   markMessagePart('final_contract')
+
+  // The last system word before the user turn: a non-English save gets one
+  // language rule. Absent (English), nothing is pushed and the prompt is
+  // byte-identical to before this feature existed.
+  if (input.replyLanguage) {
+    messages.push({ role: 'system', content: replyLanguageRule(input.replyLanguage) })
+  }
+  markMessagePart('reply_language')
 
   mark('directives', messageChars())
 

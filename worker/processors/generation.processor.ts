@@ -108,6 +108,13 @@ import {
 import type { PlayerInteractionSignalDoc } from '../../src/models/world-event.model'
 import { extractLifecycleChanges } from '../lib/character-lifecycle-extractor'
 import { createExtractorRawSink } from '../lib/extractor-raw'
+import { effectiveReplyLanguage, enabledReplyLanguages } from '../../src/utils/reply-language'
+import {
+  checkReplyLanguage,
+  decideReplyLanguage,
+  shouldCheckReplyLanguage,
+  type ReplyLanguageCheckResult,
+} from '../lib/reply-language-check'
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -697,6 +704,62 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const playerOid = parseObjectId(playerId)
   const extractorRaw = createExtractorRawSink()
 
+  // Reply-language writing detection. It starts once the recent events are in
+  // hand (the newest turn's chips are needed to tell a typed line from a tap)
+  // and is never awaited before the stream. A failed call changes nothing and
+  // never counts as a check; the guard keeps an explicit player choice winning.
+  let replyLanguageCheckPromise: Promise<ReplyLanguageCheckResult | null> | null = null
+  let replyLanguageCheckSettled = false
+  let replyLanguageCheckResult: ReplyLanguageCheckResult | null = null
+  let replyLanguageApplied = false
+  let replyLanguageWrite: Promise<void> = Promise.resolve()
+
+  // The session changes at once, so a result that beat the prompt costs it no
+  // database wait; the write is joined before the session is saved.
+  const applyReplyLanguageResult = async (result: ReplyLanguageCheckResult | null) => {
+    if (replyLanguageApplied) return
+    replyLanguageApplied = true
+    if (!result) return
+    const before = {
+      reply_language: session.reply_language,
+      reply_language_source: session.reply_language_source,
+    }
+    const checks = Number(session.reply_language_checks) || 0
+    const next = decideReplyLanguage({
+      result,
+      checks,
+      replyLanguage: effectiveReplyLanguage(session.reply_language)?.code,
+    })
+    session.reply_language_checks = checks + 1
+    if (!next) {
+      await mongoColl.worldInstances().updateOne({ _id: instanceOid }, { $inc: { reply_language_checks: 1 } })
+      return
+    }
+    session.reply_language = next.code
+    session.reply_language_source = 'writing'
+    try {
+      const guarded = await mongoColl.worldInstances().updateOne(
+        { _id: instanceOid, reply_language_source: { $ne: 'player' } },
+        {
+          $inc: { reply_language_checks: 1 },
+          $set: { reply_language_source: 'writing', ...(next.code ? { reply_language: next.code } : {}) },
+          ...(next.code ? {} : { $unset: { reply_language: '' } }),
+        },
+      )
+      if (guarded.matchedCount > 0) return
+      // The player chose a language while this turn ran: their choice stands.
+      const saved = await mongoColl.worldInstances().findOne(
+        { _id: instanceOid },
+        { projection: { reply_language: 1, reply_language_source: 1 } },
+      )
+      session.reply_language = effectiveReplyLanguage(saved?.reply_language)?.code
+      session.reply_language_source = saved?.reply_language_source
+    } catch (err) {
+      Object.assign(session, before)
+      throw err
+    }
+  }
+
   // Started during context assembly, never awaited before buildPrompt/stream.
   // If it settles in the existing context window, the current narrator can use
   // it; otherwise it becomes continuity for the next turn after this prose has
@@ -759,6 +822,41 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     currentLocation,
     locationContext: packetLocationContext,
   } = packet
+
+  // Started once the newest event's offered chips are in hand — that is what
+  // separates a typed line from a tap on a chip. It runs alongside the rest of
+  // prep and is never awaited before the stream.
+  const replyLanguageEnabled = enabledReplyLanguages()
+  if (replyLanguageEnabled.length > 0) {
+    const newestEvent = recentEvents[recentEvents.length - 1]
+    const offered = Array.isArray(newestEvent?.data?.choices)
+      ? newestEvent.data.choices.map((choice: any) => ({ send: choice?.send, label: choice?.label }))
+      : []
+    if (
+      shouldCheckReplyLanguage({
+        enabledCodes: replyLanguageEnabled.map((entry) => entry.code),
+        isTyped: !isContinuation && !confirmedWorldAction,
+        source: session.reply_language_source,
+        checks: Number(session.reply_language_checks) || 0,
+        replyLanguage: effectiveReplyLanguage(session.reply_language)?.code,
+        text: storedPlayerInput,
+        offered,
+      })
+    ) {
+      replyLanguageCheckPromise = checkReplyLanguage(storedPlayerInput, {
+        enabledCodes: replyLanguageEnabled.map((entry) => entry.code),
+      })
+        .then((result) => {
+          replyLanguageCheckResult = result
+          replyLanguageCheckSettled = true
+          return result
+        })
+        .catch(() => {
+          replyLanguageCheckSettled = true
+          return null
+        })
+    }
+  }
   const allKnownPlaces = await allKnownPlacesPromise
   const knownPlaces = mergeSceneHistoryIntoPlaces(
     allKnownPlaces.filter((place) => isSafeWitnessLocationCandidate(place.name)),
@@ -879,6 +977,14 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // heading with its prefilled value. The structured choice pass below is now
   // authoritative and receives a bounded equivalent of the narrator's story
   // context, so it stays grounded without depending on tail syntax.
+  // If the language check settled during prep, apply it now so THIS turn uses
+  // the new language. Otherwise the stream already has its answer and the
+  // result applies to the next turn.
+  if (replyLanguageCheckPromise && replyLanguageCheckSettled && !replyLanguageApplied) {
+    replyLanguageWrite = applyReplyLanguageResult(replyLanguageCheckResult).catch(() => {})
+  }
+  const turnReplyLanguage = effectiveReplyLanguage(session.reply_language)
+
   const promptStartedAt = Date.now()
   const prompt = buildPrompt({
     seedPrompt: session.seed_prompt,
@@ -925,6 +1031,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     // Structured fields (stats/flags/scene tag) are derived in a cheap pass below.
     proseOnly: true,
     emitChoices: false,
+    replyLanguage: turnReplyLanguage,
   })
   // Packet return to prompt start is the only prep time between the two phases
   // that is not already staged by the packet itself.
@@ -1159,6 +1266,15 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // The last streamed token, not the end of the turn: everything after this
   // (persistence, post-stream extraction) is the tail the composer waits on.
   const streamEndedAt = Date.now()
+  // A check that missed the prompt is applied after the prose has streamed, in
+  // parallel with extraction, before the end-of-turn session is written so the
+  // cached session carries the new language. It can never fail the turn.
+  const replyLanguageApply =
+    replyLanguageCheckPromise && !replyLanguageApplied
+      ? replyLanguageCheckPromise
+          .then((result) => applyReplyLanguageResult(result))
+          .catch(() => {})
+      : replyLanguageWrite
   const latencyMs = streamEndedAt - genStart
   const streamMs = firstTokenAt > 0 ? streamEndedAt - firstTokenAt : 0
   const endToEndTtftMs = firstTokenAt > 0 ? firstTokenAt - requestStartedAt : 0
@@ -1216,6 +1332,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     characterNames,
     messageLength: session.message_length,
     playerAddressMode,
+    replyLanguage: turnReplyLanguage?.code,
   })
   const lengthIssueCodes = streamIssues
     .filter((issue) =>
@@ -1284,6 +1401,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     playerAddressMode,
     previousOpeningNames: previousOpeningName ? [previousOpeningName] : [],
     avoidOpeningNames: characterNames,
+    replyLanguage: turnReplyLanguage?.code,
   })
 
   // Anchor choice generation to the player's identity so the choice viewpoint
@@ -3412,6 +3530,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       )
     }
   }
+
+  await replyLanguageApply
 
   const instanceUpdate: Record<string, unknown> = {
     $set: {

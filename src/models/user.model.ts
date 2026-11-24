@@ -28,6 +28,8 @@ export interface UserPreferences {
   guide_progress?: Record<string, GuideFlowProgress>
   /** Player asked the guide to stay quiet. Honoured on every device. */
   guide_opt_out?: boolean
+  /** Last reply language chosen in a save's setting; `'en'` is stored too. */
+  reply_language?: string
 }
 
 /** Where a player stands with one guide arc. */

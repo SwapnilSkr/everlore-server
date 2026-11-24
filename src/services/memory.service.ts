@@ -13,6 +13,7 @@ import { getRedisClient } from '../config/redis'
 import { getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../queues'
 import { queryRag } from '../providers/rag.provider'
 import { buildPrompt } from '../utils/prompt-builder'
+import { effectiveReplyLanguage, spliceReplayDirective } from '../utils/reply-language'
 import { lengthMaxTokens } from '../utils/narrative-styles'
 import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import type { ObjectId } from 'mongodb'
@@ -2349,6 +2350,7 @@ export const memoryService = {
       ? AI_MODELS.narrationNsfwFallbacks
       : AI_MODELS.narrationSfwFallbacks
 
+    const replyLanguageEntry = effectiveReplyLanguage(instance.reply_language)
     const prompt = buildPrompt({
       seedPrompt: template.seed_prompt,
       isSentient: template.is_sentient,
@@ -2379,6 +2381,7 @@ export const memoryService = {
         const c = replayCodex.find((x) => x._id && idString(x._id) === fid)
         return c?.canonical_name
       })(),
+      replyLanguage: replyLanguageEntry,
     })
 
     const replayDirective = replayVariants
@@ -2394,13 +2397,9 @@ export const memoryService = {
     // REQUIREMENTS/bullet text instead of narrating. Splicing it in just before
     // the user message keeps the user turn last, so the model replies in-story.
     const baseMessages = prompt.messages
-    const lastUserTurn = baseMessages[baseMessages.length - 1]
-    const head = baseMessages.slice(0, -1)
-    const replayMessages = [
-      ...head,
-      {
-        role: 'system',
-        content: `REPLAY OPTIMIZATION DIRECTIVE (instruction — do NOT repeat or quote this; respond only with in-character story prose):
+    const replayMessages = spliceReplayDirective(
+      baseMessages,
+      `REPLAY OPTIMIZATION DIRECTIVE (instruction — do NOT repeat or quote this; respond only with in-character story prose):
 - Produce a DISTINCT alternative response to the same turn.
 - Improve precision, characterization, and continuity.
 - Keep canonical narration facts true.
@@ -2419,9 +2418,8 @@ REPLAY HYGIENE:
 
 Recent variants (for contrast, do not copy):
 ${replayDirective || '(none)'}`,
-      },
-      lastUserTurn,
-    ]
+      replyLanguageEntry,
+    )
     const replayTemp = Math.max(0.4, narrationTemperature(modelId) - replayDepth * 0.04)
     // Match the alternative's length budget to the player's chosen reply length,
     // exactly like the primary turn — so a regenerate respects short/medium/long

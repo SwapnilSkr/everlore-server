@@ -22,6 +22,14 @@ import { isValidModeKey, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { DEFAULT_NARRATION_TONE, isValidNarrationTone } from '../utils/narration-tones'
 import { materializeTemplateCast } from './template-cast.service'
 import { isWorldListed } from '../utils/world-review'
+import {
+  effectiveReplyLanguage,
+  enabledReplyLanguages,
+  isReplyLanguageSetting,
+  normalizeDeviceLocale,
+  replyLanguageOptions,
+  startingLanguage,
+} from '../utils/reply-language'
 
 const TIER_LIMITS: Record<string, { max_instances: number; max_memories: number }> = {
   free: { max_instances: 3, max_memories: 100 },
@@ -45,6 +53,7 @@ export const instanceService = {
     templateId: string,
     tier: string,
     personaId?: string,
+    deviceLocale?: string,
   ): Promise<{ instance: WorldInstanceDoc; template: WorldTemplateDoc }> {
     const playerOid = parseObjectId(playerId)
     const templateOid = parseObjectId(templateId)
@@ -131,6 +140,25 @@ export const instanceService = {
       personaSnapshot = personaService.snapshotFromPersona(selectedPersona)
     }
 
+    // Start language: the player's explicit setting, else the device locale,
+    // else English. English is never stored, so the fields are only present for
+    // a non-English save. With no languages enabled nothing is read or stored.
+    let startLanguage: string | undefined
+    let startSource: 'device' | 'player' | undefined
+    if (enabledReplyLanguages().length > 0) {
+      const playerLanguage = await mongoColl
+        .users()
+        .findOne({ _id: playerOid }, { projection: { 'preferences.reply_language': 1 } })
+      const preference = playerLanguage?.preferences?.reply_language
+      const preferredCode =
+        typeof preference === 'string' && preference.trim() ? preference.trim() : undefined
+      startLanguage = startingLanguage({
+        preference: preferredCode,
+        deviceLocale: normalizeDeviceLocale(deviceLocale),
+      })
+      startSource = preferredCode ? 'player' : 'device'
+    }
+
     const instance: WorldInstanceDoc = {
       _id,
       template_id: templateOid,
@@ -148,6 +176,9 @@ export const instanceService = {
       // Characters start in first person (intimate chat feel); Worlds start in
       // third person. Either way the player can toggle POV in chat.
       narration_pov: template.kind === 'character' ? 'first' : 'third',
+      ...(startLanguage && startSource
+        ? { reply_language: startLanguage, reply_language_source: startSource }
+        : {}),
       // Chat mode, prose tone, and length are player-chosen. The template voice
       // still supplies genre/world texture; tone only controls how it is phrased.
       mode: DEFAULT_CHAT_MODE,
@@ -282,7 +313,14 @@ export const instanceService = {
       _id: parseObjectId(instanceId),
       player_id: parseObjectId(playerId),
     }, { projection: { media_voice_cast: 0 } })
-    return instance?.group_state ? publicGroupData(instance) : instance
+    if (!instance) return instance
+    if (instance.group_state) return publicGroupData(instance)
+    return {
+      ...instance,
+      // The app's Story language row reads these; `en` when absent or not effective.
+      reply_language: effectiveReplyLanguage(instance.reply_language)?.code ?? 'en',
+      reply_languages: replyLanguageOptions(),
+    }
   },
 
   /**
@@ -680,6 +718,11 @@ export const instanceService = {
       active_flags: instance.active_flags,
       current_scene: instance.current_scene,
       narration_pov: instance.narration_pov || 'third',
+      // Effective engine code, undefined for English/off/unknown. The source and
+      // check count drive writing detection; a failure changes nothing.
+      reply_language: effectiveReplyLanguage(instance.reply_language)?.code,
+      reply_language_source: instance.reply_language_source,
+      reply_language_checks: instance.reply_language_checks || 0,
       // Mode, voice, prose tone, and length are player-selected per instance.
       // A null voice override inherits the template's authored default.
       mode: instance.mode || DEFAULT_CHAT_MODE,
@@ -767,6 +810,7 @@ export const instanceService = {
       narration_tone?: string
       focus_character_id?: string | null
       persona_id?: string | null
+      reply_language?: string
     },
   ): Promise<{
     narration_pov: 'first' | 'third'
@@ -776,6 +820,8 @@ export const instanceService = {
     narration_tone: string
     focus_character_id: string | null
     persona_id: string | null
+    reply_language: string
+    reply_languages: Array<{ code: string; label: string }>
   }> {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
@@ -783,6 +829,20 @@ export const instanceService = {
     if (!target) throw new HttpError(404, 'Instance not found')
 
     const update: Record<string, unknown> = { updated_at: new Date() }
+    let unset: Record<string, ''> | null = null
+    if (settings.reply_language !== undefined) {
+      if (!isReplyLanguageSetting(settings.reply_language)) {
+        throw new HttpError(400, 'Invalid reply_language')
+      }
+      update.reply_language_source = 'player'
+      if (settings.reply_language === 'en') {
+        // English is stored as absence; the source stays `player` so writing
+        // detection never overrides an explicit choice.
+        unset = { reply_language: '' }
+      } else {
+        update.reply_language = settings.reply_language
+      }
+    }
     if (settings.narration_pov === 'first' || settings.narration_pov === 'third') {
       update.narration_pov = settings.narration_pov
     }
@@ -855,10 +915,16 @@ export const instanceService = {
 
     const result = await worldInstances().findOneAndUpdate(
       { _id: iid, player_id: pid },
-      { $set: update },
+      { $set: update, ...(unset ? { $unset: unset } : {}) },
       { returnDocument: 'after' },
     )
     if (!result) throw new HttpError(404, 'Instance not found')
+    if (settings.reply_language !== undefined) {
+      // The account remembers the last language the player chose, `en` included.
+      await mongoColl
+        .users()
+        .updateOne({ _id: pid }, { $set: { 'preferences.reply_language': settings.reply_language } })
+    }
 
     await getRedisClient().del(`session:${idString(iid)}`)
     return {
@@ -869,6 +935,8 @@ export const instanceService = {
       narration_tone: result.narration_tone || DEFAULT_NARRATION_TONE,
       focus_character_id: result.focus_character_id ? idString(result.focus_character_id) : null,
       persona_id: result.persona_id ? idString(result.persona_id) : null,
+      reply_language: effectiveReplyLanguage(result.reply_language)?.code ?? 'en',
+      reply_languages: replyLanguageOptions(),
     }
   },
 }
