@@ -44,7 +44,7 @@ export const GUARD_CATEGORIES: Record<GuardCategory, boolean> = {
   incest: true,
 }
 
-const MESSAGES: Record<GuardCategory, string> = {
+export const GUARD_MESSAGES: Record<GuardCategory, string> = {
   minor_sexual:
     'Everlore never writes sexual content involving minors. Rewrite that line and the scene picks up where it left off.',
   incest:
@@ -91,7 +91,7 @@ const SEXUAL_PHRASES = [
 const KIN_TERMS = new Set([
   'mother', 'father',
   'brother', 'brothers', 'sister', 'sisters', 'sibling', 'siblings',
-  'son', 'sons', 'daughter', 'daughters',
+  'sons', 'daughter', 'daughters',
   'aunt', 'auntie', 'uncle', 'niece', 'nephew', 'cousin',
   'grandmother', 'grandma', 'granny', 'grandfather', 'grandpa', 'granddad', 'grandad',
   'parent', 'parents',
@@ -110,6 +110,19 @@ const KIN_TERMS = new Set([
  * is what actually distinguishes the kinship reading from the vocative one.
  */
 const KIN_ADDRESS_TERMS = ['daddy', 'dad', 'mommy', 'mom', 'mum', 'mummy', 'mama', 'momma', 'papa']
+
+/**
+ * "son" alone is Spanish for "are" ("los dos son adultos"), a false positive the
+ * chat guard saw in real Portuguese/Spanish saves. In chat it counts as kinship
+ * only in an English construction: a determiner or possessive, at most one word
+ * ("my own son", "her older son"), then "son". "sons" stays unconditional —
+ * Spanish does not use that form. Image prompts keep the old any-occurrence
+ * reading, because a picture of "son" has no other meaning.
+ */
+const SON_WITH_DETERMINER = /\b(?:my|your|his|her|their|our)\s+(?:[a-z]+\s+)?son\b|\b(?:the|a)\s+son\b|\bs\s+son\b/
+
+/** Image prompts: "son" counts anywhere, exactly as before rl-s. */
+const SON_ANYWHERE = /\bson\b/
 
 const POSSESSED_KIN_ADDRESS = new RegExp(
   `\\b(?:my|your|his|her|their|our)\\s+(?:own\\s+|dear\\s+|sweet\\s+|poor\\s+)?(?:${KIN_ADDRESS_TERMS.join('|')})\\b`,
@@ -209,11 +222,11 @@ export function screenPlayerInput(text: string): GuardVerdict {
     if (!hasSexualSignal(words, normalized)) continue
 
     if (GUARD_CATEGORIES.minor_sexual && hasMinorSignal(words, normalized)) {
-      return { blocked: true, category: 'minor_sexual', message: MESSAGES.minor_sexual }
+      return { blocked: true, category: 'minor_sexual', message: GUARD_MESSAGES.minor_sexual }
     }
-    const kinSignal = hasTerm(words, KIN_TERMS) || POSSESSED_KIN_ADDRESS.test(normalized)
+    const kinSignal = hasTerm(words, KIN_TERMS) || SON_WITH_DETERMINER.test(normalized) || POSSESSED_KIN_ADDRESS.test(normalized)
     if (GUARD_CATEGORIES.incest && kinSignal) {
-      return { blocked: true, category: 'incest', message: MESSAGES.incest }
+      return { blocked: true, category: 'incest', message: GUARD_MESSAGES.incest }
     }
   }
 
@@ -280,7 +293,7 @@ export function screenImagePrompt(text: string): GuardVerdict {
     return { blocked: true, category: 'minor_sexual', message: IMAGE_MESSAGES.minor_sexual }
   }
 
-  const kinSignal = hasTerm(words, KIN_TERMS) || POSSESSED_KIN_ADDRESS.test(normalized)
+  const kinSignal = hasTerm(words, KIN_TERMS) || SON_ANYWHERE.test(normalized) || POSSESSED_KIN_ADDRESS.test(normalized)
   if (GUARD_CATEGORIES.incest && explicit && kinSignal) {
     return { blocked: true, category: 'incest', message: IMAGE_MESSAGES.incest }
   }

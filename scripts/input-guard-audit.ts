@@ -58,6 +58,9 @@ blocks('in-law', 'fucking my sister-in-law', 'incest')
 blocks('kin term after the sexual term', 'the orgasm my father gave', 'incest')
 blocks('parental diminutive UNDER a possessive is a real kinship claim', 'I fuck my daddy', 'incest')
 blocks('possessive diminutive, other form', 'sex with my mom', 'incest')
+blocks('son under a possessive', 'I have sex with my son', 'incest')
+blocks('son under a possessive, one word between', 'I have sex with my own son', 'incest')
+blocks('son under a possessive, adjective between', 'I fuck her older son', 'incest')
 
 console.log('\nallows — explicit content that must pass untouched')
 allows('graphic consensual scene', 'I pull her close, undress her slowly, and fuck her against the wall')
@@ -82,6 +85,7 @@ allows('adult address that reads as a minor noun', 'good girl, take it all')
 allows('kin and sex in DIFFERENT sentences', 'My mother waited outside. Then we had sex.')
 allows('kin word far from any sexual signal', 'my brother rode ahead to scout the pass')
 allows('sexual term with no guarded theme at all', 'she moans as I press into her')
+allows('bare son is Spanish for “are”, not kinship', 'los dos son adultos y el deseo es evidente')
 // The single most common false positive in adult roleplay: parental
 // diminutives are vocative address, not kinship, unless possessed.
 allows('vocative daddy', 'fuck me daddy')
@@ -128,6 +132,7 @@ imgBlocks('no explicit word at all, appearance term only', 'teenager, lingerie, 
 imgBlocks('coded term', 'loli, ecchi, bedroom', 'minor_sexual')
 imgBlocks('WHOLE-prompt scope: fragments describe one image', 'a young child. a nude woman.', 'minor_sexual')
 imgBlocks('family sexual imagery', 'my mother and I having sex', 'incest')
+imgBlocks('bare son counts in an image prompt, as before rl-s', 'fucking her son', 'incest')
 
 console.log('\nimage prompts — allowed')
 imgAllows('adult nude art', 'a nude woman reclining by firelight, oil painting')

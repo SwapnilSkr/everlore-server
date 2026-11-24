@@ -19,6 +19,7 @@ import { getRedisClient } from '../config/redis'
 import { generationLockKey } from '../utils/generation-lock'
 import { publicMediaEvent, withTurnMedia } from './media/events'
 import { screenPlayerInput } from '../utils/input-guard'
+import { screenPlayerInputIn } from '../utils/input-guard-languages'
 import { HttpError } from '../utils/http-error'
 
 const users = () => mongoColl.users()
@@ -59,6 +60,13 @@ export const generationService = {
     const directWith = await resolveGroupThread(instance, params.directWith)
     const requestedAt = Date.now()
     const session = await instanceService.loadSession(instanceId, playerId)
+
+    // The save's own language gets its own pack, and only that pack. English
+    // saves and languages without a pack are clear here; the English screen
+    // above is the one that reads them. Group chats dispatch through this same
+    // path, so a group message is screened by the group save's language too.
+    const languageVerdict = screenPlayerInputIn(session.reply_language, userMessage)
+    if (languageVerdict.blocked) throw new HttpError(400, languageVerdict.message!)
 
     if (session.kind === 'group') {
       await requireIdentity(playerId)
