@@ -1,4 +1,5 @@
 import type { FlagMutation, Mutation } from '../../src/utils/state-mutator'
+import type { ChoiceEnglish } from '../../src/utils/witness'
 
 /**
  * A tap-to-play suggestion. `label` is the short chip caption the player sees;
@@ -44,6 +45,12 @@ export interface GenerationOutput {
   beat_ledger: NarrativeBeatLedger
   /** 2-4 short suggested player moves for the next turn (tap-to-play chips). */
   choices: ChoiceOption[]
+  /**
+   * The SAME choices in English, aligned by index with `choices`. Present only
+   * on a non-English turn whose choice pass asked for the pair; absent (not
+   * empty) on an English turn so that path stays byte-identical.
+   */
+  choices_en?: ChoiceEnglish[]
   /** Set only when this turn crossed a true story landmark; null otherwise. */
   milestone: string | null
   /**
@@ -333,7 +340,7 @@ function sentenceEnded(value: string): string {
   return trimmed && /[.!?…]$/.test(trimmed) ? trimmed : `${trimmed}.`
 }
 
-function normalizeActionSend(raw: string): { kind: 'act' | 'say'; send: string } | null {
+function normalizeActionSend(raw: string, requireFirstPerson = true): { kind: 'act' | 'say'; send: string } | null {
   let value = raw.replace(/\s+/g, ' ').trim()
   if (!value || !isBalancedNarration(value) || /===\s*choices|\[(?:act|say)\]/i.test(value)) return null
 
@@ -347,7 +354,7 @@ function normalizeActionSend(raw: string): { kind: 'act' | 'say'; send: string }
   const pureAction = /^\*([^*]+)\*$/.exec(value)
   if (pureAction) {
     const action = pureAction[1].trim()
-    if (!/^I\b/i.test(action)) return null
+    if (requireFirstPerson && !/^I\b/i.test(action)) return null
     return { kind: 'act', send: `*${sentenceEnded(action)}*` }
   }
 
@@ -363,12 +370,13 @@ function normalizeActionSend(raw: string): { kind: 'act' | 'say'; send: string }
   // Bare actions are only safe if they are already in the player's first
   // person. Do not turn an imperative fragment such as "Turn my attention…"
   // into a bad prefilled action; the metadata fallback can provide a complete
-  // alternative instead.
-  if (!/^I\b/i.test(value)) return null
+  // alternative instead. A non-English turn's native `send` cannot be tested
+  // with the English word "I", so that half passes `requireFirstPerson: false`.
+  if (requireFirstPerson && !/^I\b/i.test(value)) return null
   return { kind: 'act', send: `*${sentenceEnded(value)}*` }
 }
 
-function normalizeSpeechSend(raw: string): { kind: 'act' | 'say'; send: string } | null {
+function normalizeSpeechSend(raw: string, requireFirstPerson = true): { kind: 'act' | 'say'; send: string } | null {
   let value = raw.replace(/\s+/g, ' ').trim()
   if (!value || !isBalancedNarration(value) || /===\s*choices|\[(?:act|say)\]/i.test(value)) return null
   value = value.replace(QUOTE_MARKS, '').trim()
@@ -377,13 +385,58 @@ function normalizeSpeechSend(raw: string): { kind: 'act' | 'say'; send: string }
   const pureAction = /^\*([^*]+)\*$/.exec(value)
   if (pureAction) {
     const action = pureAction[1].trim()
-    if (!/^I\b/i.test(action)) return null
+    if (requireFirstPerson && !/^I\b/i.test(action)) return null
     return { kind: 'act', send: `*${sentenceEnded(action)}*` }
   }
   // A say choice may include a narrated gesture, but it must still contain
   // spoken content outside the asterisks.
   if (value.includes('*') && !value.replace(/\*[^*]*\*/g, '').trim()) return null
   return { kind: 'say', send: sentenceEnded(value) }
+}
+
+interface NormalizedChoiceItem {
+  choice: ChoiceOption
+  /** Dedupe key for the chip heading, ignoring punctuation and case. */
+  labelKey: string
+}
+
+/**
+ * Normalize one raw choice (native shape). Returns null for a malformed row.
+ * Shared by both the English-only and the paired sanitizers so the two cannot
+ * drift apart.
+ */
+function normalizeChoiceItem(item: unknown, allowAnyLanguage = false): NormalizedChoiceItem | null {
+  let label = ''
+  let kind: 'act' | 'say' = 'act'
+  let content = ''
+  if (typeof item === 'string') {
+    label = item
+    content = item
+  } else if (item && typeof item === 'object') {
+    const r = item as Record<string, unknown>
+    label = typeof r.label === 'string' ? r.label : ''
+    kind = r.kind === 'say' ? 'say' : 'act'
+    content =
+      typeof r.send === 'string' && r.send.trim()
+        ? r.send
+        : typeof r.text === 'string'
+          ? r.text
+          : label
+  } else {
+    return null
+  }
+  const normalizedLabel = choiceLabel(label)
+  if (!normalizedLabel) return null
+  const normalized = kind === 'act'
+    ? normalizeActionSend(content, !allowAnyLanguage)
+    : normalizeSpeechSend(content, !allowAnyLanguage)
+  if (!normalized) return null
+  const send = normalized.send.slice(0, 280)
+  const labelKey = normalizedLabel.toLowerCase().replace(/[^a-z0-9]+/g, '')
+  const sendKey = send.toLowerCase().replace(/[*"“”'’\s.!?,;:]+/g, '')
+  // The heading may summarize the value, but must never BE the value.
+  if (!labelKey || labelKey === sendKey) return null
+  return { choice: { label: normalizedLabel, kind: normalized.kind, send }, labelKey }
 }
 
 /**
@@ -397,39 +450,75 @@ export function sanitizeChoices(raw: unknown): ChoiceOption[] {
   const out: ChoiceOption[] = []
   const seen = new Set<string>()
   for (const item of raw) {
-    let label = ''
-    let kind: 'act' | 'say' = 'act'
-    let content = ''
-    if (typeof item === 'string') {
-      label = item
-      content = item
-    } else if (item && typeof item === 'object') {
-      const r = item as Record<string, unknown>
-      label = typeof r.label === 'string' ? r.label : ''
-      kind = r.kind === 'say' ? 'say' : 'act'
-      content =
-        typeof r.send === 'string' && r.send.trim()
-          ? r.send
-          : typeof r.text === 'string'
-            ? r.text
-            : label
-    } else {
-      continue
-    }
-    const normalizedLabel = choiceLabel(label)
-    if (!normalizedLabel) continue
-    const normalized = kind === 'act' ? normalizeActionSend(content) : normalizeSpeechSend(content)
+    const normalized = normalizeChoiceItem(item)
     if (!normalized) continue
-    const send = normalized.send.slice(0, 280)
-    const labelKey = normalizedLabel.toLowerCase().replace(/[^a-z0-9]+/g, '')
-    const sendKey = send.toLowerCase().replace(/[*"“”'’\s.!?,;:]+/g, '')
-    // The heading may summarize the value, but must never BE the value.
-    if (!labelKey || labelKey === sendKey || seen.has(`${normalized.kind}\u0000${labelKey}`)) continue
-    seen.add(`${normalized.kind}\u0000${labelKey}`)
-    out.push({ label: normalizedLabel, kind: normalized.kind, send })
+    const key = `${normalized.choice.kind}\u0000${normalized.labelKey}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    out.push(normalized.choice)
     if (out.length >= 4) break
   }
   return out
+}
+
+/** Punctuation-, asterisk- and case-insensitive form for the untranslated check. */
+function choiceTextKey(value: string): string {
+  return value
+    .normalize('NFKC')
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** True when the English field is the native field verbatim and long enough to
+ *  be a real sentence (3+ words) — i.e. it was not translated. */
+function untranslatedField(native: string, english: string): boolean {
+  const key = choiceTextKey(native)
+  return key === choiceTextKey(english) && key.split(' ').filter(Boolean).length >= 3
+}
+
+export interface ChoicePairSanitizeResult {
+  choices: ChoiceOption[]
+  choices_en: ChoiceEnglish[]
+}
+
+/**
+ * Sanitize the paired, non-English choice shape: every accepted native choice
+ * must also carry a well-formed English `label_en`/`send_en`. A choice missing
+ * either English field, or whose English is the native copy itself (3+ words),
+ * is dropped. Both lists stay aligned by index through the same filtering.
+ */
+export function sanitizeChoicePairs(raw: unknown): ChoicePairSanitizeResult {
+  if (!Array.isArray(raw)) return { choices: [], choices_en: [] }
+  const choices: ChoiceOption[] = []
+  const choicesEn: ChoiceEnglish[] = []
+  const seen = new Set<string>()
+  for (const item of raw) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) continue
+    const source = item as Record<string, unknown>
+    const native = normalizeChoiceItem(source, true)
+    if (!native) continue
+    const english = normalizeChoiceItem({
+      label: typeof source.label_en === 'string' ? source.label_en : '',
+      kind: native.choice.kind,
+      send: typeof source.send_en === 'string' ? source.send_en : '',
+    })
+    if (!english) continue
+    if (
+      untranslatedField(native.choice.label, english.choice.label)
+      || untranslatedField(native.choice.send, english.choice.send)
+    ) {
+      continue
+    }
+    const key = `${native.choice.kind}\u0000${native.labelKey}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    choices.push(native.choice)
+    choicesEn.push({ label: english.choice.label, send: english.choice.send })
+    if (choices.length >= 4) break
+  }
+  return { choices, choices_en: choicesEn }
 }
 
 const VALID_SCENE_TAGS = new Set([
@@ -437,7 +526,13 @@ const VALID_SCENE_TAGS = new Set([
   'existential', 'cosmic', 'mundane',
 ])
 
-export function enforceSchema(rawResponse: string): GenerationOutput {
+export interface SchemaOptions {
+  /** The non-English choice variant: every accepted choice also carries an
+   *  English `label_en`/`send_en`, and the result gains `choices_en`. */
+  choiceLanguage?: boolean
+}
+
+export function enforceSchema(rawResponse: string, opts?: SchemaOptions): GenerationOutput {
   try {
     const parsed = JSON.parse(rawResponse)
 
@@ -491,7 +586,15 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
     parsed.beat_ledger = sanitizeBeatLedger(parsed.beat_ledger)
 
     // Choices: up to 4 structured, correctly-formatted tap-to-play suggestions.
-    parsed.choices = sanitizeChoices(parsed.choices)
+    // A non-English turn asks for the English pair alongside and keeps both
+    // lists aligned; an English turn never gains the extra key.
+    if (opts?.choiceLanguage) {
+      const pairs = sanitizeChoicePairs(parsed.choices)
+      parsed.choices = pairs.choices
+      parsed.choices_en = pairs.choices_en
+    } else {
+      parsed.choices = sanitizeChoices(parsed.choices)
+    }
 
     // Milestone: short label or null (empty/placeholder strings normalize to null).
     parsed.milestone =
@@ -519,16 +622,16 @@ export function enforceSchema(rawResponse: string): GenerationOutput {
     return parsed as GenerationOutput
   } catch (err) {
     // Attempt to extract narrative from malformed response
-    return repairResponse(rawResponse)
+    return repairResponse(rawResponse, opts)
   }
 }
 
-function repairResponse(raw: string): GenerationOutput {
+function repairResponse(raw: string, opts?: SchemaOptions): GenerationOutput {
   // Try to extract JSON from markdown code blocks
   const jsonMatch = raw.match(/```(?:json)?\s*([\s\S]*?)```/)
   if (jsonMatch) {
     try {
-      return enforceSchema(jsonMatch[1])
+      return enforceSchema(jsonMatch[1], opts)
     } catch {
       // Fall through to text extraction
     }
@@ -538,7 +641,7 @@ function repairResponse(raw: string): GenerationOutput {
   const objectMatch = raw.match(/\{[\s\S]*\}/)
   if (objectMatch) {
     try {
-      return enforceSchema(objectMatch[0])
+      return enforceSchema(objectMatch[0], opts)
     } catch {
       // Fall through
     }

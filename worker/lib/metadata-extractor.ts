@@ -1,6 +1,7 @@
 import { callLLM, AI_MODELS } from '../../src/ai'
 import { env } from '../../src/config/env'
-import { enforceSchema, type GenerationOutput } from './structured-output'
+import type { ChoiceEnglish } from '../../src/utils/witness'
+import { enforceSchema, type GenerationOutput, type SchemaOptions } from './structured-output'
 
 /** Structured fields derived from a narrative — everything except the prose itself. */
 export type SceneMetadata = Omit<GenerationOutput, 'narrative'>
@@ -198,6 +199,42 @@ const LEDGER_ONLY_SCHEMA = {
   properties: { beat_ledger: ledgerSchema }, required: ['beat_ledger'],
 }
 
+/** One choice in the non-English variant: the native chip plus the same choice
+ *  in English, both required. */
+const CHOICE_LANGUAGE_ITEM = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    label: { type: 'string' },
+    kind: { type: 'string', enum: ['act', 'say'] },
+    send: { type: 'string' },
+    label_en: { type: 'string' },
+    send_en: { type: 'string' },
+  },
+  required: ['label', 'kind', 'send', 'label_en', 'send_en'],
+}
+
+/** `choices` replaced with the paired shape, keeping every other property in
+ *  its original order. */
+function withEnglishChoices(schema: { properties: Record<string, unknown>; [key: string]: unknown }): object {
+  return {
+    ...schema,
+    properties: { ...schema.properties, choices: { type: 'array', maxItems: 4, items: CHOICE_LANGUAGE_ITEM } },
+  }
+}
+
+const CHOICE_META_SCHEMA_EN = withEnglishChoices(CHOICE_META_SCHEMA)
+const CHOICES_ONLY_SCHEMA_EN = withEnglishChoices(CHOICES_ONLY_SCHEMA)
+
+/**
+ * The one line the non-English choice system prompt gains at its very end. The
+ * other fields stay English: this pass is what the extractors and the ledger
+ * read, and only the chips the player sees are native.
+ */
+export function choiceLanguageInstruction(name: string): string {
+  return `CHOICE LANGUAGE: write every choice label and send, and the milestone, in ${name}; label_en and send_en are the same choice in English; every other field in English; keep names unchanged and keep the asterisk format.`
+}
+
 /** Default for the WITNESS half — used when its call fails so a witness outage
  *  never throws or pollutes the choice half. Presence/location stay empty/unchanged. */
 const WITNESS_FALLBACK: SceneMetadata = {
@@ -300,6 +337,9 @@ export type MetadataOpts = {
   /** Test-only observability hook. Production callers omit it; it never changes
    * request construction or validation. */
   onRaw?: (stage: 'scene_witness' | 'choice_metadata', raw: string) => void
+  /** Test-only transport. Production callers omit it and get `callLLM`; an audit
+   * injects its own function to read the exact request body without a network. */
+  call?: typeof callLLM
   /** Where each model call went. Both halves run in parallel, so the caller
    *  cannot time them from outside the pair; each half reports its own
    *  start-to-settle here, failure included. `beat_ledger` is reported only when
@@ -354,6 +394,22 @@ export type MetadataOpts = {
    * DETERMINISTICALLY after generation instead, by `dropRepeatedChoices`.
    */
   recentChoiceLabels?: string[]
+  /**
+   * Non-English turn: the choice half runs on these native values while the
+   * witness half (and the ledger) read the English copy passed as `narrative`.
+   * Absent on an English turn, where every request and result is unchanged.
+   */
+  choiceLanguage?: ChoiceLanguage
+}
+
+/** The native side of the split choice pass on a non-English turn. */
+export interface ChoiceLanguage {
+  /** Model-facing language name, e.g. "Brazilian Portuguese". */
+  name: string
+  /** The native prose the chips are written from (always available at stream end). */
+  narrative: string
+  /** The native player turn, so the choice prompt's PLAYER TURN stays native. */
+  playerInput: string
 }
 
 /** Build the STATIC rules + dynamic CONTEXT system prompt shared by both halves.
@@ -397,7 +453,14 @@ function normalizeStats(stats: StatInput): StatDescriptor[] {
   )
 }
 
-function buildMetadataSystem(opts: MetadataOpts | undefined, stats: StatDescriptor[], flagKeys: string[]): string {
+function buildMetadataSystem(
+  opts: MetadataOpts | undefined,
+  stats: StatDescriptor[],
+  flagKeys: string[],
+  /** The choice half on a non-English turn reads the NATIVE player turn while
+   *  the witness/ledger read the English copy — so the turn is overridable. */
+  playerTurnOverride?: string,
+): string {
   // Resolve who "I" is for the choices. In third-person GM prose the protagonist
   // is referred to by role ("the son", "the boy"); without naming them the
   // extractor cannot tell which character is the player and drifts the choice POV
@@ -449,7 +512,7 @@ function buildMetadataSystem(opts: MetadataOpts | undefined, stats: StatDescript
     ? ''
     : '\nNO LOCATION IS ESTABLISHED YET. "prior" is therefore NOT a valid location_evidence_source this turn: there is nothing to carry forward. Read the passage and name the place the viewpoint is physically in, citing the exact sentence that establishes it (source="narrative"), or the player turn if that is what puts them there (source="player"). Only return current_location null if the passage genuinely names no physical setting at all.'
 
-  const playerTurn = (opts?.playerInput || '').replace(/\s+/g, ' ').trim().slice(0, 900)
+  const playerTurn = (playerTurnOverride ?? opts?.playerInput ?? '').replace(/\s+/g, ' ').trim().slice(0, 900)
 
 
   const places = (opts?.knownPlaces || [])
@@ -546,8 +609,8 @@ export function dropRepeatedChoices<T extends { label?: string }>(
 /** Reuse enforceSchema's field validation on a raw half-response by injecting a
  *  placeholder narrative (enforceSchema requires one) and returning the full
  *  validated GenerationOutput; each half picks its own fields. */
-export function validateHalf(raw: string): GenerationOutput {
-  return enforceSchema(JSON.stringify({ narrative: 'placeholder', ...safeParseObject(raw) }))
+export function validateHalf(raw: string, opts?: SchemaOptions): GenerationOutput {
+  return enforceSchema(JSON.stringify({ narrative: 'placeholder', ...safeParseObject(raw) }), opts)
 }
 
 /**
@@ -565,7 +628,7 @@ export async function extractSceneWitness(
   const system = buildMetadataSystem(opts, [], [])
   const startedAt = Date.now()
   try {
-    const raw = await callLLM({
+    const raw = await (opts?.call || callLLM)({
       model: opts?.model || AI_MODELS.metadata,
       purpose: 'scene_witness',
       messages: [
@@ -617,31 +680,71 @@ export interface ChoiceMetadataExecution {
 }
 
 /**
+ * Keep two index-aligned choice lists together through an arbitrary filter.
+ * Exported for rl-3: the processor's later filters (deceased names, grounding)
+ * must drop a native chip and its English pair in one step. With no English
+ * list (an English save) the native list is filtered alone and `choices_en` is
+ * empty. A choice with no English entry is dropped rather than kept half-paired.
+ */
+export function filterChoicePairs<T extends { label?: string }>(
+  choices: T[],
+  choicesEn: readonly ChoiceEnglish[] | undefined,
+  keep: (choice: T, english: ChoiceEnglish | undefined, index: number) => boolean,
+): { choices: T[]; choices_en: ChoiceEnglish[] } {
+  const keptChoices: T[] = []
+  const keptEnglish: ChoiceEnglish[] = []
+  choices.forEach((choice, index) => {
+    const english = choicesEn?.[index]
+    if (choicesEn !== undefined && !english) return
+    if (!keep(choice, english, index)) return
+    keptChoices.push(choice)
+    if (english) keptEnglish.push(english)
+  })
+  return { choices: keptChoices, choices_en: keptEnglish }
+}
+
+/**
  * CHOICE/STAT half — suggested player moves, scene tag, tone, milestone, and
  * stat/flag mutations. Kept together (they share one JSON pass) but isolated
  * from the witness half. Falls back to an `intimate` scene tag to preserve NSFW
  * momentum (matching the legacy no-op fallback) on failure.
+ *
+ * `narrative` may be a Promise on a non-English turn: rl-3 can launch this half
+ * with the native text in `opts.choiceLanguage` before the English copy exists.
+ * The witness half and the ledger read the (possibly awaited) `narrative`.
  */
 export async function extractChoiceMetadata(
-  narrative: string,
+  narrative: string | Promise<string>,
   stats: StatInput,
   flagKeys: string[],
   opts?: MetadataOpts,
   execution?: ChoiceMetadataExecution,
 ): Promise<SceneMetadata> {
-  const baseSystem = buildMetadataSystem(opts, normalizeStats(stats), flagKeys)
+  const language = opts?.choiceLanguage
+  const normalizedStats = normalizeStats(stats)
+  const baseSystem = buildMetadataSystem(opts, normalizedStats, flagKeys)
   const choiceContext = String(opts?.choiceContext || '')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
     .slice(0, 18_000)
-  const system = choiceContext
-    ? `${baseSystem}\n\n--- CHOICE DECISION CONTEXT (selected story facts available to the narrator) ---\n${choiceContext}\nUse these facts together with the completed narrative. They are canon for grounding choices, not dialogue to quote or replay.\n--- END CHOICE DECISION CONTEXT ---`
-    : baseSystem
+  const withChoiceContext = (base: string): string => choiceContext
+    ? `${base}\n\n--- CHOICE DECISION CONTEXT (selected story facts available to the narrator) ---\n${choiceContext}\nUse these facts together with the completed narrative. They are canon for grounding choices, not dialogue to quote or replay.\n--- END CHOICE DECISION CONTEXT ---`
+    : base
+  const system = withChoiceContext(baseSystem)
   const split = execution?.split ?? env.CHOICE_LEDGER_SPLIT === 'on'
   const ledgerRule = METADATA_RULES.split('\n').find((line) => line.startsWith('- beat_ledger:'))!
-  const choicesSystem = split ? system.replace(ledgerRule + '\n', '') : system
-  const invoke = execution?.call || callLLM
+  // The choice half reads the NATIVE prose and player turn on a non-English
+  // turn; the witness half and the ledger keep the main (English) narrative.
+  const choiceBase = language
+    ? withChoiceContext(buildMetadataSystem(opts, normalizedStats, flagKeys, language.playerInput))
+    : system
+  const strippedChoiceBase = split ? choiceBase.replace(ledgerRule + '\n', '') : choiceBase
+  // The one language line sits at the very end — after the choice context too.
+  const choicesSystem = language
+    ? `${strippedChoiceBase}\n${choiceLanguageInstruction(language.name)}`
+    : strippedChoiceBase
+  const invoke = execution?.call || opts?.call || callLLM
   // Launch before awaiting choices, and catch independently: a ledger outage
   // must never discard successful choices (or vice versa). Timed around this
   // call alone: the ledger runs beside the choices request, so a reading taken
@@ -649,6 +752,9 @@ export async function extractChoiceMetadata(
   const ledgerPromise = split ? (async () => {
     const ledgerStartedAt = Date.now()
     try {
+      // A non-English turn hands the ledger the English copy, so it waits for
+      // that copy — never for the native-only choice call.
+      const ledgerNarrative = typeof narrative === 'string' ? narrative : await narrative
       const raw = await invoke({
         model: AI_MODELS.metadata,
         purpose: 'beat_ledger',
@@ -659,7 +765,7 @@ export async function extractChoiceMetadata(
         messages: [
           { role: 'system', content: system.replace(METADATA_RULES,
             METADATA_RULES.slice(0, METADATA_RULES.indexOf('\n\nRules:')) + '\n\nRules:\n' + ledgerRule + '\n') },
-          { role: 'user', content: narrative },
+          { role: 'user', content: ledgerNarrative },
         ],
         temperature: 0.2,
         maxTokens: 450,
@@ -680,6 +786,9 @@ export async function extractChoiceMetadata(
   const startedAt = Date.now()
   const choicePromise = (async () => {
     try {
+      const choiceNarrative = language
+        ? language.narrative
+        : typeof narrative === 'string' ? narrative : await narrative
       const raw = await invoke({
         model: AI_MODELS.metadata,
         purpose: 'choice_metadata',
@@ -691,18 +800,32 @@ export async function extractChoiceMetadata(
         },
         messages: [
           { role: 'system', content: choicesSystem },
-          { role: 'user', content: narrative },
+          { role: 'user', content: choiceNarrative },
         ],
         temperature: 0.2,
         // The beat ledger adds a handful of short semantic fields to this
         // existing post-stream pass. It never sits on the narrator's first-token
         // path, but leave enough room that a valid ledger cannot crowd out the
-        // core choices/state metadata.
-        maxTokens: 450,
-        responseSchema: split ? CHOICES_ONLY_SCHEMA : CHOICE_META_SCHEMA,
+        // core choices/state metadata. The paired (non-English) variant carries
+        // two more short fields per choice.
+        maxTokens: language ? 900 : 450,
+        responseSchema: language
+          ? split ? CHOICES_ONLY_SCHEMA_EN : CHOICE_META_SCHEMA_EN
+          : split ? CHOICES_ONLY_SCHEMA : CHOICE_META_SCHEMA,
       })
       opts?.onRaw?.('choice_metadata', raw)
-      const v = validateHalf(raw)
+      const v = validateHalf(raw, language ? { choiceLanguage: true } : undefined)
+      const nativeChoices = v.choices || []
+      const englishChoices = language ? (v.choices_en || []) : undefined
+      // Drop repeats on the native labels exactly as before, keeping the pair
+      // aligned through the same index order.
+      const keptOrder = dropRepeatedChoices(
+        nativeChoices.map((choice, index) => ({ label: choice.label, index })),
+        opts?.recentChoiceLabels || [],
+      ).map((entry) => entry.index)
+      const ordered = englishChoices === undefined
+        ? keptOrder
+        : keptOrder.filter((index) => englishChoices[index])
       return {
         ...WITNESS_FALLBACK,
         state_mutations: v.state_mutations,
@@ -710,7 +833,10 @@ export async function extractChoiceMetadata(
         scene_tag: v.scene_tag,
         emotional_tone: v.emotional_tone,
         beat_ledger: v.beat_ledger,
-        choices: dropRepeatedChoices(v.choices || [], opts?.recentChoiceLabels || []),
+        choices: ordered.map((index) => nativeChoices[index]),
+        ...(englishChoices === undefined
+          ? {}
+          : { choices_en: ordered.map((index) => englishChoices[index]) }),
         milestone: v.milestone,
       }
     } catch {
@@ -734,15 +860,24 @@ export async function extractChoiceMetadata(
  * falls back to safe defaults for ONLY that half — the other half is unaffected.
  */
 export async function extractSceneMetadata(
-  narrative: string,
+  narrative: string | Promise<string>,
   stats: StatInput,
   flagKeys: string[],
   opts?: MetadataOpts,
 ): Promise<SceneMetadata> {
   const [witness, choice] = await Promise.all([
-    extractSceneWitness(narrative, opts),
+    (async () => extractSceneWitness(typeof narrative === 'string' ? narrative : await narrative, opts))(),
     extractChoiceMetadata(narrative, stats, flagKeys, opts),
   ])
+  return mergeSceneMetadata(witness, choice)
+}
+
+/**
+ * Join the two halves. Exported so rl-3 can launch them separately: the choice
+ * half starts on the native text at stream end while the witness half waits for
+ * the English copy, then both are merged here with the same shape as before.
+ */
+export function mergeSceneMetadata(witness: SceneMetadata, choice: SceneMetadata): SceneMetadata {
   return {
     // WITNESS half
     present_characters: witness.present_characters,
@@ -768,6 +903,7 @@ export async function extractSceneMetadata(
     emotional_tone: choice.emotional_tone,
     beat_ledger: choice.beat_ledger,
     choices: choice.choices,
+    ...(choice.choices_en ? { choices_en: choice.choices_en } : {}),
     milestone: choice.milestone,
   }
 }

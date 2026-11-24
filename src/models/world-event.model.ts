@@ -2,6 +2,7 @@ import type { ObjectId } from 'mongodb'
 import type { ProseHygieneIssue } from '../utils/prose-hygiene'
 import type { CharacterCodexDelta } from '../services/character-codex.service'
 import type { ChoiceOption, NarrativeBeatLedger } from '../../worker/lib/structured-output'
+import type { ReplayWitness, TurnWitness } from '../utils/witness'
 import type { TimeAnchorDoc } from './time.model'
 import type { LocationAnchorDoc } from './location.model'
 import type { SceneStateDoc } from './scene-state.model'
@@ -39,6 +40,10 @@ export interface ReplayVariantDoc {
   present_characters?: string[]
   /** Non-verbatim continuity snapshot for this specific replay variant. */
   beat_ledger?: NarrativeBeatLedger
+  /** The hidden English copy this variant was narrated beside (prose and its
+   *  choices only; the player text is the event's own). Selecting the variant
+   *  restores it (§7). */
+  witness?: ReplayWitness
   /** Backend-OWNED trackable mentions derived from THIS variant's prose, so
    *  browsing/committing a variant carries its own underline data without
    *  re-running the canon-gap classifier. Same shape as EventDataDoc. */
@@ -144,6 +149,12 @@ export interface EventDataDoc {
   player_spoken_input?: string
   /** Canonical narration/action facts authored inside *...* or **...**. */
   player_narration_facts?: string[]
+  /** The hidden English copy of a non-English turn (§4). `ai_response` and
+   *  `player_input` above stay native; readers that decide what happened use
+   *  `witnessOf(event)`. */
+  witness?: TurnWitness
+  /** Set when the witness could not be made: extractors read native, as before. */
+  witness_status?: 'failed'
   /** Private, temporary behavioral residue from the player's input. */
   interaction_signals?: PlayerInteractionSignalDoc[]
   character_lifecycle_deltas?: CharacterLifecycleDeltaDoc[]

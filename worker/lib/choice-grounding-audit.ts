@@ -20,6 +20,7 @@ import {
   computeGroundingContext,
   classifyChoiceGrounding,
 } from './choice-grounding'
+import type { ChoiceEnglish } from '../../src/utils/witness'
 
 export interface ChoiceAudit<T extends GroundableChoice> {
   choice: T
@@ -102,6 +103,56 @@ function repairChoice<T extends GroundableChoice>(choice: T, issues: ChoiceGroun
     kind: 'act',
     send: '*I respond to what is actually happening, without assuming more than I know.*',
   }
+}
+
+export interface ChoicePairAuditResult<T extends GroundableChoice> extends ChoiceAuditResult<T> {
+  /** The English pair for every kept native choice, aligned by index. */
+  choices_en: ChoiceEnglish[]
+}
+
+/**
+ * The non-English choice guard (section 5). The English pair is what the
+ * grounding rules can read, so it decides: a native choice is kept only where
+ * its English pair needed NO repair. A pair that would have been repaired is
+ * dropped with its native chip rather than shown half-grounded. Nothing is
+ * invented to reach a count: if fewer than two survive, fewer than two ship.
+ */
+export function auditChoicePairs<T extends GroundableChoice>(
+  choices: T[],
+  choicesEn: readonly ChoiceEnglish[],
+  castVocab: string[],
+  groundingText?: string,
+  graphLabels?: string[],
+  worldText?: string,
+  opts?: GroundingOpts,
+): ChoicePairAuditResult<T> {
+  const ctx = computeGroundingContext(castVocab, groundingText, graphLabels, worldText, opts)
+  const native = choices || []
+  const results: ChoiceAudit<T>[] = []
+  const out: T[] = []
+  const outEnglish: ChoiceEnglish[] = []
+  const dropped: { choice: T; issues: ChoiceGroundingIssue[] }[] = []
+
+  native.forEach((choice, index) => {
+    const english = choicesEn?.[index]
+    if (!english) {
+      // A half-pair cannot be audited and must not reach the player.
+      results.push({ choice, grounded: false, issues: [] })
+      dropped.push({ choice, issues: [] })
+      return
+    }
+    const issues = classifyChoiceGrounding(`${english.label} ${english.send}`, ctx)
+    if (!issues.length) {
+      results.push({ choice, grounded: true, issues: [] })
+      out.push(choice)
+      outEnglish.push(english)
+      return
+    }
+    results.push({ choice, grounded: false, issues })
+    dropped.push({ choice, issues })
+  })
+
+  return { results, choices: out, choices_en: outEnglish, dropped, repairedCount: 0 }
 }
 
 /**
