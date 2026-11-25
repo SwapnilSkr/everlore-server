@@ -579,11 +579,11 @@ function recentHygieneReminders(events: any[], messageLength?: MessageLength): s
 }
 
 /**
- * A language story's place note. The code that spots "I go to the chapel" reads
- * English only and runs after the reply, so the location line is always one turn
- * behind here; the narrator understands the words and can follow them itself.
+ * The place note. The location line is the last committed place, and the engine's
+ * own movement directive never gets here: it replaces `userMessage`, which a typed
+ * turn doesn't print. So the narrator is asked to follow the player's own words.
  */
-const NATIVE_PLACE_NOTE =
+export const PLACE_NOTE =
   "Where this turn happens: read it from the player's own words above. If they went somewhere, or did something in a named place, the scene is there now, even when CURRENT LOCATION or the LOCATION LOCK still names the previous place: narrate from there, and do not end the reply back at the previous place. If they only mean to go later, stay where the scene is."
 
 function currentTurnUserMessage(input: PromptInput): string {
@@ -601,7 +601,7 @@ function currentTurnUserMessage(input: PromptInput): string {
     for (const fact of facts) lines.push(`- ${fact}`)
   }
   lines.push(`Player spoken aloud: ${spoken || '(none)'}`)
-  if (input.replyLanguage && !input.isContinuation && (spoken || facts.length > 0)) lines.push(NATIVE_PLACE_NOTE)
+  if (!input.isContinuation && (spoken || facts.length > 0)) lines.push(PLACE_NOTE)
   if (fallbackInstruction) lines.push(`Turn instruction: ${fallbackInstruction}`)
   lines.push(
     'Now respond to this exact current turn. The player\'s dialogue and actions have already happened: do not replay, quote, paraphrase, or narrate them back as "they say" or "their words hang." Do not replay, paraphrase, line-edit, or lightly modify the previous assistant response. Advance from the latest established beat with another character\'s response or a concrete consequence, and directly acknowledge any player action facts that just happened.',

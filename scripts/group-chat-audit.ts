@@ -1629,9 +1629,9 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —
   // `audit:prompt-part-hash` proves the emitted messages are byte-identical.
-  // The place note for a language turn moved it again; an English prompt does not
-  // carry it (`audit:reply-language` 4a and 4b2).
-  assert.equal(createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex'), '38321efe418062cb2ba6b12d0042e1f55aaca2fd0e5548c9def177c6c25806a4')
+  // The place note moved it again, then reached every typed turn; it is the only
+  // text added (`audit:prompt-part-hash` (a), `audit:reply-language` 4b2).
+  assert.equal(createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex'), '72d12f73aa5f2974c483760c981a62a2b6faddd74190292bce240cc259f95b20')
   console.log(`story builder source sha256 ${createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex')}`)
   // Data is external to this isolated checkout; the caller can supply its path.
   const dataDir = process.env.GROUP_CHAT_DATA_DIR

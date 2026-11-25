@@ -161,9 +161,9 @@ await check('prompt: the rule is the last system message before the user turn', 
 })
 
 // ── 4b2. the place note ──────────────────────────────────────────────────────
-// The English readings run after the reply on these turns, so the narrator is
-// asked to follow the player's own words; an English turn never sees the note.
-await check('prompt: a language turn asks the narrator to follow where the player went', () => {
+// The engine's movement directive never reaches a typed turn's prompt, so the
+// narrator is asked to follow the player's own words, in every language.
+await check('prompt: a typed turn asks the narrator to follow where the player went', () => {
   const user = (extra: Record<string, unknown>) => {
     const { messages } = buildPrompt({ ...basePromptInput(), ...extra })
     return messages[messages.length - 1].content
@@ -171,7 +171,11 @@ await check('prompt: a language turn asks the narrator to follow where the playe
   const turn = { userNarrationFacts: ['Vamos até a capela.'], userSpokenInput: '' }
   assert.ok(user({ ...turn, replyLanguage: PT }).includes('Where this turn happens: read it from the player\'s own words above.'))
   assert.ok(user({ ...turn, replyLanguage: PT }).indexOf('Vamos até a capela.') < user({ ...turn, replyLanguage: PT }).indexOf('Where this turn happens'))
-  assert.ok(!user(turn).includes('Where this turn happens'))
+  const english = { userNarrationFacts: ['We go to the chapel.'], userSpokenInput: '' }
+  assert.ok(user(english).indexOf('We go to the chapel.') < user(english).indexOf('Where this turn happens'))
+  assert.ok(user({ userNarrationFacts: [], userSpokenInput: 'We go to the chapel.' }).includes('Where this turn happens'))
+  assert.ok(!user({ userNarrationFacts: [], userSpokenInput: '' }).includes('Where this turn happens'))
+  assert.ok(!user({ ...english, isContinuation: true }).includes('Where this turn happens'))
   assert.ok(!user({ userNarrationFacts: [], userSpokenInput: '', replyLanguage: PT }).includes('Where this turn happens'))
   assert.ok(!user({ ...turn, replyLanguage: PT, isContinuation: true }).includes('Where this turn happens'))
 })
@@ -376,13 +380,23 @@ async function runBites() {
     },
     {
       name: 'prompt: the place note is missing',
-      check: 'prompt: a language turn asks the narrator to follow where the player went',
-      edits: [[promptBuilder, 'if (input.replyLanguage && !input.isContinuation && (spoken || facts.length > 0)) lines.push(NATIVE_PLACE_NOTE)', 'void NATIVE_PLACE_NOTE']],
+      check: 'prompt: a typed turn asks the narrator to follow where the player went',
+      edits: [[promptBuilder, 'if (!input.isContinuation && (spoken || facts.length > 0)) lines.push(PLACE_NOTE)', 'void PLACE_NOTE']],
     },
     {
-      name: 'prompt: an English turn gets the place note',
-      check: 'prompt: a language turn asks the narrator to follow where the player went',
-      edits: [[promptBuilder, 'if (input.replyLanguage && !input.isContinuation', 'if (!input.isContinuation']],
+      name: 'prompt: only language turns get the place note',
+      check: 'prompt: a typed turn asks the narrator to follow where the player went',
+      edits: [[promptBuilder, 'if (!input.isContinuation && (spoken', 'if (input.replyLanguage && !input.isContinuation && (spoken']],
+    },
+    {
+      name: 'prompt: a continued scene gets the place note',
+      check: 'prompt: a typed turn asks the narrator to follow where the player went',
+      edits: [[promptBuilder, 'if (!input.isContinuation && (spoken', 'if ((spoken']],
+    },
+    {
+      name: 'prompt: an empty turn gets the place note',
+      check: 'prompt: a typed turn asks the narrator to follow where the player went',
+      edits: [[promptBuilder, 'if (!input.isContinuation && (spoken || facts.length > 0)) lines', 'if (!input.isContinuation) lines']],
     },
     {
       name: 'prompt: the rule is not last',

@@ -1654,7 +1654,12 @@ await check('English replay: calls and writes match the HEAD snapshot', async ()
     console.log('EMIT_ENGLISH_REPLAY ' + JSON.stringify(snapshot))
     return
   }
-  assert.deepEqual(snapshot, FROZEN.replay)
+  // The place note reached English turns after the freeze; it is the only change.
+  const { PLACE_NOTE } = await import('../src/utils/prompt-builder')
+  const text = JSON.stringify(snapshot)
+  const noteLine = JSON.stringify(`${PLACE_NOTE}\n`).slice(1, -1)
+  assert.equal(text.split(noteLine).length, 2, 'the replay prompt carries the note once')
+  assert.deepEqual(JSON.parse(text.replace(noteLine, '')), FROZEN.replay)
 })
 
 await check('English edit: calls and writes match the HEAD snapshot', async () => {

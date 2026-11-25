@@ -557,5 +557,56 @@ console.log('viewpoint owner for my-room:')
   )
 }
 
+console.log('going back to a place the story has been is not a plan:')
+{
+  const visited = [
+    { name: 'The Boathouse', entityId: 'boat1', mentionCount: 2, placeKind: 'building' },
+    { name: 'The Harbour', entityId: 'harb1', mentionCount: 3 },
+    { name: 'the Rose and Crown', entityId: 'rose1', mentionCount: 1 },
+    { name: 'the chapel', entityId: 'chap1', mentionCount: 1 },
+    { name: 'the lighthouse', entityId: 'light1', mentionCount: 0 },
+    { name: 'Saltmere', entityId: 'town2', mentionCount: 2, placeKind: 'settlement' },
+  ]
+  const back = (playerInput: string) => {
+    const t = decide({
+      playerInput,
+      cursorName: 'The Harbour',
+      cursorEntityId: 'harb1',
+      knownPlaces: visited,
+      personPlaces: [{ name: 'Mara', aliases: [], placeName: 'The Harbour', placeEntityId: 'harb1' }],
+    })
+    return t.kind === 'arrival' ? t.destination?.entityId ?? t.destination?.name : t.kind
+  }
+  const cases: Array<[string, string]> = [
+    ['*I go back alone to the boathouse and sit down.*', 'boat1'],
+    ['*I go back alone to the boathouse.* "We should eat."', 'boat1'],
+    ['I head back with Mara to the boathouse.', 'boat1'],
+    ['I go back alone to the boathouse with Tom.', 'boat1'],
+    ['I go back to the boathouse and sit down.', 'boat1'],
+    ['I return to the boathouse and light the lamp.', 'boat1'],
+    ['Mara nods. I go back alone to the boathouse.', 'boat1'],
+    ['I go back slowly to the Rose and Crown and sit.', 'rose1'],
+    // Somebody else's walk, a thought, a refusal, a question, a plan: nobody moves.
+    ['I watch Mara go back alone to the boathouse.', 'intent'],
+    ['I tell Mara to go back alone to the boathouse.', 'intent'],
+    ['Mara goes back alone to the boathouse.', 'none'],
+    ['I think about when we go back alone to the boathouse.', 'intent'],
+    ['I do not go back alone to the boathouse.', 'intent'],
+    ['Do I go back alone to the boathouse?', 'intent'],
+    ['I will go back alone to the boathouse.', 'intent'],
+    ['I go back alone to the boathouse, maybe.', 'intent'],
+    ['I go back alone to the boathouse, later.', 'intent'],
+    ['Later I go back alone to the boathouse.', 'intent'],
+    ['I go back and tell her to wait.', 'intent'],
+    ['I go back alone and walk to the boathouse.', 'intent'],
+    // Not a place to walk straight back to: a town, one never visited, another place.
+    ['I go back alone to Saltmere.', 'intent'],
+    ['I go back alone to the lighthouse.', 'intent'],
+    ['I go back alone to the chapel garden.', 'intent'],
+    ['I go back alone to the harbour.', 'none'],
+  ]
+  for (const [text, want] of cases) check(text, back(text), want)
+}
+
 console.log(`\ntravel intent audit: ${pass} passed, ${fail} failed`)
 process.exit(fail === 0 ? 0 : 1)

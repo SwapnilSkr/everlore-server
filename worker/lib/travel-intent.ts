@@ -605,6 +605,53 @@ function isImmediateLets(playerInput: string): boolean {
   return LOCOMOTION_NOW.test(t)
 }
 
+/** Grammar that denies the clause it stands in. */
+const NEGATED = /\b(?:not|never|no)\b|n't\b/i
+/** Between "go back" and "to", these start a different action. */
+const CLAUSE_JOIN = /\b(?:and|or|but|then)\b/i
+/** Behind the place, these start what the player does there or who comes along.
+ *  "Rose and Crown" keeps its capital; it is tried whole first anyway. */
+const AFTER_PLACE = /\s+(?:and|then)\s+(?!\p{Lu})|\s+(?:with|without)\s+/u
+/** In front of the walk, these put it inside another thought ("I think of when we go back"). */
+const SUBORDINATE = /\b(?:when|whenever|while|as|before|after|until|since|because|though|although|unless|whether|if|how|why|that)\b/i
+
+/**
+ * "I go back alone to the boathouse and sit down" — the viewpoint test stops at
+ * the word between "back" and "to", and the place carries what is done there, so
+ * the walk was read as a plan and the cursor held against prose that went there.
+ *
+ * Read per sentence: "We should eat." beside it is not about the walk. Only a
+ * unique place the story has already been to, never a town, so the worst case is
+ * a place the player did name themselves going back to.
+ */
+function returnToKnownPlace(input: TravelIntentInput): { place: PendingDestination; label: string } | null {
+  const people = input.personPlaces.flatMap((person) => [person.name, ...(person.aliases || [])])
+  for (const sentence of String(input.playerInput || '').split(/(?<=[.!?…])\s+|[*"“”\n]+/)) {
+    const match = sentence.match(RETURN_DESTINATION)
+    if (!match) continue
+    if (/\?\s*$/.test(sentence) || NEGATED.test(sentence)) continue
+    if (playerTextMarksIntent(sentence) || PREPARE_OR_LATER.test(sentence)) continue
+    const gap = match[0].slice(0, match[0].length - match[1].length)
+    if (CLAUSE_JOIN.test(gap)) continue
+
+    // Without the words in between, so the viewpoint still has to own the verb:
+    // "I watch Mara go back alone to the boathouse" moves nobody but Mara.
+    const before = sentence.slice(0, match.index || 0)
+    if (SUBORDINATE.test(before)) continue
+    const verb = gap.match(/^\w+(?:\s+back)?/i)?.[0] || ''
+
+    for (const raw of [match[1], match[1].split(AFTER_PLACE)[0]]) {
+      const label = cleanLabel(raw)
+      const known = label ? identityMatch(label, input.knownPlaces) : null
+      if (!label || !known) continue
+      const place = asPlace(known.name, known.entityId, known.aliases)
+      if (!isOccupiedKnownPlace(input, place)) continue
+      if (playerTextSituatesViewpoint(label, `${before}${verb} to ${label}`, { people })) return { place, label }
+    }
+  }
+  return null
+}
+
 function alreadyThere(
   dest: PendingDestination | null,
   cursorName: string | null,
@@ -812,6 +859,15 @@ export function decideTravelIntent(input: TravelIntentInput): TravelIntentResult
   }
 
   const resolved = classified.label ? resolveLabel(classified.label, input) : null
+
+  if (classified.kind === 'intent' || (classified.kind === 'arrival' && !uniquelyResolved(resolved, input.knownPlaces))) {
+    const back = returnToKnownPlace(input)
+    if (back) {
+      return destinationIsCurrentPlace(back.place, input)
+        ? { kind: 'none', destination: null, pendingNext: null, label: back.label }
+        : { kind: 'arrival', destination: back.place, pendingNext: null, label: back.label }
+    }
+  }
 
   if (classified.kind === 'intent') {
     if (resolved && destinationIsCurrentPlace(resolved, input)) {

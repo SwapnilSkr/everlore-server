@@ -18,7 +18,7 @@ import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mock } from 'bun:test'
 import OpenAI from 'openai'
-import { buildPrompt } from '../src/utils/prompt-builder'
+import { buildPrompt, PLACE_NOTE } from '../src/utils/prompt-builder'
 import { traceFetch, beginLLMTrace, runWithLLMTrace, snapshotLLMTrace } from '../src/ai/usage'
 
 type PromptArgs = Parameters<typeof buildPrompt>[0]
@@ -182,10 +182,15 @@ const partIndex = (parts: Part[], name: string) => {
 }
 
 // ── (a) the prompt text did not move ───────────────────────────────────────
+// The place note in the last message is the one text added since the snapshot;
+// with that line out, every byte is still the old prompt.
 check('(a) every fixture emits the pre-change messages byte for byte', () => {
   for (const { id, prompt, baseline } of built) {
+    const last = prompt.messages.length - 1
+    const messages = prompt.messages.map((message, i) =>
+      i === last ? { ...message, content: message.content.replace(`${PLACE_NOTE}\n`, '') } : message)
     assert.equal(
-      createHash('sha256').update(JSON.stringify(prompt.messages)).digest('hex'),
+      createHash('sha256').update(JSON.stringify(messages)).digest('hex'),
       baseline,
       `${id}: emitted messages changed`,
     )
