@@ -12,7 +12,7 @@ import { join } from 'node:path'
 
 const locks = await import('../src/utils/generation-lock')
 const { acquireGenerationTurn, finishGenerationTurn, generationLockKey, generationSlots, markGenerationStreamEnd,
-  markReplayTail, pastReplayTail, refreshGenerationLock, releaseGenerationLock, waitForPriorGeneration } = locks
+  markReplayTail, pastReplayTail, refreshGenerationLock, releaseGenerationLock, replayTailSuperseded, waitForPriorGeneration } = locks
 
 const key = generationLockKey('player', 'save')
 class FakeRedis {
@@ -34,7 +34,7 @@ let redis = new FakeRedis()
 const r = () => redis as unknown as Parameters<typeof acquireGenerationTurn>[0]
 
 let replayed = 0
-let onReplay: (onSaved: (result: unknown) => Promise<void>) => Promise<void> = async () => {}
+let onReplay: (onSaved: (result: unknown) => Promise<void>, superseded: () => Promise<boolean>) => Promise<void> = async () => {}
 let live = true
 mock.module('../src/config/redis', () => ({ getRedisClient: () => redis }))
 mock.module('../src/utils/live-instance', () => ({ liveInstanceExists: async () => live }))
@@ -43,9 +43,9 @@ mock.module('../src/services/media/events', () => ({ wireSpokenLines: (lines: un
 mock.module('../src/utils/logger', () => ({ log: { info() {}, warn() {}, error() {} } }))
 mock.module('../src/services/memory.service', () => ({
   memoryService: {
-    replayEvent: async (_event: string, _player: string, _delta: unknown, onSaved: (result: unknown) => Promise<void>) => {
+    replayEvent: async (_event: string, _player: string, _delta: unknown, onSaved: (result: unknown) => Promise<void>, superseded: () => Promise<boolean>) => {
       replayed++
-      await onReplay(onSaved)
+      await onReplay(onSaved, superseded)
     },
   },
 }))
@@ -176,6 +176,38 @@ await check('processor: a replay picked up again after its save writes no second
   assert.equal(first.data.replaySaved, true)
 })
 
+await check('lock: another version asks the tail to stop, and a line already waiting overrules it', async () => {
+  const attempt = () => acquireGenerationTurn(r(), key, 'X', false)
+  await acquireGenerationTurn(r(), key, 'R', false)
+  await markReplayTail(r(), key, 'R', 'c', JSON.stringify({ type: 'replay_complete' }))
+  let clock = 0
+  const once = { timeoutMs: 100, now: () => clock, sleep: async (ms: number) => { clock += ms } }
+  await pastReplayTail(r(), key, attempt, once)
+  assert.equal(await replayTailSuperseded(r(), key, 'R'), false, 'an edit or a rewind waits for the cards')
+  clock = 0
+  await pastReplayTail(r(), key, attempt, { ...once, supersede: true })
+  assert.equal(await replayTailSuperseded(r(), key, 'R'), true)
+  assert.equal(await replayTailSuperseded(r(), key, 'other'), false)
+  assert.deepEqual(await acquireGenerationTurn(r(), key, 'N', true), { priorTurnId: 'R' }, 'a line is still admitted')
+  assert.equal(await replayTailSuperseded(r(), key, 'R'), false, 'and it reads these cards')
+  await finishGenerationTurn(r(), key, 'R', true)
+  assert.deepEqual(generationSlots(await redis.get(key)), { owner: 'N', phase: 'running' })
+})
+await check('processor: the tail hears that another version is waiting', async () => {
+  await acquireGenerationTurn(r(), key, 'R', false)
+  const heard: boolean[] = []
+  onReplay = async (onSaved, superseded) => {
+    await onSaved(RESULT)
+    heard.push(await superseded())
+    const next = pastReplayTail(r(), key, () => acquireGenerationTurn(r(), key, 'R2', false), { supersede: true })
+    await settle()
+    heard.push(await superseded())
+    void next
+  }
+  await replayProcessor(job())
+  assert.deepEqual(heard, [false, true])
+})
+
 console.log(`\nreplay tail audit: ${pass} passed, ${fail} failed`)
 if (fail) process.exit(1)
 if (process.argv.includes('--bites')) await runBites()
@@ -191,13 +223,17 @@ async function runBites() {
     ['the tail has no kind', 'lock: exclusive work waits', lock, "phase: 'tail', kind: 'replay' }", "phase: 'tail' }"],
     ['exclusive work waits on any tail', 'lock: exclusive work waits', lock, "slots?.kind !== 'replay' || slots.phase", "!slots || slots.phase"],
     ['exclusive work waits on a running replay', 'lock: exclusive work waits', lock, "      if (slots?.kind !== 'replay' || slots.phase !== 'tail' || slots.next) return null", "      if (slots && (slots.kind !== 'replay' || slots.next)) return null"],
-    ['exclusive work waits behind a line', 'lock: exclusive work gives way', lock, " || slots.next) return null\n    }", ') return null\n    }'],
+    ['exclusive work waits behind a line', 'lock: exclusive work gives way', lock, "slots.phase !== 'tail' || slots.next) return null\n      // Lost", "slots.phase !== 'tail') return null\n      // Lost"],
     ['exclusive work never gives up', 'lock: exclusive work gives way', lock, 'if (now() >= deadline) return null', 'if (now() >= deadline + 100_000) return null'],
     ['the lock is dropped at the save', 'processor: the player is freed', proc, '      saved = true\n', '      saved = true\n      await finishGenerationTurn(redis, lockKey, token, true)\n'],
     ['the end is recorded as a failure', 'processor: the player is freed', proc, "    )\n    await finishGenerationTurn(redis, lockKey, token, true).catch(() => {})\n  } catch", "    )\n  } catch"],
     ['a late failure reaches the player', 'processor: a failure after the save', proc, 'if (saved) {', 'if (false as boolean) {'],
     ['a late failure fails the next line', 'processor: a failure after the save', proc, "error: (err as Error).message })\n      await finishGenerationTurn(redis, lockKey, token, true).catch(() => {})", 'error: (err as Error).message })'],
     ['an early failure is swallowed', 'processor: a failure before the save', proc, 'if (saved) {', 'if (!saved) {'],
+    ['every waiter stops the cards', 'lock: another version', lock, 'if (options.supersede && !slots.superseded)', 'if (!slots.superseded)'],
+    ['nothing stops the cards', 'lock: another version', lock, 'if (options.supersede && !slots.superseded)', 'if (Date.now() < 0)'],
+    ['a waiting line loses its cards', 'lock: another version', lock, 'slots.superseded === true && !slots.next', 'slots.superseded === true'],
+    ['the tail is never told', 'processor: the tail hears', proc, '() => replayTailSuperseded(redis, lockKey, token),', 'async () => false,'],
     ['a lost lease hides the version', 'processor: a lost lease', proc, '        await redis.publish(channel, frame)\n', ''],
     ['a second pickup writes again', 'processor: a replay picked up again', proc, 'if (job.data.replaySaved) {', 'if (false as boolean) {'],
     ['the save is not remembered', 'processor: a replay picked up again', proc, '      job.data.replaySaved = true\n', ''],

@@ -449,7 +449,9 @@ export const playWsService = {
 
         const lockKey = generationLockKey(user.id, instanceId)
         const turnId = crypto.randomUUID()
-        const locked = await pastReplayTail(redis, lockKey, () => acquireGenerationTurn(redis, lockKey, turnId, false))
+        const locked = await pastReplayTail(
+          redis, lockKey, () => acquireGenerationTurn(redis, lockKey, turnId, false), { supersede: true },
+        )
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return

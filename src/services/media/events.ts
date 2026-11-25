@@ -35,6 +35,7 @@ type InternalTurnFields = Pick<EventDataDoc,
   | 'codex_projection_claimed_at'
   | 'codex_projection_error'
   | 'codex_projection_attempts'
+  | 'codex_refold'
   | 'codex_projection_status'
   | 'codex_projection_completed_at'
   | 'group_state_after'
@@ -75,10 +76,14 @@ function stripInternalTurnFields(data: InternalTurnFields): void {
   delete data.codex_projection_claimed_at
   delete data.codex_projection_error
   delete data.codex_projection_attempts
+  delete data.codex_refold
   delete data.group_state_after
   delete data.codex_projection_status
   delete data.codex_projection_completed_at
-  for (const variant of data.replay_variants || []) stripInternalTurnFields(variant)
+  for (const variant of data.replay_variants || []) {
+    stripInternalTurnFields(variant)
+    delete variant.projection
+  }
 }
 
 /** Player responses expose offsets and unvoiceable status, never attribution

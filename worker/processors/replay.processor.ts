@@ -1,7 +1,7 @@
 import { Job } from 'bullmq'
 import { getRedisClient } from '../../src/config/redis'
 import { memoryService, type ReplayResult } from '../../src/services/memory.service'
-import { finishGenerationTurn, generationLockKey, markReplayTail, releaseGenerationLock } from '../../src/utils/generation-lock'
+import { finishGenerationTurn, generationLockKey, markReplayTail, releaseGenerationLock, replayTailSuperseded } from '../../src/utils/generation-lock'
 import { liveInstanceExists } from '../../src/utils/live-instance'
 import { wireSpokenLines } from '../../src/services/media/events'
 import { parseObjectId } from '../../src/utils/mongo-id'
@@ -101,6 +101,7 @@ export async function replayProcessor(job: Job) {
       playerId,
       (chunk) => publishReplayDelta(proseFilter.push(chunk)),
       onSaved,
+      () => replayTailSuperseded(redis, lockKey, token),
     )
 
     // SHARED CONTRACT v1 item 4: a replay re-projects the latest turn, so notify

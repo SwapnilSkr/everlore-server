@@ -371,7 +371,7 @@ if (!mutantPath) {
     const extraMutations = [
       ['(c) omit newest event from packet', 'recentEvents.reverse()', 'recentEvents.splice(0, 1); recentEvents.reverse()', '(b,c,d)', 'packet'],
       ['(c) reuse dispatch session', 'session = await instanceService.loadSession(instanceId, playerId)', 'session = dispatchedSession', 'wiring', 'processor'],
-      ['(h) select and edit give up at once', "if (!await pastReplayTail(redis, lockKey, () => redis.set(lockKey, token, 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX'))) {", "if (!await redis.set(lockKey, token, 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')) {", '(h)', 'controller'],
+      ['(h) select and edit give up at once', "if (!await pastReplayTail(redis, lockKey, () => redis.set(lockKey, token, 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX'), options)) {", "if (!await redis.set(lockKey, token, 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')) {", '(h)', 'controller'],
       ['(h) rewind gives up at once', "const acquired = await pastReplayTail(redis, lockKey, () => redis.set(", "const acquired = await Promise.resolve().then(() => redis.set(", '(h)', 'controller'],
       ['(h) the next line is refused', "phase: 'tail', kind: 'replay' }", "phase: 'running', kind: 'replay' }", '(h)'],
       ['(g) bypass exclusive rewind/edit NX', "      'NX',", "      undefined,", '(g)', 'controller'],

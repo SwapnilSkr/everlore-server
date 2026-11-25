@@ -21,6 +21,17 @@ export interface FlagMutationDoc {
   value?: unknown
 }
 
+export interface ReplayVariantProjection {
+  /** Hash of everything the reading depended on; any change means read again. */
+  key: string
+  state_mutations: Record<string, StateMutationDoc>
+  flag_mutations: Record<string, FlagMutationDoc>
+  scene_tag: string
+  location_anchor: WorldEventDoc['location_anchor'] | null
+  /** Absent until the version's cards were read. */
+  codex_deltas?: EventDataDoc['codex_deltas']
+}
+
 export interface ReplayVariantDoc {
   id: string
   narrative: string
@@ -47,6 +58,9 @@ export interface ReplayVariantDoc {
   /** Set when this variant's copy could not be made: selecting it retries once,
    *  and a second refusal leaves the turn in the same state (§7). */
   witness_status?: 'failed'
+  /** What this version did to the story, kept so picking it again restores exactly
+   *  that instead of reading the same prose a second time. Server only. */
+  projection?: ReplayVariantProjection
   /** Backend-OWNED trackable mentions derived from THIS variant's prose, so
    *  browsing/committing a variant carries its own underline data without
    *  re-running the canon-gap classifier. Same shape as EventDataDoc. */
@@ -223,6 +237,9 @@ export interface EventDataDoc {
   /** Failed repair attempts. At CHARACTER_PROJECTION_MAX_ATTEMPTS the status
    *  becomes 'failed' so a deterministic error stops being retried forever. */
   codex_projection_attempts?: number
+  /** A replay replaced this turn's prose and its old card effects are not taken
+   *  out yet. Cleared by the refold; a repair that finds it refolds first. */
+  codex_refold?: true
   /** This turn's location changes, ledgered with authority for an exact rebuild of
    *  the place graph (anchor + containment + state + enduring facts). */
   location_deltas?: LocationDeltaDoc[]

@@ -185,6 +185,7 @@ const users = new Coll('users')
 const sceneSummaries = new Coll('scene_summaries')
 const memories = new Coll('memories')
 const mediaAssets = new Coll('media_assets')
+const entities = new Coll('entities')
 
 // ── recorders ────────────────────────────────────────────────────────────────
 type Recorder = Record<string, any[]>
@@ -250,7 +251,7 @@ const collections = () => ({
   memories: () => memories,
   mediaAssets: () => mediaAssets,
   projectionAnomalies: () => ({ insertOne: async () => ({}) }),
-  entities: () => new Coll('entities'),
+  entities: () => entities,
 })
 
 mock.module('../src/config/mongo', () => ({ mongoColl: collections() }))
@@ -592,6 +593,7 @@ function reset(options: FixtureOptions = {}) {
   sceneSummaries.reset([])
   memories.reset([])
   mediaAssets.reset([])
+  entities.reset([])
 }
 
 /** Deterministic view of everything a flow did, for the English freeze. */
@@ -649,6 +651,17 @@ const witnessUnset = () => eventUpdate().$unset?.['data.witness'] !== undefined
 const statusUnset = () => eventUpdate().$unset?.['data.witness_status'] !== undefined
 
 // Filled from HEAD (see `--emit`); every English case below must match it.
+/** Two deliberate additions since the snapshot: a version keeps what it did to the
+ *  story, and a history entry no longer copies every version. */
+function asFrozen(value: any): any {
+  return JSON.parse(JSON.stringify(value), (key, inner) => key === 'projection' && inner?.key ? undefined : inner)
+}
+function withoutHistoryVariants(value: any): any {
+  return JSON.parse(JSON.stringify(value), (key, inner) => {
+    if (key === 'previous_data') delete inner.replay_variants
+    return inner
+  })
+}
 const FROZEN: { replay: any; edit: any; select: any } = {
   replay: {
   "narrationCalls": [
@@ -1671,7 +1684,7 @@ await check('English replay: calls and writes match the HEAD snapshot', async ()
   const text = JSON.stringify(snapshot)
   const noteLine = JSON.stringify(`${PLACE_NOTE}\n`).slice(1, -1)
   assert.equal(text.split(noteLine).length, 2, 'the replay prompt carries the note once')
-  assert.deepEqual(JSON.parse(text.replace(noteLine, '')), FROZEN.replay)
+  assert.deepEqual(asFrozen(JSON.parse(text.replace(noteLine, ''))), withoutHistoryVariants(FROZEN.replay))
 })
 
 await check('English edit: calls and writes match the HEAD snapshot', async () => {
@@ -1697,7 +1710,7 @@ await check('English select: calls and writes match the HEAD snapshot', async ()
     console.log('EMIT_ENGLISH_SELECT ' + JSON.stringify(snapshot))
     return
   }
-  assert.deepEqual(snapshot, FROZEN.select)
+  assert.deepEqual(asFrozen(snapshot), withoutHistoryVariants(FROZEN.select))
 })
 
 // ── 5. one view after a refusal with an old witness (edit) ─────────────────
@@ -1964,6 +1977,154 @@ await check('cards: a lost claim or a deleted story refolds nothing', async () =
   assert.equal(cardRefolds, 0)
 })
 
+// ── 10. rapid replays, and picking a version again ──────────────────────────
+const OLD_DELTA = { name: 'Old Guest', appearance: 'Only in the first version.' }
+const ledgered = () => { english(); codexDeltas = [CARD_DELTA]; eventRow().data.codex_deltas = [OLD_DELTA] }
+const readings = () => ({ scene: rec.extractorCalls.length, cards: rec.codexCalls.length, copies: rec.witnessCalls.length })
+const pickFirst = async () => {
+  rec = freshRecorders()
+  await memoryService.selectReplayVariant(String(eventId), String(playerId), 0)
+  return readings()
+}
+
+await check('rapid: a newer replay stops the card reading and the replaced effects still come out', async () => {
+  ledgered()
+  codexHangs = true
+  let wanted = false
+  const startedAt = Date.now()
+  await memoryService.replayEvent(String(eventId), String(playerId), () => {}, async () => { wanted = true }, async () => wanted)
+  assert.ok(Date.now() - startedAt < 5000, 'at once, not at the time limit')
+  assert.equal(eventRow().data.codex_projection_status, 'pending')
+  assert.equal('codex_projection_claimed_at' in eventRow().data, false)
+  assert.equal('codex_deltas' in eventRow().data, false)
+  assert.equal(kinshipRefolds, 1, 'exactly, so the next version is written from clean cards')
+  codexHangs = false
+  kinshipRefolds = 0
+  narrationText = `${REPLAY_ENGLISH} Another take.`
+  await replaySaved(() => {})
+  assert.deepEqual(eventRow().data.codex_deltas, [CARD_DELTA])
+  assert.equal(eventRow().data.codex_projection_status, 'completed')
+})
+await check('rapid: with nobody waiting the cards are read to the end', async () => {
+  ledgered()
+  await memoryService.replayEvent(String(eventId), String(playerId), () => {}, async () => {}, async () => false)
+  assert.equal(eventRow().data.codex_projection_status, 'completed')
+})
+await check('rapid: a history entry keeps the replaced prose, never a copy of every version', async () => {
+  ledgered()
+  for (let i = 0; i < 6; i++) { narrationText = `${REPLAY_ENGLISH} Take ${'again '.repeat(i + 1)}.`; await replaySaved(() => {}) }
+  const row = eventRow()
+  assert.equal(row.data.replay_variants.length, 7, 'every version is kept')
+  assert.equal(row.edit_history.length, 6)
+  for (const entry of row.edit_history) {
+    assert.ok(entry.previous_data.ai_response)
+    assert.equal('replay_variants' in entry.previous_data, false)
+  }
+})
+await check('refold: a replay that loses its worker leaves a mark, and finishing clears it', async () => {
+  ledgered()
+  let during: Row = {}
+  await replaySaved(() => { during = clone(eventRow().data) })
+  assert.equal(during.codex_refold, true)
+  assert.equal('codex_refold' in eventRow().data, false)
+  english()
+  codexDeltas = [CARD_DELTA]
+  await replaySaved(() => { during = clone(eventRow().data) })
+  assert.equal('codex_refold' in during, false, 'nothing to take out of a turn never read')
+})
+await check('refold: the repair takes the lost replay out of the cards, and a new replay does the same', async () => {
+  const { refoldCardsWithoutTurn } = await import('../src/services/memory.service')
+  english()
+  eventRow().data.codex_refold = true
+  await refoldCardsWithoutTurn(eventRow() as any, String(playerId))
+  assert.equal(kinshipRefolds, 1)
+  assert.equal('codex_refold' in eventRow().data, false)
+  english()
+  codexDeltas = [CARD_DELTA]
+  eventRow().data.codex_refold = true
+  await replaySaved(() => {})
+  assert.equal(kinshipRefolds, 1, 'exact')
+  english()
+  codexDeltas = [CARD_DELTA]
+  await replaySaved(() => {})
+  eventRow().data.codex_refold = true
+  delete eventRow().data.codex_deltas
+  kinshipRefolds = 0
+  await pickFirst()
+  assert.equal(kinshipRefolds, 1, 'exact')
+  assert.equal('codex_refold' in eventRow().data, false)
+  const projection = await readFile(new URL('../worker/processors/character-projection.processor.ts', import.meta.url), 'utf8')
+  const hook = projection.indexOf('if (event.data.codex_refold && !event.data.codex_deltas) {')
+  assert.ok(hook > 0 && hook < projection.indexOf('const characterCodex = await readCards()'), 'before the repair reads the cards')
+})
+await check('pick: a version picked again restores what it did without reading anything', async () => {
+  ledgered()
+  const place = new ObjectId()
+  entities.reset([{ _id: place, instance_id: instanceId }])
+  Object.assign(eventRow(), { location_anchor: { entity_id: place, name: 'the cove' }, scene_tag: 'travel' })
+  eventRow().data.flag_mutations = { lit: { op: 'set', value: true } }
+  const before = clone(eventRow())
+  await replaySaved(() => {})
+  assert.deepEqual(await pickFirst(), { scene: 0, cards: 0, copies: 0 })
+  const after = eventRow()
+  assert.equal(after.data.ai_response, before.data.ai_response)
+  assert.deepEqual(after.data.choices, before.data.choices)
+  assert.deepEqual(after.data.present_characters, before.data.present_characters)
+  assert.deepEqual(after.data.codex_deltas, [OLD_DELTA])
+  assert.deepEqual(after.data.flag_mutations, before.data.flag_mutations)
+  assert.deepEqual(after.location_anchor, before.location_anchor)
+  assert.equal(after.scene_tag, 'travel')
+  assert.equal(worldInstances.rows[0].active_flags.lit, true)
+  assert.deepEqual(worldInstances.rows[0].current_location, before.location_anchor)
+  assert.equal(rec.curationJobs.length, 1, 'its memories are written again')
+  assert.ok(kinshipRefolds >= 2, 'and the cards are refolded from the ledger')
+  // Forward again: the second version keeps its own.
+  rec = freshRecorders()
+  await memoryService.selectReplayVariant(String(eventId), String(playerId), 1)
+  assert.deepEqual(readings(), { scene: 0, cards: 0, copies: 0 })
+  assert.deepEqual(eventRow().data.codex_deltas, [CARD_DELTA])
+})
+await check('pick: anything the reading depended on having changed reads again', async () => {
+  const cases: Array<[string, () => void]> = [
+    ['the player text', () => { eventRow().data.player_input = 'I leave.' }],
+    ['an earlier turn', () => { events.rows[0].data.ai_response = 'The hall is on fire.' }],
+    ['the place is gone', () => { entities.reset([]) }],
+    ['no choices kept', () => { eventRow().data.replay_variants[0].choices = [] }],
+  ]
+  for (const [label, change] of cases) {
+    ledgered()
+    const place = new ObjectId()
+    entities.reset([{ _id: place, instance_id: instanceId }])
+    eventRow().location_anchor = { entity_id: place, name: 'the cove' }
+    await replaySaved(() => {})
+    change()
+    assert.ok((await pickFirst()).scene > 0, label)
+  }
+  ledgered()
+  eventRow().data.codex_deltas = []
+  await replaySaved(() => {})
+  const read = await pickFirst()
+  assert.deepEqual([read.scene, read.cards], [0, 1], 'an empty card list is read again, the scene is not')
+})
+await check('pick: a pass a stopped replay left open is closed by the version picked after it', async () => {
+  ledgered()
+  await replaySaved(() => {})
+  eventRow().data.codex_projection_status = 'pending'
+  await pickFirst()
+  assert.equal(eventRow().data.codex_projection_status, 'completed')
+})
+await check('pick: none of it reaches the player', async () => {
+  ledgered()
+  await replaySaved(() => {})
+  const row = clone(eventRow())
+  assert.ok(row.data.replay_variants[0].projection && row.data.replay_variants[1].projection)
+  row.data.codex_refold = true
+  const { publicMediaEvent } = await import('../src/services/media/events')
+  const wire = publicMediaEvent(row as any) as any
+  assert.equal('codex_refold' in wire.data, false)
+  assert.ok(wire.data.replay_variants.every((variant: Row) => !('projection' in variant)))
+})
+
 if (fail > 0) {
   console.log(`\nwitness replay audit: ${pass} passed, ${fail} failed`)
   process.exit(1)
@@ -2092,7 +2253,7 @@ async function runBites() {
     {
       name: "13 cards are read before the announcement",
       check: "cards: the version is saved and announced before the cards are read",
-      edits: [[memory, "      await onSaved(result)\n      await finishReplayCards({ event, claimedAt: codexClaimedAt, extractDeltas, rebuildCards })", "      await finishReplayCards({ event, claimedAt: codexClaimedAt, extractDeltas, rebuildCards })\n      await onSaved(result)"]],
+      edits: [[memory, "      await onSaved(result)\n      await finishReplayCards({\n        event, claimedAt: codexClaimedAt, extractDeltas, rebuildCards, variantIndex: selectedIdx, superseded,\n      })", "      await finishReplayCards({\n        event, claimedAt: codexClaimedAt, extractDeltas, rebuildCards, variantIndex: selectedIdx, superseded,\n      })\n      await onSaved(result)"]],
     },
     {
       name: "13b the old ledger stays while the new prose is saved",
@@ -2102,7 +2263,7 @@ async function runBites() {
     {
       name: "13c the turn is not claimed",
       check: "cards: the version is saved and announced before the cards are read",
-      edits: [[memory, "'data.codex_projection_claimed_at': codexClaimedAt }),", "'data.codex_projection_attempts': 0 }),"]],
+      edits: [[memory, "'data.codex_projection_claimed_at': codexClaimedAt,\n", "'data.codex_projection_attempts': 0,\n"]],
     },
     {
       name: "13d the pass is never marked done",
@@ -2117,12 +2278,12 @@ async function runBites() {
     {
       name: "14b the deferred order forgets its ledger",
       check: "cards: both orders end with the same story",
-      edits: [[memory, "{ $set: { 'data.codex_deltas': deltas } })\n      if (ledgered", "{ $set: { 'data.codex_deltas': [] } })\n      if (ledgered"]],
+      edits: [[memory, "        'data.codex_deltas': deltas,\n        [`data", "        'data.codex_deltas': [],\n        [`data"]],
     },
     {
       name: "15 a first pass landing mid-replay is not seen",
       check: "cards: the replaced prose lands its ledger mid-replay and is still taken out",
-      edits: [[memory, "      (!!onSaved && Array.isArray(", "      (!onSaved && Array.isArray("]],
+      edits: [[memory, "    const ledgerNow = onSaved\n", "    const ledgerNow = !onSaved\n"]],
     },
     {
       name: "16 a slow pass is recorded as done",
@@ -2148,6 +2309,111 @@ async function runBites() {
       name: "18b a deleted story is refolded",
       check: "cards: a lost claim or a deleted story refolds nothing",
       edits: [[memory, "    if (!(await liveInstanceExists(event.instance_id))) return\n    if (deltas)", "    if (deltas)"]],
+    },
+    {
+      name: "19 a newer replay is never noticed",
+      check: "rapid: a newer replay stops the card reading and the replaced effects still come out",
+      edits: [[memory, "if (yes) { replaced = true; resolve(null) }", "if (yes && Date.now() < 0) { replaced = true; resolve(null) }"]],
+    },
+    {
+      name: "20 history copies every version",
+      check: "rapid: a history entry keeps the replaced prose, never a copy of every version",
+      edits: [[memory, "const { replay_variants: _live, ...rest } = data || {}", "const { ...rest } = data || {}"]],
+    },
+    {
+      name: "21 no mark for a lost worker",
+      check: "refold: a replay that loses its worker leaves a mark, and finishing clears it",
+      edits: [[memory, "...(hadLedgeredCodexDeltas ? { 'data.codex_refold': true as const } : {}),", ""]],
+    },
+    {
+      name: "21b the mark outlives the refold",
+      check: "refold: a replay that loses its worker leaves a mark, and finishing clears it",
+      edits: [[memory, "'data.codex_projection_claimed_at': '', 'data.codex_refold': '' }", "'data.codex_projection_claimed_at': '' }"]],
+    },
+    {
+      name: "22 the repair leaves the mark",
+      check: "refold: the repair takes the lost replay out of the cards, and a new replay does the same",
+      edits: [[memory, "  await events().updateOne({ _id: event._id }, { $unset: { 'data.codex_refold': '' } })\n", ""]],
+    },
+    {
+      name: "22b a replay ignores the mark",
+      check: "refold: the repair takes the lost replay out of the cards, and a new replay does the same",
+      edits: [[memory, "      ledgerNow?.codex_refold === true", "      false"]],
+    },
+    {
+      name: "22c a pick ignores the mark",
+      check: "refold: the repair takes the lost replay out of the cards, and a new replay does the same",
+      edits: [[memory, " || event.data?.codex_refold === true", ""]],
+    },
+    {
+      name: "22d a pick leaves the mark",
+      check: "refold: the repair takes the lost replay out of the cards, and a new replay does the same",
+      edits: [[memory, "if (event.data?.codex_refold) await events()", "if (Date.now() < 0) await events()"]],
+    },
+    {
+      name: "23 a pick always reads again",
+      check: "pick: a version picked again restores what it did without reading anything",
+      edits: [[memory, "if ((await replayProjectionKeyFor(event))(chosen.narrative || '') !== stored.key) return null", "return null"]],
+    },
+    {
+      name: "23b version one is not kept",
+      check: "pick: a version picked again restores what it did without reading anything",
+      edits: [[memory, "firstVersion.narrative === event.data?.ai_response && !firstVersion.projection", "false"]],
+    },
+    {
+      name: "23c the second version's cards are not kept",
+      check: "pick: a version picked again restores what it did without reading anything",
+      edits: [[memory, "        [`data.replay_variants.${variantIndex}.projection.codex_deltas`]: deltas,\n", ""]],
+    },
+    {
+      name: "23d the place is not restored",
+      check: "pick: a version picked again restores what it did without reading anything",
+      edits: [[memory, "locationAnchor: reused.location_anchor as any,", "locationAnchor: null as any,"]],
+    },
+    {
+      name: "23e the flags are not restored",
+      check: "pick: a version picked again restores what it did without reading anything",
+      edits: [[memory, "              flag_mutations: reused.flag_mutations,\n", "              flag_mutations: {},\n"]],
+    },
+    {
+      name: "24 the player's words are not in the key",
+      check: "pick: anything the reading depended on having changed reads again",
+      edits: [[memory, "    event.data?.player_input || '',\n    event.data?.world_action", "    '',\n    event.data?.world_action"]],
+    },
+    {
+      name: "24b earlier turns are not in the key",
+      check: "pick: anything the reading depended on having changed reads again",
+      edits: [[memory, "turn.data?.player_input || '', turn.data?.ai_response || '',", ""]],
+    },
+    {
+      name: "24c a missing place is trusted",
+      check: "pick: anything the reading depended on having changed reads again",
+      edits: [[memory, "if (placeId && !await", "if (placeId && Date.now() < 0 && !await"]],
+    },
+    {
+      name: "24d an empty menu is trusted",
+      check: "pick: anything the reading depended on having changed reads again",
+      edits: [[memory, " || chosen.choices.length === 0) return null", ") return null"]],
+    },
+    {
+      name: "24e an empty card list is trusted",
+      check: "pick: anything the reading depended on having changed reads again",
+      edits: [[memory, "reused?.codex_deltas?.length\n", "reused?.codex_deltas\n"]],
+    },
+    {
+      name: "25 an open pass stays open",
+      check: "pick: a pass a stopped replay left open is closed by the version picked after it",
+      edits: [[memory, "...(closesCards ? { 'data.codex_projection_status'", "...(false ? { 'data.codex_projection_status'"]],
+    },
+    {
+      name: "26 a version's record reaches the player",
+      check: "pick: none of it reaches the player",
+      edits: [[wire, "    delete variant.projection\n", ""]],
+    },
+    {
+      name: "26b the mark reaches the player",
+      check: "pick: none of it reaches the player",
+      edits: [[wire, "  delete data.codex_refold\n", ""]],
     },
   ]
 

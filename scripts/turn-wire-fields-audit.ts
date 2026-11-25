@@ -62,6 +62,7 @@ const INTERNAL_KEYS = [
   'codex_projection_claimed_at',
   'codex_projection_error',
   'codex_projection_attempts',
+  'codex_refold',
   'codex_projection_status',
   'codex_projection_completed_at',
 ]
@@ -143,6 +144,7 @@ function turnData() {
     codex_projection_claimed_at: new Date(),
     codex_projection_error: 'upstream 502',
     codex_projection_attempts: 1,
+    codex_refold: true,
     codex_projection_status: 'completed' as const,
     codex_projection_completed_at: new Date(),
   }
@@ -266,7 +268,7 @@ await check('the strip list names every key it claims, and every place it is app
     'every edit snapshot must lose its lines and its internals',
   )
   assert.ok(
-    /for \(const variant of data\.replay_variants \|\| \[\]\) stripInternalTurnFields\(variant\)/.test(eventsSource),
+    /for \(const variant of data\.replay_variants \|\| \[\]\) \{\s*stripInternalTurnFields\(variant\)\s*delete variant\.projection\s*\}/.test(eventsSource),
     'every replay variant must be stripped like a turn',
   )
   // A key nobody named is a key nobody checked: the fields this audit covers

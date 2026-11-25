@@ -185,6 +185,10 @@ async function projectCharacterWork(params: { instanceId: string; playerId: stri
   return withCharacterProjection(params, projectCharacterEvent, async (projectionEvent, assertOwned, timing, prepared) => {
     const event = projectionEvent
     const nextSequence = event.sequence
+    if (event.data.codex_refold && !event.data.codex_deltas) {
+      const { refoldCardsWithoutTurn } = await import('../../src/services/memory.service')
+      await timing.step('refold', () => refoldCardsWithoutTurn(event, playerId))
+    }
     setLLMTraceSequence(nextSequence)
     const rawNarrative = witnessOf(event).ai_response ?? event.data.ai_response
     const parsedPlayerInput = parsePlayerInput(turnInputs(event).playerInput)

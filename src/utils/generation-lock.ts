@@ -29,6 +29,8 @@ export interface GenerationSlots {
   next?: string
   /** A replay's tail: short, and other exclusive work waits for it. */
   kind?: 'replay'
+  /** Another version of the same turn is waiting: this one's cards are moot. */
+  superseded?: true
 }
 
 export function generationSlots(value: string | null): GenerationSlots | null {
@@ -129,10 +131,14 @@ const REPLAY_TAIL_WAIT_MS = 25_000
  * the player's screen locked until a replay was wholly done. It now can arrive
  * during the tail, so it waits for that instead of being refused: a refused
  * version pick would silently keep the wrong prose. Any other holder still refuses.
+ *
+ * `supersede` is for work that replaces the very version being read: it tells the
+ * tail to stop, so a player replaying again and again never queues behind the
+ * cards of versions they have already thrown away.
  */
 export async function pastReplayTail<T>(
   redis: LockRedis, key: string, attempt: () => Promise<T | null>,
-  options: { timeoutMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+  options: { supersede?: boolean; timeoutMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
 ): Promise<T | null> {
   const now = options.now || Date.now
   const sleep = options.sleep || ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
@@ -145,10 +151,21 @@ export async function pastReplayTail<T>(
     if (value) {
       const slots = generationSlots(value)
       if (slots?.kind !== 'replay' || slots.phase !== 'tail' || slots.next) return null
+      // Lost swap: the tail moved on, and the next pass looks again.
+      if (options.supersede && !slots.superseded) {
+        await swap(redis, key, value, JSON.stringify({ ...slots, superseded: true }), 'keep')
+      }
     }
     if (now() >= deadline) return null
     await sleep(100)
   }
+}
+
+/** True once newer work wants this replay's turn. A line already waiting behind
+ *  the tail reads these cards, so then they are finished after all. */
+export async function replayTailSuperseded(redis: LockRedis, key: string, token: string): Promise<boolean> {
+  const slots = generationSlots(await redis.get(key))
+  return slots?.owner === token && slots.superseded === true && !slots.next
 }
 
 /** Success is signalled only AFTER event insert, instance/cache writes and the

@@ -5,7 +5,7 @@ import { publicGroupData } from './group-chat/public'
 import { purgeMedia } from './media/deletion'
 import { purgeNotificationsForEvents } from './notifications.service'
 import { spokenLineUpdate, publishSpokenLines, publicMediaEvent, withTurnMedia, wireSpokenLines } from './media/events'
-import { randomUUID } from 'crypto'
+import { createHash, randomUUID } from 'crypto'
 import { env } from '../config/env'
 import { mongoColl } from '../config/mongo'
 import { vectorStore } from './vector-store'
@@ -21,7 +21,7 @@ import { idString, parseObjectId } from '../utils/mongo-id'
 import { log } from '../utils/logger'
 import { liveInstanceExists } from '../utils/live-instance'
 import type { CharacterCodexDelta } from './character-codex.service'
-import type { WorldEventDoc } from '../models/world-event.model'
+import type { ReplayVariantProjection, WorldEventDoc } from '../models/world-event.model'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { playerTextOf, previousTurnFor, storedWitness, witnessGlossary, witnessOf, type ChoiceEnglish } from '../utils/witness'
 import { recordAnomaly } from '../utils/record-anomaly'
@@ -685,6 +685,19 @@ async function projectLatestReplayTurn(params: {
     endpointAdjudication,
   )
 
+  return { meta, locationAnchor, ...(await deriveLatestTurnState({ event, template, meta })) }
+}
+
+/** The instance state the latest turn leaves behind: prior turns' changes plus its
+ *  own. Pure bookkeeping, no reading of prose. */
+async function deriveLatestTurnState(params: {
+  event: any
+  template: any
+  meta: { state_mutations?: any; flag_mutations?: any; scene_tag: string }
+}) {
+  const { event, template, meta } = params
+  const instanceId = idString(event.instance_id)
+  const eventSequence = Number(event.sequence || 0)
   const statLimits: Record<string, { min: number; max: number }> = {}
   let worldState: Record<string, number> = {}
   for (const [key, def] of Object.entries(template.base_stats_template || {}) as Array<[string, any]>) {
@@ -779,7 +792,49 @@ async function projectLatestReplayTurn(params: {
     summary_pending: shouldSummarize,
   }
 
-  return { meta, locationAnchor, worldState, activeFlags, currentScene }
+  return { worldState, activeFlags, currentScene }
+}
+
+/**
+ * Names the story a version was read in: its own words, the player's, and the turns
+ * before it. A version's stored effects may be reused only while this is unchanged;
+ * an edit to any of them makes the next pick read the prose again.
+ */
+async function replayProjectionKeyFor(event: any): Promise<(narrative: string) => string> {
+  const prior = await events()
+    .find({ instance_id: event.instance_id, sequence: { $lt: Number(event.sequence || 0) }, type: { $ne: 'side_chat' } })
+    .sort({ sequence: -1 })
+    .limit(EVENT_WINDOWS.promptRecentEvents)
+    .toArray()
+  const story = JSON.stringify([
+    event.data?.player_input || '',
+    event.data?.world_action ?? null,
+    prior.map((turn: any) => [
+      idString(turn._id), turn.data?.player_input || '', turn.data?.ai_response || '',
+      turn.data?.present_characters || [], turn.location_anchor?.entity_id ? idString(turn.location_anchor.entity_id) : '',
+    ]),
+  ])
+  return (narrative) => createHash('sha256').update(story).update('\0').update(narrative).digest('hex')
+}
+
+/** The stored effects of a picked version, when they still hold. Null reads afresh. */
+async function reusableReplayProjection(event: any, chosen: any): Promise<ReplayVariantProjection | null> {
+  const stored = chosen?.projection as ReplayVariantProjection | undefined
+  if (!stored?.key || chosen.witness_status === 'failed' || !Array.isArray(chosen.present_characters) ||
+    !Array.isArray(chosen.choices) || chosen.choices.length === 0) return null
+  if ((await replayProjectionKeyFor(event))(chosen.narrative || '') !== stored.key) return null
+  const placeId = stored.location_anchor?.entity_id
+  // A place merged or cleaned away since must not come back as a dangling cursor.
+  if (placeId && !await mongoColl.entities().findOne({ _id: placeId, instance_id: event.instance_id }, { projection: { _id: 1 } })) return null
+  return stored
+}
+
+/** The replaced turn for `edit_history`. Its versions all stay live on the turn, so
+ *  copying every one of them into every entry only grows the document, by the
+ *  square of the replays, toward the size no document may pass. */
+function withoutVariants(data: any) {
+  const { replay_variants: _live, ...rest } = data || {}
+  return rest
 }
 
 async function extractReplayCodexDeltas(params: {
@@ -1058,6 +1113,7 @@ export interface ReplayResult {
 
 /** A replay's card pass may not hold the player's next line longer than its wait. */
 const REPLAY_CARDS_TIMEOUT_MS = 20_000
+const REPLAY_SUPERSEDED_POLL_MS = 100
 
 /**
  * The half of a replay the player no longer waits for. The caller still holds the
@@ -1072,18 +1128,30 @@ async function finishReplayCards(params: {
   claimedAt: Date
   extractDeltas: () => Promise<CharacterCodexDelta[]>
   rebuildCards: (deltas: CharacterCodexDelta[]) => Promise<unknown>
+  variantIndex: number
+  superseded?: () => Promise<boolean>
 }): Promise<void> {
-  const { event, claimedAt, extractDeltas, rebuildCards } = params
+  const { event, claimedAt, extractDeltas, rebuildCards, variantIndex, superseded } = params
   const owned = { _id: event._id, 'data.codex_projection_claimed_at': claimedAt }
   let timer: ReturnType<typeof setTimeout> | undefined
+  let watch: ReturnType<typeof setInterval> | undefined
+  let replaced = false
   try {
     const deltas = await Promise.race([
       extractDeltas(),
       new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), REPLAY_CARDS_TIMEOUT_MS) }),
+      ...(superseded ? [new Promise<null>((resolve) => {
+        watch = setInterval(() => {
+          void superseded().then((yes) => { if (yes) { replaced = true; resolve(null) } }).catch(() => {})
+        }, REPLAY_SUPERSEDED_POLL_MS)
+      })] : []),
     ])
     if (!(await liveInstanceExists(event.instance_id))) return
     if (deltas) {
-      const ledgered = await events().updateOne(owned, { $set: { 'data.codex_deltas': deltas } })
+      const ledgered = await events().updateOne(owned, { $set: {
+        'data.codex_deltas': deltas,
+        [`data.replay_variants.${variantIndex}.projection.codex_deltas`]: deltas,
+      } })
       if (ledgered.matchedCount !== 1) {
         log.warn('replay.cards_claim_lost', { eventId: idString(event._id), sequence: event.sequence })
         return
@@ -1092,9 +1160,9 @@ async function finishReplayCards(params: {
     await rebuildCards(deltas || [])
     await events().updateOne(owned, {
       $set: { 'data.codex_projection_status': deltas ? 'completed' as const : 'pending' as const },
-      $unset: { 'data.codex_projection_claimed_at': '' },
+      $unset: { 'data.codex_projection_claimed_at': '', 'data.codex_refold': '' },
     })
-    if (!deltas) log.warn('replay.cards_timed_out', { eventId: idString(event._id), sequence: event.sequence })
+    if (!deltas) log.warn(replaced ? 'replay.cards_superseded' : 'replay.cards_timed_out', { eventId: idString(event._id), sequence: event.sequence })
   } catch (err) {
     log.warn('replay.cards_failed', { eventId: idString(event._id), sequence: event.sequence, error: (err as Error).message })
     await events().updateOne(owned, {
@@ -1103,7 +1171,20 @@ async function finishReplayCards(params: {
     }).catch(() => {})
   } finally {
     if (timer) clearTimeout(timer)
+    if (watch) clearInterval(watch)
   }
+}
+
+/** Takes a replaced turn's card effects out when the replay that should have done
+ *  it was lost. Exact, from the ledger, so running it twice changes nothing. */
+export async function refoldCardsWithoutTurn(event: WorldEventDoc, playerId: string): Promise<void> {
+  const instance = await worldInstances().findOne({ _id: event.instance_id, player_id: parseObjectId(playerId) })
+  const template = instance && await worldTemplates().findOne({ _id: instance.template_id })
+  if (!instance || !template) return
+  await rebuildCodexAndRelationsAfterReplay({
+    event, playerId, instance, template, narrative: '', playerInput: '', deltas: [], forceExactRebuild: true,
+  })
+  await events().updateOne({ _id: event._id }, { $unset: { 'data.codex_refold': '' } })
 }
 
 async function rebuildCodexKinshipFromCheckpoint(params: {
@@ -2627,12 +2708,15 @@ export const memoryService = {
    * [onSaved] is called once the version, its choices, people and place are saved,
    * and the cards are refolded after it. The caller must hold the turn lock until
    * this resolves: the refold drops the cards before it writes them back.
+   * [superseded] answers true when newer work wants the turn, and stops the refold
+   * early with this version's cards unread.
    */
   async replayEvent(
     eventId: string,
     playerId: string,
     onDelta?: (chunk: string) => void,
     onSaved?: (result: ReplayResult) => Promise<void>,
+    superseded?: () => Promise<boolean>,
   ) {
     const eid = parseObjectId(eventId)
     const pid = parseObjectId(playerId)
@@ -2990,9 +3074,32 @@ ${replayDirective || '(none)'}`,
       codex: replayCodex,
       exclude: instance.persona_snapshot?.name ? [instance.persona_snapshot.name] : [],
     })
-    const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas) ||
-      // The first pass over this turn may have landed while the replay was written.
-      (!!onSaved && Array.isArray((await events().findOne({ _id: eid }, { projection: { 'data.codex_deltas': 1 } }))?.data?.codex_deltas))
+    // The first pass over this turn may have landed while the replay was written.
+    const ledgerNow = onSaved
+      ? (await events().findOne({ _id: eid }, { projection: { 'data.codex_deltas': 1, 'data.codex_refold': 1 } }))?.data
+      : event.data
+    const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas) || Array.isArray(ledgerNow?.codex_deltas) ||
+      ledgerNow?.codex_refold === true
+    const projectionKey = await replayProjectionKeyFor(event)
+    const projectionOf = (narrative: string, from: { state_mutations?: any; flag_mutations?: any }, sceneTag: string,
+      anchor: any, codexDeltas?: CharacterCodexDelta[]): ReplayVariantProjection => ({
+      key: projectionKey(narrative),
+      state_mutations: from.state_mutations || {},
+      flag_mutations: from.flag_mutations || {},
+      scene_tag: sceneTag,
+      location_anchor: anchor ?? null,
+      ...(codexDeltas ? { codex_deltas: codexDeltas } : {}),
+    })
+    // The first replay: version one is the turn as it stands, so keep what it did.
+    const [firstVersion] = replayVariants
+    const keptVariants = replayVariants.length === 1 && !event.is_user_edited &&
+      firstVersion.narrative === event.data?.ai_response && !firstVersion.projection
+      ? [{
+          ...firstVersion,
+          projection: projectionOf(firstVersion.narrative, event.data, event.scene_tag, event.location_anchor,
+            event.data?.codex_deltas ?? ledgerNow?.codex_deltas),
+        }]
+      : replayVariants
 
     const nextVariant = {
       id: randomUUID(),
@@ -3010,6 +3117,8 @@ ${replayDirective || '(none)'}`,
       state_mutations: replayMeta.state_mutations,
       flag_mutations: replayMeta.flag_mutations,
       scene_tag: replayMeta.scene_tag,
+      projection: projectionOf(repairedReplay.narrative, replayMeta, replayMeta.scene_tag, replayProjection.locationAnchor,
+        replayCodexDeltas ?? undefined),
       // §5/§7: the native chips are stored, and the witness holds English pairs
       // by index. A refusal marks the variant so selecting it retries once.
       ...(replayWitnessLanguage
@@ -3025,7 +3134,7 @@ ${replayDirective || '(none)'}`,
         recent_event_window: recentWindow,
       },
     }
-    const nextVariants = [...replayVariants, nextVariant]
+    const nextVariants = [...keptVariants, nextVariant]
     const selectedIdx = nextVariants.length - 1
 
     // The event's own witness (§7): accepted sets it and clears an old failure;
@@ -3061,7 +3170,7 @@ ${replayDirective || '(none)'}`,
       },
       $push: {
         edit_history: {
-          previous_data: event.data,
+          previous_data: withoutVariants(event.data),
           edited_at: new Date(),
         },
       },
@@ -3084,7 +3193,12 @@ ${replayDirective || '(none)'}`,
         'data.flag_mutations': replayMeta.flag_mutations,
         ...(replayCodexDeltas
           ? { 'data.codex_deltas': replayCodexDeltas }
-          : { 'data.codex_projection_status': 'processing' as const, 'data.codex_projection_claimed_at': codexClaimedAt }),
+          : {
+              'data.codex_projection_status': 'processing' as const,
+              'data.codex_projection_claimed_at': codexClaimedAt,
+              // A worker that dies before the refold leaves this for the repair.
+              ...(hadLedgeredCodexDeltas ? { 'data.codex_refold': true as const } : {}),
+            }),
         scene_tag: replayMeta.scene_tag,
         location_anchor: replayProjection.locationAnchor,
         ...replayWitnessSet,
@@ -3155,7 +3269,9 @@ ${replayDirective || '(none)'}`,
     }
     if (onSaved) {
       await onSaved(result)
-      await finishReplayCards({ event, claimedAt: codexClaimedAt, extractDeltas, rebuildCards })
+      await finishReplayCards({
+        event, claimedAt: codexClaimedAt, extractDeltas, rebuildCards, variantIndex: selectedIdx, superseded,
+      })
     }
     return result
   },
@@ -3296,8 +3412,22 @@ ${replayDirective || '(none)'}`,
           replyLanguage: selectLanguageEntry?.code,
         })
 
-    const selectedProjection =
-      changed && selectedInstance && selectedTemplate
+    const reused = changed && selectedInstance && selectedTemplate ? await reusableReplayProjection(event, chosen) : null
+    const selectedProjection: Awaited<ReturnType<typeof projectLatestReplayTurn>> | null =
+      reused
+        ? {
+            meta: {
+              choices: chosen.choices,
+              present_characters: chosen.present_characters,
+              beat_ledger: chosen.beat_ledger,
+              state_mutations: reused.state_mutations,
+              flag_mutations: reused.flag_mutations,
+              scene_tag: reused.scene_tag,
+            } as Awaited<ReturnType<typeof projectLatestReplayTurn>>['meta'],
+            locationAnchor: reused.location_anchor as any,
+            ...(await deriveLatestTurnState({ event, template: selectedTemplate, meta: reused })),
+          }
+        : changed && selectedInstance && selectedTemplate
         ? await projectLatestReplayTurn({
             event,
             playerId,
@@ -3315,8 +3445,11 @@ ${replayDirective || '(none)'}`,
               : {}),
           })
         : null
+    // An empty list may be a reading that failed, so it is read again.
     const selectedCodexDeltas =
-      changed && selectedProjection && selectedInstance && selectedTemplate
+      reused?.codex_deltas?.length
+        ? reused.codex_deltas as CharacterCodexDelta[]
+        : changed && selectedProjection && selectedInstance && selectedTemplate
         ? await extractReplayCodexDeltas({
             event,
             playerId,
@@ -3336,7 +3469,7 @@ ${replayDirective || '(none)'}`,
             exclude: selectedInstance.persona_snapshot?.name ? [selectedInstance.persona_snapshot.name] : [],
         })
         : null
-    const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas)
+    const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas) || event.data?.codex_refold === true
 
     // §7: the event's witness follows the chosen view. A variant with its own
     // usable witness rebuilds it; a failed variant's one retry either sets it
@@ -3410,8 +3543,18 @@ ${replayDirective || '(none)'}`,
         state_mutations: selectedProjection.meta.state_mutations,
         flag_mutations: selectedProjection.meta.flag_mutations,
         scene_tag: selectedProjection.meta.scene_tag,
+        projection: {
+          key: reused?.key ?? (await replayProjectionKeyFor(event))(chosen.narrative || ''),
+          state_mutations: selectedProjection.meta.state_mutations || {},
+          flag_mutations: selectedProjection.meta.flag_mutations || {},
+          scene_tag: selectedProjection.meta.scene_tag,
+          location_anchor: selectedProjection.locationAnchor,
+          ...(selectedCodexDeltas ? { codex_deltas: selectedCodexDeltas } : {}),
+        } satisfies ReplayVariantProjection,
       }
     }
+    // This version's cards are whole, so a pass a stopped replay left open is closed.
+    const closesCards = !!selectedCodexDeltas && ['pending', 'processing'].includes(event.data?.codex_projection_status || '')
     // A failed variant whose retry succeeded keeps its copy, so choosing it again
     // neither pays for another one nor risks losing it.
     if (changed && chosenFailed && selectWitnessLanguage && selectAcceptedWitness) {
@@ -3424,10 +3567,14 @@ ${replayDirective || '(none)'}`,
 
     await purgeMedia({ event_id: eid })
     await events().updateOne({ _id: eid }, {
-      $unset: { 'data.voice_attribution': '', ...selectWitnessUnset },
+      $unset: {
+        'data.voice_attribution': '',
+        ...selectWitnessUnset,
+        ...(closesCards ? { 'data.codex_projection_claimed_at': '' } : {}),
+      },
       $push: {
         edit_history: {
-          previous_data: event.data,
+          previous_data: withoutVariants(event.data),
           edited_at: new Date(),
         },
       },
@@ -3446,6 +3593,7 @@ ${replayDirective || '(none)'}`,
         ...(selectedBeatLedger ? { 'data.beat_ledger': selectedBeatLedger } : {}),
         ...(selectedTrackableMentions ? { 'data.trackable_mentions': selectedTrackableMentions } : {}),
         ...(selectedCodexDeltas ? { 'data.codex_deltas': selectedCodexDeltas } : {}),
+        ...(closesCards ? { 'data.codex_projection_status': 'completed' as const } : {}),
         ...(selectedProjection
           ? {
               'data.state_mutations': selectedProjection.meta.state_mutations,
@@ -3505,6 +3653,7 @@ ${replayDirective || '(none)'}`,
         }).catch((err) => {
           console.warn('Replay selection: codex/kinship rebuild skipped:', (err as Error).message)
         })
+        if (event.data?.codex_refold) await events().updateOne({ _id: eid }, { $unset: { 'data.codex_refold': '' } })
       }
     }
 
