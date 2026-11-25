@@ -104,7 +104,7 @@ import type { PlayerInteractionSignalDoc } from '../../src/models/world-event.mo
 import { extractLifecycleChanges } from '../lib/character-lifecycle-extractor'
 import { createExtractorRawSink } from '../lib/extractor-raw'
 import { effectiveReplyLanguage, enabledReplyLanguages } from '../../src/utils/reply-language'
-import { witnessOf, playerTextOf, witnessGlossary, type ChoiceEnglish } from '../../src/utils/witness'
+import { witnessOf, playerTextOf, previousTurnFor, witnessGlossary, type ChoiceEnglish } from '../../src/utils/witness'
 import { screenPlayerInput } from '../../src/utils/input-guard'
 import { readPlayerTurn, offeredChipEnglish } from '../lib/player-turn'
 import {
@@ -912,6 +912,11 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
       : undefined
   const readingText = knownPlayerEnglish !== undefined ? knownPlayerEnglish : nativePlayerText
   let travel = readTravel(readTurn(readingText).parsed.raw)
+  // The cursor is held on an intent because the narrator was told not to arrive.
+  // On a non-English turn the English reading only exists after the stream, so
+  // the hold follows what the narrator was actually told: holding against prose
+  // that already arrived would leave the map behind the story.
+  const narratorToldToStay = travel.kind === 'intent'
   const settledTurn = readTurn(readingText, travel)
   parsedPlayerInput = settledTurn.parsed
   explicitPhysicalDestination = settledTurn.explicitPhysicalDestination
@@ -921,7 +926,12 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
   const locationContext =
     priorPending?.name && travel.kind !== 'arrival' && travel.kind !== 'owned_leave'
       ? `${packetLocationContext || ''}
-The player intends to go to ${priorPending.name} but has not arrived. Stay at the current place. Do not narrate arrival there. Do not bring people from that destination into this scene.`.trim()
+${
+  effectiveReplyLanguage(session.reply_language) !== undefined && knownPlayerEnglish === undefined
+    // Native words give no travel reading, so "I go in" would be told to stay.
+    ? `Earlier the player meant to go to ${priorPending.name}. If their words this turn take them there, narrate the arrival. Otherwise stay at the current place and do not bring people from there into this scene.`
+    : `The player intends to go to ${priorPending.name} but has not arrived. Stay at the current place. Do not narrate arrival there. Do not bring people from that destination into this scene.`
+}`.trim()
       : packetLocationContext
   const activeSummary = packet.sceneSummary
   const nextSequence = packet.currentSequence + 1
@@ -1421,6 +1431,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       playerNative: storedPlayerInput,
       proseNative: nativeNarrative,
       ...(knownPlayerEnglish !== undefined ? { knownPlayerEnglish } : {}),
+      ...(newestEvent ? { previous: previousTurnFor(newestEvent) } : {}),
+      worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
       people,
       places,
       pov: session.narration_pov === 'first' ? 'first' : 'third',
@@ -1940,7 +1952,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     actionDestination: confirmedWorldAction?.kind === 'travel' ? confirmedWorldAction.destination : null,
     mapResolvedDestination:
       travel.kind === 'arrival' || travel.kind === 'owned_leave' ? travel.destination?.name || null : null,
-    holdCursor: travel.kind === 'intent',
+    holdCursor: travel.kind === 'intent' && narratorToldToStay,
     cursorAliases: (() => {
       const cursorId = currentLocation?.entity_id ? idString(currentLocation.entity_id) : null
       const cursorPlace = knownPlaces.find(

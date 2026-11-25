@@ -1621,12 +1621,17 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // rl-4 replaced the live turn's inline person/place lists with the shared
   // `witnessGlossary` helper (same values, byte-identical copy input). The
   // group-only handoff did not move, so the pin was re-hashed the same way.
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), 'b8515afba2b18a20efabe446c66395002c7678016499c0ac8d846cb68823dd9b')
+  // The live turn also gives the English copy the turn before and the world's words,
+  // and holds the cursor only when the narrator was told to stay (a
+  // non-English save only). The group-only handoff did not move; re-hashed.
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '55bd9a5cb5600d524626f2776512d08a9bbbc38d1ef2010102c8ea5e8bdeee71')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —
   // `audit:prompt-part-hash` proves the emitted messages are byte-identical.
-  assert.equal(createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex'), 'f12c86814d43064dcde58909e01e5b3641a48b33bb5a447c730679692b172a6b')
+  // The place note for a language turn moved it again; an English prompt does not
+  // carry it (`audit:reply-language` 4a and 4b2).
+  assert.equal(createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex'), '38321efe418062cb2ba6b12d0042e1f55aaca2fd0e5548c9def177c6c25806a4')
   console.log(`story builder source sha256 ${createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex')}`)
   // Data is external to this isolated checkout; the caller can supply its path.
   const dataDir = process.env.GROUP_CHAT_DATA_DIR

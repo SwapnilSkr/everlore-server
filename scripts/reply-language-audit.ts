@@ -160,6 +160,22 @@ await check('prompt: the rule is the last system message before the user turn', 
   assert.ok(withRule.parts.some((part) => part.name === 'reply_language'))
 })
 
+// ── 4b2. the place note ──────────────────────────────────────────────────────
+// The English readings run after the reply on these turns, so the narrator is
+// asked to follow the player's own words; an English turn never sees the note.
+await check('prompt: a language turn asks the narrator to follow where the player went', () => {
+  const user = (extra: Record<string, unknown>) => {
+    const { messages } = buildPrompt({ ...basePromptInput(), ...extra })
+    return messages[messages.length - 1].content
+  }
+  const turn = { userNarrationFacts: ['Vamos até a capela.'], userSpokenInput: '' }
+  assert.ok(user({ ...turn, replyLanguage: PT }).includes('Where this turn happens: read it from the player\'s own words above.'))
+  assert.ok(user({ ...turn, replyLanguage: PT }).indexOf('Vamos até a capela.') < user({ ...turn, replyLanguage: PT }).indexOf('Where this turn happens'))
+  assert.ok(!user(turn).includes('Where this turn happens'))
+  assert.ok(!user({ userNarrationFacts: [], userSpokenInput: '', replyLanguage: PT }).includes('Where this turn happens'))
+  assert.ok(!user({ ...turn, replyLanguage: PT, isContinuation: true }).includes('Where this turn happens'))
+})
+
 // ── 4c. prompt rule position (replay splice) ─────────────────────────────────
 await check('prompt: replay keeps the rule last, after the directive', () => {
   const base = buildPrompt(basePromptInput())
@@ -357,6 +373,16 @@ async function runBites() {
       name: 'prompt: an absent language still pushes a rule',
       check: 'prompt: absent is byte-identical and adds no part',
       edits: [[promptBuilder, '  if (input.replyLanguage) {', '  if (input.replyLanguage !== null) {']],
+    },
+    {
+      name: 'prompt: the place note is missing',
+      check: 'prompt: a language turn asks the narrator to follow where the player went',
+      edits: [[promptBuilder, 'if (input.replyLanguage && !input.isContinuation && (spoken || facts.length > 0)) lines.push(NATIVE_PLACE_NOTE)', 'void NATIVE_PLACE_NOTE']],
+    },
+    {
+      name: 'prompt: an English turn gets the place note',
+      check: 'prompt: a language turn asks the narrator to follow where the player went',
+      edits: [[promptBuilder, 'if (input.replyLanguage && !input.isContinuation', 'if (!input.isContinuation']],
     },
     {
       name: 'prompt: the rule is not last',

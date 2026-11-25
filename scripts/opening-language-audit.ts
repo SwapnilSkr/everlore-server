@@ -646,6 +646,19 @@ await check('B names: a name the authored text carries must survive; an ordinary
   assert.equal(refused.status, 'failed', 'the name was dropped')
 })
 
+await check('B names: a described alias or a longer form of a listed name is not required', async () => {
+  resetWorld()
+  const opening = 'Old Tomas opens the gate for the steward. "Come in," *he says.*'
+  setScript('opening_language', { content: JSON.stringify({ written_in: 'en', text: 'O velho Tomas abre o portão para o mordomo. "Entre," *diz ele.*' }) })
+  const ok = await openingInLanguage(
+    { entry: PT, opening, people: ['Tomas', 'Old Tomas', 'the steward'] },
+    { call: scriptedCall, countTokens: (t) => Math.ceil(t.length / 4) },
+  )
+  assert.equal(ok.status, 'translated')
+  const prompt = callsOf('opening_language')[0].messages[0].content
+  assert.ok(prompt.includes('Tomas') && !prompt.includes('Old Tomas') && !prompt.includes('the steward'))
+})
+
 // ── C. the real create path ─────────────────────────────────────────────────
 await check('C create, en source: the player reads Portuguese, the engine reads English', async () => {
   const tpl = ptWorld()
@@ -669,7 +682,8 @@ await check('C create, en source: the player reads Portuguese, the engine reads 
   // The glossary reached the call: protagonist/seed cast names.
   const prompt = callsOf('opening_language')[0].messages[0].content
   assert.ok(prompt.includes('Mara'))
-  assert.ok(prompt.includes('the steward'))
+  // An alias that is a description is words to translate, not a name to keep.
+  assert.ok(!prompt.includes('the steward'))
 })
 
 await check('C create: witnessOf, openingSceneCanon and the place all see the English', async () => {
@@ -1279,6 +1293,16 @@ async function runBites() {
       name: '5 the name check is skipped',
       check: 'B names: a name the authored text carries must survive; an ordinary word is not required',
       edits: [[copy, 'if (containsName(nativeAll, name, true) && !containsName(englishAll, name)) return \'name\'', 'void name']],
+    },
+    {
+      name: '5b a longer form of a listed name is required',
+      check: 'B names: a described alias or a longer form of a listed name is not required',
+      edits: [[svc, '      && words[at].length < words[index].length\n', '      && false\n']],
+    },
+    {
+      name: '5c a description is required as a name',
+      check: 'B names: a described alias or a longer form of a listed name is not required',
+      edits: [[svc, '    if (/^\\p{Ll}/u.test(name)) return false\n', '']],
     },
     {
       name: '6 the marker check on the prose is skipped',

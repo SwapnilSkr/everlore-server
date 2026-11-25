@@ -141,6 +141,12 @@ export function keywordQueryTextFor(nativeText: string, chipEnglish?: string | n
   return chipEnglish && chipEnglish.trim() ? chipEnglish : nativeText
 }
 
+/** The turn before, as the copy reads it to know who is who (§4). */
+export function previousTurnFor(event: unknown): { player: string; prose: string } {
+  const view = witnessOf(event)
+  return { player: view.player_input || '', prose: view.ai_response || '' }
+}
+
 export interface WitnessGlossaryInput {
   /** Every character card of the save, aliases included. Never a truncated list:
    *  a name dropped here is a name the copy is allowed to mistranslate. */

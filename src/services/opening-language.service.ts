@@ -211,6 +211,24 @@ function uniqueNames(names: readonly string[] | undefined): string[] {
 }
 
 /**
+ * The names a translation must keep. An authored alias can be a description
+ * ("the steward") or a name with one in front ("Old Tomas"): those are words to
+ * translate, and requiring them exactly would leave English in the shown text
+ * or refuse a good translation. Structural: a name that starts in lower case, or
+ * that only adds words around a shorter listed name, is not required.
+ */
+function properNames(names: string[]): string[] {
+  const words = names.map((name) => name.split(/\s+/))
+  return names.filter((name, index) => {
+    if (/^\p{Ll}/u.test(name)) return false
+    return !names.some((other, at) =>
+      at !== index
+      && words[at].length < words[index].length
+      && words[at].every((word) => words[index].includes(word)))
+  })
+}
+
+/**
  * Make the translation for a save's language. One structured call on the
  * witness model, one retry on the metadata model, both inside one 8 s budget;
  * both must pass `witnessProblem` or the translation is refused.
@@ -226,8 +244,8 @@ export async function openingInLanguage(
   const entry = input.entry
   if (!entry || !opening.trim()) return { shown: opening, status: 'failed' }
 
-  const people = uniqueNames(input.people)
-  const places = uniqueNames(input.places)
+  const people = properNames(uniqueNames(input.people))
+  const places = properNames(uniqueNames(input.places))
   const glossary = [...people, ...places]
   const count = deps.countTokens ?? defaultCountTokens
 
@@ -318,9 +336,12 @@ async function renderOnce(
         break
       }
       reason = read.reason
-    } catch {
-      if (signal.aborted) break
-      reason = 'finish'
+    } catch (error) {
+      if (signal.aborted) {
+        reason = 'timeout'
+        break
+      }
+      reason = `call: ${(error as Error).message}`.slice(0, 160)
     }
   }
 

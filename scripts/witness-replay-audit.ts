@@ -1799,6 +1799,9 @@ await check('tapped-choice turn: the stored English player text is reused, not r
   const user = rec.witnessCalls[0].messages.find((m: Row) => m.role === 'user')!.content
   assert.equal(user.includes('<player>'), false, 'the already-English player text is never sent')
   assert.equal(witnessSet().player_input, 'Stored English player')
+  assert.ok(user.includes('Player: I ask about the tide.\nNarrator: The hall is quiet.'), 'the copy is told the turn before this one, never this one')
+  assert.ok(user.includes('Player, this turn: Stored English player'), 'the known English player line is context')
+  assert.ok(user.includes('<world>\nA lamplit harbour inn.'), 'the copy is told the world\'s words')
 })
 
 // ── 11. the repair path stays in the language ──────────────────────────────
@@ -1915,6 +1918,16 @@ async function runBites() {
       name: '10 tapped choice is retranslated',
       check: 'tapped-choice turn: the stored English player text is reused, not retranslated',
       edits: [[memory, "replayStoredWitness && replayStoredWitness.lang === replayWitnessLanguage.code", 'false']],
+    },
+    {
+      name: '10c the world words never reach the copy',
+      check: 'tapped-choice turn: the stored English player text is reused, not retranslated',
+      edits: [[memory, '...(params.worldContext ? { worldContext: params.worldContext } : {}),', '']],
+    },
+    {
+      name: '10b the turn before is this turn',
+      check: 'tapped-choice turn: the stored English player text is reused, not retranslated',
+      edits: [[memory, 'sequence: { $lt: Number(params.event?.sequence || 0) }', 'sequence: { $lte: Number(params.event?.sequence || 0) }']],
     },
     {
       name: '11 repair prompt has no language rule',

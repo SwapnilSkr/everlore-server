@@ -248,7 +248,9 @@ function routingParamsFor(req: LLMRequest, model: string, stream: boolean): Reco
       req.structuredHostShift ?? 0,
     ),
     // Hybrid narrators must emit words immediately, including hedge/fallback attempts.
-    ...((stream && prose) || req.noReasoning) && !isNextGenOpenAIModel(model) ? { reasoning: { enabled: false } } : {},
+    // A structured request only reaches hosts that take every parameter, and no
+    // OpenAI host takes this switch: sending it leaves nowhere to go (404).
+    ...((stream && prose) || (req.noReasoning && !model.startsWith('openai/'))) && !isNextGenOpenAIModel(model) ? { reasoning: { enabled: false } } : {},
     ...(req.sessionId ? { session_id: req.sessionId.slice(0, 256) } : {}),
   }
 }

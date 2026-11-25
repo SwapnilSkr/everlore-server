@@ -34,6 +34,10 @@ export interface TurnWitnessInput {
   proseNative: string
   /** A tapped choice's stored English, when the turn is a tap. */
   knownPlayerEnglish?: string
+  /** The turn before, in English, so a dropped subject is not guessed. */
+  previous?: { player: string; prose: string }
+  /** The world's authored words, so a new place keeps the world's name. */
+  worldContext?: string
   people: string[]
   places: string[]
   pov: NarrationPov
@@ -77,6 +81,8 @@ export async function runTurnWitness(
       protagonistName: input.protagonistName ?? null,
       isSentient: input.isSentient,
       ...(input.knownPlayerEnglish !== undefined ? { knownPlayerEnglish: input.knownPlayerEnglish } : {}),
+      ...(input.previous ? { previous: input.previous } : {}),
+      ...(input.worldContext ? { worldContext: input.worldContext } : {}),
       ...(input.signal ? { signal: input.signal } : {}),
     },
     deps,

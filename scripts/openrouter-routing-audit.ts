@@ -186,6 +186,15 @@ for (const model of ['gpt-5.6-luna', 'openai/gpt-5.6-luna']) {
   }
 }
 
+// A strict structured call reaches only hosts that take every parameter, and no
+// OpenAI host takes the thinking switch: sending it leaves no host at all.
+for (const model of ['openai/gpt-4o-mini', 'gpt-4o-mini']) {
+  check(!('reasoning' in buildChatRequest({ model, messages: [], responseSchema: schema, noReasoning: true }).params),
+    `(f) ${model} structured call sends no thinking switch`)
+}
+check(JSON.stringify(buildChatRequest({ model: orderedModel, messages: [], responseSchema: schema, noReasoning: true }).params.reasoning)
+  === JSON.stringify({ enabled: false }), '(f) a hybrid model still has thinking switched off when asked')
+
 // The embedding module is deliberately outside this task's editable paths.
 const embedding = readFileSync(new URL('../src/ai/embedding.ts', import.meta.url), 'utf8')
 check(embedding.includes("import { getOpenAI } from '../config/openai'")
@@ -218,12 +227,13 @@ if (process.argv.includes('--bites')) {
     { name: 'v4-flash ban', before: "'deepseek/deepseek-v4-flash-0731': { ignore: ['DeepInfra'] }", after: "'deepseek/deepseek-v4-flash-0731': {}", expected: 'FAIL deepseek/deepseek-v4-flash-0731 stream' },
     { name: 'MiMo ban', before: "'xiaomi/mimo-v2.6-flash': { ignore: ['DeepInfra'] }", after: "'xiaomi/mimo-v2.6-flash': {}", expected: 'FAIL xiaomi/mimo-v2.6-flash stream' },
     { name: 'replay host rules', before: 'const rules = prose ?', after: 'const rules = narration ?', expected: 'FAIL v4.1 replay' },
-    { name: 'replay thinking unchanged', before: '((stream && prose) || req.noReasoning) && !isNextGenOpenAIModel(model)', after: '(prose || req.noReasoning) && !isNextGenOpenAIModel(model)', expected: 'FAIL v4.1 replay' },
+    { name: 'replay thinking unchanged', before: "((stream && prose) || (req.noReasoning && !model.startsWith('openai/'))) && !isNextGenOpenAIModel(model)", after: "(prose || (req.noReasoning && !model.startsWith('openai/'))) && !isNextGenOpenAIModel(model)", expected: 'FAIL v4.1 replay' },
     { name: 'model ban scope', before: 'NARRATION_HOST_RULES[model] : undefined', after: "NARRATION_HOST_RULES['deepseek/deepseek-v3.2'] : undefined", expected: 'FAIL unlisted prose models' },
     { name: 'explicit text prose', before: "(!req.responseFormat || req.responseFormat.type === 'text')", after: '!req.responseFormat', expected: 'FAIL explicit text format' },
     { name: 'structured order isolation', before: 'const rules = prose ?', after: 'const rules = true ?', expected: 'FAIL (c) deepseek/deepseek-v4.1-flash-1017' },
     { name: 'structured ignore isolation', before: '...(prose ? { ignore:', after: '...(true ? { ignore:', expected: 'FAIL (c)' },
-    { name: 'structured thinking isolation', before: '((stream && prose) || req.noReasoning) && !isNextGenOpenAIModel(model)', after: '(stream || req.noReasoning) && !isNextGenOpenAIModel(model)', expected: 'FAIL (c)' },
+    { name: 'structured thinking isolation', before: "((stream && prose) || (req.noReasoning && !model.startsWith('openai/'))) && !isNextGenOpenAIModel(model)", after: "(stream || (req.noReasoning && !model.startsWith('openai/'))) && !isNextGenOpenAIModel(model)", expected: 'FAIL (c)' },
+    { name: 'thinking switch to an OpenAI host', before: "(req.noReasoning && !model.startsWith('openai/'))", after: 'req.noReasoning', expected: 'FAIL (f) openai/gpt-4o-mini' },
     { name: 'structured throughput sort', before: "sort: narration ? 'latency' : 'throughput'", after: "sort: 'latency'", expected: 'FAIL (c)' },
     { name: 'structured parameter requirement', before: 'require_parameters: true', after: 'require_parameters: false', expected: 'FAIL (c)' },
     { name: 'measured order swapped', before: "'openai/gpt-4o-mini': ['OpenAI', 'Azure']", after: "'openai/gpt-4o-mini': ['Azure', 'OpenAI']", expected: 'FAIL (e) openai/gpt-4o-mini chat JSON object sends the exact structured host order' },
@@ -232,7 +242,7 @@ if (process.argv.includes('--bites')) {
     { name: 'measured p90 left in', before: 'measured === undefined && Number.isFinite(p90) && p90 > 0', after: 'Number.isFinite(p90) && p90 > 0', expected: 'FAIL (e) openai/gpt-4o-mini chat JSON object keeps no sort, p90 or ignore' },
     { name: 'measured rule applied to prose', before: 'const measured = prose ? undefined : STRUCTURED_HOST_ORDER[model]', after: 'const measured = STRUCTURED_HOST_ORDER[model]', expected: 'FAIL (e) a gpt-4o-mini prose call keeps throughput sorting' },
     { name: 'OpenAI effort-only reasoning', before: 'params.reasoning = { effort: req.reasoningEffort }', after: 'params.reasoning = { effort: req.reasoningEffort, enabled: false }', expected: 'FAIL (d)' },
-    { name: 'OpenAI no-effort isolation', before: '((stream && prose) || req.noReasoning) && !isNextGenOpenAIModel(model)', after: '(stream && prose)', expected: 'FAIL (d) gpt-5.6-luna stream prose adds no reasoning without effort' },
+    { name: 'OpenAI no-effort isolation', before: "((stream && prose) || (req.noReasoning && !model.startsWith('openai/'))) && !isNextGenOpenAIModel(model)", after: '(stream && prose)', expected: 'FAIL (d) gpt-5.6-luna stream prose adds no reasoning without effort' },
   ]
   for (const mutation of mutations) {
     try {

@@ -20,7 +20,7 @@ import type { ObjectId } from 'mongodb'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { log } from '../utils/logger'
 import { parsePlayerInput } from '../utils/player-input-parser'
-import { playerTextOf, storedWitness, witnessGlossary, witnessOf, type ChoiceEnglish } from '../utils/witness'
+import { playerTextOf, previousTurnFor, storedWitness, witnessGlossary, witnessOf, type ChoiceEnglish } from '../utils/witness'
 import { recordAnomaly } from '../utils/record-anomaly'
 import { replayWitnessFields, runTurnWitness, witnessEventFields, type TurnWitnessOutcome } from '../../worker/lib/turn-witness'
 import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
@@ -213,23 +213,32 @@ async function runFlowWitness(params: {
   playerName?: string | null
   protagonistName?: string | null
   isSentient?: boolean
+  worldContext: string
   event: any
   instanceId: any
   playerId: any
   flow: 'replay' | 'edit' | 'select'
 }): Promise<{ accepted: { player: string; prose: string } | null; outcome: TurnWitnessOutcome | null }> {
   if (!params.language) return { accepted: null, outcome: null }
+  const [previousEvent] = await events()
+    .find({ instance_id: params.instanceId, sequence: { $lt: Number(params.event?.sequence || 0) } })
+    .sort({ sequence: -1 })
+    .limit(1)
+    .toArray()
+    .catch(() => [] as any[])
   const outcome = await runTurnWitness({
     language: params.language,
     playerNative: params.playerNative,
     proseNative: params.proseNative,
     ...(params.knownPlayerEnglish !== undefined ? { knownPlayerEnglish: params.knownPlayerEnglish } : {}),
+    ...(previousEvent ? { previous: previousTurnFor(previousEvent) } : {}),
     people: params.people,
     places: params.places,
     pov: params.pov,
     playerName: params.playerName ?? null,
     protagonistName: params.protagonistName ?? null,
     isSentient: params.isSentient,
+    ...(params.worldContext ? { worldContext: params.worldContext } : {}),
   })
   const sequence = Number(params.event?.sequence || 0)
   if (outcome.status === 'accepted') {
@@ -2263,6 +2272,7 @@ export const memoryService = {
         playerName: editInstance?.persona_snapshot?.name ?? null,
         protagonistName: editProtagonistName,
         isSentient: !!editTemplate?.is_sentient,
+        worldContext: [editTemplate?.seed_prompt, editTemplate?.global_lore].filter(Boolean).join('\n'),
         event,
         instanceId: event.instance_id,
         playerId: pid,
@@ -2851,6 +2861,7 @@ ${replayDirective || '(none)'}`,
         playerName: instance.persona_snapshot?.name ?? null,
         protagonistName,
         isSentient: !!template.is_sentient,
+        worldContext: [template.seed_prompt, template.global_lore].filter(Boolean).join('\n'),
         event,
         instanceId: event.instance_id,
         playerId: pid,
@@ -3159,6 +3170,7 @@ ${replayDirective || '(none)'}`,
         playerName: selectedInstance.persona_snapshot?.name ?? null,
         protagonistName,
         isSentient: !!selectedTemplate?.is_sentient,
+        worldContext: [selectedTemplate?.seed_prompt, selectedTemplate?.global_lore].filter(Boolean).join('\n'),
         event,
         instanceId: event.instance_id,
         playerId: pid,

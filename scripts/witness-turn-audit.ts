@@ -375,6 +375,33 @@ function readFileSyncSafe(relative: string): string {
   return readFileSync(new URL(`../${relative}`, import.meta.url), 'utf8')
 }
 
+await check('witness: the turn before reaches the copy', async () => {
+  let user = ''
+  await runTurnWitness({ ...WITNESS_BASE, previous: { player: 'I hide the ring.', prose: 'Mara looks away.' } }, {
+    primaryModel: 'audit-primary',
+    retryModel: 'audit-retry',
+    now: clock(),
+    call: async (req) => {
+      user = (req as any).messages[1].content
+      return copied
+    },
+  })
+  assert.ok(user.includes('Player: I hide the ring.\nNarrator: Mara looks away.'))
+})
+
+// The map must not stay behind prose that arrived: the hold is for a narrator
+// that was told to stay, and that is decided before the stream.
+await check('processor: the cursor hold and the pending note follow what the narrator was told', () => {
+  const source = readFileSyncSafe('worker/processors/generation.processor.ts')
+  const told = source.indexOf("const narratorToldToStay = travel.kind === 'intent'")
+  assert.ok(told > source.indexOf('let travel = readTravel(readTurn(readingText).parsed.raw)') && told < source.indexOf('await runTurnWitness('))
+  assert.ok(source.includes("holdCursor: travel.kind === 'intent' && narratorToldToStay,"))
+  const soft = source.indexOf('If their words this turn take them there, narrate the arrival.')
+  const guard = source.lastIndexOf('effectiveReplyLanguage(session.reply_language) !== undefined && knownPlayerEnglish === undefined', soft)
+  assert.ok(soft > 0 && guard > 0 && soft - guard < 300, 'the conditional note is for a turn read in native words only')
+  assert.ok(source.includes('The player intends to go to ${priorPending.name} but has not arrived. Stay at the current place. Do not narrate arrival there. Do not bring people from that destination into this scene.'), 'the English note keeps its bytes')
+})
+
 // ── 8-10. the processor's wiring, pinned at the numbered points ─────────────
 await check('processor: the witness is made after publishStreamEnd, guarded, and English turns never await it', () => {
   const source = readFileSyncSafe('worker/processors/generation.processor.ts')
@@ -437,6 +464,8 @@ await check('processor: the accepted copy drives parsedPlayerInput and the map r
   assert.ok(source.includes('const nativeNarrative = rawNarrative'), 'the streamed prose is kept native')
   assert.ok(source.includes('...witnessEventFields({'), 'the stored witness comes from the decision module')
   assert.ok(source.includes('...replayWitnessFields({'), 'the replay variant carries its own witness')
+  assert.ok(source.includes('...(newestEvent ? { previous: previousTurnFor(newestEvent) } : {}),'), 'the copy is told the turn before')
+  assert.ok(source.includes("worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\\n'),\n      people,"), 'the copy is told the world\'s words')
 })
 
 await check('env: MODEL_WITNESS_COPY defaults empty and the SFW narrator as before', () => {
@@ -515,6 +544,31 @@ async function runBites() {
       name: '8 memory: the previous turn reads the native field again',
       check: 'processor: the memory payload is English and the previous turn comes from witnessOf',
       edits: [[processor, 'witnessOf(recentEvents[recentEvents.length - 1]).ai_response', 'recentEvents[recentEvents.length - 1]?.data?.ai_response']],
+    },
+    {
+      name: '8a hold: the cursor is held when the narrator was not told',
+      check: 'processor: the cursor hold and the pending note follow what the narrator was told',
+      edits: [[processor, "holdCursor: travel.kind === 'intent' && narratorToldToStay,", "holdCursor: travel.kind === 'intent',"]],
+    },
+    {
+      name: '8a2 pending: the native turn is told to stay',
+      check: 'processor: the cursor hold and the pending note follow what the narrator was told',
+      edits: [[processor, 'If their words this turn take them there, narrate the arrival. ', '']],
+    },
+    {
+      name: '8a3 copy: the world words are not given',
+      check: 'processor: the accepted copy drives parsedPlayerInput and the map reading',
+      edits: [[processor, "      worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\\n'),\n      people,", '      people,']],
+    },
+    {
+      name: '8b copy: the turn before is not given',
+      check: 'processor: the accepted copy drives parsedPlayerInput and the map reading',
+      edits: [[processor, '...(newestEvent ? { previous: previousTurnFor(newestEvent) } : {}),', '']],
+    },
+    {
+      name: '8c copy: the turn-before is dropped on the way to the model',
+      check: 'witness: the turn before reaches the copy',
+      edits: [[witness, '...(input.previous ? { previous: input.previous } : {}),', '']],
     },
     {
       name: '9 env: the default is no longer the SFW narrator',
