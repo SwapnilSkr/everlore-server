@@ -10,13 +10,13 @@
 import assert from 'node:assert/strict'
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { Elysia } from 'elysia'
 
+import { CreateInstanceBody } from '../src/schemas/instance.schema'
 import {
   effectiveReplyLanguage,
   enabledReplyLanguages,
   isReplyLanguageSetting,
-  languageFromLocale,
-  normalizeDeviceLocale,
   replyLanguageOptions,
   replyLanguageRule,
   spliceReplayDirective,
@@ -24,11 +24,10 @@ import {
   type ReplyLanguageEntry,
 } from '../src/utils/reply-language'
 import {
-  checkReplyLanguage,
   decideReplyLanguage,
+  matchesOfferedChip,
   normalizeReplyText,
-  shouldCheckReplyLanguage,
-  type ReplyLanguageCheckRequest,
+  shouldStartReplyLanguageCheck,
 } from '../worker/lib/reply-language-check'
 import { buildPrompt } from '../src/utils/prompt-builder'
 import { validateProseHygiene } from '../src/utils/prose-hygiene'
@@ -67,26 +66,54 @@ function basePromptInput() {
   } as const
 }
 
-// ── 1. locale mapping ────────────────────────────────────────────────────────
-await check('locale mapping: primary subtag, underscore form and enabled-only', () => {
-  assert.equal(languageFromLocale('pt-BR', ENABLED), 'pt')
-  assert.equal(languageFromLocale('pt_BR', ENABLED), 'pt')
-  assert.equal(languageFromLocale('es-419', ENABLED), 'es')
-  assert.equal(languageFromLocale('EN-us', ENABLED), undefined)
-  assert.equal(languageFromLocale('fr-FR', ENABLED), undefined)
-  assert.equal(languageFromLocale('pt-BR', []), undefined)
-  assert.equal(languageFromLocale(undefined, ENABLED), undefined)
+// ── 1. start of a save: setting, then writing, then English ──────────────────
+await check('start of a save: setting, then writing, then English; the phone never decides', async () => {
+  assert.equal(startingLanguage({ preference: 'es', written: 'pt', enabledCodes: ENABLED }), 'es')
+  assert.equal(startingLanguage({ preference: 'en', written: 'pt', enabledCodes: ENABLED }), undefined)
+  assert.equal(startingLanguage({ written: 'pt', enabledCodes: ENABLED }), 'pt')
+  assert.equal(startingLanguage({ written: 'es', enabledCodes: ENABLED }), 'es')
+  assert.equal(startingLanguage({ written: 'en', enabledCodes: ENABLED }), undefined)
+  // A setting that is off/unknown behaves as English; the written memory does
+  // not get a second chance.
+  assert.equal(startingLanguage({ preference: 'fr', written: 'pt', enabledCodes: ENABLED }), undefined)
+  assert.equal(startingLanguage({ written: 'fr', enabledCodes: ENABLED }), undefined)
+  assert.equal(startingLanguage({ enabledCodes: ENABLED }), undefined)
+  assert.equal(startingLanguage({ preference: 'pt', enabledCodes: [] }), undefined)
+
+  // The phone's language is gone from every layer: no locale parameter, no
+  // normaliser, no create field, no 'device' source.
+  const utility = await readFile(new URL('../src/utils/reply-language.ts', import.meta.url), 'utf8')
+  assert.ok(!/deviceLocale|languageFromLocale|normalizeDeviceLocale/.test(utility))
+  const service = await readFile(new URL('../src/services/instance.service.ts', import.meta.url), 'utf8')
+  assert.ok(!/deviceLocale|device_locale/.test(service))
+  assert.ok(service.includes("'preferences.reply_language_written'"))
+  const controller = await readFile(new URL('../src/controllers/instance.controller.ts', import.meta.url), 'utf8')
+  assert.ok(!controller.includes('body.device_locale'))
+  assert.ok(!controller.includes('device_locale?:'))
+  const schema = await readFile(new URL('../src/schemas/instance.schema.ts', import.meta.url), 'utf8')
+  assert.ok(!/device_locale\s*:/.test(schema))
 })
 
-// ── 2. precedence ────────────────────────────────────────────────────────────
-await check('precedence: preference, explicit en, device, English', () => {
-  assert.equal(startingLanguage({ preference: 'es', deviceLocale: 'pt-BR', enabledCodes: ENABLED }), 'es')
-  assert.equal(startingLanguage({ preference: 'en', deviceLocale: 'pt-BR', enabledCodes: ENABLED }), undefined)
-  assert.equal(startingLanguage({ deviceLocale: 'pt-BR', enabledCodes: ENABLED }), 'pt')
-  // A stored preference that is off/unknown behaves as English; the device does
-  // not get a second chance.
-  assert.equal(startingLanguage({ preference: 'fr', deviceLocale: 'pt-BR', enabledCodes: ENABLED }), undefined)
-  assert.equal(startingLanguage({ enabledCodes: ENABLED }), undefined)
+// ── 2. old clients: a create body with device_locale is accepted and ignored ─
+await check('create: a body that still carries device_locale is accepted and ignored', async () => {
+  const app = new Elysia().post('/instances', ({ body }) => body, { body: CreateInstanceBody })
+  const accepted = await app.handle(
+    new Request('http://localhost/instances', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ template_id: 't', device_locale: 'pt-BR' }),
+    }),
+  )
+  assert.equal(accepted.status, 200)
+  assert.deepEqual(await accepted.json(), { template_id: 't' })
+  const missing = await app.handle(
+    new Request('http://localhost/instances', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ device_locale: 'pt-BR' }),
+    }),
+  )
+  assert.equal(missing.status, 422)
 })
 
 // ── 3. off = English ─────────────────────────────────────────────────────────
@@ -162,103 +189,38 @@ await check('detector decision: settling, requests, and no change', () => {
   assert.deepEqual(decide('pt', 'en', 9, 'pt'), {})
 })
 
-// ── 5. detector gate truth table ─────────────────────────────────────────────
-await check('detector gate: truth table', () => {
+// ── 5. pickup gate truth table (what is known before the packet) ─────────────
+await check('pickup gate: truth table', () => {
   const base = {
     enabledCodes: ENABLED,
     isTyped: true,
-    source: 'device' as string | undefined,
+    source: 'writing' as string | undefined,
     checks: 0,
     text: 'Olá, como você está?',
-    offered: [] as Array<{ send?: string; label?: string }>,
   }
-  assert.equal(shouldCheckReplyLanguage({ ...base, enabledCodes: [] }), false)
-  assert.equal(shouldCheckReplyLanguage(base), true)
-  assert.equal(shouldCheckReplyLanguage({ ...base, isTyped: false }), false)
-  assert.equal(shouldCheckReplyLanguage({ ...base, source: 'player' }), false)
-  assert.equal(shouldCheckReplyLanguage({ ...base, text: '   ' }), false)
-  assert.equal(
-    shouldCheckReplyLanguage({ ...base, text: 'Take his hand.', offered: [{ send: '*take his hand*', label: 'Take his hand.' }] }),
-    false,
-  )
-  // A chip's formatting differs from its label; both are still the chip.
-  assert.equal(
-    shouldCheckReplyLanguage({ ...base, text: 'take his hand', offered: [{ send: '*take his hand*', label: 'Take his hand.' }] }),
-    false,
-  )
-  assert.equal(shouldCheckReplyLanguage({ ...base, source: 'writing' }), true)
+  assert.equal(shouldStartReplyLanguageCheck({ ...base, enabledCodes: [] }), false)
+  assert.equal(shouldStartReplyLanguageCheck(base), true)
+  assert.equal(shouldStartReplyLanguageCheck({ ...base, isTyped: false }), false)
+  assert.equal(shouldStartReplyLanguageCheck({ ...base, source: 'player' }), false)
+  assert.equal(shouldStartReplyLanguageCheck({ ...base, source: undefined }), true)
+  assert.equal(shouldStartReplyLanguageCheck({ ...base, text: '   ' }), false)
   // Past three checks an English save is read only with a non-ASCII letter.
-  assert.equal(shouldCheckReplyLanguage({ ...base, checks: 3, text: 'The room is quiet.' }), false)
-  assert.equal(shouldCheckReplyLanguage({ ...base, checks: 3, text: 'Olá.' }), true)
+  assert.equal(shouldStartReplyLanguageCheck({ ...base, checks: 3, text: 'The room is quiet.' }), false)
+  assert.equal(shouldStartReplyLanguageCheck({ ...base, checks: 3, text: 'Olá.' }), true)
   // A non-English save is always read, so a player can ask for another language.
-  assert.equal(shouldCheckReplyLanguage({ ...base, checks: 3, text: 'Please write in English.', replyLanguage: 'pt' }), true)
+  assert.equal(shouldStartReplyLanguageCheck({ ...base, checks: 3, text: 'Please write in English.', replyLanguage: 'pt' }), true)
+})
+
+// ── 6. the packet-time half: a tap on an offered chip is discarded ────────────
+await check('chip test: applies after the packet and matches send or label', () => {
+  const offered = [{ send: '*take his hand*', label: 'Take his hand.' }]
+  assert.equal(matchesOfferedChip('Take his hand.', offered), true)
+  // A chip's formatting differs from its label; both are still the chip.
+  assert.equal(matchesOfferedChip('take his hand', offered), true)
+  assert.equal(matchesOfferedChip('I take his hand', offered), false)
+  assert.equal(matchesOfferedChip('Take his hand.', []), false)
+  assert.equal(matchesOfferedChip('', offered), false)
   assert.equal(normalizeReplyText('  Take   his hand. '), normalizeReplyText('*take his hand*'))
-})
-
-// ── 6. detector call, prompt and failure ─────────────────────────────────────
-await check('detector: strict request, prompt rules and parsing', async () => {
-  const requests: ReplyLanguageCheckRequest[] = []
-  const result = await checkReplyLanguage('Olá, quero falar em espanhol.', {
-    enabledCodes: ENABLED,
-    call: async (request) => {
-      requests.push(request)
-      return '{"written_in":"pt","asks_for":"es"}'
-    },
-  })
-  assert.deepEqual(result, { written_in: 'pt', asks_for: 'es' })
-  assert.equal(requests.length, 1)
-  const request = requests[0]
-  assert.equal(request.temperature, 0)
-  assert.equal(request.timeoutMs, 8000)
-  assert.ok(request.maxTokens > 0 && request.maxTokens <= 128)
-  assert.equal(request.purpose, 'reply_language_check')
-  assert.equal((request.responseSchema as { type?: string }).type, 'object')
-  const system = request.messages[0].content
-  assert.ok(/character|quotes?/.test(system))
-  assert.ok(/not a request/i.test(system))
-  assert.ok(/Names of people and places do not decide the language/i.test(system))
-  assert.ok(/Very short/i.test(system) && /mixed/i.test(system) && /"other"/i.test(system))
-
-  const asksOnly = await checkReplyLanguage('Please write in Spanish.', {
-    enabledCodes: ENABLED,
-    call: async () => '{"written_in":"en","asks_for":"es"}',
-  })
-  assert.deepEqual(asksOnly, { written_in: 'en', asks_for: 'es' })
-})
-
-await check('detector: codes outside enabled + en are other/null', async () => {
-  const result = await checkReplyLanguage('Bonjour, je parle français.', {
-    enabledCodes: ENABLED,
-    call: async () => '{"written_in":"fr","asks_for":"fr"}',
-  })
-  assert.deepEqual(result, { written_in: 'other', asks_for: null })
-})
-
-await check('detector failure: never throws, null on error or bad JSON', async () => {
-  const thrown = await checkReplyLanguage('Olá.', {
-    enabledCodes: ENABLED,
-    call: async () => {
-      throw new Error('provider down')
-    },
-  })
-  assert.equal(thrown, null)
-  const bad = await checkReplyLanguage('Olá.', {
-    enabledCodes: ENABLED,
-    call: async () => 'not json',
-  })
-  assert.equal(bad, null)
-  const empty = await checkReplyLanguage('Olá.', { enabledCodes: [] })
-  assert.equal(empty, null)
-  let calls = 0
-  const off = await checkReplyLanguage('Olá.', {
-    enabledCodes: [],
-    call: async () => {
-      calls++
-      return '{"written_in":"pt","asks_for":null}'
-    },
-  })
-  assert.equal(off, null)
-  assert.equal(calls, 0)
 })
 
 // ── 7. hygiene filter ────────────────────────────────────────────────────────
@@ -314,26 +276,32 @@ await check('settings: only en or an enabled code is accepted', () => {
   assert.equal(isReplyLanguageSetting(7, ENABLED), false)
 })
 
-await check('create: device locale is bounded and ignored when malformed', () => {
-  assert.equal(normalizeDeviceLocale('pt-BR'), 'pt-BR')
-  assert.equal(normalizeDeviceLocale('pt_BR'), 'pt_BR')
-  assert.equal(normalizeDeviceLocale('x'.repeat(36)), undefined)
-  assert.equal(normalizeDeviceLocale('not a locale!'), undefined)
-  assert.equal(normalizeDeviceLocale(42), undefined)
-})
-
 // ── 9. processor wiring (source pin) ─────────────────────────────────────────
-await check('processor: detector starts before the prompt and applies after the stream', async () => {
+await check('processor: starts at pickup with no wait, waits at the prompt, applies after the stream', async () => {
   const source = await readFile(new URL('../worker/processors/generation.processor.ts', import.meta.url), 'utf8')
-  const start = source.indexOf('replyLanguageCheckPromise = checkReplyLanguage')
+  const intent = source.indexOf('const intentRouter = startIntentRouter')
+  const start = source.indexOf('const replyLanguageCheck = startReplyLanguageCheck')
+  const packet = source.indexOf('const packet = await buildContextPacket')
+  const wait = source.indexOf('await replyLanguageCheck.waitAtPrompt(replyLanguagePrepEndedAt)')
   const prompt = source.indexOf('const prompt = buildPrompt')
-  assert.ok(start > 0, 'the detector start is missing')
-  assert.ok(prompt > start, 'the detector must start before the prompt is built')
+  assert.ok(intent > 0, 'the adult check start is missing')
+  assert.ok(start > intent, 'the language check must start beside the adult check, at pickup')
+  assert.ok(packet > start, 'the language check must start before the packet loads')
+  assert.ok(wait > packet && prompt > wait, 'the prompt wait must sit after prep and before the prompt')
+  // The chip test uses the packet and discards both the answer and the count.
+  assert.ok(source.includes('replyLanguageCheck.isOfferedChip(offered)'))
+  assert.ok(source.includes('replyLanguageCheck.discard()'))
+  assert.ok(
+    source.includes('replyLanguageCheck.started && !replyLanguageApplied && !replyLanguageCheck.discarded()'),
+    'a discarded chip must not be applied or counted',
+  )
+  assert.ok(source.includes("'preferences.reply_language_written'"), 'the writing memory is not set')
   const streamEnd = source.indexOf('const streamEndedAt = Date.now()')
   const lateApply = source.indexOf('const replyLanguageApply')
   assert.ok(streamEnd > 0 && lateApply > streamEnd, 'the late apply must start after the stream')
   assert.ok(source.includes("reply_language_source: { $ne: 'player' }"), 'the player-choice guard is missing')
   assert.ok(source.includes('await replyLanguageApply'), 'the end-of-turn apply is not awaited')
+  assert.ok(source.includes('replyLanguageCheck.cancel()'), 'the check must be cancelled when the turn ends')
 })
 
 if (fail > 0) {
@@ -360,22 +328,30 @@ async function runBites() {
   const promptBuilder = 'src/utils/prompt-builder.ts'
   const detector = 'worker/lib/reply-language-check.ts'
   const hygiene = 'src/utils/prose-hygiene.ts'
+  const processor = 'worker/processors/generation.processor.ts'
+  const schema = 'src/schemas/instance.schema.ts'
+  const service = 'src/services/instance.service.ts'
 
   const mutations: Mutation[] = [
     {
-      name: 'locale: underscore form is not normalised',
-      check: 'locale mapping: primary subtag, underscore form and enabled-only',
-      edits: [[replyLanguage, "replace(/_/g, '-')", "replace(/__never__/g, '-')"]],
-    },
-    {
-      name: 'precedence: the device overrides the preference',
-      check: 'precedence: preference, explicit en, device, English',
-      edits: [[replyLanguage, '  if (typeof params.preference === \'string\' && params.preference.trim()) {', '  if (false) {']],
+      name: 'start: the written memory overrides the setting',
+      check: 'start of a save: setting, then writing, then English; the phone never decides',
+      edits: [[replyLanguage, '  if (preference) return effectiveReplyLanguage(preference, enabledCodes)?.code', '  if (false) return effectiveReplyLanguage(preference, enabledCodes)?.code']],
     },
     {
       name: 'off: a disabled code still resolves',
       check: 'off = English: disabled/unknown/en codes are undefined',
       edits: [[replyLanguage, '  return enabledReplyLanguages(enabledCodes).find((entry) => entry.code === code)', '  return REGISTRY.find((entry) => entry.code === code)']],
+    },
+    {
+      name: 'phone: the create schema takes the phone language again',
+      check: 'start of a save: setting, then writing, then English; the phone never decides',
+      edits: [[schema, '  persona_id: t.Optional(t.String()),\n}', '  persona_id: t.Optional(t.String()),\n  device_locale: t.Optional(t.String()),\n}']],
+    },
+    {
+      name: 'start: the service stops reading the written memory',
+      check: 'start of a save: setting, then writing, then English; the phone never decides',
+      edits: [[service, "{ projection: { 'preferences.reply_language': 1, 'preferences.reply_language_written': 1 } }", "{ projection: { 'preferences.reply_language': 1 } }"]],
     },
     {
       name: 'prompt: an absent language still pushes a rule',
@@ -394,18 +370,13 @@ async function runBites() {
     },
     {
       name: 'gate: an explicit player choice does not stop detection',
-      check: 'detector gate: truth table',
+      check: 'pickup gate: truth table',
       edits: [[detector, "  if (input.source === 'player') return false", '  if (false) return false']],
     },
     {
       name: 'decision: one English line turns a settled save',
       check: 'detector decision: settling, requests, and no change',
       edits: [[detector, 'const counts = checks < SETTLING_CHECKS || !replyLanguage', 'const counts = true']],
-    },
-    {
-      name: 'detector: a failure throws instead of returning null',
-      check: 'detector failure: never throws, null on error or bad JSON',
-      edits: [[detector, '  } catch {\n    return null\n  }\n}', '  } catch (err) {\n    throw err\n  }\n}']],
     },
     {
       name: 'hygiene: non-English keeps English-worded codes',
@@ -416,6 +387,31 @@ async function runBites() {
       name: 'settings: an invalid language is accepted',
       check: 'settings: only en or an enabled code is accepted',
       edits: [[replyLanguage, "  if (value === ENGLISH_REPLY_LANGUAGE.code) return true\n  return enabledReplyLanguages(enabledCodes).some((entry) => entry.code === value)", '  return true']],
+    },
+    {
+      name: 'processor: the chip is no longer discarded',
+      check: 'processor: starts at pickup with no wait, waits at the prompt, applies after the stream',
+      edits: [[processor, '    if (replyLanguageCheck.isOfferedChip(offered)) replyLanguageCheck.discard()', '    if (false) replyLanguageCheck.discard()']],
+    },
+    {
+      name: 'processor: the prompt wait is removed',
+      check: 'processor: starts at pickup with no wait, waits at the prompt, applies after the stream',
+      edits: [[processor, 'await replyLanguageCheck.waitAtPrompt(replyLanguagePrepEndedAt)', 'await replyLanguageCheck.waitAtPrompt(0)']],
+    },
+    {
+      name: 'processor: a discarded chip is still applied',
+      check: 'processor: starts at pickup with no wait, waits at the prompt, applies after the stream',
+      edits: [[processor, 'replyLanguageCheck.started && !replyLanguageApplied && !replyLanguageCheck.discarded()', 'replyLanguageCheck.started && !replyLanguageApplied']],
+    },
+    {
+      name: 'processor: the writing memory is not set',
+      check: 'processor: starts at pickup with no wait, waits at the prompt, applies after the stream',
+      edits: [[processor, "'preferences.reply_language_written'", "'preferences.reply_language_writtenX'"]],
+    },
+    {
+      name: 'processor: the check is not cancelled at turn end',
+      check: 'processor: starts at pickup with no wait, waits at the prompt, applies after the stream',
+      edits: [[processor, '    replyLanguageCheck.cancel()', '    void 0']],
     },
   ]
 

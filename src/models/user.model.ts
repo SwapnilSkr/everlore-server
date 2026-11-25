@@ -30,6 +30,8 @@ export interface UserPreferences {
   guide_opt_out?: boolean
   /** Last reply language chosen in a save's setting; `'en'` is stored too. */
   reply_language?: string
+  /** Last language one of the player's saves settled in by writing (`'en'` too). */
+  reply_language_written?: string
 }
 
 /** Where a player stands with one guide arc. */

@@ -40,38 +40,23 @@ export function effectiveReplyLanguage(
 }
 
 /**
- * Primary subtag of a BCP 47 or underscore locale (`pt-BR`, `pt_BR`, `es-419`),
- * but only when that language is enabled. English and everything else are
- * undefined — English is the absence of a language.
- */
-export function languageFromLocale(
-  locale?: string | null,
-  enabledCodes: readonly string[] = env.REPLY_LANGUAGES || [],
-): string | undefined {
-  if (typeof locale !== 'string') return undefined
-  const trimmed = locale.trim()
-  if (!trimmed) return undefined
-  const primary = trimmed.replace(/_/g, '-').split('-')[0]?.toLowerCase()
-  if (!primary) return undefined
-  return enabledReplyLanguages(enabledCodes).some((entry) => entry.code === primary)
-    ? primary
-    : undefined
-}
-
-/**
- * A save starts in the player's chosen language, else the device locale, else
- * English. An explicit `en` preference beats the device and yields no code.
+ * A save starts in the player's chosen language, else the language a save of
+ * theirs last settled in by writing, else English. An explicit `en` setting
+ * beats the written memory and yields no code. The phone's language is never
+ * read.
  */
 export function startingLanguage(params: {
   preference?: string | null
-  deviceLocale?: string | null
+  written?: string | null
   enabledCodes?: readonly string[]
 }): string | undefined {
   const enabledCodes = params.enabledCodes ?? env.REPLY_LANGUAGES ?? []
-  if (typeof params.preference === 'string' && params.preference.trim()) {
-    return effectiveReplyLanguage(params.preference.trim(), enabledCodes)?.code
-  }
-  return languageFromLocale(params.deviceLocale, enabledCodes)
+  const preference =
+    typeof params.preference === 'string' ? params.preference.trim() : ''
+  if (preference) return effectiveReplyLanguage(preference, enabledCodes)?.code
+  const written = typeof params.written === 'string' ? params.written.trim() : ''
+  if (written) return effectiveReplyLanguage(written, enabledCodes)?.code
+  return undefined
 }
 
 /**
@@ -99,14 +84,6 @@ export function isReplyLanguageSetting(
   if (typeof value !== 'string') return false
   if (value === ENGLISH_REPLY_LANGUAGE.code) return true
   return enabledReplyLanguages(enabledCodes).some((entry) => entry.code === value)
-}
-
-/** A locale from the create body: max 35 chars, well-formed, otherwise ignored. */
-export function normalizeDeviceLocale(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
-  if (!trimmed || trimmed.length > 35) return undefined
-  return /^[A-Za-z]{2,8}(?:[-_][A-Za-z0-9]{1,8})*$/.test(trimmed) ? trimmed : undefined
 }
 
 interface ChatMessageLike {

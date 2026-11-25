@@ -75,13 +75,12 @@ export const instanceController = {
     return instance
   },
 
-  create: async ({ user, body }: { user: AuthUser | null; body: { template_id: string; persona_id?: string; device_locale?: string } }) => {
+  create: async ({ user, body }: { user: AuthUser | null; body: { template_id: string; persona_id?: string } }) => {
     if (!user) throw new HttpError(401, 'Sign in to continue.')
-    // The locale is appended only when the app sent one, so an older client's
-    // call is exactly as before.
-    const createArgs: Parameters<typeof instanceService.create> = [user.id, body.template_id, user.tier, body.persona_id]
-    if (body.device_locale !== undefined) createArgs.push(body.device_locale)
-    const result = await instanceService.create(...createArgs)
+    // The phone's language is never part of the story. An older client that
+    // still sends `device_locale` has it stripped by the create schema and
+    // ignored here.
+    const result = await instanceService.create(user.id, body.template_id, user.tier, body.persona_id)
     if (result.template.kind === 'group') return publicGroupData({ ...result, template: publicTemplate(result.template) })
     return canReadTemplateAuthoring(result.template, user)
       ? result

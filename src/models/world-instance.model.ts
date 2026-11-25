@@ -63,8 +63,8 @@ export interface WorldInstanceDoc {
   /** The save's reply language. English is never stored: absent means English.
    *  A code that is off or unknown behaves as English everywhere. */
   reply_language?: string
-  /** Who set it: the device locale at creation, writing detection, or the player. */
-  reply_language_source?: 'device' | 'writing' | 'player'
+  /** Who set it: the player's setting or writing detection. The phone never does. */
+  reply_language_source?: 'writing' | 'player'
   /** Typed player turns already checked by the writing detector. */
   reply_language_checks?: number
   /** Chat MODE (see chat-modes.ts) — how the chat flows (pacing/intent).

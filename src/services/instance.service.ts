@@ -26,7 +26,6 @@ import {
   effectiveReplyLanguage,
   enabledReplyLanguages,
   isReplyLanguageSetting,
-  normalizeDeviceLocale,
   replyLanguageOptions,
   startingLanguage,
 } from '../utils/reply-language'
@@ -53,7 +52,6 @@ export const instanceService = {
     templateId: string,
     tier: string,
     personaId?: string,
-    deviceLocale?: string,
   ): Promise<{ instance: WorldInstanceDoc; template: WorldTemplateDoc }> {
     const playerOid = parseObjectId(playerId)
     const templateOid = parseObjectId(templateId)
@@ -140,23 +138,28 @@ export const instanceService = {
       personaSnapshot = personaService.snapshotFromPersona(selectedPersona)
     }
 
-    // Start language: the player's explicit setting, else the device locale,
-    // else English. English is never stored, so the fields are only present for
-    // a non-English save. With no languages enabled nothing is read or stored.
+    // Start language: the player's explicit setting, else the language a save of
+    // theirs last settled in by writing, else English. The phone's language is
+    // never read. English is never stored, so the fields are only present for a
+    // non-English save. With no languages enabled nothing is read or stored.
     let startLanguage: string | undefined
-    let startSource: 'device' | 'player' | undefined
+    let startSource: 'player' | 'writing' | undefined
     if (enabledReplyLanguages().length > 0) {
-      const playerLanguage = await mongoColl
-        .users()
-        .findOne({ _id: playerOid }, { projection: { 'preferences.reply_language': 1 } })
+      const playerLanguage = await mongoColl.users().findOne(
+        { _id: playerOid },
+        { projection: { 'preferences.reply_language': 1, 'preferences.reply_language_written': 1 } },
+      )
       const preference = playerLanguage?.preferences?.reply_language
+      const written = playerLanguage?.preferences?.reply_language_written
       const preferredCode =
         typeof preference === 'string' && preference.trim() ? preference.trim() : undefined
+      const writtenCode =
+        typeof written === 'string' && written.trim() ? written.trim() : undefined
       startLanguage = startingLanguage({
         preference: preferredCode,
-        deviceLocale: normalizeDeviceLocale(deviceLocale),
+        written: writtenCode,
       })
-      startSource = preferredCode ? 'player' : 'device'
+      if (startLanguage) startSource = preferredCode ? 'player' : 'writing'
     }
 
     const instance: WorldInstanceDoc = {

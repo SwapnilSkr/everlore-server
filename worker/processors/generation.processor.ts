@@ -110,9 +110,8 @@ import { extractLifecycleChanges } from '../lib/character-lifecycle-extractor'
 import { createExtractorRawSink } from '../lib/extractor-raw'
 import { effectiveReplyLanguage, enabledReplyLanguages } from '../../src/utils/reply-language'
 import {
-  checkReplyLanguage,
   decideReplyLanguage,
-  shouldCheckReplyLanguage,
+  startReplyLanguageCheck,
   type ReplyLanguageCheckResult,
 } from '../lib/reply-language-check'
 
@@ -466,6 +465,18 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
     mode: dispatchedSession.mode,
     text: isContinuation ? '' : worldActionNarration(worldAction) || userMessage,
   })
+  // Reply-language writing detection starts here too, beside the adult check,
+  // from what dispatch already knows. The chip test needs the packet, so a tap
+  // can only be discarded afterwards; neither check waits for the other.
+  const replyLanguageEnabling = enabledReplyLanguages()
+  const replyLanguageCheck = startReplyLanguageCheck({
+    enabledCodes: replyLanguageEnabling.map((entry) => entry.code),
+    isTyped: !isContinuation && !worldAction,
+    source: dispatchedSession.reply_language_source,
+    checks: Number(dispatchedSession.reply_language_checks) || 0,
+    replyLanguage: effectiveReplyLanguage(dispatchedSession.reply_language)?.code,
+    text: userMessage,
+  })
   try {
   // The query embedding is the slowest thing prep waits on (p50 539 ms, p90
   // 3.5 s against 2 ms for a Mongo read), and nothing about it depends on the
@@ -704,13 +715,8 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
   const playerOid = parseObjectId(playerId)
   const extractorRaw = createExtractorRawSink()
 
-  // Reply-language writing detection. It starts once the recent events are in
-  // hand (the newest turn's chips are needed to tell a typed line from a tap)
-  // and is never awaited before the stream. A failed call changes nothing and
+  // The language check started at pickup. A failed call changes nothing and
   // never counts as a check; the guard keeps an explicit player choice winning.
-  let replyLanguageCheckPromise: Promise<ReplyLanguageCheckResult | null> | null = null
-  let replyLanguageCheckSettled = false
-  let replyLanguageCheckResult: ReplyLanguageCheckResult | null = null
   let replyLanguageApplied = false
   let replyLanguageWrite: Promise<void> = Promise.resolve()
 
@@ -737,6 +743,7 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     }
     session.reply_language = next.code
     session.reply_language_source = 'writing'
+    const writtenCode = next.code ?? 'en'
     try {
       const guarded = await mongoColl.worldInstances().updateOne(
         { _id: instanceOid, reply_language_source: { $ne: 'player' } },
@@ -746,7 +753,16 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
           ...(next.code ? {} : { $unset: { reply_language: '' } }),
         },
       )
-      if (guarded.matchedCount > 0) return
+      if (guarded.matchedCount > 0) {
+        // The account remembers the last language a save of theirs settled in
+        // by writing; the next save starts there. Never awaited before the prompt.
+        // Its own failure must not undo the save's language, which is already stored.
+        await mongoColl
+          .users()
+          .updateOne({ _id: playerOid }, { $set: { 'preferences.reply_language_written': writtenCode } })
+          .catch(() => {})
+        return
+      }
       // The player chose a language while this turn ran: their choice stands.
       const saved = await mongoColl.worldInstances().findOne(
         { _id: instanceOid },
@@ -823,39 +839,14 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     locationContext: packetLocationContext,
   } = packet
 
-  // Started once the newest event's offered chips are in hand — that is what
-  // separates a typed line from a tap on a chip. It runs alongside the rest of
-  // prep and is never awaited before the stream.
-  const replyLanguageEnabled = enabledReplyLanguages()
-  if (replyLanguageEnabled.length > 0) {
+  // The chip test needs the packet's newest event. A tapped chip started a
+  // check at pickup like any typed line; discard its answer and its count.
+  if (replyLanguageCheck.started) {
     const newestEvent = recentEvents[recentEvents.length - 1]
     const offered = Array.isArray(newestEvent?.data?.choices)
       ? newestEvent.data.choices.map((choice: any) => ({ send: choice?.send, label: choice?.label }))
       : []
-    if (
-      shouldCheckReplyLanguage({
-        enabledCodes: replyLanguageEnabled.map((entry) => entry.code),
-        isTyped: !isContinuation && !confirmedWorldAction,
-        source: session.reply_language_source,
-        checks: Number(session.reply_language_checks) || 0,
-        replyLanguage: effectiveReplyLanguage(session.reply_language)?.code,
-        text: storedPlayerInput,
-        offered,
-      })
-    ) {
-      replyLanguageCheckPromise = checkReplyLanguage(storedPlayerInput, {
-        enabledCodes: replyLanguageEnabled.map((entry) => entry.code),
-      })
-        .then((result) => {
-          replyLanguageCheckResult = result
-          replyLanguageCheckSettled = true
-          return result
-        })
-        .catch(() => {
-          replyLanguageCheckSettled = true
-          return null
-        })
-    }
+    if (replyLanguageCheck.isOfferedChip(offered)) replyLanguageCheck.discard()
   }
   const allKnownPlaces = await allKnownPlacesPromise
   const knownPlaces = mergeSceneHistoryIntoPlaces(
@@ -977,11 +968,14 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // heading with its prefilled value. The structured choice pass below is now
   // authoritative and receives a bounded equivalent of the narrator's story
   // context, so it stays grounded without depending on tail syntax.
-  // If the language check settled during prep, apply it now so THIS turn uses
-  // the new language. Otherwise the stream already has its answer and the
-  // result applies to the next turn.
-  if (replyLanguageCheckPromise && replyLanguageCheckSettled && !replyLanguageApplied) {
-    replyLanguageWrite = applyReplyLanguageResult(replyLanguageCheckResult).catch(() => {})
+  // The save's first typed turn waits at the prompt for the answer, at most
+  // 700 ms counted from where prep ended; a settled answer is used at once and
+  // every later turn never waits. An answer that misses the prompt applies to
+  // the next turn after this prose has streamed.
+  const replyLanguagePrepEndedAt = Date.now()
+  if (replyLanguageCheck.started) await replyLanguageCheck.waitAtPrompt(replyLanguagePrepEndedAt)
+  if (replyLanguageCheck.settled() && !replyLanguageCheck.discarded() && !replyLanguageApplied) {
+    replyLanguageWrite = applyReplyLanguageResult(replyLanguageCheck.result()).catch(() => {})
   }
   const turnReplyLanguage = effectiveReplyLanguage(session.reply_language)
 
@@ -1268,10 +1262,11 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   const streamEndedAt = Date.now()
   // A check that missed the prompt is applied after the prose has streamed, in
   // parallel with extraction, before the end-of-turn session is written so the
-  // cached session carries the new language. It can never fail the turn.
+  // cached session carries the new language. A discarded chip never counts.
+  // It can never fail the turn.
   const replyLanguageApply =
-    replyLanguageCheckPromise && !replyLanguageApplied
-      ? replyLanguageCheckPromise
+    replyLanguageCheck.started && !replyLanguageApplied && !replyLanguageCheck.discarded()
+      ? replyLanguageCheck.promise
           .then((result) => applyReplyLanguageResult(result))
           .catch(() => {})
       : replyLanguageWrite
@@ -3797,5 +3792,6 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   return { eventId: eventIdStr, sequence: nextSequence }
   } finally {
     intentRouter.cancel()
+    replyLanguageCheck.cancel()
   }
 }

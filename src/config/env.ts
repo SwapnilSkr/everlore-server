@@ -27,6 +27,9 @@ const optionalEnvVars = {
    *  whole feature off: no language is stored, no detector runs, the prompt is
    *  unchanged. `reply-language.ts` is the only reader of these codes. */
   REPLY_LANGUAGES: '',
+  /** OpenRouter decisions model that reads one player line: what language it is
+   *  written in and whether it asks for one. Pinned to the `typesafe/zdr` route. */
+  MODEL_REPLY_LANGUAGE: 'typesafe/jev-1.14',
   // OpenRouter image-generation model (avatars + chat backgrounds).
   IMAGE_MODEL: 'bytedance-seed/seedream-4.5',
   // One-shot creation autofill (drafts a whole world/character). Cheap, strong JSON + creative.
@@ -164,6 +167,7 @@ export interface Env {
   NARRATION_SFW_FALLBACK_MODELS: string[]
   NARRATION_NSFW_FALLBACK_MODELS: string[]
   REPLY_LANGUAGES: string[]
+  MODEL_REPLY_LANGUAGE: string
   IMAGE_MODEL: string
   AUTHORING_MODEL: string
   TTS_MODEL: string
@@ -317,6 +321,7 @@ function loadEnv(): Env {
       .split(',')
       .map((code) => code.trim())
       .filter(Boolean),
+    MODEL_REPLY_LANGUAGE: process.env.MODEL_REPLY_LANGUAGE || optionalEnvVars.MODEL_REPLY_LANGUAGE,
     IMAGE_MODEL: process.env.IMAGE_MODEL || optionalEnvVars.IMAGE_MODEL,
     AUTHORING_MODEL: process.env.AUTHORING_MODEL || optionalEnvVars.AUTHORING_MODEL,
     TTS_MODEL: process.env.TTS_MODEL || optionalEnvVars.TTS_MODEL,
