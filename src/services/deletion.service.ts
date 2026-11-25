@@ -14,6 +14,7 @@ import { isDefaultCoverUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
 import { telemetryService } from './telemetry/ingest.service'
 import { timeService } from './time.service'
+import { effectiveReplyLanguage } from '../utils/reply-language'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { HttpError } from '../utils/http-error'
 import { traceStore } from './llm-trace.service'
@@ -255,10 +256,25 @@ export const deletionService = {
 
     // 4. Re-seed the opening line so the chat reopens with the greeting.
     if (template.opening_line && template.opening_line.trim().length > 0) {
+      const greeting = template.opening_line.trim()
       // A reset re-opens the world, so it must re-read the authored opening's
       // place too. This block and the one in instance.service are the same
-      // ceremony written twice; keep them in step.
-      const [openingTimeAnchor, openingPlace] = await Promise.all([
+      // ceremony written twice; keep them in step — both now take the opening's
+      // two blocks from one helper (`authoredOpening`), and both start the
+      // save's language beside the place and time so a cold reset overlaps them.
+      const languageEntry = effectiveReplyLanguage(instance.reply_language)
+      // Loaded only for a non-English save: an English one never reaches it.
+      const openingLanguagePromise = languageEntry
+        ? import('./opening-language.service').then(({ authoredOpening }) => authoredOpening({
+            entry: languageEntry,
+            opening: greeting,
+            protagonistName: template.protagonist?.name ?? priorProtagonist?.canonical_name ?? null,
+            seedCast: instance.seed_cast_snapshot || template.seed_cast || null,
+            personaName: instance.persona_snapshot?.name ?? null,
+            placeName: null,
+          }))
+        : null
+      const [openingTimeAnchor, openingPlace, openingFields] = await Promise.all([
         timeService.anchorForNextEvent({
           instanceId: iidStr,
           templateId: idString(template._id),
@@ -266,7 +282,8 @@ export const deletionService = {
           sequence: 1,
           eventTimeLabel: 'Opening scene',
         }),
-        extractOpeningPlace({ openingLine: template.opening_line.trim(), instanceId: iidStr }),
+        extractOpeningPlace({ openingLine: greeting, instanceId: iidStr }),
+        openingLanguagePromise,
       ])
       await events().insertOne({
         _id: new ObjectId(),
@@ -276,8 +293,7 @@ export const deletionService = {
         type: 'narration',
         data: {
           player_input: '',
-          ai_response: template.opening_line.trim(),
-          spoken_lines: detectSpokenLines(template.opening_line.trim()),
+          ...(openingFields ?? { ai_response: greeting, spoken_lines: detectSpokenLines(greeting) }),
           state_mutations: {},
           flag_mutations: {},
           model_used: 'seed',

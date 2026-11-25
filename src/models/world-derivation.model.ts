@@ -11,7 +11,7 @@
  */
 export const WORLD_DERIVATIONS_COLLECTION = 'world_derivations'
 
-export type WorldDerivationKind = 'calendar' | 'opening_place'
+export type WorldDerivationKind = 'calendar' | 'opening_place' | 'opening_language'
 
 export interface WorldDerivationDoc<T = unknown> {
   /** `${kind}:${version}:${sha256(input)}`. */

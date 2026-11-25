@@ -498,7 +498,7 @@ const coverageCases: CoverageCase[] = [
     'protagonist_skipped', 'character_edited', 'character_tracked', 'relation_resolved',
     'milestone_cleared', 'history_loaded', 'voice_played',
   ] } },
-  { name: 'story_settings_changed', required: ['setting'], enums: { setting: ['pov', 'mode', 'length', 'voice', 'tone', 'focus', 'persona'] } },
+  { name: 'story_settings_changed', required: ['setting'], enums: { setting: ['pov', 'mode', 'length', 'voice', 'tone', 'focus', 'persona', 'language'] } },
   { name: 'chronicle_tab', required: ['tab'], enums: { tab: ['recap', 'timeline', 'memories', 'calendar', 'places', 'bonds', 'threads'] } },
   { name: 'chronicle_action', required: ['action'], enums: { action: ['memory_edited', 'memory_deleted', 'event_edited', 'timeline_switched'] } },
   { name: 'keepsakes_action', required: ['action'], enums: {

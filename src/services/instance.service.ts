@@ -22,6 +22,9 @@ import { isValidModeKey, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { DEFAULT_NARRATION_TONE, isValidNarrationTone } from '../utils/narration-tones'
 import { materializeTemplateCast } from './template-cast.service'
 import { isWorldListed } from '../utils/world-review'
+import { generationLockKey } from '../utils/generation-lock'
+import { publishSpokenLines } from './media/events'
+import { purgeMedia } from './media/deletion'
 import {
   effectiveReplyLanguage,
   enabledReplyLanguages,
@@ -256,7 +259,28 @@ export const instanceService = {
       // the loose first-anchor branch and adopting whatever the witness names.
       // See opening-place.service for the live case this fixes. The read was
       // started above, alongside the calendar.
-      const [openingTimeAnchor, openingPlace] = await Promise.all([
+      //
+      // The save's language starts BESIDE them, never after: on a cold cache its
+      // translation runs while the calendar, the place and the time anchor do,
+      // so a create waits for the longest of the four, not their sum. A cached
+      // translation is a single read and adds no call. An English save starts no
+      // translation at all.
+      const languageEntry = effectiveReplyLanguage(instance.reply_language)
+      // Loaded only for a non-English save: an English one never reaches it.
+      const openingLanguagePromise = languageEntry
+        ? import('./opening-language.service').then(({ authoredOpening }) => authoredOpening({
+            entry: languageEntry,
+            opening: greeting,
+            protagonistName: template.protagonist?.name ?? null,
+            seedCast: template.seed_cast ?? null,
+            personaName: instance.persona_snapshot?.name ?? null,
+            // The opening place runs against the authored words, so it is not
+            // known here. A world's authored title is not the place; the place
+            // name joins the glossary when a later re-translation knows it.
+            placeName: null,
+          }))
+        : null
+      const [openingTimeAnchor, openingPlace, openingFields] = await Promise.all([
         timeService.anchorForNextEvent({
           instanceId: idString(_id),
           templateId,
@@ -265,6 +289,7 @@ export const instanceService = {
           eventTimeLabel: 'Opening scene',
         }),
         openingPlacePromise ?? extractOpeningPlace({ openingLine: greeting, instanceId: idString(_id) }),
+        openingLanguagePromise,
       ])
       await events().insertOne({
         _id: new ObjectId(),
@@ -274,8 +299,7 @@ export const instanceService = {
         type: 'narration',
         data: {
           player_input: '',
-          ai_response: greeting,
-          spoken_lines: detectSpokenLines(greeting),
+          ...(openingFields ?? { ai_response: greeting, spoken_lines: detectSpokenLines(greeting) }),
           state_mutations: {},
           flag_mutations: {},
           model_used: 'seed',
@@ -924,6 +948,26 @@ export const instanceService = {
         .updateOne({ _id: pid }, { $set: { 'preferences.reply_language': settings.reply_language } })
     }
 
+    // §6: a language the player sets on an opening-only save shows that opening
+    // in the new language. Done after the setting is written, so the choice
+    // stands even when the opening cannot be translated. Solo only: a group
+    // keeps its own path, untouched.
+    let openingChanged = false
+    const previousCode = effectiveReplyLanguage(target.reply_language)?.code
+    const nextEntry = effectiveReplyLanguage(result.reply_language)
+    if (
+      settings.reply_language !== undefined &&
+      previousCode !== nextEntry?.code &&
+      !target.group_state &&
+      !result.group_state
+    ) {
+      openingChanged = await rewriteOpeningLanguage({
+        instance: result,
+        pid,
+        entry: nextEntry ?? null,
+      })
+    }
+
     await getRedisClient().del(`session:${idString(iid)}`)
     return {
       narration_pov: result.narration_pov || 'third',
@@ -934,6 +978,109 @@ export const instanceService = {
       focus_character_id: result.focus_character_id ? idString(result.focus_character_id) : null,
       persona_id: result.persona_id ? idString(result.persona_id) : null,
       ...liveFrameLanguage(result),
+      // Only present when the transcript on the phone is stale; the app reloads.
+      ...(openingChanged ? { opening_changed: true } : {}),
     }
   },
+}
+
+/**
+ * The §6 settings rewrite: on a save whose only event is its unedited seed
+ * opening, show that opening in `entry`'s language (or in English when `entry`
+ * is null). Guarded so a first message sent meanwhile is never overwritten:
+ *
+ *  - skipped while a generation holds the save's lock or a newer event exists,
+ *    checked before the translation and again after it;
+ *  - the update matches the same event id, the same old `ai_response` and an
+ *    opening the player has not edited.
+ *
+ * As in an edit: `voice_attribution` is unset, the event's media is purged and
+ * `spoken_lines` recomputed and published — but no `edit_history` entry is
+ * written, because this is not the player editing their story.
+ *
+ * Returns true only when the opening was actually rewritten. Never throws.
+ */
+async function rewriteOpeningLanguage(params: {
+  instance: WorldInstanceDoc
+  pid: ObjectId
+  entry: ReturnType<typeof effectiveReplyLanguage> | null
+}): Promise<boolean> {
+  const { instance, pid, entry } = params
+  const iid = instance._id
+  const generationHoldsSave = async () =>
+    !!(await getRedisClient().get(generationLockKey(idString(pid), idString(iid))))
+  const hasNewerEvent = async () =>
+    (await events().countDocuments({ instance_id: iid, player_id: pid, sequence: { $gt: 1 } })) > 0
+  try {
+    if (await generationHoldsSave()) return false
+
+    const seed = await events().findOne({ instance_id: iid, player_id: pid, sequence: 1 })
+    if (!seed || seed.data?.model_used !== 'seed' || seed.is_user_edited) return false
+    if (await hasNewerEvent()) return false
+
+    const base = String(
+      (seed.data as { witness?: { ai_response?: string } } | undefined)?.witness?.ai_response
+        || seed.data?.ai_response
+        || '',
+    )
+    if (!base.trim()) return false
+
+    const { openingGlossary, settingsOpeningFields } = await import('./opening-language.service')
+    const fields = await settingsOpeningFields({
+      entry: entry ?? null,
+      seed: seed.data as never,
+      ...openingGlossary({
+        protagonistName: (
+          await characters().findOne(
+            { instance_id: iid, is_protagonist: true },
+            { projection: { canonical_name: 1 } },
+          )
+        )?.canonical_name ?? null,
+        seedCast: instance.seed_cast_snapshot ?? null,
+        personaName: instance.persona_snapshot?.name ?? null,
+        placeName: instance.current_location?.name ?? null,
+      }),
+    })
+    if (!fields) return false
+
+    const oldAi = String(seed.data?.ai_response || '')
+    // Nothing to rewrite: the same words, with no English side to add or drop.
+    if (
+      fields.ai_response === oldAi &&
+      !fields.witness && !fields.witness_status &&
+      !seed.data?.witness && !seed.data?.witness_status
+    ) return false
+    // The translation takes seconds, and a first message may have been sent
+    // during it. Look again, so that message's turn is never overtaken.
+    if (await generationHoldsSave()) return false
+    if (await hasNewerEvent()) return false
+    const guard = { _id: seed._id, 'data.ai_response': oldAi, is_user_edited: { $ne: true } }
+    // `witness_status` is never both set and unset: a fresh witness clears any
+    // old failure, a fresh failure clears any stale witness.
+    const unset: Record<string, ''> = { 'data.voice_attribution': '' }
+    if (fields.witness) unset['data.witness_status'] = ''
+    else if (fields.witness_status) unset['data.witness'] = ''
+    else {
+      unset['data.witness'] = ''
+      unset['data.witness_status'] = ''
+    }
+    const result = await events().updateOne(guard, {
+      $unset: unset,
+      $set: {
+        'data.ai_response': fields.ai_response,
+        'data.spoken_lines': fields.spoken_lines,
+        ...(fields.witness ? { 'data.witness': fields.witness } : {}),
+        ...(fields.witness_status ? { 'data.witness_status': fields.witness_status } : {}),
+        updated_at: new Date(),
+      },
+    } as never)
+    if (result.matchedCount !== 1) return false
+    await purgeMedia({ event_id: seed._id })
+    const updated = await events().findOne({ _id: seed._id })
+    if (updated) await publishSpokenLines(updated as WorldEventDoc).catch(() => {})
+    return true
+  } catch (err) {
+    console.warn(`Failed to rewrite the opening of ${idString(iid)}:`, (err as Error).message)
+    return false
+  }
 }

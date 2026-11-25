@@ -17,15 +17,19 @@ import type { WorldDerivationKind } from '../models/world-derivation.model'
 import { log } from '../utils/logger'
 import { CALENDAR_DERIVE_PROMPT_VERSION } from './time.service'
 import { OPENING_PLACE_PROMPT_VERSION } from './opening-place.service'
+import { OPENING_LANGUAGE_PROMPT_VERSION } from './opening-language.service'
 
 /**
  * The prompt version for a kind. Each constant sits next to its own prompt
- * (`time.service.ts`, `opening-place.service.ts`) and must be bumped there when
- * that prompt changes; this reads them lazily so the two services may import
- * this module freely without an initialisation cycle.
+ * (`time.service.ts`, `opening-place.service.ts`, `opening-language.service.ts`)
+ * and must be bumped there when that prompt changes; this reads them lazily so
+ * the two services may import this module freely without an initialisation
+ * cycle.
  */
 function promptVersion(kind: WorldDerivationKind): number {
-  return kind === 'calendar' ? CALENDAR_DERIVE_PROMPT_VERSION : OPENING_PLACE_PROMPT_VERSION
+  if (kind === 'calendar') return CALENDAR_DERIVE_PROMPT_VERSION
+  if (kind === 'opening_place') return OPENING_PLACE_PROMPT_VERSION
+  return OPENING_LANGUAGE_PROMPT_VERSION
 }
 
 /** `${kind}:${version}:${sha256(input)}` — the stored `_id`, so lookups need no index. */

@@ -157,11 +157,18 @@ function paragraphBlocks(value: string): number {
  * The contract's acceptance, as a pure check. Returns the first problem in the
  * documented order, or null. `finish` and `json` are about the call that
  * produced the candidate; the rest compare the two texts.
+ *
+ * Two knobs, both off by default so a live turn's checks are exactly what they
+ * were. `markersOnProse` counts `*…*` on the prose too — the opening (§6) has
+ * no player field, so its `*…*` formatting lives in the prose alone.
+ * `allowUnchanged` accepts an identical copy, for an authored opening that is
+ * already in the save's own language.
  */
 export function witnessProblem(
   native: WitnessCopyTexts,
   english: WitnessCopyCandidate,
   glossary: readonly string[],
+  options: { markersOnProse?: boolean; allowUnchanged?: boolean } = {},
 ): WitnessProblemReason | null {
   if (english.finishReason && english.finishReason !== 'stop') return 'finish'
   if (english.parsed === false) return 'json'
@@ -182,8 +189,10 @@ export function witnessProblem(
     if (containsName(nativeAll, name, true) && !containsName(englishAll, name)) return 'name'
   }
 
-  // The player's `*...*` segments are formatting, not wording: keep them.
+  // The player's `*...*` segments are formatting, not wording: keep them. The
+  // opening puts its `*...*` in the prose, so it counts there instead.
   if (english.playerCopied !== false && native.player.trim() && markerCount(native.player) !== markerCount(english.player)) return 'markers'
+  if (options.markersOnProse && native.prose.trim() && markerCount(native.prose) !== markerCount(english.prose)) return 'markers'
 
   if (native.prose.trim()) {
     // Same blank-line-separated blocks, or one more/fewer either way.
@@ -194,8 +203,9 @@ export function witnessProblem(
   }
 
   // An untranslated prose of any length is a failure; short prose is allowed to
-  // coincide (a one-word line may translate to itself).
-  if (wordCount(native.prose) >= 6 && normalizeCopy(native.prose) === normalizeCopy(english.prose)) {
+  // coincide (a one-word line may translate to itself). An opening that is
+  // already in the save's language is legitimately identical (`allowUnchanged`).
+  if (!options.allowUnchanged && wordCount(native.prose) >= 6 && normalizeCopy(native.prose) === normalizeCopy(english.prose)) {
     return 'unchanged'
   }
 

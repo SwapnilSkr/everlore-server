@@ -30,6 +30,8 @@ import type {
 const UUID_V4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 /** §3: structural, not a list — a route that declares no name reports `unnamed`. */
 const SCREEN_NAME = /^[a-z][a-z0-9_-]{1,39}$/
+/** A short label from a server list (the app's `_slug`): letters, digits, `_`/`-`. */
+const SLUG = /^[a-z][a-z0-9_-]{1,39}$/
 const WORLD_ID = /^[0-9a-fA-F]{24}$/
 const APP_VERSION = /^\d+\.\d+\.\d+$/
 const LOCALE = /^[a-z]{2,3}(-[A-Z]{2})?$/
@@ -59,6 +61,7 @@ type PropRule =
   | { kind: 'bool' }
   | { kind: 'int'; min: number; max: number }
   | { kind: 'screen' }
+  | { kind: 'slug' }
   | { kind: 'world_id' }
   | { kind: 'genre' }
   | { kind: 'product' }
@@ -154,7 +157,17 @@ export const EVENT_SCHEMA: Record<string, { props: Record<string, PropDef> }> = 
     },
   },
   story_settings_changed: {
-    props: { setting: { rule: oneOf('pov', 'mode', 'length', 'voice', 'tone', 'focus', 'persona'), required: true } },
+    props: { setting: { rule: oneOf('pov', 'mode', 'length', 'voice', 'tone', 'focus', 'persona', 'language'), required: true } },
+  },
+  // The Story language offer (§10): shown in a new story with no player message
+  // yet; the answer is the player's (or "not now"). Both are required, and the
+  // code is the slug the app was told by the server's own list.
+  language_offer_shown: { props: {} },
+  language_offer_answered: {
+    props: {
+      answer: { rule: oneOf('yes', 'no'), required: true },
+      code: { rule: { kind: 'slug' }, required: true },
+    },
   },
   chronicle_tab: {
     props: { tab: { rule: oneOf('recap', 'timeline', 'memories', 'calendar', 'places', 'bonds', 'threads'), required: true } },
@@ -257,6 +270,8 @@ function coerceProp(rule: PropRule, value: unknown): string | number | boolean |
         : undefined
     case 'screen':
       return isScreenName(value) ? value : undefined
+    case 'slug':
+      return typeof value === 'string' && SLUG.test(value) ? value : undefined
     case 'world_id':
       return typeof value === 'string' && WORLD_ID.test(value) ? value : undefined
     case 'product':
