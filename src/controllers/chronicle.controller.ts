@@ -25,6 +25,7 @@ import { randomUUID } from 'crypto'
 import {
   GENERATION_LOCK_TTL_SECONDS,
   generationLockKey,
+  pastReplayTail,
   releaseGenerationLock,
   startGenerationLockHeartbeat,
 } from '../utils/generation-lock'
@@ -44,7 +45,7 @@ async function withChronicleEdit<T>(
   const redis = getRedisClient()
   const lockKey = generationLockKey(playerId, idString(target.instance_id))
   const token = `edit:${randomUUID()}`
-  if (!await redis.set(lockKey, token, 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')) {
+  if (!await pastReplayTail(redis, lockKey, () => redis.set(lockKey, token, 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX'))) {
     throw new HttpError(409, 'Another story operation is still in progress. Please wait for it to finish.')
   }
   const stopHeartbeat = startGenerationLockHeartbeat(redis, lockKey, token)
@@ -655,13 +656,13 @@ export const chronicleController = {
     const redis = getRedisClient()
     const lockKey = generationLockKey(user.id, params.instanceId)
     const lockValue = `rewind:${randomUUID()}`
-    const acquired = await redis.set(
+    const acquired = await pastReplayTail(redis, lockKey, () => redis.set(
       lockKey,
       lockValue,
       'EX',
       GENERATION_LOCK_TTL_SECONDS,
       'NX',
-    )
+    ))
     if (!acquired) {
       throw new HttpError(409, 'Another story operation is still in progress. Please wait for it to finish.')
     }

@@ -292,6 +292,41 @@ await check('(g) real rewind/edit/HTTP replay guards refuse while either slot is
   for (const method of methods) await assert.rejects(method, (err: unknown) => (err as { statusCode?: number }).statusCode === 409)
   characterTarget = false
 })
+await check('(h) a saved replay: the next line is admitted, and replay/rewind/edit/select wait for its cards', async () => {
+  const { markReplayTail } = await import(process.argv[2] || '../src/utils/generation-lock')
+  const tail = async () => {
+    redis = new RedisFixture(); queued.length = 0
+    assert.ok(await acquire(r(), key, 'R', false))
+    assert.equal((await send('chat', { message: 'I wait.' })).code, 'GENERATION_IN_PROGRESS')
+    assert.equal(await markReplayTail(r(), key, 'R', channel, frame('replay_complete')), true)
+  }
+  for (const action of ['chat', 'continue']) {
+    await tail()
+    assert.equal((await send(action, { message: 'I wait beside the door.' })).type, 'ack')
+    assert.equal(queued[0].data.priorTurnId, 'R')
+  }
+  const whileItEnds = async (run: () => Promise<unknown>) => {
+    await tail()
+    const pending = run().catch((err: unknown) => err)
+    let settled = false
+    void pending.then(() => { settled = true })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    assert.equal(settled, false, 'it waits while the cards are refolded')
+    await finish(r(), key, 'R', true)
+    return pending
+  }
+  assert.equal((await whileItEnds(() => send('replay')) as { type: string }).type, 'ack')
+  assert.equal(queued.length, 1)
+  eventRows = [target]
+  for (const method of [
+    () => chronicleController.rewind({ params: { instanceId: String(iid) }, body: { sequence: 1 }, user }),
+    () => chronicleController.editEvent({ params: { eventId: String(eid) }, body: { ai_response: 'Replacement' }, user }),
+    () => chronicleController.selectReplayVariant({ params: { eventId: String(eid) }, body: { variant_index: 0 }, user }),
+  ]) {
+    const err = await whileItEnds(method) as Error
+    assert.equal(err.message, 'Mutation entered while busy', 'it got the lock and went in')
+  }
+})
 await check('wiring: barrier precedes every save read; merged event/session precede completion; Lua publish precedes promotion', async () => {
   const barrierAt = processor.indexOf('const priorTurnWaitMs = await waitForPriorGeneration(')
   assert.ok(barrierAt > processor.indexOf('startQueryEmbedding(ragQueryTextFor({ isContinuation, userMessage }))'))
@@ -336,6 +371,9 @@ if (!mutantPath) {
     const extraMutations = [
       ['(c) omit newest event from packet', 'recentEvents.reverse()', 'recentEvents.splice(0, 1); recentEvents.reverse()', '(b,c,d)', 'packet'],
       ['(c) reuse dispatch session', 'session = await instanceService.loadSession(instanceId, playerId)', 'session = dispatchedSession', 'wiring', 'processor'],
+      ['(h) select and edit give up at once', "if (!await pastReplayTail(redis, lockKey, () => redis.set(lockKey, token, 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX'))) {", "if (!await redis.set(lockKey, token, 'EX', GENERATION_LOCK_TTL_SECONDS, 'NX')) {", '(h)', 'controller'],
+      ['(h) rewind gives up at once', "const acquired = await pastReplayTail(redis, lockKey, () => redis.set(", "const acquired = await Promise.resolve().then(() => redis.set(", '(h)', 'controller'],
+      ['(h) the next line is refused', "phase: 'tail', kind: 'replay' }", "phase: 'running', kind: 'replay' }", '(h)'],
       ['(g) bypass exclusive rewind/edit NX', "      'NX',", "      undefined,", '(g)', 'controller'],
     ]
     for (const [label, before, after, expected, target = 'lock'] of [...mutations, ...extraMutations]) {

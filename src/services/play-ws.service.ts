@@ -8,7 +8,7 @@ import { verifyWsToken, type AuthUser } from '../middleware/auth'
 import { rateLimit } from '../middleware/rate-limit'
 import { log } from '../utils/logger'
 import { toClientError } from '../utils/ws-error'
-import { acquireGenerationTurn, releaseGenerationLock, generationLockKey } from '../utils/generation-lock'
+import { acquireGenerationTurn, pastReplayTail, releaseGenerationLock, generationLockKey } from '../utils/generation-lock'
 import { billingService } from './billing.service'
 import { authService } from './auth.service'
 import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
@@ -449,7 +449,7 @@ export const playWsService = {
 
         const lockKey = generationLockKey(user.id, instanceId)
         const turnId = crypto.randomUUID()
-        const locked = await acquireGenerationTurn(redis, lockKey, turnId, false)
+        const locked = await pastReplayTail(redis, lockKey, () => acquireGenerationTurn(redis, lockKey, turnId, false))
         if (!locked) {
           ws.send(JSON.stringify({ type: 'error', code: 'GENERATION_IN_PROGRESS' }))
           return

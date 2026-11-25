@@ -61,6 +61,7 @@ const PURE_AUDITS = [
   'audit:turn-wire-fields',
   'audit:turn-frame-ids',
   'audit:metadata-overlap',
+  'audit:replay-tail',
   'audit:overlap-prefetch',
   'audit:keep-warm',
   'audit:narration-hedge',

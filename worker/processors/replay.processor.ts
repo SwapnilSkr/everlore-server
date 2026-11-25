@@ -1,10 +1,11 @@
 import { Job } from 'bullmq'
 import { getRedisClient } from '../../src/config/redis'
-import { memoryService } from '../../src/services/memory.service'
-import { generationLockKey, releaseGenerationLock } from '../../src/utils/generation-lock'
+import { memoryService, type ReplayResult } from '../../src/services/memory.service'
+import { finishGenerationTurn, generationLockKey, markReplayTail, releaseGenerationLock } from '../../src/utils/generation-lock'
 import { liveInstanceExists } from '../../src/utils/live-instance'
 import { wireSpokenLines } from '../../src/services/media/events'
 import { parseObjectId } from '../../src/utils/mongo-id'
+import { log } from '../../src/utils/logger'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
 
 /**
@@ -12,13 +13,19 @@ import { makeProseStreamFilter } from '../lib/prose-stream-filter'
  * streams it token-by-token (same Redis→WS delta pipeline as normal turns).
  * Publishes `replay_delta` frames while generating and `replay_complete` when
  * the variant is persisted; always releases the per-instance generation lock.
+ *
+ * `replay_complete` frees the player before the character cards are refolded. The
+ * lock stays held as a tail, so their next line waits for the refold instead of
+ * reading half of it.
  */
 export async function replayProcessor(job: Job) {
   const { instanceId, playerId, eventId } = job.data
   const redis = getRedisClient()
   const channel = `user:${playerId}:events`
   const lockKey = generationLockKey(playerId, instanceId)
+  const token = String(job.id)
   let visibleAttemptMarked = false
+  let saved = false
   const markVisibleAttempt = () => {
     if (visibleAttemptMarked) return
     visibleAttemptMarked = true
@@ -34,6 +41,10 @@ export async function replayProcessor(job: Job) {
     if (!(await liveInstanceExists(parseObjectId(instanceId)))) {
       return
     }
+    if (job.data.replaySaved) {
+      await finishGenerationTurn(redis, lockKey, token, true).catch(() => {})
+      return
+    }
     // The same filter as a primary turn, so a regenerate never streams speech
     // inside italics (or a JSON envelope) that the persisted variant then fixes.
     const proseFilter = makeProseStreamFilter()
@@ -45,15 +56,10 @@ export async function replayProcessor(job: Job) {
         JSON.stringify({ type: 'replay_delta', instanceId, eventId, delta }),
       )
     }
-    const result = await memoryService.replayEvent(eventId, playerId, (chunk) =>
-      publishReplayDelta(proseFilter.push(chunk)),
-    )
-    publishReplayDelta(proseFilter.end())
-
-    const ev: any = result.event
-    redis.publish(
-      channel,
-      JSON.stringify({
+    const onSaved = async (result: ReplayResult) => {
+      publishReplayDelta(proseFilter.end())
+      const ev: any = result.event
+      const frame = JSON.stringify({
         type: 'replay_complete',
         instanceId,
         eventId,
@@ -79,7 +85,22 @@ export async function replayProcessor(job: Job) {
           // variant restores correct trackable mentions without re-classifying.
           trackable_mentions: v.trackable_mentions || [],
         })),
-      }),
+      })
+      // Recorded first: a worker that dies from here on must not write the
+      // player a second version of a turn they are already reading.
+      job.data.replaySaved = true
+      await job.updateData(job.data).catch(() => {})
+      saved = true
+      if (!await markReplayTail(redis, lockKey, token, channel, frame)) {
+        log.warn('replay.lease_lost', { instanceId, eventId })
+        await redis.publish(channel, frame)
+      }
+    }
+    await memoryService.replayEvent(
+      eventId,
+      playerId,
+      (chunk) => publishReplayDelta(proseFilter.push(chunk)),
+      onSaved,
     )
 
     // SHARED CONTRACT v1 item 4: a replay re-projects the latest turn, so notify
@@ -94,7 +115,14 @@ export async function replayProcessor(job: Job) {
         source: 'replay',
       }),
     )
+    await finishGenerationTurn(redis, lockKey, token, true).catch(() => {})
   } catch (err) {
+    if (saved) {
+      // The player already has this version; the next line must not fail for it.
+      log.error('replay.tail_failed', { instanceId, eventId, error: (err as Error).message })
+      await finishGenerationTurn(redis, lockKey, token, true).catch(() => {})
+      return
+    }
     redis.publish(
       channel,
       JSON.stringify({
@@ -108,6 +136,6 @@ export async function replayProcessor(job: Job) {
     // hiding the failure from diagnostics and leaving no retry/dead-letter trail.
     throw err
   } finally {
-    await releaseGenerationLock(redis, lockKey, String(job.id)).catch(() => {})
+    await releaseGenerationLock(redis, lockKey, token).catch(() => {})
   }
 }

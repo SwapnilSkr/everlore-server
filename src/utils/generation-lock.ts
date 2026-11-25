@@ -27,6 +27,8 @@ export interface GenerationSlots {
   owner: string
   phase: 'running' | 'tail'
   next?: string
+  /** A replay's tail: short, and other exclusive work waits for it. */
+  kind?: 'replay'
 }
 
 export function generationSlots(value: string | null): GenerationSlots | null {
@@ -99,6 +101,53 @@ export async function markGenerationStreamEnd(
     if (!slots || slots.owner !== token) throw new Error('Generation lease lost')
     if (await swap(redis, key, before, JSON.stringify({ ...slots, phase: 'tail' }), 'keep',
       '', '', channel, frame)) return
+  }
+}
+
+/**
+ * A replay holds the plain exclusive value while it writes, and becomes a tail
+ * once the new version is saved: the next line is admitted and waits behind the
+ * character rebuild, exactly as it waits behind a turn's tail. False when the
+ * lease is no longer this replay's.
+ */
+export async function markReplayTail(
+  redis: LockRedis, key: string, token: string, channel: string, frame: string,
+): Promise<boolean> {
+  for (;;) {
+    const before = await redis.get(key)
+    if (before !== token) return false
+    const slots: GenerationSlots = { owner: token, phase: 'tail', kind: 'replay' }
+    if (await swap(redis, key, before, JSON.stringify(slots), 'keep', '', '', channel, frame)) return true
+  }
+}
+
+/** How long exclusive work waits out a replay's tail before refusing as busy. */
+const REPLAY_TAIL_WAIT_MS = 25_000
+
+/**
+ * Exclusive work (another replay, a version pick, an edit, a rewind) used to find
+ * the player's screen locked until a replay was wholly done. It now can arrive
+ * during the tail, so it waits for that instead of being refused: a refused
+ * version pick would silently keep the wrong prose. Any other holder still refuses.
+ */
+export async function pastReplayTail<T>(
+  redis: LockRedis, key: string, attempt: () => Promise<T | null>,
+  options: { timeoutMs?: number; now?: () => number; sleep?: (ms: number) => Promise<void> } = {},
+): Promise<T | null> {
+  const now = options.now || Date.now
+  const sleep = options.sleep || ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)))
+  const deadline = now() + (options.timeoutMs ?? REPLAY_TAIL_WAIT_MS)
+  for (;;) {
+    const won = await attempt()
+    if (won) return won
+    const value = await redis.get(key)
+    // Freed between the two reads: one more attempt, never a spin.
+    if (value) {
+      const slots = generationSlots(value)
+      if (slots?.kind !== 'replay' || slots.phase !== 'tail' || slots.next) return null
+    }
+    if (now() >= deadline) return null
+    await sleep(100)
   }
 }
 

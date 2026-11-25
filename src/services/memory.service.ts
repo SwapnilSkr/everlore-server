@@ -19,6 +19,9 @@ import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import type { ObjectId } from 'mongodb'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { log } from '../utils/logger'
+import { liveInstanceExists } from '../utils/live-instance'
+import type { CharacterCodexDelta } from './character-codex.service'
+import type { WorldEventDoc } from '../models/world-event.model'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { playerTextOf, previousTurnFor, storedWitness, witnessGlossary, witnessOf, type ChoiceEnglish } from '../utils/witness'
 import { recordAnomaly } from '../utils/record-anomaly'
@@ -1040,6 +1043,67 @@ export async function rebuildCodexAndRelationsAfterReplay(params: {
 
   await publishCodexUpdated(playerId, instance, codex)
   return codex
+}
+
+/** What a replay leaves on the player's screen, ready before its cards are. */
+export interface ReplayResult {
+  success: boolean
+  // The event as the media layer sends it, read loosely by every caller.
+  event: any
+  replay_count: number
+  selected_index: number
+  memories_deleted: number
+  instance_state: Record<string, unknown>
+}
+
+/** A replay's card pass may not hold the player's next line longer than its wait. */
+const REPLAY_CARDS_TIMEOUT_MS = 20_000
+
+/**
+ * The half of a replay the player no longer waits for. The caller still holds the
+ * turn lock, so nothing reads the cards while they are dropped and refolded.
+ *
+ * Never throws: the version is saved and shown. A pass that is lost or too slow
+ * takes the replaced prose's effects out and leaves the turn `pending`, which the
+ * repair sweep and the next turn's fence both pick up.
+ */
+async function finishReplayCards(params: {
+  event: WorldEventDoc
+  claimedAt: Date
+  extractDeltas: () => Promise<CharacterCodexDelta[]>
+  rebuildCards: (deltas: CharacterCodexDelta[]) => Promise<unknown>
+}): Promise<void> {
+  const { event, claimedAt, extractDeltas, rebuildCards } = params
+  const owned = { _id: event._id, 'data.codex_projection_claimed_at': claimedAt }
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    const deltas = await Promise.race([
+      extractDeltas(),
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), REPLAY_CARDS_TIMEOUT_MS) }),
+    ])
+    if (!(await liveInstanceExists(event.instance_id))) return
+    if (deltas) {
+      const ledgered = await events().updateOne(owned, { $set: { 'data.codex_deltas': deltas } })
+      if (ledgered.matchedCount !== 1) {
+        log.warn('replay.cards_claim_lost', { eventId: idString(event._id), sequence: event.sequence })
+        return
+      }
+    }
+    await rebuildCards(deltas || [])
+    await events().updateOne(owned, {
+      $set: { 'data.codex_projection_status': deltas ? 'completed' as const : 'pending' as const },
+      $unset: { 'data.codex_projection_claimed_at': '' },
+    })
+    if (!deltas) log.warn('replay.cards_timed_out', { eventId: idString(event._id), sequence: event.sequence })
+  } catch (err) {
+    log.warn('replay.cards_failed', { eventId: idString(event._id), sequence: event.sequence, error: (err as Error).message })
+    await events().updateOne(owned, {
+      $set: { 'data.codex_projection_status': 'pending' as const },
+      $unset: { 'data.codex_projection_claimed_at': '' },
+    }).catch(() => {})
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 async function rebuildCodexKinshipFromCheckpoint(params: {
@@ -2559,7 +2623,17 @@ export const memoryService = {
    * the narration is streamed token-by-token through the callback (used by the
    * streaming worker path); otherwise it is generated in one shot (REST).
    */
-  async replayEvent(eventId: string, playerId: string, onDelta?: (chunk: string) => void) {
+  /**
+   * [onSaved] is called once the version, its choices, people and place are saved,
+   * and the cards are refolded after it. The caller must hold the turn lock until
+   * this resolves: the refold drops the cards before it writes them back.
+   */
+  async replayEvent(
+    eventId: string,
+    playerId: string,
+    onDelta?: (chunk: string) => void,
+    onSaved?: (result: ReplayResult) => Promise<void>,
+  ) {
     const eid = parseObjectId(eventId)
     const pid = parseObjectId(playerId)
 
@@ -2893,7 +2967,7 @@ ${replayDirective || '(none)'}`,
         : {}),
     })
     const replayMeta = replayProjection.meta
-    const replayCodexDeltas = await extractReplayCodexDeltas({
+    const extractDeltas = () => extractReplayCodexDeltas({
       event,
       playerId,
       instance,
@@ -2902,6 +2976,13 @@ ${replayDirective || '(none)'}`,
       playerInput: replayViewPlayer,
       presentCharacters: replayMeta.present_characters,
     })
+    // With a caller waiting to be told, the cards are read after the version is
+    // saved (below); without one the replay is whole before it returns.
+    const replayCodexDeltas = onSaved ? null : await extractDeltas()
+    // Claimed in the same write that replaces the prose: the old prose's own card
+    // pass loses its claim, the repair sweep leaves this one alone, and a worker
+    // that dies here leaves the turn for that sweep instead of stale deltas.
+    const codexClaimedAt = new Date()
     const replayTrackableMentions = trackableMentionsForProse({
       // The same side the live turn uses.
       prose: replayViewNarrative,
@@ -2909,7 +2990,9 @@ ${replayDirective || '(none)'}`,
       codex: replayCodex,
       exclude: instance.persona_snapshot?.name ? [instance.persona_snapshot.name] : [],
     })
-    const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas)
+    const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas) ||
+      // The first pass over this turn may have landed while the replay was written.
+      (!!onSaved && Array.isArray((await events().findOne({ _id: eid }, { projection: { 'data.codex_deltas': 1 } }))?.data?.codex_deltas))
 
     const nextVariant = {
       id: randomUUID(),
@@ -2971,7 +3054,11 @@ ${replayDirective || '(none)'}`,
 
     await purgeMedia({ event_id: eid })
     await events().updateOne({ _id: eid }, {
-      $unset: { 'data.voice_attribution': '', ...replayWitnessUnset },
+      $unset: {
+        'data.voice_attribution': '',
+        ...replayWitnessUnset,
+        ...(replayCodexDeltas ? {} : { 'data.codex_deltas': '', 'data.codex_projection_error': '', 'data.codex_projection_attempts': '' }),
+      },
       $push: {
         edit_history: {
           previous_data: event.data,
@@ -2995,7 +3082,9 @@ ${replayDirective || '(none)'}`,
         'data.trackable_mentions': replayTrackableMentions,
         'data.state_mutations': replayMeta.state_mutations,
         'data.flag_mutations': replayMeta.flag_mutations,
-        'data.codex_deltas': replayCodexDeltas,
+        ...(replayCodexDeltas
+          ? { 'data.codex_deltas': replayCodexDeltas }
+          : { 'data.codex_projection_status': 'processing' as const, 'data.codex_projection_claimed_at': codexClaimedAt }),
         scene_tag: replayMeta.scene_tag,
         location_anchor: replayProjection.locationAnchor,
         ...replayWitnessSet,
@@ -3031,18 +3120,19 @@ ${replayDirective || '(none)'}`,
       replayViewNarrative,
     )
     await staleSummariesCoveringEvent(event)
-    await rebuildCodexAndRelationsAfterReplay({
+    const rebuildCards = (deltas: CharacterCodexDelta[]) => rebuildCodexAndRelationsAfterReplay({
       event,
       playerId,
       instance,
       template,
       narrative: replayViewNarrative,
       playerInput: replayViewPlayer,
-      deltas: replayCodexDeltas,
+      deltas,
       forceExactRebuild: hadLedgeredCodexDeltas,
     }).catch((err) => {
       console.warn('Replay projection: codex/kinship rebuild skipped:', (err as Error).message)
     })
+    if (replayCodexDeltas) await rebuildCards(replayCodexDeltas)
 
     const updated = await events().findOne({ _id: eid })
     // Post-replay instance projection for the replay_complete frame (SHARED
@@ -3055,7 +3145,7 @@ ${replayDirective || '(none)'}`,
       current_location: replayProjection.locationAnchor,
       current_time_anchor: (instance as any).current_time_anchor ?? null,
     }
-    return {
+    const result: ReplayResult = {
       success: true,
       event: updated ? (await withTurnMedia([publicMediaEvent(updated)]))[0] : updated,
       replay_count: nextVariants.length,
@@ -3063,6 +3153,11 @@ ${replayDirective || '(none)'}`,
       memories_deleted: deletedMemories,
       instance_state,
     }
+    if (onSaved) {
+      await onSaved(result)
+      await finishReplayCards({ event, claimedAt: codexClaimedAt, extractDeltas, rebuildCards })
+    }
+    return result
   },
 
   async selectReplayVariant(eventId: string, playerId: string, variantIndex: number) {

@@ -211,6 +211,11 @@ const push = (key: string, value: any) => rec[key].push(value)
 // ── scripted model ───────────────────────────────────────────────────────────
 let narrationText = NATIVE_PROSE
 let witnessMode: 'accept' | 'refuse' = 'accept'
+/** What the card extractor finds, and whether it ever answers. */
+let codexDeltas: Row[] = []
+let codexHangs = false
+let cardRefolds = 0
+let kinshipRefolds = 0
 
 function englishCopyFor(request: Row): string {
   if (witnessMode === 'refuse') return JSON.stringify({ player: '', prose: '' })
@@ -325,8 +330,10 @@ mock.module('../src/services/entity-graph.service', () => ({
       { name: 'Vane', aliases: [], placeName: 'the hall', placeEntityId: 'place-2' },
     ],
     placeLocation: async () => null,
-    syncCodexEntities: async ({ cards }: Row) =>
-      new Map((cards || []).map((card: Row) => [String(card.canonical_name || '').toLowerCase(), { _id: new ObjectId() }])),
+    syncCodexEntities: async ({ cards }: Row) => {
+      cardRefolds++
+      return new Map((cards || []).map((card: Row) => [String(card.canonical_name || '').toLowerCase(), { _id: new ObjectId() }]))
+    },
     syncRelationshipEdges: async () => {},
     ensurePlayerEntity: async () => ({ _id: new ObjectId() }),
     ensureStubEntity: async () => new ObjectId(),
@@ -337,7 +344,7 @@ mock.module('../src/services/entity-graph.service', () => ({
 }))
 mock.module('../src/services/kinship-graph.service', () => ({
   kinshipGraphService: {
-    rebuildFromLedger: async () => {},
+    rebuildFromLedger: async () => { kinshipRefolds++ },
     applyRelationAssertions: async () => ({ written: 0, notes: [] }),
     applyLedgerSince: async () => {},
     seedPremiseKinship: async () => ({ seeded: 0, notes: [] }),
@@ -401,7 +408,8 @@ mock.module('../worker/lib/metadata-extractor', () => ({
 mock.module('../worker/lib/character-codex-extractor', () => ({
   extractCharacterCodexDeltas: async (params: Row) => {
     push('codexCalls', clone({ playerInput: params.playerInput, aiResponse: params.aiResponse }))
-    return []
+    if (codexHangs) return new Promise(() => {})
+    return clone(codexDeltas)
   },
 }))
 mock.module('../worker/lib/scene-endpoint-adjudicator', () => {
@@ -499,6 +507,10 @@ function reset(options: FixtureOptions = {}) {
   writes.length = 0
   narrationText = options.narration ?? REPLAY_NATIVE
   witnessMode = 'accept'
+  codexDeltas = []
+  codexHangs = false
+  cardRefolds = 0
+  kinshipRefolds = 0
   const playerInput = options.playerInput ?? NATIVE_PLAYER
   const aiResponse = options.aiResponse ?? NATIVE_PROSE
   const eventWitness = options.eventWitness
@@ -1839,6 +1851,119 @@ await check('wire payload: publicMediaEvent strips witness and witness_status fr
   assert.equal('witness' in wire.edit_history[0].previous_data.replay_variants[0], false)
 })
 
+// ── 9. the player is freed before the cards (socket replays) ────────────────
+const CARD_DELTA = { name: 'Mara', appearance: 'A wet coat.', mutable_state: ['Her coat is drying.'] }
+const replaySaved = (onSaved: () => void | Promise<void>) =>
+  memoryService.replayEvent(String(eventId), String(playerId), () => {}, async () => { await onSaved() })
+const english = () => reset({ playerInput: 'I lean on the doorframe.', aiResponse: 'Mara enters the hall.', narration: REPLAY_ENGLISH })
+
+await check('cards: the version is saved and announced before the cards are read', async () => {
+  english()
+  codexDeltas = [CARD_DELTA]
+  eventRow().data.codex_deltas = [{ name: 'Old Guest', appearance: 'Only in the replaced prose.' }]
+  let seen: Row = {}
+  const result = await memoryService.replayEvent(String(eventId), String(playerId), () => {}, async (ready) => {
+    const row = eventRow()
+    seen = { row: clone(row.data), calls: rec.codexCalls.length, refolds: cardRefolds, curated: rec.curationJobs.length,
+      scene: clone(worldInstances.rows[0].current_scene), narrative: ready.event.data.ai_response }
+  })
+  assert.equal(seen.row.ai_response, REPLAY_ENGLISH)
+  assert.equal(seen.narrative, REPLAY_ENGLISH, 'the caller is handed the new version')
+  assert.equal(seen.row.choices.length, NATIVE_CHOICES.length)
+  assert.deepEqual(seen.row.present_characters, ['Mara'])
+  assert.ok(seen.scene, 'the instance state is written before the announcement')
+  assert.equal(seen.curated, 1, 'old memories are gone before the next line can recall')
+  assert.equal(seen.calls, 0, 'no card reading before the announcement')
+  assert.equal(seen.refolds, 0)
+  assert.equal(seen.row.codex_projection_status, 'processing')
+  assert.ok(seen.row.codex_projection_claimed_at instanceof Date)
+  assert.equal('codex_deltas' in seen.row, false, 'the old prose has no say in the ledger')
+  assert.equal(rec.codexCalls.length, 1)
+  assert.equal(cardRefolds, 1)
+  assert.deepEqual(eventRow().data.codex_deltas, [CARD_DELTA])
+  assert.equal(eventRow().data.codex_projection_status, 'completed')
+  assert.equal('codex_projection_claimed_at' in eventRow().data, false)
+  assert.equal(result.event.data.ai_response, REPLAY_ENGLISH)
+})
+
+await check('cards: both orders end with the same story', async () => {
+  const end = () => {
+    const { codex_projection_status: _s, ...data } = clone(eventRow().data)
+    delete data.replay_variants
+    return normalize({ data, instance: { ...worldInstances.rows[0], updated_at: null }, curation: rec.curationJobs,
+      cards: characters.rows.map(({ _id, updated_at, created_at, ...card }) => card), cardRefolds, kinshipRefolds })
+  }
+  for (const ledgered of [false, true]) {
+    english()
+    codexDeltas = [CARD_DELTA]
+    if (ledgered) eventRow().data.codex_deltas = [{ name: 'Old Guest', appearance: 'Only in the replaced prose.' }]
+    await memoryService.replayEvent(String(eventId), String(playerId), () => {})
+    const whole = end()
+    english()
+    codexDeltas = [CARD_DELTA]
+    if (ledgered) eventRow().data.codex_deltas = [{ name: 'Old Guest', appearance: 'Only in the replaced prose.' }]
+    await replaySaved(() => {})
+    assert.deepEqual(end(), whole, ledgered ? 'ledgered turn' : 'unledgered turn')
+    if (ledgered) {
+      assert.equal(kinshipRefolds, 1, 'a ledgered turn refolds exactly')
+      assert.ok(!JSON.stringify(whole).includes('Old Guest'))
+    }
+  }
+})
+
+await check('cards: the replaced prose lands its ledger mid-replay and is still taken out', async () => {
+  english()
+  codexDeltas = [CARD_DELTA]
+  const realFind = events.findOne.bind(events)
+  let reads = 0
+  events.findOne = (async (query: Row, opts?: Row) => {
+    // After the replay's own first read, the first pass writes its ledger.
+    const row = await realFind(query, opts as any)
+    if (++reads === 1) eventRow().data.codex_deltas = [{ name: 'Old Guest' }]
+    return row
+  }) as typeof events.findOne
+  try { await replaySaved(() => {}) } finally { events.findOne = realFind }
+  assert.equal(kinshipRefolds, 1, 'refolded exactly, not added on top')
+  assert.deepEqual(eventRow().data.codex_deltas, [CARD_DELTA])
+})
+
+await check('cards: a pass that never answers is left for the repair sweep', async () => {
+  english()
+  codexHangs = true
+  const realSetTimeout = globalThis.setTimeout
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => realSetTimeout(fn, ms === 20_000 ? 5 : ms)) as typeof setTimeout
+  try { await replaySaved(() => {}) } finally { globalThis.setTimeout = realSetTimeout }
+  assert.equal(eventRow().data.codex_projection_status, 'pending')
+  assert.equal('codex_projection_claimed_at' in eventRow().data, false)
+  assert.equal('codex_deltas' in eventRow().data, false)
+  assert.equal(cardRefolds, 1, 'the replaced prose is still taken out')
+})
+
+await check('cards: a failure after the announcement never reaches the caller', async () => {
+  english()
+  codexDeltas = [CARD_DELTA]
+  const realUpdate = events.updateOne.bind(events)
+  events.updateOne = (async (query: Row, update: Row) => {
+    if (update.$set?.['data.codex_deltas']) throw new Error('store down')
+    return realUpdate(query, update)
+  }) as typeof events.updateOne
+  try { await replaySaved(() => {}) } finally { events.updateOne = realUpdate }
+  assert.equal(eventRow().data.codex_projection_status, 'pending')
+  assert.equal(eventRow().data.ai_response, REPLAY_ENGLISH)
+})
+
+await check('cards: a lost claim or a deleted story refolds nothing', async () => {
+  english()
+  codexDeltas = [CARD_DELTA]
+  await replaySaved(() => { eventRow().data.codex_projection_claimed_at = new Date(1) })
+  assert.equal(cardRefolds, 0)
+  assert.equal('codex_deltas' in eventRow().data, false)
+  english()
+  codexDeltas = [CARD_DELTA]
+  await replaySaved(() => { worldInstances.reset([]) })
+  assert.equal(cardRefolds, 0)
+})
+
 if (fail > 0) {
   console.log(`\nwitness replay audit: ${pass} passed, ${fail} failed`)
   process.exit(1)
@@ -1963,6 +2088,66 @@ async function runBites() {
       name: '8b select does not retry a failed variant',
       check: 'select after a failed copy: one new attempt, refused again stays failed',
       edits: [[memory, 'if (changed && chosenFailed && selectWitnessLanguage && selectedInstance) {', 'if (false) {']],
+    },
+    {
+      name: "13 cards are read before the announcement",
+      check: "cards: the version is saved and announced before the cards are read",
+      edits: [[memory, "      await onSaved(result)\n      await finishReplayCards({ event, claimedAt: codexClaimedAt, extractDeltas, rebuildCards })", "      await finishReplayCards({ event, claimedAt: codexClaimedAt, extractDeltas, rebuildCards })\n      await onSaved(result)"]],
+    },
+    {
+      name: "13b the old ledger stays while the new prose is saved",
+      check: "cards: the version is saved and announced before the cards are read",
+      edits: [[memory, "{ 'data.codex_deltas': '', 'data.codex_projection_error'", "{ 'data.codex_projection_error'"]],
+    },
+    {
+      name: "13c the turn is not claimed",
+      check: "cards: the version is saved and announced before the cards are read",
+      edits: [[memory, "'data.codex_projection_claimed_at': codexClaimedAt }),", "'data.codex_projection_attempts': 0 }),"]],
+    },
+    {
+      name: "13d the pass is never marked done",
+      check: "cards: the version is saved and announced before the cards are read",
+      edits: [[memory, "deltas ? 'completed' as const : 'pending' as const", "'pending' as const"]],
+    },
+    {
+      name: "14 the deferred order refolds nothing",
+      check: "cards: both orders end with the same story",
+      edits: [[memory, "    await rebuildCards(deltas || [])\n", "    void rebuildCards\n"]],
+    },
+    {
+      name: "14b the deferred order forgets its ledger",
+      check: "cards: both orders end with the same story",
+      edits: [[memory, "{ $set: { 'data.codex_deltas': deltas } })\n      if (ledgered", "{ $set: { 'data.codex_deltas': [] } })\n      if (ledgered"]],
+    },
+    {
+      name: "15 a first pass landing mid-replay is not seen",
+      check: "cards: the replaced prose lands its ledger mid-replay and is still taken out",
+      edits: [[memory, "      (!!onSaved && Array.isArray(", "      (!onSaved && Array.isArray("]],
+    },
+    {
+      name: "16 a slow pass is recorded as done",
+      check: "cards: a pass that never answers is left for the repair sweep",
+      edits: [[memory, "deltas ? 'completed' as const : 'pending' as const", "'completed' as const"]],
+    },
+    {
+      name: "16b a slow pass keeps the replaced prose's cards",
+      check: "cards: a pass that never answers is left for the repair sweep",
+      edits: [[memory, "    await rebuildCards(deltas || [])\n", "    if (deltas) await rebuildCards(deltas)\n"]],
+    },
+    {
+      name: "17 a late failure is thrown",
+      check: "cards: a failure after the announcement never reaches the caller",
+      edits: [[memory, "    log.warn('replay.cards_failed', {", "    if (Date.now() > 0) throw err\n    log.warn('replay.cards_failed', {"]],
+    },
+    {
+      name: "18 a lost claim is refolded anyway",
+      check: "cards: a lost claim or a deleted story refolds nothing",
+      edits: [[memory, "if (ledgered.matchedCount !== 1) {", "if (ledgered.matchedCount !== 1 && Date.now() < 0) {"]],
+    },
+    {
+      name: "18b a deleted story is refolded",
+      check: "cards: a lost claim or a deleted story refolds nothing",
+      edits: [[memory, "    if (!(await liveInstanceExists(event.instance_id))) return\n    if (deltas)", "    if (deltas)"]],
     },
   ]
 
