@@ -21,8 +21,9 @@
  */
 import { MongoClient } from 'mongodb'
 import { derivationKey } from '../src/services/world-derivations.service'
-import { calendarPremiseOf, deriveCalendarFromPremise } from '../src/services/time.service'
+import { deriveCalendarFromPremise } from '../src/services/time.service'
 import { deriveOpeningPlace } from '../src/services/opening-place.service'
+import { planForWorld, type WorldWarmPlan } from '../src/services/world-warm.service'
 import { isWorldListed } from '../src/utils/world-review'
 import type { WorldTemplateDoc } from '../src/models/world-template.model'
 
@@ -47,20 +48,6 @@ function parseOptions(argv: string[]): Options {
     } else throw new Error(`Unknown option: ${arg}`)
   }
   return options
-}
-
-/** The text each derivation needs for one world; a group has no opening place. */
-export interface WorldWarmPlan {
-  calendarInput: string | null
-  openingInput: string | null
-}
-
-export function planForWorld(
-  template: Pick<WorldTemplateDoc, 'title' | 'description' | 'seed_prompt' | 'global_lore' | 'opening_line' | 'kind'>,
-): WorldWarmPlan {
-  const calendarInput = calendarPremiseOf(template) || null
-  const opening = template.kind === 'group' ? '' : String(template.opening_line || '').trim()
-  return { calendarInput, openingInput: opening || null }
 }
 
 async function main() {

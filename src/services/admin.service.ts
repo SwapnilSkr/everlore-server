@@ -16,8 +16,18 @@ import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default
 import { storageService } from './storage.service'
 import { vectorStore } from './vector-store'
 import { portraitUrl } from './media/portraits'
+import { log } from '../utils/logger'
 
 export type AdminUserTier = 'free' | 'premium' | 'creator' | 'inherit'
+
+/** Warm behind the request; loaded lazily, and a failed load only warns. */
+function startWorldWarm(templateId: string): void {
+  void import('./world-warm.service')
+    .then(({ warmWorldDerivations }) => warmWorldDerivations(templateId))
+    .catch((error) => {
+      log.warn('world_warm.start_failed', { templateId, kind: 'template', error: (error as Error).message })
+    })
+}
 
 const users = () => mongoColl.users()
 const worldTemplates = () => mongoColl.worldTemplates()
@@ -465,6 +475,8 @@ export const adminService = {
       { $set: { ...patch, updated_at: new Date() } },
       { returnDocument: 'after' },
     )
+    // An admin edit reaches the same world text a creator edit does.
+    if (updated) void startWorldWarm(templateId)
     return { world: serialize(updated) }
   },
 

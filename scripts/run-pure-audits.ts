@@ -71,6 +71,7 @@ const PURE_AUDITS = [
   'audit:mongo-index-partial',
   'audit:prose-format',
   // A raw path is allowed for an audit that has no package.json script yet.
+  'scripts/world-warm-audit.ts',
   'scripts/player-gender-audit.ts',
 ] as const
 

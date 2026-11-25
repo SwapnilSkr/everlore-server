@@ -20,6 +20,7 @@ import { familyExpandedKeys } from '../utils/narrative-styles'
 import { extractTemplateCast } from '../../worker/lib/template-cast-extractor'
 import { FIELD_LIMITS } from '../schemas/template.schema'
 import { moderationService } from './moderation.service'
+import { log } from '../utils/logger'
 import { hasMeaningfulWorldEdit, publishReviewUpdate } from '../utils/world-review'
 import {
   deriveGenre,
@@ -121,6 +122,19 @@ function assertValidStats(baseStats: Record<string, unknown> | undefined, field:
   }
 }
 
+/**
+ * Warm the world's derivations behind the request. Loaded lazily so a write
+ * never pulls the derivation stack at module load; the warm is an optimisation,
+ * never a dependency, so a failed load is a warn line and nothing more.
+ */
+function startWorldWarm(templateId: string): void {
+  void import('./world-warm.service')
+    .then(({ warmWorldDerivations }) => warmWorldDerivations(templateId))
+    .catch((error) => {
+      log.warn('world_warm.start_failed', { templateId, kind: 'template', error: (error as Error).message })
+    })
+}
+
 export const templateService = {
   async create(creatorId: string, data: any): Promise<WorldTemplateDoc> {
     await requireIdentity(creatorId)
@@ -209,6 +223,9 @@ export const templateService = {
     }
 
     await worldTemplates().insertOne(template)
+    // The first player to open this world should not pay for its calendar and
+    // opening place. The write has succeeded; the warm runs behind the request.
+    void startWorldWarm(idString(template._id))
     return template
   },
 
@@ -318,6 +335,9 @@ export const templateService = {
       throw new HttpError(409, 'This world changed while you were editing. Please reopen it.')
     }
 
+    // An edit may have changed the text the calendar and opening place derive
+    // from. Unchanged text hits the existing keys for two reads, no model call.
+    void startWorldWarm(idString(tid))
     return { ...existing, ...updateFields } as WorldTemplateDoc
   },
 
