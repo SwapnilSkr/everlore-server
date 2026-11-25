@@ -1,7 +1,7 @@
 import { callLLM, AI_MODELS } from '../../src/ai'
 import { env } from '../../src/config/env'
 import type { ChoiceEnglish } from '../../src/utils/witness'
-import { enforceSchema, type GenerationOutput, type SchemaOptions } from './structured-output'
+import { enforceSchema, untranslatedChoices, type GenerationOutput, type SchemaOptions } from './structured-output'
 
 /** Structured fields derived from a narrative — everything except the prose itself. */
 export type SceneMetadata = Omit<GenerationOutput, 'narrative'>
@@ -199,8 +199,10 @@ const LEDGER_ONLY_SCHEMA = {
   properties: { beat_ledger: ledgerSchema }, required: ['beat_ledger'],
 }
 
-/** One choice in the non-English variant: the native chip plus the same choice
- *  in English, both required. */
+/** One choice in the non-English variant: the English choice the rules describe,
+ *  then the same choice for the player. English comes first because the whole
+ *  rules block above teaches it: asked for the native text under those same names,
+ *  the model wrote English there or left the pair out on two turns in five. */
 const CHOICE_LANGUAGE_ITEM = {
   type: 'object',
   additionalProperties: false,
@@ -208,10 +210,10 @@ const CHOICE_LANGUAGE_ITEM = {
     label: { type: 'string' },
     kind: { type: 'string', enum: ['act', 'say'] },
     send: { type: 'string' },
-    label_en: { type: 'string' },
-    send_en: { type: 'string' },
+    label_local: { type: 'string' },
+    send_local: { type: 'string' },
   },
-  required: ['label', 'kind', 'send', 'label_en', 'send_en'],
+  required: ['label', 'kind', 'send', 'label_local', 'send_local'],
 }
 
 /** `choices` replaced with the paired shape, keeping every other property in
@@ -232,7 +234,70 @@ const CHOICES_ONLY_SCHEMA_EN = withEnglishChoices(CHOICES_ONLY_SCHEMA)
  * read, and only the chips the player sees are native.
  */
 export function choiceLanguageInstruction(name: string): string {
-  return `CHOICE LANGUAGE: write every choice label and send, and the milestone, in ${name}; label_en and send_en are the same choice in English; every other field in English; keep names unchanged and keep the asterisk format.`
+  return `CHOICE LANGUAGE: the player reads this story in ${name}. Every choice object has FIVE required fields, in this order: label, kind and send in English exactly as described above, whatever language the passage is in; then label_local and send_local, that same label and send translated into natural ${name}, first person kept, names and *asterisks* kept. Example shape: {"label":"Take her hand","kind":"act","send":"*I reach out and take her hand.*","label_local":"<the label in ${name}>","send_local":"<the send in ${name}, asterisks kept>"}. Never leave label_local or send_local in English. The milestone, when there is one, is in ${name}. Every other field is in English.`
+}
+
+const CHOICE_TRANSLATION_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    choices: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { label: { type: 'string' }, send: { type: 'string' } },
+        required: ['label', 'send'],
+      },
+    },
+  },
+  required: ['choices'],
+}
+/** Below this many usable pairs the missing ones are translated once. */
+const CHOICE_PAIR_FLOOR = 2
+const CHOICE_TRANSLATION_TIMEOUT_MS = 6_000
+
+/**
+ * The raw answer with its missing native copies filled in. Only for a turn left
+ * with fewer than two buttons; any failure returns the answer as it was, so a turn
+ * never loses a button it had.
+ */
+async function withMissingChoiceCopies(
+  raw: string,
+  name: string,
+  invoke: typeof callLLM,
+): Promise<string> {
+  const parsed = safeParseObject(raw)
+  const missing = untranslatedChoices(parsed.choices)
+  if (missing.length === 0) return raw
+  try {
+    const answer = await invoke({
+      model: AI_MODELS.metadata,
+      purpose: 'choice_translation',
+      messages: [
+        {
+          role: 'system',
+          content: `You translate the tap-to-play buttons of an interactive story into natural ${name}. Each has a short label and the move the player sends. Keep the first person, the meaning, every name, and the *asterisks* around actions with spoken words outside them. Return the same buttons in the same order.`,
+        },
+        { role: 'user', content: JSON.stringify(missing.map((item) => ({ label: item.label, send: item.send }))) },
+      ],
+      temperature: 0,
+      maxTokens: 500,
+      responseSchema: CHOICE_TRANSLATION_SCHEMA,
+      responseFormat: { type: 'json_schema', json_schema: { name: 'choice_translation', strict: true } },
+      timeoutMs: CHOICE_TRANSLATION_TIMEOUT_MS,
+    })
+    const copies = safeParseObject(answer).choices
+    // A different count cannot be matched to its button.
+    if (!Array.isArray(copies) || copies.length !== missing.length) return raw
+    const filled = new Map(missing.map((item, index) => {
+      const copy = copies[index] as { label?: unknown; send?: unknown } | null
+      return [item, { ...item, label_local: copy?.label, send_local: copy?.send }]
+    }))
+    return JSON.stringify({ ...parsed, choices: (parsed.choices as Record<string, unknown>[]).map((item) => filled.get(item) ?? item) })
+  } catch {
+    return raw
+  }
 }
 
 /** Default for the WITNESS half — used when its call fails so a witness outage
@@ -814,7 +879,10 @@ export async function extractChoiceMetadata(
           : split ? CHOICES_ONLY_SCHEMA : CHOICE_META_SCHEMA,
       })
       opts?.onRaw?.('choice_metadata', raw)
-      const v = validateHalf(raw, language ? { choiceLanguage: true } : undefined)
+      let v = validateHalf(raw, language ? { choiceLanguage: true } : undefined)
+      if (language && v.choices.length < CHOICE_PAIR_FLOOR) {
+        v = validateHalf(await withMissingChoiceCopies(raw, language.name, invoke), { choiceLanguage: true })
+      }
       const nativeChoices = v.choices || []
       const englishChoices = language ? (v.choices_en || []) : undefined
       // Drop repeats on the native labels exactly as before, keeping the pair

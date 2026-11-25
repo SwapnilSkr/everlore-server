@@ -2,7 +2,7 @@
  * REPLY-LANGUAGE CHOICES: the non-English choice pass (§5 of
  * `everlore-docs/phases/reply-language.md`).
  *
- * Covers the paired `label_en`/`send_en` schema, the language line, the native
+ * Covers the paired `label_local`/`send_local` schema, the language line, the native
  * choice half, the promise handoff that lets rl-3 start choices at stream end,
  * alignment through every filter, and the grounding guard that runs on the
  * English pair.
@@ -140,7 +140,7 @@ await check('absent: an explicit undefined choiceLanguage equals an omitted one'
 // ── 2. present: the native choice half and the language line ────────────────
 const LANGUAGE = { name: 'Brazilian Portuguese', narrative: NATIVE_PROSE, playerInput: NATIVE_PLAYER }
 const LANGUAGE_OPTS: MetadataOpts = { ...FIXTURE_OPTS, playerInput: ENGLISH_PLAYER, choiceLanguage: LANGUAGE }
-const EN_RAW = '{"choices":[{"label":"Perguntar por que ela saiu","kind":"say","send":"Por que você ficou fora tanto tempo?","label_en":"Ask why she left","send_en":"Why did you stay away so long?"}],"milestone":null}'
+const EN_RAW = '{"choices":[{"label":"Ask why she left","kind":"say","send":"Why did you stay away so long?","label_local":"Perguntar por que ela saiu","send_local":"Por que você ficou fora tanto tempo?"}],"milestone":null}'
 
 await check('present: the choice half reads the native prose and native player turn', async () => {
   const { requests, call } = fixtureCall(EN_RAW)
@@ -162,13 +162,13 @@ await check('present: one language line, at the very end of the choice system pr
   assert.equal(system.split('CHOICE LANGUAGE:').length - 1, 1, 'the line must appear exactly once')
 })
 
-await check('present: the schema requires label_en/send_en and maxTokens is 900', async () => {
+await check('present: the schema requires label_local/send_local and maxTokens is 900', async () => {
   const { requests, call } = fixtureCall(EN_RAW)
   await extractChoiceMetadata(ENGLISH_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, { ...LANGUAGE_OPTS, call }, { split: true })
   const choice = byPurpose(requests, 'choice_metadata')
   assert.equal(choice.maxTokens, 900)
   const item = (choice.responseSchema as Record<string, any>).properties.choices.items
-  assert.deepEqual(item.required, ['label', 'kind', 'send', 'label_en', 'send_en'])
+  assert.deepEqual(item.required, ['label', 'kind', 'send', 'label_local', 'send_local'])
   assert.equal('beat_ledger' in (choice.responseSchema as Record<string, any>).properties, false, 'split still omits the ledger')
 })
 
@@ -240,7 +240,7 @@ function pairRaw(items: unknown[]): string {
   return JSON.stringify({ choices: items, milestone: null })
 }
 const EN_ITEM = (label: string, send: string, labelEn: string, sendEn: string) => ({
-  label, kind: 'act', send, label_en: labelEn, send_en: sendEn,
+  label: labelEn, kind: 'act', send: sendEn, label_local: label, send_local: send,
 })
 
 await check('result: the native choices and the English pairs are aligned by index', async () => {
@@ -280,9 +280,9 @@ await check('result: repeat filtering keeps pairs aligned, including the floor r
   )
 })
 
-await check('result: a choice missing an English field is dropped with its pair', async () => {
+await check('result: a choice missing a native field is dropped with its pair', async () => {
   const raw = pairRaw([
-    { label: 'Perguntar agora', kind: 'act', send: '*Eu pergunto agora.*', send_en: '*I ask now.*' },
+    { label: 'Ask now', kind: 'act', send: '*I ask now.*', send_local: '*Eu pergunto agora.*' },
     EN_ITEM('Esperar em silêncio', '*Eu espero em silêncio.*', 'Wait in silence', '*I wait in silence.*'),
   ])
   const { call } = fixtureCall(raw)
@@ -300,6 +300,80 @@ await check('result: an untranslated field of 3+ words drops the pair; two words
   const result = await extractChoiceMetadata(ENGLISH_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, { ...LANGUAGE_OPTS, call }, { split: true })
   assert.deepEqual(result.choices.map((choice) => choice.label), ['Esperar aqui'], 'the untranslated 4-word send drops the second pair; the 2-word label may match')
   assert.equal(result.choices_en?.length, 1)
+})
+
+await check('result: a move with one part left in English is dropped', async () => {
+  const raw = pairRaw([
+    EN_ITEM('Perguntar', '*I lean in closer.* O que houve com você?', 'Ask', '*I lean in closer.* What happened to you?'),
+    EN_ITEM('Chegar perto', '*Eu chego mais perto.* What happened to you?', 'Come close', '*I come closer.* What happened to you?'),
+    EN_ITEM('Chamar', '*Eu aceno.* "Kai! Vem cá."', 'Call', '*I wave.* "Kai! Come here."'),
+    EN_ITEM('Esperar', '*Eu espero.*', 'Wait', '*I wait.*'),
+  ])
+  const { call } = fixtureCall(raw)
+  const result = await extractChoiceMetadata(ENGLISH_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, { ...LANGUAGE_OPTS, call }, { split: true })
+  assert.deepEqual(result.choices.map((choice) => choice.label), ['Chamar', 'Esperar'])
+})
+
+// ── the rare turn left with too few buttons ──────────────────────────────────
+const HALF_RAW = pairRaw([
+  { label: 'Ask now', kind: 'act', send: '*I ask now, quietly.*' },
+  EN_ITEM('Esperar', '*Eu espero.*', 'Wait', '*I wait.*'),
+  EN_ITEM('Leave', '*I leave the hall.*', 'Leave', '*I leave the hall.*'),
+])
+async function withTranslation(raw: string, answer: string | Error, language = true) {
+  const requests: Array<Record<string, any>> = []
+  const call = async (request: Record<string, any>) => {
+    requests.push(JSON.parse(JSON.stringify(request)))
+    if (request.purpose === 'choice_metadata') return raw
+    if (request.purpose === 'beat_ledger') return LEDGER_RAW
+    if (answer instanceof Error) throw answer
+    return answer
+  }
+  const opts = language ? LANGUAGE_OPTS : FIXTURE_OPTS
+  const result = await extractChoiceMetadata(ENGLISH_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, { ...opts, recentChoiceLabels: [], call }, { split: true })
+  return { result, asked: requests.filter((request) => request.purpose === 'choice_translation') }
+}
+const COPIES = JSON.stringify({ choices: [
+  { label: 'Perguntar agora', send: '*Eu pergunto agora, baixinho.*' },
+  { label: 'Sair', send: '*Eu saio do salão.*' },
+] })
+
+await check('missing copies: fewer than two pairs gets one translation, kept in order', async () => {
+  const { result, asked } = await withTranslation(HALF_RAW, COPIES)
+  assert.equal(asked.length, 1)
+  assert.deepEqual(JSON.parse(userOf(asked[0])), [
+    { label: 'Ask now', send: '*I ask now, quietly.*' },
+    { label: 'Leave', send: '*I leave the hall.*' },
+  ], 'only the buttons without a copy are sent')
+  assert.equal(asked[0].timeoutMs, 6000, 'the turn must not wait on it for long')
+  assert.equal(asked[0].responseFormat.json_schema.strict, true)
+  assert.ok(systemOf(asked[0]).includes(LANGUAGE.name))
+  assert.deepEqual(result.choices.map((choice) => choice.label), ['Perguntar agora', 'Esperar', 'Sair'])
+  assert.deepEqual(result.choices_en?.map((choice) => choice.label), ['Ask now', 'Wait', 'Leave'])
+})
+
+await check('missing copies: two pairs or an English turn never call it', async () => {
+  const two = pairRaw([
+    EN_ITEM('Esperar', '*Eu espero.*', 'Wait', '*I wait.*'),
+    EN_ITEM('Sair', '*Eu saio.*', 'Leave', '*I leave.*'),
+    { label: 'Ask now', kind: 'act', send: '*I ask now, quietly.*' },
+  ])
+  assert.equal((await withTranslation(two, COPIES)).asked.length, 0)
+  assert.equal((await withTranslation(pairRaw([]), COPIES)).asked.length, 0, 'nothing to translate')
+  assert.equal((await withTranslation(CHOICE_RAW, COPIES, false)).asked.length, 0, 'an English turn')
+})
+
+await check('missing copies: a failed, short or untranslated answer keeps what survived', async () => {
+  for (const answer of [
+    new Error('down'), 'not json', '{}', '{"choices":[{"label":"Sair","send":"*Eu saio do salão.*"}]}', '{"choices":[null,null]}',
+    JSON.stringify({ choices: [
+      { label: 'Ask now', send: '*I ask now, quietly.*' }, { label: 'Leave', send: '*I leave the hall.*' },
+    ] }),
+  ]) {
+    const { result } = await withTranslation(HALF_RAW, answer)
+    assert.deepEqual(result.choices.map((choice) => choice.label), ['Esperar'], String(answer))
+    assert.deepEqual(result.choices_en, [{ label: 'Wait', send: '*I wait.*' }])
+  }
 })
 
 await check('filterChoicePairs: keeps each native chip with its pair through a filter', () => {
@@ -414,7 +488,7 @@ async function runBites() {
     },
     {
       name: 'present: maxTokens is not raised',
-      check: 'present: the schema requires label_en/send_en and maxTokens is 900',
+      check: 'present: the schema requires label_local/send_local and maxTokens is 900',
       edits: [[extractor, 'maxTokens: language ? 900 : 450,', 'maxTokens: 450,']],
     },
     {
@@ -433,9 +507,52 @@ async function runBites() {
       edits: [[extractor, ': { choices_en: ordered.map((index) => englishChoices[index]) }),', ': { choices_en: englishChoices.filter(Boolean) }),']],
     },
     {
+      name: 'present: the English and native fields are read the wrong way round',
+      check: 'result: the native choices and the English pairs are aligned by index',
+      edits: [
+        [output, "label: typeof source.label_local === 'string' ? source.label_local : ''", "label: typeof source.label === 'string' ? source.label : ''"],
+        [output, "send: typeof source.send_local === 'string' ? source.send_local : ''", "send: typeof source.send === 'string' ? source.send : ''"],
+      ],
+    },
+    {
+      name: 'present: a half-translated move is accepted',
+      check: 'result: a move with one part left in English is dropped',
+      edits: [[output, "value.split('*').map(choiceTextKey)", '[choiceTextKey(value)]']],
+    },
+    {
+      name: 'missing copies: never translated',
+      check: 'missing copies: fewer than two pairs gets one translation, kept in order',
+      edits: [[extractor, 'if (language && v.choices.length < CHOICE_PAIR_FLOOR)', 'if (language && v.choices.length < 0)']],
+    },
+    {
+      name: 'missing copies: translated although two pairs survive',
+      check: 'missing copies: two pairs or an English turn never call it',
+      edits: [[extractor, 'v.choices.length < CHOICE_PAIR_FLOOR)', 'v.choices.length < 9)']],
+    },
+    {
+      name: 'missing copies: a failure loses the button that worked',
+      check: 'missing copies: a failed, short or untranslated answer keeps what survived',
+      edits: [[extractor, '  } catch {\n    return raw\n  }', "  } catch {\n    return '{}'\n  }"]],
+    },
+    {
+      name: 'missing copies: a short answer is matched by position',
+      check: 'missing copies: a failed, short or untranslated answer keeps what survived',
+      edits: [[extractor, '|| copies.length !== missing.length) return raw', ') return raw']],
+    },
+    {
+      name: 'missing copies: buttons that already worked are sent again',
+      check: 'missing copies: fewer than two pairs gets one translation, kept in order',
+      edits: [[output, ' && sanitizeChoicePairs([item]).choices.length === 0)', ')']],
+    },
+    {
+      name: 'missing copies: the call can hang the turn',
+      check: 'missing copies: fewer than two pairs gets one translation, kept in order',
+      edits: [[extractor, '      timeoutMs: CHOICE_TRANSLATION_TIMEOUT_MS,\n', '']],
+    },
+    {
       name: 'present: an untranslated two-word field is treated as translated',
       check: 'result: an untranslated field of 3+ words drops the pair; two words may match',
-      edits: [[output, 'key.split(\' \').filter(Boolean).length >= 3', 'key.split(\' \').filter(Boolean).length >= 2']],
+      edits: [[output, "part.split(' ').length >= 3", "part.split(' ').length >= 2"]],
     },
     {
       name: 'grounding: an ungrounded English pair is kept',

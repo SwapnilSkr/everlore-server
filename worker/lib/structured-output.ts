@@ -471,11 +471,13 @@ function choiceTextKey(value: string): string {
     .trim()
 }
 
-/** True when the English field is the native field verbatim and long enough to
- *  be a real sentence (3+ words) — i.e. it was not translated. */
+/** True when a native part is the English part verbatim and long enough to be a
+ *  real sentence (3+ words), i.e. it was not translated. Read part by part around
+ *  the asterisks: a move can be half translated ("*I lean in.* O que houve?"). */
 function untranslatedField(native: string, english: string): boolean {
-  const key = choiceTextKey(native)
-  return key === choiceTextKey(english) && key.split(' ').filter(Boolean).length >= 3
+  const parts = (value: string) => value.split('*').map(choiceTextKey).filter(Boolean)
+  const englishParts = new Set(parts(english))
+  return parts(native).some((part) => part.split(' ').length >= 3 && englishParts.has(part))
 }
 
 export interface ChoicePairSanitizeResult {
@@ -483,11 +485,20 @@ export interface ChoicePairSanitizeResult {
   choices_en: ChoiceEnglish[]
 }
 
+/** Raw choices whose English is well formed but whose native copy is missing or
+ *  was never translated: what one small translation can still save. */
+export function untranslatedChoices(raw: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(raw)) return []
+  return raw.filter((item): item is Record<string, unknown> =>
+    !!item && typeof item === 'object' && !Array.isArray(item) &&
+    normalizeChoiceItem(item) !== null && sanitizeChoicePairs([item]).choices.length === 0)
+}
+
 /**
- * Sanitize the paired, non-English choice shape: every accepted native choice
- * must also carry a well-formed English `label_en`/`send_en`. A choice missing
- * either English field, or whose English is the native copy itself (3+ words),
- * is dropped. Both lists stay aligned by index through the same filtering.
+ * Sanitize the paired, non-English choice shape: `label`/`send` are English and
+ * `label_local`/`send_local` are the same choice for the player. A choice missing
+ * either, or whose native text is the English copy itself (3+ words), is dropped.
+ * Both lists stay aligned by index through the same filtering.
  */
 export function sanitizeChoicePairs(raw: unknown): ChoicePairSanitizeResult {
   if (!Array.isArray(raw)) return { choices: [], choices_en: [] }
@@ -497,12 +508,16 @@ export function sanitizeChoicePairs(raw: unknown): ChoicePairSanitizeResult {
   for (const item of raw) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) continue
     const source = item as Record<string, unknown>
-    const native = normalizeChoiceItem(source, true)
+    const native = normalizeChoiceItem({
+      label: typeof source.label_local === 'string' ? source.label_local : '',
+      kind: source.kind,
+      send: typeof source.send_local === 'string' ? source.send_local : '',
+    }, true)
     if (!native) continue
     const english = normalizeChoiceItem({
-      label: typeof source.label_en === 'string' ? source.label_en : '',
+      label: typeof source.label === 'string' ? source.label : '',
       kind: native.choice.kind,
-      send: typeof source.send_en === 'string' ? source.send_en : '',
+      send: typeof source.send === 'string' ? source.send : '',
     })
     if (!english) continue
     if (
@@ -527,8 +542,8 @@ const VALID_SCENE_TAGS = new Set([
 ])
 
 export interface SchemaOptions {
-  /** The non-English choice variant: every accepted choice also carries an
-   *  English `label_en`/`send_en`, and the result gains `choices_en`. */
+  /** The non-English choice variant: every accepted choice also carries its
+   *  native `label_local`/`send_local`, and the result gains `choices_en`. */
   choiceLanguage?: boolean
 }
 
