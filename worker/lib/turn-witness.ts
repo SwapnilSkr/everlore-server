@@ -122,14 +122,16 @@ export function witnessEventFields(
 }
 
 /**
- * The witness portion of `replay_variants[0]` (§5/§7): prose and its choices
- * only; the player text is the event's own. Present only on an accepted
- * non-English turn.
+ * The witness portion of a replay variant (§5/§7): prose and its choices only;
+ * the player text is the event's own. An accepted non-English copy stores the
+ * witness; a refused one stores `witness_status: 'failed'`, so selecting the
+ * variant knows it has to retry. An English variant adds nothing.
  */
 export function replayWitnessFields(
   input: WitnessEventFieldsInput,
-): { witness?: ReplayWitness } {
-  if (!input.language || !input.accepted) return {}
+): { witness?: ReplayWitness; witness_status?: 'failed' } {
+  if (!input.language) return {}
+  if (!input.accepted) return { witness_status: 'failed' }
   const choices = input.choices && input.choices.length ? { choices: input.choices } : {}
   return {
     witness: {

@@ -1618,7 +1618,10 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // call site and handed to the builder as `authoredOpening` (so the builder's
   // AST-extracted closure stays `countTokens` only). The group handoff did not
   // move, so the pin was re-hashed the same way.
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '1c1cb81d2550b0ba09140ebb5d854820ba43499de34682f1cb003ecae648b850')
+  // rl-4 replaced the live turn's inline person/place lists with the shared
+  // `witnessGlossary` helper (same values, byte-identical copy input). The
+  // group-only handoff did not move, so the pin was re-hashed the same way.
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), 'b8515afba2b18a20efabe446c66395002c7678016499c0ac8d846cb68823dd9b')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —

@@ -44,6 +44,9 @@ export interface ReplayVariantDoc {
    *  choices only; the player text is the event's own). Selecting the variant
    *  restores it (§7). */
   witness?: ReplayWitness
+  /** Set when this variant's copy could not be made: selecting it retries once,
+   *  and a second refusal leaves the turn in the same state (§7). */
+  witness_status?: 'failed'
   /** Backend-OWNED trackable mentions derived from THIS variant's prose, so
    *  browsing/committing a variant carries its own underline data without
    *  re-running the canon-gap classifier. Same shape as EventDataDoc. */

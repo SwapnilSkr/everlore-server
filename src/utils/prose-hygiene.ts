@@ -24,6 +24,9 @@ interface ProseHygieneInput {
    *  formatting/length codes survive; English-worded checks (player label,
    *  shared history, name repetition) are not meaningful in another language. */
   replyLanguage?: string;
+  /** The model-facing name of `replyLanguage` ("Brazilian Portuguese"). Only the
+   *  repair prompt reads it, so the rewrite is told which language to stay in. */
+  replyLanguageName?: string;
 }
 
 const REPAIRABLE_CODES = new Set([
@@ -928,6 +931,7 @@ export async function repairProseHygiene(
     playerAddressMode: input.playerAddressMode,
     previousOpeningNames: input.previousOpeningNames,
     avoidOpeningNames: input.avoidOpeningNames,
+    replyLanguage: input.replyLanguage,
   });
   if (!initialIssues.some((issue) => REPAIRABLE_CODES.has(issue.code))) {
     return {
@@ -937,11 +941,27 @@ export async function repairProseHygiene(
     };
   }
 
+  const replyLanguageName = input.replyLanguageName || input.replyLanguage || ''
+  // Non-English reply: name the language and forbid translating the rewrite.
+  // The two English-only surface prescriptions below are dropped with it — an
+  // English sample sentence and English pronouns ("you"/"I") are the ways a
+  // rewrite gets pulled back into English. An English reply adds no line and
+  // keeps both prescriptions verbatim.
+  const replyLanguageRule = input.replyLanguage
+    ? `- The story prose is in ${replyLanguageName}. The rewrite must stay in ${replyLanguageName}; never translate it into English.\n`
+    : ''
+  const spokenQuoteRule = input.replyLanguage
+    ? '- Spoken aloud words must be wrapped in double quotes.'
+    : '- Spoken aloud words must be wrapped in double quotes, like "I missed you."'
+  const addressRule = input.replyLanguage
+    ? '- Preserve immersive protagonist address. Never call the visible protagonist "player" or "user".'
+    : `- Preserve immersive protagonist address. Never call the visible protagonist "player" or "user". ${input.playerAddressMode === "self" ? 'Refer to myself as I/me/my in narration.' : input.playerAddressMode === "you" ? 'Refer to them as "you" in both dialogue and narration.' : 'Refer to them by canonical name or natural third-person pronouns.'}`
+
   const repairPrompt = `Rewrite the story prose below to fix formatting and name hygiene only.
 
 Rules:
-- Keep the same events, facts, speaker intent, emotional beat, and approximate length.
-- Spoken aloud words must be wrapped in double quotes, like "I missed you."
+${replyLanguageRule}- Keep the same events, facts, speaker intent, emotional beat, and approximate length.
+${spokenQuoteRule}
 - All narration, action, body language, inner thought, and dialogue attribution must be inside single asterisks, like *she says softly*.
 - Scene description and atmospheric prose are narration. They must also be inside single asterisks.
 - Text outside asterisks must be quoted speech only.
@@ -957,7 +977,7 @@ Rules:
 - In one-on-one beats, names should be almost absent after the character is established.
 - In multi-character beats, use names only to restore clarity, then return to pronouns and distinct actions.
 - Finish cleanly. Do not end mid-sentence, on a dangling connector, or with unbalanced quotes/asterisks.
-- Preserve immersive protagonist address. Never call the visible protagonist "player" or "user". ${input.playerAddressMode === "self" ? 'Refer to myself as I/me/my in narration.' : input.playerAddressMode === "you" ? 'Refer to them as "you" in both dialogue and narration.' : 'Refer to them by canonical name or natural third-person pronouns.'}
+${addressRule}
 - Obey the selected reply length as a quality requirement:
   - short = 1 short paragraph, about 2-4 sentences; concise but complete.
   - medium = about 2-3 short paragraphs; vivid but not bloated.
@@ -993,6 +1013,7 @@ ${normalized}`;
       playerAddressMode: input.playerAddressMode,
       previousOpeningNames: input.previousOpeningNames,
       avoidOpeningNames: input.avoidOpeningNames,
+      replyLanguage: input.replyLanguage,
     });
     // A cosmetic rewrite that leaves the validation score unchanged is not a
     // repair. Keeping it used to let a second model rephrase a response while

@@ -67,6 +67,21 @@ function wellFormed(witness: Record<string, unknown>): boolean {
 }
 
 /**
+ * The raw stored witness when it is usable (present, well formed, not marked
+ * failed), else `null`. A flow that must rewrite the witness in place — replay,
+ * edit, select (§7) — needs the fields `witnessOf` does not expose (`lang`,
+ * `choices`), and needs to know whether there is anything to preserve.
+ */
+export function storedWitness(event: unknown): TurnWitness | null {
+  const data = dataOf(event)
+  const witness = objectOf(data.witness)
+  if (witness && data.witness_status !== 'failed' && wellFormed(witness)) {
+    return witness as unknown as TurnWitness
+  }
+  return null
+}
+
+/**
  * The witness's values when it is present and well formed, otherwise the
  * event's own values exactly — same references, same `undefined`s. Never
  * throws; a missing row, a partial projection or a failed witness all fall back
@@ -74,13 +89,13 @@ function wellFormed(witness: Record<string, unknown>): boolean {
  */
 export function witnessOf(event: unknown): WitnessView {
   const data = dataOf(event)
-  const witness = objectOf(data.witness)
-  if (witness && data.witness_status !== 'failed' && wellFormed(witness)) {
+  const witness = storedWitness(event)
+  if (witness) {
     return {
-      ai_response: witness.ai_response as string,
-      player_input: witness.player_input as string,
-      player_spoken_input: witness.player_spoken_input as string | undefined,
-      player_narration_facts: witness.player_narration_facts as string[] | undefined,
+      ai_response: witness.ai_response,
+      player_input: witness.player_input,
+      player_spoken_input: witness.player_spoken_input,
+      player_narration_facts: witness.player_narration_facts,
     }
   }
   return {
@@ -124,4 +139,48 @@ export function playerTextOf(event: unknown, fallback?: string): string {
  */
 export function keywordQueryTextFor(nativeText: string, chipEnglish?: string | null): string {
   return chipEnglish && chipEnglish.trim() ? chipEnglish : nativeText
+}
+
+export interface WitnessGlossaryInput {
+  /** Every character card of the save, aliases included. Never a truncated list:
+   *  a name dropped here is a name the copy is allowed to mistranslate. */
+  cards?: Array<{ canonical_name?: unknown; aliases?: unknown }>
+  /** Whoever is in the scene now. */
+  present?: string[]
+  /** The player's persona in a sentient world. */
+  personaName?: string | null
+  /** The viewpoint character's name. */
+  protagonistName?: string | null
+  /** People the place graph already knows. */
+  graphPeople?: string[]
+  /** Known locations, aliases included. */
+  places?: Array<{ name?: unknown; aliases?: unknown }>
+  currentLocationName?: string | null
+}
+
+/**
+ * The one glossary builder (§4): every known person and place, in the live
+ * turn's order, so the live turn and the replay/edit/select flows all hand the
+ * copy the same list. Empty and non-string entries are dropped; duplicates are
+ * left to `makeWitness`, which de-dupes without moving the order.
+ */
+export function witnessGlossary(input: WitnessGlossaryInput): { people: string[]; places: string[] } {
+  const people = [
+    ...(input.cards || []).flatMap((card) => [
+      card?.canonical_name,
+      ...(Array.isArray(card?.aliases) ? (card.aliases as unknown[]) : []),
+    ]),
+    ...(input.present || []),
+    input.personaName,
+    input.protagonistName,
+    ...(input.graphPeople || []),
+  ].filter((name): name is string => typeof name === 'string' && !!name.trim())
+  const places = [
+    ...(input.places || []).flatMap((place) => [
+      place?.name,
+      ...(Array.isArray(place?.aliases) ? (place.aliases as unknown[]) : []),
+    ]),
+    input.currentLocationName,
+  ].filter((name): name is string => typeof name === 'string' && !!name.trim())
+  return { people, places }
 }

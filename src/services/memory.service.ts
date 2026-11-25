@@ -13,14 +13,16 @@ import { getRedisClient } from '../config/redis'
 import { getMemoryCurationQueue, getSceneSummaryQueue, QUEUE_RETENTION } from '../queues'
 import { queryRag } from '../providers/rag.provider'
 import { buildPrompt } from '../utils/prompt-builder'
-import { effectiveReplyLanguage, spliceReplayDirective } from '../utils/reply-language'
+import { effectiveReplyLanguage, spliceReplayDirective, type ReplyLanguageEntry } from '../utils/reply-language'
 import { lengthMaxTokens } from '../utils/narrative-styles'
 import { NSFW_MODE, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import type { ObjectId } from 'mongodb'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { log } from '../utils/logger'
 import { parsePlayerInput } from '../utils/player-input-parser'
-import { playerTextOf } from '../utils/witness'
+import { playerTextOf, storedWitness, witnessGlossary, witnessOf, type ChoiceEnglish } from '../utils/witness'
+import { recordAnomaly } from '../utils/record-anomaly'
+import { replayWitnessFields, runTurnWitness, witnessEventFields, type TurnWitnessOutcome } from '../../worker/lib/turn-witness'
 import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
 import { characterCodexService } from './character-codex.service'
 import { snapshotCodexMedia, restoreCodexMedia, type CodexMediaSnapshot } from './codex-media-carryover'
@@ -142,7 +144,140 @@ function openingCharacterName(recentEvents: any[], names: string[]): string | nu
   return null
 }
 
+/** §7: the model-facing language, or null for an English/off turn. */
+function witnessLanguageOf(entry: ReplyLanguageEntry | undefined): { code: string; name: string } | null {
+  return entry ? { code: entry.code, name: entry.name } : null
+}
+
+/**
+ * §7: the language a flow runs in. Replay reads the save's; select reads the
+ * variant's; edit prefers the event's own witness language, so an English copy
+ * made before a save switched languages is repaired rather than silently
+ * re-read as native, and falls back to the save's.
+ */
+function replyLanguageForEvent(event: any, instance: any): ReplyLanguageEntry | undefined {
+  const witnessLang = event?.data?.witness?.lang
+  if (typeof witnessLang === 'string' && witnessLang) return effectiveReplyLanguage(witnessLang)
+  return effectiveReplyLanguage(instance?.reply_language)
+}
+
+/** The one glossary builder (§4/§7): every card of the save, not the first 16
+ *  the extractors read. */
+async function witnessGlossaryFor(params: {
+  instanceId: any
+  instance: any
+  template: any
+  present?: string[]
+  currentLocationName?: string | null
+}): Promise<{ people: string[]; places: string[] }> {
+  const iid = idString(params.instanceId)
+  const [cards, knownPlaces, graphPeople] = await Promise.all([
+    characters()
+      .find({ instance_id: params.instanceId })
+      .toArray()
+      .catch(() => [] as any[]),
+    entityGraphService
+      .listKnownLocations(iid, 200)
+      .catch(() => [] as Array<{ name: string; aliases: string[] }>),
+    entityGraphService
+      .listCharacterLastPlaces(iid)
+      .catch(() => [] as Array<{ name?: string }>),
+  ])
+  return witnessGlossary({
+    cards: cards as any[],
+    present: params.present,
+    personaName: params.instance?.persona_snapshot?.name,
+    protagonistName:
+      (cards as any[]).find((card) => card?.is_protagonist)?.canonical_name ||
+      params.template?.protagonist?.name,
+    graphPeople: graphPeople.map((person) => String(person?.name || '')),
+    places: knownPlaces,
+    currentLocationName: params.currentLocationName ?? params.instance?.current_location?.name,
+  })
+}
+
+/**
+ * Make the hidden copy for one replay/edit/select prose (§7). An English/off
+ * flow makes no call. A refusal logs `witness.failed` and records the
+ * `witness_failed` anomaly exactly like the live turn — ids and the reason,
+ * never any text — and returns no accepted copy, so the caller reads native.
+ */
+async function runFlowWitness(params: {
+  language: { code: string; name: string } | null
+  playerNative: string
+  proseNative: string
+  knownPlayerEnglish?: string
+  people: string[]
+  places: string[]
+  pov: 'first' | 'third'
+  playerName?: string | null
+  protagonistName?: string | null
+  isSentient?: boolean
+  event: any
+  instanceId: any
+  playerId: any
+  flow: 'replay' | 'edit' | 'select'
+}): Promise<{ accepted: { player: string; prose: string } | null; outcome: TurnWitnessOutcome | null }> {
+  if (!params.language) return { accepted: null, outcome: null }
+  const outcome = await runTurnWitness({
+    language: params.language,
+    playerNative: params.playerNative,
+    proseNative: params.proseNative,
+    ...(params.knownPlayerEnglish !== undefined ? { knownPlayerEnglish: params.knownPlayerEnglish } : {}),
+    people: params.people,
+    places: params.places,
+    pov: params.pov,
+    playerName: params.playerName ?? null,
+    protagonistName: params.protagonistName ?? null,
+    isSentient: params.isSentient,
+  })
+  const sequence = Number(params.event?.sequence || 0)
+  if (outcome.status === 'accepted') {
+    log.info('witness.copy', {
+      flow: params.flow,
+      eventId: idString(params.event?._id),
+      sequence,
+      lang: params.language.code,
+      status: 'accepted',
+      ms: outcome.ms,
+      attempts: outcome.attempts,
+    })
+    return { accepted: { player: outcome.player, prose: outcome.prose }, outcome }
+  }
+  if (outcome.status === 'rejected') {
+    log.warn('witness.failed', {
+      flow: params.flow,
+      instanceId: idString(params.instanceId),
+      eventId: idString(params.event?._id),
+      sequence,
+      reason: outcome.reason,
+      attempts: outcome.attempts,
+    })
+    void recordAnomaly({
+      instanceId: params.instanceId,
+      playerId: params.playerId,
+      eventId: params.event?._id ?? null,
+      sequence,
+      type: 'witness_failed',
+      severity: 'warn',
+      details: `${outcome.reason}:attempts=${outcome.attempts}`,
+    })
+  }
+  return { accepted: null, outcome }
+}
+
 function baseReplayVariantFor(event: any) {
+  // §7: the base variant IS the event's turn, so it carries the event's witness
+  // (or its failed status) — selecting it must not lose the English copy.
+  const stored = storedWitness(event)
+  const witness = stored
+    ? {
+        lang: stored.lang,
+        ai_response: stored.ai_response,
+        player_input: stored.player_input,
+        ...(stored.choices && stored.choices.length ? { choices: stored.choices } : {}),
+      }
+    : undefined
   return {
     id: `base_${idString(event._id)}`,
     narrative: event.data?.ai_response || '',
@@ -152,6 +287,11 @@ function baseReplayVariantFor(event: any) {
     choices: Array.isArray(event.data?.choices) ? event.data.choices : [],
     present_characters: Array.isArray(event.data?.present_characters) ? event.data.present_characters : [],
     beat_ledger: event.data?.beat_ledger,
+    ...(witness
+      ? { witness }
+      : event.data?.witness_status === 'failed'
+        ? { witness_status: 'failed' as const }
+        : {}),
     retrieval_profile: {
       lore_top_k: 10,
       memory_top_k: 25,
@@ -253,8 +393,17 @@ async function projectLatestReplayTurn(params: {
   playerId: string
   instance: any
   template: any
+  /** The prose every extractor reads: the accepted English copy, else native. */
   narrative: string
+  /** The player text every extractor reads: the accepted English copy, else
+   *  native. Passed explicitly (§7) so one view is never mixed with an older
+   *  witness still on the event. */
+  playerInput: string
   codex: any[]
+  /** Non-English turn: the unanswered choice half reads the native values. */
+  languageName?: string
+  nativeNarrative?: string
+  nativePlayerInput?: string
 }) {
   const { event, playerId, instance, template, narrative, codex } = params
   const instanceId = idString(event.instance_id)
@@ -331,7 +480,9 @@ async function projectLatestReplayTurn(params: {
     ...scenePresence.flatMap((scene) => scene.present.map((name: string) => ({ name, aliases: [] as string[] }))),
   ].filter((person) => person.name)
   const personPlaces = mergePersonPlaces(graphPeople, lastPlacesFromPresence(rosterPeople, scenePresence))
-  const replayInput = playerTextOf(event, event.userMessage)
+  // The caller passes the one view this flow reads (§7); a refused copy passes
+  // native, even if the event still holds an older English player text.
+  const replayInput = params.playerInput
   const replayAction = event.data?.world_action
   const replayPending = instance?.pending_destination?.name
     ? {
@@ -405,6 +556,18 @@ async function projectLatestReplayTurn(params: {
         knownPlaces,
         playerInput: replayInput,
         worldContext: [template.seed_prompt, template.global_lore].filter(Boolean).join('\n'),
+        // §5/§7: the extractor's witness half reads English; the choice half
+        // reads the native prose and native player turn and returns `choices_en`
+        // aligned by index with the native chips.
+        ...(params.languageName
+          ? {
+              choiceLanguage: {
+                name: params.languageName,
+                narrative: params.nativeNarrative ?? narrative,
+                playerInput: params.nativePlayerInput ?? replayInput,
+              },
+            }
+          : {}),
       },
     ),
     adjudicateEntityCandidates({
@@ -613,6 +776,8 @@ async function extractReplayCodexDeltas(params: {
   instance: any
   template: any
   narrative: string
+  /** The one view this flow reads: English copy, else native (§7). */
+  playerInput: string
   presentCharacters: string[]
 }) {
   const { event, instance, template, narrative, presentCharacters } = params
@@ -621,9 +786,9 @@ async function extractReplayCodexDeltas(params: {
     .sort({ mention_count: -1, updated_at: -1 })
     .toArray()
   const deltas = await extractCharacterCodexDeltas({
-    // The extractor reads English, so it reads the hidden English copy of the
-    // player's text on a non-English turn, else the event's own.
-    playerInput: playerTextOf(event),
+    // The extractor reads English. The caller hands it the accepted copy's
+    // player text, or native on a refused/English turn — never a mix.
+    playerInput: params.playerInput,
     aiResponse: narrative,
     existing: existing.map((c: any) => ({
       canonical_name: c.canonical_name,
@@ -707,6 +872,8 @@ export async function rebuildCodexAndRelationsAfterReplay(params: {
   instance: any
   template: any
   narrative: string
+  /** The one view this flow reads: English copy, else native (§7). */
+  playerInput: string
   deltas: any[]
   forceExactRebuild: boolean
 }) {
@@ -811,8 +978,9 @@ export async function rebuildCodexAndRelationsAfterReplay(params: {
   } else {
     // Incremental: merge this turn's LLM assertions with a deterministic pass over
     // its input + prose, then apply on top of the existing edges. The player's
-    // text is read from ONE view, so the English copy and its facts agree.
-    const parsedInput = parsePlayerInput(playerTextOf(event))
+    // text is read from the ONE view the flow passed in (§7), so the English
+    // copy and its facts agree and an older witness is never mixed in.
+    const parsedInput = parsePlayerInput(params.playerInput)
     const relationAssertions = mergeRelationAssertions(
       deltas.flatMap((d) => d.relation_assertions || []),
       extractKinshipAssertions({
@@ -2040,6 +2208,7 @@ export const memoryService = {
             active_flags: 1,
             persona_snapshot: 1,
             current_location: 1,
+            reply_language: 1,
           },
         },
       ),
@@ -2050,13 +2219,66 @@ export const memoryService = {
           { projection: { is_sentient: 1, seed_prompt: 1, global_lore: 1 } },
         )
       : null
+    // §7: the event's own witness language wins, else the save's. No entry means
+    // English/off, and then no witness may survive this edit.
+    const editLanguageEntry = replyLanguageForEvent(event, editInstance)
+    const editWitnessLanguage = witnessLanguageOf(editLanguageEntry)
+    const storedEditWitness = storedWitness(event)
     const proseHygieneIssues = validateProseHygiene({
       narrative: nextAiResponse || '',
       characterNames: editCharacterNames,
       messageLength: editInstance?.message_length || 'medium',
       playerAddressMode: editTemplate?.is_sentient ? 'you' : editInstance?.narration_pov === 'first' ? 'self' : 'role',
       avoidOpeningNames: editCharacterNames,
+      replyLanguage: editLanguageEntry?.code,
     })
+
+    // The copy is made BEFORE the extraction (§7), so the extractor reads one
+    // English view. A prose-only edit keeps the stored English prose; a
+    // player-only edit copies both and the returned prose is discarded; both
+    // changed is one copy of both. A refused copy reads native.
+    let editAcceptedWitness: { player: string; prose: string } | null = null
+    if (contentChanged && editWitnessLanguage) {
+      const glossary = await witnessGlossaryFor({
+        instanceId: event.instance_id,
+        instance: editInstance,
+        template: editTemplate,
+        present: Array.isArray(event.data?.present_characters) ? event.data.present_characters : [],
+        currentLocationName: (event as any).location_anchor?.name || editInstance?.current_location?.name || null,
+      })
+      const editProtagonistName =
+        ((await characters().findOne({ instance_id: event.instance_id, is_protagonist: true })) as any)?.canonical_name ||
+        editTemplate?.protagonist?.name ||
+        null
+      const { accepted } = await runFlowWitness({
+        language: editWitnessLanguage,
+        playerNative: nextPlayerInput || '',
+        proseNative: nextAiResponse || '',
+        ...(aiChanged && !playerChanged && storedEditWitness
+          ? { knownPlayerEnglish: storedEditWitness.player_input }
+          : {}),
+        people: glossary.people,
+        places: glossary.places,
+        pov: (editInstance?.narration_pov || 'third') === 'first' ? 'first' : 'third',
+        playerName: editInstance?.persona_snapshot?.name ?? null,
+        protagonistName: editProtagonistName,
+        isSentient: !!editTemplate?.is_sentient,
+        event,
+        instanceId: event.instance_id,
+        playerId: pid,
+        flow: 'edit',
+      })
+      if (accepted) {
+        editAcceptedWitness = {
+          player: accepted.player,
+          // A player-only edit must leave the stored English prose alone.
+          prose: playerChanged && !aiChanged && storedEditWitness ? storedEditWitness.ai_response : accepted.prose,
+        }
+      }
+    }
+    const editViewNarrative = editAcceptedWitness ? editAcceptedWitness.prose : nextAiResponse || ''
+    const editViewPlayer = editAcceptedWitness ? editAcceptedWitness.player : nextPlayerInput || ''
+
     let nextReplayVariants = replayVariants
     let nextSelectedReplayIndex =
       typeof event.data?.selected_replay_index === 'number'
@@ -2068,6 +2290,7 @@ export const memoryService = {
     // any other variant. Only the AI text matters here; a player-only edit leaves
     // the prose — and its chips — unchanged.
     let editChoices: Awaited<ReturnType<typeof extractSceneMetadata>>['choices'] | null = null
+    let editChoicesEn: ChoiceEnglish[] | null = null
     let editPresent: string[] | null = null
     let editBeatLedger: Awaited<ReturnType<typeof extractSceneMetadata>>['beat_ledger'] | null = null
     let editTrackableMentions: ReturnType<typeof trackableMentionsForProse> | null = null
@@ -2102,13 +2325,13 @@ export const memoryService = {
         ...((card?.aliases as string[]) || []),
       ]).filter((name): name is string => typeof name === 'string' && !!name.trim())
       const editCandidates = entityAdjudicationCandidates({
-        prose: nextAiResponse,
+        prose: editViewNarrative,
         knownNames: editKnownNames,
         exclude: [editProtagonist?.name || '', ...(editProtagonist?.aliases || [])],
       })
       const [editMeta, editEntityAdjudication] = await Promise.all([
         extractSceneMetadata(
-          nextAiResponse,
+          editViewNarrative,
           statDescriptors(editTemplate?.base_stats_template || editInstance?.world_state),
           Object.keys(editInstance?.active_flags || {}),
           {
@@ -2117,10 +2340,23 @@ export const memoryService = {
             protagonist: editProtagonist,
             roster: editRoster,
             worldContext: [editTemplate?.seed_prompt, editTemplate?.global_lore].filter(Boolean).join('\n'),
+            // English turn: the request is exactly as before. Non-English: the
+            // witness half reads the English view and the choice half the native
+            // values (§5/§7).
+            ...(editWitnessLanguage
+              ? {
+                  playerInput: editViewPlayer,
+                  choiceLanguage: {
+                    name: editWitnessLanguage.name,
+                    narrative: nextAiResponse || '',
+                    playerInput: nextPlayerInput || '',
+                  },
+                }
+              : {}),
           },
         ),
         adjudicateEntityCandidates({
-          prose: nextAiResponse,
+          prose: editViewNarrative,
           candidates: editCandidates,
           knownCast: editKnownNames,
           knownPlaces: [],
@@ -2133,10 +2369,13 @@ export const memoryService = {
         editEntityAdjudication,
       )
       editChoices = editMeta.choices
+      editChoicesEn = editMeta.choices_en ?? null
       editPresent = editMeta.present_characters
       editBeatLedger = editMeta.beat_ledger
       editTrackableMentions = trackableMentionsForProse({
-        prose: nextAiResponse,
+        // The same side the live turn uses: the English prose on an accepted
+        // copy, native on a refused/English one.
+        prose: editViewNarrative,
         present: editPresent,
         codex: editCodex,
         exclude: editInstance?.persona_snapshot?.name ? [editInstance.persona_snapshot.name] : [],
@@ -2155,14 +2394,72 @@ export const memoryService = {
           present_characters: editPresent,
           beat_ledger: editBeatLedger,
           trackable_mentions: editTrackableMentions || [],
+          ...(editWitnessLanguage
+            ? replayWitnessFields({
+                language: editWitnessLanguage,
+                accepted: editAcceptedWitness,
+                // A prose edit replaces the chips.
+                choices: editChoicesEn ?? undefined,
+              })
+            : {}),
         })
       }
       nextSelectedReplayIndex = nextReplayVariants.length - 1
     }
 
+    // §7: the player text is shared by every variant, so a player edit touches
+    // every variant that carries a witness. A refused copy invalidates them all;
+    // an edit on a turn whose language is off removes any witness, event and
+    // variants alike, so none outlives the text it was made from.
+    const withoutWitness = (variant: any) => {
+      if (!variant || typeof variant !== 'object') return variant
+      const copy = { ...variant }
+      delete copy.witness
+      delete copy.witness_status
+      return copy
+    }
+    if (contentChanged && !editLanguageEntry) {
+      nextReplayVariants = nextReplayVariants.map(withoutWitness)
+    } else if (playerChanged) {
+      nextReplayVariants = nextReplayVariants.map((variant: any) => {
+        if (!variant?.witness) return variant
+        if (editAcceptedWitness) {
+          return { ...variant, witness: { ...variant.witness, player_input: editAcceptedWitness.player } }
+        }
+        const copy = withoutWitness(variant)
+        return { ...copy, witness_status: 'failed' as const }
+      })
+    }
+
+    // The event's own witness fields (§7). An accepted copy sets `witness` and
+    // clears any old failure; a refusal clears the witness and marks the turn;
+    // language off removes both keys.
+    const editWitnessSet: Record<string, unknown> = {}
+    const editWitnessUnset: Record<string, ''> = {}
+    if (contentChanged) {
+      if (!editLanguageEntry) {
+        // English: only touch a key that exists, so a plain English edit writes
+        // the exact document it always did.
+        if (event.data?.witness) editWitnessUnset['data.witness'] = ''
+        if (event.data?.witness_status !== undefined) editWitnessUnset['data.witness_status'] = ''
+      } else if (editAcceptedWitness && editWitnessLanguage) {
+        editWitnessSet['data.witness'] = witnessEventFields({
+          language: editWitnessLanguage,
+          accepted: editAcceptedWitness,
+          // A prose edit replaces the chips; a player-only edit keeps the
+          // stored English chips (they were never re-derived).
+          choices: aiChanged ? editChoicesEn ?? undefined : storedEditWitness?.choices,
+        }).witness
+        editWitnessUnset['data.witness_status'] = ''
+      } else {
+        editWitnessUnset['data.witness'] = ''
+        editWitnessSet['data.witness_status'] = 'failed'
+      }
+    }
+
     await purgeMedia({ event_id: eid })
     await events().updateOne({ _id: eid }, {
-      $unset: { 'data.voice_attribution': '' },
+      $unset: { 'data.voice_attribution': '', ...editWitnessUnset },
       $push: {
         edit_history: {
           previous_data: event.data,
@@ -2178,6 +2475,7 @@ export const memoryService = {
         'data.replay_variants': nextReplayVariants,
         'data.selected_replay_index': nextSelectedReplayIndex,
         'data.prose_hygiene_issues': proseHygieneIssues,
+        ...editWitnessSet,
         // Fresh chips + presence re-derived from the rewritten narrative.
         ...(aiChanged
           ? {
@@ -2198,13 +2496,18 @@ export const memoryService = {
     let deletedMemories = 0
 
     if (contentChanged) {
+      // §7: recuration reads the accepted English view (raw, spoken, facts and
+      // prose); a refused or English edit keeps today's native values.
+      const recurationInput = editAcceptedWitness
+        ? parsePlayerInput(editAcceptedWitness.player)
+        : parsedPlayerInput
       deletedMemories = await recurateMemoriesForEvent(
         event,
         playerId,
-        parsedPlayerInput.raw,
-        parsedPlayerInput.spoken,
-        parsedPlayerInput.narrationFacts,
-        nextAiResponse || '',
+        recurationInput.raw,
+        recurationInput.spoken,
+        recurationInput.narrationFacts,
+        editAcceptedWitness ? editAcceptedWitness.prose : nextAiResponse || '',
       )
       await staleSummariesCoveringEvent(event)
     }
@@ -2337,8 +2640,32 @@ export const memoryService = {
       })
     }
 
-    const ragQuery = parsed.raw || event.data.ai_response || template.seed_prompt
-    const rag = await queryRag(idString(template._id), idString(event.instance_id), ragQuery, loreTopK, memoryTopK)
+    // §7: replay runs in the save's effective language. The stored witness is
+    // the event's earlier English copy, usable only while it still exists.
+    const replyLanguageEntry = effectiveReplyLanguage(instance.reply_language)
+    const replayWitnessLanguage = witnessLanguageOf(replyLanguageEntry)
+    const replayStoredWitness = storedWitness(event)
+
+    // Recall keeps today's embedding text, except a turn with no player text
+    // (a continue) embeds the English prose; keyword search prefers the stored
+    // English player text because memories are written in English.
+    const ragQuery = parsed.raw || witnessOf(event).ai_response || template.seed_prompt
+    const keywordText = replayStoredWitness?.player_input?.trim() ? replayStoredWitness.player_input : undefined
+    const rag = keywordText
+      ? await queryRag(
+          idString(template._id),
+          idString(event.instance_id),
+          ragQuery,
+          loreTopK,
+          memoryTopK,
+          [],
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          keywordText,
+        )
+      : await queryRag(idString(template._id), idString(event.instance_id), ragQuery, loreTopK, memoryTopK)
 
     const mode = instance.mode || DEFAULT_CHAT_MODE
     const modeWantsNsfw = mode === NSFW_MODE
@@ -2346,7 +2673,7 @@ export const memoryService = {
       template.is_nsfw_capable && userNsfwEnabled
         ? modeWantsNsfw
           ? 'nsfw'
-          : classifyScene(parsed.raw, priorEvents)
+          : classifyScene(replayStoredWitness?.player_input ?? parsed.raw, priorEvents)
         : 'sfw'
     const modelId =
       sceneClass === 'nsfw'
@@ -2356,7 +2683,6 @@ export const memoryService = {
       ? AI_MODELS.narrationNsfwFallbacks
       : AI_MODELS.narrationSfwFallbacks
 
-    const replyLanguageEntry = effectiveReplyLanguage(instance.reply_language)
     const prompt = buildPrompt({
       seedPrompt: template.seed_prompt,
       isSentient: template.is_sentient,
@@ -2472,6 +2798,11 @@ ${replayDirective || '(none)'}`,
         return previousOpeningName ? [previousOpeningName] : []
       })(),
       avoidOpeningNames: replayCodex.map((c) => c.canonical_name),
+      // A non-English replay must never be repaired into English: the rewrite
+      // is told to stay in the save's language, and the validator keeps only
+      // language-neutral codes.
+      replyLanguage: replyLanguageEntry?.code,
+      replyLanguageName: replyLanguageEntry?.name,
       // Replay repair follows the same reliable formatting path as live turns.
       model: AI_MODELS.metadata,
     })
@@ -2488,6 +2819,49 @@ ${replayDirective || '(none)'}`,
       )
     }
 
+    // §7: the final NATIVE prose gets its hidden English copy, awaited BEFORE
+    // any extractor. A prose-only turn needs no retranslation of the player
+    // text when the event's usable witness is in the same language. A refused
+    // copy reads native on both sides.
+    let replayAcceptedWitness: { player: string; prose: string } | null = null
+    if (replayWitnessLanguage) {
+      const newestPrior = priorEvents[priorEvents.length - 1]
+      const presentNow = Array.isArray(newestPrior?.data?.present_characters)
+        ? newestPrior.data.present_characters.filter((name: unknown): name is string => typeof name === 'string')
+        : []
+      const glossary = await witnessGlossaryFor({
+        instanceId: event.instance_id,
+        instance,
+        template,
+        present: presentNow,
+        currentLocationName: (event as any).location_anchor?.name || instance.current_location?.name || null,
+      })
+      const protagonistName =
+        replayCodex.find((card) => card?.is_protagonist)?.canonical_name || template.protagonist?.name || null
+      const { accepted } = await runFlowWitness({
+        language: replayWitnessLanguage,
+        playerNative: event.data.player_input || '',
+        proseNative: repairedReplay.narrative,
+        ...(replayStoredWitness && replayStoredWitness.lang === replayWitnessLanguage.code
+          ? { knownPlayerEnglish: replayStoredWitness.player_input }
+          : {}),
+        people: glossary.people,
+        places: glossary.places,
+        pov: (instance.narration_pov || 'third') === 'first' ? 'first' : 'third',
+        playerName: instance.persona_snapshot?.name ?? null,
+        protagonistName,
+        isSentient: !!template.is_sentient,
+        event,
+        instanceId: event.instance_id,
+        playerId: pid,
+        flow: 'replay',
+      })
+      replayAcceptedWitness = accepted
+    }
+    // ONE view, never mixed: the accepted copy's two texts, or native both.
+    const replayViewNarrative = replayAcceptedWitness ? replayAcceptedWitness.prose : repairedReplay.narrative
+    const replayViewPlayer = replayAcceptedWitness ? replayAcceptedWitness.player : event.data.player_input || ''
+
     // Regenerate the turn projections FROM THE NEW VARIANT. Replay is limited to
     // the latest turn, so we can safely recompute the instance's current state
     // from prior event deltas + this replay's extracted mutations/location.
@@ -2496,8 +2870,16 @@ ${replayDirective || '(none)'}`,
       playerId,
       instance,
       template,
-      narrative: repairedReplay.narrative,
+      narrative: replayViewNarrative,
+      playerInput: replayViewPlayer,
       codex: replayCodex,
+      ...(replayWitnessLanguage
+        ? {
+            languageName: replayWitnessLanguage.name,
+            nativeNarrative: repairedReplay.narrative,
+            nativePlayerInput: event.data.player_input || '',
+          }
+        : {}),
     })
     const replayMeta = replayProjection.meta
     const replayCodexDeltas = await extractReplayCodexDeltas({
@@ -2505,11 +2887,13 @@ ${replayDirective || '(none)'}`,
       playerId,
       instance,
       template,
-      narrative: repairedReplay.narrative,
+      narrative: replayViewNarrative,
+      playerInput: replayViewPlayer,
       presentCharacters: replayMeta.present_characters,
     })
     const replayTrackableMentions = trackableMentionsForProse({
-      prose: repairedReplay.narrative,
+      // The same side the live turn uses.
+      prose: replayViewNarrative,
       present: replayMeta.present_characters,
       codex: replayCodex,
       exclude: instance.persona_snapshot?.name ? [instance.persona_snapshot.name] : [],
@@ -2532,6 +2916,15 @@ ${replayDirective || '(none)'}`,
       state_mutations: replayMeta.state_mutations,
       flag_mutations: replayMeta.flag_mutations,
       scene_tag: replayMeta.scene_tag,
+      // §5/§7: the native chips are stored, and the witness holds English pairs
+      // by index. A refusal marks the variant so selecting it retries once.
+      ...(replayWitnessLanguage
+        ? replayWitnessFields({
+            language: replayWitnessLanguage,
+            accepted: replayAcceptedWitness,
+            choices: replayMeta.choices_en,
+          })
+        : {}),
       retrieval_profile: {
         lore_top_k: loreTopK,
         memory_top_k: memoryTopK,
@@ -2541,9 +2934,33 @@ ${replayDirective || '(none)'}`,
     const nextVariants = [...replayVariants, nextVariant]
     const selectedIdx = nextVariants.length - 1
 
+    // The event's own witness (§7): accepted sets it and clears an old failure;
+    // refused clears it and marks the turn; English/off removes both, so no
+    // witness outlives the prose it was made from.
+    const replayWitnessSet: Record<string, unknown> = {}
+    const replayWitnessUnset: Record<string, ''> = {}
+    if (replayWitnessLanguage) {
+      if (replayAcceptedWitness) {
+        replayWitnessSet['data.witness'] = witnessEventFields({
+          language: replayWitnessLanguage,
+          accepted: replayAcceptedWitness,
+          choices: replayMeta.choices_en,
+        }).witness
+        replayWitnessUnset['data.witness_status'] = ''
+      } else {
+        replayWitnessUnset['data.witness'] = ''
+        replayWitnessSet['data.witness_status'] = 'failed'
+      }
+    } else {
+      // English: only remove a key that exists, so a plain English replay writes
+      // the exact document it always did.
+      if (event.data?.witness) replayWitnessUnset['data.witness'] = ''
+      if (event.data?.witness_status !== undefined) replayWitnessUnset['data.witness_status'] = ''
+    }
+
     await purgeMedia({ event_id: eid })
     await events().updateOne({ _id: eid }, {
-      $unset: { 'data.voice_attribution': '' },
+      $unset: { 'data.voice_attribution': '', ...replayWitnessUnset },
       $push: {
         edit_history: {
           previous_data: event.data,
@@ -2570,6 +2987,7 @@ ${replayDirective || '(none)'}`,
         'data.codex_deltas': replayCodexDeltas,
         scene_tag: replayMeta.scene_tag,
         location_anchor: replayProjection.locationAnchor,
+        ...replayWitnessSet,
         updated_at: new Date(),
       },
     } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>)
@@ -2591,13 +3009,15 @@ ${replayDirective || '(none)'}`,
     )
     await getRedisClient().del(`session:${idString(event.instance_id)}`)
 
+    // The memory extractor reads the same one view as every other extractor.
+    const replayRecurationInput = replayAcceptedWitness ? parsePlayerInput(replayAcceptedWitness.player) : parsed
     const deletedMemories = await recurateMemoriesForEvent(
       event,
       playerId,
-      parsed.raw,
-      parsed.spoken,
-      parsed.narrationFacts,
-      nextVariant.narrative,
+      replayRecurationInput.raw,
+      replayRecurationInput.spoken,
+      replayRecurationInput.narrationFacts,
+      replayViewNarrative,
     )
     await staleSummariesCoveringEvent(event)
     await rebuildCodexAndRelationsAfterReplay({
@@ -2605,7 +3025,8 @@ ${replayDirective || '(none)'}`,
       playerId,
       instance,
       template,
-      narrative: nextVariant.narrative,
+      narrative: replayViewNarrative,
+      playerInput: replayViewPlayer,
       deltas: replayCodexDeltas,
       forceExactRebuild: hadLedgeredCodexDeltas,
     }).catch((err) => {
@@ -2670,6 +3091,7 @@ ${replayDirective || '(none)'}`,
             persona_snapshot: 1,
             current_location: 1,
             focus_character_id: 1,
+            reply_language: 1,
           },
         },
       ),
@@ -2693,6 +3115,65 @@ ${replayDirective || '(none)'}`,
           },
         )
       : null
+
+    // §7: the chosen variant decides the view. Its own witness wins; a failed
+    // one gets one new attempt; a variant with neither is an English turn and
+    // carries no witness. When the prose did not change, the witness is not
+    // touched at all.
+    const chosenWitness = storedWitness({ data: chosen })
+    const chosenFailed = chosen?.witness_status === 'failed'
+    const chosenFailedLanguage =
+      effectiveReplyLanguage(selectedInstance?.reply_language) ??
+      effectiveReplyLanguage(event.data.witness?.lang)
+    const selectLanguageEntry = chosenWitness
+      ? effectiveReplyLanguage(chosenWitness.lang)
+      : chosenFailed
+        ? chosenFailedLanguage
+        : undefined
+    const selectWitnessLanguage = witnessLanguageOf(selectLanguageEntry)
+    let selectAcceptedWitness: { player: string; prose: string } | null = null
+    let selectViewNarrative = chosenWitness
+      ? chosenWitness.ai_response
+      : chosen.narrative || event.data.ai_response || ''
+    let selectViewPlayer = chosenWitness ? chosenWitness.player_input : event.data.player_input || ''
+
+    if (changed && chosenFailed && selectWitnessLanguage && selectedInstance) {
+      const glossary = await witnessGlossaryFor({
+        instanceId: event.instance_id,
+        instance: selectedInstance,
+        template: selectedTemplate,
+        present: Array.isArray(event.data?.present_characters) ? event.data.present_characters : [],
+        currentLocationName: (event as any).location_anchor?.name || selectedInstance.current_location?.name || null,
+      })
+      const protagonistName =
+        (selectedCodex as any[]).find((card) => card?.is_protagonist)?.canonical_name ||
+        selectedTemplate?.protagonist?.name ||
+        null
+      const { accepted } = await runFlowWitness({
+        language: selectWitnessLanguage,
+        playerNative: event.data.player_input || '',
+        proseNative: nextAi,
+        people: glossary.people,
+        places: glossary.places,
+        pov: (selectedInstance.narration_pov || 'third') === 'first' ? 'first' : 'third',
+        playerName: selectedInstance.persona_snapshot?.name ?? null,
+        protagonistName,
+        isSentient: !!selectedTemplate?.is_sentient,
+        event,
+        instanceId: event.instance_id,
+        playerId: pid,
+        flow: 'select',
+      })
+      selectAcceptedWitness = accepted
+      if (accepted) {
+        selectViewNarrative = accepted.prose
+        selectViewPlayer = accepted.player
+      } else {
+        selectViewNarrative = nextAi
+        selectViewPlayer = event.data.player_input || ''
+      }
+    }
+
     const proseHygieneIssues = Array.isArray(chosen.prose_hygiene_issues)
       ? chosen.prose_hygiene_issues
       : validateProseHygiene({
@@ -2705,6 +3186,7 @@ ${replayDirective || '(none)'}`,
               ? 'self'
               : 'role',
           avoidOpeningNames: selectedCharacterNames,
+          replyLanguage: selectLanguageEntry?.code,
         })
 
     const selectedProjection =
@@ -2714,8 +3196,16 @@ ${replayDirective || '(none)'}`,
             playerId,
             instance: selectedInstance,
             template: selectedTemplate,
-            narrative: nextAi,
+            narrative: selectViewNarrative,
+            playerInput: selectViewPlayer,
             codex: selectedCodex as any[],
+            ...(selectWitnessLanguage
+              ? {
+                  languageName: selectWitnessLanguage.name,
+                  nativeNarrative: nextAi,
+                  nativePlayerInput: event.data.player_input || '',
+                }
+              : {}),
           })
         : null
     const selectedCodexDeltas =
@@ -2725,20 +3215,68 @@ ${replayDirective || '(none)'}`,
             playerId,
             instance: selectedInstance,
             template: selectedTemplate,
-            narrative: nextAi,
+            narrative: selectViewNarrative,
+            playerInput: selectViewPlayer,
             presentCharacters: selectedProjection.meta.present_characters,
           })
         : null
     const selectedTrackableMentions =
       changed && selectedProjection && selectedInstance
         ? trackableMentionsForProse({
-            prose: nextAi,
+            prose: selectViewNarrative,
             present: selectedProjection.meta.present_characters,
             codex: selectedCodex,
             exclude: selectedInstance.persona_snapshot?.name ? [selectedInstance.persona_snapshot.name] : [],
         })
         : null
     const hadLedgeredCodexDeltas = Array.isArray(event.data?.codex_deltas)
+
+    // §7: the event's witness follows the chosen view. A variant with its own
+    // usable witness rebuilds it; a failed variant's one retry either sets it
+    // or leaves it failed; a variant with neither clears both. An unchanged
+    // prose never touches it.
+    const selectWitnessSet: Record<string, unknown> = {}
+    const selectWitnessUnset: Record<string, ''> = {}
+    if (changed) {
+      if (chosenWitness) {
+        const parsedEnglish = parsePlayerInput(chosenWitness.player_input)
+        const alignedChoices =
+          chosenWitness.choices &&
+          Array.isArray(chosen.choices) &&
+          chosenWitness.choices.length === chosen.choices.length
+            ? chosenWitness.choices
+            : undefined
+        selectWitnessSet['data.witness'] = {
+          lang: chosenWitness.lang,
+          ai_response: chosenWitness.ai_response,
+          player_input: chosenWitness.player_input,
+          player_spoken_input: parsedEnglish.spoken,
+          player_narration_facts: parsedEnglish.narrationFacts,
+          ...(alignedChoices ? { choices: alignedChoices } : {}),
+        }
+        selectWitnessUnset['data.witness_status'] = ''
+      } else if (chosenFailed) {
+        if (selectWitnessLanguage && selectAcceptedWitness) {
+          selectWitnessSet['data.witness'] = witnessEventFields({
+            language: selectWitnessLanguage,
+            accepted: selectAcceptedWitness,
+          }).witness
+          selectWitnessUnset['data.witness_status'] = ''
+        } else if (selectWitnessLanguage) {
+          selectWitnessUnset['data.witness'] = ''
+          selectWitnessSet['data.witness_status'] = 'failed'
+        } else if (event.data?.witness || event.data?.witness_status !== undefined) {
+          // No language to retry in: the turn is English now; clear only what exists.
+          if (event.data?.witness) selectWitnessUnset['data.witness'] = ''
+          if (event.data?.witness_status !== undefined) selectWitnessUnset['data.witness_status'] = ''
+        }
+      } else if (event.data?.witness || event.data?.witness_status !== undefined) {
+        // Neither: an English turn's variant; a plain English select writes the
+        // exact document it always did.
+        if (event.data?.witness) selectWitnessUnset['data.witness'] = ''
+        if (event.data?.witness_status !== undefined) selectWitnessUnset['data.witness_status'] = ''
+      }
+    }
 
     // Choices/presence are part of a replay variant's player-facing snapshot.
     // Do not overwrite a stored variant's chips merely because choosing it also
@@ -2767,10 +3305,19 @@ ${replayDirective || '(none)'}`,
         scene_tag: selectedProjection.meta.scene_tag,
       }
     }
+    // A failed variant whose retry succeeded keeps its copy, so choosing it again
+    // neither pays for another one nor risks losing it.
+    if (changed && chosenFailed && selectWitnessLanguage && selectAcceptedWitness) {
+      const { witness_status: _failed, ...retried } = nextVariants[variantIndex]
+      nextVariants[variantIndex] = {
+        ...retried,
+        ...replayWitnessFields({ language: selectWitnessLanguage, accepted: selectAcceptedWitness }),
+      }
+    }
 
     await purgeMedia({ event_id: eid })
     await events().updateOne({ _id: eid }, {
-      $unset: { 'data.voice_attribution': '' },
+      $unset: { 'data.voice_attribution': '', ...selectWitnessUnset },
       $push: {
         edit_history: {
           previous_data: event.data,
@@ -2800,6 +3347,7 @@ ${replayDirective || '(none)'}`,
               location_anchor: selectedProjection.locationAnchor,
             }
           : {}),
+        ...selectWitnessSet,
         updated_at: new Date(),
       },
     } as import('mongodb').UpdateFilter<import('../models/world-event.model').WorldEventDoc>)
@@ -2825,14 +3373,16 @@ ${replayDirective || '(none)'}`,
 
     let deletedMemories = 0
     if (changed) {
-      const parsed = parsePlayerInput(event.data.player_input || '')
+      // The memory extractor reads the chosen view, English when the variant
+      // carried a usable copy and native otherwise.
+      const recurationInput = parsePlayerInput(selectViewPlayer)
       deletedMemories = await recurateMemoriesForEvent(
         event,
         playerId,
-        parsed.raw,
-        parsed.spoken,
-        parsed.narrationFacts,
-        nextAi,
+        recurationInput.raw,
+        recurationInput.spoken,
+        recurationInput.narrationFacts,
+        selectViewNarrative,
       )
       await staleSummariesCoveringEvent(event)
       if (selectedProjection && selectedInstance && selectedTemplate && selectedCodexDeltas) {
@@ -2841,7 +3391,8 @@ ${replayDirective || '(none)'}`,
           playerId,
           instance: selectedInstance,
           template: selectedTemplate,
-          narrative: nextAi,
+          narrative: selectViewNarrative,
+          playerInput: selectViewPlayer,
           deltas: selectedCodexDeltas,
           forceExactRebuild: hadLedgeredCodexDeltas,
         }).catch((err) => {

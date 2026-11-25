@@ -22,6 +22,8 @@ export async function publishSpokenLines(event: WorldEventDoc): Promise<void> {
 /** The per-turn keys the server owns, on a turn, in an edit snapshot, or on a
  *  replay variant. */
 type InternalTurnFields = Pick<EventDataDoc,
+  | 'witness'
+  | 'witness_status'
   | 'group_selfies'
   | 'voice_attribution'
   | 'media_revision'
@@ -60,6 +62,8 @@ type InternalTurnFields = Pick<EventDataDoc,
  * a turn, its edit snapshots and their variants.
  */
 function stripInternalTurnFields(data: InternalTurnFields): void {
+  delete data.witness
+  delete data.witness_status
   delete data.group_selfies
   delete data.voice_attribution
   delete data.media_revision

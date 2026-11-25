@@ -328,7 +328,9 @@ await check('stored fields: all four text fields on acceptance, failure flag on 
   assert.deepEqual(variant, {
     witness: { lang: 'pt', ai_response: ENGLISH_PROSE, player_input: ENGLISH_PLAYER, choices },
   })
-  assert.deepEqual(replayWitnessFields({ language: LANGUAGE, accepted: null }), {}, 'a refused copy leaves no variant witness')
+  // §7: a refused copy is recorded on the variant too, so selecting it retries once.
+  assert.deepEqual(replayWitnessFields({ language: LANGUAGE, accepted: null }), { witness_status: 'failed' })
+  assert.deepEqual(replayWitnessFields({ language: null, accepted: null }), {}, 'an English turn adds nothing')
   assert.equal(witnessOf({ data: { ...accepted, ai_response: NATIVE_PROSE, player_input: NATIVE_PLAYER } }).ai_response, ENGLISH_PROSE)
 })
 

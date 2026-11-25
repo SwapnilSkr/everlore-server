@@ -104,7 +104,7 @@ import type { PlayerInteractionSignalDoc } from '../../src/models/world-event.mo
 import { extractLifecycleChanges } from '../lib/character-lifecycle-extractor'
 import { createExtractorRawSink } from '../lib/extractor-raw'
 import { effectiveReplyLanguage, enabledReplyLanguages } from '../../src/utils/reply-language'
-import { witnessOf, playerTextOf, type ChoiceEnglish } from '../../src/utils/witness'
+import { witnessOf, playerTextOf, witnessGlossary, type ChoiceEnglish } from '../../src/utils/witness'
 import { screenPlayerInput } from '../../src/utils/input-guard'
 import { readPlayerTurn, offeredChipEnglish } from '../lib/player-turn'
 import {
@@ -1402,17 +1402,17 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       : []
     const protagonistCardName =
       (characterCodex as any[]).find((card) => card?.is_protagonist)?.canonical_name || session.protagonist?.name || null
-    const people = [
-      ...(characterCodex as any[]).flatMap((card) => [card?.canonical_name, ...((card?.aliases as string[]) || [])]),
-      ...presentNow,
-      session.persona_snapshot?.name,
-      protagonistCardName,
-      ...graphPeople.map((person) => person.name),
-    ].filter((name): name is string => typeof name === 'string' && !!name.trim())
-    const places = [
-      ...knownPlaces.flatMap((place) => [place.name, ...(place.aliases || [])]),
-      currentLocation?.name,
-    ].filter((name): name is string => typeof name === 'string' && !!name.trim())
+    // §4/§7: the same glossary builder every flow uses (replay, edit, select),
+    // so the copy is always given the same person and place names.
+    const { people, places } = witnessGlossary({
+      cards: characterCodex as any[],
+      present: presentNow,
+      personaName: session.persona_snapshot?.name,
+      protagonistName: protagonistCardName,
+      graphPeople: graphPeople.map((person) => person.name),
+      places: knownPlaces,
+      currentLocationName: currentLocation?.name,
+    })
     const witnessStartedAt = Date.now()
     const outcome: TurnWitnessOutcome = await runTurnWitness({
       language: witnessLanguage,
