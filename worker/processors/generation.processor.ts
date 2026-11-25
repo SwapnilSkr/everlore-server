@@ -104,7 +104,7 @@ import type { PlayerInteractionSignalDoc } from '../../src/models/world-event.mo
 import { extractLifecycleChanges } from '../lib/character-lifecycle-extractor'
 import { createExtractorRawSink } from '../lib/extractor-raw'
 import { effectiveReplyLanguage, enabledReplyLanguages } from '../../src/utils/reply-language'
-import { witnessOf, type ChoiceEnglish } from '../../src/utils/witness'
+import { witnessOf, playerTextOf, type ChoiceEnglish } from '../../src/utils/witness'
 import { screenPlayerInput } from '../../src/utils/input-guard'
 import { readPlayerTurn, offeredChipEnglish } from '../lib/player-turn'
 import {
@@ -189,6 +189,14 @@ function completeNarrativePrefix(narrative: string): string | null {
 
 const CHOICE_CONTEXT_TOKEN_LIMIT = 3_200
 
+/** The authored opening as the choice writer sees it: the English side of the
+ *  seed event (its own prose on an English save), §4/§6. */
+export function authoredOpeningForChoice(recentEvents: any[]): string {
+  return recentEvents.length === 1 && recentEvents[0]?.data?.model_used === 'seed'
+    ? String(witnessOf(recentEvents[0]).ai_response || '').trim()
+    : ''
+}
+
 /**
  * Build the small, fact-only packet the structured choice model needs to make
  * the same grounded decisions as the narrator. It deliberately excludes the
@@ -218,15 +226,17 @@ function buildChoiceDecisionContext(input: {
   sceneStateText?: string
   companionFacts: string[]
   recentEvents: any[]
+  /** The authored opening's canon text, already read through `witnessOf` by the
+   *  caller. Passed in so the witness read lives at the call site, not inside
+   *  this builder (it keeps its small, testable closure). */
+  authoredOpening?: string
 }): string {
   const sections: string[] = []
   const playerLabel = input.isSentient
     ? `The player is ${input.playerName || 'a separate person interacting with the cast'}.`
     : `The player is the GM-world protagonist${input.playerName ? `, ${input.playerName}` : ''}.`
   sections.push(`WORLD MODE\n${playerLabel}\nCurrent player turn: ${input.playerInput.slice(0, 900) || '(continue)'}`)
-  const onlyOpening = input.recentEvents.length === 1 && input.recentEvents[0]?.data?.model_used === 'seed'
-    ? String(input.recentEvents[0]?.data?.ai_response || '').trim()
-    : ''
+  const onlyOpening = String(input.authoredOpening || '').trim()
   if (onlyOpening) {
     sections.push(`AUTHORED OPENING SCENE\n${onlyOpening.slice(0, 1_800)}`)
   }
@@ -824,7 +834,7 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
           ? idString(event.data.location_anchor.entity_id)
           : null,
       sequence: Number(event.sequence || 0),
-      playerInput: String(event.data?.player_input || event.userMessage || ''),
+      playerInput: playerTextOf(event, event.userMessage),
     })),
   )
   const graphPeople = await graphPeoplePromise
@@ -1046,6 +1056,10 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     sceneStateText: renderSceneStateForPrompt(packet.sceneState),
     companionFacts: packet.companionFacts,
     recentEvents,
+    // Read through `witnessOf` at the call site (§4, §6): an English save gets
+    // the authored opening's own prose, a player-made non-English opening its
+    // English copy. The builder only ever sees the resulting string.
+    authoredOpening: authoredOpeningForChoice(recentEvents),
   })
   const choiceContextTokens = countTokens(choiceDecisionContext)
 
@@ -2980,9 +2994,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // opening only NAMES in passing still has to earn their way in.
   const openingCast: Array<{ name: string }> = (() => {
     if (!openingScene) return []
-    const authored = String(
-      (recentEvents || []).find((event: any) => event?.data?.model_used === 'seed')?.data?.ai_response || '',
-    )
+    const authored = authoredOpeningForChoice((recentEvents || []))
+      || String(witnessOf((recentEvents || []).find((event: any) => event?.data?.model_used === 'seed')).ai_response || '')
     if (!authored.trim()) return []
     const out: Array<{ name: string }> = []
     for (const card of (characterCodex as any[]) || []) {

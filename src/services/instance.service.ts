@@ -26,7 +26,7 @@ import {
   effectiveReplyLanguage,
   enabledReplyLanguages,
   isReplyLanguageSetting,
-  replyLanguageOptions,
+  liveFrameLanguage,
   startingLanguage,
 } from '../utils/reply-language'
 
@@ -318,12 +318,7 @@ export const instanceService = {
     }, { projection: { media_voice_cast: 0 } })
     if (!instance) return instance
     if (instance.group_state) return publicGroupData(instance)
-    return {
-      ...instance,
-      // The app's Story language row reads these; `en` when absent or not effective.
-      reply_language: effectiveReplyLanguage(instance.reply_language)?.code ?? 'en',
-      reply_languages: replyLanguageOptions(),
-    }
+    return { ...instance, ...liveFrameLanguage(instance) }
   },
 
   /**
@@ -938,8 +933,7 @@ export const instanceService = {
       narration_tone: result.narration_tone || DEFAULT_NARRATION_TONE,
       focus_character_id: result.focus_character_id ? idString(result.focus_character_id) : null,
       persona_id: result.persona_id ? idString(result.persona_id) : null,
-      reply_language: effectiveReplyLanguage(result.reply_language)?.code ?? 'en',
-      reply_languages: replyLanguageOptions(),
+      ...liveFrameLanguage(result),
     }
   },
 }

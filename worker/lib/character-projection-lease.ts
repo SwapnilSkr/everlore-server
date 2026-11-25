@@ -2,6 +2,7 @@ import { mongoColl } from '../../src/config/mongo'
 import { parseObjectId, idString } from '../../src/utils/mongo-id'
 import { recordAnomaly } from '../../src/utils/record-anomaly'
 import { log } from '../../src/utils/logger'
+import { witnessOf } from '../../src/utils/witness'
 import type { WorldEventDoc } from '../../src/models/world-event.model'
 
 /** Refreshed while extracting AND while waiting for earlier projections. */
@@ -104,6 +105,18 @@ export async function fenceOnPriorProjection(
   } catch (err) {
     log.warn('projection.fence_error', { instanceId: params.instanceId, reason: String(err) })
   }
+}
+
+/**
+ * Is a later row ready to join this batch? The text is judged through
+ * `witnessOf` — the exact view the batch hands the extractor — so a
+ * non-English turn is ready on its English copy and a failed copy never blocks
+ * the row. A gap, a ledgered retry or a live owner stops the batch here.
+ */
+export function batchRowReady(row: WorldEventDoc): boolean {
+  const view = witnessOf(row)
+  return Array.isArray(row.data.present_characters) && typeof view.ai_response === 'string' &&
+    typeof view.player_input === 'string' && !row.data.codex_deltas && !hasLiveProjectionClaim(row)
 }
 
 /** Waiting workers do not reserve a row: only the front claims work. This lets
@@ -216,8 +229,7 @@ export async function withCharacterProjection<T>(
         if (claims.length >= characterProjectionBatchMax()) break
         // Stop at a gap, never overtake inputs still being materialized, a
         // ledgered retry, or a live owner (including a timeout escapee).
-        if (!Array.isArray(row.data.present_characters) || typeof row.data.ai_response !== 'string' ||
-          typeof row.data.player_input !== 'string' || row.data.codex_deltas || hasLiveProjectionClaim(row)) break
+        if (!batchRowReady(row)) break
         if (!(await claimEvent(row))) break
       }
     }

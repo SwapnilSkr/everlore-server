@@ -10,6 +10,7 @@ import { parseObjectId, idString } from '../../src/utils/mongo-id'
 import { liveInstanceExists } from '../../src/utils/live-instance'
 import { getSceneSummaryQueue, QUEUE_RETENTION } from '../../src/queues'
 import { log } from '../../src/utils/logger'
+import { witnessOf } from '../../src/utils/witness'
 
 /** Roll up a fixed block of consecutive scene summaries into one chapter. */
 const CHAPTER_SCENE_BLOCK = 8
@@ -42,6 +43,15 @@ async function embedSummary(
     log.warn('summary.embed_failed', { tier, startSequence, endSequence, error: (err as Error).message })
     return null
   }
+}
+
+/** The recap's source text for a story save: the hidden English copy on a
+ *  non-English turn, else the event's own fields (§4, §9). Group threads build
+ *  their text from `lines` and never reach this. */
+export function storySummarySource(events: Array<{ sequence: number }>): string {
+  return events
+    .map((e) => { const view = witnessOf(e); return `[Turn ${e.sequence}] Player: ${view.player_input}\nWorld: ${view.ai_response}` })
+    .join('\n\n')
 }
 
 export async function summaryProcessor(job: Job) {
@@ -102,9 +112,7 @@ async function summaryWork(job: Job) {
 
   const groupInstance = groupBatch?.instance || (events.some(event => event.data.lines !== undefined) ? await mongoColl.worldInstances().findOne({ _id: instanceOid, group_state: { $exists: true } }) : null)
   const members = groupInstance ? await loadGroupMembers(groupInstance) : []
-  const conversationText = groupInstance ? events.filter(event => event.data.dm_with === groupBatch?.thread).map(event => `[Turn ${event.sequence}]\n${groupMessages([event], groupInstance.group_context!.player, members, groupBatch?.thread).map(line => `${line.name}: ${line.text}`).join('\n')}`).join('\n\n') : events
-    .map((e) => `[Turn ${e.sequence}] Player: ${e.data.player_input}\nWorld: ${e.data.ai_response}`)
-    .join('\n\n')
+  const conversationText = groupInstance ? events.filter(event => event.data.dm_with === groupBatch?.thread).map(event => `[Turn ${event.sequence}]\n${groupMessages([event], groupInstance.group_context!.player, members, groupBatch?.thread).map(line => `${line.name}: ${line.text}`).join('\n')}`).join('\n\n') : storySummarySource(events)
 
   const summaryResult = await callLLM({
     purpose: 'scene_summary',

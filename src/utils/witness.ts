@@ -90,3 +90,38 @@ export function witnessOf(event: unknown): WitnessView {
     player_narration_facts: data.player_narration_facts as string[] | undefined,
   }
 }
+
+/**
+ * Every projection that feeds a moved reader must ALSO fetch these two fields,
+ * or `witnessOf` silently reads a native row that carries a hidden English copy
+ * (§4, point 3). Exported so an audit can prove the projection has them.
+ */
+export const WITNESS_PROJECTION = { 'data.witness': 1, 'data.witness_status': 1 } as const
+
+/**
+ * The player's own words as the engine decided them: the English copy on a
+ * non-English turn, else the event's native text. `fallback` covers a stored
+ * row that keeps its text under another key (a replay's `userMessage`). A
+ * continue and a world action legitimately have no player text, so '' is exact.
+ */
+export function playerTextOf(event: unknown, fallback?: string): string {
+  return witnessOf(event).player_input || fallback || ''
+}
+
+/**
+ * §9a keyword recall: the text the keyword (`$text`) search should take.
+ *
+ * Memories are written in English, so a tapped choice that carries stored
+ * English searches with that English; a typed line or an edited chip has none
+ * and searches with its own text. The EMBEDDING stays on the native text (the
+ * prefetch already started it) — only the keyword half moves, so nothing
+ * re-embeds and nothing waits.
+ *
+ * The chip's English is passed in (`offeredChipEnglish` in
+ * `worker/lib/player-turn.ts`) rather than imported: this module is read by the
+ * event model and every turn path, and it must stay free of the worker's turn
+ * machinery. `null`/`undefined` means "no stored English".
+ */
+export function keywordQueryTextFor(nativeText: string, chipEnglish?: string | null): string {
+  return chipEnglish && chipEnglish.trim() ? chipEnglish : nativeText
+}

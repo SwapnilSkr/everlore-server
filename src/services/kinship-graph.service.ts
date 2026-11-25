@@ -12,6 +12,7 @@ import { characterCodexService, type CharacterCodexDelta } from './character-cod
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { confidenceTier } from '../utils/world-authority'
 import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
+import { witnessOf, playerTextOf, WITNESS_PROJECTION } from '../utils/witness'
 import type { CharacterProfileDoc } from '../models/character-profile.model'
 import type { EntityDoc } from '../models/entity.model'
 import {
@@ -645,7 +646,7 @@ export const kinshipGraphService = {
     const ledger = await events()
       .find(
         { instance_id: iid, ...typeFilter },
-        { projection: { sequence: 1, _id: 1, 'data.codex_deltas': 1, 'data.player_input': 1, 'data.ai_response': 1 } },
+        { projection: { sequence: 1, _id: 1, 'data.codex_deltas': 1, 'data.player_input': 1, 'data.ai_response': 1, ...WITNESS_PROJECTION } },
       )
       .sort({ sequence: 1 })
       .toArray()
@@ -654,12 +655,15 @@ export const kinshipGraphService = {
     let touched = 0
     for (const ev of ledger) {
       const llm = (ev.data?.codex_deltas || []).flatMap((d) => d.relation_assertions || [])
-      const parsed = parsePlayerInput(ev.data?.player_input || '')
+      // One view of the stored turn: the English copy on a non-English turn, so
+      // the rebuild reads the same facts the live turn wrote.
+      const view = witnessOf(ev)
+      const parsed = parsePlayerInput(playerTextOf(ev))
       const deterministic = extractKinshipAssertions({
         corrections: parsed.corrections,
         narrationFacts: parsed.narrationFacts,
         claims: parsed.claims,
-        prose: ev.data?.ai_response || '',
+        prose: view.ai_response || '',
       })
       const merged = mergeRelationAssertions(llm, deterministic)
       const transitions = extractLifecycleTransitions({
@@ -681,7 +685,7 @@ export const kinshipGraphService = {
           cards: codex,
           entitiesByCardName: entityMap,
           selfAnchorId,
-          sceneText: ev.data?.ai_response || '',
+          sceneText: view.ai_response || '',
           ensureStub: (name: string) =>
             entityGraphService.ensureStubEntity({ instanceId, playerId, sequence: ev.sequence, name }),
           transitions,
@@ -783,7 +787,7 @@ export const kinshipGraphService = {
     const ledger = await events()
       .find(
         { instance_id: iid, sequence: { $gt: fromSequence }, ...typeFilter },
-        { projection: { sequence: 1, _id: 1, 'data.codex_deltas': 1, 'data.player_input': 1, 'data.ai_response': 1 } },
+        { projection: { sequence: 1, _id: 1, 'data.codex_deltas': 1, 'data.player_input': 1, 'data.ai_response': 1, ...WITNESS_PROJECTION } },
       )
       .sort({ sequence: 1 })
       .toArray()
@@ -792,12 +796,13 @@ export const kinshipGraphService = {
     let touched = 0
     for (const ev of ledger) {
       const llm = (ev.data?.codex_deltas || []).flatMap((d) => d.relation_assertions || [])
-      const parsed = parsePlayerInput(ev.data?.player_input || '')
+      const view = witnessOf(ev)
+      const parsed = parsePlayerInput(playerTextOf(ev))
       const deterministic = extractKinshipAssertions({
         corrections: parsed.corrections,
         narrationFacts: parsed.narrationFacts,
         claims: parsed.claims,
-        prose: ev.data?.ai_response || '',
+        prose: view.ai_response || '',
       })
       const merged = mergeRelationAssertions(llm, deterministic)
       const transitions = extractLifecycleTransitions({
@@ -817,7 +822,7 @@ export const kinshipGraphService = {
           cards: codex,
           entitiesByCardName: entityMap,
           selfAnchorId,
-          sceneText: ev.data?.ai_response || '',
+          sceneText: view.ai_response || '',
           ensureStub: (name: string) =>
             entityGraphService.ensureStubEntity({ instanceId, playerId, sequence: ev.sequence, name }),
           transitions,

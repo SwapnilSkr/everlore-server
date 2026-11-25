@@ -8,6 +8,7 @@ import {
   narrationToneLabel,
 } from './narration-tones'
 import { parsePlayerInput } from './player-input-parser'
+import { witnessOf } from './witness'
 import { replyLanguageRule, type ReplyLanguageEntry } from './reply-language'
 import { CHOICE_TAIL_INSTRUCTION } from '../../worker/lib/choice-tail'
 import type { PersonaSnapshotDoc } from '../models/persona.model'
@@ -145,20 +146,30 @@ function placeholderAddressNames(cards: PromptInput['characterCodex']): string[]
     .filter(Boolean)
 }
 
-function eventPlayerParts(event: any): {
+/**
+ * The player half of a stored turn, from ONE view of the event.
+ *
+ * On a non-English turn the continuity line must show the English copy of what
+ * the player said and did — the same text everything else decided on. Every
+ * field comes from the same `witnessOf` view so a native field can never be
+ * mixed with an English one (a native `player_input` parsed for its facts while
+ * the stored `player_spoken_input` is English would splice two languages into
+ * one line). English turns read their own fields exactly as before.
+ */
+export function eventPlayerParts(event: any): {
   spoken: string
   narrationFacts: string[]
 } {
-  const data = event.data || {}
-  if (typeof data.player_spoken_input === 'string' || Array.isArray(data.player_narration_facts)) {
+  const view = witnessOf(event)
+  if (typeof view.player_spoken_input === 'string' || Array.isArray(view.player_narration_facts)) {
     return {
-      spoken: String(data.player_spoken_input || '').trim(),
-      narrationFacts: Array.isArray(data.player_narration_facts)
-        ? data.player_narration_facts.map((f: unknown) => String(f || '').trim()).filter(Boolean)
+      spoken: String(view.player_spoken_input || '').trim(),
+      narrationFacts: Array.isArray(view.player_narration_facts)
+        ? view.player_narration_facts.map((f: unknown) => String(f || '').trim()).filter(Boolean)
         : [],
     }
   }
-  const parsed = parsePlayerInput(String(data.player_input || ''))
+  const parsed = parsePlayerInput(String(view.player_input || ''))
   return { spoken: parsed.spoken, narrationFacts: parsed.narrationFacts }
 }
 
@@ -334,13 +345,18 @@ function beatLedgerFacts(event: any): string[] {
  * of where the scene begins and who is there, so carry it once with an explicit
  * anti-copy instruction. After any generated turn exists, its structured ledger
  * takes over and raw prose stays out of context as usual.
+ *
+ * An authored opening is English, so `witnessOf` returns its own prose. A
+ * player-made world's opening may not be English; rl-4 gives it a witness, and
+ * this reads the English side through the same view so the narrator keeps one
+ * language of canon (`reply-language.md` §6, §9a).
  */
-function openingSceneCanon(recentEvents: any[]): string | null {
-  const narrated = recentEvents.filter((event) => String(event?.data?.ai_response || '').trim())
+export function openingSceneCanon(recentEvents: any[]): string | null {
+  const narrated = recentEvents.filter((event) => String(witnessOf(event).ai_response || '').trim())
   if (narrated.length !== 1) return null
   const opening = narrated[0]
   if (opening?.data?.model_used !== 'seed') return null
-  return String(opening.data.ai_response).trim().slice(0, 1_800) || null
+  return String(witnessOf(opening).ai_response).trim().slice(0, 1_800) || null
 }
 
 function compactPersonaLine(input: PromptInput): string {

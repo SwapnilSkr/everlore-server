@@ -296,6 +296,10 @@ export async function queryRag(
   prefetched?: { lore?: QueryResponse; memory?: QueryResponse },
   /** Supplied only by group calls; an absent thread selects shared memories. */
   audience?: { thread?: string },
+  /** Only the keyword half searches with this. Memories are written in English,
+   *  so a tapped choice in another language searches with its stored English
+   *  while the embedding stays on the text it was prefetched with. */
+  keywordText: string = queryText,
 ): Promise<RagResult> {
   const ragStartedAt = Date.now()
   // The vector search is one of four retrieval routes, not a precondition for
@@ -332,14 +336,14 @@ export async function queryRag(
   })
 
   const keywordSearch = async (): Promise<MemoryDoc[]> => {
-    if (!queryText.trim()) return []
+    if (!keywordText.trim()) return []
     try {
       return (await mongoColl
         .memories()
         .find(
           {
             ...memoryScope(),
-            $text: { $search: queryText },
+            $text: { $search: keywordText },
           },
           { projection: { score: { $meta: 'textScore' } } as never },
         )

@@ -1,6 +1,7 @@
 import type { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { normalizeEntityName } from './entity-graph.service'
+import { witnessOf, WITNESS_PROJECTION } from '../utils/witness'
 import type {
   PhysicalFact,
   SceneCastMember,
@@ -66,6 +67,20 @@ function isBareTitle(name: string): boolean {
   return normalized.split(' ').every((token) => PRESENCE_TITLE_WORDS.has(token))
 }
 
+/**
+ * The legacy-carry prose: one lowercased blob of the recent turns' narration.
+ * Read through `witnessOf` — a decision about who is in the room reads the
+ * English copy the rest of the engine decided on, not the native display text.
+ */
+export function sceneCarryProse(events: Array<{ data?: { ai_response?: string } }>): string {
+  return ` ${events
+    .map((event) => String(witnessOf(event).ai_response || ''))
+    .join(' ')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s'-]+/g, ' ')
+    .replace(/\s+/g, ' ')} `
+}
+
 /** Scene state as of the newest main-story turn. Reading it from the event
  *  ledger (rather than a mutable per-instance doc) is what makes rewind free:
  *  delete the turns and the previous snapshot is current again. */
@@ -81,6 +96,7 @@ export async function loadCurrentSceneState(
           'data.scene_state': 1,
           'data.present_characters': 1,
           'data.ai_response': 1,
+          ...WITNESS_PROJECTION,
           location_anchor: 1,
           sequence: 1,
         },
@@ -112,12 +128,11 @@ export async function loadCurrentSceneState(
   // scene state to inherit, the only evidence available is the prose, so admit
   // the ones the recent narration actually names. A genuinely quiet character
   // drops for a single turn and returns the moment the story mentions them.
-  const recentProse = ` ${tail
-    .map((event) => String(event?.data?.ai_response || ''))
-    .join(' ')
-    .toLowerCase()
-    .replace(/[^a-z0-9\s'-]+/g, ' ')
-    .replace(/\s+/g, ' ')} `
+  //
+  // Prose evidence is read from `witnessOf`: on a non-English turn the names on
+  // screen are the native ones, but this is a decision about who is here, so it
+  // reads the English copy the rest of the engine decided on.
+  const recentProse = sceneCarryProse(tail)
   const carried = recentProse.trim().length > 1
     ? reported.filter((name) => {
         const normalized = normalizeEntityName(name)

@@ -76,6 +76,22 @@ export function replyLanguageOptions(
   return [ENGLISH_REPLY_LANGUAGE, ...enabled.map(({ code, label }) => ({ code, label }))]
 }
 
+/**
+ * The Story language fields the app reads on a load frame (`reply-language.md`
+ * §10): the effective code (`'en'` when absent) and the offered list. One
+ * helper, used by `getById` and the live-chat load frame alike, so the two can
+ * never drift; the list is `replyLanguageOptions()`, never a second list.
+ */
+export function liveFrameLanguage(instance: { reply_language?: string | null }): {
+  reply_language: string
+  reply_languages: Array<{ code: string; label: string }>
+} {
+  return {
+    reply_language: effectiveReplyLanguage(instance.reply_language)?.code ?? ENGLISH_REPLY_LANGUAGE.code,
+    reply_languages: replyLanguageOptions(),
+  }
+}
+
 /** A settings PATCH accepts `en` or an enabled code; everything else is invalid. */
 export function isReplyLanguageSetting(
   value: unknown,

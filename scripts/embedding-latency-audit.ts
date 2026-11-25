@@ -175,6 +175,7 @@ mock.module('../src/config/mongo', () => ({
 // to attribute. Only the shapes the packet reads.
 let kinshipCalls = 0
 mock.module('../src/services/entity-graph.service', () => ({
+  normalizeEntityName: (name: string) => String(name || '').trim().toLowerCase(),
   entityGraphService: {
     normalizeEntityName: (name: string) => String(name || '').trim().toLowerCase(),
     findMentionedCharacterCards: async () => {

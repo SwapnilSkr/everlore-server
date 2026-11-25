@@ -3,6 +3,7 @@ import { recordLastActive } from './last-active.service'
 import { getRedisClient, getRedisSubscriber } from '../config/redis'
 import { generationService } from './generation.service'
 import { parsePlayerWorldAction } from '../utils/world-action'
+import { liveFrameLanguage } from '../utils/reply-language'
 import { verifyWsToken, type AuthUser } from '../middleware/auth'
 import { rateLimit } from '../middleware/rate-limit'
 import { log } from '../utils/logger'
@@ -490,9 +491,12 @@ export const playWsService = {
           const responseState = state.template && !canReadTemplateAuthoring(state.template, user)
             ? { ...state, template: publicTemplate(state.template) }
             : state
+          // The same Story language fields `GET /instances/:id` sends, from the
+          // same helper. A group's frame has none, as its HTTP one has none.
+          const storyFrame = { ...responseState, ...liveFrameLanguage(state.instance) }
           // Replies to concurrent loads can overtake each other, so a thread's answer names its thread.
           // Faces come from the template read on this request, so art published later still reaches an old save.
-          ws.send(JSON.stringify({ type: 'instance_loaded', ...(directWith === undefined ? {} : { directWith }), data: state.template?.kind === 'group' ? publicGroupPayload(responseState, state.template) : responseState }))
+          ws.send(JSON.stringify({ type: 'instance_loaded', ...(directWith === undefined ? {} : { directWith }), data: state.template?.kind === 'group' ? publicGroupPayload(responseState, state.template) : storyFrame }))
           // Entering a save is opening it: the replies it gathered while the
           // player was away have been seen.
           if (instanceId) await markSaveStoryRepliesRead({ playerId: user.id, instanceId })

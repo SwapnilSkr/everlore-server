@@ -14,6 +14,8 @@ import type { TimeAnchorDoc } from '../models/time.model'
 import type { LocationAnchorDoc } from '../models/location.model'
 import { type WorldFactSource, confidenceTier } from '../utils/world-authority'
 import { loadCurrentSceneState } from './scene-state.service'
+import { witnessOf, keywordQueryTextFor } from '../utils/witness'
+import { offeredChipEnglish } from '../../worker/lib/player-turn'
 import type { SceneStateDoc } from '../models/scene-state.model'
 import type { PrepStages } from '../models/generation-log.model'
 
@@ -162,6 +164,15 @@ export function ragQueryTextFor(params: {
 }): string {
   if (!params.isContinuation) return params.userMessage
   return String(params.lastNarration || '') || 'Continue the current scene.'
+}
+
+/**
+ * The narration a continue searches with: the last turn's prose as the engine
+ * decided it — the hidden English copy on a non-English save, else native.
+ * This is a recall decision, not display (§4, §9a).
+ */
+export function continueNarration(events: unknown[]): string | undefined {
+  return witnessOf(events[events.length - 1]).ai_response
 }
 
 /**
@@ -329,11 +340,17 @@ export async function buildContextPacket(params: {
   }
 
   // ── 2. Retrieval (vector + keyword + entity neighborhood + open threads) ──
+  // A continue has no player text: its query is the previous narration, read
+  // through `witnessOf` (see `continueNarration`).
   const ragQueryText = ragQueryTextFor({
     isContinuation,
     userMessage,
-    lastNarration: recentEvents[recentEvents.length - 1]?.data?.ai_response,
+    lastNarration: continueNarration(recentEvents),
   })
+  const keywordText = keywordQueryTextFor(
+    ragQueryText,
+    isContinuation ? null : offeredChipEnglish(userMessage, recentEvents[recentEvents.length - 1]),
+  )
   let loreTexts: string[] = []
   let memoryTexts: string[] = []
   let openThreads: string[] = []
@@ -384,6 +401,8 @@ export async function buildContextPacket(params: {
       currentTimeAnchor?.timeline_id || 'main',
       currentLocation?.entity_id ? idString(currentLocation.entity_id) : null,
       prefetched?.responses,
+      undefined,
+      keywordText,
     )
     loreTexts = rag.loreTexts
     memoryTexts = rag.memoryTexts

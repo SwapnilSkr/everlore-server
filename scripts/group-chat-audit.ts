@@ -1613,9 +1613,17 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // text, travel and choice readings into `worker/lib/player-turn.ts`; the story
   // source changed, the group-only handoff did not, so the pin below is the
   // re-hashed file minus exactly the same two group lines.
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '9e50838817abeec11cc723a56eaa2dfe381ae0cc1f297f5c3e603289e3493c2a')
+  // rl-3r moved the remaining stored-turn readers (choice context's authored
+  // opening, opening cast, place history) to `witnessOf`; the opening text is now read at the
+  // call site and handed to the builder as `authoredOpening` (so the builder's
+  // AST-extracted closure stays `countTokens` only). The group handoff did not
+  // move, so the pin was re-hashed the same way.
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '1c1cb81d2550b0ba09140ebb5d854820ba43499de34682f1cb003ecae648b850')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
-  assert.equal(createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex'), '4c128e7f9f10ff94b5ba52bd817deeb11915842c8d14147eae48646c9a6c4bbd')
+  // rl-3r: the continuity player half and `openingSceneCanon` now read through
+  // `witnessOf`, so this source moved while the prompt it EMITS did not —
+  // `audit:prompt-part-hash` proves the emitted messages are byte-identical.
+  assert.equal(createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex'), 'f12c86814d43064dcde58909e01e5b3641a48b33bb5a447c730679692b172a6b')
   console.log(`story builder source sha256 ${createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex')}`)
   // Data is external to this isolated checkout; the caller can supply its path.
   const dataDir = process.env.GROUP_CHAT_DATA_DIR

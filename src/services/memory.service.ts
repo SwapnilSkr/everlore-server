@@ -20,6 +20,7 @@ import type { ObjectId } from 'mongodb'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { log } from '../utils/logger'
 import { parsePlayerInput } from '../utils/player-input-parser'
+import { playerTextOf } from '../utils/witness'
 import { extractKinshipAssertions, mergeRelationAssertions } from '../../worker/lib/kinship-pattern-extractor'
 import { characterCodexService } from './character-codex.service'
 import { snapshotCodexMedia, restoreCodexMedia, type CodexMediaSnapshot } from './codex-media-carryover'
@@ -308,7 +309,9 @@ async function projectLatestReplayTurn(params: {
       name: ev.location_anchor?.name || null,
       entityId: ev.location_anchor?.entity_id ? idString(ev.location_anchor.entity_id) : null,
       sequence: Number(ev.sequence || 0),
-      playerInput: String(ev.data?.player_input || ev.userMessage || ''),
+      // What the player did, as canon decided it: the English copy on a
+      // non-English turn, else their own text.
+      playerInput: playerTextOf(ev, ev.userMessage),
     })),
   )
   const graphPeople = await entityGraphService.listCharacterLastPlaces(instanceId).catch(() => [])
@@ -328,7 +331,7 @@ async function projectLatestReplayTurn(params: {
     ...scenePresence.flatMap((scene) => scene.present.map((name: string) => ({ name, aliases: [] as string[] }))),
   ].filter((person) => person.name)
   const personPlaces = mergePersonPlaces(graphPeople, lastPlacesFromPresence(rosterPeople, scenePresence))
-  const replayInput = String(event.data?.player_input || event.userMessage || '')
+  const replayInput = playerTextOf(event, event.userMessage)
   const replayAction = event.data?.world_action
   const replayPending = instance?.pending_destination?.name
     ? {
@@ -618,7 +621,9 @@ async function extractReplayCodexDeltas(params: {
     .sort({ mention_count: -1, updated_at: -1 })
     .toArray()
   const deltas = await extractCharacterCodexDeltas({
-    playerInput: event.data?.player_input || '',
+    // The extractor reads English, so it reads the hidden English copy of the
+    // player's text on a non-English turn, else the event's own.
+    playerInput: playerTextOf(event),
     aiResponse: narrative,
     existing: existing.map((c: any) => ({
       canonical_name: c.canonical_name,
@@ -805,8 +810,9 @@ export async function rebuildCodexAndRelationsAfterReplay(params: {
       })
   } else {
     // Incremental: merge this turn's LLM assertions with a deterministic pass over
-    // its input + prose, then apply on top of the existing edges.
-    const parsedInput = parsePlayerInput(event.data?.player_input || '')
+    // its input + prose, then apply on top of the existing edges. The player's
+    // text is read from ONE view, so the English copy and its facts agree.
+    const parsedInput = parsePlayerInput(playerTextOf(event))
     const relationAssertions = mergeRelationAssertions(
       deltas.flatMap((d) => d.relation_assertions || []),
       extractKinshipAssertions({

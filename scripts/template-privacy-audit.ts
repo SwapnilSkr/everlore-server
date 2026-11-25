@@ -133,6 +133,8 @@ function assertPublic(value: object, serialized = false) {
 const bytes = (value: unknown) => Buffer.from(JSON.stringify(value))
 const wire = (value: unknown) => JSON.parse(JSON.stringify(value))
 const createBody = { template_id: fixture._id.toHexString(), persona_id: 'fixture-persona' }
+// With no Story language switched on, a story's frame says English and offers no list.
+const languageFields = { reply_language: 'en', reply_languages: [] }
 async function loadFrame(user: AuthUser) {
   const frames: string[] = []
   liveTier = user.tier
@@ -188,7 +190,7 @@ await check('(i) non-owner instance_loaded projects only the response template w
   const frame = await loadFrame(stranger)
   assert.deepEqual(bytes(loaded), before, 'engine state must stay byte-identical')
   assertPublic(frame.data.template, true)
-  assert.deepEqual(frame, { type: 'instance_loaded', data: { ...wire(loaded), template: frame.data.template } })
+  assert.deepEqual(frame, { type: 'instance_loaded', data: { ...wire(loaded), ...languageFields, template: frame.data.template } })
 })
 await check('(j) owner POST /instances preserves the full template', async () => {
   created = playFixture()
@@ -202,7 +204,7 @@ await check('(j) owner instance_loaded preserves the full template', async () =>
   const before = bytes(loaded)
   const frame = await loadFrame(owner)
   assert.deepEqual(bytes(loaded), before)
-  assert.deepEqual(frame, { type: 'instance_loaded', data: wire(loaded) })
+  assert.deepEqual(frame, { type: 'instance_loaded', data: { ...wire(loaded), ...languageFields } })
   assert.deepEqual(frame.data.template, wire(fixture))
 })
 await check('a player admin tier gets public templates in both play responses', async () => {
@@ -215,7 +217,7 @@ await check('instance_loaded preserves a missing template and every other field'
   loaded.template = null
   try {
     const before = bytes(loaded)
-    assert.deepEqual(await loadFrame(stranger), { type: 'instance_loaded', data: wire(loaded) })
+    assert.deepEqual(await loadFrame(stranger), { type: 'instance_loaded', data: { ...wire(loaded), ...languageFields } })
     assert.deepEqual(bytes(loaded), before)
   } finally {
     loaded.template = template

@@ -24,6 +24,7 @@ import { extractCharacterCodexDeltas, extractCharacterCodexBatch, looksLikeUnnam
 import { getRedisClient } from '../../src/config/redis'
 import { CharacterProjectionTiming, withCharacterProjection } from '../lib/character-projection-lease'
 import { recordAnomaly } from '../../src/utils/record-anomaly'
+import { witnessOf } from '../../src/utils/witness'
 import { log } from '../../src/utils/logger'
 import type { WorldEventDoc } from '../../src/models/world-event.model'
 import type { CharacterProfileDoc } from '../../src/models/character-profile.model'
@@ -148,8 +149,27 @@ async function extractionInputs(instanceId: string, characterCodex: CharacterPro
   return { existing: characterCodex, knownLocations: knownPlaces, promotableRecurringPeople }
 }
 
+/**
+ * Everything the card extractor reads for one stored turn (§4): the hidden
+ * English copy on a non-English save, else the event's own fields.
+ *
+ * A world action's synthetic player line is not the player's prose and is never
+ * in the witness, so its own fallback still supplies it — and it still applies
+ * when the witness's player text is empty (a continue), because `playerInput`
+ * falls back rather than refusing. Both fields come from the SAME view, so a
+ * native player text can never be paired with English prose.
+ */
+export function characterProjectionTurnInputs(event: WorldEventDoc) {
+  const view = witnessOf(event)
+  return { sequence: event.sequence,
+    playerInput: view.player_input || (event.data.world_action ? event.data.codex_projection_context?.player_input || '' : ''),
+    // `witnessOf` falls back to the event's own value, so the `??` only covers a
+    // row with no prose at all — never a mixed language.
+    aiResponse: view.ai_response ?? '', presentCast: event.data.present_characters || [] }
+}
+
 /** Generation and recovery run the identical per-turn tail, under one batch's
- * leases. Inputs and graph/canon writes always carry their OWN event sequence. */
+ *  leases. Inputs and graph/canon writes always carry their OWN event sequence. */
 export async function projectCharacterEvent(params: { instanceId: string; playerId: string; eventId: string }) {
   return runBackgroundLLMTrace({ instance_id: params.instanceId, player_id: params.playerId,
     event_id: params.eventId }, () => projectCharacterWork(params))
@@ -161,14 +181,12 @@ async function projectCharacterWork(params: { instanceId: string; playerId: stri
   if (!(await timing.step('instance_exists_read', () => liveInstanceExists(instanceOid)))) return { skipped: 'instance_deleted' }
   const loadSession = () => timing.step('session_read', () => instanceService.loadSession(instanceId, playerId))
   const readCards = () => timing.step('cards_read', () => mongoColl.characters().find({ instance_id: instanceOid }).toArray())
-  const turnInputs = (event: WorldEventDoc) => ({ sequence: event.sequence,
-    playerInput: event.data.player_input || (event.data.world_action ? event.data.codex_projection_context?.player_input || '' : ''),
-    aiResponse: event.data.ai_response, presentCast: event.data.present_characters || [] })
+  const turnInputs = characterProjectionTurnInputs
   return withCharacterProjection(params, projectCharacterEvent, async (projectionEvent, assertOwned, timing, prepared) => {
     const event = projectionEvent
     const nextSequence = event.sequence
     setLLMTraceSequence(nextSequence)
-    const rawNarrative = event.data.ai_response
+    const rawNarrative = witnessOf(event).ai_response ?? event.data.ai_response
     const parsedPlayerInput = parsePlayerInput(turnInputs(event).playerInput)
     const confirmedWorldAction = event.data.world_action
     const session = await loadSession()
