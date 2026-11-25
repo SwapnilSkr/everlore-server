@@ -23,6 +23,7 @@ import {
   type TailModelCallStage,
 } from '../../src/models/generation-log.model'
 import { buildPrompt } from '../../src/utils/prompt-builder'
+import { storyPlayerGender } from '../../src/models/player-gender'
 import { lengthMaxTokens } from '../../src/utils/narrative-styles'
 import { parsePlayerInput } from '../../src/utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-mutator'
@@ -985,6 +986,17 @@ ${
   const turnReplyLanguage = effectiveReplyLanguage(session.reply_language)
 
   const promptStartedAt = Date.now()
+  // The protagonist card is the choice pass's anchor too: find it once, from the
+  // codex the packet already returned. In a GM world (not sentient) that card
+  // IS the player's character, so neither prompt gets a gender line; a sentient
+  // world's locked protagonist never suppresses it, and a persona still wins.
+  const protagonistCard = (characterCodex as any[]).find((c) => c.is_protagonist)
+  const turnPlayerGender = storyPlayerGender(
+    session.player_gender ?? 'unknown',
+    protagonistCard,
+    !!session.persona_snapshot,
+    !!session.is_sentient,
+  )
   const prompt = buildPrompt({
     seedPrompt: session.seed_prompt,
     isSentient: session.is_sentient,
@@ -1016,6 +1028,10 @@ ${
     toneExampleSeed: instanceId,
     styleNotes: session.style_notes,
     playerPersona: session.persona_snapshot || null,
+    // A session cached before this field existed reads as unknown rather than
+    // silent: the narrator still gets the neutral rule for this turn — unless
+    // the save's protagonist is the character the player authored.
+    playerGender: turnPlayerGender,
     messageLength: session.message_length,
     characterCodex,
     deceasedCharacterNames: packet.deceasedCharacterNames,
@@ -1531,7 +1547,6 @@ ${
   // Anchor choice generation to the player's identity so the choice viewpoint
   // can't drift. GM worlds: the protagonist card IS the player's character.
   // Sentient worlds: the player is the persona talking to the locked character.
-  const protagonistCard = (characterCodex as any[]).find((c) => c.is_protagonist)
   const choiceProtagonist = session.is_sentient
     ? session.persona_snapshot?.name
       ? { name: session.persona_snapshot.name, aliases: [] }
@@ -1660,6 +1675,9 @@ ${
           .filter((label: string) => label && !taken.has(normalizeEntityName(label)))
       })(),
       choiceContext: choiceDecisionContext,
+      // First-person buttons are the player's own words, so the choice half is
+      // told the same effective gender the narrator got.
+      playerGender: turnPlayerGender,
       // §6: the choice half reads the NATIVE prose and native player turn; the
       // witness half and the ledger read the English copy passed as `narrative`.
       ...(turnReplyLanguage
@@ -1669,6 +1687,9 @@ ${
               narrative: nativeNarrative,
               playerInput: nativePlayerInputRaw,
             },
+            // The English line is already known here (the copy settled before
+            // the extractors), so the English pair is checked against it too.
+            ...(acceptedWitness ? { playerInputEnglish: acceptedWitness.player } : {}),
           }
         : {}),
       onRaw: (stage, raw) => extractorRaw.capture(stage)(raw),

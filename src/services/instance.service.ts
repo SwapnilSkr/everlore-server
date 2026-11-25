@@ -9,6 +9,7 @@ import { COLLECTIONS } from '../models/collections'
 import type { WorldInstanceDoc } from '../models/world-instance.model'
 import type { WorldTemplateDoc, WorldTemplateSummaryDoc } from '../models/world-template.model'
 import type { WorldEventDoc } from '../models/world-event.model'
+import { effectivePlayerGender } from '../models/player-gender'
 import { getRedisClient } from '../config/redis'
 import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
@@ -720,10 +721,17 @@ export const instanceService = {
     const iid = parseObjectId(instanceId)
     const pid = parseObjectId(playerId)
 
-    const instance = await worldInstances().findOne({
-      _id: iid,
-      player_id: pid,
-    })
+    // The account's onboarding gender is needed for this save's one effective
+    // gender. Read only that key, in the same round trip as the save itself —
+    // never a serial read ahead of the narrator. The session is cached for an
+    // hour, so this costs one indexed projection read per cache miss.
+    const [instance, player] = await Promise.all([
+      worldInstances().findOne({
+        _id: iid,
+        player_id: pid,
+      }),
+      mongoColl.users().findOne({ _id: pid }, { projection: { 'preferences.gender': 1 } }),
+    ])
     if (!instance) throw new Error('Instance not found')
 
     const template = await worldTemplates().findOne({
@@ -764,6 +772,10 @@ export const instanceService = {
       focus_character_id: instance.focus_character_id ? idString(instance.focus_character_id) : null,
       persona_id: instance.persona_id ? idString(instance.persona_id) : null,
       persona_snapshot: instance.persona_snapshot || null,
+      // One effective gender per turn: the persona's when the save uses one,
+      // else the account's onboarding answer, else unknown. The worker reads
+      // this and adds no database read of its own.
+      player_gender: effectivePlayerGender(instance.persona_snapshot, player?.preferences?.gender),
       current_time_anchor: instance.current_time_anchor || null,
       active_timeline_id: instance.active_timeline_id || 'main',
       default_calendar_id: instance.default_calendar_id ? idString(instance.default_calendar_id) : null,

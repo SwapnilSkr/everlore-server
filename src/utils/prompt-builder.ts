@@ -12,6 +12,7 @@ import { witnessOf } from './witness'
 import { replyLanguageRule, type ReplyLanguageEntry } from './reply-language'
 import { CHOICE_TAIL_INSTRUCTION } from '../../worker/lib/choice-tail'
 import type { PersonaSnapshotDoc } from '../models/persona.model'
+import type { EffectivePlayerGender } from '../models/player-gender'
 import type { PlayerInteractionSignalDoc } from '../models/world-event.model'
 import type { PromptPart } from '../models/llm-call.model'
 
@@ -63,6 +64,10 @@ interface PromptInput {
   styleNotes?: string
   /** Optional reusable player persona selected for this instance. */
   playerPersona?: PersonaSnapshotDoc | null
+  /** The one effective gender for this turn (persona, else onboarding, else
+   *  unknown). Emitted as the gender line when the persona profile cannot carry
+   *  it, or as the neutral line when the gender is unknown/non-binary. */
+  playerGender?: EffectivePlayerGender
   /** Desired reply length: 'short' | 'medium' | 'long'. Defaults to medium. */
   messageLength?: MessageLength
   /** Canonical emergent character cards enforced as story constraints. */
@@ -368,6 +373,26 @@ function compactPersonaLine(input: PromptInput): string {
   if (p.description) parts.push(`Description: ${String(p.description).replace(/\s+/g, ' ').trim().slice(0, 500)}`)
   if (p.other_info) parts.push(`Other: ${String(p.other_info).replace(/\s+/g, ' ').trim().slice(0, 500)}`)
   return parts.join('\n')
+}
+
+/**
+ * The one short gender line the narrator gains when the persona profile cannot
+ * carry it. A male/female persona already states its gender above, so no line is
+ * added; non-binary is NOT the same instruction as "Gender: non-binary", so the
+ * neutral line is still emitted. English saves get this too: third-person
+ * English narration also has to choose he/she.
+ */
+function playerGenderLine(input: PromptInput): string {
+  const gender = input.playerGender
+  if (!gender) return ''
+  if ((gender === 'male' || gender === 'female') && input.playerPersona?.gender) return ''
+  if (gender === 'male') {
+    return `PLAYER GENDER (canon): the player character is male; use masculine wording for the player wherever the narration or dialogue refers to them.`
+  }
+  if (gender === 'female') {
+    return `PLAYER GENDER (canon): the player character is female; use feminine wording for the player wherever the narration or dialogue refers to them.`
+  }
+  return `PLAYER GENDER (canon): the player character's gender is not stated; never assign one. Refer to the player without gendered words — in languages with grammatical gender, use no gendered pronouns, adjectives, participles or nouns for the player.`
 }
 
 /**
@@ -1036,6 +1061,14 @@ ${personaLine}
 `
   }
   markDynamicPart('player_persona_profile')
+
+  const genderLine = playerGenderLine(input)
+  if (genderLine) {
+    dynamicContent += `${genderLine}
+
+`
+    markDynamicPart('player_gender')
+  }
 
   if (input.userNarrationFacts && input.userNarrationFacts.length > 0) {
     dynamicContent += `PLAYER CANONICAL NARRATION FOR THIS TURN (GROUND TRUTH — these events/facts already happened):\n`

@@ -242,6 +242,9 @@ function pairRaw(items: unknown[]): string {
 const EN_ITEM = (label: string, send: string, labelEn: string, sendEn: string) => ({
   label: labelEn, kind: 'act', send: sendEn, label_local: label, send_local: send,
 })
+const SAY_ITEM = (label: string, send: string, labelEn: string, sendEn: string) => ({
+  label: labelEn, kind: 'say', send: sendEn, label_local: label, send_local: send,
+})
 
 await check('result: the native choices and the English pairs are aligned by index', async () => {
   const raw = pairRaw([
@@ -278,6 +281,45 @@ await check('result: repeat filtering keeps pairs aligned, including the floor r
     result.choices.map((choice) => expectedEn[choice.label]),
     'the English pair must follow the native chip, not the original index',
   )
+})
+
+await check('result: a native chip repeating the player line is dropped and the pair stays aligned', async () => {
+  const raw = pairRaw([
+    SAY_ITEM('Perguntar de novo', 'Quanto tempo você ficou fora?', 'Ask again', 'How long have you been away?'),
+    EN_ITEM('Esperar', '*Eu espero em silêncio.*', 'Wait', '*I wait in silence.*'),
+    EN_ITEM('Sair', '*Eu saio do salão.*', 'Leave', '*I leave the hall.*'),
+  ])
+  const opts: MetadataOpts = { ...LANGUAGE_OPTS, playerInputEnglish: ENGLISH_PLAYER }
+  const { call } = fixtureCall(raw)
+  const result = await extractChoiceMetadata(ENGLISH_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, { ...opts, call }, { split: true })
+  assert.deepEqual(result.choices.map((choice) => choice.label), ['Esperar', 'Sair'])
+  assert.deepEqual(result.choices_en?.map((choice) => choice.label), ['Wait', 'Leave'], 'the English pair must follow the native drop')
+})
+
+await check('result: the English pair repeating the witness line is dropped too', async () => {
+  const raw = pairRaw([
+    SAY_ITEM('Perguntar sobre a tempestade', 'Pergunto de novo sobre a tormenta.', 'Ask about the storm', 'How long were you away?'),
+    EN_ITEM('Esperar', '*Eu espero em silêncio.*', 'Wait', '*I wait in silence.*'),
+    EN_ITEM('Sair', '*Eu saio do salão.*', 'Leave', '*I leave the hall.*'),
+  ])
+  const opts: MetadataOpts = { ...LANGUAGE_OPTS, playerInputEnglish: ENGLISH_PLAYER }
+  const { call } = fixtureCall(raw)
+  const result = await extractChoiceMetadata(ENGLISH_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, { ...opts, call }, { split: true })
+  assert.deepEqual(result.choices.map((choice) => choice.label), ['Esperar', 'Sair'])
+  assert.deepEqual(result.choices_en?.map((choice) => choice.label), ['Wait', 'Leave'])
+})
+
+await check('result: player-line repeats keep the floor and the pairs aligned', async () => {
+  const raw = pairRaw([
+    SAY_ITEM('Perguntar de novo', NATIVE_PLAYER, 'Ask again', 'How long have you been away?'),
+    SAY_ITEM('Repetir a pergunta', NATIVE_PLAYER, 'Repeat the question', 'How long were you gone?'),
+    SAY_ITEM('Insistir', NATIVE_PLAYER, 'Press her', 'How long did you stay out?'),
+  ])
+  const opts: MetadataOpts = { ...LANGUAGE_OPTS, playerInputEnglish: undefined }
+  const { call } = fixtureCall(raw)
+  const result = await extractChoiceMetadata(ENGLISH_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, { ...opts, call }, { split: true })
+  assert.deepEqual(result.choices.map((choice) => choice.label), ['Perguntar de novo', 'Repetir a pergunta'])
+  assert.deepEqual(result.choices_en?.map((choice) => choice.label), ['Ask again', 'Repeat the question'])
 })
 
 await check('result: a choice missing a native field is dropped with its pair', async () => {
@@ -474,7 +516,7 @@ async function runBites() {
     {
       name: 'absent: the English result gained choices_en',
       check: 'absent: results match the pre-change fixture and gain no choices_en',
-      edits: [[extractor, "...(englishChoices === undefined\n          ? {}\n          : { choices_en: ordered.map((index) => englishChoices[index]) }),", 'choices_en: ordered.map((index) => englishChoices?.[index] ?? { label: \'\', send: \'\' }),']],
+      edits: [[extractor, "...(englishChoices === undefined\n          ? {}\n          : { choices_en: keptOrder.map((index) => englishChoices[index]) }),", 'choices_en: keptOrder.map((index) => englishChoices?.[index] ?? { label: \'\', send: \'\' }),']],
     },
     {
       name: 'present: the choice half reads the English prose',
@@ -484,7 +526,7 @@ async function runBites() {
     {
       name: 'present: the language line is not last',
       check: 'present: one language line, at the very end of the choice system prompt',
-      edits: [[extractor, '? `${strippedChoiceBase}\\n${choiceLanguageInstruction(language.name)}`', '? `${choiceLanguageInstruction(language.name)}\\n${strippedChoiceBase}`']],
+      edits: [[extractor, "? `${strippedChoiceBase}${genderRule ? `\\n${genderRule}` : ''}\\n${choiceLanguageInstruction(language.name)}`", "? `${choiceLanguageInstruction(language.name)}\\n${strippedChoiceBase}${genderRule ? `\\n${genderRule}` : ''}`"]],
     },
     {
       name: 'present: maxTokens is not raised',
@@ -504,7 +546,17 @@ async function runBites() {
     {
       name: 'present: the English pair is not aligned through the repeats filter',
       check: 'result: repeat filtering keeps pairs aligned, including the floor restore',
-      edits: [[extractor, ': { choices_en: ordered.map((index) => englishChoices[index]) }),', ': { choices_en: englishChoices.filter(Boolean) }),']],
+      edits: [[extractor, ': { choices_en: keptOrder.map((index) => englishChoices[index]) }),', ': { choices_en: englishChoices.filter(Boolean) }),']],
+    },
+    {
+      name: 'result: the native player-line repeat is not dropped',
+      check: 'result: a native chip repeating the player line is dropped and the pair stays aligned',
+      edits: [[extractor, '    if (choiceRepeatsPlayerLine(choice, playerInput)) repeat = true', '    if (false) repeat = true']],
+    },
+    {
+      name: 'result: the English pair repeating the witness line is not dropped',
+      check: 'result: the English pair repeating the witness line is dropped too',
+      edits: [[extractor, '    if (english && choiceRepeatsPlayerLine(english, playerInputEnglish)) repeat = true', '    if (false) repeat = true']],
     },
     {
       name: 'present: the English and native fields are read the wrong way round',

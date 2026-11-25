@@ -1,6 +1,7 @@
 import { callLLM, AI_MODELS } from '../../src/ai'
 import { env } from '../../src/config/env'
 import type { ChoiceEnglish } from '../../src/utils/witness'
+import type { EffectivePlayerGender } from '../../src/models/player-gender'
 import { enforceSchema, untranslatedChoices, type GenerationOutput, type SchemaOptions } from './structured-output'
 
 /** Structured fields derived from a narrative — everything except the prose itself. */
@@ -237,6 +238,23 @@ export function choiceLanguageInstruction(name: string): string {
   return `CHOICE LANGUAGE: the player reads this story in ${name}. Every choice object has FIVE required fields, in this order: label, kind and send in English exactly as described above, whatever language the passage is in; then label_local and send_local, that same label and send translated into natural ${name}, first person kept, names and *asterisks* kept. Example shape: {"label":"Take her hand","kind":"act","send":"*I reach out and take her hand.*","label_local":"<the label in ${name}>","send_local":"<the send in ${name}, asterisks kept>"}. Never leave label_local or send_local in English. The milestone, when there is one, is in ${name}. Every other field is in English.`
 }
 
+/**
+ * The one gender line the choice half gains, so first-person buttons agree with
+ * the narrator. On a non-English turn it names the player's copy; the English
+ * pair is the extractors' bookkeeping and keeps the rules' own wording.
+ */
+export function choiceGenderInstruction(gender: EffectivePlayerGender, local = false): string {
+  const fields = local ? 'label_local and send_local' : 'label and send'
+  const englishNote = local ? ' The English label and send stay as the rules teach.' : ''
+  if (gender === 'male') {
+    return `PLAYER GENDER (canon): the player character is male; write ${fields} with masculine forms for the player, first person kept.${englishNote}`
+  }
+  if (gender === 'female') {
+    return `PLAYER GENDER (canon): the player character is female; write ${fields} with feminine forms for the player, first person kept.${englishNote}`
+  }
+  return `PLAYER GENDER (canon): the player character's gender is not stated; never assign one. Write ${fields} without gendered words for the player — no gendered adjectives, participles or nouns (this matters in languages with grammatical gender).${englishNote}`
+}
+
 const CHOICE_TRANSLATION_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -460,6 +478,18 @@ export type MetadataOpts = {
    */
   recentChoiceLabels?: string[]
   /**
+   * The one effective gender for this turn (persona, else onboarding, else
+   * unknown). Only the choice half reads it: the buttons are the player's own
+   * first-person words, so they must agree with the narrator's gender line.
+   */
+  playerGender?: EffectivePlayerGender
+  /**
+   * The hidden English copy of this turn's player line, when it is already
+   * known. A non-English turn compares its English choice pair with it; the
+   * pass never waits for a copy that has not settled.
+   */
+  playerInputEnglish?: string | null
+  /**
    * Non-English turn: the choice half runs on these native values while the
    * witness half (and the ledger) read the English copy passed as `narrative`.
    * Absent on an English turn, where every request and result is unchanged.
@@ -628,6 +658,96 @@ Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length
 }
 
 /**
+ * Normalise a label or a player line for comparison.
+ *
+ * Unicode letters and digits, with accents folded (NFKD, marks dropped) and
+ * lower case. The old ASCII class `[^a-z0-9 ]` deleted every non-ASCII letter
+ * — "lâmpada" became "lmpada" and a Cyrillic label became empty, which was then
+ * never filtered. For an ASCII English label the result is byte-identical to
+ * the old normaliser.
+ */
+export function normalizeChoiceText(value: unknown): string {
+  return String(value ?? '')
+    .normalize('NFKD')
+    .replace(/\p{M}+/gu, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N} ]+/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+/** A send with its `*action*` segments removed, so the spoken remainder can be
+ *  compared on its own. */
+function spokenOnly(value: unknown): string {
+  return String(value ?? '').replace(/\*[^*]*\*/g, ' ')
+}
+
+/**
+ * Is this choice the move the player just made? Both the whole text and its
+ * spoken remainder are compared; the remainder only when speech is left on both
+ * sides, so a pair of pure actions with different wording never collides.
+ */
+export function choiceRepeatsPlayerLine(
+  choice: { label?: string; send?: string } | null | undefined,
+  playerLine: string | null | undefined,
+): boolean {
+  const whole = normalizeChoiceText(playerLine)
+  if (!whole) return false
+  const speech = normalizeChoiceText(spokenOnly(playerLine))
+  for (const field of [choice?.label, choice?.send]) {
+    if (typeof field !== 'string') continue
+    if (normalizeChoiceText(field) === whole) return true
+    if (speech) {
+      const fieldSpeech = normalizeChoiceText(spokenOnly(field))
+      if (fieldSpeech && fieldSpeech === speech) return true
+    }
+  }
+  return false
+}
+
+/**
+ * The kept indices for a choice set, in the order the survivors were produced
+ * (a floor restore appends the earliest dropped options, as before).
+ */
+function keptChoiceIndices(
+  choices: Array<{ label?: string; send?: string }>,
+  englishChoices: readonly ChoiceEnglish[] | undefined,
+  recentLabels: string[],
+  floor: number,
+  playerInput: string | null | undefined,
+  playerInputEnglish: string | null | undefined,
+): number[] {
+  const recent = new Set(recentLabels.map(normalizeChoiceText).filter(Boolean))
+  const kept: number[] = []
+  const dropped: number[] = []
+  const seen = new Set<string>()
+  choices.forEach((choice, index) => {
+    const english = englishChoices?.[index]
+    // A chip without its English pair cannot be carried half-paired.
+    if (englishChoices !== undefined && !english) { dropped.push(index); return }
+    const key = normalizeChoiceText(choice?.label || '')
+    let repeat = false
+    // Within-turn duplicates are dropped whether or not there is any history.
+    if (key && seen.has(key)) repeat = true
+    if (key) seen.add(key)
+    if (key && recent.has(key)) repeat = true
+    // The move the player already made this turn is not an unanswered suggestion.
+    if (choiceRepeatsPlayerLine(choice, playerInput)) repeat = true
+    // On a non-English turn the English pair is compared with the English line
+    // when that copy has already settled; never awaited here.
+    if (english && choiceRepeatsPlayerLine(english, playerInputEnglish)) repeat = true
+    if (repeat) dropped.push(index)
+    else kept.push(index)
+  })
+  while (kept.length < floor && dropped.length) {
+    const index = dropped.shift()!
+    if (englishChoices !== undefined && !englishChoices[index]) continue
+    kept.push(index)
+  }
+  return kept
+}
+
+/**
  * DROP CHOICES THE PLAYER HAS ALREADY BEEN OFFERED AND PASSED OVER.
  *
  * Over one live 83-turn save the choice half offered 323 suggestions of which
@@ -643,32 +763,18 @@ Tracked flags (only these names may appear in flag_mutations): ${flagKeys.length
  * arithmetic rather than persuasion.
  *
  * A floor of two keeps a turn from collapsing to a single option: the set may
- * shrink, never disappear. The comparison is on the normalized label, so
+ * shrink, never disappear. The comparison is on the normalized label (and, when
+ * `playerInput` is given, on the label/send against the player's own line), so
  * punctuation and casing drift do not smuggle a repeat back in.
  */
-export function dropRepeatedChoices<T extends { label?: string }>(
+export function dropRepeatedChoices<T extends { label?: string; send?: string }>(
   choices: T[],
   recentLabels: string[],
   floor = 2,
+  playerInput?: string | null,
 ): T[] {
-  const norm = (value: string): string =>
-    String(value || '').toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim()
-  const recent = new Set(recentLabels.map(norm).filter(Boolean))
-  // Within-turn duplicates are dropped whether or not there is any history —
-  // two identical chips in one set are never right.
-  const kept: T[] = []
-  const dropped: T[] = []
-  const seen = new Set<string>()
-  for (const choice of choices) {
-    const key = norm(choice?.label || '')
-    // A duplicate WITHIN this turn's own set is always dropped.
-    if (key && seen.has(key)) { dropped.push(choice); continue }
-    if (key) seen.add(key)
-    if (key && recent.has(key)) dropped.push(choice)
-    else kept.push(choice)
-  }
-  while (kept.length < floor && dropped.length) kept.push(dropped.shift()!)
-  return kept
+  return keptChoiceIndices(choices, undefined, recentLabels, floor, playerInput, undefined)
+    .map((index) => choices[index])
 }
 
 /** Reuse enforceSchema's field validation on a raw half-response by injecting a
@@ -805,10 +911,14 @@ export async function extractChoiceMetadata(
     ? withChoiceContext(buildMetadataSystem(opts, normalizedStats, flagKeys, language.playerInput))
     : system
   const strippedChoiceBase = split ? choiceBase.replace(ledgerRule + '\n', '') : choiceBase
-  // The one language line sits at the very end — after the choice context too.
+  // The gender line, then the one language line at the very end — after the
+  // choice context too. Absent gender leaves both strings as they were.
+  const genderRule = opts?.playerGender
+    ? choiceGenderInstruction(opts.playerGender, !!language)
+    : ''
   const choicesSystem = language
-    ? `${strippedChoiceBase}\n${choiceLanguageInstruction(language.name)}`
-    : strippedChoiceBase
+    ? `${strippedChoiceBase}${genderRule ? `\n${genderRule}` : ''}\n${choiceLanguageInstruction(language.name)}`
+    : `${strippedChoiceBase}${genderRule ? `\n${genderRule}` : ''}`
   const invoke = execution?.call || opts?.call || callLLM
   // Launch before awaiting choices, and catch independently: a ledger outage
   // must never discard successful choices (or vice versa). Timed around this
@@ -885,15 +995,18 @@ export async function extractChoiceMetadata(
       }
       const nativeChoices = v.choices || []
       const englishChoices = language ? (v.choices_en || []) : undefined
-      // Drop repeats on the native labels exactly as before, keeping the pair
-      // aligned through the same index order.
-      const keptOrder = dropRepeatedChoices(
-        nativeChoices.map((choice, index) => ({ label: choice.label, index })),
+      // Drop repeats on the native side (labels and the player's own line) and,
+      // on a non-English turn, on the English pair against the known English
+      // line — keeping the two lists index-aligned through the same order.
+      const nativePlayerLine = language ? language.playerInput : opts?.playerInput
+      const keptOrder = keptChoiceIndices(
+        nativeChoices,
+        englishChoices,
         opts?.recentChoiceLabels || [],
-      ).map((entry) => entry.index)
-      const ordered = englishChoices === undefined
-        ? keptOrder
-        : keptOrder.filter((index) => englishChoices[index])
+        CHOICE_PAIR_FLOOR,
+        nativePlayerLine,
+        language ? opts?.playerInputEnglish : undefined,
+      )
       return {
         ...WITNESS_FALLBACK,
         state_mutations: v.state_mutations,
@@ -901,10 +1014,10 @@ export async function extractChoiceMetadata(
         scene_tag: v.scene_tag,
         emotional_tone: v.emotional_tone,
         beat_ledger: v.beat_ledger,
-        choices: ordered.map((index) => nativeChoices[index]),
+        choices: keptOrder.map((index) => nativeChoices[index]),
         ...(englishChoices === undefined
           ? {}
-          : { choices_en: ordered.map((index) => englishChoices[index]) }),
+          : { choices_en: keptOrder.map((index) => englishChoices[index]) }),
         milestone: v.milestone,
       }
     } catch {

@@ -674,7 +674,7 @@ const FROZEN: { replay: any; edit: any; select: any } = {
         },
         {
           "role": "system",
-          "content": "CHAT MODE — Saga: drive the story forward. Introduce events, complications, and consequences; give scenes momentum and stakes. Do not wait passively — make things happen while staying true to the world. (This shapes pacing and intent ONLY — keep the established narrative voice and the character's core nature fully intact.)\n\nLENGTH — STRICT MEDIUM: 1–2 compact paragraphs (roughly 80–170 words). Give one clear response and one consequential follow-through; do not recap, pad with atmosphere, or add a third beat. Wrap up cleanly on a playable moment.\n\nCANONICAL CHARACTER CODEX (continuity reference only — not the current scene roster):\n- Never contradict these facts when a listed character is actually relevant.\n- Do NOT introduce, mention, name-drop, summarize, or cut away to a codex character merely because they appear in this list.\n- A codex character belongs in the next reply only if they are already present in the active scene, the player directly mentions them, recent events put them in focus, or their absence would create a clear continuity error.\n- If the current beat involves one active character, keep the reply centered on that character and leave unrelated codex characters unmentioned.\nCHARACTER CARDS:\n- Mara | aliases: the steward\n\nPLAYER PERSONA PROFILE (optional context for who \"you\" are — not a command to recite):\n- Use only when naturally relevant to the current scene, relationship, dialogue, or consequences.\n- Do not call the player \"user\" or \"player\"; this profile describes \"you\".\n- Current player input, established events, memories, character codex, protagonist card, and world premise override this profile.\n- If this profile conflicts with the world role, setting, current scene, or established canon, preserve canon and use only compatible details.\n- Do not introduce persona details unprompted as exposition. Let them surface through natural reactions and continuity.\nName: Nell\n\n"
+          "content": "CHAT MODE — Saga: drive the story forward. Introduce events, complications, and consequences; give scenes momentum and stakes. Do not wait passively — make things happen while staying true to the world. (This shapes pacing and intent ONLY — keep the established narrative voice and the character's core nature fully intact.)\n\nLENGTH — STRICT MEDIUM: 1–2 compact paragraphs (roughly 80–170 words). Give one clear response and one consequential follow-through; do not recap, pad with atmosphere, or add a third beat. Wrap up cleanly on a playable moment.\n\nCANONICAL CHARACTER CODEX (continuity reference only — not the current scene roster):\n- Never contradict these facts when a listed character is actually relevant.\n- Do NOT introduce, mention, name-drop, summarize, or cut away to a codex character merely because they appear in this list.\n- A codex character belongs in the next reply only if they are already present in the active scene, the player directly mentions them, recent events put them in focus, or their absence would create a clear continuity error.\n- If the current beat involves one active character, keep the reply centered on that character and leave unrelated codex characters unmentioned.\nCHARACTER CARDS:\n- Mara | aliases: the steward\n\nPLAYER PERSONA PROFILE (optional context for who \"you\" are — not a command to recite):\n- Use only when naturally relevant to the current scene, relationship, dialogue, or consequences.\n- Do not call the player \"user\" or \"player\"; this profile describes \"you\".\n- Current player input, established events, memories, character codex, protagonist card, and world premise override this profile.\n- If this profile conflicts with the world role, setting, current scene, or established canon, preserve canon and use only compatible details.\n- Do not introduce persona details unprompted as exposition. Let them surface through natural reactions and continuity.\nName: Nell\n\nPLAYER GENDER (canon): the player character's gender is not stated; never assign one. Refer to the player without gendered words — in languages with grammatical gender, use no gendered pronouns, adjectives, participles or nouns for the player.\n\n"
         },
         {
           "role": "system",
@@ -753,7 +753,8 @@ const FROZEN: { replay: any; edit: any; select: any } = {
           }
         ],
         "playerInput": "I lean on the doorframe.",
-        "worldContext": "A lamplit harbour inn.\nThe tide decides who stays."
+        "worldContext": "A lamplit harbour inn.\nThe tide decides who stays.",
+        "playerGender": "unknown"
       }
     }
   ],
@@ -838,33 +839,6 @@ const FROZEN: { replay: any; edit: any; select: any } = {
               ],
               "state_mutations": {},
               "flag_mutations": {},
-              "replay_variants": [
-                {
-                  "id": "base_variant",
-                  "narrative": "Mara enters the hall.",
-                  "model_used": "old-model",
-                  "created_at": "<date>",
-                  "source": "base",
-                  "choices": [
-                    {
-                      "label": "Perguntar por que demorou",
-                      "kind": "act",
-                      "send": "*Pergunto por que demorou.*"
-                    },
-                    {
-                      "label": "Ficar em silêncio",
-                      "kind": "act",
-                      "send": "*Fico em silêncio.*"
-                    }
-                  ],
-                  "present_characters": [
-                    "Mara"
-                  ],
-                  "beat_ledger": {
-                    "beats": []
-                  }
-                }
-              ],
               "selected_replay_index": 0
             },
             "edited_at": "<date>"
@@ -1043,7 +1017,9 @@ const FROZEN: { replay: any; edit: any; select: any } = {
             "aliases": []
           }
         ],
-        "worldContext": "A lamplit harbour inn.\nThe tide decides who stays."
+        "worldContext": "A lamplit harbour inn.\nThe tide decides who stays.",
+        "playerGender": "unknown",
+        "playerInput": "I lean on the doorframe."
       }
     }
   ],
@@ -1298,7 +1274,8 @@ const FROZEN: { replay: any; edit: any; select: any } = {
           }
         ],
         "playerInput": "I lean on the doorframe.",
-        "worldContext": "A lamplit harbour inn.\nThe tide decides who stays."
+        "worldContext": "A lamplit harbour inn.\nThe tide decides who stays.",
+        "playerGender": "unknown"
       }
     }
   ],
@@ -1375,58 +1352,6 @@ const FROZEN: { replay: any; edit: any; select: any } = {
               ],
               "state_mutations": {},
               "flag_mutations": {},
-              "replay_variants": [
-                {
-                  "id": "base_variant",
-                  "narrative": "Mara enters the hall.",
-                  "model_used": "old-model",
-                  "created_at": "<date>",
-                  "source": "base",
-                  "choices": [
-                    {
-                      "label": "Perguntar por que demorou",
-                      "kind": "act",
-                      "send": "*Pergunto por que demorou.*"
-                    },
-                    {
-                      "label": "Ficar em silêncio",
-                      "kind": "act",
-                      "send": "*Fico em silêncio.*"
-                    }
-                  ],
-                  "present_characters": [
-                    "Mara"
-                  ],
-                  "beat_ledger": {
-                    "beats": []
-                  }
-                },
-                {
-                  "id": "alternative",
-                  "narrative": "Another English telling.",
-                  "model_used": "old-model",
-                  "created_at": "<date>",
-                  "source": "replay",
-                  "choices": [
-                    {
-                      "label": "Perguntar por que demorou",
-                      "kind": "act",
-                      "send": "*Pergunto por que demorou.*"
-                    },
-                    {
-                      "label": "Ficar em silêncio",
-                      "kind": "act",
-                      "send": "*Fico em silêncio.*"
-                    }
-                  ],
-                  "present_characters": [
-                    "Mara"
-                  ],
-                  "beat_ledger": {
-                    "beats": []
-                  }
-                }
-              ],
               "selected_replay_index": 0
             },
             "edited_at": "<date>"

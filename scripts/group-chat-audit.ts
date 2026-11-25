@@ -1624,14 +1624,21 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // The live turn also gives the English copy the turn before and the world's words,
   // and holds the cursor only when the narrator was told to stay (a
   // non-English save only). The group-only handoff did not move; re-hashed.
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '55bd9a5cb5600d524626f2776512d08a9bbbc38d1ef2010102c8ea5e8bdeee71')
+  // rl-g added the turn's gender wiring; the handoff still did not move, so the pin
+  // is re-hashed the same way (rl-g and its fix).
+  // rl-g-fix-2 decides the player-authored protagonist from the world's
+  // `is_sentient` (the role test was removed); the handoff still did not move,
+  // so the pin is re-hashed the same way.
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '036cea596ceaf460d333663217375abceec8b121e95221395373987ac7390056')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —
   // `audit:prompt-part-hash` proves the emitted messages are byte-identical.
   // The place note moved it again, then reached every typed turn; it is the only
   // text added (`audit:prompt-part-hash` (a), `audit:reply-language` 4b2).
-  assert.equal(createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex'), '72d12f73aa5f2974c483760c981a62a2b6faddd74190292bce240cc259f95b20')
+  // rl-g added the narrator gender line to this source; the emitted prompt is
+  // proved byte-identical by `audit:prompt-part-hash`, so the pin was re-hashed.
+  assert.equal(createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex'), '43d682276e31034bb70f52ade3608f2cb52d2c546fa4922679a7ea4411a3317e')
   console.log(`story builder source sha256 ${createHash('sha256').update(before.replace('export const NARRATIVE_BOUNDARIES', 'const NARRATIVE_BOUNDARIES')).digest('hex')}`)
   // Data is external to this isolated checkout; the caller can supply its path.
   const dataDir = process.env.GROUP_CHAT_DATA_DIR

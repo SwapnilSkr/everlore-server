@@ -70,6 +70,8 @@ const PURE_AUDITS = [
   'audit:memory-archive-null',
   'audit:mongo-index-partial',
   'audit:prose-format',
+  // A raw path is allowed for an audit that has no package.json script yet.
+  'scripts/player-gender-audit.ts',
 ] as const
 
 const { scripts } = await Bun.file(new URL('../package.json', import.meta.url)).json() as { scripts: Record<string, string> }
@@ -77,7 +79,9 @@ const { scripts } = await Bun.file(new URL('../package.json', import.meta.url)).
 let failed = 0
 for (const script of PURE_AUDITS) {
   console.log(`\n──────── ${script} ────────`)
-  const command = scripts[script].match(/^bun (?:--no-env-file )?run (scripts\/[\w-]+\.ts)$/)
+  const entry = scripts[script] ?? (script.endsWith('.ts') ? `bun --no-env-file run ${script}` : undefined)
+  if (!entry) throw new Error(`Not a pure audit entry: ${script}`)
+  const command = entry.match(/^bun (?:--no-env-file )?run (scripts\/[\w-]+\.ts)$/)
   if (!command) throw new Error(`Not a pure audit entry: ${script}`)
   const proc = Bun.spawn(['bun', '--no-env-file', 'run', command[1]], {
     stdout: 'inherit',

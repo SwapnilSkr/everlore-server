@@ -22,6 +22,7 @@ import { log } from '../utils/logger'
 import { liveInstanceExists } from '../utils/live-instance'
 import type { CharacterCodexDelta } from './character-codex.service'
 import type { ReplayVariantProjection, WorldEventDoc } from '../models/world-event.model'
+import { effectivePlayerGender, storyPlayerGender, type EffectivePlayerGender } from '../models/player-gender'
 import { parsePlayerInput } from '../utils/player-input-parser'
 import { playerTextOf, previousTurnFor, storedWitness, witnessGlossary, witnessOf, type ChoiceEnglish } from '../utils/witness'
 import { recordAnomaly } from '../utils/record-anomaly'
@@ -416,6 +417,10 @@ async function projectLatestReplayTurn(params: {
   languageName?: string
   nativeNarrative?: string
   nativePlayerInput?: string
+  /** One effective gender for this turn, from the persona or the account. */
+  playerGender?: EffectivePlayerGender
+  /** The accepted English player line, when the copy has settled. */
+  playerInputEnglish?: string
 }) {
   const { event, playerId, instance, template, narrative, codex } = params
   const instanceId = idString(event.instance_id)
@@ -439,6 +444,15 @@ async function projectLatestReplayTurn(params: {
     : []
 
   const protagonistCard = (codex as any[]).find((c) => c.is_protagonist)
+  // The buttons are the player's own words. In a GM world (not sentient) the
+  // protagonist card is who the player described themselves as, so it gets no
+  // gender line; a persona still wins.
+  const turnPlayerGender = storyPlayerGender(
+    params.playerGender,
+    protagonistCard,
+    !!instance.persona_snapshot,
+    !!template.is_sentient,
+  )
   const choiceProtagonist = template.is_sentient
     ? instance.persona_snapshot?.name
       ? { name: instance.persona_snapshot.name, aliases: [] }
@@ -568,6 +582,7 @@ async function projectLatestReplayTurn(params: {
         knownPlaces,
         playerInput: replayInput,
         worldContext: [template.seed_prompt, template.global_lore].filter(Boolean).join('\n'),
+        ...(turnPlayerGender ? { playerGender: turnPlayerGender } : {}),
         // §5/§7: the extractor's witness half reads English; the choice half
         // reads the native prose and native player turn and returns `choices_en`
         // aligned by index with the native chips.
@@ -578,6 +593,7 @@ async function projectLatestReplayTurn(params: {
                 narrative: params.nativeNarrative ?? narrative,
                 playerInput: params.nativePlayerInput ?? replayInput,
               },
+              ...(params.playerInputEnglish ? { playerInputEnglish: params.playerInputEnglish } : {}),
             }
           : {}),
       },
@@ -2349,7 +2365,7 @@ export const memoryService = {
       throw new HttpError(400, 'Event edit did not change ai_response or player_input.')
     }
     const replayVariants = normalizeReplayVariants(event)
-    const [editCharacterNames, editInstance] = await Promise.all([
+    const [editCharacterNames, editInstance, editPlayer] = await Promise.all([
       characterNamesForInstance(event.instance_id),
       worldInstances().findOne(
         { _id: event.instance_id, player_id: pid },
@@ -2366,7 +2382,14 @@ export const memoryService = {
           },
         },
       ),
+      // The re-extracted chips are the player's own words too; read only the
+      // onboarding gender, in the same round trip as the save.
+      users().findOne({ _id: pid }, { projection: { 'preferences.gender': 1 } }),
     ])
+    const editPlayerGender = effectivePlayerGender(
+      editInstance?.persona_snapshot,
+      editPlayer?.preferences?.gender,
+    )
     const editTemplate = editInstance
       ? await worldTemplates().findOne(
           { _id: editInstance.template_id },
@@ -2457,6 +2480,14 @@ export const memoryService = {
         .limit(16)
         .toArray()
       const editProtagonistCard = (editCodex as any[]).find((c) => c.is_protagonist)
+      // Same effective gender as replay and pick: a GM world's protagonist card
+      // drops the line; a sentient world's never does, and a persona still wins.
+      const editTurnGender = storyPlayerGender(
+        editPlayerGender,
+        editProtagonistCard,
+        !!editInstance?.persona_snapshot,
+        !!editTemplate?.is_sentient,
+      )
       const editProtagonist = editTemplate?.is_sentient
         ? editInstance?.persona_snapshot?.name
           ? { name: editInstance.persona_snapshot.name, aliases: [] }
@@ -2495,17 +2526,23 @@ export const memoryService = {
             protagonist: editProtagonist,
             roster: editRoster,
             worldContext: [editTemplate?.seed_prompt, editTemplate?.global_lore].filter(Boolean).join('\n'),
+            playerGender: editTurnGender,
+            // The player's own line, for the repeat check. On a non-English
+            // turn this is the English view, and the native chips compare
+            // against `choiceLanguage.playerInput` instead.
+            playerInput: editViewPlayer,
             // English turn: the request is exactly as before. Non-English: the
             // witness half reads the English view and the choice half the native
             // values (§5/§7).
             ...(editWitnessLanguage
               ? {
-                  playerInput: editViewPlayer,
                   choiceLanguage: {
                     name: editWitnessLanguage.name,
                     narrative: nextAiResponse || '',
                     playerInput: nextPlayerInput || '',
                   },
+                  // The English line is known only when the copy settled.
+                  ...(editAcceptedWitness ? { playerInputEnglish: editAcceptedWitness.player } : {}),
                 }
               : {}),
           },
@@ -2747,8 +2784,14 @@ export const memoryService = {
     })
     if (!template) throw new Error('Template not found')
 
-    const player = await users().findOne({ _id: pid }, { projection: { 'preferences.nsfw_enabled': 1 } })
+    // The same read that answers NSFW consent carries the onboarding gender, so
+    // the one effective gender costs no extra round trip on a replay.
+    const player = await users().findOne(
+      { _id: pid },
+      { projection: { 'preferences.nsfw_enabled': 1, 'preferences.gender': 1 } },
+    )
     const userNsfwEnabled = player?.preferences?.nsfw_enabled === true
+    const replayPlayerGender = effectivePlayerGender(instance.persona_snapshot, player?.preferences?.gender)
 
     const parsed = parsePlayerInput(event.data.player_input || '')
     const replayVariants = normalizeReplayVariants(event)
@@ -2807,6 +2850,16 @@ export const memoryService = {
         is_protagonist: true,
       })
     }
+
+    // The narrator and the choice pass read the protagonist card the same way:
+    // a GM world's card drops the gender line, exactly as before; a sentient
+    // world's never does, and a persona still wins over it.
+    const replayTurnGender = storyPlayerGender(
+      replayPlayerGender,
+      replayCodex.find((card) => card?.is_protagonist),
+      !!instance.persona_snapshot,
+      !!template.is_sentient,
+    )
 
     // §7: replay runs in the save's effective language. The stored witness is
     // the event's earlier English copy, usable only while it still exists.
@@ -2874,6 +2927,7 @@ export const memoryService = {
       toneExampleSeed: idString(instance._id),
       styleNotes: template.style_notes || '',
       playerPersona: instance.persona_snapshot || null,
+      playerGender: replayTurnGender,
       messageLength: instance.message_length || 'medium',
       characterCodex: replayCodex,
       focusCharacterName: (() => {
@@ -3042,11 +3096,13 @@ ${replayDirective || '(none)'}`,
       narrative: replayViewNarrative,
       playerInput: replayViewPlayer,
       codex: replayCodex,
+      playerGender: replayTurnGender,
       ...(replayWitnessLanguage
         ? {
             languageName: replayWitnessLanguage.name,
             nativeNarrative: repairedReplay.narrative,
             nativePlayerInput: event.data.player_input || '',
+            ...(replayAcceptedWitness ? { playerInputEnglish: replayAcceptedWitness.player } : {}),
           }
         : {}),
     })
@@ -3299,7 +3355,7 @@ ${replayDirective || '(none)'}`,
     const chosen = variants[variantIndex]
     const nextAi = chosen.narrative || event.data.ai_response || ''
     const changed = nextAi !== event.data.ai_response
-    const [selectedCharacterNames, selectedInstance, selectedCodex] = await Promise.all([
+    const [selectedCharacterNames, selectedInstance, selectedCodex, selectedUser] = await Promise.all([
       characterNamesForInstance(event.instance_id),
       worldInstances().findOne(
         { _id: event.instance_id, player_id: pid },
@@ -3322,7 +3378,14 @@ ${replayDirective || '(none)'}`,
         .sort({ mention_count: -1, updated_at: -1 })
         .limit(16)
         .toArray(),
+      // The choice half re-extracted by a pick is the player's own words too;
+      // read only the onboarding gender, in the same round trip.
+      users().findOne({ _id: pid }, { projection: { 'preferences.gender': 1 } }),
     ])
+    const selectedPlayerGender = effectivePlayerGender(
+      selectedInstance?.persona_snapshot,
+      selectedUser?.preferences?.gender,
+    )
     const selectedTemplate = selectedInstance
       ? await worldTemplates().findOne(
           { _id: selectedInstance.template_id },
@@ -3436,11 +3499,13 @@ ${replayDirective || '(none)'}`,
             narrative: selectViewNarrative,
             playerInput: selectViewPlayer,
             codex: selectedCodex as any[],
+            playerGender: selectedPlayerGender,
             ...(selectWitnessLanguage
               ? {
                   languageName: selectWitnessLanguage.name,
                   nativeNarrative: nextAi,
                   nativePlayerInput: event.data.player_input || '',
+                  ...(selectAcceptedWitness ? { playerInputEnglish: selectAcceptedWitness.player } : {}),
                 }
               : {}),
           })
