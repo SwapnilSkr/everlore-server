@@ -29,6 +29,12 @@ export type ProjectionAnomalyType =
    *  present, a departure for someone absent, a physical fact naming an absent
    *  actor. The claim is rejected, not folded in. */
   | 'scene_contradiction'
+  /** The hidden English copy of a non-English turn was refused; the turn's
+   *  memory was read from the native text. `details` is a reason, never text. */
+  | 'witness_failed'
+  /** The English copy of a delivered turn's player line would have been stopped
+   *  by the English guard. A note for review; nothing was removed or blocked. */
+  | 'input_guard_after_reply'
 
 export type ProjectionAnomalySeverity = 'info' | 'warn' | 'error'
 

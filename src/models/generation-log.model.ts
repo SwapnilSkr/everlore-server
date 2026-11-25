@@ -61,6 +61,8 @@ export type TailModelCallStage = (typeof TAIL_MODEL_CALL_STAGES)[number]
  */
 export const TAIL_STAGE_KEYS = [
   ...TAIL_MODEL_CALL_STAGES,
+  // The hidden English copy of a non-English turn: a serial step before the join.
+  'witness_copy',
   // A milestone within choice_metadata, not an additional serial wait.
   'choice_metadata_first_token',
   'extraction_join',

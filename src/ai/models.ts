@@ -38,7 +38,7 @@ export const AI_MODELS = {
   /** Makes the hidden English copy of a non-English turn (the witness). One
    *  retry goes to `metadata`; see `worker/lib/witness-copy.ts`. Defaults to the
    *  SFW narrator, which already writes fluent Portuguese and Spanish. */
-  witnessCopy: process.env.MODEL_WITNESS_COPY || env.NARRATION_SFW_MODEL,
+  witnessCopy: env.MODEL_WITNESS_COPY || env.NARRATION_SFW_MODEL,
 
   /** Alternate prose models, used only for a primary model's pre-stream 429. */
   narrationSfwFallbacks: env.NARRATION_SFW_FALLBACK_MODELS,

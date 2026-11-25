@@ -37,7 +37,7 @@ import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
 import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
 import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
-import { extractSceneMetadata, statDescriptors } from '../lib/metadata-extractor'
+import { extractSceneMetadata, filterChoicePairs, statDescriptors } from '../lib/metadata-extractor'
 import { classifyPresenceCodexGaps, isActionableMention, hasSceneParticipationGrammar } from '../lib/presence-gap-detector'
 import {
   adjudicateEntityCandidates,
@@ -57,9 +57,7 @@ import { kinshipGraphService } from '../../src/services/kinship-graph.service'
 import { entityGraphService, normalizeEntityName, placesAreTheSameLocation, isVagueLocationLabel, isBareGenericPlaceLabel } from '../../src/services/entity-graph.service'
 import { locationService } from '../../src/services/location.service'
 import {
-  extractExplicitPhysicalDestination,
   isExplicitSceneExit,
-  isExplicitPlayerSceneTransition,
   hasGroundedWitnessLocationEvidence,
   isSafeWitnessLocationCandidate,
   validatedContainmentHint,
@@ -69,25 +67,22 @@ import {
   evaluateLocationCitation,
   citationAdmitsLocation,
   passageSituatesViewpoint,
-  extractStatedPosition,
 } from '../lib/location-citation'
 import { evaluateTimeCitation, citationAdmitsTimeSkip } from '../lib/time-citation'
 import { decidePartyDecay, type DriftState } from '../lib/cursor-drift'
 import { decideLocation } from '../lib/location-decision'
 import {
-  classifyPlayerTravel,
   decideTravelIntent,
   lastPlacesFromPresence,
   mergePersonPlaces,
   mergeSceneHistoryIntoPlaces,
   occupancyVenueAliases,
   aliasesToBindOnArrival,
-  travelPromptDirective,
   viewpointOwnerName,
   type PendingDestination,
 } from '../lib/travel-intent'
 import { decidePlacePromotion, classifyPlaceRelation } from '../lib/place-promotion'
-import { auditChoices } from '../lib/choice-grounding-audit'
+import { auditChoicePairs, auditChoices } from '../lib/choice-grounding-audit'
 import { classifyChoiceGrounding, computeGroundingContext } from '../lib/choice-grounding'
 import { detectNarratedTimeSkip } from '../lib/time-skip-signal'
 import { detectCompanionJoins, detectCompanionDepartures, detectSoloTravel } from '../lib/party-signal'
@@ -109,6 +104,15 @@ import type { PlayerInteractionSignalDoc } from '../../src/models/world-event.mo
 import { extractLifecycleChanges } from '../lib/character-lifecycle-extractor'
 import { createExtractorRawSink } from '../lib/extractor-raw'
 import { effectiveReplyLanguage, enabledReplyLanguages } from '../../src/utils/reply-language'
+import { witnessOf, type ChoiceEnglish } from '../../src/utils/witness'
+import { screenPlayerInput } from '../../src/utils/input-guard'
+import { readPlayerTurn, offeredChipEnglish } from '../lib/player-turn'
+import {
+  replayWitnessFields,
+  runTurnWitness,
+  witnessEventFields,
+  type TurnWitnessOutcome,
+} from '../lib/turn-witness'
 import {
   decideReplyLanguage,
   startReplyLanguageCheck,
@@ -635,77 +639,38 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
   if (!isContinuation) {
     startQueryEmbedding(ragQueryTextFor({ isContinuation, userMessage: actionNarration || userMessage }))
   }
-  const parsedPlayerInput = isContinuation
-    ? {
-        raw: '',
-        spoken: '',
-        narrationFacts: [] as string[],
-        corrections: [] as string[],
-        claims: [] as string[],
-        actionFacts: [] as string[],
-        fragments: [],
-      }
-    : parsePlayerInput(actionNarration || userMessage)
-
-  // A normal choice chip remains editable prose, but an action that explicitly
-  // names a physical destination is still a player commitment. Carry it into
-  // the narrator prompt and the location seam so “Head for the cafe” cannot
-  // become an unrequested warehouse detour.
-  const explicitPhysicalDestination = confirmedWorldAction
-    ? null
-    : extractExplicitPhysicalDestination(parsedPlayerInput.raw)
-  const playerTravel = confirmedWorldAction || isContinuation
-    ? { kind: 'none' as const, label: null }
-    : classifyPlayerTravel(parsedPlayerInput.raw)
+  // Everything this turn derives from the player's own words lives in ONE pure
+  // helper (§4 of reply-language.md). The post-stream half calls it again with
+  // the hidden English copy, so the two readings can never disagree about where
+  // the player went or what they committed to. An English turn passes the same
+  // text twice and gets exactly the values that used to be computed inline here.
   const priorPending = pendingFromSession(session)
-  const travelDirective = confirmedWorldAction
-    ? null
-    : travelPromptDirective({
-        kind: playerTravel.kind,
-        label: playerTravel.label,
-        resolvedName:
-          playerTravel.kind === 'arrival' && priorPending?.name ? priorPending.name : playerTravel.label,
-        cursorName: (session as { current_location?: { name?: string } }).current_location?.name || null,
-        playerInput: parsedPlayerInput.raw,
-      })
-  const statedPosition = confirmedWorldAction || isContinuation
-    ? null
-    : extractStatedPosition(parsedPlayerInput.raw)
-  // Intent ("let's head to the tavern") is not a scene break — the player is
-  // still here. Arrival and owned-room leave are. extractExplicitPhysicalDestination
-  // used to treat "let's head to X" as a transition and emptied the room.
-  let playerSceneTransition =
-    !confirmedWorldAction &&
-    !isContinuation &&
-    playerTravel.kind !== 'intent' &&
-    (playerTravel.kind === 'owned_leave' ||
-      playerTravel.kind === 'arrival' ||
-      isExplicitPlayerSceneTransition(parsedPlayerInput.raw))
-  let playerForcesFreshCast =
-    playerSceneTransition || confirmedWorldAction?.kind === 'travel'
-
-  let promptUserMessage = confirmedWorldAction
-    ? worldActionDirective(confirmedWorldAction)
-    : travelDirective
-      ? travelDirective
-    : statedPosition && !explicitPhysicalDestination
-      ? `[PLAYER POSITION: The player has placed themselves "${statedPosition}". That is where this scene happens. Narrate from there. Do not return them to the previous place, and do not contradict their own statement of where they are.]`
-    : explicitPhysicalDestination
-      ? `[PLAYER MOVEMENT COMMITMENT: The player has explicitly chosen to go to ${explicitPhysicalDestination}. Narrate the route and arrival at that exact destination. Do not redirect them to another place, substitute a different destination, or leave the journey unresolved.]
-PLAYER ACTION: ${parsedPlayerInput.raw}`
-      : playerSceneTransition
-        ? `[PLAYER SCENE TRANSITION: The player has physically left the prior scene. Keep the narration anchored to the player's viewpoint and the place they reach. Do NOT cut away to, or keep scene focus on, people they left behind unless the player explicitly brought them along.]
-PLAYER ACTION: ${parsedPlayerInput.raw}`
-      : isContinuation
-        ? "[The player waits and observes. Continue the current beat naturally without asking what they do. You MUST move the scene through a concrete response: a present NPC speaks (preferred in a conversation), takes a meaningful action, makes a decision, reveals information, or produces a consequence. Do NOT answer a Continue with only silence, tension, glances, hesitation, body language, or atmospheric description; never repeat a stalled silence from the preceding beat. A detached or disinterested character still responds through a terse dismissal, evasion, refusal, cold action, or consequential withdrawal. Do not introduce a new complication, location, character, danger, romance escalation, or major plot turn unless it was already clearly set up by recent events. Because this is an autonomous continuation, do not open with the active character's name; begin with pronoun, action, body language, speech, or setting instead.]"
-        : parsedPlayerInput.spoken || '[No spoken dialogue from player this turn.]'
+  const nativePlayerText = isContinuation ? '' : actionNarration || userMessage
+  const worldActionPrompt = confirmedWorldAction ? worldActionDirective(confirmedWorldAction) : undefined
+  const playerTurn = readPlayerTurn({
+    playerText: nativePlayerText,
+    isContinuation,
+    worldAction: confirmedWorldAction,
+    actionNarration,
+    worldActionDirective: worldActionPrompt,
+    priorPending,
+    cursorName: (session as { current_location?: { name?: string } }).current_location?.name || null,
+  })
+  let parsedPlayerInput = playerTurn.parsed
+  // The player's NATIVE turn, as today: the choice pass and the stored event
+  // keep it even when the deterministic reading used a tapped chip's English.
+  const nativePlayerInputRaw = playerTurn.parsed.raw
+  let explicitPhysicalDestination = playerTurn.explicitPhysicalDestination
+  let playerSceneTransition = playerTurn.playerSceneTransition
+  let playerForcesFreshCast = playerTurn.playerForcesFreshCast
+  let promptUserMessage = playerTurn.promptUserMessage
   // World actions are structured control-plane commands, not chat authored by
   // the player. Keep their canonical payload on `data.world_action` and their
   // result in the travel/kinship ledgers; never persist the synthetic
   // `*I travel to …*` helper as a player message.
   const storedPlayerInput = isContinuation || confirmedWorldAction ? '' : userMessage
-  const storedPlayerSpokenInput = confirmedWorldAction ? '' : parsedPlayerInput.spoken
-  const storedPlayerNarrationFacts = confirmedWorldAction ? [] : parsedPlayerInput.narrationFacts
+  const storedPlayerSpokenInput = confirmedWorldAction ? '' : playerTurn.narratorParsed.spoken
+  const storedPlayerNarrationFacts = confirmedWorldAction ? [] : playerTurn.narratorParsed.narrationFacts
   const classifyText = isContinuation ? '' : actionNarration || userMessage
 
   // The turn lock's TTL is kept alive by the worker-level heartbeat (see
@@ -889,40 +854,60 @@ PLAYER ACTION: ${parsedPlayerInput.raw}`
     personaName: session.persona_snapshot?.name,
     templateProtagonistName: session.protagonist?.name,
   })
-  const travel = decideTravelIntent({
-    playerInput: parsedPlayerInput.raw,
-    isContinuation,
-    cursorName: currentLocation?.name || null,
-    cursorEntityId: currentLocation?.entity_id ? idString(currentLocation.entity_id) : null,
-    knownPlaces: knownPlaces.map((place) => ({
-      name: place.name,
-      aliases: place.aliases,
-      entityId: place.entityId || null,
-      lastSeenSequence: place.lastSeenSequence,
-      mentionCount: place.mentionCount,
-      parentId: place.parentId ?? null,
-      placeKind: place.placeKind ?? null,
-    })),
-    personPlaces,
-    pending: priorPending,
-    playerName,
-  })
-  const mapTravelDirective = travelPromptDirective({
-    kind: travel.kind,
-    label: travel.label,
-    resolvedName: travel.destination?.name || travel.label,
-    cursorName: currentLocation?.name || null,
-    playerInput: parsedPlayerInput.raw,
-  })
-  if (travel.kind === 'arrival' || travel.kind === 'owned_leave') {
-    playerSceneTransition = true
-    playerForcesFreshCast = true
-    if (mapTravelDirective) promptUserMessage = mapTravelDirective
-  } else if (travel.kind === 'intent' && mapTravelDirective) {
-    playerSceneTransition = false
-    playerForcesFreshCast = confirmedWorldAction?.kind === 'travel'
-    promptUserMessage = mapTravelDirective
-  }
+  // The map reading: same inputs the helper was given above, so the two halves
+  // of the turn can never disagree about where the player meant to go.
+  const travelPlaces = knownPlaces.map((place) => ({
+    name: place.name,
+    aliases: place.aliases,
+    entityId: place.entityId || null,
+    lastSeenSequence: place.lastSeenSequence,
+    mentionCount: place.mentionCount,
+    parentId: place.parentId ?? null,
+    placeKind: place.placeKind ?? null,
+  }))
+  const readTravel = (playerInput: string) =>
+    decideTravelIntent({
+      playerInput,
+      isContinuation,
+      cursorName: currentLocation?.name || null,
+      cursorEntityId: currentLocation?.entity_id ? idString(currentLocation.entity_id) : null,
+      knownPlaces: travelPlaces,
+      personPlaces,
+      pending: priorPending,
+      playerName,
+    })
+  const readTurn = (playerText: string, travel?: ReturnType<typeof readTravel>) =>
+    readPlayerTurn({
+      playerText,
+      narratorText: nativePlayerText,
+      isContinuation,
+      worldAction: confirmedWorldAction,
+      actionNarration,
+      worldActionDirective: worldActionPrompt,
+      priorPending,
+      // The pre-packet directive reads the cached session cursor; the map's own
+      // directive reads the packet cursor. Same two values the inline code read.
+      cursorName: (session as { current_location?: { name?: string } }).current_location?.name || null,
+      travelCursorName: currentLocation?.name || null,
+      ...(travel ? { travel } : {}),
+    })
+
+  // §2: a tapped chip whose English is stored is known the moment the packet is
+  // in, and its English is what the deterministic reading must use — a tapped
+  // "go to the market" has to move the player the way the English says. What
+  // the narrator is shown as the player's words, and what is stored, stay native.
+  const knownPlayerEnglish =
+    (effectiveReplyLanguage(session.reply_language) !== undefined) && !isContinuation && !confirmedWorldAction
+      ? offeredChipEnglish(userMessage, recentEvents[recentEvents.length - 1])
+      : undefined
+  const readingText = knownPlayerEnglish !== undefined ? knownPlayerEnglish : nativePlayerText
+  let travel = readTravel(readTurn(readingText).parsed.raw)
+  const settledTurn = readTurn(readingText, travel)
+  parsedPlayerInput = settledTurn.parsed
+  explicitPhysicalDestination = settledTurn.explicitPhysicalDestination
+  playerSceneTransition = settledTurn.playerSceneTransition
+  playerForcesFreshCast = settledTurn.playerForcesFreshCast
+  promptUserMessage = settledTurn.promptUserMessage
   const locationContext =
     priorPending?.name && travel.kind !== 'arrival' && travel.kind !== 'owned_leave'
       ? `${packetLocationContext || ''}
@@ -998,8 +983,10 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     recentEvents,
     currentInteractionSignals: interactionSignalSettled ? settledInteractionSignals : [],
     userMessage: tickDirective ?? promptUserMessage,
-    userSpokenInput: parsedPlayerInput.spoken,
-    userNarrationFacts: parsedPlayerInput.narrationFacts,
+    // What the narrator is shown as the player's own words stays native, even
+    // when the deterministic reading above was made from a tapped chip's English.
+    userSpokenInput: settledTurn.narratorParsed.spoken,
+    userNarrationFacts: settledTurn.narratorParsed.narrationFacts,
     isContinuation,
     maxTokens: MAX_CONTEXT_TOKENS,
     narrationPov: session.narration_pov,
@@ -1043,7 +1030,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   const choiceDecisionContext = buildChoiceDecisionContext({
     isSentient: !!session.is_sentient,
     playerName: choicePlayerName,
-    playerInput: confirmedWorldAction ? actionNarration : isContinuation ? 'Continue the current scene.' : parsedPlayerInput.raw,
+    playerInput: confirmedWorldAction ? actionNarration : isContinuation ? 'Continue the current scene.' : nativePlayerInputRaw,
     locationContext,
     timeContext,
     worldState: session.world_state || {},
@@ -1382,6 +1369,121 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   publishStreamEnd(rawNarrative)
   await streamEndPublish
 
+  // ── THE WITNESS (§4) ──────────────────────────────────────────────────────
+  // The hidden English copy of a non-English turn, made once, straight after
+  // the stream closes and BEFORE any extractor: everything below that decides
+  // what happened then reads the English, and only the few native uses named in
+  // the phase doc keep `nativeNarrative`. It never runs for an English save, so
+  // that path takes no await, no model call and moves no value.
+  const nativeNarrative = rawNarrative
+  let acceptedWitness: { player: string; prose: string } | null = null
+  let witnessLanguage: { code: string; name: string } | null = null
+  // Stays undefined on an English turn, so its stage is absent and never a 0.
+  let witnessMs: number | undefined
+  if (turnReplyLanguage) {
+    witnessLanguage = { code: turnReplyLanguage.code, name: turnReplyLanguage.name }
+    const newestEvent = recentEvents[recentEvents.length - 1]
+    const presentNow: string[] = Array.isArray(newestEvent?.data?.present_characters)
+      ? newestEvent.data.present_characters.filter((n: unknown): n is string => typeof n === 'string')
+      : []
+    const protagonistCardName =
+      (characterCodex as any[]).find((card) => card?.is_protagonist)?.canonical_name || session.protagonist?.name || null
+    const people = [
+      ...(characterCodex as any[]).flatMap((card) => [card?.canonical_name, ...((card?.aliases as string[]) || [])]),
+      ...presentNow,
+      session.persona_snapshot?.name,
+      protagonistCardName,
+      ...graphPeople.map((person) => person.name),
+    ].filter((name): name is string => typeof name === 'string' && !!name.trim())
+    const places = [
+      ...knownPlaces.flatMap((place) => [place.name, ...(place.aliases || [])]),
+      currentLocation?.name,
+    ].filter((name): name is string => typeof name === 'string' && !!name.trim())
+    const witnessStartedAt = Date.now()
+    const outcome: TurnWitnessOutcome = await runTurnWitness({
+      language: witnessLanguage,
+      // Continue and world action: the player part is as today (empty in both),
+      // so only the prose is copied.
+      playerNative: storedPlayerInput,
+      proseNative: nativeNarrative,
+      ...(knownPlayerEnglish !== undefined ? { knownPlayerEnglish } : {}),
+      people,
+      places,
+      pov: session.narration_pov === 'first' ? 'first' : 'third',
+      playerName,
+      protagonistName: protagonistCardName,
+      isSentient: !!session.is_sentient,
+    })
+    witnessMs = Math.max(0, Date.now() - witnessStartedAt)
+    if (outcome.status === 'accepted') {
+      acceptedWitness = { player: outcome.player, prose: outcome.prose }
+      rawNarrative = outcome.prose
+      // The values derived from the player's text move with it, through the
+      // same helper, so the cursor, scene break and fresh-cast rule read the
+      // English. Time labels are recomputed below from `parsedPlayerInput.raw`.
+      if (!isContinuation && !confirmedWorldAction) {
+        parsedPlayerInput = parsePlayerInput(outcome.player)
+        travel = readTravel(parsedPlayerInput.raw)
+        const englishTurn = readTurn(parsedPlayerInput.raw, travel)
+        parsedPlayerInput = englishTurn.parsed
+        explicitPhysicalDestination = englishTurn.explicitPhysicalDestination
+        playerSceneTransition = englishTurn.playerSceneTransition
+        playerForcesFreshCast = englishTurn.playerForcesFreshCast
+      }
+    } else if (outcome.status === 'rejected') {
+      log.warn('witness.failed', {
+        jobId: job.id,
+        instanceId,
+        sequence: nextSequence,
+        reason: outcome.reason,
+        attempts: outcome.attempts,
+      })
+      // An anomaly the way this processor records the others: ids and a reason,
+      // never any of the player's text.
+      void recordAnomaly({
+        instanceId: instanceOid,
+        playerId: playerOid,
+        eventId: null,
+        sequence: nextSequence,
+        type: 'witness_failed',
+        severity: 'warn',
+        details: `${outcome.reason}:attempts=${outcome.attempts}`,
+      })
+    }
+    // The stage's ms also goes into `tail_stages`; attempts and verdict live here.
+    log.info('witness.copy', {
+      jobId: job.id,
+      instanceId,
+      sequence: nextSequence,
+      lang: witnessLanguage.code,
+      status: outcome.status,
+      ms: witnessMs,
+      attempts: 'attempts' in outcome ? outcome.attempts : 0,
+    })
+    // §7: after the reply, the ENGLISH hard input guard reads the English player
+    // text. A match is a note for review; it removes and blocks nothing.
+    if (acceptedWitness && acceptedWitness.player.trim()) {
+      const guard = screenPlayerInput(acceptedWitness.player)
+      if (guard.blocked) {
+        log.warn('input_guard.after_reply', {
+          jobId: job.id,
+          instanceId,
+          sequence: nextSequence,
+          category: guard.category,
+        })
+        void recordAnomaly({
+          instanceId: instanceOid,
+          playerId: playerOid,
+          eventId: null,
+          sequence: nextSequence,
+          type: 'input_guard_after_reply',
+          severity: 'warn',
+          details: String(guard.category),
+        })
+      }
+    }
+  }
+
   const previousOpeningName = openingCharacterName(recentEvents || [], characterNames)
   // A live stream is an interaction contract: once prose is visible, no
   // post-stream system may silently rewrite it into a different scene. Hygiene
@@ -1390,7 +1492,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // Replay/edit flows are unstreamed replacements and retain their dedicated
   // hygiene-repair path in memory.service.
   const proseHygieneIssues = validateProseHygiene({
-    narrative: rawNarrative,
+    // Hygiene audits the prose that streamed, native, on every save (§4).
+    narrative: nativeNarrative,
     characterNames,
     messageLength: session.message_length,
     playerAddressMode,
@@ -1531,6 +1634,17 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
           .filter((label: string) => label && !taken.has(normalizeEntityName(label)))
       })(),
       choiceContext: choiceDecisionContext,
+      // §6: the choice half reads the NATIVE prose and native player turn; the
+      // witness half and the ledger read the English copy passed as `narrative`.
+      ...(turnReplyLanguage
+        ? {
+            choiceLanguage: {
+              name: turnReplyLanguage.name,
+              narrative: nativeNarrative,
+              playerInput: nativePlayerInputRaw,
+            },
+          }
+        : {}),
       onRaw: (stage, raw) => extractorRaw.capture(stage)(raw),
       // Each call reports its own start-to-settle; the pair runs in parallel, so
       // measuring outside it would report the join twice. `beat_ledger` appears
@@ -1611,8 +1725,11 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       })
     }
   }
-  const finalNarrative = rawNarrative
+  const finalNarrative = nativeNarrative
   const parsed: GenerationOutput = { narrative: finalNarrative, ...meta }
+  // English choices, index-aligned with `parsed.choices`, carried through every
+  // filter below so `data.witness.choices` can never drift from `data.choices`.
+  let choicesEn: ChoiceEnglish[] | undefined = parsed.choices_en
   const independentlyCorroboratedPeople = adjudicatedPersonKeys(entityCandidates, entityAdjudication)
   parsed.present_characters = filterAdjudicatedPresence(
     parsed.present_characters || [],
@@ -1622,10 +1739,21 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   const deceasedThisTurn = new Set(characterLifecycleDeltas.map((delta) => delta.name_normalized))
   const blockedLifeStateKeys = new Set([...persistedDeceasedKeys, ...deceasedThisTurn])
   const blockedLifeStateNames = [...packet.deceasedCharacterNames, ...characterLifecycleDeltas.map((delta) => delta.name)]
+  // §6: both life-state filters keep the native chip and its English pair in
+  // step, and test the ENGLISH pair (that is the language the guard reads).
+  const filterPairs = (keep: (text: string) => boolean) => {
+    const filtered = filterChoicePairs(
+      parsed.choices || [],
+      choicesEn,
+      (choice, english) => keep(`${(english ?? choice).label} ${(english ?? choice).send}`),
+    )
+    parsed.choices = filtered.choices
+    if (choicesEn !== undefined) choicesEn = filtered.choices_en
+  }
   if (deceasedThisTurn.size) {
     parsed.present_characters = parsed.present_characters.filter((name) => !blockedLifeStateKeys.has(normalizeEntityName(name)))
-    parsed.choices = (parsed.choices || []).filter((choice) =>
-      !characterLifecycleDeltas.some((delta) => new RegExp(`\\b${escapeRegExp(delta.name)}\\b`, 'i').test(`${choice.label} ${choice.send}`)),
+    filterPairs((text) =>
+      !characterLifecycleDeltas.some((delta) => new RegExp(`\\b${escapeRegExp(delta.name)}\\b`, 'i').test(text)),
     )
   }
   if (entityAdjudication.available && entityAdjudication.decisions.some((decision) => decision.verdict !== 'person')) {
@@ -1640,8 +1768,8 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // Choices come solely from the schema-enforced choice metadata pass. The
   // prose narrator never controls their wire format or their visibility.
   if (blockedLifeStateKeys.size) {
-    parsed.choices = (parsed.choices || []).filter((choice) =>
-      !blockedLifeStateNames.some((name) => name && new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(`${choice.label} ${choice.send}`)),
+    filterPairs((text) =>
+      !blockedLifeStateNames.some((name) => name && new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(text)),
     )
   }
   // Closed-check backstop on the choices: the metadata model is *told* never to
@@ -1693,11 +1821,17 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
   // metaphor beings) in place rather than dropping them, so the player keeps a full
   // set of grounded options ("attack the ghost" → "investigate the presence").
   // Unrepairable / duplicate-after-repair choices are still dropped. Off TTFT.
-  const audited = auditChoices(parsed.choices || [], castVocab, rawNarrative, graphLabels, worldText, {
+  // §6: the guards read what they can judge. On a non-English turn that is the
+  // English pair — a pair that would have needed a repair is dropped with its
+  // native chip, never shown half-grounded. English turns keep the repair pass.
+  const groundingOpts = {
     protagonist: choiceProtagonist,
     isSentient: !!session.is_sentient,
     currentLocationName: currentLocation?.name || null,
-  })
+  }
+  const audited = choicesEn !== undefined
+    ? auditChoicePairs(parsed.choices || [], choicesEn, castVocab, rawNarrative, graphLabels, worldText, groundingOpts)
+    : auditChoices(parsed.choices || [], castVocab, rawNarrative, graphLabels, worldText, groundingOpts)
   if (audited.repairedCount > 0 || audited.dropped.length > 0) {
     log.warn('choice-grounding audited choices', {
       instanceId: idString(instanceId),
@@ -1716,6 +1850,13 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     })
   }
   parsed.choices = audited.choices
+  if (choicesEn !== undefined) {
+    // Only `auditChoicePairs` returns English pairs; `auditChoices` (the English
+    // turn's repair pass) has no `choices_en`, and `choicesEn` stays undefined
+    // there, so this only runs on a non-English turn.
+    choicesEn = (audited as { choices_en?: ChoiceEnglish[] }).choices_en ?? []
+  }
+  parsed.choices_en = choicesEn
 
   // The structural + grounding audit is complete. `parsed.choices` now holds the
   // ONLY set the player may see — narrator-tail or metadata fallback alike. Ship
@@ -3244,6 +3385,14 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
       player_input: storedPlayerInput,
       player_spoken_input: storedPlayerSpokenInput,
       player_narration_facts: storedPlayerNarrationFacts,
+      // §5: the hidden English copy of a non-English turn, or `witness_status`
+      // on failure; both keys are omitted on an English turn, whose document is
+      // byte-identical to before.
+      ...witnessEventFields({
+        language: witnessLanguage,
+        accepted: acceptedWitness,
+        choices: choicesEn,
+      }),
       ...(interactionSignals.length ? { interaction_signals: interactionSignals } : {}),
       ...(characterLifecycleDeltas.length ? { character_lifecycle_deltas: characterLifecycleDeltas } : {}),
       ...(confirmedWorldAction ? { world_action: confirmedWorldAction } : {}),
@@ -3282,6 +3431,13 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
           created_at: new Date(),
           source: 'base',
           choices: parsed.choices,
+          // §5/§7: the variant carries its own English prose, player text and
+          // choices, so selecting or re-running it keeps the same witness.
+          ...replayWitnessFields({
+            language: witnessLanguage,
+            accepted: acceptedWitness,
+            choices: choicesEn,
+          }),
           present_characters: parsed.present_characters,
           beat_ledger: parsed.beat_ledger,
           retrieval_profile: {
@@ -3352,11 +3508,14 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     kind: 'memory_curation',
     payload: {
       instanceId, playerId, eventId: eventIdStr,
+      // §8: the memory pass reads the hidden English copy (player text and
+      // prose), and the previous turn's English via `witnessOf` — a reader of
+      // the event, never of this turn's variables.
       playerInput: parsedPlayerInput.raw,
       playerSpokenInput: parsedPlayerInput.spoken,
       playerNarrationFacts: parsedPlayerInput.narrationFacts,
       aiResponse: rawNarrative,
-      precedingAiResponse: recentEvents[recentEvents.length - 1]?.data?.ai_response || null,
+      precedingAiResponse: witnessOf(recentEvents[recentEvents.length - 1]).ai_response || null,
       sceneTag: parsed.scene_tag,
       isSentient: !!session.is_sentient,
       playerPersonaName: session.persona_snapshot?.name || null,
@@ -3676,6 +3835,7 @@ The player intends to go to ${priorPending.name} but has not arrived. Stay at th
     try {
     const tailStages = buildTailStages({
       ...tailCallMs,
+      witness_copy: witnessMs,
       choice_metadata_first_token: choiceFirstTokenMs,
       extraction_join: extractionJoinMs,
       interaction_signal_wait: interactionSignalWaitMs,

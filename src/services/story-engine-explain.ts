@@ -2,7 +2,7 @@ import type { GenerationLogDoc } from '../models/generation-log.model'
 import type { LLMCallDoc } from '../models/llm-call.model'
 
 export const STORY_LABELS: Record<string, string> = {
-  narration: 'Narrator', choice_metadata: 'Choices', scene_witness: 'Scene witness (who is here, where)',
+  narration: 'Narrator', witness_copy: 'English copy of the turn', choice_metadata: 'Choices', scene_witness: 'Scene witness (who is here, where)',
   entity_adjudication: 'Cast check', character_deaths: 'Deaths check', deaths: 'Deaths check',
   scene_endpoint: 'Scene ending check', beat_ledger: 'Continuity notes', player_interaction: 'Interaction check',
   codex_extraction: 'Card update', codex_compaction: 'Card cleanup', memory_curation: 'Memory curation',

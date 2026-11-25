@@ -26,10 +26,12 @@ export interface TurnWitness {
 }
 
 /**
- * A replay variant keeps the prose and its choices (§7); its player text is the
- * event's own, so a variant witness is not a full TurnWitness.
+ * A replay variant keeps the prose and its choices (§7) plus the English player
+ * text, so a variant that is selected or re-run carries the same English the
+ * live turn had (rl-4 reads it). Still not a full `TurnWitness`: the spoken
+ * input and narration facts are the event's own.
  */
-export type ReplayWitness = Pick<TurnWitness, 'lang' | 'ai_response' | 'choices'>
+export type ReplayWitness = Pick<TurnWitness, 'lang' | 'ai_response' | 'player_input' | 'choices'>
 
 /** What every post-stream reader should consume instead of the event's fields. */
 export interface WitnessView {
