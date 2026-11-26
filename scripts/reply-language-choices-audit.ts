@@ -356,13 +356,31 @@ await check('result: a move with one part left in English is dropped', async () 
   assert.deepEqual(result.choices.map((choice) => choice.label), ['Chamar', 'Esperar'])
 })
 
+// ── the authored writing style, told only to models that write ─────────────
+await check('instruction: es names the tú imperative and Latin American Spanish; pt the você imperative; English neither', () => {
+  const es = choiceLanguageInstruction('Spanish')
+  assert.ok(es.includes('Latin American Spanish'), 'es must name the regional variety')
+  assert.ok(es.includes('tú'), 'es must name the informal tú imperative')
+  assert.ok(es.includes('Every label_local uses one form:'), 'es must state the one label form')
+  const pt = choiceLanguageInstruction('Brazilian Portuguese')
+  assert.ok(pt.includes('você'), 'pt must name the você imperative')
+  assert.ok(pt.includes('imperative'))
+  assert.ok(pt.includes('Every label_local uses one form:'))
+  // A name with no authored style — English included — reads exactly as before.
+  for (const bare of [choiceLanguageInstruction('English'), choiceLanguageInstruction('Klingon')]) {
+    assert.equal(bare.includes('Latin American'), false)
+    assert.equal(bare.includes('você'), false)
+    assert.equal(bare.includes('one form'), false)
+  }
+})
+
 // ── the rare turn left with too few buttons ──────────────────────────────────
 const HALF_RAW = pairRaw([
   { label: 'Ask now', kind: 'act', send: '*I ask now, quietly.*' },
   EN_ITEM('Esperar', '*Eu espero.*', 'Wait', '*I wait.*'),
   EN_ITEM('Leave', '*I leave the hall.*', 'Leave', '*I leave the hall.*'),
 ])
-async function withTranslation(raw: string, answer: string | Error, language = true) {
+async function withTranslation(raw: string, answer: string | Error, language = true, name = LANGUAGE.name) {
   const requests: Array<Record<string, any>> = []
   const call = async (request: Record<string, any>) => {
     requests.push(JSON.parse(JSON.stringify(request)))
@@ -371,25 +389,34 @@ async function withTranslation(raw: string, answer: string | Error, language = t
     if (answer instanceof Error) throw answer
     return answer
   }
-  const opts = language ? LANGUAGE_OPTS : FIXTURE_OPTS
+  const opts = language
+    ? { ...LANGUAGE_OPTS, choiceLanguage: { ...LANGUAGE, name } }
+    : FIXTURE_OPTS
   const result = await extractChoiceMetadata(ENGLISH_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, { ...opts, recentChoiceLabels: [], call }, { split: true })
   return { result, asked: requests.filter((request) => request.purpose === 'choice_translation') }
 }
+/** A proper rescue answer for HALF_RAW's two dropped buttons: both sides, English
+ *  and the player's copy, in the order they were sent. */
 const COPIES = JSON.stringify({ choices: [
-  { label: 'Perguntar agora', send: '*Eu pergunto agora, baixinho.*' },
-  { label: 'Sair', send: '*Eu saio do salão.*' },
+  { label_en: 'Ask now', send_en: '*I ask now, quietly.*', label_local: 'Perguntar agora', send_local: '*Eu pergunto agora, baixinho.*' },
+  { label_en: 'Leave', send_en: '*I leave the hall.*', label_local: 'Sair', send_local: '*Eu saio do salão.*' },
 ] })
 
-await check('missing copies: fewer than two pairs gets one translation, kept in order', async () => {
+await check('missing copies: fewer than two pairs gets one rescue, kept in order', async () => {
   const { result, asked } = await withTranslation(HALF_RAW, COPIES)
   assert.equal(asked.length, 1)
   assert.deepEqual(JSON.parse(userOf(asked[0])), [
     { label: 'Ask now', send: '*I ask now, quietly.*' },
-    { label: 'Leave', send: '*I leave the hall.*' },
-  ], 'only the buttons without a copy are sent')
+    { label: 'Leave', send: '*I leave the hall.*', label_local: 'Leave', send_local: '*I leave the hall.*' },
+  ], 'every dropped button goes, whatever language each field is in')
+  assert.equal(asked[0].purpose, 'choice_translation')
+  assert.equal(asked[0].temperature, 0)
   assert.equal(asked[0].timeoutMs, 6000, 'the turn must not wait on it for long')
   assert.equal(asked[0].responseFormat.json_schema.strict, true)
+  const item = (asked[0].responseSchema as Record<string, any>).properties.choices.items
+  assert.deepEqual(item.required, ['label_en', 'send_en', 'label_local', 'send_local'], 'both sides are required')
   assert.ok(systemOf(asked[0]).includes(LANGUAGE.name))
+  assert.ok(systemOf(asked[0]).includes('você'), 'the pt rescue names its imperative')
   assert.deepEqual(result.choices.map((choice) => choice.label), ['Perguntar agora', 'Esperar', 'Sair'])
   assert.deepEqual(result.choices_en?.map((choice) => choice.label), ['Ask now', 'Wait', 'Leave'])
 })
@@ -405,11 +432,72 @@ await check('missing copies: two pairs or an English turn never call it', async 
   assert.equal((await withTranslation(CHOICE_RAW, COPIES, false)).asked.length, 0, 'an English turn')
 })
 
-await check('missing copies: a failed, short or untranslated answer keeps what survived', async () => {
+// The real turn 22 of the first Spanish save: the model wrote Spanish into the
+// English slots too, every native copy equalled its English one, and all four
+// buttons vanished. The rescue must rebuild both sides from what was dropped.
+const TURN_22_RAW = JSON.stringify({
+  choices: [
+    { label: 'Te acerco más a mí', kind: 'act', send: '*I pull you closer to me.*', label_local: 'Te acerco más a mí', send_local: '*Te acerco más a mí.*' },
+    { label: 'Pregunto sobre la película', kind: 'say', send: 'What movie are we going to see?', label_local: 'Pregunto sobre la película', send_local: '¿Qué película vamos a ver?' },
+    { label: 'Bromeo sobre la situación', kind: 'say', send: 'Just remember, I might get jealous!', label_local: 'Bromeo sobre la situación', send_local: 'Solo recuerda, ¡podría ponerme celoso!' },
+    { label: 'Sonrío y te miro a los ojos', kind: 'act', send: '*I smile and look into your eyes.*', label_local: 'Sonrío y te miro a los ojos', send_local: '*Sonrío y te miro a los ojos.*' },
+  ],
+  milestone: null,
+})
+const TURN_22_COPIES = JSON.stringify({ choices: [
+  { label_en: 'Pull you closer', send_en: '*I pull you closer to me.*', label_local: 'Te acerco más a mí', send_local: '*Te acerco más a mí.*' },
+  { label_en: 'Ask about the movie', send_en: 'What movie are we going to see?', label_local: 'Pregunto sobre la película', send_local: '¿Qué película vamos a ver?' },
+  { label_en: 'Joke about the situation', send_en: 'Just remember, I might get jealous!', label_local: 'Bromeo sobre la situación', send_local: 'Solo recuerda, ¡podría ponerme celoso!' },
+  { label_en: 'Smile and look into your eyes', send_en: '*I smile and look into your eyes.*', label_local: 'Sonrío y te miro a los ojos', send_local: '*Sonrío y te miro a los ojos.*' },
+] })
+
+await check('rescue: turn 22 (Spanish in the English slots) is rebuilt into four buttons', async () => {
+  const { result, asked } = await withTranslation(TURN_22_RAW, TURN_22_COPIES, true, 'Spanish')
+  assert.equal(asked.length, 1, 'all four turned unusable, so one rescue must run')
+  assert.equal(JSON.parse(userOf(asked[0])).length, 4, 'every dropped button goes, not only a native part')
+  assert.ok(systemOf(asked[0]).includes('tú'), 'the es rescue names its label form')
+  assert.ok(systemOf(asked[0]).includes('Latin American Spanish'))
+  assert.deepEqual(result.choices.map((choice) => choice.label), [
+    'Te acerco más a mí', 'Pregunto sobre la película', 'Bromeo sobre la situación', 'Sonrío y te miro a los ojos',
+  ])
+  assert.deepEqual(result.choices.map((choice) => choice.kind), ['act', 'say', 'say', 'act'], 'kind comes from the original row')
+  assert.deepEqual(result.choices_en?.map((choice) => choice.label), [
+    'Pull you closer', 'Ask about the movie', 'Joke about the situation', 'Smile and look into your eyes',
+  ], 'the English side must be English')
+})
+
+// A rescue that is no better: both sides still the same text. The unchanged
+// sanitizer must drop them, so the guard survives the new path.
+const IDENTITY_RAW = pairRaw([
+  SAY_ITEM('Pregunto por la película', '¿Qué película vamos a ver?', 'Pregunto por la película', '¿Qué película vamos a ver?'),
+  SAY_ITEM('Bromeo sobre la situación', 'Solo recuerda, ¡podría ponerme celoso!', 'Bromeo sobre la situación', 'Solo recuerda, ¡podría ponerme celoso!'),
+])
+const IDENTITY_COPIES = JSON.stringify({ choices: [
+  { label_en: 'Pregunto por la película', send_en: '¿Qué película vamos a ver?', label_local: 'Pregunto por la película', send_local: '¿Qué película vamos a ver?' },
+  { label_en: 'Bromeo sobre la situación', send_en: 'Solo recuerda, ¡podría ponerme celoso!', label_local: 'Bromeo sobre la situación', send_local: 'Solo recuerda, ¡podría ponerme celoso!' },
+]})
+
+await check('rescue: an answer still identical on both sides is dropped by the guard', async () => {
+  const { result, asked } = await withTranslation(IDENTITY_RAW, IDENTITY_COPIES, true, 'Spanish')
+  assert.equal(asked.length, 1, 'the rescue path must actually run')
+  assert.deepEqual(result.choices, [], 'no button may ship with its native copy still English')
+  assert.deepEqual(result.choices_en, [])
+})
+
+await check('rescue: a failed, short or malformed answer keeps whatever the turn had', async () => {
+  const proper = { label_en: 'Ask now', send_en: '*I ask now, quietly.*', label_local: 'Perguntar agora', send_local: '*Eu pergunto agora, baixinho.*' }
+  const leave = { label_en: 'Leave', send_en: '*I leave the hall.*', label_local: 'Sair', send_local: '*Eu saio do salão.*' }
   for (const answer of [
-    new Error('down'), 'not json', '{}', '{"choices":[{"label":"Sair","send":"*Eu saio do salão.*"}]}', '{"choices":[null,null]}',
+    new Error('down'),
+    'not json',
+    '{}',
+    JSON.stringify({ choices: [proper] }),
+    JSON.stringify({ choices: [proper, leave, { label_en: 'Extra', send_en: '*I wait.*', label_local: 'Extra', send_local: '*Extra.*' }] }),
+    '{"choices":[null,null]}',
+    JSON.stringify({ choices: [proper, { label_en: 'Leave', send_en: '*I leave the hall.*' }] }),
     JSON.stringify({ choices: [
-      { label: 'Ask now', send: '*I ask now, quietly.*' }, { label: 'Leave', send: '*I leave the hall.*' },
+      { label_en: 'Ask now', send_en: '*I ask now, quietly.*', label_local: 'Ask now', send_local: '*I ask now, quietly.*' },
+      { label_en: 'Leave', send_en: '*I leave the hall.*', label_local: 'Leave', send_local: '*I leave the hall.*' },
     ] }),
   ]) {
     const { result } = await withTranslation(HALF_RAW, answer)
@@ -572,34 +660,59 @@ async function runBites() {
       edits: [[output, "value.split('*').map(choiceTextKey)", '[choiceTextKey(value)]']],
     },
     {
-      name: 'missing copies: never translated',
-      check: 'missing copies: fewer than two pairs gets one translation, kept in order',
+      name: 'missing copies: never rescued',
+      check: 'missing copies: fewer than two pairs gets one rescue, kept in order',
       edits: [[extractor, 'if (language && v.choices.length < CHOICE_PAIR_FLOOR)', 'if (language && v.choices.length < 0)']],
     },
     {
-      name: 'missing copies: translated although two pairs survive',
+      name: 'missing copies: rescued although two pairs survive',
       check: 'missing copies: two pairs or an English turn never call it',
       edits: [[extractor, 'v.choices.length < CHOICE_PAIR_FLOOR)', 'v.choices.length < 9)']],
     },
     {
-      name: 'missing copies: a failure loses the button that worked',
-      check: 'missing copies: a failed, short or untranslated answer keeps what survived',
+      name: 'rescue: a failure loses the button that worked',
+      check: 'rescue: a failed, short or malformed answer keeps whatever the turn had',
       edits: [[extractor, '  } catch {\n    return raw\n  }', "  } catch {\n    return '{}'\n  }"]],
     },
     {
-      name: 'missing copies: a short answer is matched by position',
-      check: 'missing copies: a failed, short or untranslated answer keeps what survived',
+      name: 'rescue: a wrong count is matched by position',
+      check: 'rescue: a failed, short or malformed answer keeps whatever the turn had',
       edits: [[extractor, '|| copies.length !== missing.length) return raw', ') return raw']],
     },
     {
+      name: 'rescue: a malformed row is accepted',
+      check: 'rescue: a failed, short or malformed answer keeps whatever the turn had',
+      edits: [[extractor, '    if (!usable) return raw\n', '']],
+    },
+    {
       name: 'missing copies: buttons that already worked are sent again',
-      check: 'missing copies: fewer than two pairs gets one translation, kept in order',
+      check: 'missing copies: fewer than two pairs gets one rescue, kept in order',
       edits: [[output, ' && sanitizeChoicePairs([item]).choices.length === 0)', ')']],
     },
     {
       name: 'missing copies: the call can hang the turn',
-      check: 'missing copies: fewer than two pairs gets one translation, kept in order',
+      check: 'missing copies: fewer than two pairs gets one rescue, kept in order',
       edits: [[extractor, '      timeoutMs: CHOICE_TRANSLATION_TIMEOUT_MS,\n', '']],
+    },
+    {
+      name: 'rescue: the rebuilt pair keeps the source label instead of label_en',
+      check: 'rescue: turn 22 (Spanish in the English slots) is rebuilt into four buttons',
+      edits: [[extractor, '        label: copy.label_en,', "        label: typeof item.label === 'string' ? item.label : copy.label_en,"]],
+    },
+    {
+      name: 'rescue: the equal-text guard is bypassed',
+      check: 'rescue: an answer still identical on both sides is dropped by the guard',
+      edits: [[output, '    if (\n      untranslatedField(native.choice.label, english.choice.label)\n      || untranslatedField(native.choice.send, english.choice.send)\n    ) {\n      continue\n    }', '    if (false) {\n      continue\n    }']],
+    },
+    {
+      name: 'instruction: the regional variety is dropped',
+      check: 'instruction: es names the tú imperative and Latin American Spanish; pt the você imperative; English neither',
+      edits: [[extractor, "  const varietyLine = variety ? ` Use ${variety}.` : ''", "  const varietyLine = ''"]],
+    },
+    {
+      name: 'instruction: the one label form is dropped',
+      check: 'instruction: es names the tú imperative and Latin American Spanish; pt the você imperative; English neither',
+      edits: [[extractor, "  const formLine = choiceLabelForm ? ` Every label_local uses one form: ${choiceLabelForm}.` : ''", "  const formLine = ''"]],
     },
     {
       name: 'present: an untranslated two-word field is treated as translated',

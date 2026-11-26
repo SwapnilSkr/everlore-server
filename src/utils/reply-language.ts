@@ -13,14 +13,34 @@ export interface ReplyLanguageEntry {
   name: string
   /** Name shown to the player in the Story language row. */
   label: string
+  /**
+   * Authored instruction for the variety of the language, e.g. Latin American
+   * Spanish. Only ever given to a model that writes; never used to judge text,
+   * so a player's own Spain Spanish is still read as Spanish.
+   */
+  variety?: string
+  /** Authored form every native choice label uses, e.g. the "tú" imperative. */
+  choiceLabelForm?: string
 }
 
 /** English is offered to the player but never stored on a save. */
 export const ENGLISH_REPLY_LANGUAGE = { code: 'en', label: 'English' } as const
 
 const REGISTRY: readonly ReplyLanguageEntry[] = [
-  { code: 'pt', name: 'Brazilian Portuguese', label: 'Português' },
-  { code: 'es', name: 'Spanish', label: 'Español' },
+  {
+    code: 'pt',
+    name: 'Brazilian Portuguese',
+    label: 'Português',
+    variety: 'Brazilian Portuguese: address the player as "você", never "tu" or its verb forms',
+    choiceLabelForm: 'the "você" imperative, e.g. "Pegue a mão dela"',
+  },
+  {
+    code: 'es',
+    name: 'Spanish',
+    label: 'Español',
+    variety: 'Latin American Spanish: "ustedes" for the plural, never "vosotros" or its verb forms',
+    choiceLabelForm: 'the informal "tú" imperative, e.g. "Toma su mano", "Pregúntale por el bento"',
+  },
 ]
 
 export function enabledReplyLanguages(
@@ -61,10 +81,22 @@ export function startingLanguage(params: {
 
 /**
  * The one narrator instruction. It must be the last system message before the
- * user turn and is only sent for a non-English save.
+ * user turn and is only sent for a non-English save. An entry authored without
+ * a `variety` produces exactly the text it produced before that field existed.
  */
 export function replyLanguageRule(entry: ReplyLanguageEntry): string {
-  return `REPLY LANGUAGE (hard rule, overrides everything above about wording): write the ENTIRE reply in ${entry.name}: every line of narration, dialogue and attribution. No English sentence anywhere. Keep the names of people and places exactly as given. The format is unchanged: dialogue in double quotes, every other visible word in single-asterisk italics.`
+  const variety = entry.variety ? ` Use ${entry.variety}.` : ''
+  return `REPLY LANGUAGE (hard rule, overrides everything above about wording): write the ENTIRE reply in ${entry.name}: every line of narration, dialogue and attribution. No English sentence anywhere.${variety} Keep the names of people and places exactly as given. The format is unchanged: dialogue in double quotes, every other visible word in single-asterisk italics.`
+}
+
+/**
+ * The authored writing style for a model-facing language name. The extractor's
+ * `choiceLanguage` carries only the name (it is the registry name, by
+ * definition), so the style is looked up here rather than threaded through every
+ * caller; an unknown name yields none and the write prompts read as before.
+ */
+export function replyLanguageWriteStyle(name: string): Pick<ReplyLanguageEntry, 'variety' | 'choiceLabelForm'> {
+  return REGISTRY.find((entry) => entry.name === name) ?? {}
 }
 
 /** Story language row: empty hides it, otherwise English comes first. */

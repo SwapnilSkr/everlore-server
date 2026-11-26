@@ -8,6 +8,7 @@
  *   bun --no-env-file run scripts/reply-language-audit.ts --bites
  */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Elysia } from 'elysia'
@@ -24,6 +25,7 @@ import {
   type ReplyLanguageEntry,
 } from '../src/utils/reply-language'
 import {
+  buildReplyLanguageRequest,
   decideReplyLanguage,
   matchesOfferedChip,
   normalizeReplyText,
@@ -135,6 +137,45 @@ await check('off = English: disabled/unknown/en codes are undefined', () => {
   assert.ok(rule.includes('every line of narration, dialogue and attribution. No English sentence anywhere.'))
   assert.ok(rule.includes('Keep the names of people and places exactly as given.'))
   assert.ok(rule.endsWith('The format is unchanged: dialogue in double quotes, every other visible word in single-asterisk italics.'))
+})
+
+// ── 3b. authored variety: a writing instruction, never a judging rule ───────
+await check('style: the es narrator rule names Latin American Spanish and the detector still accepts any Spanish', () => {
+  const es = effectiveReplyLanguage('es', ENABLED)!
+  const pt = effectiveReplyLanguage('pt', ENABLED)!
+  assert.ok(replyLanguageRule(es).includes('Latin American Spanish'), 'es must name its variety')
+  assert.ok(replyLanguageRule(es).includes('"ustedes"'))
+  assert.ok(replyLanguageRule(pt).includes('Brazilian Portuguese'))
+  assert.ok(replyLanguageRule(pt).includes('"você"'))
+  // An entry authored without a variety produces exactly the old rule text.
+  assert.equal(
+    replyLanguageRule({ code: 'es', name: 'Spanish', label: 'Español' }),
+    'REPLY LANGUAGE (hard rule, overrides everything above about wording): write the ENTIRE reply in Spanish: every line of narration, dialogue and attribution. No English sentence anywhere. Keep the names of people and places exactly as given. The format is unchanged: dialogue in double quotes, every other visible word in single-asterisk italics.',
+  )
+  // Detection is unchanged: any Spanish reads as Spanish, whatever the variety.
+  const request = buildReplyLanguageRequest('Hola, ¿cómo estás?', [pt, es])
+  assert.deepEqual(request.questions.written_in.criteria, {
+    pt: 'Written in Brazilian Portuguese.',
+    es: 'Written in Spanish.',
+    en: 'Written in English, including English with a foreign name or word in it.',
+    other: 'Another language, only a name or a sound, or a word equally normal in two of these languages.',
+  })
+  assert.deepEqual(request.questions.asks_for.criteria, {
+    pt: 'Asks for Brazilian Portuguese.',
+    es: 'Asks for Spanish.',
+    en: 'Asks for English.',
+    none: 'Does not ask for a language. Mentioning a language, or a character speaking one, is not asking.',
+  })
+})
+
+// ── 3c. an English save's built prompt is byte-identical ─────────────────────
+// Pinned from the tree before this change; the reply-language work must add
+// nothing at all to an English narrator prompt.
+const FROZEN_ENGLISH_PROMPT = '1adb30b789935a8696785b1ee6c9734118d372c60520bb4da50c6a8630c39409'
+
+await check('prompt: an English save is byte-identical to the pre-change prompt', () => {
+  const sha = createHash('sha256').update(JSON.stringify(buildPrompt(basePromptInput()))).digest('hex')
+  assert.equal(sha, FROZEN_ENGLISH_PROMPT)
 })
 
 // ── 4a. prompt byte-identity when absent ─────────────────────────────────────
@@ -452,6 +493,21 @@ async function runBites() {
       name: 'processor: the check is not cancelled at turn end',
       check: 'processor: starts at pickup with no wait, waits at the prompt, applies after the stream',
       edits: [[processor, '    replyLanguageCheck.cancel()', '    void 0']],
+    },
+    {
+      name: 'style: the es narrator rule loses its regional variety',
+      check: 'style: the es narrator rule names Latin American Spanish and the detector still accepts any Spanish',
+      edits: [[replyLanguage, "  const variety = entry.variety ? ` Use ${entry.variety}.` : ''", "  const variety = ''"]],
+    },
+    {
+      name: 'style: the detector starts judging the variety',
+      check: 'style: the es narrator rule names Latin American Spanish and the detector still accepts any Spanish',
+      edits: [[detector, 'writtenCriteria[entry.code] = `Written in ${entry.name}.`', 'writtenCriteria[entry.code] = `Written in ${entry.variety ?? entry.name}.`']],
+    },
+    {
+      name: 'prompt: an English save gains a reply-language rule',
+      check: 'prompt: an English save is byte-identical to the pre-change prompt',
+      edits: [[promptBuilder, '  if (input.replyLanguage) {', '  if (input.replyLanguage !== null) {']],
     },
   ]
 

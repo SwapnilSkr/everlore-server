@@ -1,5 +1,6 @@
 import { callLLM, AI_MODELS } from '../../src/ai'
 import { env } from '../../src/config/env'
+import { replyLanguageWriteStyle } from '../../src/utils/reply-language'
 import type { ChoiceEnglish } from '../../src/utils/witness'
 import type { EffectivePlayerGender } from '../../src/models/player-gender'
 import { enforceSchema, untranslatedChoices, type GenerationOutput, type SchemaOptions } from './structured-output'
@@ -232,10 +233,15 @@ const CHOICES_ONLY_SCHEMA_EN = withEnglishChoices(CHOICES_ONLY_SCHEMA)
 /**
  * The one line the non-English choice system prompt gains at its very end. The
  * other fields stay English: this pass is what the extractors and the ledger
- * read, and only the chips the player sees are native.
+ * read, and only the chips the player sees are native. The language's authored
+ * style (`variety`, `choiceLabelForm`) is added where a model is being told how
+ * to write; a name without them yields exactly the old text.
  */
 export function choiceLanguageInstruction(name: string): string {
-  return `CHOICE LANGUAGE: the player reads this story in ${name}. Every choice object has FIVE required fields, in this order: label, kind and send in English exactly as described above, whatever language the passage is in; then label_local and send_local, that same label and send translated into natural ${name}, first person kept, names and *asterisks* kept. Example shape: {"label":"Take her hand","kind":"act","send":"*I reach out and take her hand.*","label_local":"<the label in ${name}>","send_local":"<the send in ${name}, asterisks kept>"}. Never leave label_local or send_local in English. The milestone, when there is one, is in ${name}. Every other field is in English.`
+  const { variety, choiceLabelForm } = replyLanguageWriteStyle(name)
+  const varietyLine = variety ? ` Use ${variety}.` : ''
+  const formLine = choiceLabelForm ? ` Every label_local uses one form: ${choiceLabelForm}.` : ''
+  return `CHOICE LANGUAGE: the player reads this story in ${name}.${varietyLine} Every choice object has FIVE required fields, in this order: label, kind and send in English exactly as described above, whatever language the passage is in; then label_local and send_local, that same label and send translated into natural ${name}, first person kept, names and *asterisks* kept.${formLine} Example shape: {"label":"Take her hand","kind":"act","send":"*I reach out and take her hand.*","label_local":"<the label in ${name}>","send_local":"<the send in ${name}, asterisks kept>"}. Never leave label_local or send_local in English. The milestone, when there is one, is in ${name}. Every other field is in English.`
 }
 
 /**
@@ -264,21 +270,42 @@ const CHOICE_TRANSLATION_SCHEMA = {
       items: {
         type: 'object',
         additionalProperties: false,
-        properties: { label: { type: 'string' }, send: { type: 'string' } },
-        required: ['label', 'send'],
+        properties: {
+          label_en: { type: 'string' },
+          send_en: { type: 'string' },
+          label_local: { type: 'string' },
+          send_local: { type: 'string' },
+        },
+        required: ['label_en', 'send_en', 'label_local', 'send_local'],
       },
     },
   },
   required: ['choices'],
 }
-/** Below this many usable pairs the missing ones are translated once. */
+/** Below this many usable pairs the missing ones are rebuilt in one call. */
 const CHOICE_PAIR_FLOOR = 2
 const CHOICE_TRANSLATION_TIMEOUT_MS = 6_000
 
+/** The language-bearing fields of a dropped choice, whatever language each is
+ *  in. `kind` is not language and stays with the original row. */
+function choiceRescueSource(item: Record<string, unknown>): Record<string, string> {
+  const source: Record<string, string> = {}
+  for (const field of ['label', 'send', 'label_local', 'send_local'] as const) {
+    if (typeof item[field] === 'string') source[field] = item[field]
+  }
+  return source
+}
+
 /**
- * The raw answer with its missing native copies filled in. Only for a turn left
- * with fewer than two buttons; any failure returns the answer as it was, so a turn
+ * The raw answer with its unusable buttons rebuilt. Only for a turn left with
+ * fewer than two buttons; any failure returns the answer as it was, so a turn
  * never loses a button it had.
+ *
+ * The model may write the player's language into the English slots (that is the
+ * bug this replaces: on 5 of 37 Spanish turns it did), so one call is asked for
+ * both sides of every dropped choice, with the source stated as possibly in
+ * either language. The rebuilt pairs go back through the unchanged
+ * `sanitizeChoicePairs`, so a side that is still the same text is still dropped.
  */
 async function withMissingChoiceCopies(
   raw: string,
@@ -288,6 +315,9 @@ async function withMissingChoiceCopies(
   const parsed = safeParseObject(raw)
   const missing = untranslatedChoices(parsed.choices)
   if (missing.length === 0) return raw
+  const { variety, choiceLabelForm } = replyLanguageWriteStyle(name)
+  const varietyLine = variety ? ` Use ${variety}.` : ''
+  const formLine = choiceLabelForm ? ` Every label_local uses one form: ${choiceLabelForm}.` : ''
   try {
     const answer = await invoke({
       model: AI_MODELS.metadata,
@@ -295,23 +325,37 @@ async function withMissingChoiceCopies(
       messages: [
         {
           role: 'system',
-          content: `You translate the tap-to-play buttons of an interactive story into natural ${name}. Each has a short label and the move the player sends. Keep the first person, the meaning, every name, and the *asterisks* around actions with spoken words outside them. Return the same buttons in the same order.`,
+          content: `You rebuild the tap-to-play buttons of an interactive story in ${name}. Each button may carry its text in English, in ${name}, or a mix: label and send are the ordinary fields, label_local and send_local the player's copy. Return label_en and send_en in English: label_en is the short imperative the player gives themselves (e.g. "Take her hand"), send_en the move in the first person. Return label_local and send_local in natural ${name}, first person kept, every name and the *asterisks* around actions kept with spoken words outside them.${varietyLine}${formLine} Return the same buttons in the same order.`,
         },
-        { role: 'user', content: JSON.stringify(missing.map((item) => ({ label: item.label, send: item.send }))) },
+        { role: 'user', content: JSON.stringify(missing.map(choiceRescueSource)) },
       ],
       temperature: 0,
-      maxTokens: 500,
+      maxTokens: 700,
       responseSchema: CHOICE_TRANSLATION_SCHEMA,
       responseFormat: { type: 'json_schema', json_schema: { name: 'choice_translation', strict: true } },
       timeoutMs: CHOICE_TRANSLATION_TIMEOUT_MS,
     })
     const copies = safeParseObject(answer).choices
-    // A different count cannot be matched to its button.
+    // A different count cannot be matched to its button, and one malformed row
+    // would drop a button the turn already had.
     if (!Array.isArray(copies) || copies.length !== missing.length) return raw
-    const filled = new Map(missing.map((item, index) => {
-      const copy = copies[index] as { label?: unknown; send?: unknown } | null
-      return [item, { ...item, label_local: copy?.label, send_local: copy?.send }]
-    }))
+    const usable = copies.every((copy) =>
+      !!copy && typeof copy === 'object' &&
+      ['label_en', 'send_en', 'label_local', 'send_local'].every(
+        (field) => typeof (copy as Record<string, unknown>)[field] === 'string',
+      ))
+    if (!usable) return raw
+    const filled = new Map<Record<string, unknown>, Record<string, unknown>>()
+    missing.forEach((item, index) => {
+      const copy = copies[index] as Record<string, string>
+      filled.set(item, {
+        label: copy.label_en,
+        kind: item.kind,
+        send: copy.send_en,
+        label_local: copy.label_local,
+        send_local: copy.send_local,
+      })
+    })
     return JSON.stringify({ ...parsed, choices: (parsed.choices as Record<string, unknown>[]).map((item) => filled.get(item) ?? item) })
   } catch {
     return raw
