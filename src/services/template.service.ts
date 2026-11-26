@@ -76,7 +76,7 @@ function seededShuffle<T>(items: readonly T[], rng: () => number): T[] {
  * rows, the player and the exclude list — never on the order Mongo returned
  * them in. Genre is authored data; a missing one is its own shelf.
  */
-function orderStarterChoices(
+export function orderStarterChoices(
   candidates: readonly WorldTemplateDoc[],
   userId: string,
   excludeIds: readonly string[],
@@ -113,6 +113,131 @@ function orderStarterChoices(
     }
   }
   return picked
+}
+
+const compareById = (a: WorldTemplateDoc, b: WorldTemplateDoc): number => {
+  const left = idString(a._id)
+  const right = idString(b._id)
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+/** A card's voice, normalized so a stray space or case still matches a pick. */
+const voiceOf = (template: WorldTemplateDoc): string =>
+  typeof template.narrative_style === 'string' ? template.narrative_style.trim().toLowerCase() : ''
+
+/** A card's shelf; a missing genre is its own shelf, as in the spread above. */
+const shelfOf = (template: WorldTemplateDoc): string | undefined => template.genre
+
+/**
+ * The starter-choice order once the player has picked interests: most cards
+ * come from the voices they chose, the rest still shows range.
+ *
+ * `lean = min(3, count - 1)` cards are matching — an exact voice first, a
+ * same-family voice after — and prefer a voice, then a shelf, the cards
+ * already chosen don't use. The rest keep the one-per-shelf spread above over
+ * the pool the matching cards left, preferring shelves the matching cards
+ * didn't use. If that pool runs dry, matching cards fill the rest, so the
+ * answer never has fewer cards than it would with no interests at all.
+ *
+ * The seed is the single-starter one (player and sorted exclude list), so the
+ * same request answers the same and "show me others" keeps the same mix on
+ * what remains. With no interests the plain spread is returned untouched.
+ */
+export function orderStarterChoicesForInterests(
+  candidates: readonly WorldTemplateDoc[],
+  userId: string,
+  excludeIds: readonly string[],
+  count: number,
+  interests: readonly string[],
+): WorldTemplateDoc[] {
+  if (count <= 0 || candidates.length === 0) return []
+  const picks = new Set(
+    interests.map((key) => key.trim().toLowerCase()).filter(Boolean),
+  )
+  if (picks.size === 0) return orderStarterChoices(candidates, userId, excludeIds, count)
+
+  const rng = mulberry32(hashSeed(`${userId}|${[...excludeIds].sort().join(',')}|interests`))
+
+  // Mongo never hands back the same id twice, but the pools below must not
+  // either: a card can only be taken once.
+  const pool: WorldTemplateDoc[] = []
+  const seen = new Set<string>()
+  for (const template of candidates) {
+    const key = idString(template._id)
+    if (seen.has(key)) continue
+    seen.add(key)
+    pool.push(template)
+  }
+
+  const familyPicks = new Set(familyExpandedKeys([...picks]).filter((key) => !picks.has(key)))
+  const exact = pool.filter((template) => picks.has(voiceOf(template)))
+  const family = pool.filter((template) => familyPicks.has(voiceOf(template)))
+  const offInterest = pool.filter((template) =>
+    !picks.has(voiceOf(template)) && !familyPicks.has(voiceOf(template)))
+
+  const lean = Math.min(3, count - 1)
+  const usedVoices = new Set<string>()
+  const usedShelves = new Set<string | undefined>()
+  const matched: WorldTemplateDoc[] = []
+
+  // Take from one tier at a time: an unused voice first, then an unused shelf,
+  // then whatever the seeded order puts next.
+  const take = (rows: readonly WorldTemplateDoc[], limit: number) => {
+    const queue = seededShuffle([...rows].sort(compareById), rng)
+    while (queue.length > 0 && matched.length < limit) {
+      let index = queue.findIndex((template) => !usedVoices.has(voiceOf(template)))
+      if (index < 0) index = queue.findIndex((template) => !usedShelves.has(shelfOf(template)))
+      if (index < 0) index = 0
+      const [template] = queue.splice(index, 1)
+      matched.push(template)
+      usedVoices.add(voiceOf(template))
+      usedShelves.add(shelfOf(template))
+    }
+  }
+  take(exact, lean)
+  take(family, lean)
+
+  const wanted = count - matched.length
+  let off: WorldTemplateDoc[] = []
+  if (wanted > 0) {
+    const fresh = offInterest.filter((template) => !usedShelves.has(shelfOf(template)))
+    const stale = offInterest.filter((template) => usedShelves.has(shelfOf(template)))
+    off = orderStarterChoices(fresh, userId, excludeIds, wanted)
+    if (off.length < wanted) {
+      off = off.concat(orderStarterChoices(stale, userId, excludeIds, wanted - off.length))
+    }
+  }
+
+  if (matched.length + off.length < count) {
+    const taken = new Set([...matched, ...off].map((template) => idString(template._id)))
+    const left = pool.filter((template) => !taken.has(idString(template._id)))
+    take(left, count - off.length)
+  }
+
+  return interleaveStarterChoices(matched, off.slice(0, count - matched.length), rng)
+}
+
+/**
+ * Put the off-interest cards between the matching ones, seeded: a matching
+ * card is always first, and the others take a slot that changes with the seed
+ * instead of always landing last.
+ */
+function interleaveStarterChoices(
+  matched: readonly WorldTemplateDoc[],
+  off: readonly WorldTemplateDoc[],
+  rng: () => number,
+): WorldTemplateDoc[] {
+  if (matched.length === 0 || off.length === 0) return [...matched, ...off]
+  const free: number[] = []
+  for (let slot = 1; slot < matched.length + off.length; slot++) free.push(slot)
+  const slots = off.map(() => free.splice(Math.floor(rng() * free.length), 1)[0])
+  const ordered: WorldTemplateDoc[] = []
+  let next = 0
+  for (let slot = 0; slot < matched.length + off.length; slot++) {
+    const at = slots.indexOf(slot)
+    ordered.push(at >= 0 ? off[at] : matched[next++])
+  }
+  return ordered
 }
 
 /** Explore options beyond paging and search; mirrors the query schema. */
@@ -506,7 +631,8 @@ export const templateService = {
    * The four (or `count`) starters a new player picks from: the same discovery
    * gate as `starter()`, minus anything already shown and anything this player
    * already has a save of, one per shelf where possible, in a stable per-player
-   * shuffle. One extra read, `template_id` only.
+   * shuffle — leaning toward the interests the player picked in onboarding.
+   * Two extra reads, `template_id` and `preferences.interests` only.
    */
   async starterChoices(
     userId: string,
@@ -527,15 +653,16 @@ export const templateService = {
       filter._id = { $nin: [...blocked, ...excludeOids] }
     }
 
-    const [rows, saved] = await Promise.all([
+    const [rows, saved, interests] = await Promise.all([
       worldTemplates().find(filter).toArray(),
       worldInstances()
         .find({ player_id: parseObjectId(userId) }, { projection: { template_id: 1 } })
         .toArray(),
+      this.interestsFor(userId),
     ])
     const savedIds = new Set(saved.map((instance) => idString(instance.template_id)))
     const candidates = rows.filter((template) => !savedIds.has(idString(template._id)))
-    return orderStarterChoices(candidates, userId, excludeIds, count)
+    return orderStarterChoicesForInterests(candidates, userId, excludeIds, count, interests)
   },
 
   async listPublished(

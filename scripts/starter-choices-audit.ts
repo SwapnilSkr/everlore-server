@@ -13,12 +13,23 @@
  *   - non-starters, groups, hidden and blocked worlds never appear;
  *   - `count` and `exclude` validation is a 400, and 401 without a user;
  *   - `/templates/starter` still answers exactly as before.
+ *
+ * And the lean toward interests (2026-11-27):
+ *   - no interests answers exactly like the plain spread, for the same pool;
+ *   - three starters on the picked voices give three of four, one off;
+ *   - one exact match, then two family matches, then the off-interest card;
+ *   - interests matching every starter still give `count` cards, no duplicates;
+ *   - five picked voices give three matching cards in three different voices;
+ *   - the same inputs answer the same, and exclude keeps the three/one mix;
+ *   - a matching card leads, and the off-interest card moves with the player;
+ *   - a card is never duplicated and never more than `count` come back.
  */
 import assert from 'node:assert/strict'
 import { isDeepStrictEqual } from 'node:util'
 import { mock } from 'bun:test'
 import { ObjectId } from 'mongodb'
 import { SignJWT } from 'jose'
+import type { WorldTemplateDoc } from '../src/models/world-template.model'
 
 type Row = Record<string, unknown>
 
@@ -106,6 +117,8 @@ mock.module('../src/config/redis', () => ({
 
 const { Elysia, ValidationError } = await import('elysia')
 const { templateRoutes } = await import('../src/routes/template.routes')
+const { orderStarterChoices, orderStarterChoicesForInterests } = await import('../src/services/template.service')
+const { familyExpandedKeys } = await import('../src/utils/narrative-styles')
 const { HttpError } = await import('../src/utils/http-error')
 const { VALIDATION_MESSAGE } = await import('../src/utils/validation-response')
 const { env } = await import('../src/config/env')
@@ -264,6 +277,166 @@ await check('a template with no genre is its own shelf, counted once', async () 
   assert.equal(new Set(shelvesOf(cards)).size, 4, `shelves: ${shelvesOf(cards).join(',')}`)
   // Only one absent-genre card: the other is a leftover, not a second shelf.
   assert.equal(shelvesOf(cards).filter((shelf) => shelf === '(none)').length, 1)
+})
+
+// ── 1b. The lean toward the player's interests ───────────────────────────────
+/** Twenty starters over six shelves: romance 6, epic 4, dark 3, horror 2, cozy 2, modern 3. */
+function starterPool(): Row[] {
+  const voices: Array<[string, string]> = [
+    ['romance', 'flirty'], ['romance', 'flirty'],
+    ['romance', 'dark_romance'], ['romance', 'dark_romance'],
+    ['romance', 'regency'], ['romance', 'regency'],
+    ['epic', 'epic_fantasy'], ['epic', 'epic_fantasy'],
+    ['epic', 'shonen'], ['epic', 'shonen'],
+    ['dark', 'grimdark'], ['dark', 'grimdark'],
+    ['dark', 'noir'],
+    ['horror', 'horror'], ['horror', 'horror'],
+    ['cozy', 'cozy_comfort'], ['cozy', 'cozy_comfort'],
+    ['modern', 'modern_casual'], ['modern', 'kdrama'], ['modern', 'slice_of_life'],
+  ]
+  return voices.map(([genre, narrative_style]) => world({ genre, narrative_style }))
+}
+
+function setInterests(keys: string[]) {
+  const row = users.find((user) => user._id instanceof ObjectId && (user._id as ObjectId).equals(player))!
+  row.preferences = { interests: keys }
+}
+
+/** Every voice that counts as a match for these picks: exact, then same family. */
+function matchingStyles(interests: string[]): Set<string> {
+  return new Set([...interests, ...familyExpandedKeys(interests)])
+}
+
+await check('with no interests the answer is identical to the plain spread', async () => {
+  const pool = starterPool() as unknown as WorldTemplateDoc[]
+  const exclude = [String(pool[0]._id), String(pool[7]._id)]
+  for (const count of [1, 4, 8]) {
+    const plain = orderStarterChoices(pool, String(player), exclude, count)
+    const leaned = orderStarterChoicesForInterests(pool, String(player), exclude, count, [])
+    assert.deepEqual(
+      plain.map((row) => String(row._id)),
+      leaned.map((row) => String(row._id)),
+      `count=${count}`,
+    )
+  }
+})
+
+await check('three starters on the picked voices give three of four, one off', async () => {
+  reset(starterPool())
+  setInterests(['regency', 'kdrama'])
+  try {
+    const cards = await choices('?count=4')
+    assert.equal(cards.length, 4)
+    const styles = cards.map((card) => card.narrative_style as string)
+    const matching = matchingStyles(['regency', 'kdrama'])
+    assert.equal(styles.filter((style) => matching.has(style)).length, 3, `voices: ${styles.join(',')}`)
+    assert(['regency', 'kdrama'].includes(styles[0]), `the first card should match: ${styles.join(',')}`)
+    assert.equal(styles.some((style) => !matching.has(style)), true, `no off-interest card: ${styles.join(',')}`)
+  } finally {
+    setInterests([])
+  }
+})
+
+await check('one exact match, then two family matches, then one off', async () => {
+  reset([
+    world({ genre: 'romance', narrative_style: 'regency' }),
+    world({ genre: 'romance', narrative_style: 'dark_romance' }),
+    world({ genre: 'romance', narrative_style: 'dark_romance' }),
+    world({ genre: 'epic', narrative_style: 'epic_fantasy' }),
+    world({ genre: 'epic', narrative_style: 'shonen' }),
+    world({ genre: 'horror', narrative_style: 'horror' }),
+  ])
+  setInterests(['regency'])
+  try {
+    const cards = await choices('?count=4')
+    const styles = cards.map((card) => card.narrative_style as string)
+    const matching = matchingStyles(['regency'])
+    assert.deepEqual(
+      styles.filter((style) => matching.has(style)),
+      ['regency', 'dark_romance', 'dark_romance'],
+      `voices: ${styles.join(',')}`,
+    )
+    assert.equal(styles.filter((style) => !matching.has(style)).length, 1, `voices: ${styles.join(',')}`)
+  } finally {
+    setInterests([])
+  }
+})
+
+await check('interests matching every starter still give count cards, no duplicates', async () => {
+  const pool = starterPool()
+  reset(pool)
+  setInterests([...new Set(pool.map((row) => String(row.narrative_style)))])
+  try {
+    const cards = await choices('?count=4')
+    assert.equal(cards.length, 4)
+    assert.equal(new Set(ids(cards)).size, 4)
+  } finally {
+    setInterests([])
+  }
+})
+
+await check('five picked voices give three matching cards in three different voices', async () => {
+  const pool = starterPool() as unknown as WorldTemplateDoc[]
+  const five = ['regency', 'kdrama', 'flirty', 'horror', 'epic_fantasy']
+  for (let index = 0; index < 8; index++) {
+    const userId = new ObjectId(index.toString().padStart(24, '0')).toHexString()
+    const cards = orderStarterChoicesForInterests(pool, userId, [], 4, five)
+    const exact = cards
+      .map((card) => String(card.narrative_style))
+      .filter((style) => five.includes(style))
+    assert.equal(exact.length, 3, `${userId}: exact cards ${exact.join(',')}`)
+    assert.equal(new Set(exact).size, 3, `${userId}: voices ${exact.join(',')}`)
+  }
+})
+
+await check('the same interests and player answer the same, and exclude keeps the mix', async () => {
+  reset(starterPool())
+  setInterests(['regency', 'kdrama'])
+  try {
+    const first = await choices('?count=4')
+    const again = await choices('?count=4')
+    assert.deepEqual(ids(first), ids(again))
+
+    const shown = ids(first)
+    const next = await choices(`?count=4&exclude=${shown.join(',')}`)
+    for (const id of shown) assert.equal(ids(next).includes(id), false, `${id} came back`)
+    const matching = matchingStyles(['regency', 'kdrama'])
+    const matched = next.filter((card) => matching.has(String(card.narrative_style)))
+    assert.equal(matched.length, 3, `matching cards after exclude: ${matched.length}`)
+  } finally {
+    setInterests([])
+  }
+})
+
+await check('interests never duplicate a card or return more than count', async () => {
+  reset(starterPool())
+  setInterests(['regency', 'kdrama'])
+  try {
+    for (let count = 1; count <= 8; count++) {
+      const cards = await choices(`?count=${count}`)
+      assert.equal(cards.length, count, `count=${count}`)
+      assert.equal(new Set(ids(cards)).size, cards.length, `count=${count} repeated a card`)
+    }
+  } finally {
+    setInterests([])
+  }
+})
+
+await check('a matching card leads and the off-interest card moves with the player', async () => {
+  const pool = starterPool() as unknown as WorldTemplateDoc[]
+  const interests = ['regency', 'kdrama']
+  const matching = matchingStyles(interests)
+  const positions = new Set<number>()
+  for (let index = 0; index < 8; index++) {
+    const userId = new ObjectId(index.toString().padStart(24, '0')).toHexString()
+    const cards = orderStarterChoicesForInterests(pool, userId, [], 4, interests)
+    assert.equal(cards.length, 4)
+    assert.equal(matching.has(String(cards[0].narrative_style)), true, `${userId}: first card is ${cards[0].narrative_style}`)
+    const at = cards.findIndex((card) => !matching.has(String(card.narrative_style)))
+    assert.equal(at > 0, true, `${userId}: no off-interest card`)
+    positions.add(at)
+  }
+  assert.equal(positions.size > 1, true, `the off card only ever sat at ${[...positions].join(',')}`)
 })
 
 // ── 2. Two shelves still fill to count ───────────────────────────────────────
