@@ -87,7 +87,11 @@ try {
   const ago = (days: number) => new Date(now.getTime() - days * DAY)
   const at = (daysAgo: number, hours = 12) => {
     const day = new Date(now.getTime() - daysAgo * DAY)
-    return new Date(Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate(), hours))
+    const start = Date.UTC(day.getUTCFullYear(), day.getUTCMonth(), day.getUTCDate())
+    const wanted = start + hours * 3_600_000
+    // Before `hours` UTC, "today at noon" is still in the future and falls out of
+    // the window (CI at 06:35 UTC, 2026-11-26): keep it today, but in the past.
+    return new Date(wanted < now.getTime() ? wanted : start + (now.getTime() - start) / 2)
   }
   const id = () => new ObjectId()
   const day = (delta: number) => new Date(Date.now() - delta * DAY).toISOString().slice(0, 10)
