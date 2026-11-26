@@ -16,6 +16,7 @@ import { HttpError } from '../utils/http-error'
 import { idString, parseObjectId } from '../utils/mongo-id'
 import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
+import { coverWrite, deleteReplacedThumb, makeCoverThumb } from '../utils/cover-thumb'
 import { familyExpandedKeys } from '../utils/narrative-styles'
 import { extractTemplateCast } from '../../worker/lib/template-cast-extractor'
 import { FIELD_LIMITS } from '../schemas/template.schema'
@@ -265,6 +266,9 @@ export const templateService = {
 
     // Promote a chosen preview, or assign the universal default when skipped.
     const imageUrl = await resolveTemplateImageUrl(data.image_url)
+    // Every kind carries its small cover, so no list card downloads the full
+    // one. A failed thumb leaves the cover without it; the save still lands.
+    const thumbUrl = await makeCoverThumb(imageUrl)
 
     const template: WorldTemplateDoc = {
       _id,
@@ -283,6 +287,7 @@ export const templateService = {
       narrative_style: typeof data.narrative_style === 'string' ? data.narrative_style : '',
       style_notes: typeof data.style_notes === 'string' ? data.style_notes.slice(0, 500) : '',
       image_url: imageUrl,
+      ...(thumbUrl ? { image_thumb_url: thumbUrl } : {}),
       image_prompt: typeof data.image_prompt === 'string' ? data.image_prompt.slice(0, FIELD_LIMITS.imagePrompt) : '',
       opening_line: typeof data.opening_line === 'string' ? data.opening_line.trim() : undefined,
       protagonist,
@@ -378,8 +383,18 @@ export const templateService = {
     }
 
     // If a new image was chosen (or cleared), promote or fall back to default.
+    // The small copy always describes the cover beside it, so it is remade in
+    // this write, or removed when one could not be made. A thumb never travels
+    // in the body: the server owns it.
+    delete updateFields.image_thumb_url
+    let dropThumb = false
     if (typeof data.image_url === 'string' && data.image_url !== existing.image_url) {
-      updateFields.image_url = await resolveTemplateImageUrl(data.image_url)
+      const imageUrl = await resolveTemplateImageUrl(data.image_url)
+      const write = coverWrite(imageUrl, await makeCoverThumb(imageUrl))
+      updateFields.image_url = write.set.image_url
+      if (write.set.image_thumb_url) updateFields.image_thumb_url = write.set.image_thumb_url
+      dropThumb = write.unset.image_thumb_url !== undefined
+      deleteReplacedThumb(existing.image_thumb_url, write.set.image_thumb_url)
       if (existing.image_url && !isDefaultCoverUrl(existing.image_url)) {
         const oldKey = storageService.keyFromUrl(existing.image_url)
         if (oldKey) void storageService.delete(oldKey)
@@ -408,7 +423,9 @@ export const templateService = {
         visibility: existing.visibility ?? { $exists: false },
         review_status: existing.review_status ?? { $exists: false },
       },
-      { $set: updateFields },
+      dropThumb
+        ? { $set: updateFields, $unset: { image_thumb_url: '' as const } }
+        : { $set: updateFields },
     )
     if (result.matchedCount === 0) {
       throw new HttpError(409, 'This world changed while you were editing. Please reopen it.')

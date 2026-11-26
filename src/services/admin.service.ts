@@ -14,6 +14,7 @@ import { playerInsights, playerInsightsService } from './admin-insights-players'
 import { worldInsights, type WorldListOptions } from './admin-insights-worlds'
 import { isDefaultCoverUrl, resolveTemplateImageUrl } from '../constants/default-cover'
 import { storageService } from './storage.service'
+import { coverWrite, deleteReplacedThumb, makeCoverThumb } from '../utils/cover-thumb'
 import { vectorStore } from './vector-store'
 import { portraitUrl } from './media/portraits'
 import { log } from '../utils/logger'
@@ -461,8 +462,17 @@ export const adminService = {
     const patch = cleanPatch(data)
     if ('creator_id' in patch) patch.creator_id = maybeObjectId(patch.creator_id)
 
+    // The small copy is the server's: never taken from the patch, only remade
+    // beside a cover that changed.
+    delete patch.image_thumb_url
+    let dropThumb = false
     if (typeof patch.image_url === 'string' && patch.image_url !== existing.image_url) {
-      patch.image_url = await resolveTemplateImageUrl(patch.image_url)
+      const imageUrl = await resolveTemplateImageUrl(patch.image_url)
+      const write = coverWrite(imageUrl, await makeCoverThumb(imageUrl))
+      patch.image_url = write.set.image_url
+      if (write.set.image_thumb_url) patch.image_thumb_url = write.set.image_thumb_url
+      dropThumb = write.unset.image_thumb_url !== undefined
+      deleteReplacedThumb(existing.image_thumb_url, write.set.image_thumb_url)
       if (existing.image_url && !isDefaultCoverUrl(existing.image_url)) {
         const oldKey = storageService.keyFromUrl(existing.image_url)
         if (oldKey) void storageService.delete(oldKey)
@@ -472,7 +482,9 @@ export const adminService = {
     if (Object.keys(patch).length === 0) throw new HttpError(400, 'No editable fields provided')
     const updated = await worldTemplates().findOneAndUpdate(
       { _id: tid },
-      { $set: { ...patch, updated_at: new Date() } },
+      dropThumb
+        ? { $set: { ...patch, updated_at: new Date() }, $unset: { image_thumb_url: '' as const } }
+        : { $set: { ...patch, updated_at: new Date() } },
       { returnDocument: 'after' },
     )
     // An admin edit reaches the same world text a creator edit does.
