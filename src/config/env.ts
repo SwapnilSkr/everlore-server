@@ -107,6 +107,10 @@ const optionalEnvVars = {
   /** Comma-separated hosts the same-turn router may use after the primary. Both
    * are measured at the router model; an empty string pins the primary alone. */
   NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS: 'InferenceNet,Reka',
+  /** A save whose replies are not English holds routing this long, counted from
+   *  the moment the same-turn router started, because the fallback lexicon is
+   *  English vocabulary and scores native Portuguese/Spanish text at zero. */
+  NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS: '1200',
   ADMIN_USERNAME: '',
   ADMIN_PASSWORD: '',
   // Throughput knobs — defaults are the safe production values. Crank these via
@@ -205,6 +209,7 @@ export interface Env {
   NSFW_SAME_TURN_ROUTER_MODEL: string
   NSFW_SAME_TURN_ROUTER_HOST: string
   NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS: string[]
+  NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS: number
   ADMIN_USERNAME: string
   ADMIN_PASSWORD: string
   GENERATION_CONCURRENCY: number
@@ -264,6 +269,16 @@ function loadEnv(): Env {
 
   const sameTurnRouter = process.env.NSFW_SAME_TURN_ROUTER || optionalEnvVars.NSFW_SAME_TURN_ROUTER
   if (sameTurnRouter !== 'on' && sameTurnRouter !== 'off') throw new Error('Invalid NSFW_SAME_TURN_ROUTER')
+
+  // A typo here ("1,200", "1200ms") would silently turn the wait into 0 ms and
+  // lose the non-English turn it exists to save, so anything that is not a
+  // non-negative whole number falls back to the committed 1200.
+  const configuredNonEnWait = Number(
+    process.env.NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS || optionalEnvVars.NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS,
+  )
+  const routerNonEnWaitMs = Number.isSafeInteger(configuredNonEnWait) && configuredNonEnWait >= 0
+    ? configuredNonEnWait
+    : Number(optionalEnvVars.NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS)
 
   const configuredPromoCap = Number(process.env.INK_PROMO_DAILY_TURN_CAP || optionalEnvVars.INK_PROMO_DAILY_TURN_CAP)
 
@@ -364,6 +379,7 @@ function loadEnv(): Env {
       .split(',')
       .map((host) => host.trim())
       .filter(Boolean),
+    NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS: routerNonEnWaitMs,
     ADMIN_USERNAME: process.env.ADMIN_USERNAME || optionalEnvVars.ADMIN_USERNAME,
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || optionalEnvVars.ADMIN_PASSWORD,
     GENERATION_CONCURRENCY: Number(process.env.GENERATION_CONCURRENCY || optionalEnvVars.GENERATION_CONCURRENCY),

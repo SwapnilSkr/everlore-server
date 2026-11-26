@@ -16,6 +16,11 @@ export interface IntentRouterTrace extends IntentSlot {
   started: boolean
   fallback?: 'late' | 'error' | 'malformed' | 'off' | 'gated'
 }
+export interface LateIntentResult {
+  sexual: boolean
+  /** Total time since the router started, not the time after `decide()`. */
+  ms: number
+}
 interface Eligibility { capable: boolean; enabled: boolean; mode?: string }
 interface RouterConfig { switch: 'on' | 'off'; model: string; host: string; fallbackHosts: string[] }
 // The shared builder carries OpenRouter extensions beyond the SDK's types.
@@ -78,8 +83,9 @@ const transport: IntentTransport = async (params, signal) => {
 
 const eligible = (input: Eligibility) => input.capable && input.enabled && input.mode !== NSFW_MODE
 
-/** Starts immediately; the only exposed decision operation is synchronous.
- * Once closed, even a transport that ignores abort cannot change this turn. */
+/** Starts immediately; the routing decision is synchronous. A late answer keeps
+ * running under the transport's own timeout so it can still be read afterwards;
+ * only `cancel()` stops it early. */
 export function startIntentRouter(input: Eligibility & { text: string }, deps: {
   transport?: IntentTransport
   now?: () => number
@@ -110,16 +116,31 @@ export function startIntentRouter(input: Eligibility & { text: string }, deps: {
       } finally { finish() }
     })()
   }
+  const waitUpTo = async (maxMs: number): Promise<void> => {
+    if (!started || slot.settled || closed) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try { await Promise.race([completion, new Promise<void>(resolve => { timer = setTimeout(resolve, maxMs) })]) }
+    finally { if (timer) clearTimeout(timer) }
+  }
   return {
     async wait(maxMs: number): Promise<void> {
-      if (!started || slot.settled || closed) return
-      let timer: ReturnType<typeof setTimeout> | undefined
-      try { await Promise.race([completion, new Promise<void>(resolve => { timer = setTimeout(resolve, maxMs) })]) }
-      finally { if (timer) clearTimeout(timer) }
+      await waitUpTo(maxMs)
+    },
+    /** Waits only for what is left of `budgetMs` counted from the start, so a
+     * caller can hold routing for a total budget without knowing when it began. */
+    async waitSinceStart(budgetMs: number): Promise<void> {
+      await waitUpTo(Math.max(0, budgetMs - (now() - began)))
+    },
+    /** The answer `decide()` left running. Undefined when nothing started, the
+     * turn was cancelled, the wait ran out, or the answer was not usable. */
+    async lateResult(maxMs: number): Promise<LateIntentResult | undefined> {
+      if (!started || closed) return undefined
+      await waitUpTo(maxMs)
+      if (closed || !slot.settled || slot.error || typeof slot.sexual !== 'boolean') return undefined
+      return { sexual: slot.sexual, ms: slot.ms }
     },
     decide(current: Eligibility & { text?: string }): IntentRouterTrace {
       if (snapshot) return snapshot
-      closed = true
       if (started && !slot.settled) slot.ms = now() - began
       let fallback: IntentRouterTrace['fallback']
       if (!started) fallback = config.switch === 'off' ? 'off' : 'gated'
@@ -127,11 +148,32 @@ export function startIntentRouter(input: Eligibility & { text: string }, deps: {
       else if (!slot.settled) fallback = 'late'
       else if (slot.error) fallback = slot.error
       snapshot = { ...slot, started, ...(fallback ? { fallback } : {}) }
-      if (started && !slot.settled) controller.abort()
+      // A late answer is kept, not aborted: the request keeps its transport
+      // timeout so `lateResult` can read it after the prose has streamed. The
+      // frozen snapshot above is what this turn routed on, whatever arrives now.
       return snapshot
     },
     cancel(): void { closed = true; if (started && !slot.settled) controller.abort() },
   }
+}
+
+/** The persisted intent for this turn. A late router answer counts exactly like
+ * an on-time one; a negative one changes nothing (the lexicon's own score and
+ * the borderline judge still stand). */
+export function resolveNsfwIntent(input: {
+  onTimeSexual: boolean
+  lateSexual?: boolean
+  judgedIntent: boolean
+  currentTurnScore: number
+}): { nsfwIntent: boolean; source?: 'direct_explicit' | 'intent_judge' } {
+  const routerSexual = input.onTimeSexual || input.lateSexual === true
+  const nsfwIntent = routerSexual || input.judgedIntent || input.currentTurnScore >= 3
+  const source = routerSexual || input.judgedIntent
+    ? 'intent_judge' as const
+    : input.currentTurnScore >= 3
+      ? 'direct_explicit' as const
+      : undefined
+  return { nsfwIntent, source }
 }
 
 /** A negative answer zeros only this line's vocabulary contribution. The

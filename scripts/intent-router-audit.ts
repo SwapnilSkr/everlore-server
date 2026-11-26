@@ -18,7 +18,8 @@ const processor = readFileSync(child ? process.argv[5] : processorPath, 'utf8')
 const config = { switch: 'on' as 'on' | 'off', model: 'deepseek/deepseek-v4.1-flash-1017', host: 'Relace' }
 const defaults = { capable: true, enabled: true, mode: 'free_play' }
 const env = { NSFW_SAME_TURN_ROUTER: 'on', NSFW_SAME_TURN_ROUTER_MODEL: config.model,
-  NSFW_SAME_TURN_ROUTER_HOST: config.host, NSFW_INTENT_DEFER_ENABLED: true,
+  NSFW_SAME_TURN_ROUTER_HOST: config.host, NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS: 1200,
+  NSFW_INTENT_DEFER_ENABLED: true,
   OPENROUTER_PREFERRED_P90_LATENCY_SECONDS: 3, CHEAP_RANK_MODEL: 'gpt-4o-mini' }
 mock.module('../src/config/env', () => ({ env }))
 mock.module('../src/config/mongo', () => ({ mongoColl: {} }))
@@ -91,13 +92,71 @@ const cases: Record<string, () => void | Promise<void>> = {
   },
   late: async () => {
     const f = fixture('take me'); f.advance(100)
-    const d = f.decide(); assert.equal(d.trace.fallback, 'late'); assert.equal(f.signal.aborted, true); assert.equal(d.trace.ms, 100)
+    const d = f.decide(); assert.equal(d.trace.fallback, 'late'); assert.equal(d.trace.ms, 100)
+    assert.equal(f.signal.aborted, false, 'a late answer is kept, not aborted')
     sameOld(d, oldDecision('take me', [])); assert.equal(d.routerSettled, false)
+    const waiting = f.turn.lateResult(1000)
     await f.settle(response(true), 200)
-    assert.deepEqual(f.decide().trace, d.trace, 'an abort-ignoring transport cannot change the frozen snapshot')
+    assert.deepEqual(await waiting, { sexual: true, ms: 200 })
+    assert.deepEqual(f.decide().trace, d.trace, 'a late answer cannot change the frozen route')
+  },
+  lateIntent: async () => {
+    for (const [raw, expected] of [[response(true), true], [response(false), false]] as const) {
+      const f = fixture('take me'); const d = f.decide()
+      assert.equal(d.sceneClassification, 'sfw', 'the streaming turn keeps the lexicon route')
+      const waiting = f.turn.lateResult(1000); await f.settle(raw, 700)
+      const late = await waiting
+      assert.equal(late?.sexual, expected); assert.equal(late?.ms, 700)
+      const intent = router.resolveNsfwIntent({ onTimeSexual: false, lateSexual: late?.sexual,
+        judgedIntent: false, currentTurnScore: d.currentTurnScore })
+      assert.deepEqual(intent, expected
+        ? { nsfwIntent: true, source: 'intent_judge' }
+        : { nsfwIntent: false, source: undefined })
+      if (!expected) continue
+      const stored = { nsfw_intent: true, nsfw_intent_source: 'intent_judge' }
+      assert.equal(scoreScene('', [stored]).decision, 'sfw', 'one positive is momentum alone, as before')
+      assert.equal(scoreScene('', [stored, stored]).decision, 'nsfw', 'the stored intent routes the next turn')
+    }
+    // Error and malformed answers change nothing.
+    for (const failure of ['error', 'malformed'] as const) {
+      const f = fixture('take me'); f.decide()
+      const waiting = f.turn.lateResult(1000)
+      if (failure === 'error') await f.error(); else await f.settle({})
+      assert.equal(await waiting, undefined)
+    }
+    // An answer past the processor's bound is not read at all.
+    const bound = fixture('take me'); bound.decide()
+    assert.equal(await bound.turn.lateResult(20), undefined)
+    assert.deepEqual(router.resolveNsfwIntent({ onTimeSexual: false, judgedIntent: false, currentTurnScore: 2 }),
+      { nsfwIntent: false, source: undefined })
+  },
+  nonEnglish: async () => {
+    // Portuguese/Spanish: the router's own answer at 1,000 ms is held for and
+    // routes this turn adult, where the English lexicon sees nothing.
+    const native = 'Quero que me toques agora.'
+    assert.equal(scoreScene(native, []).score, 0, 'the fallback lexicon cannot read native text')
+    const f = fixture(native)
+    const waiting = f.turn.waitSinceStart(1200)
+    await f.settle(response(true), 1000)
+    await waiting
+    const d = f.decide(); assert.equal(d.trace.fallback, undefined); assert.equal(d.sceneClassification, 'nsfw')
+    assert.equal(d.trace.sexual, true); assert.equal(d.trace.ms, 1000)
+    // The same timing on an English turn adds no wait, so it falls back late.
+    const english = fixture('Hello.'); english.advance(1000)
+    const late = english.decide(); assert.equal(late.trace.fallback, 'late'); assert.equal(late.sceneClassification, 'sfw')
+    // The budget counts from the router's start, not from the call.
+    const spent = fixture('Olá.'); spent.advance(1500)
+    const startedAt = Date.now(); await spent.turn.waitSinceStart(1200)
+    assert.ok(Date.now() - startedAt < 300, 'an already-spent budget must not wait again')
+    assert.equal(spent.decide().trace.fallback, 'late')
+    // The processor holds routing only for a save whose effective language is
+    // not English, and always on the shared budget.
+    assert.match(processor, /const turnReplyLanguage = effectiveReplyLanguage\(session\.reply_language\)/)
+    assert.match(processor, /if \(turnReplyLanguage\) await intentRouter\.waitSinceStart\(env\.NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS\)/)
   },
   cancel: async () => {
     const f = fixture(); f.turn.cancel(); assert.equal(f.signal.aborted, true)
+    assert.equal(await f.turn.lateResult(1000), undefined)
     await f.settle(response(true)); assert.equal(f.decide().trace.sexual, undefined)
   },
   error: async () => {
@@ -152,8 +211,9 @@ const cases: Record<string, () => void | Promise<void>> = {
     const error = fixture('take me'); await error.error(); assert.equal(error.decide().borderlineForIntent, true)
     const malformed = fixture('take me'); await malformed.settle({}); assert.equal(malformed.decide().borderlineForIntent, true)
     assert.match(processor, /const judgedNsfwIntent = borderlineForIntent \? \(await classifyBorderlineIntent\(classifyText\)\)/)
-    assert.match(processor, /const sameTurnNsfwIntent = routerSettled && sameTurnRouterTrace.sexual === true/)
-    assert.match(processor, /const nsfwIntent = sameTurnNsfwIntent \|\| judgedNsfwIntent \|\| currentTurnScore >= 3/)
+    assert.match(processor, /const sameTurnNsfwIntent = routerSettled && sameTurnRouterTrace\.sexual === true/)
+    assert.match(processor, /const \{ nsfwIntent, source: nsfwIntentSource \} = resolveNsfwIntent\(\{/)
+    assert.match(processor, /onTimeSexual: sameTurnNsfwIntent, lateSexual: lateRouterIntent\?\.sexual,/)
     assert.match(processor, /nsfw_intent_router_source: 'same_turn_router'/)
     // One new positive carries exactly the existing judge's +2 weight.
     assert.equal(scoreScene('', [{ nsfw_intent: true, nsfw_intent_source: 'intent_judge' }]).score, 2)
@@ -194,17 +254,32 @@ const cases: Record<string, () => void | Promise<void>> = {
   },
   source: () => {
     const file = ts.createSourceFile('processor.ts', processor, ts.ScriptTarget.Latest, true)
+    const narrator = processor.indexOf('const narration = await callLLMStreamWithFallback(')
     function visit(node: ts.Node) {
-      if (ts.isAwaitExpression(node)) assert(!/intentRouter|IntentRouter|decideIntentRoute/.test(node.expression.getText(file)), 'narrator must not await router')
+      if (ts.isAwaitExpression(node) && /intentRouter|IntentRouter|decideIntentRoute/.test(node.expression.getText(file))) {
+        const awaited = node.expression.getText(file)
+        if (/^intentRouter\.lateResult\(/.test(awaited)) {
+          assert(node.getStart(file) > narrator, 'the late answer is read after the prose, never before the narrator')
+        } else {
+          assert.equal(awaited, 'intentRouter.waitSinceStart(env.NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS)',
+            'the only other router await is the bounded non-English route hold')
+        }
+      }
       ts.forEachChild(node, visit)
     }
     visit(file)
     const start = processor.indexOf('const intentRouter = startIntentRouter(')
     const live = processor.indexOf('const liveCheckStartedAt')
     const prompt = processor.indexOf('const prompt = buildPrompt(')
+    const languageWait = processor.indexOf('if (turnReplyLanguage) await intentRouter.waitSinceStart(env.NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS)')
     const decision = processor.indexOf('} = decideIntentRoute(')
-    const narrator = processor.indexOf('const narration = await callLLMStreamWithFallback(')
     assert(start > 0 && start < live && prompt < decision && decision < narrator)
+    assert(languageWait > 0 && languageWait < decision, 'the non-English hold precedes the routing decision')
+    assert(processor.indexOf('const turnReplyLanguage = effectiveReplyLanguage(session.reply_language)') < languageWait,
+      'the hold uses the turn\'s own effective language, not a re-derived one')
+    assert.match(processor, /const lateRouterIntent = sameTurnRouterTrace\.started && sameTurnRouterTrace\.fallback === 'late'/)
+    assert.match(processor, /same_turn_router_late: \{ sexual: lateRouterIntent\.sexual, ms: lateRouterIntent\.ms \}/)
+    assert.match(processor, /const LATE_ROUTER_INTENT_WAIT_MS = 3000/)
     assert(!/\bawait\b|Promise\.race|setTimeout|sleep|poll/.test(processor.slice(decision, narrator)))
     assert.match(processor, /proseOnly: true/); assert.match(processor, /temperature: narrationTemperature\(modelId\)/)
     assert.match(processor, /finally \{\s*intentRouter.cancel\(\)/)
@@ -225,7 +300,13 @@ const mutations: Array<[string, string, string, 'router' | 'processor']> = [
   ['yes', "trace.sexual ? 'nsfw'", "trace.sexual ? 'sfw'", 'router'],
   ['no', "scoreScene('', input.recentEvents).decision", "'sfw'", 'router'],
   ['insult', "scoreScene('', input.recentEvents).decision", 'scoreScene(input.text, input.recentEvents).decision', 'router'],
-  ['late', 'if (started && !slot.settled) controller.abort()', 'if (false) controller.abort()', 'router'],
+  ['late', "snapshot = { ...slot, started, ...(fallback ? { fallback } : {}) }",
+    "snapshot = { ...slot, started, ...(fallback ? { fallback } : {}) }; if (started && !slot.settled) controller.abort()", 'router'],
+  ['lateIntent', 'return { sexual: slot.sexual, ms: slot.ms }', 'return undefined', 'router'],
+  ['lateIntent', "if (closed || !slot.settled || slot.error || typeof slot.sexual !== 'boolean') return undefined", 'if (closed) return undefined', 'router'],
+  ['lateIntent', 'const routerSexual = input.onTimeSexual || input.lateSexual === true', 'const routerSexual = input.onTimeSexual', 'router'],
+  ['nonEnglish', 'await waitUpTo(Math.max(0, budgetMs - (now() - began)))', 'await waitUpTo(budgetMs)', 'router'],
+  ['nonEnglish', 'if (turnReplyLanguage) await intentRouter.waitSinceStart(', 'if (true) await intentRouter.waitSinceStart(', 'processor'],
   ['cancel', 'cancel(): void { closed = true; if (started && !slot.settled) controller.abort() }', 'cancel(): void { closed = true }', 'router'],
   ['error', "error instanceof MalformedIntent ? 'malformed' : 'error'", "'malformed'", 'router'],
   ['malformed', "choice?.finish_reason !== 'stop'", 'false', 'router'],

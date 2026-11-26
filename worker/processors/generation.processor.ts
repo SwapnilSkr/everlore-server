@@ -34,7 +34,7 @@ import { instanceService } from '../../src/services/instance.service'
 import { liveInstanceExists } from '../../src/utils/live-instance'
 import { generationLockKey, finishGenerationTurn, markGenerationStreamEnd, waitForPriorGeneration } from '../../src/utils/generation-lock'
 import { classifyBorderlineIntent } from '../lib/nsfw-classifier'
-import { startIntentRouter, decideIntentRoute } from '../lib/intent-router'
+import { startIntentRouter, decideIntentRoute, resolveNsfwIntent } from '../lib/intent-router'
 import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
 import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
@@ -437,6 +437,10 @@ function worldActionDirective(action: PlayerWorldAction): string {
 }
 /** Min turns between fate-seeded tick beats — keeps old promises from nagging. */
 const FATE_SEED_COOLDOWN_TURNS = 8
+/** How long the tail may hold this turn's persisted intent for a same-turn
+ *  router answer that was still in flight when the turn routed. Runs after the
+ *  prose has streamed; the request itself is cut at the transport's 6 s. */
+const LATE_ROUTER_INTENT_WAIT_MS = 3000
 
 
 export async function generationProcessor(job: Job): Promise<{ eventId: string; sequence: number } | void> {
@@ -1195,6 +1199,11 @@ ${
   let streamFailure: unknown = null
   let fallbackAttempts: Array<{ from: string; to: string }> = []
   let narrationRoute: { provider?: string; hedged: boolean; hedgeWinner?: 'primary' | 'hedge' } = { hedged: false }
+  // The fallback lexicon is English vocabulary, so it scores native Portuguese
+  // and Spanish at zero: a non-English save holds routing a little longer for the
+  // router's own answer instead of losing the turn to that zero. English saves
+  // take the byte-identical path with no wait.
+  if (turnReplyLanguage) await intentRouter.waitSinceStart(env.NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS)
   const routingDecidedAt = Date.now()
   const { trace: sameTurnRouterTrace, routerSettled, sceneClassification,
     currentTurnScore, borderlineForIntent } = decideIntentRoute({
@@ -3320,13 +3329,22 @@ ${
   const judgedNsfwIntent = borderlineForIntent ? (await classifyBorderlineIntent(classifyText)) === 'nsfw' : false
   const contentIntentMs =
     contentIntentStartedAt === undefined ? undefined : Date.now() - contentIntentStartedAt
+  // The router was still answering when this turn routed. The request kept
+  // running, so its answer is read here instead of being thrown away: a late
+  // "yes" still persists this turn's intent, which is what routes the NEXT turn.
+  const lateRouterIntent = sameTurnRouterTrace.started && sameTurnRouterTrace.fallback === 'late'
+    ? await intentRouter.lateResult(LATE_ROUTER_INTENT_WAIT_MS)
+    : undefined
+  // Logged apart from `same_turn_router`: the trace above is what this turn
+  // routed on and never changes, this is what the router finally said.
+  const lateRouterLogFields = lateRouterIntent
+    ? { same_turn_router_late: { sexual: lateRouterIntent.sexual, ms: lateRouterIntent.ms } }
+    : {}
   const sameTurnNsfwIntent = routerSettled && sameTurnRouterTrace.sexual === true
-  const nsfwIntent = sameTurnNsfwIntent || judgedNsfwIntent || currentTurnScore >= 3
-  const nsfwIntentSource: 'direct_explicit' | 'intent_judge' | undefined = sameTurnNsfwIntent || judgedNsfwIntent
-    ? 'intent_judge'
-    : currentTurnScore >= 3
-      ? 'direct_explicit'
-      : undefined
+  const { nsfwIntent, source: nsfwIntentSource } = resolveNsfwIntent({
+    onTimeSexual: sameTurnNsfwIntent, lateSexual: lateRouterIntent?.sexual,
+    judgedIntent: judgedNsfwIntent, currentTurnScore,
+  })
 
   // Ledger this turn's location changes (anchor + containment + state + enduring
   // facts), authority-tagged, so the place graph is a rebuildable projection like
@@ -3910,6 +3928,7 @@ ${
         scene_classification: sceneClassification,
         nsfw_path: isNsfwTurn,
         ...intentRouterLogFields,
+        ...lateRouterLogFields,
         model_used: modelId,
         ...(modelId !== requestedModelId ? { requested_model: requestedModelId } : {}),
         ...(fallbackAttempts.length ? { fallback_attempts: fallbackAttempts } : {}),

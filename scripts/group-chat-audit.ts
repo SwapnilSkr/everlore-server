@@ -1629,7 +1629,10 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // rl-g-fix-2 decides the player-authored protagonist from the world's
   // `is_sentient` (the role test was removed); the handoff still did not move,
   // so the pin is re-hashed the same way.
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '036cea596ceaf460d333663217375abceec8b121e95221395373987ac7390056')
+  // router-late keeps a late same-turn router answer for the next turn and holds
+  // routing a little longer on a non-English save; the handoff still did not
+  // move, so the pin is re-hashed the same way.
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), 'b57d5ff093c640a444736e97350eedcf5d1a7d7ca0e2ebe71b4dabb6f4542254')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —
