@@ -513,7 +513,7 @@ const mutations: Mutation[] = [
   { name: 'token trim destroys earlier messages', check: 'sentence trimming', edits: [[lines, "&& source === input.at(-1)", '']] },
   { name: 'skip processor trim', check: 'processor sentence trim', edits: [[lines, "line.text = trimReply(withoutTag, options.finishReason === 'length' && source === input.at(-1), !!options.addressed || !!options.sceneMembers?.includes(member.id))", 'line.text = clean']] },
   { name: 'finish reason lost at reply', check: 'processor sentence trim', edits: [[reply, 'finishReason: response.finishReason, ', '']] },
-  { name: 'finish reason lost at transport', check: 'writer finish reason exposed', edits: [['src/ai/client.ts', 'req.onFinishReason?.(response.choices?.[0]?.finish_reason)', 'req.onFinishReason?.(undefined)']] },
+  { name: 'finish reason lost at transport', check: 'writer finish reason exposed', edits: [['src/ai/client.ts', 'req.onFinishReason?.(used.finishReason)', 'req.onFinishReason?.(undefined)']] },
   { name: 'finish reason lost at fallback result', check: 'writer finish reason exposed', edits: [['src/ai/client.ts', 'return { content, model, fallbackAttempts, finishReason }', 'return { content, model, fallbackAttempts }']] },
 
   { name: 'addressed seed history leak', check: 'addressed history keeps', edits: [[worker, "recent.filter(event => event.data.model_used !== 'seed')", 'recent']] },
@@ -907,7 +907,12 @@ const artMutations: Mutation[] = [
   { name: 'art preview member thumb dropped', check: artPreview, edits: [[groupPublic,
     '      ...(entry.role ? { role: entry.role } : {}),\n      ...(face ? { portrait_url: face.url } : {}),\n      ...(face?.thumb ? { portrait_thumb_url: face.thumb } : {}),',
     '      ...(entry.role ? { role: entry.role } : {}),\n      ...(face ? { portrait_url: face.url } : {}),']] },
-  { name: 'art preview cover thumb dropped', check: artPreview, edits: [[groupPublic, '...(template.image_thumb_url ? { image_thumb_url: template.image_thumb_url } : {}),', '...{},']] },
+  // The allow-list supplies the cover thumb for every public template; the group
+  // spread is a second writer, so the bite removes the key from the list.
+  { name: 'art preview cover thumb dropped', check: artPreview, edits: [
+    ['src/utils/template-public-projection.ts', "'image_url', 'image_thumb_url',", "'image_url',"],
+    [groupPublic, '...(template.image_thumb_url ? { image_thumb_url: template.image_thumb_url } : {}),', '...{},'],
+  ] },
   { name: 'art chats member thumb dropped', check: artChatsThumbs, edits: [[groupChats, '...(face?.thumb ? { portrait_thumb_url: face.thumb } : {}),', '...{},']] },
   { name: 'art chats cover thumb dropped', check: artChatsThumbs, edits: [[groupChats, '...(source.template?.image_thumb_url ? { image_thumb_url: source.template.image_thumb_url } : {}),', '...{},']] },
   { name: 'art portrait thumb plan omitted', check: artThumbPlan, edits: [[ingestPortraits, "if (thumbAssetKey && current.thumb_key !== thumbAssetKey) return { kind: 'thumb', thumbKey: thumbAssetKey }", "if (false) return { kind: 'thumb', thumbKey: thumbAssetKey }"]] },
@@ -1180,7 +1185,7 @@ const ideaMutations: Mutation[] = [
     [ideaLib, "responseFormat: { type: 'json_schema', json_schema: { name: 'group_reply_ideas', strict: true } },\n", '']] },
   { name: 'ideas adult writer given the schema', check: ideaRequest, edits: [[ideaLib, '...(input.adult ? {} : {', '...(false ? {} : {']] },
   { name: 'ideas adult writer given a reasoning switch', check: ideaRequest, edits: [[ideaLib, '...(input.adult ? {} : {', '...(input.adult ? { noReasoning: true } : {']] },
-  { name: 'ideas transport ignores the no-reasoning switch', check: ideaRequest, edits: [['src/ai/client.ts', '...((stream && prose) || req.noReasoning) &&', '...(stream && prose) &&']] },
+  { name: 'ideas transport ignores the no-reasoning switch', check: ideaRequest, edits: [['src/ai/client.ts', "...((stream && prose) || (req.noReasoning && !model.startsWith('openai/'))) &&", '...(stream && prose) &&']] },
   { name: 'ideas prose or fenced reply dropped', check: ideaBadOutput, edits: [[ideaLib, "const object = raw.slice(raw.indexOf('{'), raw.lastIndexOf('}') + 1)", 'const object = raw']] },
   { name: 'ideas unparseable reply invents an idea', check: ideaBadOutput, edits: [[ideaLib, 'try { parsed = JSON.parse(object) } catch { return [] }', "try { parsed = JSON.parse(object) } catch { return ['An invented idea.'] }"]] },
   { name: 'ideas length cap removed', check: ideaBadOutput, edits: [[ideaLib, 'if (length < 1 || length > GROUP_IDEA_MAX_CHARS) continue', 'if (length < 1) continue']] },

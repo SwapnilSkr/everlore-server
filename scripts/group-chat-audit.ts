@@ -4912,8 +4912,9 @@ await check('art non-group template keeps its exact public shape', async () => {
   const { seed_cast: _cast, ...world } = { ...groupTemplate(), kind: 'world' as const }
   assert.deepEqual(publicGroupTemplate(world), publicTemplate(world))
   assert(!('members' in publicGroupTemplate(world)))
-  // A normal world never gains the group-only small cover.
-  assert(!('image_thumb_url' in publicGroupTemplate({ ...world, image_thumb_url: coverThumb })))
+  // The cover's small variant reaches every public template, group or not, so
+  // list cards never download the full cover (2026-11-26).
+  assert.equal(publicGroupTemplate({ ...world, image_thumb_url: coverThumb }).image_thumb_url, coverThumb)
 })
 
 await check('art small variants reach the chats row and are omitted when absent', async () => {

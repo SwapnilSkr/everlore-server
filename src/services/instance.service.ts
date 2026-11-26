@@ -7,7 +7,7 @@ import { ObjectId } from 'mongodb'
 import { mongoColl } from '../config/mongo'
 import { COLLECTIONS } from '../models/collections'
 import type { WorldInstanceDoc } from '../models/world-instance.model'
-import type { WorldTemplateDoc, WorldTemplateSummaryDoc } from '../models/world-template.model'
+import type { WorldTemplateDoc } from '../models/world-template.model'
 import type { WorldEventDoc } from '../models/world-event.model'
 import { effectivePlayerGender } from '../models/player-gender'
 import { getRedisClient } from '../config/redis'
@@ -23,6 +23,11 @@ import { isValidModeKey, DEFAULT_CHAT_MODE } from '../utils/chat-modes'
 import { DEFAULT_NARRATION_TONE, isValidNarrationTone } from '../utils/narration-tones'
 import { materializeTemplateCast } from './template-cast.service'
 import { isWorldListed } from '../utils/world-review'
+import {
+  TEMPLATE_SUMMARY_PROJECTION,
+  templateSummary,
+  type InstanceTemplateSummary,
+} from '../utils/template-public-projection'
 import { generationLockKey } from '../utils/generation-lock'
 import { publishSpokenLines } from './media/events'
 import { purgeMedia } from './media/deletion'
@@ -47,7 +52,7 @@ const personas = () => mongoColl.personas()
 const events = () => mongoColl.events()
 
 export type InstanceListRow = WorldInstanceDoc & {
-  template: WorldTemplateSummaryDoc | null
+  template: InstanceTemplateSummary | null
 }
 
 export const instanceService = {
@@ -398,7 +403,7 @@ export const instanceService = {
     playerId: string,
     templateId: string,
   ): Promise<{
-    template: WorldTemplateSummaryDoc | null
+    template: InstanceTemplateSummary | null
     stories: Array<
       InstanceListRow & {
         preview: string
@@ -423,8 +428,7 @@ export const instanceService = {
       if (!template || (idString(template.creator_id) !== playerId && !isWorldListed(template))) {
         return { template: null, stories: [] }
       }
-      const { _id, title, is_sentient, description, kind, image_url } = template
-      return { template: { _id, title, is_sentient, description, kind, image_url }, stories: [] }
+      return { template: templateSummary(template), stories: [] }
     }
 
     const instanceIds = instances.map((i) => i._id)
@@ -471,17 +475,10 @@ export const instanceService = {
 
     const templateRows = (await worldTemplates()
       .find({ _id: templateOid })
-      .project({
-        _id: 1,
-        title: 1,
-        is_sentient: 1,
-        description: 1,
-        kind: 1,
-        image_url: 1,
-      })
+      .project(TEMPLATE_SUMMARY_PROJECTION)
       .limit(1)
-      .toArray()) as WorldTemplateSummaryDoc[]
-    const template = templateRows[0] || null
+      .toArray()) as InstanceTemplateSummary[]
+    const template = templateRows[0] ? templateSummary(templateRows[0]) : null
 
     const templateMap = template ? new Map([[idString(template._id), template]]) : new Map()
 
@@ -513,17 +510,10 @@ export const instanceService = {
     const templateIds = [...new Set(instances.map((i) => i.template_id))]
     const templates = (await worldTemplates()
       .find({ _id: { $in: templateIds } })
-      .project({
-        _id: 1,
-        title: 1,
-        is_sentient: 1,
-        description: 1,
-        kind: 1,
-        image_url: 1,
-      })
-      .toArray()) as WorldTemplateSummaryDoc[]
+      .project(TEMPLATE_SUMMARY_PROJECTION)
+      .toArray()) as InstanceTemplateSummary[]
 
-    const templateMap = new Map(templates.map((t) => [idString(t._id), t]))
+    const templateMap = new Map(templates.map((t) => [idString(t._id), templateSummary(t)]))
 
     return instances.map((inst) => ({
       ...(inst.group_state ? publicGroupData(inst) : inst),
@@ -561,7 +551,7 @@ export const instanceService = {
           from: COLLECTIONS.world_templates,
           localField: '_id',
           foreignField: '_id',
-          pipeline: [{ $project: { _id: 1, title: 1, is_sentient: 1, description: 1, kind: 1, image_url: 1 } }],
+          pipeline: [{ $project: { ...TEMPLATE_SUMMARY_PROJECTION } }],
           as: 'template',
         },
       },

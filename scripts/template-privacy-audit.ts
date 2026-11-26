@@ -9,7 +9,7 @@ import { HttpError } from '../src/utils/http-error'
 // An independent contract: importing the implementation's keys would hide an
 // accidental allow-list expansion from this audit.
 const expectedPublicKeys = [
-  '_id', 'slug', 'title', 'description', 'kind', 'image_url', 'global_lore',
+  '_id', 'slug', 'title', 'description', 'kind', 'image_url', 'image_thumb_url', 'global_lore',
   'base_stats_template', 'opening_line', 'narrative_style', 'scene_tags',
   'is_nsfw_capable', 'is_sentient', 'is_published', 'creator_id', 'version',
   'created_at', 'updated_at', 'visibility', 'review_status',
@@ -20,6 +20,7 @@ const fixture = {
   creator_id: new ObjectId('000000000000000000000002'),
   slug: 'fixture-world', title: 'Fixture World', description: 'A public description.',
   kind: 'world', image_url: 'https://example.invalid/cover.webp',
+  image_thumb_url: 'https://example.invalid/cover.w540.webp',
   global_lore: 'A public world guide.',
   base_stats_template: { resolve: { default: 5, min: 0, max: 10, description: 'Resolve' } },
   opening_line: 'The story begins.', narrative_style: 'fantasy', scene_tags: ['arrival'],
@@ -169,6 +170,12 @@ await check('(e) verified admin is allowed full authoring access', () => {
 })
 await check('(f) an unknown future field is absent publicly', () => {
   assert.equal(Object.hasOwn(publicTemplate(fixture), 'future_private_field'), false)
+})
+await check('the cover thumbnail passes through and is absent when there is none', () => {
+  assert.equal(publicTemplate(fixture).image_thumb_url, fixture.image_thumb_url)
+  const unthumbed: Partial<typeof fixture> = { ...fixture }
+  delete unthumbed.image_thumb_url
+  assert.equal(Object.hasOwn(publicTemplate(unthumbed), 'image_thumb_url'), false)
 })
 await check('(g) owner mine/list retains seed_prompt, seed_cast and every field', async () => {
   const result = await templateController.listMine({ user: owner, query: {} })
