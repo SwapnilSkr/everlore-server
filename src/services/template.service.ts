@@ -34,6 +34,85 @@ import {
 
 const worldTemplates = () => mongoColl.worldTemplates()
 const users = () => mongoColl.users()
+const worldInstances = () => mongoColl.worldInstances()
+
+/** FNV-1a over the seed string; a small, stable hash for the shuffle below. */
+function hashSeed(seed: string): number {
+  let hash = 0x811c9dc5
+  for (let i = 0; i < seed.length; i++) {
+    hash ^= seed.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return hash >>> 0
+}
+
+/** mulberry32: one 32-bit seed in, one uniform double out. No dependency. */
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0
+    let t = state
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+
+/** Fisher-Yates over a copy, so the caller's rows are never mutated. */
+function seededShuffle<T>(items: readonly T[], rng: () => number): T[] {
+  const shuffled = [...items]
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1))
+    ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+  }
+  return shuffled
+}
+
+/**
+ * The starter-choice order. One per shelf first, in a seeded shelf order, then
+ * the leftovers, so the cards differ from each other whenever the shelves
+ * allow it. The starting set is sorted by id, so the answer depends only on the
+ * rows, the player and the exclude list — never on the order Mongo returned
+ * them in. Genre is authored data; a missing one is its own shelf.
+ */
+function orderStarterChoices(
+  candidates: readonly WorldTemplateDoc[],
+  userId: string,
+  excludeIds: readonly string[],
+  count: number,
+): WorldTemplateDoc[] {
+  if (count <= 0 || candidates.length === 0) return []
+  const rng = mulberry32(hashSeed(`${userId}|${[...excludeIds].sort().join(',')}`))
+  const stable = [...candidates].sort((a, b) => {
+    const left = idString(a._id)
+    const right = idString(b._id)
+    return left < right ? -1 : left > right ? 1 : 0
+  })
+
+  const shelves = new Map<string | undefined, WorldTemplateDoc[]>()
+  for (const template of stable) {
+    const shelf = template.genre
+    const group = shelves.get(shelf)
+    if (group) group.push(template)
+    else shelves.set(shelf, [template])
+  }
+  const shelfOrder = seededShuffle([...shelves.keys()], rng)
+  for (const shelf of shelfOrder) shelves.set(shelf, seededShuffle(shelves.get(shelf)!, rng))
+
+  const picked: WorldTemplateDoc[] = []
+  for (const shelf of shelfOrder) {
+    if (picked.length >= count) break
+    picked.push(shelves.get(shelf)![0])
+  }
+  if (picked.length < count) {
+    const remaining = shelfOrder.flatMap((shelf) => shelves.get(shelf)!.slice(1))
+    for (const template of seededShuffle(remaining, rng)) {
+      if (picked.length >= count) break
+      picked.push(template)
+    }
+  }
+  return picked
+}
 
 /** Explore options beyond paging and search; mirrors the query schema. */
 export interface TemplateListFilters {
@@ -404,6 +483,42 @@ export const templateService = {
       template,
     })).sort(forYouComparator(interests))
     return ranked[0]?.template ?? null
+  },
+
+  /**
+   * The four (or `count`) starters a new player picks from: the same discovery
+   * gate as `starter()`, minus anything already shown and anything this player
+   * already has a save of, one per shelf where possible, in a stable per-player
+   * shuffle. One extra read, `template_id` only.
+   */
+  async starterChoices(
+    userId: string,
+    count: number,
+    excludeIds: readonly string[],
+  ): Promise<WorldTemplateDoc[]> {
+    const filter: Record<string, unknown> = {
+      is_published: true,
+      ...(await moderationService.discoveryFilter(userId)),
+      starter: true as const,
+      kind: { $ne: 'group' as const },
+    }
+    const excludeOids = excludeIds.map((id) => parseObjectId(id))
+    if (excludeOids.length > 0) {
+      // The discovery filter already excludes blocked templates with `_id.$nin`;
+      // union the two so an exclude never discards a player's blocks.
+      const blocked = (filter._id as { $nin?: ObjectId[] } | undefined)?.$nin ?? []
+      filter._id = { $nin: [...blocked, ...excludeOids] }
+    }
+
+    const [rows, saved] = await Promise.all([
+      worldTemplates().find(filter).toArray(),
+      worldInstances()
+        .find({ player_id: parseObjectId(userId) }, { projection: { template_id: 1 } })
+        .toArray(),
+    ])
+    const savedIds = new Set(saved.map((instance) => idString(instance.template_id)))
+    const candidates = rows.filter((template) => !savedIds.has(idString(template._id)))
+    return orderStarterChoices(candidates, userId, excludeIds, count)
   },
 
   async listPublished(

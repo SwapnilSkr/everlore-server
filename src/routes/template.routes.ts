@@ -37,6 +37,34 @@ function assertListQuery(query: unknown) {
   if (!Value.Check(ListQueryValues, query)) throw new HttpError(400, VALIDATION_MESSAGE)
 }
 
+const STARTER_CHOICES_DEFAULT = 4
+const STARTER_CHOICES_MAX = 8
+const TEMPLATE_ID_PATTERN = /^[a-fA-F0-9]{24}$/
+
+/** `count` is a whole number 1..8; absent means four, anything else is a 400. */
+function parseStarterCount(raw: unknown): number {
+  if (raw === undefined) return STARTER_CHOICES_DEFAULT
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw)) {
+    throw new HttpError(400, 'count must be a whole number from 1 to 8.')
+  }
+  const value = Number(raw)
+  if (value < 1 || value > STARTER_CHOICES_MAX) {
+    throw new HttpError(400, 'count must be a whole number from 1 to 8.')
+  }
+  return value
+}
+
+/** `exclude` is a comma-separated list of template ids; a bad id is a 400. */
+function parseStarterExclude(raw: unknown): string[] {
+  if (raw === undefined) return []
+  if (typeof raw !== 'string') throw new HttpError(400, 'exclude must be a comma-separated list of template ids.')
+  const ids = raw.split(',').map((id) => id.trim()).filter(Boolean)
+  if (ids.some((id) => !TEMPLATE_ID_PATTERN.test(id))) {
+    throw new HttpError(400, 'exclude must be a comma-separated list of template ids.')
+  }
+  return [...new Set(ids.map((id) => id.toLowerCase()))]
+}
+
 export const templateRoutes = new Elysia({ prefix: '/templates' })
   .use(authPlugin)
 
@@ -52,6 +80,16 @@ export const templateRoutes = new Elysia({ prefix: '/templates' })
     if (!user) throw new HttpError(401, 'Sign in to continue.')
     const template = await templateService.starter(user.id)
     return { template: template ? publicTemplate(template) : null }
+  })
+
+  // The four cards a new player picks from. Declared before /:id, like /starter,
+  // or the path would be read as an id.
+  .get('/starter-choices', async ({ user, query }) => {
+    if (!user) throw new HttpError(401, 'Sign in to continue.')
+    const count = parseStarterCount(query.count)
+    const exclude = parseStarterExclude(query.exclude)
+    const templates = await templateService.starterChoices(user.id, count, exclude)
+    return { templates: templates.map(publicTemplate) }
   })
 
   .get('/mine/list', (ctx) => templateController.listMine(ctx), { query: MyTemplateQueryParams })

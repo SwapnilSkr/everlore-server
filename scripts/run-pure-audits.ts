@@ -21,6 +21,7 @@ const PURE_AUDITS = [
   'audit:review-access',
   'audit:world-review',
   'audit:genre',
+  'audit:starter-choices',
   'audit:template-privacy',
   'audit:choice-grounding',
   'audit:movement',

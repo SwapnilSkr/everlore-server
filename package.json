@@ -143,6 +143,7 @@
     "gen:player-avatars": "bun run scripts/gen-player-avatars.ts",
     "seed:catalog": "bun --no-env-file run scripts/seed-catalog.ts",
     "audit:starter": "bun --no-env-file run scripts/starter-audit.ts",
+    "audit:starter-choices": "bun --no-env-file run scripts/starter-choices-audit.ts",
     "audit:seed-catalog": "bun --no-env-file run scripts/seed-catalog-audit.ts",
     "seed:default-cover": "bun run scripts/seed-default-cover.ts",
     "clean:queue-jobs": "bun run scripts/clean-redis-jobs.ts",
