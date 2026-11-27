@@ -61,6 +61,7 @@ const FRAME = /\btype:\s*'(generation_[a-z_]+|choices_ready|milestone_unlocked)'
 const CATALOGUE: Record<string, string[]> = {
   [PROCESSOR]: [
     'choices_ready',
+    'choices_ready',
     'generation_complete',
     'generation_delta',
     'generation_reset',
@@ -153,7 +154,7 @@ await check('every per-turn frame carries jobId — the same expression as the l
     ...processorFrames.map((frame) => ({ ...frame, file: PROCESSOR })),
     ...workerFrames.map((frame) => ({ ...frame, file: WORKER })),
   ]
-  assert.equal(all.length, 11, 'fixture: every per-turn publish site must be found')
+  assert.equal(all.length, 12, 'fixture: every per-turn publish site must be found')
   for (const frame of all) {
     const where = `${frame.file}:${frame.line} ${frame.type}`
     assert.ok(

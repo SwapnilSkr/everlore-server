@@ -61,16 +61,20 @@ const CALL_MS: Record<string, number> = {
 }
 const calls: Array<{ purpose: string; ms: number }> = []
 let failPurpose: string | null = null
+// A real choices answer, so the primary attempt settles and does not add its one
+// retry to the call count this audit pins (the retry is covered by
+// `choice-early-audit`).
+const CHOICE_METADATA_TEXT = JSON.stringify({ choices: [{ label: 'Wait', kind: 'act', send: '*I wait.*' }], milestone: null })
 
 mock.module('../src/ai', () => ({
-  AI_MODELS: { metadata: 'audit-metadata' },
+  AI_MODELS: { metadata: 'audit-metadata', choices: 'audit-choices' },
   callLLM: async (opts: { purpose?: string }) => {
     const purpose = String(opts.purpose || '')
     const ms = CALL_MS[purpose] ?? 0
     calls.push({ purpose, ms })
     await Bun.sleep(ms)
     if (purpose === failPurpose) throw new Error(`${purpose} failed`)
-    return '{}'
+    return purpose === 'choice_metadata' ? CHOICE_METADATA_TEXT : '{}'
   },
 }))
 

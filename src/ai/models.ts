@@ -18,6 +18,7 @@ import { env } from '../config/env'
  *  narrationSfw         deepseek/deepseek-v4.1-flash-1017 yes    OpenRouter NARRATION_SFW_MODEL
  *  narrationNsfw        cognitivecomputations/dolphin-mistral-24b-venice-edition yes OpenRouter NARRATION_NSFW_MODEL
  *  metadata             gpt-4o-mini                  no         OpenRouter MODEL_METADATA
+ *  choices              deepseek/deepseek-v4.1-flash-1017 no     OpenRouter MODEL_CHOICES
  *  memoryCuration       gpt-4o-mini                  no         OpenRouter MODEL_MEMORY_CURATION
  *  sceneSummary         gpt-4o-mini                  no         OpenRouter MODEL_SCENE_SUMMARY
  *  codexExtraction      gpt-4o-mini                  no         OpenRouter MODEL_CODEX_EXTRACTION
@@ -53,6 +54,9 @@ export const AI_MODELS = {
 
   /** Derives stat/flag mutations, scene tag, and tone from finished prose (NSFW path). */
   metadata: process.env.MODEL_METADATA || 'gpt-4o-mini',
+
+  /** Writes the tap-to-play buttons. Fast and cheap; one retry goes to `metadata`. */
+  choices: env.MODEL_CHOICES,
 
   /** Extracts long-term memories from a completed turn. */
   memoryCuration: process.env.MODEL_MEMORY_CURATION || 'gpt-4o-mini',

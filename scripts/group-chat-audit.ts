@@ -1632,7 +1632,10 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // router-late keeps a late same-turn router answer for the next turn and holds
   // routing a little longer on a non-English save; the handoff still did not
   // move, so the pin is re-hashed the same way.
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), 'b57d5ff093c640a444736e97350eedcf5d1a7d7ca0e2ebe71b4dabb6f4542254')
+  // buttons-fast split the metadata pair into the choice and witness halves and
+  // hoisted the choice audit/publish before the join; the group-only handoff did
+  // not move, so the pin is re-hashed the same way.
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '9f1ff2c952c951f147aa6123c26a3ce1a96adee1d8ff1338d0b6c27a85056147')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —

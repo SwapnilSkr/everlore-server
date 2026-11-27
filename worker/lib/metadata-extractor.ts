@@ -320,7 +320,8 @@ async function withMissingChoiceCopies(
   const formLine = choiceLabelForm ? ` Every label_local uses one form: ${choiceLabelForm}.` : ''
   try {
     const answer = await invoke({
-      model: AI_MODELS.metadata,
+      model: AI_MODELS.choices,
+      noReasoning: true,
       purpose: 'choice_translation',
       messages: [
         {
@@ -475,6 +476,8 @@ export type MetadataOpts = {
   onStage?: (stage: 'scene_witness' | 'choice_metadata' | 'beat_ledger', ms: number) => void
   onChoiceFirstToken?: (ms: number, winner: 'primary' | 'hedge') => void
   onChoiceHedge?: () => void
+  /** Which model produced the kept buttons; logged as `choice_model`. */
+  onChoiceModel?: (model: string) => void
   /** Raw player-authored turn. The witness uses this to identify actual travel
    * intent; it never treats narration alone as player authority. */
   playerInput?: string | null
@@ -1005,65 +1008,76 @@ export async function extractChoiceMetadata(
   const startedAt = Date.now()
   const choicePromise = (async () => {
     try {
-      const choiceNarrative = language
-        ? language.narrative
-        : typeof narrative === 'string' ? narrative : await narrative
-      const raw = await invoke({
-        model: AI_MODELS.metadata,
-        purpose: 'choice_metadata',
-        firstTokenHedge: {
-          delayMs: env.CHOICE_HEDGE_MS,
-          lostPurpose: 'choice_metadata_hedge_lost',
-          onHedge: opts?.onChoiceHedge,
-          onFirstToken: (winner) => opts?.onChoiceFirstToken?.(Date.now() - startedAt, winner),
-        },
-        messages: [
-          { role: 'system', content: choicesSystem },
-          { role: 'user', content: choiceNarrative },
-        ],
-        temperature: 0.2,
-        // The beat ledger adds a handful of short semantic fields to this
-        // existing post-stream pass. It never sits on the narrator's first-token
-        // path, but leave enough room that a valid ledger cannot crowd out the
-        // core choices/state metadata. The paired (non-English) variant carries
-        // two more short fields per choice.
-        maxTokens: language ? 900 : 450,
-        responseSchema: language
-          ? split ? CHOICES_ONLY_SCHEMA_EN : CHOICE_META_SCHEMA_EN
-          : split ? CHOICES_ONLY_SCHEMA : CHOICE_META_SCHEMA,
-      })
-      opts?.onRaw?.('choice_metadata', raw)
-      let v = validateHalf(raw, language ? { choiceLanguage: true } : undefined)
-      if (language && v.choices.length < CHOICE_PAIR_FLOOR) {
-        v = validateHalf(await withMissingChoiceCopies(raw, language.name, invoke), { choiceLanguage: true })
+      const askChoices = async (model: string, noReasoning: boolean): Promise<SceneMetadata> => {
+        const choiceNarrative = language
+          ? language.narrative
+          : typeof narrative === 'string' ? narrative : await narrative
+        const raw = await invoke({
+          model,
+          ...(noReasoning ? { noReasoning: true } : {}),
+          purpose: 'choice_metadata',
+          firstTokenHedge: {
+            delayMs: env.CHOICE_HEDGE_MS,
+            lostPurpose: 'choice_metadata_hedge_lost',
+            onHedge: opts?.onChoiceHedge,
+            onFirstToken: (winner) => opts?.onChoiceFirstToken?.(Date.now() - startedAt, winner),
+          },
+          messages: [
+            { role: 'system', content: choicesSystem },
+            { role: 'user', content: choiceNarrative },
+          ],
+          temperature: 0.2,
+          // The beat ledger adds a handful of short semantic fields to this
+          // existing post-stream pass. It never sits on the narrator's first-token
+          // path, but leave enough room that a valid ledger cannot crowd out the
+          // core choices/state metadata. The paired (non-English) variant carries
+          // two more short fields per choice.
+          maxTokens: language ? 900 : 450,
+          responseSchema: language
+            ? split ? CHOICES_ONLY_SCHEMA_EN : CHOICE_META_SCHEMA_EN
+            : split ? CHOICES_ONLY_SCHEMA : CHOICE_META_SCHEMA,
+        })
+        opts?.onRaw?.('choice_metadata', raw)
+        let v = validateHalf(raw, language ? { choiceLanguage: true } : undefined)
+        if (language && v.choices.length < CHOICE_PAIR_FLOOR) {
+          v = validateHalf(await withMissingChoiceCopies(raw, language.name, invoke), { choiceLanguage: true })
+        }
+        const nativeChoices = v.choices || []
+        const englishChoices = language ? (v.choices_en || []) : undefined
+        // Drop repeats on the native side (labels and the player's own line) and,
+        // on a non-English turn, on the English pair against the known English
+        // line — keeping the two lists index-aligned through the same order.
+        const nativePlayerLine = language ? language.playerInput : opts?.playerInput
+        const keptOrder = keptChoiceIndices(
+          nativeChoices,
+          englishChoices,
+          opts?.recentChoiceLabels || [],
+          CHOICE_PAIR_FLOOR,
+          nativePlayerLine,
+          language ? opts?.playerInputEnglish : undefined,
+        )
+        return {
+          ...WITNESS_FALLBACK,
+          state_mutations: v.state_mutations,
+          flag_mutations: v.flag_mutations,
+          scene_tag: v.scene_tag,
+          emotional_tone: v.emotional_tone,
+          beat_ledger: v.beat_ledger,
+          choices: keptOrder.map((index) => nativeChoices[index]),
+          ...(englishChoices === undefined
+            ? {}
+            : { choices_en: keptOrder.map((index) => englishChoices[index]) }),
+          milestone: v.milestone,
+        }
       }
-      const nativeChoices = v.choices || []
-      const englishChoices = language ? (v.choices_en || []) : undefined
-      // Drop repeats on the native side (labels and the player's own line) and,
-      // on a non-English turn, on the English pair against the known English
-      // line — keeping the two lists index-aligned through the same order.
-      const nativePlayerLine = language ? language.playerInput : opts?.playerInput
-      const keptOrder = keptChoiceIndices(
-        nativeChoices,
-        englishChoices,
-        opts?.recentChoiceLabels || [],
-        CHOICE_PAIR_FLOOR,
-        nativePlayerLine,
-        language ? opts?.playerInputEnglish : undefined,
-      )
-      return {
-        ...WITNESS_FALLBACK,
-        state_mutations: v.state_mutations,
-        flag_mutations: v.flag_mutations,
-        scene_tag: v.scene_tag,
-        emotional_tone: v.emotional_tone,
-        beat_ledger: v.beat_ledger,
-        choices: keptOrder.map((index) => nativeChoices[index]),
-        ...(englishChoices === undefined
-          ? {}
-          : { choices_en: keptOrder.map((index) => englishChoices[index]) }),
-        milestone: v.milestone,
-      }
+      try {
+        const first = await askChoices(AI_MODELS.choices, true)
+        if ((first.choices?.length ?? 0) > 0) { opts?.onChoiceModel?.(AI_MODELS.choices); return first }
+      } catch { /* fall through to the one retry */ }
+      // A host outage or a refused adult scene must never leave the turn without buttons.
+      const retry = await askChoices(AI_MODELS.metadata, false)
+      opts?.onChoiceModel?.(AI_MODELS.metadata)
+      return retry
     } catch {
       return { ...WITNESS_FALLBACK, scene_tag: 'intimate' }
     } finally {

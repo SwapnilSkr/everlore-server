@@ -194,6 +194,8 @@ export interface GenerationLogDoc {
   choice_hedge_winner?: 'primary' | 'hedge'
   /** Model used for the structured-metadata extraction pass. */
   metadata_model: string
+  /** Model that produced the kept buttons; absent when the fallback was used. */
+  choice_model?: string
   tokens_in: number
   tokens_out: number
   /** Non-mutating prose hygiene findings from the streamed response. */

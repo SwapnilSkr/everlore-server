@@ -55,8 +55,12 @@ const FIXTURE_OPTS: MetadataOpts = {
 }
 const FROZEN = {
   witnessRequest: 'd89a01dd06acb61e3909bceec5a6a4d69bcc1af788a5f77b2bd45b01905a22e7',
-  unsplitRequest: '3f11c62aff10e84b44dedf6af4625de1ca5a27ff1658b8cb0286d4ad48dbf7d5',
-  splitChoiceRequest: '018189ce68b7bf8ab3aaf97b6c7f7835aa6f019c8b42b69a1cdeded3a5e664da',
+  // buttons-fast moved the choice pass to `AI_MODELS.choices` with
+  // `noReasoning: true`. Reverting only those two fields reproduces the old
+  // pins (`3f11c62a…` unsplit, `018189ce…` split); the witness and ledger pins
+  // are unchanged because those calls still use `AI_MODELS.metadata`.
+  unsplitRequest: 'f886234df2fd1afdc72082675ec23bf6c8d9ce9a3e466132d37c6fcee1111a61',
+  splitChoiceRequest: 'fae6c8e2c13f9720ec18d3f206499fd8ec15ec5ff3b1b174052f3cd11828bc16',
   splitLedgerRequest: 'b497658ea879876a3f4f42b17ed6f4ecbbd9b238fa0be70596047adbde561fb1',
   result: 'f7e27d15e9fce9c6585e287234f8bbcf1963e3b8149b7e7f829758374b541cf5',
 }
@@ -107,14 +111,12 @@ function fixtureCall(choiceRaw: string = CHOICE_RAW) {
 await check('absent: the witness, choice and ledger requests match the pre-change fixture', async () => {
   const witness = fixtureCall()
   await extractSceneWitness(FIXTURE_PROSE, { ...FIXTURE_OPTS, call: witness.call })
-  assert.equal(sha(witness.requests[0]), FROZEN.witnessRequest, 'the witness request moved')
-
   const unsplit = fixtureCall()
   await extractChoiceMetadata(FIXTURE_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, { ...FIXTURE_OPTS, call: unsplit.call }, { split: false })
-  assert.equal(sha(unsplit.requests[0]), FROZEN.unsplitRequest, 'the unsplit choice request moved')
-
   const split = fixtureCall()
   await extractChoiceMetadata(FIXTURE_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, { ...FIXTURE_OPTS, call: split.call }, { split: true })
+  assert.equal(sha(witness.requests[0]), FROZEN.witnessRequest, 'the witness request moved')
+  assert.equal(sha(unsplit.requests[0]), FROZEN.unsplitRequest, 'the unsplit choice request moved')
   assert.equal(sha(byPurpose(split.requests, 'choice_metadata')), FROZEN.splitChoiceRequest, 'the split choice request moved')
   assert.equal(sha(byPurpose(split.requests, 'beat_ledger')), FROZEN.splitLedgerRequest, 'the ledger request moved')
 })
@@ -479,7 +481,9 @@ const IDENTITY_COPIES = JSON.stringify({ choices: [
 
 await check('rescue: an answer still identical on both sides is dropped by the guard', async () => {
   const { result, asked } = await withTranslation(IDENTITY_RAW, IDENTITY_COPIES, true, 'Spanish')
-  assert.equal(asked.length, 1, 'the rescue path must actually run')
+  // Both attempts come back with no buttons, so the one retry runs the rescue
+  // again: one `choice_translation` per choice attempt.
+  assert.equal(asked.length, 2, 'the rescue path must run on each attempt')
   assert.deepEqual(result.choices, [], 'no button may ship with its native copy still English')
   assert.deepEqual(result.choices_en, [])
 })

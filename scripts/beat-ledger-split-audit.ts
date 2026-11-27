@@ -19,7 +19,7 @@ let releaseLedger: (() => void) | undefined
 const ledger = { npc_beats: [{ character: 'Neri', intent: 'seeks help', reaction: 'hopeful' }], emotional_shift: 'trust grows', setting: 'in the archive', consequence: 'a letter arrives', unresolved_hook: 'who sent the letter' }
 const choices = [{ label: 'Read the letter', kind: 'act', send: '*I read the letter.*' }, { label: 'Ask Neri', kind: 'say', send: 'Who sent this?' }]
 const output = { state_mutations: { focus: { op: 'add', value: 2 } }, flag_mutations: {}, scene_tag: 'exploration', emotional_tone: 'curious', beat_ledger: ledger, choices, milestone: null }
-mock.module('../src/ai', () => ({ AI_MODELS: { metadata: 'gpt-4o-mini' }, callLLM: async (request: Request) => {
+mock.module('../src/ai', () => ({ AI_MODELS: { metadata: 'gpt-4o-mini', choices: 'gpt-4o-mini' }, callLLM: async (request: Request) => {
   requests.push(request)
   if (request.purpose === fail) throw new Error('fixture failure')
   if (request.purpose === 'beat_ledger') {
@@ -50,7 +50,11 @@ await check('(a) off pins the legacy request byte for byte', async () => {
   assert.equal(requests.length, 1)
   baseline = requests[0]
   if (process.argv.includes('--legacy-pin')) { console.log(`LEGACY_PIN ${hash(wire(baseline))}`); return }
-  assert.equal(hash(wire(baseline)), 'b52bf6028b5a28a334547c301214e43d4d5769f5cee917c30de402a242555f21')
+  // buttons-fast moved the choice pass to `AI_MODELS.choices` and set
+  // `noReasoning: true`. The model string here is unchanged (the audit mocks
+  // both keys to gpt-4o-mini); dropping `noReasoning` reproduces the previous
+  // pin `b52bf602…` byte for byte.
+  assert.equal(hash(wire(baseline)), '3b77ffee6b7ec504513543ab9cc19a66bf38a0642969013b3bad114a1917601d')
   assert.equal(typeof baseline.firstTokenHedge?.onFirstToken, 'function')
   assert.equal(baseline.firstTokenHedge?.delayMs, 1500)
   const config = readFileSync(new URL('../src/config/env.ts', import.meta.url), 'utf8')
@@ -150,7 +154,9 @@ await check('(e) dry-run default, strict flags and hard cap before every call', 
   const invoke = experimentCall(parseArgs([]).execute, async () => { sent++; return '{}' }, () => { planned++ })
   await extractChoiceMetadata(narrative, [], [], opts, { split: true, call: invoke })
   assert.equal(sent, 1, 'default dry-run never sends either model request')
-  assert.equal(planned, 2)
+  // buttons-fast adds one retry when the first answer carries no buttons, which
+  // the dry-run stub ('{}') does; so the plan is choice + its one retry + ledger.
+  assert.equal(planned, 3)
 })
 await check('(f) usage.cost replaces the bound and permits a later call under cap', async () => {
   const b = new SpendBudget(.1)

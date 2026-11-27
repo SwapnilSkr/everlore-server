@@ -23,7 +23,7 @@ mock.module('../src/config/openai', () => ({
 }))
 mock.module('../src/utils/logger', () => ({ log: { info() {}, warn() {} } }))
 const { callLLM, setNarrationStreamingClientForAudit, NARRATION_HEDGE_MS } = await import('../src/ai/client')
-mock.module('../src/ai', () => ({ callLLM, AI_MODELS: { metadata: 'gpt-4o-mini' } }))
+mock.module('../src/ai', () => ({ callLLM, AI_MODELS: { metadata: 'gpt-4o-mini', choices: 'gpt-4o-mini' } }))
 const realEnforceSchema = (await import('../worker/lib/structured-output')).enforceSchema
 let validationFails = false
 mock.module('../worker/lib/structured-output', () => ({ enforceSchema: (raw: string) => {
@@ -57,7 +57,12 @@ class Clock {
   async to(at: number) {
     assert.ok(at >= this.now)
     await flush()
+    // A mutated transport can schedule a timer that re-schedules itself at the
+    // same instant; without a bound this loop would spin forever instead of
+    // letting the check fail. 100k firings is far above any legitimate scenario.
+    let firings = 0
     while (true) {
+      if (++firings > 100_000) throw new Error('fake clock runaway: a timer keeps rescheduling at the same time')
       const next = [...this.timers].sort((a, b) => a[1].at - b[1].at || a[0] - b[0])[0]
       if (!next || next[1].at > at) break
       this.now = next[1].at
@@ -140,7 +145,7 @@ function fixture(plans: Plan[]) {
 
 let passed = 0
 let failed = 0
-async function check(label: string, plans: Plan[], test: (f: ReturnType<typeof fixture>) => Promise<void>) {
+async function check(label: string, plans: Plan[], test: (f: ReturnType<typeof fixture>) => Promise<void>, watchdogMs = 1000) {
   const f = fixture(plans)
   env.CHOICE_HEDGE_MS = H
   nonstreamCalls.length = 0
@@ -148,7 +153,24 @@ async function check(label: string, plans: Plan[], test: (f: ReturnType<typeof f
   validationFails = false
   nonstreamText = MODEL_TEXT
   try {
-    await runWithLLMUsage(() => test(f))
+    // A fake clock never advances on its own, so a defect that leaves a promise
+    // unsettled (e.g. one contender never calling `finish`) would hang the audit
+    // forever instead of failing it. Watch on a REAL timer, which the fake clock
+    // does not replace, so a deadlock becomes the check's failure. A real
+    // fake-clock check settles in milliseconds; the subprocess check passes a
+    // longer bound because it spawns real work.
+    let watchdog: ReturnType<typeof realSetTimeout> | undefined
+    const deadlock = new Promise<never>((_, reject) => {
+      watchdog = realSetTimeout(
+        () => reject(new Error('deadlock: the turn never settled (no fake-clock advance could resolve it)')),
+        watchdogMs,
+      )
+    })
+    try {
+      await runWithLLMUsage(() => Promise.race([Promise.resolve().then(() => test(f)), deadlock]))
+    } finally {
+      if (watchdog !== undefined) realClearTimeout(watchdog)
+    }
     passed++
     console.log(`PASS ${label}`)
   } catch (error) {
@@ -360,7 +382,7 @@ for (const error of [rateLimit(), Object.assign(new Error('bad gateway'), { stat
   })
 }
 
-await check('(ii) early primary and backup fail: unchanged fallback with exactly two requests', [
+await check('(ii) early primary and backup fail, then the one retry fails too: unchanged fallback', [
   { events: [{ at: 10, error: rateLimit() }] },
   { events: [{ at: 20, error: new Error('backup failure') }] },
 ], async ({ clock, calls }) => {
@@ -382,7 +404,11 @@ await check('(ii) early primary and backup fail: unchanged fallback with exactly
   assert.deepEqual(choiceHedgeLogFields(x.route), { choice_hedged: true })
   assert.ok(!('choice_metadata_first_token' in x.stages))
   assert.equal(x.stages.choice_metadata, 30)
-  assert.deepEqual(snapshotLLMUsage().map(u => u.purpose), ['choice_metadata', 'choice_metadata_hedge_lost'])
+  // buttons-fast: when both early attempts fail, the choice half makes one
+  // retry on the metadata model, which hedges the same way — so two more
+  // attempts are accounted here even though the fixture gives them no provider
+  // request (they throw before `create` records a call).
+  assert.deepEqual(snapshotLLMUsage().map(u => u.purpose), ['choice_metadata', 'choice_metadata_hedge_lost', 'choice_metadata', 'choice_metadata_hedge_lost'])
   assert.equal(clock.timers.size, 0)
 })
 
@@ -433,9 +459,10 @@ await check('winner text that fails validation gives the unchanged fallback', [
 
 await check('malformed text retains the existing parser repair result', [
   { events: [text(10, 'broken JSON'), end(20)] },
+  { events: [text(10, 'broken JSON'), end(20)] },
 ], async ({ clock }) => {
   const x = extraction()
-  await clock.to(30)
+  await clock.to(60)
   env.CHOICE_HEDGE_MS = 0
   nonstreamText = 'broken JSON'
   assert.deepEqual(await x.result, await extraction().result)
@@ -503,7 +530,7 @@ await check('(g) unchanged narration race and routing audits pass', [], async ()
     const result = child(script)
     assert.equal(result.code, 0, result.output)
   }
-})
+}, 60_000)
 
 console.log(`Choice hedge audit: ${passed} passed, ${failed} failed`)
 process.exitCode = failed ? 1 : 0

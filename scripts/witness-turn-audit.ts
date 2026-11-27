@@ -447,7 +447,9 @@ await check('processor: the choice pass reads native, the extractors read Englis
   assert.ok(source.includes('witness_copy: witnessMs,'), 'the copy is a stage in the turn timing')
   assert.ok(source.includes('? auditChoicePairs('), 'a non-English turn grounds the English pair')
   assert.ok(source.includes('filterChoicePairs('), 'the life-state filters keep pairs aligned')
-  assert.ok(source.includes('parsed.choices_en = choicesEn'), 'the aligned English pairs are what the event stores')
+  // buttons-fast finishes the pairs inside `earlyChoicesPromise`; the joined
+  // result is what the event stores.
+  assert.ok(source.includes('parsed.choices_en = finished.choices_en'), 'the aligned English pairs are what the event stores')
 })
 
 await check('processor: the memory payload is English and the previous turn comes from witnessOf', () => {

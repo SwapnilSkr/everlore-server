@@ -38,7 +38,7 @@ import { startIntentRouter, decideIntentRoute, resolveNsfwIntent } from '../lib/
 import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
 import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
-import { extractSceneMetadata, filterChoicePairs, statDescriptors } from '../lib/metadata-extractor'
+import { extractChoiceMetadata, extractSceneWitness, mergeSceneMetadata, filterChoicePairs, statDescriptors, type MetadataOpts } from '../lib/metadata-extractor'
 import { classifyPresenceCodexGaps, isActionableMention, hasSceneParticipationGrammar } from '../lib/presence-gap-detector'
 import {
   adjudicateEntityCandidates,
@@ -84,7 +84,7 @@ import {
 } from '../lib/travel-intent'
 import { decidePlacePromotion, classifyPlaceRelation } from '../lib/place-promotion'
 import { auditChoicePairs, auditChoices } from '../lib/choice-grounding-audit'
-import { classifyChoiceGrounding, computeGroundingContext } from '../lib/choice-grounding'
+import { classifyChoiceGrounding, computeGroundingContext, type ChoiceGroundingIssue } from '../lib/choice-grounding'
 import { detectNarratedTimeSkip } from '../lib/time-skip-signal'
 import { detectCompanionJoins, detectCompanionDepartures, detectSoloTravel } from '../lib/party-signal'
 import { type WorldFactSource, SOURCE_RANK, confidenceFor, isWorldFactSource } from '../../src/utils/world-authority'
@@ -101,7 +101,7 @@ import {
   activeCastInteractionCandidates,
   extractPlayerInteractionSignals,
 } from '../lib/player-interaction-signal'
-import type { PlayerInteractionSignalDoc } from '../../src/models/world-event.model'
+import type { PlayerInteractionSignalDoc, CharacterLifecycleDeltaDoc } from '../../src/models/world-event.model'
 import { extractLifecycleChanges } from '../lib/character-lifecycle-extractor'
 import { createExtractorRawSink } from '../lib/extractor-raw'
 import { effectiveReplyLanguage, enabledReplyLanguages } from '../../src/utils/reply-language'
@@ -1640,79 +1640,82 @@ ${
     onRaw: extractorRaw.capture('entity_adjudication'),
     onStage: recordTailStage,
   })
-  const metaPromise = extractSceneMetadata(
-    rawNarrative,
-    statDescriptors(session.stat_definitions || session.world_state),
-    Object.keys(session.active_flags || {}),
-    {
-      isSentient: session.is_sentient,
-      currentLocationName: currentLocation?.name || null,
-      priorPresent,
-      // Open configurations entering this turn, so the witness can close the
-      // ones this passage ends instead of leaving them to outlive the story.
-      priorPhysical: (packet.sceneState?.physical || []).map((fact) => fact.statement),
-      protagonist: choiceProtagonist,
-      roster: choiceRoster,
-      knownPlaces,
-      playerInput: parsedPlayerInput.raw,
-      // The world premise/lore, so the extractor can tell a LITERAL ghost (a real
-      // spirit in a horror/fantasy world) from a FIGURATIVE one (a metaphor for an
-      // overlooked person in a grounded drama) instead of reifying the metaphor
-      // into a "ask her about the ghost" choice.
-      worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
-      // WHAT HAS ALREADY BEEN SUGGESTED AND PASSED OVER.
-      //
-      // The choice half had no memory of its own output, so a standing
-      // situation kept producing the same obvious move. Measured over one live
-      // 83-turn save: 323 choices, 242 distinct, and "Challenge Isolde's
-      // authority" offered SIXTEEN times across the scene it belonged to. The
-      // player declined it every time; the set never moved on.
-      //
-      // A label the player actually SENT is dropped from the list — they took
-      // that path, so it is no longer an unanswered suggestion, and repeating
-      // a variant of it may well be the right next move.
-      recentChoiceLabels: (() => {
-        const taken = new Set(
-          (packet.recentEvents || [])
-            .map((event: any) => normalizeEntityName(String(event?.data?.player_input || '')))
-            .filter(Boolean),
-        )
-        return (packet.recentEvents || [])
-          .slice(-6)
-          .flatMap((event: any) => (event?.data?.choices || []) as any[])
-          .map((choice: any) => String(choice?.label || '').trim())
-          .filter((label: string) => label && !taken.has(normalizeEntityName(label)))
-      })(),
-      choiceContext: choiceDecisionContext,
-      // First-person buttons are the player's own words, so the choice half is
-      // told the same effective gender the narrator got.
-      playerGender: turnPlayerGender,
-      // §6: the choice half reads the NATIVE prose and native player turn; the
-      // witness half and the ledger read the English copy passed as `narrative`.
-      ...(turnReplyLanguage
-        ? {
-            choiceLanguage: {
-              name: turnReplyLanguage.name,
-              narrative: nativeNarrative,
-              playerInput: nativePlayerInputRaw,
-            },
-            // The English line is already known here (the copy settled before
-            // the extractors), so the English pair is checked against it too.
-            ...(acceptedWitness ? { playerInputEnglish: acceptedWitness.player } : {}),
-          }
-        : {}),
-      onRaw: (stage, raw) => extractorRaw.capture(stage)(raw),
-      // Each call reports its own start-to-settle; the pair runs in parallel, so
-      // measuring outside it would report the join twice. `beat_ledger` appears
-      // only when the choices pass is split.
-      onStage: recordTailStage,
-      onChoiceHedge: () => { choiceRoute.hedged = true },
-      onChoiceFirstToken: (ms, winner) => {
-        choiceFirstTokenMs = ms
-        choiceRoute.winner = winner
-      },
+  let choiceModel: string | undefined
+  const metaStats = statDescriptors(session.stat_definitions || session.world_state)
+  const metaFlags = Object.keys(session.active_flags || {})
+  const metaOpts: MetadataOpts = {
+    isSentient: session.is_sentient,
+    currentLocationName: currentLocation?.name || null,
+    priorPresent,
+    // Open configurations entering this turn, so the witness can close the
+    // ones this passage ends instead of leaving them to outlive the story.
+    priorPhysical: (packet.sceneState?.physical || []).map((fact) => fact.statement),
+    protagonist: choiceProtagonist,
+    roster: choiceRoster,
+    knownPlaces,
+    playerInput: parsedPlayerInput.raw,
+    // The world premise/lore, so the extractor can tell a LITERAL ghost (a real
+    // spirit in a horror/fantasy world) from a FIGURATIVE one (a metaphor for an
+    // overlooked person in a grounded drama) instead of reifying the metaphor
+    // into a "ask her about the ghost" choice.
+    worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
+    // WHAT HAS ALREADY BEEN SUGGESTED AND PASSED OVER.
+    //
+    // The choice half had no memory of its own output, so a standing
+    // situation kept producing the same obvious move. Measured over one live
+    // 83-turn save: 323 choices, 242 distinct, and "Challenge Isolde's
+    // authority" offered SIXTEEN times across the scene it belonged to. The
+    // player declined it every time; the set never moved on.
+    //
+    // A label the player actually SENT is dropped from the list — they took
+    // that path, so it is no longer an unanswered suggestion, and repeating
+    // a variant of it may well be the right next move.
+    recentChoiceLabels: (() => {
+      const taken = new Set(
+        (packet.recentEvents || [])
+          .map((event: any) => normalizeEntityName(String(event?.data?.player_input || '')))
+          .filter(Boolean),
+      )
+      return (packet.recentEvents || [])
+        .slice(-6)
+        .flatMap((event: any) => (event?.data?.choices || []) as any[])
+        .map((choice: any) => String(choice?.label || '').trim())
+        .filter((label: string) => label && !taken.has(normalizeEntityName(label)))
+    })(),
+    choiceContext: choiceDecisionContext,
+    // First-person buttons are the player's own words, so the choice half is
+    // told the same effective gender the narrator got.
+    playerGender: turnPlayerGender,
+    // §6: the choice half reads the NATIVE prose and native player turn; the
+    // witness half and the ledger read the English copy passed as `narrative`.
+    ...(turnReplyLanguage
+      ? {
+          choiceLanguage: {
+            name: turnReplyLanguage.name,
+            narrative: nativeNarrative,
+            playerInput: nativePlayerInputRaw,
+          },
+          // The English line is already known here (the copy settled before
+          // the extractors), so the English pair is checked against it too.
+          ...(acceptedWitness ? { playerInputEnglish: acceptedWitness.player } : {}),
+        }
+      : {}),
+    onRaw: (stage, raw) => extractorRaw.capture(stage)(raw),
+    // Each call reports its own start-to-settle; the pair runs in parallel, so
+    // measuring outside it would report the join twice. `beat_ledger` appears
+    // only when the choices pass is split.
+    onStage: recordTailStage,
+    onChoiceHedge: () => { choiceRoute.hedged = true },
+    onChoiceFirstToken: (ms, winner) => {
+      choiceFirstTokenMs = ms
+      choiceRoute.winner = winner
     },
-  )
+    onChoiceModel: (model) => { choiceModel = model },
+  }
+  const choiceHalfPromise = extractChoiceMetadata(rawNarrative, metaStats, metaFlags, metaOpts)
+  const witnessHalfPromise = extractSceneWitness(rawNarrative, metaOpts)
+  const metaPromise = Promise.all([witnessHalfPromise, choiceHalfPromise])
+    .then(([witness, choice]) => mergeSceneMetadata(witness, choice))
   // Do not wait for the broad metadata pass just to build a candidate set. The
   // endpoint judge receives the prior cast, every known card/alias, and the
   // same gated walk-on candidates the entity judge sees. That is sufficient to
@@ -1744,6 +1747,137 @@ ${
     onRaw: extractorRaw.capture('character_deaths'),
     onStage: recordTailStage,
   })
+  // ── CHOICE-AUDIT PREPARE (before the join) ────────────────────────────────
+  // Nothing here reads the witness half, the entity adjudication or the
+  // endpoint: the life-state filters need only the deaths, and the grounding
+  // read is a pre-turn kinship READ. Hoisted so the buttons can be finished and
+  // published the moment their own call is back, without waiting out the tail.
+  const castVocab = (characterCodex as any[]).flatMap((c) => [
+    c?.canonical_name,
+    c?.name_normalized,
+    c?.role,
+    ...((c?.aliases as string[]) || []),
+  ])
+  // Authoritative source: the kinship GRAPH as it stood after PRIOR turns (a cheap
+  // pre-turn READ — the graph for THIS turn is written later on the tail). Gives
+  // the player's actual relatives' labels, perspective-correct. GM worlds anchor on
+  // the protagonist card's entity; sentient/empty fall back to cast+prose. Flag
+  // KINSHIP_GRAPH_READS=off disables consumption (write path keeps shadowing).
+  const graphLabelsPromise: Promise<string[]> = (async () => {
+    let labels: string[] = []
+    if (process.env.KINSHIP_GRAPH_READS !== 'off' && !session.is_sentient) {
+      const selfReadId = protagonistCard?.entity_id ? idString(protagonistCard.entity_id) : null
+      if (selfReadId) {
+        const summary = await kinshipGraphService.kinSummary(idString(instanceId), selfReadId).catch(() => ({
+          kinds: new Set(),
+          labelsByKind: {} as Record<string, string[]>,
+        }))
+        labels = Object.values(summary.labelsByKind).flat() as string[]
+      }
+    }
+    return labels
+  })()
+  // Pass the grounded narrator prose so a relative introduced THIS turn (not yet
+  // in the pre-turn codex) isn't mistaken for a fabrication; and the world
+  // premise/lore so a SUPERNATURAL being only survives when the world establishes
+  // it as real (otherwise "Ask her about the ghost" for a metaphorical ghost in a
+  // grounded drama is dropped — the prompt rule alone is unreliable on the small
+  // model). Real ghosts in a horror world: their premise names them or they're carded.
+  const worldText = [session.seed_prompt, session.global_lore].filter(Boolean).join('\n')
+  const groundingOpts = {
+    protagonist: choiceProtagonist,
+    isSentient: !!session.is_sentient,
+    currentLocationName: currentLocation?.name || null,
+  }
+  // (a) life-state filters, (e) grounding audit and (f) the final assignment,
+  // all on local copies, unchanged in order and logic.
+  let choiceDropped: { choice: GenerationOutput['choices'][number]; issues: ChoiceGroundingIssue[] }[] = []
+  const finishChoices = (
+    choicesIn: GenerationOutput['choices'],
+    choicesEnIn: ChoiceEnglish[] | undefined,
+    deltas: CharacterLifecycleDeltaDoc[],
+    labels: string[],
+  ): { choices: GenerationOutput['choices']; choices_en: ChoiceEnglish[] | undefined } => {
+    let choices = choicesIn
+    let choicesEn = choicesEnIn
+    const deceasedThisTurn = new Set(deltas.map((delta) => delta.name_normalized))
+    const blockedLifeStateKeys = new Set([...persistedDeceasedKeys, ...deceasedThisTurn])
+    const blockedLifeStateNames = [...packet.deceasedCharacterNames, ...deltas.map((delta) => delta.name)]
+    // §6: both life-state filters keep the native chip and its English pair in
+    // step, and test the ENGLISH pair (that is the language the guard reads).
+    const filterPairs = (keep: (text: string) => boolean) => {
+      const filtered = filterChoicePairs(
+        choices,
+        choicesEn,
+        (choice, english) => keep(`${(english ?? choice).label} ${(english ?? choice).send}`),
+      )
+      choices = filtered.choices
+      if (choicesEn !== undefined) choicesEn = filtered.choices_en
+    }
+    if (deceasedThisTurn.size) {
+      filterPairs((text) =>
+        !deltas.some((delta) => new RegExp(`\\b${escapeRegExp(delta.name)}\\b`, 'i').test(text)),
+      )
+    }
+    // Choices come solely from the schema-enforced choice metadata pass. The
+    // prose narrator never controls their wire format or their visibility.
+    if (blockedLifeStateKeys.size) {
+      filterPairs((text) =>
+        !blockedLifeStateNames.some((name) => name && new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(text)),
+      )
+    }
+    // Audit + REPAIR ungrounded choices (fabricated/wrong-perspective kin, reified
+    // metaphor beings) in place rather than dropping them, so the player keeps a full
+    // set of grounded options ("attack the ghost" → "investigate the presence").
+    // Unrepairable / duplicate-after-repair choices are still dropped. Off TTFT.
+    // §6: the guards read what they can judge. On a non-English turn that is the
+    // English pair — a pair that would have needed a repair is dropped with its
+    // native chip, never shown half-grounded. English turns keep the repair pass.
+    const audited = choicesEn !== undefined
+      ? auditChoicePairs(choices, choicesEn, castVocab, rawNarrative, labels, worldText, groundingOpts)
+      : auditChoices(choices, castVocab, rawNarrative, labels, worldText, groundingOpts)
+    choiceDropped = audited.dropped
+    if (audited.repairedCount > 0 || audited.dropped.length > 0) {
+      log.warn('choice-grounding audited choices', {
+        instanceId: idString(instanceId),
+        sequence: nextSequence,
+        repaired: audited.results
+          .filter((r) => r.repaired)
+          .map((r) => ({
+            from: r.choice.label,
+            to: r.repaired!.label,
+            issue: r.issues[0]?.type,
+          })),
+        dropped: audited.dropped.map((d) => ({
+          label: d.choice.label,
+          issue: d.issues[0]?.type,
+        })),
+      })
+    }
+    choices = audited.choices
+    if (choicesEn !== undefined) {
+      // Only `auditChoicePairs` returns English pairs; `auditChoices` (the English
+      // turn's repair pass) has no `choices_en`, and `choicesEn` stays undefined
+      // there, so this only runs on a non-English turn.
+      choicesEn = (audited as { choices_en?: ChoiceEnglish[] }).choices_en ?? []
+    }
+    return { choices, choices_en: choicesEn }
+  }
+  let choiceAuditMs = 0
+  const earlyChoicesPromise = Promise.all([choiceHalfPromise, deathExtractionPromise, graphLabelsPromise])
+    .then(([choice, deltas, labels]) => {
+      const startedAt = Date.now()
+      const done = finishChoices(choice.choices || [], choice.choices_en, deltas, labels)
+      choiceAuditMs = Date.now() - startedAt
+      if (!choicesReadySent && done.choices.length > 0) {
+        redis.publish(channel, JSON.stringify({ type: 'choices_ready', instanceId, jobId: String(job.id), choices: done.choices }))
+        choicesReadySent = true
+      }
+      return done
+    })
+  // Awaited after the join; if the join throws first this rejection would be
+  // unhandled and take the worker down, so it is marked handled here too.
+  earlyChoicesPromise.catch(() => {})
   // All post-stream checks run together. None is allowed to alter visible prose
   // or delay the narrator's first token.
   const [meta, entityAdjudication, characterLifecycleDeltas, endpointAdjudication] = await Promise.all([
@@ -1753,7 +1887,6 @@ ${
     endpointAdjudicationPromise,
   ])
   const extractionJoinMs = Date.now() - tailExtractionStartedAt
-  const choiceAuditStartedAt = Date.now()
   if (endpointAdjudication.citationVerdicts.length > 0) {
     log.info('presence.citation_advisory', {
       instanceId: idString(instanceId),
@@ -1794,23 +1927,8 @@ ${
   )
   const deceasedThisTurn = new Set(characterLifecycleDeltas.map((delta) => delta.name_normalized))
   const blockedLifeStateKeys = new Set([...persistedDeceasedKeys, ...deceasedThisTurn])
-  const blockedLifeStateNames = [...packet.deceasedCharacterNames, ...characterLifecycleDeltas.map((delta) => delta.name)]
-  // §6: both life-state filters keep the native chip and its English pair in
-  // step, and test the ENGLISH pair (that is the language the guard reads).
-  const filterPairs = (keep: (text: string) => boolean) => {
-    const filtered = filterChoicePairs(
-      parsed.choices || [],
-      choicesEn,
-      (choice, english) => keep(`${(english ?? choice).label} ${(english ?? choice).send}`),
-    )
-    parsed.choices = filtered.choices
-    if (choicesEn !== undefined) choicesEn = filtered.choices_en
-  }
   if (deceasedThisTurn.size) {
     parsed.present_characters = parsed.present_characters.filter((name) => !blockedLifeStateKeys.has(normalizeEntityName(name)))
-    filterPairs((text) =>
-      !characterLifecycleDeltas.some((delta) => new RegExp(`\\b${escapeRegExp(delta.name)}\\b`, 'i').test(text)),
-    )
   }
   if (entityAdjudication.available && entityAdjudication.decisions.some((decision) => decision.verdict !== 'person')) {
     log.info('entity.adjudication.held', {
@@ -1821,98 +1939,23 @@ ${
         .map((decision) => ({ key: decision.key, verdict: decision.verdict, evidence: decision.evidenceType })),
     })
   }
-  // Choices come solely from the schema-enforced choice metadata pass. The
-  // prose narrator never controls their wire format or their visibility.
-  if (blockedLifeStateKeys.size) {
-    filterPairs((text) =>
-      !blockedLifeStateNames.some((name) => name && new RegExp(`\\b${escapeRegExp(name)}\\b`, 'i').test(text)),
-    )
-  }
-  // Closed-check backstop on the choices: the metadata model is *told* never to
-  // invent characters, but nothing enforced it — a small model would fabricate a
-  // relative the cast doesn't have ("Encourage my brother" when the player has
-  // only a sister) and the bad choice reached the player. Drop any choice that
-  // references a kinship relation no codex card carries. Pure string work, off
-  // the TTFT path (the prose already streamed) → zero added latency. Every kin
-  // the cast DOES have is whitelisted, so a valid "confront my sister" survives.
-  const castVocab = (characterCodex as any[]).flatMap((c) => [
-    c?.canonical_name,
-    c?.name_normalized,
-    c?.role,
-    ...((c?.aliases as string[]) || []),
-  ])
-  // Authoritative source: the kinship GRAPH as it stood after PRIOR turns (a cheap
-  // pre-turn READ — the graph for THIS turn is written later on the tail). Gives
-  // the player's actual relatives' labels, perspective-correct. GM worlds anchor on
-  // the protagonist card's entity; sentient/empty fall back to cast+prose. Flag
-  // KINSHIP_GRAPH_READS=off disables consumption (write path keeps shadowing).
-  let graphLabels: string[] = []
-  if (process.env.KINSHIP_GRAPH_READS !== 'off' && !session.is_sentient) {
-    const selfReadId = protagonistCard?.entity_id ? idString(protagonistCard.entity_id) : null
-    if (selfReadId) {
-      const summary = await kinshipGraphService.kinSummary(idString(instanceId), selfReadId).catch(() => ({
-        kinds: new Set(),
-        labelsByKind: {} as Record<string, string[]>,
-      }))
-      graphLabels = Object.values(summary.labelsByKind).flat() as string[]
-    }
-  }
-  // Pass the grounded narrator prose so a relative introduced THIS turn (not yet
-  // in the pre-turn codex) isn't mistaken for a fabrication; and the world
-  // premise/lore so a SUPERNATURAL being only survives when the world establishes
-  // it as real (otherwise "Ask her about the ghost" for a metaphorical ghost in a
-  // grounded drama is dropped — the prompt rule alone is unreliable on the small
-  // model). Real ghosts in a horror world: their premise names them or they're carded.
-  const worldText = [session.seed_prompt, session.global_lore].filter(Boolean).join('\n')
   // Reuse the exact premise-aware classification for scene presence. Choices
   // already cannot turn a figurative "ghost" into an option in a grounded
   // world; without this companion guard, a faulty witness could still promote
   // that label into present_characters and subsequently mint a graph stub.
+  const graphLabels = await graphLabelsPromise
   const choiceGroundingContext = computeGroundingContext(castVocab, rawNarrative, graphLabels, worldText, {
     protagonist: choiceProtagonist,
     isSentient: !!session.is_sentient,
     currentLocationName: currentLocation?.name || null,
   })
-  // Audit + REPAIR ungrounded choices (fabricated/wrong-perspective kin, reified
-  // metaphor beings) in place rather than dropping them, so the player keeps a full
-  // set of grounded options ("attack the ghost" → "investigate the presence").
-  // Unrepairable / duplicate-after-repair choices are still dropped. Off TTFT.
-  // §6: the guards read what they can judge. On a non-English turn that is the
-  // English pair — a pair that would have needed a repair is dropped with its
-  // native chip, never shown half-grounded. English turns keep the repair pass.
-  const groundingOpts = {
-    protagonist: choiceProtagonist,
-    isSentient: !!session.is_sentient,
-    currentLocationName: currentLocation?.name || null,
-  }
-  const audited = choicesEn !== undefined
-    ? auditChoicePairs(parsed.choices || [], choicesEn, castVocab, rawNarrative, graphLabels, worldText, groundingOpts)
-    : auditChoices(parsed.choices || [], castVocab, rawNarrative, graphLabels, worldText, groundingOpts)
-  if (audited.repairedCount > 0 || audited.dropped.length > 0) {
-    log.warn('choice-grounding audited choices', {
-      instanceId: idString(instanceId),
-      sequence: nextSequence,
-      repaired: audited.results
-        .filter((r) => r.repaired)
-        .map((r) => ({
-          from: r.choice.label,
-          to: r.repaired!.label,
-          issue: r.issues[0]?.type,
-        })),
-      dropped: audited.dropped.map((d) => ({
-        label: d.choice.label,
-        issue: d.issues[0]?.type,
-      })),
-    })
-  }
-  parsed.choices = audited.choices
-  if (choicesEn !== undefined) {
-    // Only `auditChoicePairs` returns English pairs; `auditChoices` (the English
-    // turn's repair pass) has no `choices_en`, and `choicesEn` stays undefined
-    // there, so this only runs on a non-English turn.
-    choicesEn = (audited as { choices_en?: ChoiceEnglish[] }).choices_en ?? []
-  }
-  parsed.choices_en = choicesEn
+  // (a), (e) and (f) already ran the moment the buttons' own call was back.
+  // Take the finished set here so the rest of the tail sees the same state, and
+  // so the old publish site below still fires if the early path published none.
+  const finished = await earlyChoicesPromise
+  parsed.choices = finished.choices
+  parsed.choices_en = finished.choices_en
+  choicesEn = finished.choices_en
 
   // The structural + grounding audit is complete. `parsed.choices` now holds the
   // ONLY set the player may see — narrator-tail or metadata fallback alike. Ship
@@ -1930,7 +1973,6 @@ ${
     )
     choicesReadySent = true
   }
-  const choiceAuditMs = Date.now() - choiceAuditStartedAt
 
   const locationStartedAt = Date.now()
   const statLimits = Object.fromEntries(
@@ -3409,7 +3451,7 @@ ${
     player_input: parsedPlayerInput.raw,
     ...(session.is_sentient && detectSelfIntroName(parsedPlayerInput.raw)
       ? { player_self_name: detectSelfIntroName(parsedPlayerInput.raw)! } : {}),
-    anomalies: { stubNames: stubResult.ensured, droppedChoices: audited.dropped,
+    anomalies: { stubNames: stubResult.ensured, droppedChoices: choiceDropped,
       ...(locationAnchor?.name ? { locationAnchorName: locationAnchor.name } : {}),
       ...(parsed.current_location ? { witnessLocationName: parsed.current_location } : {}),
       excludeNames: presenceGapExcludes },
@@ -3937,6 +3979,7 @@ ${
         ...(narrationRoute.hedgeWinner ? { hedge_winner: narrationRoute.hedgeWinner } : {}),
         ...choiceHedgeLogFields(choiceRoute),
         metadata_model: AI_MODELS.metadata,
+        ...(choiceModel ? { choice_model: choiceModel } : {}),
         tokens_in: event.data.tokens_in,
         tokens_out: event.data.tokens_out,
         llm_calls: snapshotLLMUsage(),

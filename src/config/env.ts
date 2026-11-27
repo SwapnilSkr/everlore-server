@@ -34,6 +34,8 @@ const optionalEnvVars = {
    *  (the default) uses the SFW narrator, which already writes fluent Portuguese
    *  and Spanish. One retry always goes to the metadata model. */
   MODEL_WITNESS_COPY: '',
+  /** The tap-to-play buttons. One retry always goes to the metadata model. */
+  MODEL_CHOICES: 'deepseek/deepseek-v4.1-flash-1017',
   // OpenRouter image-generation model (avatars + chat backgrounds).
   IMAGE_MODEL: 'bytedance-seed/seedream-4.5',
   // One-shot creation autofill (drafts a whole world/character). Cheap, strong JSON + creative.
@@ -177,6 +179,7 @@ export interface Env {
   REPLY_LANGUAGES: string[]
   MODEL_REPLY_LANGUAGE: string
   MODEL_WITNESS_COPY: string
+  MODEL_CHOICES: string
   IMAGE_MODEL: string
   AUTHORING_MODEL: string
   TTS_MODEL: string
@@ -343,6 +346,7 @@ function loadEnv(): Env {
       .filter(Boolean),
     MODEL_REPLY_LANGUAGE: process.env.MODEL_REPLY_LANGUAGE || optionalEnvVars.MODEL_REPLY_LANGUAGE,
     MODEL_WITNESS_COPY: process.env.MODEL_WITNESS_COPY || optionalEnvVars.MODEL_WITNESS_COPY,
+    MODEL_CHOICES: process.env.MODEL_CHOICES || optionalEnvVars.MODEL_CHOICES,
     IMAGE_MODEL: process.env.IMAGE_MODEL || optionalEnvVars.IMAGE_MODEL,
     AUTHORING_MODEL: process.env.AUTHORING_MODEL || optionalEnvVars.AUTHORING_MODEL,
     TTS_MODEL: process.env.TTS_MODEL || optionalEnvVars.TTS_MODEL,
