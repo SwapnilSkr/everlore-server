@@ -213,7 +213,9 @@ await check('(a) fast primary cancels hedge at FIRST token, not completion', [
   assert.equal(calls.length, 1)
   assert.equal(nonstreamCalls.length, 0)
   assert.equal(x.raw(), MODEL_TEXT)
-  assert.equal((await x.result).scene_tag, 'exploration')
+  // The buttons answer no longer carries the scene tag/stat fields; the parse
+  // is proved by the raw text and the choices, and the tag is the safe default.
+  assert.equal((await x.result).scene_tag, 'dialogue')
   assert.deepEqual(x.stages, { choice_metadata_first_token: 800, choice_metadata: H + 2010 })
   assert.deepEqual(choiceHedgeLogFields(x.route), {})
   assert.equal(clock.timers.size, 0)
@@ -265,10 +267,13 @@ await check('(c,f) same text gives identical metadata; zero is the exact non-str
   const streamed = extraction()
   await clock.to(40)
   const expected = await streamed.result
-  assert.equal(expected.scene_tag, 'exploration')
+  // The four moved fields are the safe defaults here; the witness half writes
+  // them now, so this pass must ignore the answer's copies.
+  assert.equal(expected.scene_tag, 'dialogue')
+  assert.equal(expected.emotional_tone, 'neutral')
+  assert.deepEqual(expected.state_mutations, {})
+  assert.deepEqual(expected.flag_mutations, {})
   assert.equal(expected.choices.length, 2)
-  assert.ok(Object.keys(expected.state_mutations).length > 0)
-  assert.ok(Object.keys(expected.flag_mutations).length > 0)
   env.CHOICE_HEDGE_MS = 0
   const plain = extraction()
   assert.deepEqual(await plain.result, expected)
@@ -372,7 +377,7 @@ for (const error of [rateLimit(), Object.assign(new Error('bad gateway'), { stat
     await clock.to(H + 100)
     assert.equal(calls.length, 2, 'original hedge timer must not send a third request')
     const result = await x.result
-    assert.equal(result.scene_tag, 'exploration')
+    assert.equal(result.scene_tag, 'dialogue')
     assert.equal(result.choices.length, 2)
     assert.equal(x.raw(), MODEL_TEXT)
     assert.deepEqual(choiceHedgeLogFields(x.route), { choice_hedged: true, choice_hedge_winner: 'hedge' })
@@ -438,7 +443,7 @@ for (const loser of ['primary', 'hedge'] as const) {
   ], async ({ clock, calls }) => {
     const x = extraction()
     await clock.to(H + 100)
-    assert.equal((await x.result).scene_tag, 'exploration')
+    assert.equal((await x.result).scene_tag, 'dialogue')
     assert.equal(calls.length, 2)
     assert.equal(snapshotLLMUsage()[loser === 'primary' ? 0 : 1].purpose, 'choice_metadata_hedge_lost')
   })
@@ -494,7 +499,7 @@ await check('scene witness stays non-streamed even with choice hedge enabled', [
   assert.equal(calls.length, 0)
   assert.equal(nonstreamCalls.length, 1)
   assert.equal(nonstreamCalls[0].params.stream, undefined)
-  assert.equal(nonstreamCalls[0].params.max_tokens, 620)
+  assert.equal(nonstreamCalls[0].params.max_tokens, 720)
 })
 
 const read = (file: string) => readFileSync(new URL(`../${file}`, import.meta.url), 'utf8')
@@ -549,7 +554,7 @@ if (!process.argv.includes('--no-bites') && !failed) {
     { name: '(c) drop schema on stream', before: 'if (req.responseSchema) {', after: 'if (req.responseSchema && !stream) {', expected: 'FAIL (c,f)' },
     { name: '(c) corrupt assembled text', before: 'return result.content', after: "return '{}'", expected: 'FAIL (c,f)' },
     { name: '(d) lose loser accounting', file: 'worker/lib/metadata-extractor.ts', before: "lostPurpose: 'choice_metadata_hedge_lost'", after: "lostPurpose: 'choice_metadata'", expected: 'FAIL (b,d)' },
-    { name: '(e) wrong fallback', file: 'worker/lib/metadata-extractor.ts', before: "return { ...WITNESS_FALLBACK, scene_tag: 'intimate' }", after: "return { ...WITNESS_FALLBACK, scene_tag: 'dialogue' }", expected: 'FAIL (e,h)' },
+    { name: '(e) wrong fallback', file: 'worker/lib/metadata-extractor.ts', before: "      return { ...WITNESS_FALLBACK, scene_tag: 'intimate' }", after: "      return { ...WITNESS_FALLBACK, scene_tag: 'dialogue' }", expected: 'FAIL (e,h)' },
     { name: '(f) stream when zero', before: 'req.firstTokenHedge.delayMs > 0', after: 'req.firstTokenHedge.delayMs >= 0', expected: 'FAIL (c,f)' },
     { name: '(g) narration threshold', before: 'export const NARRATION_HEDGE_MS = 3500', after: 'export const NARRATION_HEDGE_MS = 3501', expected: 'production narration hedge threshold' },
     { name: '(g) narration loser label', before: "hedge?.lostPurpose ?? 'narration_hedge_lost'", after: "hedge?.lostPurpose ?? 'narration'", expected: 'FAIL (b,g,h)', script: 'scripts/narration-hedge-audit.ts' },

@@ -1635,7 +1635,10 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // buttons-fast split the metadata pair into the choice and witness halves and
   // hoisted the choice audit/publish before the join; the group-only handoff did
   // not move, so the pin is re-hashed the same way.
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '9f1ff2c952c951f147aa6123c26a3ce1a96adee1d8ff1338d0b6c27a85056147')
+  // buttons-slim handed the tracked stats and flags to `extractSceneWitness` on
+  // that hoisted line; the handoff still did not move, so re-hashed the same way
+  // (the stripped source differs from the pinned one only on that call).
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), 'db81d1745fbd31ba15166936585d1b005d3396e1f5cfacc83c7905f67e07c4d8')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —

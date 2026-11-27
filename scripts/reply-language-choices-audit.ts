@@ -54,15 +54,23 @@ const FIXTURE_OPTS: MetadataOpts = {
   choiceContext: 'Mara served the household for years.',
 }
 const FROZEN = {
-  witnessRequest: 'd89a01dd06acb61e3909bceec5a6a4d69bcc1af788a5f77b2bd45b01905a22e7',
+  witnessRequest: '6be147e6a0468b3984cb12f9bbd2ee18c4000db60b2f6d84af756f15696f6c22',
   // buttons-fast moved the choice pass to `AI_MODELS.choices` with
   // `noReasoning: true`. Reverting only those two fields reproduces the old
   // pins (`3f11c62a…` unsplit, `018189ce…` split); the witness and ledger pins
   // are unchanged because those calls still use `AI_MODELS.metadata`.
-  unsplitRequest: 'f886234df2fd1afdc72082675ec23bf6c8d9ce9a3e466132d37c6fcee1111a61',
-  splitChoiceRequest: 'fae6c8e2c13f9720ec18d3f206499fd8ec15ec5ff3b1b174052f3cd11828bc16',
+  //
+  // buttons-slim then moved the four stat/flag/tag/tone fields to the witness:
+  // the witness request moves only in its schema (the four properties, now
+  // required) and `maxTokens` 620 → 720; the choice requests move only by the
+  // four rule lines removed from the system and the four properties removed
+  // from the schema; the ledger request is unchanged (`b497658e…`), and this
+  // result moves only in `state_mutations` and `emotional_tone`, which now take
+  // the safe defaults here.
+  unsplitRequest: '4775303c09c89e14b249f0d0cea805aa52ee735364284949c49b5574e784856d',
+  splitChoiceRequest: '695bf1cdef6a57ee6c20b3cc03eb9ff2961a83a7f2a872f01152f310b11e8f53',
   splitLedgerRequest: 'b497658ea879876a3f4f42b17ed6f4ecbbd9b238fa0be70596047adbde561fb1',
-  result: 'f7e27d15e9fce9c6585e287234f8bbcf1963e3b8149b7e7f829758374b541cf5',
+  result: '5966858544c5c5956895a643f02628e706477dd0506d16f442a77d5d0146ec15',
 }
 
 const WITNESS_RAW = '{"present_characters":["Mara"],"characters_departed":[],"physical_state_opened":[],"physical_state_closed":[],"current_location":"the hall","player_destination":null,"player_travel_confirmed":false,"location_evidence":"steps into the hall","location_evidence_source":"narrative","containment_hint":null,"movement":"lateral","viewpoint_moved":true,"time_elapsed":null,"time_evidence":null,"location_state_changes":[],"location_permanent_facts":[]}'
@@ -608,17 +616,17 @@ async function runBites() {
     {
       name: 'absent: the English result gained choices_en',
       check: 'absent: results match the pre-change fixture and gain no choices_en',
-      edits: [[extractor, "...(englishChoices === undefined\n          ? {}\n          : { choices_en: keptOrder.map((index) => englishChoices[index]) }),", 'choices_en: keptOrder.map((index) => englishChoices?.[index] ?? { label: \'\', send: \'\' }),']],
+      edits: [[extractor, "...(englishChoices === undefined\n            ? {}\n            : { choices_en: keptOrder.map((index) => englishChoices[index]) }),", 'choices_en: keptOrder.map((index) => englishChoices?.[index] ?? { label: \'\', send: \'\' }),']],
     },
     {
       name: 'present: the choice half reads the English prose',
       check: 'present: the choice half reads the native prose and native player turn',
-      edits: [[extractor, 'const choiceNarrative = language\n        ? language.narrative\n        : typeof narrative === \'string\' ? narrative : await narrative', 'const choiceNarrative = typeof narrative === \'string\' ? narrative : await narrative']],
+      edits: [[extractor, "const choiceNarrative = language\n          ? language.narrative\n          : typeof narrative === 'string' ? narrative : await narrative", "const choiceNarrative = typeof narrative === 'string' ? narrative : await narrative"]],
     },
     {
       name: 'present: the language line is not last',
       check: 'present: one language line, at the very end of the choice system prompt',
-      edits: [[extractor, "? `${strippedChoiceBase}${genderRule ? `\\n${genderRule}` : ''}\\n${choiceLanguageInstruction(language.name)}`", "? `${choiceLanguageInstruction(language.name)}\\n${strippedChoiceBase}${genderRule ? `\\n${genderRule}` : ''}`"]],
+      edits: [[extractor, "? `${buttonsBase}${genderRule ? `\\n${genderRule}` : ''}\\n${choiceLanguageInstruction(language.name)}`", "? `${choiceLanguageInstruction(language.name)}\\n${buttonsBase}${genderRule ? `\\n${genderRule}` : ''}`"]],
     },
     {
       name: 'present: maxTokens is not raised',
@@ -633,7 +641,7 @@ async function runBites() {
     {
       name: 'present: the witness waits for nothing (starts on native)',
       check: 'present: a promised English copy lets the choice half start first and the rest wait',
-      edits: [[extractor, "(async () => extractSceneWitness(typeof narrative === 'string' ? narrative : await narrative, opts))(),", "(async () => extractSceneWitness(opts?.choiceLanguage?.narrative ?? (typeof narrative === 'string' ? narrative : await narrative), opts))(),"]],
+      edits: [[extractor, "(async () => extractSceneWitness(typeof narrative === 'string' ? narrative : await narrative, opts, stats, flagKeys))(),", "(async () => extractSceneWitness(opts?.choiceLanguage?.narrative ?? (typeof narrative === 'string' ? narrative : await narrative), opts, stats, flagKeys))(),"]],
     },
     {
       name: 'present: the English pair is not aligned through the repeats filter',

@@ -1713,7 +1713,7 @@ ${
     onChoiceModel: (model) => { choiceModel = model },
   }
   const choiceHalfPromise = extractChoiceMetadata(rawNarrative, metaStats, metaFlags, metaOpts)
-  const witnessHalfPromise = extractSceneWitness(rawNarrative, metaOpts)
+  const witnessHalfPromise = extractSceneWitness(rawNarrative, metaOpts, metaStats, metaFlags)
   const metaPromise = Promise.all([witnessHalfPromise, choiceHalfPromise])
     .then(([witness, choice]) => mergeSceneMetadata(witness, choice))
   // Do not wait for the broad metadata pass just to build a candidate set. The

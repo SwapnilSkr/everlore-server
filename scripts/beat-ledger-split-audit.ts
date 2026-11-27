@@ -54,7 +54,11 @@ await check('(a) off pins the legacy request byte for byte', async () => {
   // `noReasoning: true`. The model string here is unchanged (the audit mocks
   // both keys to gpt-4o-mini); dropping `noReasoning` reproduces the previous
   // pin `b52bf602…` byte for byte.
-  assert.equal(hash(wire(baseline)), '3b77ffee6b7ec504513543ab9cc19a66bf38a0642969013b3bad114a1917601d')
+  //
+  // buttons-slim then took the four rule lines and the four schema properties
+  // for the stat/flag/tag/tone fields out of this request (`3b77ffee…`); the
+  // ledger's own request is unchanged.
+  assert.equal(hash(wire(baseline)), '1165fbe2ff9657f68c89eff084668dfce5cb829e733db4ca8c09adb2821edc4d')
   assert.equal(typeof baseline.firstTokenHedge?.onFirstToken, 'function')
   assert.equal(baseline.firstTokenHedge?.delayMs, 1500)
   const config = readFileSync(new URL('../src/config/env.ts', import.meta.url), 'utf8')

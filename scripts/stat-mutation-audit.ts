@@ -11,7 +11,7 @@
  * MUST leave every gauge alone. Run with LIVE=1 to include it.
  */
 import { applyStateMutations, resolveStatKey } from '../src/utils/state-mutator'
-import { extractChoiceMetadata, statDescriptors } from '../worker/lib/metadata-extractor'
+import { extractSceneWitness, statDescriptors } from '../worker/lib/metadata-extractor'
 
 let failed = 0
 function ok(label: string, condition: boolean, detail = '') {
@@ -109,12 +109,13 @@ if (process.env.LIVE) {
   ]
 
   for (const testCase of cases) {
-    const meta = await extractChoiceMetadata(testCase.prose, stats, [], {
+    // The scene witness writes the stat changes now, not the buttons half.
+    const meta = await extractSceneWitness(testCase.prose, {
       isSentient: false,
       protagonist: { name: 'the detective', aliases: [] },
       worldContext,
       playerInput: '',
-    } as any)
+    } as any, stats, [])
     const mutations = (meta.state_mutations || {}) as Record<string, { op: string; value: number }>
     ok(testCase.label, testCase.expect(mutations), JSON.stringify(mutations))
     const untracked = Object.keys(mutations).filter((key) => !resolveStatKey(key, ['heat', 'reputation']))

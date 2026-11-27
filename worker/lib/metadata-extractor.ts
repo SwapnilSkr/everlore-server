@@ -10,15 +10,61 @@ export type SceneMetadata = Omit<GenerationOutput, 'narrative'>
 
 /**
  * The metadata pass is SPLIT into two focused LLM calls so the most fragile
- * half (the SCENE WITNESS: who is present / where / how time moved) can fail
- * without corrupting the CHOICE/STAT half, and vice versa. `extractSceneMetadata`
+ * half (the SCENE WITNESS: who is present / where / how time moved, plus the
+ * stat and flag changes, the scene tag and the tone) can fail without corrupting
+ * the CHOICE half, and vice versa. `extractSceneMetadata`
  * runs both in parallel and merges — every caller (main turn, edit, replay) gets
  * the isolation for free with an identical return shape. See METADATA_SPLIT.md.
  */
 
+/** The four fields the buttons call used to write and the scene witness now
+ *  owns: the buttons are published before the tail settles, so the scene type
+ *  and the gauges must not depend on their model. Kept as property definitions
+ *  so the witness schema carries them unchanged. */
+const MOVED_FIELDS_SCHEMA_PROPERTIES = {
+  state_mutations: {
+    type: 'object',
+    additionalProperties: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        op: { type: 'string', enum: ['add', 'subtract', 'set'] },
+        value: { type: 'number' },
+      },
+      required: ['op', 'value'],
+    },
+  },
+  flag_mutations: {
+    type: 'object',
+    additionalProperties: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        op: { type: 'string', enum: ['set', 'increment', 'decrement'] },
+        value: {
+          anyOf: [
+            { type: 'string' },
+            { type: 'number' },
+            { type: 'boolean' },
+            { type: 'null' },
+          ],
+        },
+      },
+      required: ['op', 'value'],
+    },
+  },
+  scene_tag: {
+    type: 'string',
+    enum: ['dialogue', 'combat', 'romantic', 'intimate', 'exploration', 'existential', 'cosmic', 'mundane'],
+  },
+  emotional_tone: { type: 'string' },
+}
+
 /** WITNESS schema — the fragile, low-token scene-observation half: presence,
- *  departures, location, movement, time, and place facts. A bad/truncated
- *  witness response falls back to safe defaults and never touches choices. */
+ *  departures, location, movement, time, place facts, and (since the buttons
+ *  were split onto their own model) the stat/flag changes, scene tag and tone.
+ *  A bad/truncated witness response falls back to safe defaults and never
+ *  touches choices. */
 const WITNESS_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -97,52 +143,18 @@ const WITNESS_SCHEMA = {
       maxItems: 6,
       items: { type: 'string' },
     },
+    ...MOVED_FIELDS_SCHEMA_PROPERTIES,
   },
-  required: ['present_characters', 'characters_departed', 'physical_state_opened', 'physical_state_closed', 'current_location', 'player_destination', 'player_travel_confirmed', 'location_evidence', 'location_evidence_source', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'time_evidence', 'location_state_changes', 'location_permanent_facts'],
+  required: ['present_characters', 'characters_departed', 'physical_state_opened', 'physical_state_closed', 'current_location', 'player_destination', 'player_travel_confirmed', 'location_evidence', 'location_evidence_source', 'containment_hint', 'movement', 'viewpoint_moved', 'time_elapsed', 'time_evidence', 'location_state_changes', 'location_permanent_facts', 'state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone'],
 }
 
-/** CHOICE/STAT schema — the player-moves + bookkeeping half: choices, scene tag,
- *  tone, milestone, stat/flag mutations. Isolated from the witness half. */
+/** CHOICE schema — the player-moves + bookkeeping half: choices, the beat ledger
+ *  and the milestone. The stat/flag changes, scene tag and tone moved to the
+ *  witness half (the buttons call no longer returns them). */
 const CHOICE_META_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    state_mutations: {
-      type: 'object',
-      additionalProperties: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          op: { type: 'string', enum: ['add', 'subtract', 'set'] },
-          value: { type: 'number' },
-        },
-        required: ['op', 'value'],
-      },
-    },
-    flag_mutations: {
-      type: 'object',
-      additionalProperties: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          op: { type: 'string', enum: ['set', 'increment', 'decrement'] },
-          value: {
-            anyOf: [
-              { type: 'string' },
-              { type: 'number' },
-              { type: 'boolean' },
-              { type: 'null' },
-            ],
-          },
-        },
-        required: ['op', 'value'],
-      },
-    },
-    scene_tag: {
-      type: 'string',
-      enum: ['dialogue', 'combat', 'romantic', 'intimate', 'exploration', 'existential', 'cosmic', 'mundane'],
-    },
-    emotional_tone: { type: 'string' },
     beat_ledger: {
       type: 'object',
       additionalProperties: false,
@@ -186,7 +198,7 @@ const CHOICE_META_SCHEMA = {
       anyOf: [{ type: 'string' }, { type: 'null' }],
     },
   },
-  required: ['state_mutations', 'flag_mutations', 'scene_tag', 'emotional_tone', 'beat_ledger', 'choices', 'milestone'],
+  required: ['beat_ledger', 'choices', 'milestone'],
 }
 
 // Preserve property order in the legacy schema: the ledger precedes choices.
@@ -448,6 +460,19 @@ Rules:
 - time_evidence: REQUIRED whenever time_elapsed is not null. One SHORT exact excerpt (3-20 words) from the COMPLETED NARRATIVE that states the span passing ("Two days later, the rain finally stopped", "weeks wore on"). It must contain the same time unit the label claims. Never paraphrase. If you cannot cite the sentence, time_elapsed must be null — this is machine-checked before the story calendar moves.
 - location_state_changes: short clauses for what BECAME TRUE about the CURRENT place this turn — its mutable condition. Capture changes in EITHER direction, not only destruction: damage/decline ("the gate now lies in ruins", "the tavern has burned down", "soldiers occupy the square") AND improvement/transformation ("the garden has been restored to bloom", "the hall is now decorated for the feast", "the overgrown courtyard has been cleared", "the hearth is lit and the room is warm again"). If the prose shows the place visibly altered — repaired, rebuilt, cleaned, decorated, brought to life, flooded, emptied, transformed — record it. Each clause must be self-contained and name what changed. Empty array [] when the place's condition did not change (the usual case).
 - location_permanent_facts: short clauses for ENDURING, canonical facts about the current place newly established this turn ("the temple was built over a buried god", "this bridge is the only crossing for fifty miles"). These are lasting truths, not passing events or moods. Empty array [] almost always — use sparingly.`
+
+/** The rules the buttons half is no longer told, because it no longer writes
+ *  these fields: the witness half reads the whole rules block and owns them.
+ *  Each is one line of METADATA_RULES, and each must exist exactly once — a
+ *  missing or duplicated line would silently change a model's instructions. */
+const MOVED_RULE_PREFIXES = ['- state_mutations:', '- flag_mutations:', '- scene_tag:', '- emotional_tone:'] as const
+const MOVED_RULES = MOVED_RULE_PREFIXES.map((prefix) => {
+  const lines = METADATA_RULES.split('\n').filter((line) => line.startsWith(prefix))
+  if (lines.length !== 1) {
+    throw new Error(`METADATA_RULES must carry exactly one "${prefix}" rule line (found ${lines.length})`)
+  }
+  return lines[0]
+})
 
 /**
  * Derive ALL structured fields (state/flag mutations, scene tag, tone, choices,
@@ -833,17 +858,20 @@ export function validateHalf(raw: string, opts?: SchemaOptions): GenerationOutpu
 
 /**
  * WITNESS half — the dedicated low-token scene observation: who is present, who
- * left, where the viewpoint stands, how it moved, how time elapsed, and what
- * changed about the place. Isolated from the choice/stat half so a witness
- * failure (truncation, bad JSON) falls back to safe defaults and never corrupts
- * the choices/stats, and vice versa. Returns a full SceneMetadata with only the
- * witness fields populated; the rest are the safe fallback.
+ * left, where the viewpoint stands, how it moved, how time elapsed, what changed
+ * about the place, and the stat/flag changes, scene tag and tone the buttons
+ * half no longer writes. Isolated from the choice half so a witness failure
+ * (truncation, bad JSON) falls back to safe defaults and never corrupts the
+ * choices, and vice versa. Returns a full SceneMetadata with only the witness
+ * fields populated; the rest are the safe fallback.
  */
 export async function extractSceneWitness(
   narrative: string,
   opts?: MetadataOpts,
+  stats?: StatInput,
+  flagKeys?: string[],
 ): Promise<SceneMetadata> {
-  const system = buildMetadataSystem(opts, [], [])
+  const system = buildMetadataSystem(opts, normalizeStats(stats ?? []), flagKeys ?? [])
   const startedAt = Date.now()
   try {
     const raw = await (opts?.call || callLLM)({
@@ -856,8 +884,10 @@ export async function extractSceneWitness(
       temperature: 0.2,
       // Raised with the physical-state fields: at 450 a turn with a grip plus a
       // location change could truncate, and a truncated witness falls back to
-      // empty — silently losing the presence read for that turn.
-      maxTokens: 620,
+      // empty — silently losing the presence read for that turn. Raised again
+      // (620 → 720) because the stat/flag mutations and the scene tag now come
+      // back in this answer too.
+      maxTokens: 720,
       responseSchema: WITNESS_SCHEMA,
     })
     opts?.onRaw?.('scene_witness', raw)
@@ -880,9 +910,13 @@ export async function extractSceneWitness(
       time_evidence: v.time_evidence ?? null,
       location_state_changes: v.location_state_changes ?? [],
       location_permanent_facts: v.location_permanent_facts ?? [],
+      state_mutations: v.state_mutations ?? {},
+      flag_mutations: v.flag_mutations ?? {},
+      scene_tag: v.scene_tag ?? 'dialogue',
+      emotional_tone: v.emotional_tone ?? 'neutral',
     }
   } catch {
-    return WITNESS_FALLBACK
+    return { ...WITNESS_FALLBACK, scene_tag: 'intimate' }
   } finally {
     // A failed call is still time the tail waited, so the stage is reported on
     // both paths; only a call that never happened leaves no stage.
@@ -922,10 +956,11 @@ export function filterChoicePairs<T extends { label?: string }>(
 }
 
 /**
- * CHOICE/STAT half — suggested player moves, scene tag, tone, milestone, and
- * stat/flag mutations. Kept together (they share one JSON pass) but isolated
- * from the witness half. Falls back to an `intimate` scene tag to preserve NSFW
- * momentum (matching the legacy no-op fallback) on failure.
+ * CHOICE half — suggested player moves, the milestone and the beat ledger. The
+ * stat/flag mutations, scene tag and tone belong to the witness half now; this
+ * answer fills them with the safe defaults and the merge takes the witness's.
+ * Falls back to an `intimate` scene tag to preserve NSFW momentum (matching the
+ * legacy no-op fallback) on failure.
  *
  * `narrative` may be a Promise on a non-English turn: rl-3 can launch this half
  * with the native text in `opts.choiceLanguage` before the English copy exists.
@@ -958,14 +993,18 @@ export async function extractChoiceMetadata(
     ? withChoiceContext(buildMetadataSystem(opts, normalizedStats, flagKeys, language.playerInput))
     : system
   const strippedChoiceBase = split ? choiceBase.replace(ledgerRule + '\n', '') : choiceBase
+  // This half no longer returns the four moved fields, so it is not told their
+  // rules — in the split and the unsplit case alike. The ledger's own system is
+  // built from `system`, so it keeps its rule.
+  const buttonsBase = MOVED_RULES.reduce((base, rule) => base.replace(rule + '\n', ''), strippedChoiceBase)
   // The gender line, then the one language line at the very end — after the
   // choice context too. Absent gender leaves both strings as they were.
   const genderRule = opts?.playerGender
     ? choiceGenderInstruction(opts.playerGender, !!language)
     : ''
   const choicesSystem = language
-    ? `${strippedChoiceBase}${genderRule ? `\n${genderRule}` : ''}\n${choiceLanguageInstruction(language.name)}`
-    : `${strippedChoiceBase}${genderRule ? `\n${genderRule}` : ''}`
+    ? `${buttonsBase}${genderRule ? `\n${genderRule}` : ''}\n${choiceLanguageInstruction(language.name)}`
+    : `${buttonsBase}${genderRule ? `\n${genderRule}` : ''}`
   const invoke = execution?.call || opts?.call || callLLM
   // Launch before awaiting choices, and catch independently: a ledger outage
   // must never discard successful choices (or vice versa). Timed around this
@@ -1058,10 +1097,12 @@ export async function extractChoiceMetadata(
         )
         return {
           ...WITNESS_FALLBACK,
-          state_mutations: v.state_mutations,
-          flag_mutations: v.flag_mutations,
-          scene_tag: v.scene_tag,
-          emotional_tone: v.emotional_tone,
+          // The witness half now writes these four; the buttons answer cannot
+          // carry them, so the safe defaults stand until the halves are merged.
+          state_mutations: WITNESS_FALLBACK.state_mutations,
+          flag_mutations: WITNESS_FALLBACK.flag_mutations,
+          scene_tag: WITNESS_FALLBACK.scene_tag,
+          emotional_tone: WITNESS_FALLBACK.emotional_tone,
           beat_ledger: v.beat_ledger,
           choices: keptOrder.map((index) => nativeChoices[index]),
           ...(englishChoices === undefined
@@ -1091,7 +1132,8 @@ export async function extractChoiceMetadata(
 /**
  * Derive ALL structured fields (state/flag mutations, scene tag, tone, choices,
  * milestone, presence, location, time) from a finished narrative by running the
- * WITNESS and CHOICE/STAT halves in parallel and merging. Runs on EVERY turn:
+ * WITNESS and CHOICE halves in parallel and merging. The tracked stats and flags
+ * go to the witness half, which judges them. Runs on EVERY turn:
  * the narrator is always `proseOnly` (streamed prose, uncensored-model
  * compatible), so this cheap reliable model handles the structured bookkeeping.
  * `opts.protagonist` anchors first-person choice generation to the player so the
@@ -1105,7 +1147,7 @@ export async function extractSceneMetadata(
   opts?: MetadataOpts,
 ): Promise<SceneMetadata> {
   const [witness, choice] = await Promise.all([
-    (async () => extractSceneWitness(typeof narrative === 'string' ? narrative : await narrative, opts))(),
+    (async () => extractSceneWitness(typeof narrative === 'string' ? narrative : await narrative, opts, stats, flagKeys))(),
     extractChoiceMetadata(narrative, stats, flagKeys, opts),
   ])
   return mergeSceneMetadata(witness, choice)
@@ -1135,11 +1177,11 @@ export function mergeSceneMetadata(witness: SceneMetadata, choice: SceneMetadata
     time_evidence: witness.time_evidence,
     location_state_changes: witness.location_state_changes,
     location_permanent_facts: witness.location_permanent_facts,
-    // CHOICE/STAT half
-    state_mutations: choice.state_mutations,
-    flag_mutations: choice.flag_mutations,
-    scene_tag: choice.scene_tag,
-    emotional_tone: choice.emotional_tone,
+    state_mutations: witness.state_mutations,
+    flag_mutations: witness.flag_mutations,
+    scene_tag: witness.scene_tag,
+    emotional_tone: witness.emotional_tone,
+    // CHOICE half
     beat_ledger: choice.beat_ledger,
     choices: choice.choices,
     ...(choice.choices_en ? { choices_en: choice.choices_en } : {}),
