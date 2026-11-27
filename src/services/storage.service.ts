@@ -84,7 +84,7 @@ export const storageService = {
    * Promote a chosen `previews/` image to the durable `media/` prefix so the
    * lifecycle rule won't expire it. Idempotent: returns the URL unchanged if it
    * isn't one of our preview URLs (already durable, or external). Best-effort
-   * deletes the old preview object afterward.
+   * leaves the preview for the lifecycle rule.
    */
   async promote(url: string): Promise<string> {
     if (!isStorageConfigured()) return url
@@ -104,7 +104,9 @@ export const storageService = {
       // If the copy fails, keep the original URL rather than losing the image.
       return url
     }
-    void this.delete(key)
+    // The preview is left for the bucket's lifecycle rule to expire. Deleting it
+    // here broke a second save of the same picture: its copy then failed and
+    // the record kept the dead preview URL (two characters, 2026-11-22).
     return `${env.CDN_BASE_URL.replace(/\/+$/, '')}/${destKey}`
   },
 
