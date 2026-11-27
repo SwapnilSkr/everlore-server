@@ -12,6 +12,15 @@
  *   (d) the processor publishes `choices_ready` inside the `earlyChoicesPromise`
  *       chain, guards both publish sites, and assigns the finished set after
  *       the join.
+ *   (f) a non-English turn launches the button half BEFORE the hidden English
+ *       copy: the `choice_metadata` request leaves at once while the copy is
+ *       still 2 s away.
+ *   (g) the split ledger still waits for the copy and its request is exactly the
+ *       one built after it, with the English player line.
+ *   (h) the English repeat check still sees the English line when it arrives
+ *       late, through `englishTurn`.
+ *   (i) the processor wiring, read as text: the early launch sits before the
+ *       copy and `englishDone` is called after it.
  *
  * Pure: every model call is injected. No network, no DB.
  *
@@ -58,11 +67,16 @@ const byPurpose = (requests: Array<Record<string, any>>, purpose: string) =>
  * A stubbed transport. `choiceAnswers` is consumed one per `choice_metadata`
  * call: a string is returned, an Error is thrown. Past the end, the last answer
  * repeats. The ledger and the witness always answer.
+ *
+ * `sends` records when each request was made: the early-launch checks read when
+ * a call started relative to the copy, which the request bodies cannot say.
  */
 function stub(choiceAnswers: Array<string | Error>) {
   const requests: Array<Record<string, any>> = []
+  const sends: Array<{ purpose: string; at: number }> = []
   let choiceAttempt = 0
   const call = async (request: Record<string, any>) => {
+    sends.push({ purpose: String(request.purpose || ''), at: Date.now() })
     requests.push(JSON.parse(JSON.stringify(request)))
     if (request.purpose === 'choice_metadata') {
       const answer = choiceAnswers[Math.min(choiceAttempt, choiceAnswers.length - 1)]
@@ -74,7 +88,7 @@ function stub(choiceAnswers: Array<string | Error>) {
     if (request.purpose === 'scene_witness') return WITNESS_RAW
     return '{}'
   }
-  return { requests, call }
+  return { requests, sends, call }
 }
 
 const opts = (call: MetadataOpts['call']): MetadataOpts => ({ call, playerInput: '*I wait by the door.*' })
@@ -178,6 +192,157 @@ await check('(d) the processor publishes choices_ready early, guards both sites,
   assert.ok(assignedAt > joinAt, 'the finished set must be assigned after the join')
 })
 
+// ── (f)-(i) a non-English turn starts the buttons before the English copy ───
+const NATIVE_LINE = 'Quanto tempo você ficou fora?'
+const ENGLISH_LINE = 'How long were you away?'
+const ENGLISH_PROSE = 'Mara steps into the hall.'
+const CHOICE_LANGUAGE = { name: 'Brazilian Portuguese', narrative: 'Mara entra no salão.', playerInput: NATIVE_LINE }
+
+/** Native chips with their English pairs: the paired schema, so no translation
+ *  retry is needed and the only calls are the ones a check means to measure. */
+function pairRaw(pairs: Array<{ label: string; send: string; local: string; localSend: string; kind?: string }>): string {
+  return JSON.stringify({
+    choices: pairs.map((pair) => ({
+      label: pair.label,
+      kind: pair.kind || 'act',
+      send: pair.send,
+      label_local: pair.local,
+      send_local: pair.localSend,
+    })),
+    milestone: null,
+  })
+}
+const PAIR_RAW = pairRaw([
+  { label: 'Ask why she left', send: '*I ask why she left.*', local: 'Perguntar por que ela saiu', localSend: '*Eu pergunto por que ela saiu.*' },
+  { label: 'Wait in silence', send: '*I wait in silence.*', local: 'Esperar em silêncio', localSend: '*Eu espero em silêncio.*' },
+])
+
+/** The value the processor hands the button half: one promise per input, both
+ *  resolved by the copy that starts after the launch. */
+const englishValuesOf = (copy: Promise<{ playerInput: string; playerInputEnglish: string; narrative: string }>) =>
+  copy.then(({ playerInput, playerInputEnglish }) => ({ playerInput, playerInputEnglish }))
+
+await check('(f) with choiceLanguage set, the button call is sent within 100 ms while the copy takes 2 s', async () => {
+  const { sends, call } = stub([PAIR_RAW])
+  const launchedAt = Date.now()
+  const englishTurn = new Promise<{ playerInput: string; playerInputEnglish: string; narrative: string }>((resolve) => {
+    setTimeout(() => resolve({ playerInput: ENGLISH_LINE, playerInputEnglish: ENGLISH_LINE, narrative: ENGLISH_PROSE }), 2000)
+  })
+  const pending = extractChoiceMetadata(
+    englishTurn.then((copy) => copy.narrative),
+    FIXTURE_STATS,
+    FIXTURE_FLAGS,
+    {
+      call,
+      playerInput: NATIVE_LINE,
+      choiceLanguage: CHOICE_LANGUAGE,
+      englishTurn: englishValuesOf(englishTurn),
+    },
+    { split: true },
+  )
+  await new Promise((resolve) => setTimeout(resolve, 100))
+  const choiceSend = sends.find((send) => send.purpose === 'choice_metadata')
+  assert.ok(choiceSend, 'the button call must be sent before the copy settles')
+  assert.ok(
+    choiceSend.at - launchedAt <= 100,
+    `the button call was sent ${choiceSend.at - launchedAt} ms after the launch, while the copy was still 2 s away`,
+  )
+  assert.equal(sends.some((send) => send.purpose === 'beat_ledger'), false, 'the ledger must still wait for the copy')
+  const result = await pending
+  assert.ok(result.choices.length >= 2, 'the waiting pair must still ship its buttons')
+})
+
+await check('(g) the split ledger is sent only after englishTurn and is the request built with the English player line', async () => {
+  let resolvedAt = 0
+  const englishTurn = new Promise<{ playerInput: string; playerInputEnglish: string; narrative: string }>((resolve) => {
+    setTimeout(() => {
+      resolvedAt = Date.now()
+      resolve({ playerInput: ENGLISH_LINE, playerInputEnglish: ENGLISH_LINE, narrative: ENGLISH_PROSE })
+    }, 300)
+  })
+  const early = stub([PAIR_RAW])
+  await extractChoiceMetadata(
+    englishTurn.then((copy) => copy.narrative),
+    FIXTURE_STATS,
+    FIXTURE_FLAGS,
+    {
+      call: early.call,
+      playerInput: NATIVE_LINE,
+      choiceLanguage: CHOICE_LANGUAGE,
+      englishTurn: englishValuesOf(englishTurn),
+    },
+    { split: true },
+  )
+  // Today's launch: the objects the processor built after the copy, with the
+  // English player line and no promise.
+  const today = stub([PAIR_RAW])
+  await extractChoiceMetadata(
+    Promise.resolve(ENGLISH_PROSE),
+    FIXTURE_STATS,
+    FIXTURE_FLAGS,
+    { call: today.call, playerInput: ENGLISH_LINE, choiceLanguage: CHOICE_LANGUAGE },
+    { split: true },
+  )
+  const ledgerSend = early.sends.find((send) => send.purpose === 'beat_ledger')
+  assert.ok(ledgerSend, 'the split must still make its ledger call')
+  assert.ok(
+    ledgerSend.at >= resolvedAt,
+    `the ledger was sent ${resolvedAt - ledgerSend.at} ms before the copy settled`,
+  )
+  const earlyLedger = byPurpose(early.requests, 'beat_ledger')[0]
+  const todayLedger = byPurpose(today.requests, 'beat_ledger')[0]
+  assert.deepEqual(earlyLedger, todayLedger, 'the early ledger must be byte-identical to the one built with the English line')
+  const system = JSON.stringify(earlyLedger.messages[0].content)
+  assert.ok(system.includes(ENGLISH_LINE), 'the ledger must be told the English player turn')
+  assert.equal(system.includes(NATIVE_LINE), false, 'the native player turn must not reach the ledger')
+})
+
+await check('(h) an English pair equal to the English line is dropped when the line arrives late via englishTurn', async () => {
+  const raw = pairRaw([
+    { label: 'Ask about the storm', kind: 'say', send: 'How long were you away?', local: 'Perguntar sobre a tempestade', localSend: 'Pergunto de novo sobre a tormenta.' },
+    { label: 'Wait', send: '*I wait in silence.*', local: 'Esperar', localSend: '*Eu espero em silêncio.*' },
+    { label: 'Leave', send: '*I leave the hall.*', local: 'Sair', localSend: '*Eu saio do salão.*' },
+  ])
+  let resolveCopy!: (copy: { playerInput: string; playerInputEnglish: string; narrative: string }) => void
+  const englishTurn = new Promise<{ playerInput: string; playerInputEnglish: string; narrative: string }>((resolve) => {
+    resolveCopy = resolve
+  })
+  const { requests, call } = stub([raw])
+  const pending = extractChoiceMetadata(
+    englishTurn.then((copy) => copy.narrative),
+    FIXTURE_STATS,
+    FIXTURE_FLAGS,
+    {
+      call,
+      playerInput: NATIVE_LINE,
+      choiceLanguage: CHOICE_LANGUAGE,
+      englishTurn: englishValuesOf(englishTurn),
+    },
+    { split: true },
+  )
+  // The buttons answer first: when they do, the English line does not exist yet.
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(byPurpose(requests, 'choice_metadata').length, 1, 'the buttons must answer before the copy settles')
+  resolveCopy({ playerInput: ENGLISH_LINE, playerInputEnglish: ENGLISH_LINE, narrative: ENGLISH_PROSE })
+  const result = await pending
+  assert.deepEqual(result.choices.map((choice) => choice.label), ['Esperar', 'Sair'])
+  assert.deepEqual(result.choices_en?.map((choice) => choice.label), ['Wait', 'Leave'])
+})
+
+await check('(i) the processor launches the non-English buttons before the copy and hands the copy over after it', async () => {
+  const processor = await readFile(new URL('../worker/processors/generation.processor.ts', import.meta.url), 'utf8')
+  const launch = processor.indexOf('const earlyChoiceHalf =')
+  assert.ok(launch > 0, 'the early button launch must exist')
+  const witness = processor.indexOf('await runTurnWitness(')
+  assert.ok(witness > launch, 'the early launch must be declared before the copy runs')
+  const done = processor.indexOf('englishDone?.({')
+  assert.ok(done > witness, 'englishDone must be called after the copy block')
+  assert.ok(
+    processor.slice(launch, witness).includes('englishReady.then'),
+    'the launch must be handed the copy through the promise',
+  )
+})
+
 if (fail > 0) {
   console.log(`\nchoice-early audit: ${pass} passed, ${fail} failed`)
   process.exit(1)
@@ -222,6 +387,28 @@ async function runBites() {
       name: '(d) the early publish guard removed',
       check: '(d) the processor publishes choices_ready early, guards both sites, and assigns after the join',
       edits: [[processor, '      if (!choicesReadySent && done.choices.length > 0) {', '      if (done.choices.length > 0) {']],
+    },
+    {
+      name: '(f) the button half made to wait for the copy',
+      check: '(f) with choiceLanguage set, the button call is sent within 100 ms while the copy takes 2 s',
+      edits: [[extractor, '  const language = opts?.choiceLanguage', '  await opts?.englishTurn\n  const language = opts?.choiceLanguage']],
+    },
+    {
+      name: '(g) the ledger kept on the early (native) object',
+      check: '(g) the split ledger is sent only after englishTurn and is the request built with the English player line',
+      edits: [[extractor, '      const english = opts?.englishTurn ? await opts.englishTurn : undefined', '      const english = undefined']],
+    },
+    {
+      name: '(h) the late English line never read',
+      check: '(h) an English pair equal to the English line is dropped when the line arrives late via englishTurn',
+      edits: [[extractor,
+        '          language ? (opts?.englishTurn ? (await opts.englishTurn).playerInputEnglish : opts?.playerInputEnglish) : undefined,',
+        '          language ? opts?.playerInputEnglish : undefined,']],
+    },
+    {
+      name: '(i) the early launch renamed away',
+      check: '(i) the processor launches the non-English buttons before the copy and hands the copy over after it',
+      edits: [[processor, 'const earlyChoiceHalf = englishReady', 'const lateChoiceHalf = englishReady']],
     },
   ]
 

@@ -1638,7 +1638,12 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // buttons-slim handed the tracked stats and flags to `extractSceneWitness` on
   // that hoisted line; the handoff still did not move, so re-hashed the same way
   // (the stripped source differs from the pinned one only on that call).
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), 'db81d1745fbd31ba15166936585d1b005d3396e1f5cfacc83c7905f67e07c4d8')
+  // buttons-copy starts the non-English button half before the hidden English
+  // copy: the declaration block it reads (protagonist, roster, prior presence,
+  // tail clock, stat/flag names), the options literal and the launch moved above
+  // the copy, and the launch is now `earlyChoiceHalf ?? …`. Nothing else
+  // changed, and the group-only handoff did not move; re-hashed the same way.
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '4838da7c496d46da79421d5055e80a096918b5b637b04d302f83c7977d1a9a2a')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —

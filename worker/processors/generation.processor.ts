@@ -1429,6 +1429,140 @@ ${
   let witnessLanguage: { code: string; name: string } | null = null
   // Stays undefined on an English turn, so its stage is absent and never a 0.
   let witnessMs: number | undefined
+  // Declared here, before the copy, so a non-English turn can start the button
+  // half first: none of these reads the English copy.
+  // Anchor choice generation to the player's identity so the choice viewpoint
+  // can't drift. GM worlds: the protagonist card IS the player's character.
+  // Sentient worlds: the player is the persona talking to the locked character.
+  const choiceProtagonist = session.is_sentient
+    ? session.persona_snapshot?.name
+      ? { name: session.persona_snapshot.name, aliases: [] }
+      : null
+    : protagonistCard
+      ? {
+          name: protagonistCard.canonical_name,
+          aliases: protagonistCard.aliases || [],
+        }
+      : session.persona_snapshot?.name
+        ? { name: session.persona_snapshot.name, aliases: [] }
+        : null
+  // Known cast for name normalization: the selected codex minus the PLAYER, so
+  // present_characters + choice references come back as canonical names the app
+  // can match exactly (instead of whatever alias/role the prose used). In GM
+  // worlds the player IS the is_protagonist card, so drop it; in sentient worlds
+  // the player is the (un-carded) persona and the is_protagonist card is the AI
+  // character the player talks to — very much an "other", so keep it.
+  const choiceRoster = (characterCodex as any[])
+    .filter((c) => c.canonical_name && (session.is_sentient || !c.is_protagonist))
+    .map((c) => ({
+      name: c.canonical_name as string,
+      aliases: (c.aliases || []) as string[],
+    }))
+  // Presence persists across a continuous scene: seed the extractor with whoever
+  // was present at the end of the most recent main-story turn, so a character
+  // still in the room but not named this passage isn't dropped to "elsewhere".
+  const priorPresent: string[] = (() => {
+    for (let i = (recentEvents as any[]).length - 1; i >= 0; i--) {
+      const pc = (recentEvents as any[])[i]?.data?.present_characters
+      if (Array.isArray(pc)) return pc.filter((n) => typeof n === 'string')
+    }
+    return []
+  })()
+  // ── TAIL CLOCK ───────────────────────────────────────────────────────────
+  // The post-stream calls run concurrently, so each is timed on its own inside
+  // the batch and `extraction_join` is the batch. Each call reports from its own
+  // gate, inside its own lib, so a skipped call leaves no entry and never a 0 —
+  // and if a lib's gate changes, its timing follows without a second copy here.
+  const tailCallMs: Partial<Record<TailModelCallStage, number>> = {}
+  const recordTailStage = (stage: TailModelCallStage, ms: number) => { tailCallMs[stage] = ms }
+  const choiceRoute: ChoiceHedgeRoute = { hedged: false }
+  let choiceFirstTokenMs: number | undefined
+  let choiceModel: string | undefined
+  const metaStats = statDescriptors(session.stat_definitions || session.world_state)
+  const metaFlags = Object.keys(session.active_flags || {})
+  // Built at CALL time: an early button launch (below) reads the native values,
+  // the launch after the copy reads exactly today's object.
+  const buildMetaOpts = (): MetadataOpts => ({
+    isSentient: session.is_sentient,
+    currentLocationName: currentLocation?.name || null,
+    priorPresent,
+    // Open configurations entering this turn, so the witness can close the
+    // ones this passage ends instead of leaving them to outlive the story.
+    priorPhysical: (packet.sceneState?.physical || []).map((fact) => fact.statement),
+    protagonist: choiceProtagonist,
+    roster: choiceRoster,
+    knownPlaces,
+    playerInput: parsedPlayerInput.raw,
+    // The world premise/lore, so the extractor can tell a LITERAL ghost (a real
+    // spirit in a horror/fantasy world) from a FIGURATIVE one (a metaphor for an
+    // overlooked person in a grounded drama) instead of reifying the metaphor
+    // into a "ask her about the ghost" choice.
+    worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
+    // WHAT HAS ALREADY BEEN SUGGESTED AND PASSED OVER.
+    //
+    // The choice half had no memory of its own output, so a standing
+    // situation kept producing the same obvious move. Measured over one live
+    // 83-turn save: 323 choices, 242 distinct, and "Challenge Isolde's
+    // authority" offered SIXTEEN times across the scene it belonged to. The
+    // player declined it every time; the set never moved on.
+    //
+    // A label the player actually SENT is dropped from the list — they took
+    // that path, so it is no longer an unanswered suggestion, and repeating
+    // a variant of it may well be the right next move.
+    recentChoiceLabels: (() => {
+      const taken = new Set(
+        (packet.recentEvents || [])
+          .map((event: any) => normalizeEntityName(String(event?.data?.player_input || '')))
+          .filter(Boolean),
+      )
+      return (packet.recentEvents || [])
+        .slice(-6)
+        .flatMap((event: any) => (event?.data?.choices || []) as any[])
+        .map((choice: any) => String(choice?.label || '').trim())
+        .filter((label: string) => label && !taken.has(normalizeEntityName(label)))
+    })(),
+    choiceContext: choiceDecisionContext,
+    // First-person buttons are the player's own words, so the choice half is
+    // told the same effective gender the narrator got.
+    playerGender: turnPlayerGender,
+    // §6: the choice half reads the NATIVE prose and native player turn; the
+    // witness half and the ledger read the English copy passed as `narrative`.
+    ...(turnReplyLanguage
+      ? {
+          choiceLanguage: {
+            name: turnReplyLanguage.name,
+            narrative: nativeNarrative,
+            playerInput: nativePlayerInputRaw,
+          },
+          // Present only on the launch AFTER the copy; an early launch takes the
+          // English line through `englishTurn` instead.
+          ...(acceptedWitness ? { playerInputEnglish: acceptedWitness.player } : {}),
+        }
+      : {}),
+    onRaw: (stage, raw) => extractorRaw.capture(stage)(raw),
+    // Each call reports its own start-to-settle; the pair runs in parallel, so
+    // measuring outside it would report the join twice. `beat_ledger` appears
+    // only when the choices pass is split.
+    onStage: recordTailStage,
+    onChoiceHedge: () => { choiceRoute.hedged = true },
+    onChoiceFirstToken: (ms, winner) => {
+      choiceFirstTokenMs = ms
+      choiceRoute.winner = winner
+    },
+    onChoiceModel: (model) => { choiceModel = model },
+  })
+  // The button call needs nothing the copy makes. On a non-English turn it
+  // starts now and is handed the copy's two English values when they settle;
+  // the ledger's player turn and the English repeat check wait for them. An
+  // English turn creates neither, so its path is unchanged.
+  let englishDone!: (v: { playerInput: string | null | undefined; playerInputEnglish: string | null | undefined; narrative: string }) => void
+  const englishReady = turnReplyLanguage
+    ? new Promise<{ playerInput: string | null | undefined; playerInputEnglish: string | null | undefined; narrative: string }>((r) => { englishDone = r })
+    : undefined
+  const earlyChoiceHalf = englishReady
+    ? extractChoiceMetadata(englishReady.then((e) => e.narrative), metaStats, metaFlags,
+        { ...buildMetaOpts(), englishTurn: englishReady.then(({ playerInput, playerInputEnglish }) => ({ playerInput, playerInputEnglish })) })
+    : undefined
   if (turnReplyLanguage) {
     witnessLanguage = { code: turnReplyLanguage.code, name: turnReplyLanguage.name }
     const newestEvent = recentEvents[recentEvents.length - 1]
@@ -1535,6 +1669,15 @@ ${
     }
   }
 
+  // The copy has settled, so the button call that started before it gets the two
+  // English values it waited for. A rejected copy leaves the line undefined and
+  // the prose native — exactly what the launch after the copy used to pass.
+  englishDone?.({
+    playerInput: parsedPlayerInput.raw,
+    playerInputEnglish: acceptedWitness?.player,
+    narrative: rawNarrative,
+  })
+
   const previousOpeningName = openingCharacterName(recentEvents || [], characterNames)
   // A live stream is an interaction contract: once prose is visible, no
   // post-stream system may silently rewrite it into a different scene. Hygiene
@@ -1553,43 +1696,6 @@ ${
     replyLanguage: turnReplyLanguage?.code,
   })
 
-  // Anchor choice generation to the player's identity so the choice viewpoint
-  // can't drift. GM worlds: the protagonist card IS the player's character.
-  // Sentient worlds: the player is the persona talking to the locked character.
-  const choiceProtagonist = session.is_sentient
-    ? session.persona_snapshot?.name
-      ? { name: session.persona_snapshot.name, aliases: [] }
-      : null
-    : protagonistCard
-      ? {
-          name: protagonistCard.canonical_name,
-          aliases: protagonistCard.aliases || [],
-        }
-      : session.persona_snapshot?.name
-        ? { name: session.persona_snapshot.name, aliases: [] }
-        : null
-  // Known cast for name normalization: the selected codex minus the PLAYER, so
-  // present_characters + choice references come back as canonical names the app
-  // can match exactly (instead of whatever alias/role the prose used). In GM
-  // worlds the player IS the is_protagonist card, so drop it; in sentient worlds
-  // the player is the (un-carded) persona and the is_protagonist card is the AI
-  // character the player talks to — very much an "other", so keep it.
-  const choiceRoster = (characterCodex as any[])
-    .filter((c) => c.canonical_name && (session.is_sentient || !c.is_protagonist))
-    .map((c) => ({
-      name: c.canonical_name as string,
-      aliases: (c.aliases || []) as string[],
-    }))
-  // Presence persists across a continuous scene: seed the extractor with whoever
-  // was present at the end of the most recent main-story turn, so a character
-  // still in the room but not named this passage isn't dropped to "elsewhere".
-  const priorPresent: string[] = (() => {
-    for (let i = (recentEvents as any[]).length - 1; i >= 0; i--) {
-      const pc = (recentEvents as any[])[i]?.data?.present_characters
-      if (Array.isArray(pc)) return pc.filter((n) => typeof n === 'string')
-    }
-    return []
-  })()
   const persistedDeceasedKeys = new Set(packet.deceasedCharacterNames.map((name) => normalizeEntityName(name)))
   // Places are a separate graph type from people. Keep their names available to
   // every downstream presence seam so a capitalized city/landmark cannot become
@@ -1618,15 +1724,8 @@ ${
     knownNames: priorCardNamesForPresence,
     exclude: [...knownPlacePresenceKeys, choiceProtagonist?.name || '', ...(choiceProtagonist?.aliases || [])],
   })
-  // ── TAIL CLOCK ───────────────────────────────────────────────────────────
-  // The post-stream calls run concurrently, so each is timed on its own inside
-  // the batch and `extraction_join` is the batch. Each call reports from its own
-  // gate, inside its own lib, so a skipped call leaves no entry and never a 0 —
-  // and if a lib's gate changes, its timing follows without a second copy here.
-  const tailCallMs: Partial<Record<TailModelCallStage, number>> = {}
-  const recordTailStage = (stage: TailModelCallStage, ms: number) => { tailCallMs[stage] = ms }
-  const choiceRoute: ChoiceHedgeRoute = { hedged: false }
-  let choiceFirstTokenMs: number | undefined
+  // `extraction_join` is the batch, timed from here; each call reports from its
+  // own gate (declared above).
   const tailExtractionStartedAt = Date.now()
   // This semantic classification is intentionally post-stream and parallel to
   // hygiene + metadata. It can only gate unfamiliar-candidate promotion; it
@@ -1640,79 +1739,10 @@ ${
     onRaw: extractorRaw.capture('entity_adjudication'),
     onStage: recordTailStage,
   })
-  let choiceModel: string | undefined
-  const metaStats = statDescriptors(session.stat_definitions || session.world_state)
-  const metaFlags = Object.keys(session.active_flags || {})
-  const metaOpts: MetadataOpts = {
-    isSentient: session.is_sentient,
-    currentLocationName: currentLocation?.name || null,
-    priorPresent,
-    // Open configurations entering this turn, so the witness can close the
-    // ones this passage ends instead of leaving them to outlive the story.
-    priorPhysical: (packet.sceneState?.physical || []).map((fact) => fact.statement),
-    protagonist: choiceProtagonist,
-    roster: choiceRoster,
-    knownPlaces,
-    playerInput: parsedPlayerInput.raw,
-    // The world premise/lore, so the extractor can tell a LITERAL ghost (a real
-    // spirit in a horror/fantasy world) from a FIGURATIVE one (a metaphor for an
-    // overlooked person in a grounded drama) instead of reifying the metaphor
-    // into a "ask her about the ghost" choice.
-    worldContext: [session.seed_prompt, session.global_lore].filter(Boolean).join('\n'),
-    // WHAT HAS ALREADY BEEN SUGGESTED AND PASSED OVER.
-    //
-    // The choice half had no memory of its own output, so a standing
-    // situation kept producing the same obvious move. Measured over one live
-    // 83-turn save: 323 choices, 242 distinct, and "Challenge Isolde's
-    // authority" offered SIXTEEN times across the scene it belonged to. The
-    // player declined it every time; the set never moved on.
-    //
-    // A label the player actually SENT is dropped from the list — they took
-    // that path, so it is no longer an unanswered suggestion, and repeating
-    // a variant of it may well be the right next move.
-    recentChoiceLabels: (() => {
-      const taken = new Set(
-        (packet.recentEvents || [])
-          .map((event: any) => normalizeEntityName(String(event?.data?.player_input || '')))
-          .filter(Boolean),
-      )
-      return (packet.recentEvents || [])
-        .slice(-6)
-        .flatMap((event: any) => (event?.data?.choices || []) as any[])
-        .map((choice: any) => String(choice?.label || '').trim())
-        .filter((label: string) => label && !taken.has(normalizeEntityName(label)))
-    })(),
-    choiceContext: choiceDecisionContext,
-    // First-person buttons are the player's own words, so the choice half is
-    // told the same effective gender the narrator got.
-    playerGender: turnPlayerGender,
-    // §6: the choice half reads the NATIVE prose and native player turn; the
-    // witness half and the ledger read the English copy passed as `narrative`.
-    ...(turnReplyLanguage
-      ? {
-          choiceLanguage: {
-            name: turnReplyLanguage.name,
-            narrative: nativeNarrative,
-            playerInput: nativePlayerInputRaw,
-          },
-          // The English line is already known here (the copy settled before
-          // the extractors), so the English pair is checked against it too.
-          ...(acceptedWitness ? { playerInputEnglish: acceptedWitness.player } : {}),
-        }
-      : {}),
-    onRaw: (stage, raw) => extractorRaw.capture(stage)(raw),
-    // Each call reports its own start-to-settle; the pair runs in parallel, so
-    // measuring outside it would report the join twice. `beat_ledger` appears
-    // only when the choices pass is split.
-    onStage: recordTailStage,
-    onChoiceHedge: () => { choiceRoute.hedged = true },
-    onChoiceFirstToken: (ms, winner) => {
-      choiceFirstTokenMs = ms
-      choiceRoute.winner = winner
-    },
-    onChoiceModel: (model) => { choiceModel = model },
-  }
-  const choiceHalfPromise = extractChoiceMetadata(rawNarrative, metaStats, metaFlags, metaOpts)
+  const metaOpts = buildMetaOpts()
+  // A non-English turn started this call before the copy; its ledger and the
+  // English repeat check were handed the copy's values.
+  const choiceHalfPromise = earlyChoiceHalf ?? extractChoiceMetadata(rawNarrative, metaStats, metaFlags, metaOpts)
   const witnessHalfPromise = extractSceneWitness(rawNarrative, metaOpts, metaStats, metaFlags)
   const metaPromise = Promise.all([witnessHalfPromise, choiceHalfPromise])
     .then(([witness, choice]) => mergeSceneMetadata(witness, choice))

@@ -562,6 +562,11 @@ export type MetadataOpts = {
    */
   playerInputEnglish?: string | null
   /**
+   * Non-English turn launched before the English copy: the ledger's player turn
+   * and the English repeat check wait for this; the button call itself does not.
+   */
+  englishTurn?: Promise<{ playerInput: string | null | undefined; playerInputEnglish: string | null | undefined }>
+  /**
    * Non-English turn: the choice half runs on these native values while the
    * witness half (and the ledger) read the English copy passed as `narrative`.
    * Absent on an English turn, where every request and result is unchanged.
@@ -995,7 +1000,7 @@ export async function extractChoiceMetadata(
   const strippedChoiceBase = split ? choiceBase.replace(ledgerRule + '\n', '') : choiceBase
   // This half no longer returns the four moved fields, so it is not told their
   // rules — in the split and the unsplit case alike. The ledger's own system is
-  // built from `system`, so it keeps its rule.
+  // built from `ledgerSystem` (today's `system`), so it keeps its rule.
   const buttonsBase = MOVED_RULES.reduce((base, rule) => base.replace(rule + '\n', ''), strippedChoiceBase)
   // The gender line, then the one language line at the very end — after the
   // choice context too. Absent gender leaves both strings as they were.
@@ -1016,6 +1021,12 @@ export async function extractChoiceMetadata(
       // A non-English turn hands the ledger the English copy, so it waits for
       // that copy — never for the native-only choice call.
       const ledgerNarrative = typeof narrative === 'string' ? narrative : await narrative
+      // An early launch was given the native player line; the ledger's PLAYER
+      // TURN is the English one, so it is rebuilt from the copy's own value.
+      const english = opts?.englishTurn ? await opts.englishTurn : undefined
+      const ledgerSystem = english
+        ? withChoiceContext(buildMetadataSystem({ ...opts, playerInput: english.playerInput }, normalizedStats, flagKeys))
+        : system
       const raw = await invoke({
         model: AI_MODELS.metadata,
         purpose: 'beat_ledger',
@@ -1024,7 +1035,7 @@ export async function extractChoiceMetadata(
           lostPurpose: 'beat_ledger_hedge_lost',
         },
         messages: [
-          { role: 'system', content: system.replace(METADATA_RULES,
+          { role: 'system', content: ledgerSystem.replace(METADATA_RULES,
             METADATA_RULES.slice(0, METADATA_RULES.indexOf('\n\nRules:')) + '\n\nRules:\n' + ledgerRule + '\n') },
           { role: 'user', content: ledgerNarrative },
         ],
@@ -1093,7 +1104,9 @@ export async function extractChoiceMetadata(
           opts?.recentChoiceLabels || [],
           CHOICE_PAIR_FLOOR,
           nativePlayerLine,
-          language ? opts?.playerInputEnglish : undefined,
+          // An early launch has no English line yet; it is awaited here, after
+          // the model answered, so the buttons never wait on the copy.
+          language ? (opts?.englishTurn ? (await opts.englishTurn).playerInputEnglish : opts?.playerInputEnglish) : undefined,
         )
         return {
           ...WITNESS_FALLBACK,
