@@ -39,7 +39,7 @@ import { startIntentRouter, decideIntentRoute, resolveNsfwIntent, intentCacheKey
 import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
 import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
-import { extractChoiceMetadata, extractSceneWitness, mergeSceneMetadata, filterChoicePairs, statDescriptors, type MetadataOpts, type SceneMetadata } from '../lib/metadata-extractor'
+import { extractChoiceMetadata, extractSceneWitness, mergeSceneMetadata, filterChoicePairs, choicesNameAnyone, statDescriptors, type MetadataOpts, type SceneMetadata } from '../lib/metadata-extractor'
 import { classifyPresenceCodexGaps, isActionableMention, hasSceneParticipationGrammar } from '../lib/presence-gap-detector'
 import {
   adjudicateEntityCandidates,
@@ -1932,8 +1932,21 @@ ${
     return { choices, choices_en: choicesEn }
   }
   let choiceAuditMs = 0
-  const earlyChoicesPromise = Promise.all([Promise.race([choicesOnly, choiceHalfPromise]), deathExtractionPromise, graphLabelsPromise])
-    .then(([choice, deltas, labels]) => {
+  // The deaths call can only report someone on this list (the extractor drops
+  // any other name), and the this-turn filter in `finishChoices` only drops a
+  // button that names a reported death. So when no button names anyone on it,
+  // the deaths answer cannot change the buttons and they go out without it:
+  // on a non-English turn that call starts only after the English copy and
+  // took ~1.1 s of the button wait. Same name list and same text the filter
+  // reads; the stored deltas below still await `deathExtractionPromise`.
+  const lifecycleNames = (packet.lifecycleRoster || [])
+    .filter((card) => !(card as { is_protagonist?: boolean }).is_protagonist && card.canonical_name)
+    .map((card) => card.canonical_name)
+  let choicesWaitedForDeaths: boolean | undefined
+  const earlyChoicesPromise = Promise.all([Promise.race([choicesOnly, choiceHalfPromise]), graphLabelsPromise])
+    .then(async ([choice, labels]) => {
+      choicesWaitedForDeaths = choicesNameAnyone(choice.choices || [], choice.choices_en, lifecycleNames)
+      const deltas: CharacterLifecycleDeltaDoc[] = choicesWaitedForDeaths ? await deathExtractionPromise : []
       const startedAt = Date.now()
       const done = finishChoices(choice.choices || [], choice.choices_en, deltas, labels)
       choiceAuditMs = Date.now() - startedAt
@@ -4063,6 +4076,7 @@ ${
         ...(choicesReadyAt > 0
           ? { choices_ready_at: new Date(choicesReadyAt), choices_ready_ms: choicesReadyAt - streamEndedAt }
           : {}),
+        ...(choicesWaitedForDeaths !== undefined ? { choices_waited_for_deaths: choicesWaitedForDeaths } : {}),
         prose_hygiene_issues: proseHygieneIssues,
         latency_ms: latencyMs,
         ttft_ms: ttftMs,

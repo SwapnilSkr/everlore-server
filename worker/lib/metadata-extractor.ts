@@ -964,6 +964,29 @@ export function filterChoicePairs<T extends { label?: string }>(
 }
 
 /**
+ * Whether any button names one of `names`, read exactly as the processor's
+ * this-turn deaths filter reads it: the English pair when there is one, else
+ * the chip, `label send`, whole word, any case. The deaths call can only report
+ * a name from the cast list, and that filter only drops a button naming a
+ * reported name, so when this is false for the cast list the deaths answer
+ * cannot change the buttons and they need not wait for it.
+ */
+export function choicesNameAnyone<T extends { label?: string; send?: string }>(
+  choices: T[],
+  choicesEn: readonly ChoiceEnglish[] | undefined,
+  names: readonly string[],
+): boolean {
+  const escaped = (name: string) => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const patterns = names.filter(Boolean).map((name) => new RegExp(`\\b${escaped(name)}\\b`, 'i'))
+  if (!patterns.length) return false
+  return choices.some((choice, index) => {
+    const pair = choicesEn?.[index] ?? choice
+    const text = `${pair.label} ${pair.send}`
+    return patterns.some((pattern) => pattern.test(text))
+  })
+}
+
+/**
  * CHOICE half — suggested player moves, the milestone and the beat ledger. The
  * stat/flag mutations, scene tag and tone belong to the witness half now; this
  * answer fills them with the safe defaults and the merge takes the witness's.

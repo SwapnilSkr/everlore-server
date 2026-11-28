@@ -244,6 +244,9 @@ export interface GenerationLogDoc {
   choices_ready_at?: Date
   /** Stream end to that publish: the button wait the player actually saw. */
   choices_ready_ms?: number
+  /** Whether a button named someone on the cast list, so the buttons waited
+   *  for this turn's deaths answer before going out. */
+  choices_waited_for_deaths?: boolean
   turn_cost_usd?: number
   call_count?: number
   failed_call_count?: number

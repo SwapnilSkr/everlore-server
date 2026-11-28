@@ -26,6 +26,15 @@
  *       still carries `beat_ledger`.
  *   (k) the processor races the early publish on `choicesOnly`, while
  *       `metaPromise` still joins `choiceHalfPromise`.
+ *   (l) `choicesNameAnyone` reads what the this-turn deaths filter reads: the
+ *       English pair when there is one, `label send`, whole word, any case.
+ *   (m) when it says no, that deaths filter keeps every button for ANY set of
+ *       reported cast names, so skipping the wait cannot change the buttons.
+ *   (n) the processor wiring, read as text: the buttons await the deaths only
+ *       when a button names someone on `packet.lifecycleRoster`, the stored
+ *       deltas still await `deathExtractionPromise`, and the filter reads the
+ *       English pair the way (l) does.
+ *   (o) the deaths extractor can only report a name from its candidates.
  *
  * Pure: every model call is injected. No network, no DB.
  *
@@ -39,6 +48,8 @@ import { join } from 'node:path'
 import {
   extractChoiceMetadata,
   extractSceneWitness,
+  choicesNameAnyone,
+  filterChoicePairs,
   type MetadataOpts,
   type SceneMetadata,
 } from '../worker/lib/metadata-extractor'
@@ -394,6 +405,89 @@ await check('(k) the processor races the early publish on choicesOnly and keeps 
   assert.equal(metaBlock.includes('choicesOnly'), false, 'metaPromise must not read the pre-ledger half')
 })
 
+await check('(l) choicesNameAnyone reads the English pair, label and send, whole word, any case', () => {
+  const names = ['Vernon', 'Ann']
+  const chip = (label: string, send: string) => ({ label, send, kind: 'say' })
+  // No English list (an English save): the chip itself is read.
+  assert.equal(choicesNameAnyone([chip('Ask Vernon', 'Where were you?')], undefined, names), true, 'label')
+  assert.equal(choicesNameAnyone([chip('Wait', 'I look at vernon.')], undefined, names), true, 'send, any case')
+  assert.equal(choicesNameAnyone([chip('Ask Annabel', 'Where were you?')], undefined, names), false, 'a longer name is not Ann')
+  assert.equal(choicesNameAnyone([chip('Look around', 'I look around.')], undefined, names), false, 'nobody named')
+  assert.equal(choicesNameAnyone([chip('Ask Vernon', 'Hi')], undefined, []), false, 'empty cast list')
+  // With an English list the English pair is what counts, as in the filter.
+  assert.equal(
+    choicesNameAnyone([chip('Pergunta ao Vernon', 'Onde estavas?')], [{ label: 'Ask the steward', send: 'Where were you?' }], names),
+    false, 'native names him, English pair does not')
+  assert.equal(
+    choicesNameAnyone([chip('Pergunta ao mordomo', 'Onde estavas?')], [{ label: 'Ask Vernon', send: 'Where were you?' }], names),
+    true, 'English pair names him')
+})
+
+await check('(m) when no button names the cast, the this-turn deaths filter keeps every button for any reported names', () => {
+  const cast = ['Vernon', 'Ann', 'Old Tom']
+  const fixtures: Array<{ choices: Array<{ label: string; send: string; kind: string }>; en?: Array<{ label: string; send: string }> }> = [
+    { choices: [{ label: 'Look around', send: 'I look around the hall.', kind: 'do' }, { label: 'Ask Annabel', send: 'Annabel, why?', kind: 'say' }] },
+    { choices: [{ label: 'Pergunta ao Vernon', send: 'Vernon?', kind: 'say' }, { label: 'Sai', send: 'Saio.', kind: 'do' }],
+      en: [{ label: 'Ask the steward', send: 'Steward?' }, { label: 'Leave', send: 'I leave.' }] },
+    { choices: [{ label: 'Call for Tom', send: 'Tom! Tommy!', kind: 'say' }] },
+    // Names the cast only in the send, or only in the English pair: the helper
+    // must say yes here, or the filter below would drop a button it let through.
+    { choices: [{ label: 'Wait', send: 'I wait for Vernon.', kind: 'do' }] },
+    { choices: [{ label: 'Espera', send: 'Espero.', kind: 'do' }], en: [{ label: 'Wait for Ann', send: 'I wait.' }] },
+  ]
+  // Every subset of the cast list, as the deaths call could report.
+  const subsets = Array.from({ length: 1 << cast.length }, (_, mask) => cast.filter((_, i) => mask & (1 << i)))
+  let skipped = 0
+  for (const f of fixtures) {
+    if (choicesNameAnyone(f.choices, f.en, cast)) continue
+    skipped++
+    for (const reported of subsets) {
+      // The processor's this-turn deaths filter, same predicate as (n) pins.
+      const kept = filterChoicePairs(f.choices, f.en, (choice, english) =>
+        !reported.some((name) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i')
+          .test(`${(english ?? choice).label} ${(english ?? choice).send}`)))
+      assert.equal(kept.choices.length, f.choices.length, `skipped the wait, then reported ${reported.join(',')} dropped a button: ${JSON.stringify(f)}`)
+    }
+  }
+  assert.equal(skipped, 3, 'the three fixtures that name nobody must skip the wait')
+})
+
+await check('(n) the processor awaits the deaths for the buttons only when a button names the cast list', async () => {
+  const processor = await readFile(new URL('../worker/processors/generation.processor.ts', import.meta.url), 'utf8')
+  const earlyAt = processor.indexOf('const earlyChoicesPromise =')
+  assert.ok(earlyAt >= 0, 'earlyChoicesPromise must exist')
+  const earlyLine = processor.slice(earlyAt, processor.indexOf('\n', earlyAt))
+  assert.equal(earlyLine.includes('deathExtractionPromise'), false, `the join must not wait on the deaths: ${earlyLine}`)
+  const thenAt = processor.indexOf('.then(', earlyAt)
+  const body = processor.slice(thenAt, processor.indexOf('const startedAt = Date.now()', thenAt))
+  assert.ok(body.includes('choicesWaitedForDeaths = choicesNameAnyone(choice.choices || [], choice.choices_en, lifecycleNames)'),
+    `the wait must be decided from the buttons and the cast list: ${body}`)
+  assert.ok(body.includes('choicesWaitedForDeaths ? await deathExtractionPromise : []'), `the deaths must be awaited when a button names the cast: ${body}`)
+  const namesAt = processor.indexOf('const lifecycleNames =')
+  const namesBlock = processor.slice(namesAt, processor.indexOf('let choicesWaitedForDeaths', namesAt))
+  assert.ok(namesBlock.includes('packet.lifecycleRoster') && namesBlock.includes('card.canonical_name'),
+    `the names must be the deaths call's own candidates: ${namesBlock}`)
+  assert.ok(/candidates: packet\.lifecycleRoster \|\| \[\],/.test(processor.slice(processor.indexOf('const deathExtractionPromise ='), namesAt)),
+    'the deaths call must read the same list')
+  const tailAt = processor.indexOf('const [meta, entityAdjudication, characterLifecycleDeltas, endpointAdjudication] = await Promise.all([')
+  assert.ok(tailAt > earlyAt && processor.slice(tailAt, processor.indexOf('])', tailAt)).includes('deathExtractionPromise'),
+    'the stored deltas must still await deathExtractionPromise')
+  const finishAt = processor.indexOf('const finishChoices = (')
+  const finish = processor.slice(finishAt, earlyAt)
+  assert.ok(finish.includes('keep(`${(english ?? choice).label} ${(english ?? choice).send}`)'), 'the filter must read the English pair as (l) does')
+  assert.ok(finish.includes("!deltas.some((delta) => new RegExp(`\\\\b${escapeRegExp(delta.name)}\\\\b`, 'i').test(text))"),
+    'the this-turn filter must match the reported name as (m) does')
+})
+
+await check('(o) the deaths extractor reports only names from its candidates', async () => {
+  const extractor = await readFile(new URL('../worker/lib/character-lifecycle-extractor.ts', import.meta.url), 'utf8')
+  assert.ok(extractor.includes(".filter((card) => !card.is_protagonist && card.canonical_name)\n    .map((card) => ({ name: card.canonical_name,"),
+    'candidates must be the non-protagonist canonical names')
+  assert.ok(extractor.includes("const name = byName.get(normalizeEntityName(String((change as any).name || '')))"),
+    'a reported name must be looked up in the candidates')
+  assert.ok(extractor.includes('if (!name || !evidence) continue'), 'an unknown name must be dropped')
+})
+
 if (fail > 0) {
   console.log(`\nchoice-early audit: ${pass} passed, ${fail} failed`)
   process.exit(1)
@@ -472,6 +566,31 @@ async function runBites() {
       name: '(k) the early publish put back on the ledger-bearing half',
       check: '(k) the processor races the early publish on choicesOnly and keeps metaPromise on choiceHalfPromise',
       edits: [[processor, 'Promise.race([choicesOnly, choiceHalfPromise])', 'choiceHalfPromise']],
+    },
+    {
+      name: '(l) the name match made a substring',
+      check: '(l) choicesNameAnyone reads the English pair, label and send, whole word, any case',
+      edits: [[extractor, "new RegExp(`\\\\b${escaped(name)}\\\\b`, 'i')", "new RegExp(escaped(name), 'i')"]],
+    },
+    {
+      name: '(l) the native chip read instead of the English pair',
+      check: '(l) choicesNameAnyone reads the English pair, label and send, whole word, any case',
+      edits: [[extractor, '    const pair = choicesEn?.[index] ?? choice\n', '    const pair = choice\n']],
+    },
+    {
+      name: '(m) the helper reads the label only',
+      check: '(m) when no button names the cast, the this-turn deaths filter keeps every button for any reported names',
+      edits: [[extractor, '    const text = `${pair.label} ${pair.send}`\n    return patterns', '    const text = `${pair.label}`\n    return patterns']],
+    },
+    {
+      name: '(n) the buttons never wait for the deaths',
+      check: '(n) the processor awaits the deaths for the buttons only when a button names the cast list',
+      edits: [[processor, 'choicesWaitedForDeaths ? await deathExtractionPromise : []', 'false ? await deathExtractionPromise : []']],
+    },
+    {
+      name: '(o) the extractor keeps a name off the cast list',
+      check: '(o) the deaths extractor reports only names from its candidates',
+      edits: [['worker/lib/character-lifecycle-extractor.ts', 'if (!name || !evidence) continue', 'if (!evidence) continue']],
     },
   ]
 

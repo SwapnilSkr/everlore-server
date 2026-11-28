@@ -1651,7 +1651,11 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // fires the button pre-computation after `choices_ready`, and logs when the
   // buttons were sent; the group-only handoff still did not move, so re-hashed
   // the same way.
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '615f076111d59cb052621cfe16d9c3acbb1f9bf9ab3ac42d2797777dde0bf6aa')
+  // buttons-cast-wait publishes the buttons without the deaths answer when no
+  // button names anyone on the cast list (`lifecycleNames`, `choicesNameAnyone`)
+  // and logs `choices_waited_for_deaths`; the group-only handoff still did not
+  // move, so re-hashed the same way.
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '0fb9e486a299836989df38aaf28a29b5e4f06a186d840645a3e3e8faddc31814')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —
