@@ -3,6 +3,8 @@ import type { CharacterLifecycleDeltaDoc } from '../../src/models/world-event.mo
 import { normalizeEntityName } from '../../src/services/entity-graph.service'
 import { log } from '../../src/utils/logger'
 import { excerptNamesPerson, excerptShowsSubjectPredicate, narrationOnly } from './scene-endpoint-adjudicator'
+import { env } from '../../src/config/env'
+import { hedgedCall } from './hedged-call'
 
 const SCHEMA = {
   type: 'object',
@@ -196,6 +198,10 @@ export async function extractLifecycleChanges(params: {
   /** Where this call's own wait went. Reported only when the extractor actually
    *  called, from a `finally` — a failed call is still a wait. */
   onStage?: (stage: 'deaths', ms: number) => void
+  /** Fired when the backup request went out (the first was slow or failed). */
+  onHedge?: () => void
+  /** Overrides `DEATHS_HEDGE_MS`; for audits. */
+  hedgeMs?: number
 }): Promise<CharacterLifecycleDeltaDoc[]> {
   const prose = String(params.prose || '').trim()
   const authored = (params.playerNarration || []).map((f) => String(f || '').trim()).filter(Boolean)
@@ -214,7 +220,10 @@ export async function extractLifecycleChanges(params: {
   }
   const startedAt = Date.now()
   try {
-    const raw = await callLLM({
+    // A stuck answer once held the turn's buttons for 10.7 s (test stack,
+    // 2026-11-28): one identical backup request after `DEATHS_HEDGE_MS`.
+    const raw = await hedgedCall((signal) => callLLM({
+      signal,
       model: AI_MODELS.metadata,
       purpose: 'character_deaths',
       temperature: 0,
@@ -240,7 +249,7 @@ export async function extractLifecycleChanges(params: {
             `\n\nSTORY PROSE:\n${prose}`,
         },
       ],
-    })
+    }), { hedgeMs: params.hedgeMs ?? env.DEATHS_HEDGE_MS, onHedge: params.onHedge })
     params.onRaw?.(raw)
     const parsed = unwrapSchemaEcho(JSON.parse(raw))
     const byName = new Map(candidates.map((candidate) => [normalizeEntityName(candidate.name), candidate.name]))

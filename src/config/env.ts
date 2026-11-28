@@ -117,6 +117,10 @@ const optionalEnvVars = {
   /** How long the primary host alone may run before an identical request goes
    *  out to the other host. The first valid answer settles the slot. */
   NSFW_SAME_TURN_ROUTER_HEDGE_MS: '350',
+  // A deaths call still unanswered after this many ms gets one identical backup
+  // request; the first good answer wins. Prod p99 was 3.0 s (30 days to
+  // 2026-11-28), a stuck answer 10.7 s on the test stack. 0 turns it off.
+  DEATHS_HEDGE_MS: '2500',
   /** Cache of same-turn router answers, keyed by save and exact text, so a tap
    *  on a prepared button or a drafted line routes without a model call. */
   NSFW_INTENT_CACHE: 'on',
@@ -221,6 +225,7 @@ export interface Env {
   NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS: string[]
   NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS: number
   NSFW_SAME_TURN_ROUTER_HEDGE_MS: number
+  DEATHS_HEDGE_MS: number
   NSFW_INTENT_CACHE: 'on' | 'off'
   ADMIN_USERNAME: string
   ADMIN_PASSWORD: string
@@ -299,6 +304,11 @@ function loadEnv(): Env {
   const routerHedgeMs = Number.isSafeInteger(configuredHedge) && configuredHedge >= 0
     ? configuredHedge
     : Number(optionalEnvVars.NSFW_SAME_TURN_ROUTER_HEDGE_MS)
+
+  const configuredDeathsHedge = Number(process.env.DEATHS_HEDGE_MS || optionalEnvVars.DEATHS_HEDGE_MS)
+  const deathsHedgeMs = Number.isSafeInteger(configuredDeathsHedge) && configuredDeathsHedge >= 0
+    ? configuredDeathsHedge
+    : Number(optionalEnvVars.DEATHS_HEDGE_MS)
 
   const intentCache = process.env.NSFW_INTENT_CACHE || optionalEnvVars.NSFW_INTENT_CACHE
   if (intentCache !== 'on' && intentCache !== 'off') throw new Error('Invalid NSFW_INTENT_CACHE')
@@ -405,6 +415,7 @@ function loadEnv(): Env {
       .filter(Boolean),
     NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS: routerNonEnWaitMs,
     NSFW_SAME_TURN_ROUTER_HEDGE_MS: routerHedgeMs,
+    DEATHS_HEDGE_MS: deathsHedgeMs,
     NSFW_INTENT_CACHE: intentCache,
     ADMIN_USERNAME: process.env.ADMIN_USERNAME || optionalEnvVars.ADMIN_USERNAME,
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || optionalEnvVars.ADMIN_PASSWORD,

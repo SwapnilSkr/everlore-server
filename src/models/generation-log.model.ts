@@ -247,6 +247,9 @@ export interface GenerationLogDoc {
   /** Whether a button named someone on the cast list, so the buttons waited
    *  for this turn's deaths answer before going out. */
   choices_waited_for_deaths?: boolean
+  /** The deaths call's first answer was slow or failed, so its one backup
+   *  request went out (`DEATHS_HEDGE_MS`). Omitted otherwise. */
+  deaths_hedged?: true
   turn_cost_usd?: number
   call_count?: number
   failed_call_count?: number

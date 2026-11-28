@@ -1800,6 +1800,9 @@ ${
     onRaw: extractorRaw.capture('scene_endpoint'),
     onStage: recordTailStage,
   })
+  // Set when the deaths call's first answer was slow or failed and its one
+  // backup request went out; logged as `deaths_hedged`.
+  let deathsHedged = false
   const deathExtractionPromise = extractLifecycleChanges({
     prose: rawNarrative,
     // What the player authored inside *asterisks* this turn. It is canon, and
@@ -1814,6 +1817,7 @@ ${
     sequence: nextSequence,
     onRaw: extractorRaw.capture('character_deaths'),
     onStage: recordTailStage,
+    onHedge: () => { deathsHedged = true },
   })
   // ── CHOICE-AUDIT PREPARE (before the join) ────────────────────────────────
   // Nothing here reads the witness half, the entity adjudication or the
@@ -4077,6 +4081,7 @@ ${
           ? { choices_ready_at: new Date(choicesReadyAt), choices_ready_ms: choicesReadyAt - streamEndedAt }
           : {}),
         ...(choicesWaitedForDeaths !== undefined ? { choices_waited_for_deaths: choicesWaitedForDeaths } : {}),
+        ...(deathsHedged ? { deaths_hedged: true } : {}),
         prose_hygiene_issues: proseHygieneIssues,
         latency_ms: latencyMs,
         ttft_ms: ttftMs,
