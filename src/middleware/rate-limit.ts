@@ -12,6 +12,9 @@ const LIMITS: Record<string, { max: number; windowSeconds: number }> = {
   image_generate: { max: 40, windowSeconds: 3600 },
   image_upload: { max: 40, windowSeconds: 3600 },
   autofill: { max: 30, windowSeconds: 3600 },
+  // A draft frame asks the adult judge about a line the player is still typing,
+  // so it costs a model call. One per paused keystroke burst is plenty.
+  draft: { max: 30, windowSeconds: 60 },
   group_draft: { max: 10, windowSeconds: 3600 },
   // A moderation queue is only useful if it cannot be flooded. Generous enough
   // that a player cleaning up a bad browse session never hits it.

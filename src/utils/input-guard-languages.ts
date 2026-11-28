@@ -807,3 +807,33 @@ export function screenPlayerInputIn(language: string | null | undefined, text: s
 
   return { blocked: false }
 }
+
+/**
+ * Does this line describe a sexual act at all, in a save's language? Same packs,
+ * sentence loop and masking as `screenPlayerInputIn`, but it drops the family
+ * and minor tests and keeps the act test: a live act is one that is not a
+ * conversation about it (`talkingAboutIt`) and not denied (`denies`).
+ *
+ * The same-turn router's fallback lexicon is English vocabulary, so routing a
+ * Portuguese or Spanish turn on THAT word score reads a native line as zero.
+ * This answers the one question that gap needs. Unknown and English languages
+ * are false — English routing stays on `scoreScene`, which is where it ran.
+ */
+export function sexualActIn(language: string | null | undefined, text: string): boolean {
+  if (!text || typeof text !== 'string') return false
+  if (typeof language !== 'string') return false
+  const code = language.trim().toLowerCase().split(/[-_]/)[0]
+  const pack = PACKS.get(code)
+  if (!pack) return false
+
+  for (const sentence of splitSentences(text)) {
+    const tokens = tokenize(normalize(sentence, pack))
+    maskPhrases(tokens, pack.idioms)
+    maskClearedCoded(pack, tokens)
+
+    const acts = actMatches(pack, tokens).filter((match) => !talkingAboutIt(tokens, match))
+    if (acts.some((match) => !denies(pack, tokens, match))) return true
+  }
+
+  return false
+}

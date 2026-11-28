@@ -13,6 +13,10 @@ import { billingService } from './billing.service'
 import { authService } from './auth.service'
 import { canReadTemplateAuthoring, publicTemplate } from '../utils/template-public-projection'
 import { clearPlayerOnline, clearWatching, markPlayerOnline, markSaveStoryRepliesRead, markWatching } from './notifications.service'
+import { instanceService } from './instance.service'
+import { mongoColl } from '../config/mongo'
+import { parseObjectId } from '../utils/mongo-id'
+import { NSFW_MODE } from '../utils/chat-modes'
 
 /** Underlying Bun socket — stable identity; Elysia passes a new `ElysiaWS` wrapper per event. */
 type RawWs = { send: (data: string) => void }
@@ -504,6 +508,43 @@ export const playWsService = {
           if (instanceId) await markSaveStoryRepliesRead({ playerId: user.id, instanceId })
         } catch (err: unknown) {
           ws.send(JSON.stringify({ type: 'error', ...toClientError(err, { at: 'ws.load_instance', userId: user.id }) }))
+        }
+        break
+      }
+
+      case 'draft': {
+        // The player is still typing. Judge the line now and cache the answer so
+        // the send that follows usually routes without a model call. Nothing is
+        // ever sent back — success, failure or a rate limit all stay silent — and
+        // the text itself never reaches a log.
+        const instanceId = typeof frame.instance_id === 'string' ? frame.instance_id : ''
+        const text = (data as { payload?: { text?: unknown } }).payload?.text
+        if (!instanceId || typeof text !== 'string') return
+        const trimmed = text.trim()
+        if (trimmed.length < 3 || trimmed.length > 600) return
+        const rl = await rateLimit(user.id, 'draft')
+        if (!rl.allowed) return
+        try {
+          // Ask only where the turn's own router would ask: an adult-capable solo
+          // save, a player who turned adult content on, outside the authored adult
+          // mode. Anywhere else the answer could never be used, so it is never paid
+          // for. The session load also proves the save is this player's.
+          const session = await instanceService.loadSession(instanceId, user.id)
+          if (session.kind === 'group' || !session.is_nsfw_capable || session.mode === NSFW_MODE) return
+          const player = await mongoColl.users().findOne(
+            { _id: parseObjectId(user.id) },
+            { projection: { 'preferences.nsfw_enabled': 1 } },
+          )
+          if (player?.preferences?.nsfw_enabled !== true) return
+          // Imported here so a socket service the pure audits load without the
+          // worker's model stack does not pull it in for every frame.
+          const { cacheIntent, intentCacheKey, judgeSexualIntent } = await import('../../worker/lib/intent-router')
+          const answer = await judgeSexualIntent(trimmed)
+          if (answer !== undefined) {
+            await cacheIntent(redis, intentCacheKey(user.id, instanceId, trimmed), answer, 120)
+          }
+        } catch {
+          // A missed draft only means the next turn asks the router as usual.
         }
         break
       }

@@ -240,6 +240,10 @@ export interface GenerationLogDoc {
   narrator_started_at?: Date
   first_word_at?: Date
   reply_ended_at?: Date
+  /** When the buttons were published to the player (`choices_ready`). */
+  choices_ready_at?: Date
+  /** Stream end to that publish: the button wait the player actually saw. */
+  choices_ready_ms?: number
   turn_cost_usd?: number
   call_count?: number
   failed_call_count?: number

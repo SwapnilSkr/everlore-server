@@ -314,7 +314,7 @@ const mutations: Array<[string, string, string, 'router' | 'processor']> = [
   ['ardent', "input.capable && input.enabled && input.mode !== NSFW_MODE", 'input.capable && input.enabled', 'router'],
   ['off', "config.switch === 'on' && eligible(input)", 'eligible(input)', 'router'],
   ['judge', 'let borderlineForIntent = false', 'let borderlineForIntent = true', 'router'],
-  ['request', 'allow_fallbacks: false', 'allow_fallbacks: true', 'router'],
+  ['request', 'order: [host], only: [host], allow_fallbacks: false', 'order: [host], only: [host], allow_fallbacks: true', 'router'],
   ['telemetry', 'settleLLMTrace(trace, error, signal.aborted)', 'settleLLMTrace(trace)', 'router'],
   ['source', '} = decideIntentRoute({', '} = await decideIntentRoute({', 'processor'],
 ]

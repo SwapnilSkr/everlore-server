@@ -111,8 +111,15 @@ const optionalEnvVars = {
   NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS: 'InferenceNet,Reka',
   /** A save whose replies are not English holds routing this long, counted from
    *  the moment the same-turn router started, because the fallback lexicon is
-   *  English vocabulary and scores native Portuguese/Spanish text at zero. */
-  NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS: '1200',
+   *  English vocabulary and scores native Portuguese/Spanish text at zero. The
+   *  Portuguese/Spanish act check below now covers that gap, so the wait is 0. */
+  NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS: '0',
+  /** How long the primary host alone may run before an identical request goes
+   *  out to the other host. The first valid answer settles the slot. */
+  NSFW_SAME_TURN_ROUTER_HEDGE_MS: '350',
+  /** Cache of same-turn router answers, keyed by save and exact text, so a tap
+   *  on a prepared button or a drafted line routes without a model call. */
+  NSFW_INTENT_CACHE: 'on',
   ADMIN_USERNAME: '',
   ADMIN_PASSWORD: '',
   // Throughput knobs — defaults are the safe production values. Crank these via
@@ -213,6 +220,8 @@ export interface Env {
   NSFW_SAME_TURN_ROUTER_HOST: string
   NSFW_SAME_TURN_ROUTER_FALLBACK_HOSTS: string[]
   NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS: number
+  NSFW_SAME_TURN_ROUTER_HEDGE_MS: number
+  NSFW_INTENT_CACHE: 'on' | 'off'
   ADMIN_USERNAME: string
   ADMIN_PASSWORD: string
   GENERATION_CONCURRENCY: number
@@ -273,15 +282,26 @@ function loadEnv(): Env {
   const sameTurnRouter = process.env.NSFW_SAME_TURN_ROUTER || optionalEnvVars.NSFW_SAME_TURN_ROUTER
   if (sameTurnRouter !== 'on' && sameTurnRouter !== 'off') throw new Error('Invalid NSFW_SAME_TURN_ROUTER')
 
-  // A typo here ("1,200", "1200ms") would silently turn the wait into 0 ms and
-  // lose the non-English turn it exists to save, so anything that is not a
-  // non-negative whole number falls back to the committed 1200.
+  // A typo here ("1,200", "1200ms") would silently turn the wait into something
+  // else, so anything that is not a non-negative whole number falls back to the
+  // committed default. The default is 0 now: the pt/es act check carries routing
+  // there, so a bad value loses nothing a valid one would have saved.
   const configuredNonEnWait = Number(
     process.env.NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS || optionalEnvVars.NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS,
   )
   const routerNonEnWaitMs = Number.isSafeInteger(configuredNonEnWait) && configuredNonEnWait >= 0
     ? configuredNonEnWait
     : Number(optionalEnvVars.NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS)
+
+  const configuredHedge = Number(
+    process.env.NSFW_SAME_TURN_ROUTER_HEDGE_MS || optionalEnvVars.NSFW_SAME_TURN_ROUTER_HEDGE_MS,
+  )
+  const routerHedgeMs = Number.isSafeInteger(configuredHedge) && configuredHedge >= 0
+    ? configuredHedge
+    : Number(optionalEnvVars.NSFW_SAME_TURN_ROUTER_HEDGE_MS)
+
+  const intentCache = process.env.NSFW_INTENT_CACHE || optionalEnvVars.NSFW_INTENT_CACHE
+  if (intentCache !== 'on' && intentCache !== 'off') throw new Error('Invalid NSFW_INTENT_CACHE')
 
   const configuredPromoCap = Number(process.env.INK_PROMO_DAILY_TURN_CAP || optionalEnvVars.INK_PROMO_DAILY_TURN_CAP)
 
@@ -384,6 +404,8 @@ function loadEnv(): Env {
       .map((host) => host.trim())
       .filter(Boolean),
     NSFW_SAME_TURN_ROUTER_NON_EN_WAIT_MS: routerNonEnWaitMs,
+    NSFW_SAME_TURN_ROUTER_HEDGE_MS: routerHedgeMs,
+    NSFW_INTENT_CACHE: intentCache,
     ADMIN_USERNAME: process.env.ADMIN_USERNAME || optionalEnvVars.ADMIN_USERNAME,
     ADMIN_PASSWORD: process.env.ADMIN_PASSWORD || optionalEnvVars.ADMIN_PASSWORD,
     GENERATION_CONCURRENCY: Number(process.env.GENERATION_CONCURRENCY || optionalEnvVars.GENERATION_CONCURRENCY),

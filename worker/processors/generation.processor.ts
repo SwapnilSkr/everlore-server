@@ -25,6 +25,7 @@ import {
 import { buildPrompt } from '../../src/utils/prompt-builder'
 import { storyPlayerGender } from '../../src/models/player-gender'
 import { lengthMaxTokens } from '../../src/utils/narrative-styles'
+import { NSFW_MODE } from '../../src/utils/chat-modes'
 import { parsePlayerInput } from '../../src/utils/player-input-parser'
 import { applyStateMutations, applyFlagMutations } from '../../src/utils/state-mutator'
 import { countTokens } from '../../src/utils/token-counter'
@@ -34,7 +35,7 @@ import { instanceService } from '../../src/services/instance.service'
 import { liveInstanceExists } from '../../src/utils/live-instance'
 import { generationLockKey, finishGenerationTurn, markGenerationStreamEnd, waitForPriorGeneration } from '../../src/utils/generation-lock'
 import { classifyBorderlineIntent } from '../lib/nsfw-classifier'
-import { startIntentRouter, decideIntentRoute, resolveNsfwIntent } from '../lib/intent-router'
+import { startIntentRouter, decideIntentRoute, resolveNsfwIntent, intentCacheKey, readCachedIntent, cacheIntent, judgeSexualIntent } from '../lib/intent-router'
 import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
 import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
@@ -479,10 +480,19 @@ export async function generationProcessor(job: Job): Promise<{ eventId: string; 
 
   // Input-only work starts at pickup, ahead of the live check and prior tail.
   // The routing snapshot is read synchronously immediately before narration.
+  const routerText = isContinuation ? '' : worldActionNarration(worldAction) || userMessage
+  // A tapped button or a drafted line already asked the judge, and its answer is
+  // cached under this save and this exact text (see the tail below and the
+  // `draft` frame). Find it before the turn starts so nothing is asked or waited
+  // for. One GET; on any error it is undefined and the router runs as today.
+  const precomputed = env.NSFW_INTENT_CACHE === 'on' && !isContinuation
+    ? await readCachedIntent(getRedisClient(), intentCacheKey(playerId, instanceId, routerText))
+    : undefined
   const intentRouter = startIntentRouter({
     capable: !!dispatchedSession.is_nsfw_capable, enabled: !!userNsfwEnabled,
     mode: dispatchedSession.mode,
-    text: isContinuation ? '' : worldActionNarration(worldAction) || userMessage,
+    text: routerText,
+    precomputed,
   })
   // Reply-language writing detection starts here too, beside the adult check,
   // from what dispatch already knows. The chip test needs the packet, so a tap
@@ -1209,6 +1219,7 @@ ${
     currentTurnScore, borderlineForIntent } = decideIntentRoute({
     router: intentRouter, capable: !!session.is_nsfw_capable,
     enabled: !!userNsfwEnabled, mode: session.mode, text: classifyText, recentEvents,
+    language: turnReplyLanguage?.code,
   })
   const intentRouterLogFields = {
     same_turn_router: sameTurnRouterTrace,
@@ -1333,6 +1344,27 @@ ${
   // showing a fast malformed chip and silently replacing it later is worse UX
   // than a brief post-prose preparation state.
   let choicesReadySent = false
+  // When the buttons reached the player, for the turn log's `choices_ready_ms`.
+  let choicesReadyAt = 0
+
+  // A tap sends the button's own `send` text, so judging each button now means the
+  // next turn usually finds its answer already in the cache instead of waiting on
+  // a model call. Fired after the buttons are published, never awaited on the
+  // turn, gated exactly like the router (adult-capable, player opted in, not the
+  // authored adult mode), and every error is swallowed.
+  const precomputeChoices = (offered: Array<{ send?: string }> | undefined) => {
+    if (env.NSFW_INTENT_CACHE !== 'on') return
+    if (!session.is_nsfw_capable || !userNsfwEnabled || session.mode === NSFW_MODE) return
+    for (const choice of offered ?? []) {
+      const send = choice?.send
+      if (typeof send !== 'string' || send.trim().length === 0) continue
+      void judgeSexualIntent(send)
+        .then((answer) => answer === undefined
+          ? undefined
+          : cacheIntent(redis, intentCacheKey(playerId, instanceId, send), answer, 1800))
+        .catch(() => {})
+    }
+  }
 
   // RAW witness prose: what the model actually generated. All world-state
   // extractors (metadata, choice grounding, codex, kinship, memory) witness
@@ -1908,6 +1940,8 @@ ${
       if (!choicesReadySent && done.choices.length > 0) {
         redis.publish(channel, JSON.stringify({ type: 'choices_ready', instanceId, jobId: String(job.id), choices: done.choices }))
         choicesReadySent = true
+        choicesReadyAt = Date.now()
+        precomputeChoices(done.choices)
       }
       return done
     })
@@ -2008,6 +2042,8 @@ ${
       }),
     )
     choicesReadySent = true
+    choicesReadyAt = Date.now()
+    precomputeChoices(parsed.choices)
   }
 
   const locationStartedAt = Date.now()
@@ -4024,6 +4060,9 @@ ${
         narrator_started_at: narratorStartedAt,
         ...(firstTokenAt > 0 ? { first_word_at: new Date(firstTokenAt) } : {}),
         reply_ended_at: new Date(lastTokenAt || streamEndedAt),
+        ...(choicesReadyAt > 0
+          ? { choices_ready_at: new Date(choicesReadyAt), choices_ready_ms: choicesReadyAt - streamEndedAt }
+          : {}),
         prose_hygiene_issues: proseHygieneIssues,
         latency_ms: latencyMs,
         ttft_ms: ttftMs,

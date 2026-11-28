@@ -58,7 +58,7 @@ const AMBIGUOUS_PATTERNS = [
   /\bgive\s+(?:myself|yourself)\s+to\b/i,
 ]
 
-const SIGNAL_THRESHOLD = 3
+export const SIGNAL_THRESHOLD = 3
 
 // --- Mongo-backed lexicon cache (loaded once at worker boot, refreshed lazily) ---
 let wordWeights: Record<string, number> = FALLBACK_WORDS

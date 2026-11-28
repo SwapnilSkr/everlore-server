@@ -24,6 +24,7 @@ const WsActionMessage = t.Object({
     t.Literal('world_action'),
     t.Literal('replay'),
     t.Literal('ping'),
+    t.Literal('draft'),
     t.Literal('load_instance'),
   ]),
   instance_id: t.Optional(t.String()),

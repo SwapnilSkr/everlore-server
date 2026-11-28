@@ -1646,7 +1646,12 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // buttons-ledger-unblock adds the pre-ledger `choicesSettled`/`choicesOnly`
   // pair, hands it to `buildMetaOpts` as `onChoices`, and races the early
   // publish on it; the group-only handoff still did not move, so re-hashed.
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), 'ffb792afaddc610cb2e15f93d883916a30f55808ae99a67db72eac755988d988')
+  // routing-fast reads a precomputed adult answer for the turn's own text before
+  // the router starts, passes the save's language to the routing decision, and
+  // fires the button pre-computation after `choices_ready`, and logs when the
+  // buttons were sent; the group-only handoff still did not move, so re-hashed
+  // the same way.
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '615f076111d59cb052621cfe16d9c3acbb1f9bf9ab3ac42d2797777dde0bf6aa')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —
