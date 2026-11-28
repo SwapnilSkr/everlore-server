@@ -172,21 +172,28 @@ const goodJson = '{"ok": true}'
 }
 
 // 3: empty content with content_filter is still retried.
-for (const host of ['Azure', 'OpenAI']) {
+// gpt models have one host, OpenAI (Azure is banned), so a cut there has
+// nowhere else to go: no retry, the first reply stands.
+{
   const result = await run([
-    { content: cutJson, finish: 'content_filter', provider: host },
-    { content: goodJson, finish: 'stop', provider: 'OtherHost' },
+    { content: cutJson, finish: 'content_filter', provider: 'OpenAI' },
+    { content: goodJson, finish: 'stop', provider: 'Azure' },
   ], { model: 'gpt-4o-mini' })
-  check(`a cut at ${host} retries a gpt-4o-mini pass with order kept and ${host} ignored`, () => {
+  check('a cut at OpenAI on a gpt-4o-mini pass is not retried anywhere else', () => {
     assert.equal(result.error, undefined)
-    assert.equal(result.value, goodJson)
-    assert.equal(result.calls.length, 2)
-    const expected = { order: ['OpenAI', 'Azure'], allow_fallbacks: true, require_parameters: true }
-    assert.deepEqual(result.calls[0].params.provider, expected)
-    assert.deepEqual(result.calls[1].params.provider, { ...expected, ignore: [host] })
-    assert.deepEqual(result.reasons, ['stop'])
+    assert.equal(result.value, cutJson)
+    assert.equal(result.calls.length, 1)
+    assert.deepEqual(result.calls[0].params.provider,
+      { order: ['OpenAI'], only: ['OpenAI'], ignore: ['Azure'], allow_fallbacks: false, require_parameters: true })
   })
 }
+check('a retry body exists only while an allowed host is left', () => {
+  const pinned = { model: 'm', provider: { only: ['OpenAI'], ignore: ['Azure'] } }
+  assert.equal(contentFilterRetryParams(pinned, 'OpenAI'), null)
+  const two = { model: 'm', provider: { only: ['A', 'B'] } }
+  assert.deepEqual(contentFilterRetryParams(two, 'A'), { model: 'm', provider: { only: ['A', 'B'], ignore: ['A'] } })
+  assert.deepEqual(contentFilterRetryParams({ model: 'm', provider: {} }, 'A'), { model: 'm', provider: { ignore: ['A'] } })
+})
 {
   const result = await run([
     { content: null, finish: 'content_filter', provider: 'FixtureHost' },
@@ -442,7 +449,7 @@ if (process.argv.includes('--bites')) {
   const path = new URL('../src/ai/client.ts', import.meta.url)
   const original = readFileSync(path, 'utf8')
   const gate = "first.finishReason === 'content_filter' && !isProseRequest(req)"
-  const hostGuard = 'if (host && !req.signal?.aborted && remaining > 0) {'
+  const hostGuard = 'if (retryParams && !req.signal?.aborted && remaining > 0) {'
   const retryCall = "client, remaining, 'fallback')"
   const finishCall = 'req.onFinishReason?.(used.finishReason)'
   const logCall = "log.warn('chat.content_filtered', { purpose: req.purpose, model: req.model, host, recovered })"
@@ -452,9 +459,9 @@ if (process.argv.includes('--bites')) {
     { name: 'length reason', before: gate, after: "first.finishReason !== 'stop' && !isProseRequest(req)", expected: 'FAIL finish_reason length is not retried' },
     { name: 'normal reply gate', before: gate, after: '!isProseRequest(req)', expected: 'FAIL a normal structured reply takes one provider call' },
     { name: 'json_object prose', before: "(!req.responseFormat || req.responseFormat.type === 'text')", after: "(!req.responseFormat || req.responseFormat.type !== 'json_schema')", expected: 'FAIL a json_object reply counts as structured' },
-    { name: 'host guard', before: hostGuard, after: 'if (!req.signal?.aborted && remaining > 0) {', expected: 'FAIL a cut reply with no named host is not retried' },
-    { name: 'abort guard', before: hostGuard, after: 'if (host && remaining > 0) {', expected: 'FAIL an aborted signal is never retried' },
-    { name: 'deadline guard', before: hostGuard, after: 'if (host && !req.signal?.aborted && remaining > -999999) {', expected: 'FAIL no retry once the deadline is spent' },
+    { name: 'host guard', before: 'const retryParams = host ? contentFilterRetryParams(params, host) : null', after: "const retryParams = contentFilterRetryParams(params, host ?? '')", expected: 'FAIL a cut reply with no named host is not retried' },
+    { name: 'abort guard', before: hostGuard, after: 'if (retryParams && remaining > 0) {', expected: 'FAIL an aborted signal is never retried' },
+    { name: 'deadline guard', before: hostGuard, after: 'if (retryParams && !req.signal?.aborted && remaining > -999999) {', expected: 'FAIL no retry once the deadline is spent' },
     { name: 'remaining timeout', before: retryCall, after: "client, timeout, 'fallback')", expected: 'FAIL the retry gets the time the first call left' },
     { name: 'fallback role', before: retryCall, after: "client, remaining, 'primary')", expected: 'FAIL each attempt has its own trace, role and response' },
     { name: 'filtered retry accepted', before: "retry.content !== null && retry.finishReason !== 'content_filter'", after: 'retry.content !== null', expected: 'FAIL a retry filtered too returns the first reply' },
@@ -468,9 +475,10 @@ if (process.argv.includes('--bites')) {
     { name: 'no traces', before: 'const trace = beginLLMTrace({ model: params.model, purpose: req.purpose, streamed: false,', after: 'const trace = undefined && beginLLMTrace({ model: params.model, purpose: req.purpose, streamed: false,', expected: 'FAIL each attempt has its own trace, role and response' },
     { name: 'log carries text', before: '{ purpose: req.purpose, model: req.model, host, recovered }', after: '{ purpose: req.purpose, model: req.model, host, recovered, prompt: req.messages }', expected: 'FAIL the cut is logged once with no prompt or reply text' },
     { name: 'log twice', before: logCall, after: `${logCall}; ${logCall}`, expected: 'FAIL the cut is logged once with no prompt or reply text' },
-    { name: 'ignore duplicates', before: 'ignore: [...new Set([...existing, host])]', after: 'ignore: [host]', expected: 'FAIL existing ignore merges without duplicates and stays unmutated' },
-    { name: 'ignore mutation', before: 'return { ...params, provider: { ...provider, ignore: [...new Set([...existing, host])] } }', after: 'provider.ignore = [host]; return params', expected: 'FAIL existing ignore merges without duplicates and stays unmutated' },
-    { name: 'retry drops host order', before: 'provider: { ...provider, ignore: [...new Set([...existing, host])] }', after: 'provider: { ignore: [...new Set([...existing, host])] }', expected: 'FAIL a cut at Azure retries a gpt-4o-mini pass' },
+    { name: 'ignore duplicates', before: 'const ignore = [...new Set([...existing, host])]', after: 'const ignore = [host]', expected: 'FAIL existing ignore merges without duplicates and stays unmutated' },
+    { name: 'ignore mutation', before: 'return { ...params, provider: { ...provider, ignore } }', after: 'provider.ignore = [host]; return params', expected: 'FAIL existing ignore merges without duplicates and stays unmutated' },
+    { name: 'retry drops the allowed hosts', before: 'provider: { ...provider, ignore } }', after: 'provider: { ignore } }', expected: 'FAIL a retry body exists only while an allowed host is left' },
+    { name: 'pinned host retried into nowhere', before: 'provider.only.every((allowed) => ignore.includes(allowed))) return null', after: 'false) return null', expected: 'FAIL a cut at OpenAI on a gpt-4o-mini pass is not retried' },
     { name: 'signal dropped', before: '...(req.signal ? { signal: req.signal } : {}),', after: '...(req.signal && false ? { signal: req.signal } : {}),', expected: 'FAIL the retry shares the first call signal and retry policy' },
     { name: 'retry policy dropped', before: '...(req.timeoutMs ? { maxRetries: 0 } : {})', after: '...(false ? { maxRetries: 0 } : {})', expected: 'FAIL the retry shares the first call signal and retry policy' },
   ]

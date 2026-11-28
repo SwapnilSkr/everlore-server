@@ -240,7 +240,8 @@ for (const winner of ['primary', 'hedge'] as const) {
     assert.equal(calls[1].at, H)
     const primaryOrder = (calls[0].params.provider as { order: string[] }).order
     const hedgeOrder = (calls[1].params.provider as { order: string[] }).order
-    assert.deepEqual(hedgeOrder, [...primaryOrder.slice(1), primaryOrder[0]], 'backup asks another host first')
+    // gpt models have one host (OpenAI), so the backup races on the same one.
+    assert.deepEqual(hedgeOrder, primaryOrder, 'backup keeps the same hosts')
     assert.deepEqual({ ...calls[1].params, provider: { ...calls[1].params.provider, order: primaryOrder } }, calls[0].params,
       'backup repeats everything else byte for byte')
     await clock.to(H + 20)
@@ -289,7 +290,8 @@ await check('(c,f) same text gives identical metadata; zero is the exact non-str
   assert.equal(body.temperature, 0.2)
   assert.equal(body.max_tokens, 450)
   assert.equal((body.response_format as { type: string }).type, 'json_schema')
-  assert.deepEqual((body.provider as { order: string[] }).order, ['OpenAI', 'Azure'])
+  assert.deepEqual((body.provider as { order: string[] }).order, ['OpenAI'])
+  assert.deepEqual((body.provider as { only: string[] }).only, ['OpenAI'])
   assert.equal((body.provider as { require_parameters: boolean }).require_parameters, true)
   assert.equal('sort' in (body.provider as object), false)
   assert.deepEqual(choiceHedgeLogFields(plain.route), {})
@@ -297,7 +299,7 @@ await check('(c,f) same text gives identical metadata; zero is the exact non-str
   assert.deepEqual(snapshotLLMUsage().map(u => u.streamed), [true, false])
 })
 
-await check('structured host order: primary unrotated, hedge rotated by one', [
+await check('gpt host pin: primary and hedge both go to OpenAI only', [
   { events: [text(H + 20, '{}'), end(H + 30)] },
   { events: [text(10, '{}'), end(20)] },
 ], async ({ clock, calls }) => {
@@ -307,19 +309,16 @@ await check('structured host order: primary unrotated, hedge rotated by one', [
   })
   await clock.to(H - 1)
   assert.equal(calls.length, 1)
-  assert.deepEqual(calls[0].params.provider,
-    { order: ['OpenAI', 'Azure'], allow_fallbacks: true, require_parameters: true },
-    'primary sends the measured order')
+  const pinned = { order: ['OpenAI'], only: ['OpenAI'], ignore: ['Azure'], allow_fallbacks: false, require_parameters: true }
+  assert.deepEqual(calls[0].params.provider, pinned, 'primary goes to OpenAI only')
   await clock.to(H + 10)
   assert.equal(calls.length, 2)
-  assert.deepEqual(calls[1].params.provider,
-    { order: ['Azure', 'OpenAI'], allow_fallbacks: true, require_parameters: true },
-    'hedge starts one host later')
+  assert.deepEqual(calls[1].params.provider, pinned, 'hedge goes to OpenAI only')
   await clock.to(H + 21)
   await result
 })
 
-await check('structured host order: an unlisted model keeps throughput sorting', [
+await check('structured routing: a non-gpt model keeps throughput sorting', [
   { events: [text(H + 20, '{}'), end(H + 30)] },
   { events: [text(10, '{}'), end(20)] },
 ], async ({ clock, calls }) => {
@@ -367,7 +366,7 @@ for (const error of [rateLimit(), Object.assign(new Error('bad gateway'), { stat
     assert.equal(calls[1].at, 10)
     const primaryOrder = (calls[0].params.provider as { order: string[] }).order
     const hedgeOrder = (calls[1].params.provider as { order: string[] }).order
-    assert.deepEqual(hedgeOrder, [...primaryOrder.slice(1), primaryOrder[0]], 'immediate backup asks another host first')
+    assert.deepEqual(hedgeOrder, primaryOrder, 'immediate backup keeps the same hosts')
     assert.deepEqual({ ...calls[1].params, provider: { ...calls[1].params.provider, order: primaryOrder } }, calls[0].params,
       'immediate backup repeats everything else byte for byte')
     await clock.to(H)
@@ -564,8 +563,6 @@ if (!process.argv.includes('--no-bites') && !failed) {
     { name: '(h) wrong row winner', file: 'src/models/generation-log.model.ts', before: 'choice_hedge_winner: route.winner', after: "choice_hedge_winner: 'primary'", expected: 'FAIL (b,d) silent primary: exactly one hedge; hedge wins' },
     { name: '(h) disconnect processor row', file: 'worker/processors/generation.processor.ts', before: '...choiceHedgeLogFields(choiceRoute),', after: '...choiceHedgeLogFields({ hedged: false }),', expected: 'FAIL (h)' },
     { name: 'first token clock', file: 'worker/lib/metadata-extractor.ts', before: 'opts?.onChoiceFirstToken?.(Date.now() - startedAt, winner)', after: 'opts?.onChoiceFirstToken?.(0, winner)', expected: 'FAIL (a)' },
-    { name: 'structured hedge rotation dropped', before: 'const at = by % hosts.length', after: 'const at = 0', expected: 'FAIL structured host order: primary unrotated, hedge rotated by one' },
-    { name: 'structured rotation on the primary', before: 'if (!by) return [...hosts]', after: 'if (!by) return [...hosts.slice(1), hosts[0]]', expected: 'FAIL structured host order: primary unrotated, hedge rotated by one' },
     { name: 'SDK retries', before: 'maxRetries: 0,\n    })', after: 'maxRetries: 2,\n    })', expected: 'FAIL (b,d)' },
     { name: 'overall timeout after first token', before: 'timeoutMs}ms`)), timeoutMs)', after: 'timeoutMs}ms`)), timeoutMs * 2)', expected: 'FAIL 90s overall deadline applies after first token' },
     { name: 'default knob', file: 'src/config/env.ts', before: "CHOICE_HEDGE_MS: '1500'", after: "CHOICE_HEDGE_MS: '1501'", expected: 'FAIL (h)' },

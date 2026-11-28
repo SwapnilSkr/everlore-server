@@ -41,9 +41,9 @@ check(structured.params.response_format?.type === 'json_schema'
   && structured.params.response_format.json_schema?.name === 'story_metadata',
   'schema and existing schema name reach OpenRouter')
 check(structured.params.provider?.require_parameters === true
-  && structured.params.provider?.sort === 'throughput'
-  && structured.params.provider?.allow_fallbacks === true,
-  'schema requirement merges with provider preferences')
+  && JSON.stringify(structured.params.provider?.only) === JSON.stringify(['OpenAI'])
+  && structured.params.provider?.allow_fallbacks === false,
+  'schema requirement merges with the OpenAI pin')
 check(structured.params.session_id === 'story-1' && structured.params.reasoning?.effort === 'low'
   && !('reasoning_effort' in structured.params), 'sticky routing and OpenRouter reasoning dialect')
 check(structured.params.max_completion_tokens === 1800
@@ -59,14 +59,14 @@ check(plain.params.session_id === 'story-1' && plain.params.provider?.require_pa
 
 for (const [label, request] of [
   ['streamed prose', plain],
-  ['structured', structured],
-  ['streamed schema', buildChatRequest({ model: 'gpt-4o-mini', messages: [], responseSchema: schema }, true)],
-  ['streamed JSON', buildChatRequest({ model: 'gpt-4o-mini', messages: [], responseFormat: { type: 'json_object' } }, true)],
-  ['replay prose', buildChatRequest({ model: 'gpt-4o-mini', messages: [] })],
+  // gpt models are pinned to OpenAI and checked in (e); these are the others.
+  ['structured', buildChatRequest({ model: 'deepseek/deepseek-v3.2', messages: [], responseSchema: schema })],
+  ['streamed schema', buildChatRequest({ model: 'deepseek/deepseek-v3.2', messages: [], responseSchema: schema }, true)],
+  ['streamed JSON', buildChatRequest({ model: 'deepseek/deepseek-v3.2', messages: [], responseFormat: { type: 'json_object' } }, true)],
+  ['replay prose', buildChatRequest({ model: 'qwen/qwen3-audit', messages: [] })],
 ] as const) {
   const provider = request.params.provider
-  // Both gpt-4o-mini structured shapes are measured: they name their hosts.
-  const measured = label === 'streamed schema' || label === 'streamed JSON'
+  const measured = false
   check((measured ? !('sort' in (provider ?? {})) : provider?.sort === (label === 'streamed prose' ? 'latency' : 'throughput'))
     && provider?.allow_fallbacks === true, `${label} keeps its intended sorting and fallback routing`)
   const prose = label === 'streamed prose' || label === 'replay prose'
@@ -110,7 +110,7 @@ check(JSON.stringify(replay.params.provider?.order) === JSON.stringify(hostOrder
   && JSON.stringify(replay.params.provider?.ignore) === JSON.stringify(['GMICloud'])
   && !('reasoning' in replay.params),
   'v4.1 replay retains host order and bans without a thinking override')
-const unruled = buildChatRequest({ model: 'gpt-4o-mini', messages: [] }, true)
+const unruled = buildChatRequest({ model: 'qwen/qwen3-audit', messages: [] }, true)
 check(JSON.stringify(unruled.params.provider?.ignore) === JSON.stringify(['GMICloud'])
   && unruled.params.provider?.sort === 'latency' && !('order' in unruled.params.provider)
   && JSON.stringify(unruled.params.reasoning) === JSON.stringify({ enabled: false }),
@@ -136,42 +136,38 @@ for (const model of [orderedModel, 'deepseek/deepseek-v3.2', 'deepseek/deepseek-
     }
   }
 }
-// Measured structured models name their hosts, streamed or not, with every
-// structured shape and both the normalized and bare id. Throughput sorting and
-// the p90 hint are gone so neither can move the reply to another host.
+// Every gpt model goes to OpenAI alone (owner, 2026-11-28: Azure banned):
+// every shape, streamed or not, normalized or bare, prose or structured, and
+// every gpt id the app is configured with. Exactly one host and no fallback.
 const p90 = env.OPENROUTER_PREFERRED_P90_LATENCY_SECONDS
 const p90Preference = Number.isFinite(p90) && p90 > 0 ? { preferred_max_latency: { p90 } } : {}
-for (const [normalized, order] of [
-  ['openai/gpt-4o-mini', ['OpenAI', 'Azure']],
-  ['openai/gpt-6-luna', ['Amazon Bedrock', 'OpenAI', 'Azure']],
-] as const) {
+const { directorModel, moderationModel } = await import('../src/services/media/config')
+const configuredGpt = [...chatModels.map(([, model]) => model), env.CHEAP_RANK_MODEL, directorModel(), moderationModel()]
+  .map((model) => buildChatRequest({ model, messages: [] }).params.model as string)
+  .filter((model) => model.startsWith('openai/'))
+check(configuredGpt.includes('openai/gpt-4o-mini'), '(e) the configured gpt models are found')
+for (const normalized of [...new Set(['openai/gpt-4o-mini', 'openai/gpt-6-luna', 'openai/gpt-5.6-luna', 'openai/gpt-6.1-sol', ...configuredGpt])]) {
   for (const model of [normalized, normalized.replace(/^openai\//, '')]) {
     for (const stream of [false, true]) {
       for (const [format, options, requireParameters] of [
+        ['prose', {}, false],
+        ['text', { responseFormat: { type: 'text' } }, false],
         ['JSON object', { responseFormat: { type: 'json_object' } }, false],
         ['JSON schema', { responseFormat: { type: 'json_schema', json_schema: { name: 'audit', schema } } }, true],
         ['schema', { responseSchema: schema }, true],
       ] as const) {
         const { params } = buildChatRequest({ model, messages: [], ...options }, stream)
-        const expected = { order: [...order], allow_fallbacks: true, ...(requireParameters ? { require_parameters: true } : {}) }
+        const expected = { order: ['OpenAI'], only: ['OpenAI'], ignore: ['Azure'], allow_fallbacks: false, ...(requireParameters ? { require_parameters: true } : {}) }
         check(JSON.stringify(params.provider) === JSON.stringify(expected),
-          `(e) ${model} ${stream ? 'stream' : 'chat'} ${format} sends the exact structured host order`)
-        check(!('sort' in params.provider) && !('preferred_max_latency' in params.provider) && !('ignore' in params.provider),
-          `(e) ${model} ${stream ? 'stream' : 'chat'} ${format} keeps no sort, p90 or ignore`)
+          `(e) ${model} ${stream ? 'stream' : 'chat'} ${format} goes to OpenAI only, Azure banned, no fallback`)
       }
     }
   }
 }
-const proseMini = buildChatRequest({ model: 'gpt-4o-mini', messages: [], purpose: 'scene_summary' })
-check(JSON.stringify(proseMini.params.provider) === JSON.stringify({
-  sort: 'throughput', ignore: ['GMICloud'], allow_fallbacks: true, ...p90Preference,
-}), '(e) a gpt-4o-mini prose call keeps throughput sorting and the p90 preference')
-check(!('order' in proseMini.params.provider) && !('reasoning' in proseMini.params),
-  '(e) a gpt-4o-mini prose call keeps no host order and no reasoning override')
-const unlistedStructured = buildChatRequest({ model: 'gpt-5.6-luna', messages: [], responseSchema: schema }, true)
+const unlistedStructured = buildChatRequest({ model: 'qwen/qwen3-audit', messages: [], responseSchema: schema }, true)
 check(JSON.stringify(unlistedStructured.params.provider) === JSON.stringify({
   sort: 'throughput', allow_fallbacks: true, require_parameters: true, ...p90Preference,
-}), '(e) an unlisted structured model keeps throughput sorting and the p90 preference')
+}), '(e) a non-gpt structured model keeps throughput sorting and the p90 preference')
 
 for (const model of ['gpt-5.6-luna', 'openai/gpt-5.6-luna']) {
   for (const stream of [false, true]) {
@@ -235,12 +231,12 @@ if (process.argv.includes('--bites')) {
     { name: 'structured thinking isolation', before: "((stream && prose) || (req.noReasoning && !model.startsWith('openai/'))) && !isNextGenOpenAIModel(model)", after: "(stream || (req.noReasoning && !model.startsWith('openai/'))) && !isNextGenOpenAIModel(model)", expected: 'FAIL (c)' },
     { name: 'thinking switch to an OpenAI host', before: "(req.noReasoning && !model.startsWith('openai/'))", after: 'req.noReasoning', expected: 'FAIL (f) openai/gpt-4o-mini' },
     { name: 'structured throughput sort', before: "sort: narration ? 'latency' : 'throughput'", after: "sort: 'latency'", expected: 'FAIL (c)' },
-    { name: 'structured parameter requirement', before: 'require_parameters: true', after: 'require_parameters: false', expected: 'FAIL (c)' },
-    { name: 'measured order swapped', before: "'openai/gpt-4o-mini': ['OpenAI', 'Azure']", after: "'openai/gpt-4o-mini': ['Azure', 'OpenAI']", expected: 'FAIL (e) openai/gpt-4o-mini chat JSON object sends the exact structured host order' },
-    { name: 'measured wrong model key', before: "'openai/gpt-6-luna':", after: "'openai/gpt-6-luna-typo':", expected: 'FAIL (e) openai/gpt-6-luna chat JSON object sends the exact structured host order' },
-    { name: 'measured sort left in', before: '...(order ? { order: [...order] } :', after: "...(order ? { order: [...order], sort: 'throughput' } :", expected: 'FAIL (e) openai/gpt-4o-mini chat JSON object keeps no sort, p90 or ignore' },
-    { name: 'measured p90 left in', before: 'measured === undefined && Number.isFinite(p90) && p90 > 0', after: 'Number.isFinite(p90) && p90 > 0', expected: 'FAIL (e) openai/gpt-4o-mini chat JSON object keeps no sort, p90 or ignore' },
-    { name: 'measured rule applied to prose', before: 'const measured = prose ? undefined : STRUCTURED_HOST_ORDER[model]', after: 'const measured = STRUCTURED_HOST_ORDER[model]', expected: 'FAIL (e) a gpt-4o-mini prose call keeps throughput sorting' },
+    { name: 'structured parameter requirement', before: '      allow_fallbacks: true,\n      ...(requireParameters ? { require_parameters: true } : {}),', after: '      allow_fallbacks: true,\n      ...(requireParameters ? { require_parameters: false } : {}),', expected: 'FAIL (c)' },
+    { name: 'OpenAI pin dropped', before: '        only: [OPENAI_ONLY_HOST],\n', after: '', expected: 'FAIL (e) openai/gpt-4o-mini chat prose goes to OpenAI only' },
+    { name: 'gpt fallbacks allowed', before: 'allow_fallbacks: false,', after: 'allow_fallbacks: true,', expected: 'FAIL (e) openai/gpt-4o-mini chat prose goes to OpenAI only' },
+    { name: 'Azure ban dropped', before: "['Azure'] as const", after: '[] as const', expected: 'FAIL (e) openai/gpt-4o-mini chat prose goes to OpenAI only' },
+    { name: 'gpt pin skipped', before: 'if (isOpenAIModel(model)) {', after: 'if (false) {', expected: 'FAIL (e) openai/gpt-4o-mini chat prose goes to OpenAI only' },
+    { name: 'gpt pin only on structured', before: 'if (isOpenAIModel(model)) {', after: 'if (isOpenAIModel(model) && !prose) {', expected: 'FAIL (e) gpt-4o-mini stream prose goes to OpenAI only' },
     { name: 'OpenAI effort-only reasoning', before: 'params.reasoning = { effort: req.reasoningEffort }', after: 'params.reasoning = { effort: req.reasoningEffort, enabled: false }', expected: 'FAIL (d)' },
     { name: 'OpenAI no-effort isolation', before: "((stream && prose) || (req.noReasoning && !model.startsWith('openai/'))) && !isNextGenOpenAIModel(model)", after: '(stream && prose)', expected: 'FAIL (d) gpt-5.6-luna stream prose adds no reasoning without effort' },
   ]
