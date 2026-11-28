@@ -38,7 +38,7 @@ import { startIntentRouter, decideIntentRoute, resolveNsfwIntent } from '../lib/
 import { type GenerationOutput, sanitizeChoices } from '../lib/structured-output'
 import { makeChoiceTailFilter } from '../lib/choice-tail'
 import { makeProseStreamFilter } from '../lib/prose-stream-filter'
-import { extractChoiceMetadata, extractSceneWitness, mergeSceneMetadata, filterChoicePairs, statDescriptors, type MetadataOpts } from '../lib/metadata-extractor'
+import { extractChoiceMetadata, extractSceneWitness, mergeSceneMetadata, filterChoicePairs, statDescriptors, type MetadataOpts, type SceneMetadata } from '../lib/metadata-extractor'
 import { classifyPresenceCodexGaps, isActionableMention, hasSceneParticipationGrammar } from '../lib/presence-gap-detector'
 import {
   adjudicateEntityCandidates,
@@ -1480,9 +1480,15 @@ ${
   let choiceModel: string | undefined
   const metaStats = statDescriptors(session.stat_definitions || session.world_state)
   const metaFlags = Object.keys(session.active_flags || {})
+  // The button half's result on its own, before the split ledger join: the ledger
+  // is not needed by the button audit or the publish, so the buttons must not
+  // wait 2-5 s for it.
+  let choicesSettled!: (result: SceneMetadata) => void
+  const choicesOnly = new Promise<SceneMetadata>((r) => { choicesSettled = r })
   // Built at CALL time: an early button launch (below) reads the native values,
   // the launch after the copy reads exactly today's object.
   const buildMetaOpts = (): MetadataOpts => ({
+    onChoices: (result) => choicesSettled(result),
     isSentient: session.is_sentient,
     currentLocationName: currentLocation?.name || null,
     priorPresent,
@@ -1894,7 +1900,7 @@ ${
     return { choices, choices_en: choicesEn }
   }
   let choiceAuditMs = 0
-  const earlyChoicesPromise = Promise.all([choiceHalfPromise, deathExtractionPromise, graphLabelsPromise])
+  const earlyChoicesPromise = Promise.all([Promise.race([choicesOnly, choiceHalfPromise]), deathExtractionPromise, graphLabelsPromise])
     .then(([choice, deltas, labels]) => {
       const startedAt = Date.now()
       const done = finishChoices(choice.choices || [], choice.choices_en, deltas, labels)

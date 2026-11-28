@@ -21,6 +21,11 @@
  *       late, through `englishTurn`.
  *   (i) the processor wiring, read as text: the early launch sits before the
  *       copy and `englishDone` is called after it.
+ *   (j) the split ledger no longer holds the buttons: `onChoices` fires with the
+ *       button half while a 3 s ledger is still out, and the returned promise
+ *       still carries `beat_ledger`.
+ *   (k) the processor races the early publish on `choicesOnly`, while
+ *       `metaPromise` still joins `choiceHalfPromise`.
  *
  * Pure: every model call is injected. No network, no DB.
  *
@@ -35,6 +40,7 @@ import {
   extractChoiceMetadata,
   extractSceneWitness,
   type MetadataOpts,
+  type SceneMetadata,
 } from '../worker/lib/metadata-extractor'
 import { AI_MODELS } from '../src/ai/models'
 
@@ -343,6 +349,51 @@ await check('(i) the processor launches the non-English buttons before the copy 
   )
 })
 
+// ── (j)-(k) the buttons stop waiting for the split ledger call ──────────────
+const SLOW_LEDGER_RAW = '{"beat_ledger":{"npc_beats":["Mara sets her coat aside"],"emotional_shift":null,"setting":"the hall","consequence":null,"unresolved_hook":null}}'
+
+await check('(j) with the split on, onChoices fires with the buttons while the ledger is still 3 s out; the returned promise carries it', async () => {
+  const LEDGER_DELAY_MS = 3000
+  const call = async (request: Record<string, any>) => {
+    if (request.purpose === 'beat_ledger') {
+      await new Promise((resolve) => setTimeout(resolve, LEDGER_DELAY_MS))
+      return SLOW_LEDGER_RAW
+    }
+    if (request.purpose === 'scene_witness') return WITNESS_RAW
+    return GOOD_RAW
+  }
+  const startedAt = Date.now()
+  let firedAt: number | undefined
+  let early: SceneMetadata | undefined
+  const pending = extractChoiceMetadata(FIXTURE_PROSE, FIXTURE_STATS, FIXTURE_FLAGS, {
+    ...opts(call),
+    onChoices: (result) => { firedAt = Date.now() - startedAt; early = result },
+  }, { split: true })
+  await new Promise((resolve) => setTimeout(resolve, 300))
+  assert.notEqual(firedAt, undefined, 'onChoices must fire without waiting for the ledger')
+  assert.ok((firedAt as number) <= 300, `onChoices fired ${firedAt} ms after the launch, while the ledger was 3 s out`)
+  assert.ok((early?.choices?.length ?? 0) > 0, 'onChoices must receive the buttons')
+  assert.equal(early?.beat_ledger?.setting ?? null, null, 'the half reported before the join has no ledger in it')
+  const result = await pending
+  const returnedAt = Date.now() - startedAt
+  assert.ok(returnedAt >= LEDGER_DELAY_MS, `the returned promise settled at ${returnedAt} ms, before the ledger`)
+  assert.equal(result.beat_ledger?.setting, 'the hall', 'the returned promise must still carry beat_ledger')
+})
+
+await check('(k) the processor races the early publish on choicesOnly and keeps metaPromise on choiceHalfPromise', async () => {
+  const processor = await readFile(new URL('../worker/processors/generation.processor.ts', import.meta.url), 'utf8')
+  const earlyAt = processor.indexOf('const earlyChoicesPromise =')
+  assert.ok(earlyAt >= 0, 'earlyChoicesPromise must exist')
+  const earlyLine = processor.slice(earlyAt, processor.indexOf('\n', earlyAt))
+  assert.ok(earlyLine.includes('Promise.race([choicesOnly, choiceHalfPromise])'),
+    `the early publish must race on the button half alone: ${earlyLine}`)
+  const metaAt = processor.indexOf('const metaPromise =')
+  assert.ok(metaAt >= 0, 'metaPromise must exist')
+  const metaBlock = processor.slice(metaAt, processor.indexOf('\n', processor.indexOf('.then(', metaAt)))
+  assert.ok(metaBlock.includes('choiceHalfPromise'), 'metaPromise must keep the ledger-carrying half')
+  assert.equal(metaBlock.includes('choicesOnly'), false, 'metaPromise must not read the pre-ledger half')
+})
+
 if (fail > 0) {
   console.log(`\nchoice-early audit: ${pass} passed, ${fail} failed`)
   process.exit(1)
@@ -409,6 +460,18 @@ async function runBites() {
       name: '(i) the early launch renamed away',
       check: '(i) the processor launches the non-English buttons before the copy and hands the copy over after it',
       edits: [[processor, 'const earlyChoiceHalf = englishReady', 'const lateChoiceHalf = englishReady']],
+    },
+    {
+      name: '(j) onChoices moved after the ledger join',
+      check: '(j) with the split on, onChoices fires with the buttons while the ledger is still 3 s out; the returned promise carries it',
+      edits: [[extractor,
+        '  try { opts?.onChoices?.(choices) } catch {}\n  return ledgerPromise ? { ...choices, beat_ledger: await ledgerPromise } : choices',
+        '  const joined = ledgerPromise ? { ...choices, beat_ledger: await ledgerPromise } : choices\n  try { opts?.onChoices?.(joined) } catch {}\n  return joined']],
+    },
+    {
+      name: '(k) the early publish put back on the ledger-bearing half',
+      check: '(k) the processor races the early publish on choicesOnly and keeps metaPromise on choiceHalfPromise',
+      edits: [[processor, 'Promise.race([choicesOnly, choiceHalfPromise])', 'choiceHalfPromise']],
     },
   ]
 

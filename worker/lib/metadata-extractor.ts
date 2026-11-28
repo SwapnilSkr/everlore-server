@@ -503,6 +503,9 @@ export type MetadataOpts = {
   onChoiceHedge?: () => void
   /** Which model produced the kept buttons; logged as `choice_model`. */
   onChoiceModel?: (model: string) => void
+  /** Called once with the button half's result as soon as it settles, before the
+   *  ledger join. The returned promise still carries the ledger. */
+  onChoices?: (result: SceneMetadata) => void
   /** Raw player-authored turn. The witness uses this to identify actual travel
    * intent; it never treats narration alone as player authority. */
   playerInput?: string | null
@@ -1139,6 +1142,9 @@ export async function extractChoiceMetadata(
     }
   })()
   const choices = await choicePromise
+  // The buttons are publishable now; the ledger join below must not hold them.
+  // A throwing callback cannot change what this function returns.
+  try { opts?.onChoices?.(choices) } catch {}
   return ledgerPromise ? { ...choices, beat_ledger: await ledgerPromise } : choices
 }
 

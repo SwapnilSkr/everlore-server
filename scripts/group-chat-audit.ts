@@ -1643,7 +1643,10 @@ await check('story prompt fixed fixture hashes unchanged; only group kind hands 
   // tail clock, stat/flag names), the options literal and the launch moved above
   // the copy, and the launch is now `earlyChoiceHalf ?? …`. Nothing else
   // changed, and the group-only handoff did not move; re-hashed the same way.
-  assert.equal(createHash('sha256').update(originalStory).digest('hex'), '4838da7c496d46da79421d5055e80a096918b5b637b04d302f83c7977d1a9a2a')
+  // buttons-ledger-unblock adds the pre-ledger `choicesSettled`/`choicesOnly`
+  // pair, hands it to `buildMetaOpts` as `onChoices`, and races the early
+  // publish on it; the group-only handoff still did not move, so re-hashed.
+  assert.equal(createHash('sha256').update(originalStory).digest('hex'), 'ffb792afaddc610cb2e15f93d883916a30f55808ae99a67db72eac755988d988')
   const before = await readFile(new URL('../src/utils/prompt-builder.ts', import.meta.url), 'utf8')
   // rl-3r: the continuity player half and `openingSceneCanon` now read through
   // `witnessOf`, so this source moved while the prompt it EMITS did not —
